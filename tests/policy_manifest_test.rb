@@ -2,6 +2,14 @@
 # Focused mutation checks for the migration manifest policy.
 #
 # The sandbox harness and the fixture list live in policy_mutation_support.rb.
+#
+# Every row names the policy scripts that actually detect its planted defect, so
+# its sandbox runs one or two of them rather than all eight. Those sets were
+# derived by measurement, not by reading the scripts: 218 of the 242 mutations
+# here are detected by exactly one script, and only 17 by the one that dominates
+# a sandbox's cost. `--audit` runs all eight again and fails on any call site
+# whose declared set has drifted from what the scripts now do -- run it after
+# adding a check to a policy script.
 
 require_relative "policy_mutation_support"
 
@@ -361,14 +369,16 @@ end
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.
 expect_failure(failures, "divergent logging fragment",
-               "komga: x-logging must hold the values every stack's copy of it shares") do |root|
+               "komga: x-logging must hold the values every stack's copy of it shares",
+               detected_by: %i[policy]) do |root|
   mutate_compose.call(root, "services/komga/compose.yml") do |compose|
     compose["x-logging"] = { "driver" => "json-file", "options" => { "max-size" => "50m", "max-file" => "3" } }
   end
 end
 
 expect_failure(failures, "divergent health-check timing fragment",
-               "komga: x-healthcheck-defaults must hold the values every stack's copy of it shares") do |root|
+               "komga: x-healthcheck-defaults must hold the values every stack's copy of it shares",
+               detected_by: %i[policy]) do |root|
   mutate_compose.call(root, "services/komga/compose.yml") do |compose|
     compose["x-healthcheck-defaults"] = { "interval" => "45s", "timeout" => "10s",
                                           "retries" => 5, "start_period" => "60s" }
@@ -377,14 +387,16 @@ end
 
 expect_failure(failures, "service defaults fragment disagreeing with platform policy",
                "komga: x-service-defaults must carry the platform cpuset, " \
-               "security_opt, restart and logging") do |root|
+               "security_opt, restart and logging",
+               detected_by: %i[policy]) do |root|
   mutate_compose.call(root, "services/komga/compose.yml") do |compose|
     compose.fetch("x-service-defaults")["security_opt"] = []
   end
 end
 
 expect_failure(failures, "container-local logging variant",
-               "komga/komga: logging must be the platform fragment, not a variant of it") do |root|
+               "komga/komga: logging must be the platform fragment, not a variant of it",
+               detected_by: %i[policy]) do |root|
   mutate_compose.call(root, "services/komga/compose.yml") do |compose|
     compose.fetch("services").fetch("komga")["logging"] =
       { "driver" => "json-file", "options" => { "max-size" => "1g", "max-file" => "99" } }
@@ -392,47 +404,54 @@ expect_failure(failures, "container-local logging variant",
 end
 
 expect_failure(failures, "recreated retired role",
-               "retired role directory must be absent") do |root|
+               "retired role directory must be absent",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "roles", retired_token, "tasks", "main.yml")
   FileUtils.mkdir_p(File.dirname(path))
   File.write(path, "---\n[]\n")
 end
 
 expect_failure(failures, "current README mention",
-               "retired declaration remains: README.md") do |root|
+               "retired declaration remains: README.md",
+               detected_by: %i[policy]) do |root|
   File.open(File.join(root, "README.md"), "a") { |file| file.puts(retired_token) }
 end
 
 expect_failure(failures, "current operator documentation mention",
-               "retired declaration remains: docs/adding-a-service.md") do |root|
+               "retired declaration remains: docs/adding-a-service.md",
+               detected_by: %i[policy]) do |root|
   File.open(File.join(root, "docs", "adding-a-service.md"), "a") do |file|
     file.puts(retired_token.upcase)
   end
 end
 
 expect_failure(failures, "nested current operator documentation mention",
-               "retired declaration remains: docs/operator/guide.md") do |root|
+               "retired declaration remains: docs/operator/guide.md",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "docs", "operator", "guide.md")
   FileUtils.mkdir_p(File.dirname(path))
   File.write(path, retired_token)
 end
 
 expect_failure(failures, "deceptive migration neighbor",
-               "retired declaration remains: scripts/migrate-media-acquisition-vault.py.bak") do |root|
+               "retired declaration remains: scripts/migrate-media-acquisition-vault.py.bak",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "scripts", "migrate-media-acquisition-vault.py.bak")
   FileUtils.mkdir_p(File.dirname(path))
   File.write(path, retired_token)
 end
 
 expect_failure(failures, "lone migration file",
-               "the temporary encrypted-vault migration audit is incomplete") do |root|
+               "the temporary encrypted-vault migration audit is incomplete",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "scripts", "migrate-media-acquisition-vault.py")
   FileUtils.mkdir_p(File.dirname(path))
   File.write(path, "#!/usr/bin/env python3\n")
 end
 
 expect_failure(failures, "missing validation registration",
-               "the temporary encrypted-vault migration audit is incomplete") do |root|
+               "the temporary encrypted-vault migration audit is incomplete",
+               detected_by: %i[policy]) do |root|
   migration_paths = %w[
     scripts/migrate-media-acquisition-vault.py
     tests/media_acquisition_vault_migration_test.py
@@ -445,7 +464,8 @@ expect_failure(failures, "missing validation registration",
 end
 
 expect_failure(failures, "changed tracked README detection",
-               "retired declaration remains: README.md") do |root|
+               "retired declaration remains: README.md",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "README.md")
   File.open(path, "a") { |file| file.puts(retired_token) }
   _stdout, stderr, status = capture3_without_git_routing("git", "add", "README.md", chdir: root)
@@ -453,19 +473,22 @@ expect_failure(failures, "changed tracked README detection",
 end
 
 expect_failure(failures, "new untracked forbidden source",
-               "retired declaration remains: tests/retired-policy.rb") do |root|
+               "retired declaration remains: tests/retired-policy.rb",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "tests", "retired-policy.rb"), retired_token)
 end
 
 expect_failure(failures, "selected current-source leaf symlink",
-               "tests/retired-policy.rb: active source must be a regular file") do |root|
+               "tests/retired-policy.rb: active source must be a regular file",
+               detected_by: %i[policy]) do |root|
   target = File.join(root, "retired-policy-target")
   File.write(target, retired_token)
   File.symlink(target, File.join(root, "tests", "retired-policy.rb"))
 end
 
 expect_failure(failures, "selected current-source symlinked ancestor",
-               "tests/operator/guide.rb: active source path must not contain symlinks") do |root|
+               "tests/operator/guide.rb: active source path must not contain symlinks",
+               detected_by: %i[policy]) do |root|
   tracked_directory = File.join(root, "tests", "operator")
   tracked_source = File.join(tracked_directory, "guide.rb")
   FileUtils.mkdir_p(tracked_directory)
@@ -500,7 +523,8 @@ expect_fixture_identity_rejection(
 )
 
 expect_failure(failures, "reintroduced legacy source",
-               "must not reintroduce a legacy migration source") do |root|
+               "must not reintroduce a legacy migration source",
+               detected_by: %i[policy]) do |root|
   mutate_manifest(root) do |manifest|
     manifest["legacy_source"] = { "repository" => "example/legacy" }
   end
@@ -509,36 +533,43 @@ end
 {
   "role" => "wrong_role"
 }.each do |field, value|
-  expect_failure(failures, "wrong #{field}", "beszel: #{field} must equal") do |root|
+  expect_failure(failures, "wrong #{field}", "beszel: #{field} must equal",
+                 detected_by: %i[policy deployment]) do |root|
     mutate_manifest(root) { |manifest| service(manifest, "beszel")[field] = value }
   end
 end
 
-expect_failure(failures, "ntfy downgrade", "ntfy: status must be implemented or accepted") do |root|
+expect_failure(failures, "ntfy downgrade", "ntfy: status must be implemented or accepted",
+               detected_by: %i[policy ci]) do |root|
   mutate_manifest(root) { |manifest| service(manifest, "ntfy")["status"] = "planned" }
 end
 
-expect_failure(failures, "non-string name", "service name must be a string") do |root|
+expect_failure(failures, "non-string name", "service name must be a string",
+               detected_by: %i[policy ci deployment vault]) do |root|
   mutate_manifest(root) { |manifest| manifest.fetch("services").first["name"] = 7 }
 end
 
-expect_failure(failures, "heterogeneous services", "each service manifest entry must be a mapping") do |root|
+expect_failure(failures, "heterogeneous services", "each service manifest entry must be a mapping",
+               detected_by: %i[policy ci deployment vault]) do |root|
   mutate_manifest(root) { |manifest| manifest.fetch("services")[0] = "audiobookshelf" }
 end
 
-expect_failure(failures, "duplicate manifest service", "service manifest name values must be unique") do |root|
+expect_failure(failures, "duplicate manifest service", "service manifest name values must be unique",
+               detected_by: %i[policy vault]) do |root|
   mutate_manifest(root) do |document|
     document.fetch("services") << service(document, "arr").dup
   end
 end
 
 expect_failure(failures, "implemented service stripped of its vault contract",
-               "tests/expected/seerr.yml vault_keys must be a nonempty list") do |root|
+               "tests/expected/seerr.yml vault_keys must be a nonempty list",
+               detected_by: %i[policy vault]) do |root|
   mutate_yaml_file(root, "tests/expected/seerr.yml") { |document| document["vault_keys"] = [] }
 end
 
 expect_failure(failures, "second acquisition job",
-               "Configarr must be the sole one-shot acquisition service") do |root|
+               "Configarr must be the sole one-shot acquisition service",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
     catalog.dig("projects", "arr", "services", "radarr")["class"] = "one_shot"
   end
@@ -588,28 +619,32 @@ promote_arr_with_compose = lambda do |root|
 end
 
 expect_failure(failures, "acquisition job missing jobs profile",
-               "arr/configarr: one-shot acquisition service must use only the jobs profile") do |root|
+               "arr/configarr: one-shot acquisition service must use only the jobs profile",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "configarr").delete("profiles")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
 expect_failure(failures, "acquisition job publishes a port",
-               "arr/configarr: one-shot acquisition service must not publish ports") do |root|
+               "arr/configarr: one-shot acquisition service must not publish ports",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "configarr")["ports"] = ["9999:9999"]
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
 expect_failure(failures, "acquisition daemon claims restart exemption",
-               "arr/radarr: long-running services must restart unless-stopped") do |root|
+               "arr/radarr: long-running services must restart unless-stopped",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("restart")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
 expect_failure(failures, "acquisition daemon claims healthcheck exemption",
-               "arr/radarr: long-running services must define a health check") do |root|
+               "arr/radarr: long-running services must define a health check",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("healthcheck")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
@@ -617,7 +652,8 @@ end
 
 expect_failure(failures, "acquisition daemon claims privilege-escalation exemption",
                "arr/radarr: must refuse privilege escalation with security_opt " \
-               "no-new-privileges:true") do |root|
+               "no-new-privileges:true",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("security_opt")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
@@ -625,7 +661,8 @@ end
 
 expect_failure(failures, "acquisition job claims privilege-escalation exemption",
                "arr/configarr: must refuse privilege escalation with security_opt " \
-               "no-new-privileges:true") do |root|
+               "no-new-privileges:true",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "configarr").delete("security_opt")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
@@ -633,14 +670,16 @@ end
 
 expect_failure(failures, "acquisition daemon disarms no-new-privileges",
                "arr/radarr: must refuse privilege escalation with security_opt " \
-               "no-new-privileges:true") do |root|
+               "no-new-privileges:true",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr")["security_opt"] = ["no-new-privileges:false"]
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
 expect_failure(failures, "acquisition daemon claims Dozzle exemption",
-               "arr/radarr: long-running services must declare a Dozzle event identity") do |root|
+               "arr/radarr: long-running services must declare a Dozzle event identity",
+               detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr", "labels").delete("dev.dozzle.name")
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
@@ -749,7 +788,8 @@ failures << "foundation strict CLI: missing usage diagnostic" unless
 
 %w[policy_test.rb policy_vault_test.rb].each do |caller|
   expect_failure(failures, "#{caller} substitutes the manifest status mapping",
-                 "service statuses must have exactly the rostered service names") do |root|
+                 "service statuses must have exactly the rostered service names",
+                 detected_by: %i[policy vault]) do |root|
     path = File.join(root, "tests", caller)
     source = File.read(path)
     expected = "pinned_service_expectations(ROOT, service_statuses)"
@@ -759,7 +799,8 @@ failures << "foundation strict CLI: missing usage diagnostic" unless
   end
 end
 
-expect_failure(failures, "malformed YAML", "service manifest is malformed") do |root|
+expect_failure(failures, "malformed YAML", "service manifest is malformed",
+               detected_by: %i[policy vault]) do |root|
   File.write(File.join(root, "services", "manifest.yml"), "services: [unterminated")
 end
 
@@ -776,44 +817,51 @@ failures << "multiple manifest documents: policy_test.rb emitted a Ruby stack tr
   output.match?(/\.rb:\d+:in [`']/)
 
 expect_failure(failures, "missing platform hierarchy",
-               "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
+               "inventory/local.yml must expose nas_hosts as a child of platform_hosts",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "inventory/local.yml") { |inventory| inventory.delete("platform_hosts") }
 end
 
 expect_failure(failures, "wrong platform child",
-               "inventory/local.yml must expose nas_hosts as a child of platform_hosts") do |root|
+               "inventory/local.yml must expose nas_hosts as a child of platform_hosts",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "inventory/local.yml") do |inventory|
     inventory.fetch("platform_hosts").fetch("children")["wrong_hosts"] =
       inventory.fetch("platform_hosts").fetch("children").delete("nas_hosts")
   end
 end
 
-expect_failure(failures, "missing Mac inventory", "inventory/mac.yml is missing") do |root|
+expect_failure(failures, "missing Mac inventory", "inventory/mac.yml is missing",
+               detected_by: %i[policy]) do |root|
   FileUtils.rm(File.join(root, "inventory", "mac.yml"))
 end
 
 expect_failure(failures, "machine fact leaked into shared vars",
-               "machine facts must not be all-group variables") do |root|
+               "machine facts must not be all-group variables",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |vars|
     vars["nas_docker_root"] = "/leaked"
   end
 end
 
 expect_failure(failures, "raw Mac storage root",
-               "Mac nas_docker_root must canonicalize PLATFORM_DOCKER_ROOT before export") do |root|
+               "Mac nas_docker_root must canonicalize PLATFORM_DOCKER_ROOT before export",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
     vars["nas_docker_root"] = "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') }}"
   end
 end
 
 expect_failure(failures, "missing filter registration",
-               "Mac path canonicalization must use the configured physical-path filter") do |root|
+               "Mac path canonicalization must use the configured physical-path filter",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "ansible.cfg")
   File.write(path, File.read(path).sub(/^filter_plugins\s*=.*\n/, ""))
 end
 
 expect_failure(failures, "nonfunctional physical-path filter",
-               "Mac physical-path filter must reject ambiguous or relative paths") do |root|
+               "Mac physical-path filter must reject ambiguous or relative paths",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "filter_plugins", "platform_paths.py")
   source = File.read(path).sub("return os.path.realpath(value)",
                                "return value  # os.path.realpath(value)")
@@ -821,14 +869,16 @@ expect_failure(failures, "nonfunctional physical-path filter",
 end
 
 expect_failure(failures, "leading double separator accepted",
-               "Mac physical-path filter must reject ambiguous or relative paths") do |root|
+               "Mac physical-path filter must reject ambiguous or relative paths",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "filter_plugins", "platform_paths.py")
   source = File.read(path).sub(" or value.startswith(os.sep * 2)", "")
   File.write(path, source)
 end
 
 expect_failure(failures, "missing Mac path fixture wiring",
-               "integration must prove canonical Mac paths pass target validation") do |root|
+               "integration must prove canonical Mac paths pass target validation",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   source = File.read(path)
     .gsub(/^.*mac_inventory_path_test\.yml.*\n/, "")
@@ -836,34 +886,39 @@ expect_failure(failures, "missing Mac path fixture wiring",
   File.write(path, source)
 end
 
-expect_failure(failures, "missing host capability", "must define platform_beszel_agent_available") do |root|
+expect_failure(failures, "missing host capability", "must define platform_beszel_agent_available",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
     vars.delete("platform_beszel_agent_available")
   end
 end
 
 expect_failure(failures, "wrong capability type",
-               "platform_render_device_available must be boolean") do |root|
+               "platform_render_device_available must be boolean",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
     vars["platform_render_device_available"] = "false"
   end
 end
 
-expect_failure(failures, "invalid production platform kind", "platform_kind must be mac") do |root|
+expect_failure(failures, "invalid production platform kind", "platform_kind must be mac",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/mac_hosts/main.yml") do |vars|
     vars["platform_kind"] = "integration"
   end
 end
 
 expect_failure(failures, "removed NAS mount guard",
-               "preflight must check mounts by command exit status, including in check mode") do |root|
+               "preflight must check mounts by command exit status, including in check mode",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "roles/preflight/tasks/main.yml") do |tasks|
     tasks.find { |task| task["name"] == "Require the NAS volumes to be mounted" }.delete("when")
   end
 end
 
 expect_failure(failures, "weakened GPU device proof",
-               "GPU availability must require declared capability and an existing character device") do |root|
+               "GPU availability must require declared capability and an existing character device",
+               detected_by: %i[platform]) do |root|
   mutate_yaml_file(root, "roles/preflight/tasks/gpu.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Record whether hardware acceleration is available" }
     task.fetch("ansible.builtin.set_fact")["preflight_gpu_available"] =
@@ -872,21 +927,24 @@ expect_failure(failures, "weakened GPU device proof",
 end
 
 expect_failure(failures, "weakened platform kind choices",
-               "deployment bundle platform_kind must allow only nas or mac") do |root|
+               "deployment bundle platform_kind must allow only nas or mac",
+               detected_by: %i[deployment]) do |root|
   mutate_yaml_file(root, "roles/deployment_bundle/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options", "platform_kind").delete("choices")
   end
 end
 
 expect_failure(failures, "test mode defaults enabled",
-               "deployment bundle test mode must be an explicit false boolean option") do |root|
+               "deployment bundle test mode must be an explicit false boolean option",
+               detected_by: %i[deployment]) do |root|
   mutate_yaml_file(root, "roles/deployment_bundle/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options", "deployment_bundle_test_mode")["default"] = true
   end
 end
 
 expect_failure(failures, "weakened dirty bypass guard",
-               "dirty controller bypass must require explicit integration Compose test mode") do |root|
+               "dirty controller bypass must require explicit integration Compose test mode",
+               detected_by: %i[deployment]) do |root|
   mutate_yaml_file(root, "roles/deployment_bundle/tasks/controller.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Restrict dirty controller bypass to integration" }
     task.fetch("ansible.builtin.assert")["that"] = [
@@ -896,7 +954,8 @@ expect_failure(failures, "weakened dirty bypass guard",
 end
 
 expect_failure(failures, "weakened Compose override guard",
-               "Compose override selection must require explicit test mode") do |root|
+               "Compose override selection must require explicit test mode",
+               detected_by: %i[deployment]) do |root|
   mutate_yaml_file(root, "roles/deployment_bundle/tasks/controller.yml") do |tasks|
     task = tasks.find do |entry|
       entry["name"] == "Restrict Compose override selection to explicit test mode"
@@ -906,14 +965,16 @@ expect_failure(failures, "weakened Compose override guard",
 end
 
 expect_failure(failures, "missing ntfy Compose interface",
-               "ntfy argument specs must require platform_compose_kind") do |root|
+               "ntfy argument specs must require platform_compose_kind",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "roles/ntfy/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options").delete("platform_compose_kind")
   end
 end
 
 expect_failure(failures, "missing Beszel render interface",
-               "Beszel argument specs must require platform_render_device_path") do |root|
+               "Beszel argument specs must require platform_render_device_path",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "roles/beszel/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options").delete("platform_render_device_path")
   end
@@ -921,14 +982,16 @@ end
 
 
 expect_failure(failures, "missing Beszel Compose interface",
-               "beszel argument specs must require platform_compose_kind") do |root|
+               "beszel argument specs must require platform_compose_kind",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "roles/beszel/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options").delete("platform_compose_kind")
   end
 end
 
 expect_failure(failures, "Mac storage claims Linux ownership",
-               "host preparation must restrict Linux ownership to the explicit integration capability") do |root|
+               "host preparation must restrict Linux ownership to the explicit integration capability",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task.fetch("ansible.builtin.file")["owner"] = "{{ item.owner | default(omit) }}"
@@ -936,7 +999,8 @@ expect_failure(failures, "Mac storage claims Linux ownership",
 end
 
 expect_failure(failures, "preservation-only storage inspected after creation",
-               "host preparation must validate preservation-only storage before ordinary creation") do |root|
+               "host preparation must validate preservation-only storage before ordinary creation",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     inspect = tasks.delete_at(tasks.index do |task|
       task["name"] == "Inspect preservation-only service state directories"
@@ -947,7 +1011,8 @@ expect_failure(failures, "preservation-only storage inspected after creation",
 end
 
 expect_failure(failures, "preservation-only storage follows symlinks",
-               "host preparation must inspect preservation-only storage without following symlinks") do |root|
+               "host preparation must inspect preservation-only storage without following symlinks",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find do |entry|
       entry["name"] == "Inspect preservation-only service state directories"
@@ -957,7 +1022,8 @@ expect_failure(failures, "preservation-only storage follows symlinks",
 end
 
 expect_failure(failures, "preservation-only directory refusal removed",
-               "host preparation must refuse missing, non-directory, or symlink preservation-only storage") do |root|
+               "host preparation must refuse missing, non-directory, or symlink preservation-only storage",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find do |entry|
       entry["name"] == "Require safe preservation-only service state directories"
@@ -967,7 +1033,8 @@ expect_failure(failures, "preservation-only directory refusal removed",
 end
 
 expect_failure(failures, "preservation-only storage recreated",
-               "ordinary storage creation must include unmarked entries and exclude preservation-only storage") do |root|
+               "ordinary storage creation must include unmarked entries and exclude preservation-only storage",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
     task = tasks.find { |entry| entry["name"] == "Create service state directories" }
     task["loop"] = "{{ nas_storage }}"
@@ -975,7 +1042,8 @@ expect_failure(failures, "preservation-only storage recreated",
 end
 
 expect_failure(failures, "unfiltered Beszel settings readback",
-               "collection readback must use a URL-encoded identity filter with totals") do |root|
+               "collection readback must use a URL-encoded identity filter with totals",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Refresh notification settings after reconciliation"
@@ -986,7 +1054,8 @@ expect_failure(failures, "unfiltered Beszel settings readback",
 end
 
 expect_failure(failures, "silent Beszel user creation",
-               "Beszel user creation must report real and check-mode predicted changes") do |root|
+               "Beszel user creation must report real and check-mode predicted changes",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/application_user.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Create the application user"
@@ -996,7 +1065,8 @@ expect_failure(failures, "silent Beszel user creation",
 end
 
 expect_failure(failures, "unredacted Beszel webhook summary",
-               "Beszel webhook mismatch diagnostics must never include URL bodies") do |root|
+               "Beszel webhook mismatch diagnostics must never include URL bodies",
+               detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
       entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
@@ -1006,7 +1076,8 @@ expect_failure(failures, "unredacted Beszel webhook summary",
 end
 
 expect_failure(failures, "missing Beszel system ownership guard",
-               "Beszel must reject same-name systems outside the managed user relation") do |root|
+               "Beszel must reject same-name systems outside the managed user relation",
+               detected_by: %i[beszel]) do |root|
   path = File.join(root, "roles", "beszel", "tasks", "configure.yml")
   body = File.read(path).sub(
     "Refuse same-name systems outside the managed user relation",
@@ -1016,7 +1087,8 @@ expect_failure(failures, "missing Beszel system ownership guard",
 end
 
 expect_failure(failures, "unencoded Beszel contract filters",
-               "Beszel contract must use complete encoded identity filters and enforce system ownership") do |root|
+               "Beszel contract must use complete encoded identity filters and enforce system ownership",
+               detected_by: %i[beszel]) do |root|
   path = File.join(root, "tests", "contracts", "beszel.sh")
   File.write(path, File.read(path).gsub("URI.encode_www_form", "removed_form_encoding"))
 end
@@ -1026,7 +1098,8 @@ end
   "duplicate service name key" => ["    name: duplicate\n", "name"],
   "duplicate service key" => ["    role: duplicate\n", "role"]
 }.each do |label, (insertion, key)|
-  expect_failure(failures, label, "service manifest contains duplicate mapping key #{key}") do |root|
+  expect_failure(failures, label, "service manifest contains duplicate mapping key #{key}",
+                 detected_by: %i[policy ci deployment mac vault]) do |root|
     path = File.join(root, "services", "manifest.yml")
     body = File.read(path)
     body = case label
@@ -1041,7 +1114,8 @@ end
   end
 end
 
-expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/validate-policy.sh") do |root|
+expect_failure(failures, "CI bypasses policy entrypoint", "CI must run tests/validate-policy.sh",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).sub("tests/validate-policy.sh", "ruby tests/policy_test.rb"))
 end
@@ -1051,18 +1125,21 @@ end
 # runs nowhere while every test still passes, so dropping its job is planted here
 # the same way dropping a manifest line is.
 expect_failure(failures, "CI drops the policy mutation job",
-               "CI must run ruby tests/policy_manifest_test.rb") do |root|
+               "CI must run ruby tests/policy_manifest_test.rb",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb", "true"))
 end
 
-expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts") do |root|
+expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub(/^\s*ruby \/repo\/tests\/run_contracts\.rb --execute\n/, ""))
 end
 
 expect_failure(failures, "controller script loses its quoting",
-               "controller script escapes its quoted argument") do |root|
+               "controller script escapes its quoted argument",
+               detected_by: %i[integration]) do |root|
   # Unescape one condition's inner quotes exactly as the regression did: the
   # argument closes early and the `;` that follows terminates the whole
   # `docker run`, so the container starts with no operands at all.
@@ -1077,7 +1154,8 @@ expect_failure(failures, "controller script loses its quoting",
   File.write(path, broken)
 end
 
-expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI") do |root|
+expect_failure(failures, "integration omits contract ABI", "integration must set the contract environment ABI",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   body = File.read(path)
   source = body.scan(/^\s*PLATFORM_REPORT_ROOT=.*\n/).last
@@ -1091,7 +1169,8 @@ provisioning_task = <<~YAML
       url: http://127.0.0.1/
 YAML
 
-expect_failure(failures, "arbitrary provisioning uri", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "arbitrary provisioning uri", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
 end
 
@@ -1168,7 +1247,8 @@ end
         that: ["ntfy_result.status == ntfy_result.status"]
   YAML
 }.each do |label, tasks|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
+  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+                 detected_by: %i[policy]) do |root|
     File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), tasks)
   end
 end
@@ -1188,14 +1268,16 @@ expect_success(failures, "assert from registered URI result") do |root|
   YAML
 end
 
-expect_failure(failures, "wrong contract path", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "wrong contract path", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   contract = File.join(root, "services", "ntfy", "contract.yml")
   File.write(contract, "#!/bin/sh\nexit 1\n")
   File.chmod(0o755, contract)
 end
 
-expect_failure(failures, "empty contract", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "empty contract", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   contract = File.join(root, "tests", "contracts", "ntfy.sh")
   FileUtils.mkdir_p(File.dirname(contract))
@@ -1208,7 +1290,8 @@ end
   "exit one" => "#!/bin/sh\nexit 1\n",
   "standalone false" => "#!/bin/sh\nfalse\n"
 }.each do |label, body|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
+  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+                 detected_by: %i[policy]) do |root|
     File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
     write_contract(root, "ntfy", body)
   end
@@ -1240,7 +1323,8 @@ expect_success(failures, "registered variable contract") do |root|
   register_contract(root, "ntfy")
 end
 
-expect_failure(failures, "unregistered contract", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "unregistered contract", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   write_contract(root, "ntfy", "#!/bin/sh\nendpoint=/ntfy/health\ncurl --fail \"$endpoint\"\n")
 end
@@ -1250,7 +1334,8 @@ end
   "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/ntfy.sh\n"],
   "YAML name registration spoof" => [".github/workflows/ci.yml", "\nname: tests/contracts/ntfy.sh\n"]
 }.each do |label, (relative_harness, registration)|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification") do |root|
+  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+                 detected_by: %i[policy integration]) do |root|
     File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
     write_contract(root, "ntfy", "#!/bin/sh\ntrue\n")
     harness = File.join(root, relative_harness)
@@ -1258,13 +1343,15 @@ end
   end
 end
 
-expect_failure(failures, "contract syntax error", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "contract syntax error", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   write_contract(root, "ntfy", "#!/bin/sh\nif then\ncurl --fail http://127.0.0.1/ntfy\n")
   register_contract(root, "ntfy")
 end
 
-expect_failure(failures, "symlink contract", "ntfy: implemented service has no automated verification") do |root|
+expect_failure(failures, "symlink contract", "ntfy: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
   contracts = File.join(root, "tests", "contracts")
   FileUtils.mkdir_p(contracts)
@@ -1286,7 +1373,8 @@ expect_success(failures, "paperless contract alias") do |root|
   register_contract(root, "paperless")
 end
 
-expect_failure(failures, "paperless service-name contract", "paperless-ngx: implemented service has no automated verification") do |root|
+expect_failure(failures, "paperless service-name contract", "paperless-ngx: implemented service has no automated verification",
+               detected_by: %i[policy]) do |root|
   implement_paperless(root)
   write_contract(root, "paperless-ngx", <<~'SH')
     #!/bin/sh
@@ -1296,32 +1384,37 @@ expect_failure(failures, "paperless service-name contract", "paperless-ngx: impl
   register_contract(root, "paperless-ngx")
 end
 
-expect_failure(failures, "symlink compose", "ntfy: compose.yml must be a regular file within its service root") do |root|
+expect_failure(failures, "symlink compose", "ntfy: compose.yml must be a regular file within its service root",
+               detected_by: %i[policy integration]) do |root|
   path = File.join(root, "services", "ntfy", "compose.yml")
   File.unlink(path)
   File.symlink("../beszel/compose.yml", path)
 end
 
-expect_failure(failures, "symlink role directory", "ntfy: role must be a real directory within roles") do |root|
+expect_failure(failures, "symlink role directory", "ntfy: role must be a real directory within roles",
+               detected_by: %i[policy integration deployment]) do |root|
   path = File.join(root, "roles", "ntfy")
   FileUtils.rm_r(path)
   File.symlink("beszel", path)
 end
 
-expect_failure(failures, "symlink role meta", "ntfy: argument_specs.yml must be a regular file within its role root") do |root|
+expect_failure(failures, "symlink role meta", "ntfy: argument_specs.yml must be a regular file within its role root",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "roles", "ntfy", "meta", "argument_specs.yml")
   File.unlink(path)
   File.symlink("../../beszel/meta/argument_specs.yml", path)
 end
 
-expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a regular file within its role root") do |root|
+expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a regular file within its role root",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "roles", "ntfy", "tasks", "main.yml")
   File.unlink(path)
   File.symlink("../../beszel/tasks/main.yml", path)
 end
 
 expect_failure(failures, "dirty controller enabled by default",
-               "deployment bundle must refuse dirty controller sources by default") do |root|
+               "deployment bundle must refuse dirty controller sources by default",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "defaults", "main.yml")
   defaults = YAML.safe_load_file(path)
   defaults["deployment_bundle_allow_dirty_controller"] = true
@@ -1329,14 +1422,16 @@ expect_failure(failures, "dirty controller enabled by default",
 end
 
 expect_failure(failures, "untracked controller inspection removed",
-               "deployment bundle must inspect the whole tracked and untracked controller checkout") do |root|
+               "deployment bundle must inspect the whole tracked and untracked controller checkout",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
   tasks = File.read(path).sub("      - --untracked-files=all\n", "")
   File.write(path, tasks)
 end
 
 expect_failure(failures, "controller inspection narrowed by pathspec",
-               "deployment bundle must inspect the whole tracked and untracked controller checkout") do |root|
+               "deployment bundle must inspect the whole tracked and untracked controller checkout",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
   tasks = File.read(path).sub(
     "      - --untracked-files=all\n",
@@ -1346,7 +1441,8 @@ expect_failure(failures, "controller inspection narrowed by pathspec",
 end
 
 expect_failure(failures, "dirty refusal made run once",
-               "dirty controller refusal must be evaluated independently for every target host") do |root|
+               "dirty controller refusal must be evaluated independently for every target host",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "controller.yml")
   tasks = File.read(path).sub(
     "- name: Require committed controller bundle sources\n",
@@ -1356,7 +1452,8 @@ expect_failure(failures, "dirty refusal made run once",
 end
 
 expect_failure(failures, "fresh-root probe regressed to deployment root",
-               "fresh-install preflight must probe the existing validated nas_docker_root") do |root|
+               "fresh-install preflight must probe the existing validated nas_docker_root",
+               detected_by: %i[platform]) do |root|
   path = File.join(root, "roles", "preflight", "tasks", "main.yml")
   tasks = File.read(path).gsub(
     "{{ nas_docker_root }}/.nas-platform-preflight-probe",
@@ -1366,33 +1463,38 @@ expect_failure(failures, "fresh-root probe regressed to deployment root",
 end
 
 expect_failure(failures, "release mode comparison removed",
-               "immutable release comparison must include stat.S_IMODE") do |root|
+               "immutable release comparison must include stat.S_IMODE",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "files", "compare_release_trees.py")
   File.write(path, File.read(path).gsub("stat.S_IMODE", "stat.filemode"))
 end
 
 expect_failure(failures, "controller input canonical containment removed",
-               "controller input validator must use os.path.realpath") do |root|
+               "controller input validator must use os.path.realpath",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "files", "validate_controller_input.py")
   File.write(path, File.read(path).gsub("os.path.realpath", "os.path.normpath"))
 end
 
 expect_failure(failures, "controller input validator unreferenced",
-               "controller input task must execute the exact extracted validator source") do |root|
+               "controller input task must execute the exact extracted validator source",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "controller_input.yml")
   File.write(path, File.read(path).gsub("files/validate_controller_input.py",
                                         "files/validate_target.py"))
 end
 
 expect_failure(failures, "release comparison script unreferenced",
-               "deployment bundle must compare releases with the tracked comparison script") do |root|
+               "deployment bundle must compare releases with the tracked comparison script",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   File.write(path, File.read(path).gsub("files/compare_release_trees.py",
                                         "files/validate_target.py"))
 end
 
 expect_failure(failures, "Immich classifier controller validation removed",
-               "controller inputs must validate every tracked runtime helper") do |root|
+               "controller inputs must validate every tracked runtime helper",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   File.write(path, File.read(path).gsub(
     "services/immich/classify_restore.py", "services/immich/missing.py"
@@ -1400,7 +1502,8 @@ expect_failure(failures, "Immich classifier controller validation removed",
 end
 
 expect_failure(failures, "acquisition catalog controller validation moved after parsing",
-               "controller inputs must validate the required acquisition catalog before parsing inputs") do |root|
+               "controller inputs must validate the required acquisition catalog before parsing inputs",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   tasks = YAML.safe_load_file(path)
   validation_index = tasks.index do |task|
@@ -1416,7 +1519,8 @@ expect_failure(failures, "acquisition catalog controller validation moved after 
 end
 
 expect_failure(failures, "Immich classifier release copy removed",
-               "deployment bundle must package the exact Immich classifier with mode 0644") do |root|
+               "deployment bundle must package the exact Immich classifier with mode 0644",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.reject! do |task|
@@ -1426,7 +1530,8 @@ expect_failure(failures, "Immich classifier release copy removed",
 end
 
 expect_failure(failures, "acquisition catalog release destination changed",
-               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   File.write(path, File.read(path).gsub(
     "{{ deployment_bundle_staging_dir }}/config/media-acquisition.yml",
@@ -1435,7 +1540,8 @@ expect_failure(failures, "acquisition catalog release destination changed",
 end
 
 expect_failure(failures, "acquisition catalog release mode changed",
-               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644") do |root|
+               "deployment bundle must stage the exact acquisition catalog bytes with mode 0644",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   copy = tasks.find do |task|
@@ -1446,7 +1552,8 @@ expect_failure(failures, "acquisition catalog release mode changed",
 end
 
 expect_failure(failures, "Immich classifier manifest integrity removed",
-               "deployment manifest must bind runtime helper paths, modes, and checksums") do |root|
+               "deployment manifest must bind runtime helper paths, modes, and checksums",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
   File.write(path, File.read(path).gsub(
     "'immich': ['classify_restore.py']", "'immich': []"
@@ -1454,7 +1561,8 @@ expect_failure(failures, "Immich classifier manifest integrity removed",
 end
 
 expect_failure(failures, "acquisition catalog manifest checksum removed",
-               "deployment manifest must bind the exact acquisition catalog path, mode, and checksum") do |root|
+               "deployment manifest must bind the exact acquisition catalog path, mode, and checksum",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
   File.write(path, File.read(path).gsub(
     "lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false)",
@@ -1463,7 +1571,8 @@ expect_failure(failures, "acquisition catalog manifest checksum removed",
 end
 
 expect_failure(failures, "Immich classifier manifest verifier removed",
-               "deployment manifest verifier must reproduce runtime helper integrity") do |root|
+               "deployment manifest verifier must reproduce runtime helper integrity",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub(
     '"immich" => ["classify_restore.py"]', '"immich" => []'
@@ -1471,38 +1580,44 @@ expect_failure(failures, "Immich classifier manifest verifier removed",
 end
 
 expect_failure(failures, "acquisition staged-byte verification removed",
-               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation") do |root|
+               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub("File.dirname(manifest_path)", "repository_root"))
 end
 
 expect_failure(failures, "deployment sha unquoted",
-               "deployment manifest must quote git_sha as a YAML string") do |root|
+               "deployment manifest must quote git_sha as a YAML string",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
   File.write(path, File.read(path).gsub("platform_release_id | to_json", "platform_release_id"))
 end
 
 expect_failure(failures, "target lstat replaced by following stat",
-               "target validator must use os.lstat for symlink-safe canonical containment") do |root|
+               "target validator must use os.lstat for symlink-safe canonical containment",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "files", "validate_target.py")
   File.write(path, File.read(path).gsub("os.lstat", "os.stat"))
 end
 
 expect_failure(failures, "root ancestor walk removed",
-               "target validator must lstat every existing ancestor from filesystem root to nas_docker_root") do |root|
+               "target validator must lstat every existing ancestor from filesystem root to nas_docker_root",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "files", "validate_target.py")
   File.write(path, File.read(path).gsub("root_relative_parts", "unchecked_root_parts"))
 end
 
 expect_failure(failures, "target validator lookup replaced",
-               "target containment task must execute the exact extracted validator source") do |root|
+               "target containment task must execute the exact extracted validator source",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
   lookup = "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_target.py') }}"
   File.write(path, File.read(path).gsub(lookup, "{{ 'pass' }}"))
 end
 
 expect_failure(failures, "target validation record removed",
-               "target validation must record that the play has already validated containment") do |root|
+               "target validation must record that the play has already validated containment",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
   tasks = YAML.safe_load_file(path)
   tasks.reject! do |task|
@@ -1513,7 +1628,8 @@ end
 
 expect_failure(failures, "containment revalidated beside each mutation",
                "deployment bundle must validate target containment exactly once, " \
-               "not beside each mutation") do |root|
+               "not beside each mutation",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   index = tasks.index { |task| task["ansible.builtin.include_tasks"] == "target.yml" }
@@ -1522,7 +1638,8 @@ expect_failure(failures, "containment revalidated beside each mutation",
 end
 
 expect_failure(failures, "play-level containment validation repeated",
-               "deployment bundle target validation must be skipped when the play already validated") do |root|
+               "deployment bundle target validation must be skipped when the play already validated",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.each do |task|
@@ -1536,7 +1653,8 @@ end
 # Compose files are now derived from the named service, so the way to leave them
 # unguarded is to misname it.
 expect_failure(failures, "service Compose override left unguarded",
-               "komga must name the manifest service whose Compose files a selective run deploys") do |root|
+               "komga must name the manifest service whose Compose files a selective run deploys",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.each do |task|
@@ -1552,7 +1670,8 @@ end
 # extra paths in silence.
 expect_failure(failures, "derived deployment paths widened past the role",
                "names service \"jellyfin\", which is not the manifest service directory " \
-               "deployed by role \"komga\"") do |root|
+               "deployed by role \"komga\"",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.each do |task|
@@ -1564,7 +1683,8 @@ expect_failure(failures, "derived deployment paths widened past the role",
 end
 
 expect_failure(failures, "preflight probe leaf unguarded",
-               "target validator must guard the exact preflight probe leaf") do |root|
+               "target validator must guard the exact preflight probe leaf",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
   body = File.read(path)
                   .gsub("      - \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n", "")
@@ -1573,7 +1693,8 @@ expect_failure(failures, "preflight probe leaf unguarded",
 end
 
 expect_failure(failures, "preflight target validation removed",
-               "target containment must be validated before preflight can mutate the target") do |root|
+               "target containment must be validated before preflight can mutate the target",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "site.yml")
   site = YAML.safe_load_file(path)
   site.first["pre_tasks"].reject! do |task|
@@ -1583,7 +1704,8 @@ expect_failure(failures, "preflight target validation removed",
 end
 
 expect_failure(failures, "manifest component validation removed",
-               "deployment bundle must validate manifest service path components") do |root|
+               "deployment bundle must validate manifest service path components",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   tasks = YAML.safe_load_file(path)
   tasks.reject! do |task|
@@ -1593,25 +1715,29 @@ expect_failure(failures, "manifest component validation removed",
 end
 
 expect_failure(failures, "platform image merge removed",
-               "deployment manifest images must merge canonical and platform Compose services") do |root|
+               "deployment manifest images must merge canonical and platform Compose services",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
   File.write(path, File.read(path).gsub("platform_compose", "override_compose"))
 end
 
 expect_failure(failures, "Compose override tag normalization removed",
-               "deployment manifest must parse Compose tags without rewriting source text") do |root|
+               "deployment manifest must parse Compose tags without rewriting source text",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
   File.write(path, File.read(path).gsub("platform_compose_metadata", "from_yaml"))
 end
 
 expect_failure(failures, "Compose metadata unknown-tag rejection removed",
-               "Compose metadata loader must allow only exact known tags and fail closed") do |root|
+               "Compose metadata loader must allow only exact known tags and fail closed",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "filter_plugins", "compose_metadata.py")
   File.write(path, File.read(path).gsub("except yaml.YAMLError", "except TypeError"))
 end
 
 expect_failure(failures, "Compose metadata behavior tests bypassed",
-               "policy validation must execute Compose metadata parser behavior tests") do |root|
+               "policy validation must execute Compose metadata parser behavior tests",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).gsub(
     "ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml",
@@ -1647,7 +1773,8 @@ if permissive_output.include?("compose-filter-secret-sentinel")
 end
 
 expect_failure(failures, "platform override redefines image",
-               "platform image overrides differ from the canonical compose.yml image") do |root|
+               "platform image overrides differ from the canonical compose.yml image",
+               detected_by: %i[policy integration]) do |root|
   path = File.join(root, "services", "beszel", "compose.integration.yml")
   File.write(path, <<~YAML)
     ---
@@ -1658,31 +1785,36 @@ expect_failure(failures, "platform override redefines image",
 end
 
 expect_failure(failures, "controller input lstat removed",
-               "controller input validator must use os.lstat") do |root|
+               "controller input validator must use os.lstat",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "files", "validate_controller_input.py")
   File.write(path, File.read(path).gsub("os.lstat", "os.stat"))
 end
 
 expect_failure(failures, "runtime service leaves omitted",
-               "target validator must guard every implemented runtime service leaf") do |root|
+               "target validator must guard every implemented runtime service leaf",
+               detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "target.yml")
   File.write(path, File.read(path).gsub("deployment_bundle_services", "unchecked_services"))
 end
 
 expect_failure(failures, "portable vault key omitted",
-               "vault-plain.yml.j2 is missing required portable credential vault_immich_db_password") do |root|
+               "vault-plain.yml.j2 is missing required portable credential vault_immich_db_password",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "templates", "vault-plain.yml.j2")
   File.write(path, File.read(path).gsub(/^vault_immich_db_password:.*\n/, ""))
 end
 
 expect_failure(failures, "NAS coordinate leaked into vault",
-               "vault.yml.example has unexpected or non-portable vault key vault_nas_address") do |root|
+               "vault.yml.example has unexpected or non-portable vault key vault_nas_address",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "inventory", "group_vars", "all", "vault.yml.example")
   File.write(path, File.read(path) + "vault_nas_address: 192.0.2.1\n")
 end
 
 expect_failure(failures, "credential-bearing read left unredacted",
-               "tasks that render a credential must set no_log") do |root|
+               "tasks that render a credential must set no_log",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
   body = File.read(path)
   File.write(path, replace_last(
@@ -1706,7 +1838,8 @@ end
 # message.
 REDACTED_ASSERTION_TARGET = "Require a complete Komga library listing"
 expect_failure(failures, "credential-free assertion redacted",
-               "assertions that can render no credential must not set no_log") do |root|
+               "assertions that can render no credential must not set no_log",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "komga", "tasks", "main.yml")
   target = YAML.safe_load_file(path, aliases: true).find do |task|
     task.is_a?(Hash) && task["name"] == REDACTED_ASSERTION_TARGET
@@ -1728,7 +1861,8 @@ end
 # check that a pinned entry still names a real task is deliberately skipped on a
 # partial tree, which this sandbox is, so the message asserted here is the rule's.
 expect_failure(failures, "pinned redaction exception no longer covers a renamed task",
-               "tasks that render a credential must set no_log") do |root|
+               "tasks that render a credential must set no_log",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "beszel", "tasks", "application_user.yml")
   File.write(path, File.read(path).sub(
                      "- name: Refuse duplicate managed application users after reconciliation\n",
@@ -1737,7 +1871,8 @@ expect_failure(failures, "pinned redaction exception no longer covers a renamed 
 end
 
 expect_failure(failures, "vault validation disclosure",
-               "every vault contract task must use no_log") do |root|
+               "every vault contract task must use no_log",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   tasks.first.delete("no_log")
@@ -1750,7 +1885,8 @@ end
 # corresponds to dropping the old condition: the key stops being inspected, and
 # nothing else in the role names it.
 expect_failure(failures, "vault shape validation omitted",
-               "vault contract shape validation must inspect vault_immich_db_password") do |root|
+               "vault contract shape validation must inspect vault_immich_db_password",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
   body = File.read(path)
   File.write(path, replace_last(
@@ -1761,7 +1897,8 @@ expect_failure(failures, "vault shape validation omitted",
 end
 
 expect_failure(failures, "vault checksum moved before encryption guard",
-               "vault contract must verify encryption header before computing SHA-256") do |root|
+               "vault contract must verify encryption header before computing SHA-256",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   checksum_index = tasks.index do |task|
@@ -1785,7 +1922,8 @@ end
   "Write the plaintext vars file for encryption"
 ].each do |task_name|
   expect_failure(failures, "generator redaction removed from #{task_name}",
-                 "generate-secrets.yml must redact secret-bearing task #{task_name}") do |root|
+                 "generate-secrets.yml must redact secret-bearing task #{task_name}",
+                 detected_by: %i[vault]) do |root|
     path = File.join(root, "generate-secrets.yml")
     play = YAML.safe_load_file(path).first
     task = play.fetch("tasks").find { |entry| entry["name"] == task_name }
@@ -1795,50 +1933,58 @@ end
 end
 
 expect_failure(failures, "ephemeral self-test silence check removed from CI",
-               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+               "CI must run the silent ephemeral vault self-test with explicit dependencies",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).gsub("test ! -s", "true"))
 end
 
 expect_failure(failures, "ephemeral dependency removed from CI",
-               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+               "CI must run the silent ephemeral vault self-test with explicit dependencies",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).gsub("apache2-utils", "removed-dependency"))
 end
 
 expect_failure(failures, "ephemeral self-test removed from CI",
-               "CI must run the silent ephemeral vault self-test with explicit dependencies") do |root|
+               "CI must run the silent ephemeral vault self-test with explicit dependencies",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).gsub("tests/generate-ephemeral-vault.sh --self-test", "true"))
 end
 
 expect_failure(failures, "generator redaction test removed from CI",
-               "CI must execute the generated-secret redaction test") do |root|
+               "CI must execute the generated-secret redaction test",
+               detected_by: %i[vault]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).gsub("tests/generate-secrets-redaction-test.sh", "true"))
 end
 
 expect_failure(failures, "integration ephemeral helper bypassed",
-               "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+               "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub('--output \"\$vault_file\"', "--output-bypassed"))
 end
 
 expect_failure(failures, "integration ephemeral cleanup context removed",
-               "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+               "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub("TMPDIR='$sandbox' /repo/tests/generate-ephemeral-vault.sh --cleanup",
                                       "/repo/tests/generate-ephemeral-vault.sh --cleanup"))
 end
 
 expect_failure(failures, "integration lock acquisition removed",
-               "integration must serialize fixed-name containers with an atomic empty-directory lock") do |root|
+               "integration must serialize fixed-name containers with an atomic empty-directory lock",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration.sh")
   File.write(path, File.read(path).sub("acquire_integration_lock", "bypass_integration_lock"))
 end
 
 expect_failure(failures, "integration lock made non-atomic",
-               "integration must serialize fixed-name containers with an atomic empty-directory lock") do |root|
+               "integration must serialize fixed-name containers with an atomic empty-directory lock",
+               detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration_lock.sh")
   File.write(path, File.read(path).sub('mkdir "$lock_candidate"', "true"))
 end
@@ -1857,7 +2003,8 @@ end
                            'PLATFORM_CONTRACT_VAULT_FILE=\"\$vault_file\"']
 }.each do |property, (relative_path, source)|
   expect_failure(failures, "integration #{property} removed",
-                 "integration must consume the ephemeral encrypted vault without duplicate secret authoring") do |root|
+                 "integration must consume the ephemeral encrypted vault without duplicate secret authoring",
+                 detected_by: %i[integration]) do |root|
     path = File.join(root, relative_path)
     body = File.read(path)
     mutated = if property == "contract vault ABI"
@@ -1887,7 +2034,8 @@ end
   "mid-validation cleanup" => "self-test mid-validation failure left credential material"
 }.each do |property, evidence|
   expect_failure(failures, "ephemeral #{property} removed",
-                 "ephemeral vault self-test must cover #{property}") do |root|
+                 "ephemeral vault self-test must cover #{property}",
+                 detected_by: %i[vault]) do |root|
     path = File.join(root, "tests", "generate-ephemeral-vault.sh")
     File.write(path, File.read(path).gsub(evidence, "removed self-test evidence"))
   end
@@ -1911,32 +2059,37 @@ end
   "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT"
 }.each do |property, source|
   expect_failure(failures, "ephemeral #{property} removed",
-                 "ephemeral vault helper must preserve #{property}") do |root|
+                 "ephemeral vault helper must preserve #{property}",
+                 detected_by: %i[vault]) do |root|
     path = File.join(root, "tests", "generate-ephemeral-vault.sh")
     File.write(path, File.read(path).sub(source, "removed-helper-guard"))
   end
 end
 
 expect_failure(failures, "Mac lifecycle keep-on-failure option removed",
-               "Mac proof harness must accept --keep-on-failure") do |root|
+               "Mac proof harness must accept --keep-on-failure",
+               detected_by: %i[mac]) do |root|
   path = File.join(root, "tests", "mac", "run.sh")
   File.write(path, File.read(path).gsub("--keep-on-failure", "removed-keep-on-failure"))
 end
 
 expect_failure(failures, "Mac log sanitizer self-test removed",
-               "validate-policy.sh must run ruby tests/mac/sanitize-logs.rb --self-test") do |root|
+               "validate-policy.sh must run ruby tests/mac/sanitize-logs.rb --self-test",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).gsub("ruby tests/mac/sanitize-logs.rb --self-test", "true"))
 end
 
 expect_failure(failures, "Mac report self-test removed",
-               "validate-policy.sh must run ruby tests/mac/report.rb --self-test") do |root|
+               "validate-policy.sh must run ruby tests/mac/report.rb --self-test",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).gsub("ruby tests/mac/report.rb --self-test", "true"))
 end
 
 expect_failure(failures, "Mac cleanup self-test removed",
-               "validate-policy.sh must run tests/mac/cleanup.sh --self-test") do |root|
+               "validate-policy.sh must run tests/mac/cleanup.sh --self-test",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).gsub("tests/mac/cleanup.sh --self-test", "true"))
 end
@@ -1989,7 +2142,8 @@ end
     "tests/mac/snapshot-paperless-drill-throttle-test.sh"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
-                 "validate-policy.sh must run #{command}") do |root|
+                 "validate-policy.sh must run #{command}",
+                 detected_by: %i[policy ci mac]) do |root|
     path = File.join(root, "tests", "validate-policy.sh")
     File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
   end
@@ -1997,7 +2151,8 @@ end
 
 expect_failure(failures, "filter input argument spec check removed from policy validation",
                "validate-policy.sh must run PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" " \
-               "tests/filter_input_argument_spec_test.py exactly once") do |root|
+               "tests/filter_input_argument_spec_test.py exactly once",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, "tests", "validate-policy.sh")
   File.write(path, File.read(path).lines.reject do |line|
     line.strip == 'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py'
@@ -2015,14 +2170,16 @@ end
     "ruby tests/image_prune_role_test.rb"
 }.each do |name, command|
   expect_failure(failures, "#{name} removed from policy validation",
-                 "validate-policy.sh must run the #{name} exactly once") do |root|
+                 "validate-policy.sh must run the #{name} exactly once",
+                 detected_by: %i[ci]) do |root|
     path = File.join(root, "tests", "validate-policy.sh")
     File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
   end
 end
 
 expect_failure(failures, "production auto-deploy installer syntax check removed",
-               "CI must syntax-check install-production-auto-deploy.yml") do |root|
+               "CI must syntax-check install-production-auto-deploy.yml",
+               detected_by: %i[ci]) do |root|
   path = File.join(root, ".github", "workflows", "ci.yml")
   File.write(path, File.read(path).lines.reject do |line|
     line.strip == "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
@@ -2030,7 +2187,8 @@ expect_failure(failures, "production auto-deploy installer syntax check removed"
 end
 
 expect_failure(failures, "Mac raw log body retained",
-               "Mac log sanitizer self-test must pass without raw values") do |root|
+               "Mac log sanitizer self-test must pass without raw values",
+               detected_by: %i[mac]) do |root|
   path = File.join(root, "tests", "mac", "sanitize-logs.rb")
   leaked_body = 'line.encode(Encoding::UTF_8, invalid: :replace, undef: :replace, replace: "")'
   File.write(path, File.read(path).sub('"message" => REDACTION', "\"message\" => #{leaked_body}"))
@@ -2041,12 +2199,14 @@ end
 # a deleted file must not read as a service with nothing to check, and a value that
 # drifts from the Compose file must still be caught from its new home.
 expect_failure(failures, "pinned service expectations deleted",
-               "pinned service expectations are missing: tests/expected/komga.yml") do |root|
+               "pinned service expectations are missing: tests/expected/komga.yml",
+               detected_by: %i[policy vault]) do |root|
   FileUtils.rm(File.join(root, "tests", "expected", "komga.yml"))
 end
 
 expect_failure(failures, "pinned expectations for an unrostered service",
-               "tests/expected must hold exactly one file per rostered service") do |root|
+               "tests/expected must hold exactly one file per rostered service",
+               detected_by: %i[policy vault]) do |root|
   File.write(File.join(root, "tests", "expected", "plex.yml"), <<~YAML)
     ---
     role: plex
@@ -2058,7 +2218,8 @@ expect_failure(failures, "pinned expectations for an unrostered service",
 end
 
 expect_failure(failures, "pinned CPU ceiling drifts from Compose",
-               "jellyfin/jellyfin: CPU ceiling must match the pinned service policy") do |root|
+               "jellyfin/jellyfin: CPU ceiling must match the pinned service policy",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
     expectation["container_cpus"]["jellyfin"] = 9.9
   end
@@ -2070,14 +2231,16 @@ end
 # only as Compose drift, which is why this mutation is separate from the one
 # above.
 expect_failure(failures, "pinned CPU ceiling exceeds the container CPU budget",
-               "jellyfin/jellyfin: CPU ceiling 4.0 exceeds the 3-CPU cpuset it shares") do |root|
+               "jellyfin/jellyfin: CPU ceiling 4.0 exceeds the 3-CPU cpuset it shares",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
     expectation["container_cpus"]["jellyfin"] = 4.0
   end
 end
 
 expect_failure(failures, "pinned CPU ceiling is not a number",
-               "tests/expected/jellyfin.yml container_cpus.jellyfin must be numeric") do |root|
+               "tests/expected/jellyfin.yml container_cpus.jellyfin must be numeric",
+               detected_by: %i[policy vault]) do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
     expectation["container_cpus"]["jellyfin"] = "3.O"
   end
@@ -2091,7 +2254,8 @@ end
 # drift check that shares the phrase "CPU ceiling".
 expect_failure(failures, "deployed acquisition catalog ceiling drifts from the pinned home",
                "arr/radarr: config/media-acquisition.yml cpus 2.0 must equal the 1.0 pinned in " \
-               "tests/expected/arr.yml") do |root|
+               "tests/expected/arr.yml",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
     catalog.dig("projects", "arr", "services", "radarr")["cpus"] = 2.0
   end
@@ -2102,28 +2266,32 @@ end
 # directions and this proves that comparison is live.
 expect_failure(failures, "deployed acquisition catalog drops a pinned container",
                "downloaders: config/media-acquisition.yml must declare a cpus ceiling for exactly " \
-               "the containers pinned in tests/expected/downloaders.yml") do |root|
+               "the containers pinned in tests/expected/downloaders.yml",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "config/media-acquisition.yml") do |catalog|
     catalog.dig("projects", "downloaders", "services").delete("unpackerr")
   end
 end
 
 expect_failure(failures, "pinned vault key dropped",
-               "vault key vault_jellyfin_opensubtitles_password") do |root|
+               "vault key vault_jellyfin_opensubtitles_password",
+               detected_by: %i[vault]) do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
     expectation["vault_keys"].delete("vault_jellyfin_opensubtitles_password")
   end
 end
 
 expect_failure(failures, "pinned role drifts from the manifest",
-               "jellyfin: role must equal") do |root|
+               "jellyfin: role must equal",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "tests/expected/jellyfin.yml") do |expectation|
     expectation["role"] = "jellyfin_wrong"
   end
 end
 
 expect_failure(failures, "pinned expectations gain an unknown field",
-               "tests/expected/komga.yml must define exactly") do |root|
+               "tests/expected/komga.yml must define exactly",
+               detected_by: %i[policy vault]) do |root|
   mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
@@ -2133,7 +2301,8 @@ end
 # comparison honest: a rename on either side has to be reported, and the one
 # relaxation the comparison makes has to be earned rather than blanket.
 expect_failure(failures, "service template mounts an undeclared library",
-               "roles/komga/templates/env.j2: {{ nas_media_root }}/Comics is not declared in nas_storage") do |root|
+               "roles/komga/templates/env.j2: {{ nas_media_root }}/Comics is not declared in nas_storage",
+               detected_by: %i[policy]) do |root|
   path = File.join(root, "roles", "komga", "templates", "env.j2")
   File.write(path, File.read(path).sub(
     "KOMGA_LIBRARY_PATH={{ nas_media_root }}/Books",
@@ -2147,7 +2316,8 @@ end
 # therefore stop the parent mount being accepted, or the relaxation would be a
 # blanket pass for any path with a declared entry somewhere below it.
 expect_failure(failures, "media library leaves removed from storage",
-               "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage") do |root|
+               "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
     inventory.fetch("nas_storage").reject! do |entry|
       entry.fetch("path").start_with?("{{ nas_media_root }}/Media/")
@@ -2156,11 +2326,13 @@ expect_failure(failures, "media library leaves removed from storage",
 end
 
 expect_failure(failures, "media Compose bind source undeclared",
-               "immich/immich-server: ${NAS_MEDIA_ROOT:?}/Immich is not declared in nas_storage") do |root|
+               "immich/immich-server: ${NAS_MEDIA_ROOT:?}/Immich is not declared in nas_storage",
+               detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
     entry = inventory.fetch("nas_storage").find { |item| item.fetch("path") == "{{ nas_media_root }}/Immich" }
     entry["path"] = "{{ nas_media_root }}/Immich-renamed"
   end
 end
 
+audit_policy_detection(failures)
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")
