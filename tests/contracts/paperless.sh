@@ -148,9 +148,16 @@ compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 integration = YAML.safe_load_file(integration_path, aliases: true)
 
-# Task files are flattened so a task on a block's rescue or always path is still
-# a task the role executes. main.yml is flat today; an unflattened load would
-# quietly stop seeing whole phases the first time it is not.
+# The role is read through static_role_tasks, which assembles it the way Ansible
+# does: statically imported stages spliced in where they stand, dynamic includes
+# left alone. main.yml is an index of nine stage files, so loading that one file
+# hands every check below an index instead of the role. This script aborts on its
+# first violation and its presence invariants come first, so that mistake is loud
+# here rather than silent -- but the absence invariants below ("never invokes the
+# consuming mail endpoint", "never counts global processed-mail or tasks") would
+# hold trivially over an index, and they are the half that would stay green if the
+# ordering ever changed. Task lists are then flattened so a task on a block's
+# rescue or always path is still a task the role executes.
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
@@ -177,7 +184,7 @@ def scalar_forms(value)
   [value, value.gsub(/[[:space:]]+/, "")].uniq
 end
 
-role_tasks = flatten_tasks(YAML.safe_load_file(role_path, aliases: true))
+role_tasks = flatten_tasks(static_role_tasks(role_path, aliases: true))
 role_task_names = role_tasks.filter_map { |task| task["name"] }
 role_scalars = role_strings(role_tasks)
 defaults = YAML.safe_load_file(defaults_path)

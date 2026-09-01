@@ -325,7 +325,13 @@ JELLYFIN_PRIMARY_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
 JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
 PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
-PAPERLESS_ROLE = "roles/paperless_ngx/tasks/main.yml"
+# The Paperless role is one stage per file, imported from a main.yml index, so a
+# row names the stage that owns the text it breaks -- same reason as Jellyfin
+# above.
+PAPERLESS_STORAGE = "roles/paperless_ngx/tasks/storage.yml"
+PAPERLESS_MAIL_STATE = "roles/paperless_ngx/tasks/mail_state.yml"
+PAPERLESS_MAIL_PROBE = "roles/paperless_ngx/tasks/mail_probe.yml"
+PAPERLESS_MAIL_RECONCILE = "roles/paperless_ngx/tasks/mail_reconcile.yml"
 PAPERLESS_ENVIRONMENT = "roles/paperless_ngx/templates/env.j2"
 PAPERLESS_COMPOSE = "services/paperless-ngx/compose.yml"
 PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
@@ -716,7 +722,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a required task that survives only as a comment",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_RECONCILE,
     "- name: Repair the managed Paperless mail rule\n",
     "# - name: Repair the managed Paperless mail rule\n" \
     "- name: Repair the managed Paperless mail rule again\n"]],
@@ -728,7 +734,7 @@ check_rejected(
 # contains it and once by the comparison that still spells both operands.
 check_rejected(
   failures, :paperless, "a probe-state snapshot the probe no longer sits between",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "    paperless_managed_mail_probe_state_before:\n",
     "    paperless_managed_mail_probe_state_before_disabled:\n"]],
   "managed account/rule state is not snapshotted around the credential probe"
@@ -736,7 +742,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a probe-state comparison replaced by a tautology",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_PROBE,
     "      - paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after\n",
     "      - true\n"]],
   "managed account/rule state is not snapshotted around the credential probe"
@@ -744,7 +750,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a renamed schema validation task",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "- name: Validate Paperless mail account and rule schemas before mutation\n",
     "- name: Validate Paperless mail account and rule schemas after mutation\n"]],
   "managed mail schema is not validated globally before mutation"
@@ -752,7 +758,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a schema validation task named only in a comment",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "- name: Validate Paperless mail account and rule schemas before mutation\n",
     "# - name: Validate Paperless mail account and rule schemas before mutation\n" \
     "- name: Validate Paperless mail schemas before mutation\n"]],
@@ -761,7 +767,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a sixth effective state source",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_STORAGE,
     "    paperless_effective_state_host_paths:\n" \
     "      - \"{{ paperless_effective_state_host_path }}/postgres\"\n",
     "    paperless_effective_state_host_paths:\n" \
@@ -776,7 +782,7 @@ check_rejected(
 # whitespace-stripped scalar as well: read as source text, both were accepted.
 check_rejected(
   failures, :paperless, "a consuming mail endpoint folded across two lines",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "- name: Refuse duplicate managed Paperless mail rules\n",
     "- name: Consume the managed Paperless mail account\n" \
     "  ansible.builtin.uri:\n" \
@@ -791,7 +797,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "a global task-count endpoint folded across two lines",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "- name: Refuse duplicate managed Paperless mail accounts\n",
     "- name: Count global Paperless tasks\n" \
     "  ansible.builtin.uri:\n" \
@@ -826,7 +832,7 @@ check_rejected(
 # substring satisfied by whichever one still did it.
 check_rejected(
   failures, :paperless, "grouped app-password spacing kept out of the payload only",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "           'password': vault_paperless_gmail_app_password | replace(' ', ''),\n",
     "           'password': vault_paperless_gmail_app_password,\n"]],
   "role must accept Google's grouped app-password display"
@@ -834,7 +840,7 @@ check_rejected(
 
 check_rejected(
   failures, :paperless, "grouped app-password spacing kept out of the fingerprint only",
-  [[PAPERLESS_ROLE,
+  [[PAPERLESS_MAIL_STATE,
     "          (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}\n",
     "          vault_paperless_gmail_app_password) | hash('sha256') }}\n"]],
   "role must accept Google's grouped app-password display"

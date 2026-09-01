@@ -47,8 +47,13 @@ PYTHON = ENV.fetch("PATH").split(File::PATH_SEPARATOR).map do |directory|
   File.join(directory, "python3")
 end.find { |path| File.executable?(path) }.freeze
 
+# The role is one stage per file; static_role_tasks assembles it the way Ansible
+# does, imports spliced in where they stand. The mail block this fixture runs is
+# contiguous in that assembly and split across mail_state.yml, mail_probe.yml and
+# mail_reconcile.yml in the tree, so reading main.yml alone would find neither
+# endpoint and raise rather than pass.
 def selected_mail_tasks
-  tasks = YAML.safe_load_file(ROLE, aliases: true)
+  tasks = PolicySupport.static_role_tasks(ROLE, aliases: true)
   first = tasks.index { |task| task["name"] == "List Paperless mail accounts for reconciliation" }
   last = tasks.index do |task|
     task["name"] == "Require exact Paperless administrator, mail account, and mail rule"
@@ -165,7 +170,7 @@ def run_storage_policy_fixture(effective_paths)
     "Require exact Paperless host storage policy",
     "Validate canonical Paperless storage source separation"
   ]
-  tasks = YAML.safe_load_file(ROLE, aliases: true).select do |candidate|
+  tasks = PolicySupport.static_role_tasks(ROLE, aliases: true).select do |candidate|
     task_names.include?(candidate["name"])
   end
   raise "Paperless storage policy tasks are unavailable" unless tasks.map { |task| task["name"] } == task_names

@@ -1,0 +1,125 @@
+---
+# The vault administrator, inside Django. Reads the identity through manage.py,
+# decides creation or repair from that read alone, and ends the role under
+# --check once it has reported what it would do -- a planned administrator makes
+# every later read of this role meaningless, so there is nothing to simulate
+# past it. `meta: end_role` ends the role and not merely this file: a statically
+# imported stage is spliced into the role's task list, so the stages imported
+# after it are not reached either.
+
+- name: Inspect the vault Paperless administrator identity
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    env:
+      MANAGED_USERNAME: "{{ vault_paperless_admin_username }}"
+    argv:
+      - python
+      - manage.py
+      - shell
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/inspect_admin.py') }}"
+    tty: false
+  register: paperless_admin_identity_probe
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the vault Paperless administrator identity
+  ansible.builtin.set_fact:
+    paperless_admin_identity: "{{ paperless_admin_identity_probe.stdout_lines | last | from_json }}"
+  no_log: true
+
+- name: Resolve Paperless administrator reconciliation requirements
+  ansible.builtin.set_fact:
+    paperless_admin_identity_count: "{{ paperless_admin_identity.count | int }}"
+    paperless_admin_repair_required: >-
+      {{ paperless_admin_identity.count | int == 1 and
+         (paperless_admin_identity.email != vault_paperless_admin_email or
+          not paperless_admin_identity.is_superuser | bool or
+          not paperless_admin_identity.is_staff | bool or
+          not paperless_admin_identity.is_active | bool) }}
+  no_log: true
+
+- name: Refuse duplicate vault Paperless administrator identities
+  ansible.builtin.assert:
+    that:
+      - paperless_admin_identity_count | int <= 1
+    fail_msg: The vault Paperless administrator identity is duplicated.
+
+- name: Report planned vault Paperless administrator creation
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_ADMIN_CREATE
+  when:
+    - ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+  changed_when: true
+
+- name: Stop Paperless check mode after planned administrator creation
+  ansible.builtin.meta: end_role
+  when:
+    - ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+
+- name: Report planned Paperless administrator repair
+  ansible.builtin.debug:
+    msg: PAPERLESS_PLAN_ADMIN_REPAIR
+  when:
+    - ansible_check_mode
+    - paperless_admin_repair_required | bool
+  changed_when: true
+
+- name: Stop Paperless check mode after planned administrator repair
+  ansible.builtin.meta: end_role
+  when:
+    - ansible_check_mode
+    - paperless_admin_repair_required | bool
+
+- name: Create the absent vault Paperless administrator
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env DJANGO_SUPERUSER_PASSWORD="$PAPERLESS_ADMIN_PASSWORD"
+        python manage.py createsuperuser --noinput --username "$1" --email "$2"
+      - paperless-admin-create
+      - "{{ vault_paperless_admin_username }}"
+      - "{{ vault_paperless_admin_email }}"
+    tty: false
+  when:
+    - not ansible_check_mode
+    - paperless_admin_identity_count | int == 0
+  changed_when: true
+  no_log: true
+
+- name: Repair the vault Paperless administrator
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: webserver
+    env:
+      MANAGED_USERNAME: "{{ vault_paperless_admin_username }}"
+      MANAGED_EMAIL: "{{ vault_paperless_admin_email }}"
+    argv:
+      - python
+      - manage.py
+      - shell
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/repair_admin.py') }}"
+    tty: false
+  when:
+    - not ansible_check_mode
+    - paperless_admin_repair_required | bool
+  changed_when: true
+  no_log: true

@@ -1,0 +1,64 @@
+---
+# Administrator identity over the API. Requires exactly one user with the vault
+# username, then rereads it after managed-user reconciliation and requires its
+# email, superuser, staff and active flags to be the vault's.
+
+- name: Verify Paperless users for exact administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/users/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_users
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the exact Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_managed_administrators: >-
+      {{ paperless_users.json.results
+         | selectattr('username', 'equalto', vault_paperless_admin_username) | list }}
+  no_log: true
+
+- name: Require one vault Paperless administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_managed_administrators | length == 1
+    fail_msg: The Paperless vault administrator is absent or duplicated.
+
+- name: Read the reconciled Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.uri:
+    url: "{{ paperless_api }}/api/users/?page_size=1000"
+    headers:
+      Authorization: "Token {{ paperless_api_token }}"
+    status_code: [200]
+    return_content: true
+  register: paperless_users_after
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the reconciled Paperless administrator
+  tags: [platform_verify_paperless]
+  ansible.builtin.set_fact:
+    paperless_reconciled_administrators: >-
+      {{ paperless_users_after.json.results
+         | selectattr('username', 'equalto', vault_paperless_admin_username) | list }}
+  no_log: true
+
+- name: Require exact Paperless administrator identity
+  tags: [platform_verify_paperless]
+  ansible.builtin.assert:
+    that:
+      - paperless_reconciled_administrators | length == 1
+      - paperless_reconciled_administrators[0].email == vault_paperless_admin_email
+      - paperless_reconciled_administrators[0].is_superuser | bool
+      - paperless_reconciled_administrators[0].is_staff | bool
+      - paperless_reconciled_administrators[0].is_active | bool
+    fail_msg: The Paperless vault administrator has identity drift.

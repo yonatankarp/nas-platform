@@ -1,0 +1,103 @@
+---
+# Storage. Resolves the effective host paths for both platforms, refuses any
+# layout other than the owned one, and proves the document and state roots
+# neither alias nor nest. Nothing here touches the target: every task is a fact
+# or an assertion, so a wrong path fails before the release is read.
+
+- name: Resolve effective Paperless storage roots
+  ansible.builtin.set_fact:
+    paperless_effective_state_host_path: >-
+      {{ paperless_state_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_docker_root ~ '/paperless-ngx') }}
+    paperless_effective_archive_host_path: >-
+      {{ paperless_archive_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/archive') }}
+    paperless_effective_consume_host_path: >-
+      {{ paperless_consume_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/inbox') }}
+    paperless_effective_export_host_path: >-
+      {{ paperless_export_host_path
+         if platform_compose_kind == 'nas'
+         else (nas_media_root ~ '/Documents/export') }}
+    paperless_effective_cache_host_path: >-
+      {{ paperless_state_host_path ~ '/cache'
+         if platform_compose_kind == 'nas'
+         else (nas_docker_root ~ '/paperless-ngx/cache') }}
+
+- name: Resolve effective Paperless mount source lists
+  ansible.builtin.set_fact:
+    paperless_effective_document_host_paths:
+      - "{{ paperless_effective_archive_host_path }}"
+      - "{{ paperless_effective_consume_host_path }}"
+      - "{{ paperless_effective_export_host_path }}"
+    paperless_effective_state_host_paths:
+      - "{{ paperless_effective_state_host_path }}/postgres"
+      - "{{ paperless_effective_state_host_path }}/redis"
+      - "{{ paperless_effective_state_host_path }}/data"
+      - "{{ paperless_effective_cache_host_path }}"
+      - "{{ paperless_effective_state_host_path }}/tessdata"
+
+- name: Require exact Paperless host storage policy
+  ansible.builtin.assert:
+    that:
+      - paperless_archive_host_path == '/volume2/Documents/archive'
+      - paperless_consume_host_path == '/volume2/Documents/inbox'
+      - paperless_export_host_path == '/volume2/Documents/export'
+      - paperless_state_host_path == '/volume1/Docker/paperless-ngx'
+      - paperless_effective_document_host_paths | unique | length == 3
+      - paperless_effective_state_host_paths | unique | length == 5
+      - >-
+        paperless_effective_archive_host_path != paperless_effective_consume_host_path and
+        not paperless_effective_archive_host_path.startswith(paperless_effective_consume_host_path ~ '/') and
+        not paperless_effective_consume_host_path.startswith(paperless_effective_archive_host_path ~ '/')
+      - >-
+        paperless_effective_archive_host_path != paperless_effective_export_host_path and
+        not paperless_effective_archive_host_path.startswith(paperless_effective_export_host_path ~ '/') and
+        not paperless_effective_export_host_path.startswith(paperless_effective_archive_host_path ~ '/')
+      - >-
+        paperless_effective_consume_host_path != paperless_effective_export_host_path and
+        not paperless_effective_consume_host_path.startswith(paperless_effective_export_host_path ~ '/') and
+        not paperless_effective_export_host_path.startswith(paperless_effective_consume_host_path ~ '/')
+    fail_msg: Paperless document and state storage paths overlap or differ from the owned policy.
+
+- name: Validate canonical Paperless storage source separation
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_storage_layout.py') }}"
+      - "{{ paperless_effective_document_host_paths | to_json }}"
+      - "{{ paperless_effective_state_host_paths | to_json }}"
+  changed_when: false
+  check_mode: false
+
+- name: Resolve required central Paperless storage declarations
+  ansible.builtin.set_fact:
+    paperless_required_storage_declarations:
+      - {path: "{{ nas_docker_root }}/paperless-ngx/postgres", mode: "0755", recovery: critical}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/redis", mode: "0755", recovery: cache}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/data", mode: "0755", recovery: critical}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/cache", mode: "0755", recovery: cache}
+      - {path: "{{ nas_docker_root }}/paperless-ngx/tessdata", mode: "0755", recovery: cache}
+      - {path: "{{ nas_media_root }}/Documents/archive", mode: "0755", recovery: critical}
+      - {path: "{{ nas_media_root }}/Documents/inbox", mode: "0755", recovery: critical}
+      - {path: "{{ nas_media_root }}/Documents/export", mode: "0755", recovery: critical}
+
+- name: Require unique central Paperless storage declarations
+  ansible.builtin.assert:
+    that:
+      - paperless_storage_matches | length == 1
+      - paperless_storage_matches[0].mode == item.mode
+      - paperless_storage_matches[0].recovery == item.recovery
+    fail_msg: >-
+      {{ item.path }} must have one exact mode/recovery declaration in nas_storage;
+      host_prep alone owns its creation and ownership policy.
+  vars:
+    paperless_storage_matches: >-
+      {{ nas_storage | selectattr('path', 'equalto', item.path) | list }}
+  loop: "{{ paperless_required_storage_declarations }}"
+  loop_control:
+    label: "{{ item.path }}"

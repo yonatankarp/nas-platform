@@ -1,0 +1,134 @@
+---
+# Deployment. Revalidates the release paths this role touches, installs the
+# pinned Hebrew OCR model, renders the environment, brings the data services up
+# and refuses a rotated database credential before the application follows,
+# reports the deployment and checks the applied CPU policy.
+
+- name: Revalidate deployment paths before Paperless runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: paperless-ngx
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ platform_runtime_dir }}/services/paperless-ngx/.gmail-credential-fingerprint"
+      - "{{ paperless_effective_state_host_path }}/postgres"
+      - "{{ paperless_effective_state_host_path }}/redis"
+      - "{{ paperless_effective_state_host_path }}/data"
+      - "{{ paperless_effective_cache_host_path }}"
+      - "{{ paperless_effective_state_host_path }}/tessdata"
+      - "{{ paperless_effective_state_host_path }}/tessdata/heb.traineddata"
+      - "{{ paperless_effective_archive_host_path }}"
+      - "{{ paperless_effective_consume_host_path }}"
+      - "{{ paperless_effective_export_host_path }}"
+
+- name: Select the Paperless mounted tessdata root
+  ansible.builtin.set_fact:
+    paperless_tessdata_root: "{{ paperless_effective_state_host_path }}/tessdata"
+
+- name: Require the internally derived Paperless tessdata root
+  ansible.builtin.assert:
+    that:
+      - paperless_tessdata_root == ((paperless_state_host_path
+        if platform_compose_kind == 'nas' else
+        (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
+
+- name: Install the pinned Hebrew OCR model
+  ansible.builtin.get_url:
+    url: "{{ paperless_hebrew_model_url }}"
+    dest: "{{ paperless_tessdata_root }}/heb.traineddata"
+    checksum: "{{ paperless_hebrew_model_checksum }}"
+    mode: "0644"
+
+- name: Render the Paperless environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/paperless-ngx/.env"
+    mode: "0600"
+  no_log: true
+
+- name: Deploy the Paperless data services
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    services: [broker, db]
+    state: present
+    wait: true
+    wait_timeout: "{{ paperless_data_compose_wait_timeout }}"
+  register: paperless_data_deploy
+
+- name: Refuse a rotated Paperless database credential
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    service: db
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env PGPASSWORD="$POSTGRES_PASSWORD" PGCONNECT_TIMEOUT=15
+        psql --host=db --username="$1" --dbname="$2"
+        --no-align --tuples-only
+        --command="select current_user || '/' || current_database()"
+      - paperless-database-probe
+      - "{{ vault_paperless_db_username }}"
+      - "{{ vault_paperless_db_name }}"
+    tty: false
+  register: paperless_database_identity
+  when: not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Classify the Paperless database credential probe
+  ansible.builtin.set_fact:
+    paperless_database_probe_status: >-
+      {{ 'execution-failed' if paperless_database_identity.rc is not defined
+         else 'connection-rejected' if paperless_database_identity.rc | int != 0
+         else 'identity-mismatch' if paperless_database_identity.stdout | default('') | trim !=
+              vault_paperless_db_username ~ '/' ~ vault_paperless_db_name
+         else 'verified' }}
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Require the managed Paperless database credential
+  ansible.builtin.assert:
+    that:
+      - paperless_database_probe_status == 'verified'
+    fail_msg: >-
+      Paperless database credential verification failed
+      ({{ paperless_database_probe_status }}) in Compose service db.
+      Restore the previous vault values or migrate the database credential explicitly, then rerun.
+  when: not ansible_check_mode
+
+- name: Deploy Paperless
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/paperless-ngx"
+    project_name: "{{ paperless_compose_project_name }}"
+    files: "{{ platform_service_compose_files['paperless-ngx'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/paperless-ngx/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ paperless_compose_wait_timeout }}"
+  register: paperless_deploy
+
+- name: Report the Paperless deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Paperless
+    ntfy_deployment_report_changed: "{{ (paperless_data_deploy is changed) or (paperless_deploy is changed) }}"
+
+- name: Verify Paperless effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: paperless-ngx
+    container_cpu_project_name: "{{ paperless_compose_project_name }}"
