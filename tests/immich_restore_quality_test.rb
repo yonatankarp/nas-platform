@@ -749,9 +749,11 @@ refuse("filename-injection mutation was not detected") unless
 # tests/contracts/immich-runtime.rb. Reading the wrapper for them would now find
 # nothing and report a lane that is in fact still wired.
 contract_text = File.read(File.join(ROOT, "tests", "contracts", "immich-runtime.rb"))
-integration_text = File.read(File.join(ROOT, "tests", "integration.sh"))
+# The controller's own dispatch is a program in a file of its own, so the calls
+# it makes are read there rather than out of the launcher that starts it.
+integration_text = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
 # The launchers the Immich lane drives live in the controller's library, where
-# they are ordinary shell rather than escaped text inside the `sh -c` argument.
+# they are ordinary shell for the same reason.
 library_text = File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
 clean_restore_source = library_text[/^run_immich_clean_restore\(\) \{.*?^\}/m].to_s
 [
@@ -794,6 +796,6 @@ end
 end
 refuse("Immich restore scenarios are not owned by the Immich suite") unless
   integration_text.include?("suite_is immich; then") &&
-  integration_text.include?('[ "\$INTEGRATION_SUITE" = immich ]')
+  integration_text.include?("[ $INTEGRATION_SUITE = immich ]")
 
 puts "Immich restore quality contract passed"
