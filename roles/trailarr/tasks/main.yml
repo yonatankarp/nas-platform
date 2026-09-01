@@ -179,8 +179,8 @@
 - name: Reconcile the Trailarr per-item monitoring
   ansible.builtin.include_tasks: reconcile_monitoring.yml
   when:
-    - media_usenet_enabled | bool
     - trailarr_monitor_all_media | bool
+    - media_usenet_enabled | bool
 
 - name: Report the inert Trailarr arr connections
   ansible.builtin.debug:

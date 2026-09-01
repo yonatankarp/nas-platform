@@ -242,6 +242,18 @@ if failures.empty?
   # successful monitor with a literal null body. A status code therefore proves
   # nothing here, exactly as it proves nothing for settings/update above, so the
   # reconcile has to read the library back and assert on what it finds.
+  # Splitting permission from intent is only worth anything if the include
+  # respects both. Dropping either clause is a silent change of meaning that no
+  # other check would notice, so the condition is pinned here by name.
+  monitoring_include = tasks.find do |task|
+    task["ansible.builtin.include_tasks"].to_s.include?("reconcile_monitoring.yml")
+  end
+  failures << "Trailarr must gate the monitoring reconcile on usenet and on intent" unless
+    monitoring_include &&
+      %w[media_usenet_enabled trailarr_monitor_all_media].all? { |name|
+        Array(monitoring_include["when"]).any? { |clause| clause.to_s.include?(name) }
+      }
+
   monitoring = flatten_tasks(
     YAML.safe_load_file(
       File.join(root, "roles/trailarr/tasks/reconcile_monitoring.yml"), aliases: true
