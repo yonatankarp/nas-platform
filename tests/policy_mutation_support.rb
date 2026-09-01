@@ -544,22 +544,53 @@ def service(manifest, name)
   manifest.fetch("services").find { |entry| entry["name"] == name }
 end
 
-# Every policy script the suite is split across. A mutation may be caught by any of
-# them, so all of them run against one sandbox and their output is concatenated: a
-# check that moved to another file must still report, not silently stop mattering.
-POLICY_SCRIPTS = %w[
-  tests/policy_test.rb
-  tests/policy_platform_test.rb
-  tests/policy_ci_test.rb
-  tests/policy_beszel_test.rb
-  tests/policy_integration_test.rb
-  tests/policy_deployment_test.rb
-  tests/policy_mac_test.rb
-  tests/policy_vault_test.rb
-].freeze
+# Every policy script the suite is split across, keyed by the short name a
+# mutation row names it with. A row declares the scripts that actually detect its
+# defect (`detected_by:`) instead of running all eight, because seven of them
+# cannot produce the message it asserts and the harness builds a sandbox per row.
+POLICY_SCRIPTS_BY_NAME = {
+  policy: "tests/policy_test.rb",
+  platform: "tests/policy_platform_test.rb",
+  ci: "tests/policy_ci_test.rb",
+  beszel: "tests/policy_beszel_test.rb",
+  integration: "tests/policy_integration_test.rb",
+  deployment: "tests/policy_deployment_test.rb",
+  mac: "tests/policy_mac_test.rb",
+  vault: "tests/policy_vault_test.rb"
+}.freeze
 
-# Runs the whole policy set against one mutated sandbox, because which script
-# rejects a mutation is exactly what this harness must not hard-code.
+POLICY_SCRIPTS = POLICY_SCRIPTS_BY_NAME.values.freeze
+
+# `--audit` re-derives every row's detecting set by running the whole policy set
+# against it, and reports each call site whose declared set disagrees. It is the
+# answer to the one thing narrowing cannot fail loudly on: a check added to a
+# script a row no longer runs stops covering that row, and nothing else would say
+# so. Deliberately not in CI -- it is exactly the eightfold cost narrowing removed.
+POLICY_AUDIT = ARGV.include?("--audit")
+
+# Keyed by call site rather than by label, because a call site inside a loop is
+# one declaration covering several mutations and only their union has to match
+# it. Labels cannot key this: several rows share one, and some are interpolated.
+#
+# The key assumes one declared set per call site, which is what every loop here
+# does -- it passes the same `detected_by` on each iteration. A loop that
+# computed a different set per iteration would record only the first, so give it
+# its own call site rather than teaching this to merge declarations.
+POLICY_AUDIT_SITES = {}
+
+def resolve_policy_scripts(names, label)
+  raise "#{label}: detected_by must be a nonempty list of script names" if names.nil? || names.empty?
+
+  names.map do |name|
+    POLICY_SCRIPTS_BY_NAME.fetch(name) do
+      raise "#{label}: unknown policy script #{name.inspect}; " \
+            "known names are #{POLICY_SCRIPTS_BY_NAME.keys.join(', ')}"
+    end
+  end
+end
+
+# Runs the named scripts against one mutated sandbox and reports each one's
+# output and exit status separately.
 #
 # The scripts run concurrently. Every one of them only reads the sandbox, and
 # each is a subprocess that releases the GVL, so this is the same parallelism
@@ -568,19 +599,26 @@ POLICY_SCRIPTS = %w[
 # over a hundred of them, so a second spent here is spent a hundred times.
 #
 # Results are collected by index rather than appended as they finish, so the
-# output a caller matches against stays in POLICY_SCRIPTS order and a failure
+# output a caller matches against stays in the caller's order and a failure
 # report does not depend on which script happened to exit first.
-def run_policy(scripts = POLICY_SCRIPTS)
+def run_policy_scripts(scripts)
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
     yield sandbox
-    results = scripts.map do |script|
-      Thread.new { capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox) }
+    scripts.map do |script|
+      Thread.new do
+        stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
+        [script, stdout + stderr, status.success?]
+      end
     end.map(&:value)
-    output = results.map { |stdout, stderr, _status| stdout + stderr }.join
-    [output, results.all? { |_stdout, _stderr, status| status.success? }]
   end
+end
+
+def run_policy(scripts = POLICY_SCRIPTS, &mutation)
+  results = run_policy_scripts(scripts, &mutation)
+  output = results.map { |_script, script_output, _ok| script_output }.join
+  [output, results.all? { |_script, _script_output, ok| ok }]
 end
 
 def run_compose_metadata_behavior
@@ -596,11 +634,55 @@ def run_compose_metadata_behavior
   end
 end
 
-def expect_failure(failures, label, message)
-  output, succeeded = run_policy { |root| yield root }
-  failures << "#{label}: policy unexpectedly passed" if succeeded
+# `detected_by` is the set of policy scripts that actually reject this mutation,
+# and it is required rather than defaulted: a default would let the next row
+# added quietly go back to running all eight, with nothing reporting it.
+#
+# Getting it wrong in the narrowing direction is fail-closed -- drop the script
+# that owns the diagnostic and the row's own assertions fail by name. Getting it
+# wrong in the other direction, by listing fewer scripts than really detect the
+# defect, costs coverage that no assertion here can see, which is what `--audit`
+# exists to find.
+def expect_failure(failures, label, message, detected_by:)
+  scripts = resolve_policy_scripts(detected_by, label)
+  scripts = POLICY_SCRIPTS if POLICY_AUDIT
+  results = run_policy_scripts(scripts) { |root| yield root }
+  record_audit_detection(label, message, detected_by, results, caller_locations(1, 1).first) if POLICY_AUDIT
+
+  output = results.map { |_script, script_output, _ok| script_output }.join
+  failures << "#{label}: policy unexpectedly passed" if results.all? { |_s, _o, ok| ok }
   failures << "#{label}: missing failure message #{message.inspect}" unless output.include?(message)
   failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
+end
+
+# A script detects a mutation if it rejects it, names it, or crashes on it --
+# all three are properties the row asserts, so all three keep a script listed.
+def detecting_script_names(message, results)
+  results.filter_map do |script, output, ok|
+    detected = !ok || output.include?(message) || output.match?(/\.rb:\d+:in [`']/)
+    POLICY_SCRIPTS_BY_NAME.key(script) if detected
+  end
+end
+
+def record_audit_detection(label, message, declared, results, site)
+  entry = POLICY_AUDIT_SITES[site.lineno] ||= { declared: declared, actual: [], label: label }
+  entry[:actual] |= detecting_script_names(message, results)
+end
+
+# Both directions are silent without this. A script that starts detecting a row
+# is coverage the row has stopped running; one that stops detecting it is a stale
+# entry paying for a subprocess that proves nothing.
+def audit_policy_detection(failures)
+  return unless POLICY_AUDIT
+
+  POLICY_AUDIT_SITES.each do |lineno, entry|
+    missing = entry[:actual] - entry[:declared]
+    stale = entry[:declared] - entry[:actual]
+    where = "line #{lineno} (#{entry[:label]})"
+    failures << "#{where}: detected_by omits #{missing.join(', ')}" if missing.any?
+    failures << "#{where}: detected_by names #{stale.join(', ')}, which no longer detect it" if stale.any?
+  end
+  puts "policy mutation audit: #{POLICY_AUDIT_SITES.length} call sites re-derived against all eight scripts"
 end
 
 def expect_success(failures, label)

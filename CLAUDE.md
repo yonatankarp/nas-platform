@@ -51,6 +51,12 @@ Ansible's own interpreter use `"$ansible_python"`; resolve it with
 Several Ruby tests accept `--self-test`, which proves the test itself detects a
 planted regression.
 
+`ruby tests/policy_manifest_test.rb --audit` is the one to run after adding a
+check to a policy script. Each mutation row names the policy scripts that detect
+its planted defect and runs only those; `--audit` runs all eight again and fails
+on any row whose declared set has drifted. It costs what the narrowing removed,
+so it is deliberately not in CI.
+
 ### Integration suites
 
 ```sh
