@@ -1556,5 +1556,54 @@ declared_phases.each do |relative_path, declarations|
   end
 end
 
+# The integration controller is a program in the same checkout it inspects.
+# /repo inside its container is the copy of this tree the run is testing, and
+# the file itself sits at /repo/tests, so a path taken from $0, dirname "$0" or
+# BASH_SOURCE resolves into the tree the program is judging rather than the
+# tree it is meant to act on. The launcher hands it both roots as environment;
+# nothing in it may work one out for itself. The precedent for reading a
+# sibling as /repo/tests/... is already in the file, which is exactly why a
+# reviewer would read a new dirname as consistent rather than as a defect.
+controller_program = File.join(ROOT, "tests", "integration_controller.sh")
+controller_source = File.file?(controller_program) ? File.read(controller_program) : nil
+check(failures, !controller_source.nil?,
+      "tests/integration_controller.sh: the integration controller program is missing")
+unless controller_source.nil?
+  self_relative = controller_source.lines.each_with_index.filter_map do |line, index|
+    next if line.lstrip.start_with?("#")
+    next unless line.match?(/\$\{?0\b|\bdirname\b|\bBASH_SOURCE\b/)
+
+    "#{index + 1}: #{line.strip}"
+  end
+  check(failures, self_relative.empty?,
+        "tests/integration_controller.sh: resolves a path from where the file " \
+        "sits rather than from CONTROLLER_REPO_DIR or CONTROLLER_SANDBOX at " \
+        "#{self_relative.join('; ')}")
+
+  # Extracting the program out of the sh -c argument made shellcheck able to
+  # read it and it immediately found defects the escaping had hidden: 53 SC2086
+  # and 4 SC2068 unquoted expansions, and one SC2070 -- `[ -n $VAR ]`, which
+  # tests true on an empty value. They are pre-existing and belong to the
+  # follow-up that replaces this file's text assertions with execution, so the
+  # gate excludes exactly those three codes. Pinned here because an exclusion
+  # list that may quietly grow is a check that quietly stops running.
+  manifest = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
+  controller_check = manifest.lines.map(&:chomp).find do |line|
+    line.end_with?(" tests/integration_controller.sh")
+  end
+  check(failures, controller_check ==
+        "shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 " \
+        "tests/integration_controller.sh",
+        "tests/validate-policy.sh: the integration controller must be " \
+        "shellchecked excluding exactly SC2068,SC2070,SC2086, not " \
+        "#{controller_check.inspect}")
+end
+
+# The controller must not go back to being text inside a shell string: that is
+# the shape that made it unreachable by sh -n and shellcheck in the first place.
+launcher_source = File.read(File.join(ROOT, "tests", "integration.sh"))
+check(failures, !launcher_source.include?(%(sh -eu -c ")),
+      "tests/integration.sh: the controller is a program again pasted into an " \
+      "sh -c argument, where no syntax check or linter can read it")
 
 report(failures, "policy: all properties hold", "policy violation(s)")

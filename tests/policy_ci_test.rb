@@ -31,6 +31,11 @@ failures = []
 integration_path = File.join(ROOT, "tests", "integration.sh")
 suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
+# What the controller does is asserted against the controller. It is a program
+# in a file of its own now rather than escaped text inside an sh -c argument,
+# so these read it unescaped, at the place the code they police actually lives.
+controller_path = File.join(ROOT, "tests", "integration_controller.sh")
+controller_body = File.file?(controller_path) ? File.read(controller_path) : ""
 
 suite_rows = []
 malformed_rows = []
@@ -93,10 +98,10 @@ unless suite_rows.empty?
           "acquisition foundation suite #{lane} has no matching static contract")
   end
 end
-if File.file?(integration_path)
+if File.file?(controller_path)
   check(failures,
-        integration_body.include?(
-          '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static'
+        controller_body.include?(
+          "/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static"
         ),
         "acquisition foundation suites must execute their matching static contract")
 end
@@ -203,7 +208,7 @@ check(failures,
       "the collision fixture image must be resolved to a digest-pinned local " \
       "image, falling back to the base image a local build already pulled")
 check(failures,
-      integration_body.include?('[ \\"\\$INTEGRATION_TOOLCHAIN_PREINSTALLED\\" != true ]') &&
+      controller_body.include?('[ "$INTEGRATION_TOOLCHAIN_PREINSTALLED" != true ]') &&
         integration_body.include?('-e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled"'),
       "the in-container install must run only when no built toolchain is in play")
 # The fallback and the image must install the same things, or a developer's first
@@ -269,8 +274,8 @@ enabled_idempotence_contracts = enabled_idempotence_service_tags
    ["run_enabled_idempotence #{selection}", "run_play --tags #{selection} --check --diff"]]
 end
 enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
-  suite_body = integration_body[
-    /if \[ "\\\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
+  suite_body = controller_body[
+    /if \[ \$INTEGRATION_SUITE = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
     1
   ].to_s
   check(failures, suite_body.include?(idempotence_call),

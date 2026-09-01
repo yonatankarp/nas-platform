@@ -12,7 +12,15 @@ controller_library=$repo_dir/tests/integration_controller_lib.sh
   printf '%s\n' 'integration controller library is missing' >&2
   exit 1
 }
-grep -qF '. /repo/tests/integration_controller_lib.sh' "$integration" || {
+# The controller program itself is a file too, for the same reason. What it
+# does is asserted there; tests/integration.sh is read only for what the
+# launcher does -- the sandbox, the mounts, the environment it hands across.
+controller_program=$repo_dir/tests/integration_controller.sh
+[ -r "$controller_program" ] || {
+  printf '%s\n' 'integration controller program is missing' >&2
+  exit 1
+}
+grep -qF '. /repo/tests/integration_controller_lib.sh' "$controller_program" || {
   printf '%s\n' 'integration controller does not source its launcher library' >&2
   exit 1
 }
@@ -358,11 +366,12 @@ assert_output \
 # runtime proof lives in the last project's lane rather than in a lane of its
 # own. The dispatch arm is still a closed case arm; what changed is that it
 # falls through to that project's service proof instead of exiting.
-grep -qF 'seerr)' "$integration" || {
+grep -qF 'seerr)' "$controller_program" || {
   printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
   exit 1
 }
-grep -qF '/repo/tests/contracts/"\$INTEGRATION_SUITE"-foundation.sh static' "$integration" || {
+grep -qF '/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static' \
+  "$controller_program" || {
   printf '%s\n' 'acquisition foundation suites do not run their matching static contract' >&2
   exit 1
 }
@@ -394,11 +403,12 @@ acquisition_runtime_contract_holds() {
     printf '%s\n' "$acquisition_dispatch" |
       grep -qF 'run_media_acquisition_foundation_verify'
 }
-acquisition_runtime_contract_holds "$integration" "$controller_library" || {
+acquisition_runtime_contract_holds "$controller_program" "$controller_library" || {
   printf '%s\n' 'acquisition suites omit the shared inventory-derived Linux runtime verifier path' >&2
   exit 1
 }
-sed '/run_media_acquisition_foundation_verify$/d' "$integration" > "$acquisition_runtime_mutant"
+sed '/run_media_acquisition_foundation_verify$/d' "$controller_program" \
+  > "$acquisition_runtime_mutant"
 if acquisition_runtime_contract_holds "$acquisition_runtime_mutant" \
     "$controller_library"; then
   printf '%s\n' 'acquisition runtime contract accepts removal of real verifier execution' >&2
@@ -449,10 +459,11 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
   printf '%s\n' 'integration sandbox is not owner-only' >&2
   exit 1
 }
-grep -qF -- '" integration-run "$playbook" "$@"' "$integration"
+grep -qF -- 'sh /repo/tests/integration_controller.sh "$playbook" "$@"' \
+  "$integration"
 grep -qF -- '"$playbook" "$@"' "$controller_library"
-grep -qF -- 'run_play --tags \"\$INTEGRATION_TAGS\" \"\$@\"' "$integration"
-grep -qF -- 'run_play \"\$@\"' "$integration"
+grep -qF -- 'run_play --tags "$INTEGRATION_TAGS" "$@"' "$controller_program"
+grep -qF -- 'run_play "$@"' "$controller_program"
 
 # The controller and every acquisition resource share one strict namespace
 # derived from the disposable directory. Exercise the production derivation so
@@ -513,7 +524,8 @@ printf '%s\n' "$run_play_namespace" |
   printf '%s\n' 'integration plays do not deploy under the disposable namespace' >&2
   exit 1
 }
-if grep -n -- '-e platform_project_name=' "$integration" "$controller_library" |
+if grep -n -- '-e platform_project_name=' \
+     "$integration" "$controller_program" "$controller_library" |
    grep -vF -- '-e platform_project_name="$integration_project_namespace"' |
    grep -vF -- '-e platform_project_name="$integration_project_namespace-negative"' \
      >/dev/null; then
@@ -590,11 +602,11 @@ assert_idempotence_recap_rejected 'duplicate target recap' \
 assert_idempotence_recap_rejected 'task-output false match before failed recap' \
   'TASK [debug] ********************************************************************\nok: [nas] => {"msg":"changed=0 unreachable=0 failed=0"}\nPLAY RECAP *********************************************************************\nnas : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
 
-arr_enabled_block=$(sed -n '/if \[ "\\\$INTEGRATION_SUITE" = arr \]; then/,/^    fi$/p' \
-  "$integration")
+arr_enabled_block=$(sed -n '/if \[ \$INTEGRATION_SUITE = arr \]; then/,/^    fi$/p' \
+  "$controller_program")
 downloaders_enabled_block=$(sed -n \
-  '/if \[ "\\\$INTEGRATION_SUITE" = downloaders \]; then/,/^    fi$/p' \
-  "$integration")
+  '/if \[ \$INTEGRATION_SUITE = downloaders \]; then/,/^    fi$/p' \
+  "$controller_program")
 printf '%s\n' "$arr_enabled_block" | grep -qF 'run_enabled_idempotence arr'
 printf '%s\n' "$downloaders_enabled_block" |
   grep -qF 'run_enabled_idempotence arr,downloaders'
@@ -618,7 +630,7 @@ grep -qF 'requests_version=2.34.2' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
   exit 1
 }
-grep -qF "'requests==\$requests_version'" "$integration" || {
+grep -qF '"requests==$requests_version"' "$controller_program" || {
   printf '%s\n' 'integration controller does not install docker_container_info runtime support' >&2
   exit 1
 }
@@ -690,12 +702,12 @@ if immich_negative_order_holds "$immich_order_mutant"; then
 fi
 
 for suite in komga jellyfin immich; do
-  grep -qF "suite_is $suite" "$integration" || {
+  grep -qF "suite_is $suite" "$controller_program" || {
     printf '%s\n' "$suite has no independent scenario dispatch" >&2
     exit 1
   }
 done
-jellyfin_scenarios=$(sed -n '/suite_is jellyfin/,/^    fi$/p' "$integration")
+jellyfin_scenarios=$(sed -n '/suite_is jellyfin/,/^    fi$/p' "$controller_program")
 printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract seed'
 printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
 # The committed deployment vault is intentionally encrypted with an operator
@@ -703,8 +715,10 @@ printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
 # replace only that copy with its generated ephemeral vault, and export the
 # matching password before any Ansible invocation.
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
-grep -qF -- 'install -m 0600 \"\$vault_file\" /repo/inventory/group_vars/all/vault.yml' "$integration"
-grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE=\"\$vault_password_file\"' "$integration"
+grep -qF -- 'install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml' \
+  "$controller_program"
+grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file"' \
+  "$controller_program"
 grep -qF -- '-e @"$fixture_vars_file"' "$controller_library" || {
   printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
   exit 1
@@ -848,7 +862,8 @@ fi
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
 grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
   prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
-grep -qF '/repo/tests/media_control_network_collision_test.sh live' "$integration" ||
+grep -qF '/repo/tests/media_control_network_collision_test.sh live' \
+  "$controller_program" ||
   prepull_fail 'the owning integration lane does not execute the live collision test'
 
 compose_images() {
