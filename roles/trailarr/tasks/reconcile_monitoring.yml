@@ -1,0 +1,152 @@
+---
+# Per-item monitoring, as a converge rather than an operator ritual.
+#
+# The design this role was built from called per-item monitoring a manual
+# acceptance step, on the grounds that Trailarr's item ids are assigned when the
+# arr sync first sees a title and are not derivable from anything vault or
+# inventory knows. That argument is sound for monitoring a *selected* title and
+# does not apply to the platform's actual requirement, which is that every movie
+# and every series has a trailer. "All of them" is universally quantified, needs
+# no ids, and is a fixed point, so it belongs here.
+#
+# Three measured behaviours shape the file.
+#
+# POST /api/v1/media/batch_update takes {media_ids, action} and carries the whole
+# library in one request, so this is not a 460-iteration loop. Its `action` is
+# typed as a bare string with no enum and the four accepted values live only in
+# the endpoint's own description, so "monitor" is confirmed by observation rather
+# than by schema: sent against id 1, the item read back monitor true.
+#
+# The response is worthless as a success signal. It came back as literal `null`,
+# not the message the endpoint documents, and a sibling endpoint in this same
+# application reports failure as HTTP 200 with prose in the body -- which is why
+# tasks/main.yml refuses to call PUT /settings/update at all. So the write is
+# proved by reading the media list back, never by a status code.
+#
+# downloaded_at is not the exclusion key, though it looks like one. Every item
+# Trailarr counts satisfied still reads downloaded_at null, because on an adopted
+# library the trailer was already on disk and Trailarr never downloaded it. Set
+# membership in /api/v1/media/downloaded is the honest test, and it is a better
+# fixed point than any field on the item: whatever the application does to the
+# monitor flag after a successful download, a finished item lands in that
+# collection and stays excluded from then on.
+#
+# Redacted: the request carries the application API key.
+- name: Read the Trailarr media library
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/media/all"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: trailarr_media_read
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: same key.
+- name: Read the satisfied Trailarr media
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/media/downloaded"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: trailarr_media_satisfied_read
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Numeric ids and two counts. Nothing here is credential material, which is what
+# lets the report below say why the write fired -- the two reads above are
+# redacted wholesale and can say nothing at all.
+#
+# rejectattr with no test rejects the truthy, so this keeps exactly the items
+# whose monitor flag is false or null.
+- name: Resolve the unmonitored Trailarr media
+  ansible.builtin.set_fact:
+    trailarr_media_to_monitor: >-
+      {{ trailarr_media_read.json | default([]) | rejectattr('monitor')
+         | map(attribute='id') | list
+         | difference(trailarr_media_satisfied_read.json | default([])
+                      | map(attribute='id') | list)
+         | sort }}
+    trailarr_media_total: >-
+      {{ trailarr_media_read.json | default([]) | length }}
+    trailarr_media_satisfied_total: >-
+      {{ trailarr_media_satisfied_read.json | default([]) | length }}
+
+- name: Report the Trailarr monitoring reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      {{ trailarr_media_total }} media items,
+      {{ trailarr_media_satisfied_total }} already carrying a trailer.
+      {{ trailarr_media_to_monitor | length }}
+      {{ 'would be' if ansible_check_mode else 'are' }} monitored.
+      {{ 'The download task may fetch them.'
+         if trailarr_monitoring_enabled | bool else
+         'MONITOR_ENABLED is false, so the download task publishes a
+          would-download report and fetches nothing.' }}
+
+# Redacted: the request carries the application API key.
+- name: Monitor every Trailarr item without a trailer
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/media/batch_update"
+    method: POST
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    body_format: json
+    body:
+      media_ids: "{{ trailarr_media_to_monitor }}"
+      action: monitor
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - trailarr_media_to_monitor | length > 0
+  changed_when: true
+  no_log: true
+
+# The write above cannot be trusted to have done anything, so this is not
+# belt-and-braces: it is the only evidence the reconcile worked. A wrong action
+# string answers 200 and monitors nothing, and without this the role would report
+# changed on every run forever while the library stayed untouched.
+#
+# Redacted: same key.
+- name: Read the Trailarr media library after monitoring
+  ansible.builtin.uri:
+    url: "{{ trailarr_api }}/media/all"
+    method: GET
+    headers:
+      X-API-KEY: "{{ vault_trailarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: trailarr_media_verify_read
+  when:
+    - not ansible_check_mode
+    - trailarr_media_to_monitor | length > 0
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require every submitted Trailarr item to read monitored
+  vars:
+    trailarr_media_still_unmonitored: >-
+      {{ trailarr_media_verify_read.json | default([])
+         | selectattr('id', 'in', trailarr_media_to_monitor)
+         | rejectattr('monitor') | map(attribute='id') | list | sort }}
+  ansible.builtin.assert:
+    that:
+      - trailarr_media_still_unmonitored | length == 0
+    fail_msg: >-
+      Trailarr answered the batch update with success and left
+      {{ trailarr_media_still_unmonitored | length }} of
+      {{ trailarr_media_to_monitor | length }} submitted items unmonitored,
+      including ids {{ trailarr_media_still_unmonitored[:10] | join(', ') }}.
+      The endpoint's action value is typed as a bare string with no enum and this
+      application reports some failures as HTTP 200, so the likely cause is that
+      "monitor" is no longer the accepted verb on this image.
+  when:
+    - not ansible_check_mode
+    - trailarr_media_to_monitor | length > 0
