@@ -8,9 +8,7 @@
 # Fixtures and helpers come from media_managed_users_support.rb.
 
 def exercise_jellyfin_recovery_marker_safety(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   inspect_name = "Inspect Jellyfin primary administrator recovery marker"
   require_name = "Require safe Jellyfin primary administrator recovery marker file"
   read_name = "Read Jellyfin primary administrator recovery marker"
@@ -65,9 +63,7 @@ def exercise_jellyfin_recovery_marker_safety(failures)
 end
 
 def exercise_jellyfin_library_inventory_global_gate(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   mutation_names = [
     "Rename adopted Jellyfin managed libraries",
     "Create absent Jellyfin managed libraries",
@@ -131,9 +127,7 @@ def exercise_jellyfin_library_inventory_global_gate(failures)
 end
 
 def exercise_jellyfin_library_rename_identity_refresh(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   selected_names = [
     "Initialize normalized Jellyfin library inventory",
     "Resolve normalized Jellyfin library inventory",
@@ -421,9 +415,7 @@ def exercise_jellyfin_primary_identity_recovery(failures)
 end
 
 def exercise_jellyfin_extra_path_recovery(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   selected_names = [
     "Initialize normalized Jellyfin library inventory",
     "Resolve normalized Jellyfin library inventory",
@@ -504,9 +496,7 @@ def exercise_jellyfin_extra_path_recovery(failures)
 end
 
 def exercise_jellyfin_primary_preflight(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   selected_names = [
     "Initialize Jellyfin primary administrator matches",
     "Resolve Jellyfin primary administrator matches",
@@ -571,9 +561,7 @@ def exercise_jellyfin_primary_preflight(failures)
 end
 
 def exercise_jellyfin_library_shape_preflight(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   selected_names = [
     "Initialize Jellyfin primary administrator matches",
     "Resolve Jellyfin primary administrator matches",

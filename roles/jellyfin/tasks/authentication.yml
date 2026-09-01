@@ -1,0 +1,156 @@
+---
+# The reconciliation identity. Validates the recovery marker an interrupted
+# rename leaves behind, authenticates the primary administrator under whichever
+# name that marker says it currently carries, falls back to the pre-hop name,
+# refuses anything that is not the vault administrator, and resolves the bearer
+# token every later stage sends.
+#
+# verify.yml carries its own copy of the authenticate/require/resolve sequence,
+# tagged platform_verify_jellyfin. Sharing one parameterised file between the
+# two would need apply: tags: at one call site, which changes tag selection --
+# the one thing this split is proving it does not do. Deliberately deferred.
+
+- name: Inspect Jellyfin primary administrator recovery marker
+  ansible.builtin.stat:
+    path: "{{ jellyfin_primary_recovery_marker }}"
+  register: jellyfin_primary_recovery_marker_state
+  changed_when: false
+  check_mode: false
+
+- name: Require safe Jellyfin primary administrator recovery marker file
+  ansible.builtin.assert:
+    that:
+      - not jellyfin_primary_recovery_marker_state.stat.exists or
+        jellyfin_primary_recovery_marker_state.stat.isreg
+      - not jellyfin_primary_recovery_marker_state.stat.exists or
+        not jellyfin_primary_recovery_marker_state.stat.islnk
+      - not jellyfin_primary_recovery_marker_state.stat.exists or
+        jellyfin_primary_recovery_marker_state.stat.mode == '0600'
+      - not jellyfin_primary_recovery_marker_state.stat.exists or
+        (ansible_facts.user_id is defined and
+         jellyfin_primary_recovery_marker_state.stat.pw_name == ansible_facts.user_id)
+    fail_msg: >-
+      The Jellyfin primary administrator recovery marker is not a private regular
+      file owned by the effective platform user.
+
+# Redacted through the parse below: the marker records the primary
+# administrator's original name, which is vault_jellyfin_admin_username.
+- name: Read Jellyfin primary administrator recovery marker
+  ansible.builtin.slurp:
+    src: "{{ jellyfin_primary_recovery_marker }}"
+  register: jellyfin_primary_recovery_marker_content
+  when: jellyfin_primary_recovery_marker_state.stat.exists
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve Jellyfin primary administrator recovery state
+  ansible.builtin.set_fact:
+    jellyfin_primary_recovery_state: >-
+      {{ (jellyfin_primary_recovery_marker_content.content | b64decode | from_json)
+         if jellyfin_primary_recovery_marker_state.stat.exists else {} }}
+  no_log: true
+
+- name: Require safe Jellyfin primary administrator recovery state
+  ansible.builtin.assert:
+    that:
+      - >-
+        jellyfin_primary_recovery_state | length == 0 or
+        jellyfin_primary_recovery_state.keys() | list | sort == ['id', 'original_name']
+      - >-
+        jellyfin_primary_recovery_state | length == 0 or
+        jellyfin_primary_recovery_state.id | string is match('^[A-Fa-f0-9-]{32,36}$')
+      - >-
+        jellyfin_primary_recovery_state | length == 0 or
+        (jellyfin_primary_recovery_state.original_name is string and
+         jellyfin_primary_recovery_state.original_name | trim | length > 0)
+    fail_msg: The Jellyfin primary administrator recovery marker is malformed.
+
+- name: Resolve Jellyfin primary administrator authentication name
+  ansible.builtin.set_fact:
+    jellyfin_primary_authentication_name: >-
+      {{ ('nas-platform-admin-' ~ (jellyfin_primary_recovery_state.id | string)[0:12])
+         if jellyfin_primary_recovery_state | length > 0 else jellyfin_admin_username }}
+  no_log: true
+
+- name: Authenticate the expected Jellyfin primary administrator identity
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ jellyfin_primary_authentication_name }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_primary_authentication_attempt
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Authenticate the pre-hop Jellyfin primary administrator identity
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ jellyfin_primary_recovery_state.original_name }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_primary_fallback_authentication
+  when:
+    - not ansible_check_mode or jellyfin_wizard_completed | bool
+    - jellyfin_primary_recovery_state | length > 0
+    - jellyfin_primary_authentication_attempt.status | default(0) | int != 200
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve authenticated Jellyfin primary administrator identity
+  ansible.builtin.set_fact:
+    jellyfin_reconcile_login: >-
+      {{ jellyfin_primary_authentication_attempt
+         if jellyfin_primary_authentication_attempt.status | default(0) | int == 200
+         else (jellyfin_primary_fallback_authentication |
+               default(jellyfin_primary_authentication_attempt)) }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+- name: Require the vault Jellyfin administrator
+  ansible.builtin.assert:
+    that:
+      - jellyfin_reconcile_login.status | default(0) | int == 200
+      - jellyfin_reconcile_login.json.User.Id | string is match('^[A-Fa-f0-9-]{32,36}$')
+      - jellyfin_reconcile_login.json.User.Policy.IsAdministrator | bool
+      - jellyfin_reconcile_login.json.User.Configuration is mapping
+      - jellyfin_reconcile_login.json.AccessToken | default('') | length > 0
+      - >-
+        jellyfin_primary_recovery_state | length == 0 or
+        jellyfin_reconcile_login.json.User.Id | string == jellyfin_primary_recovery_state.id | string
+      - >-
+        jellyfin_primary_recovery_state | length == 0 or
+        jellyfin_reconcile_login.json.User.Name in
+          [jellyfin_primary_authentication_name,
+           jellyfin_primary_recovery_state.original_name,
+           jellyfin_admin_username]
+    fail_msg: >-
+      Jellyfin does not accept the preserved primary administrator credential,
+      or the authenticated identity is not an administrator. No owned state was changed.
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Resolve the Jellyfin reconciliation identity and token
+  ansible.builtin.set_fact:
+    jellyfin_reconcile_token: "{{ jellyfin_reconcile_login.json.AccessToken }}"
+    jellyfin_primary_authenticated_id: "{{ jellyfin_reconcile_login.json.User.Id | string }}"
+    jellyfin_primary_temporary_name: >-
+      {{ 'nas-platform-admin-' ~ (jellyfin_reconcile_login.json.User.Id | string)[0:12] }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true

@@ -209,6 +209,18 @@ def jellyfin_library_inventory_include(name, response)
   }
 end
 
+# The whole Jellyfin role as one task list, assembled the way Ansible assembles
+# it: main.yml is an index of statically imported stage files, so every import
+# is spliced in where it stands and the phase-gated dynamic includes are left
+# alone. Every probe below selects the tasks it drives by name, and a probe that
+# reads only the index would select nothing, run an empty playbook and report
+# the property holding -- so the reader is shared rather than repeated.
+def jellyfin_role_tasks
+  PolicySupport.static_role_tasks(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
+  )
+end
+
 def basic_credentials(request)
   encoded = request.fetch("headers").fetch("authorization", "").delete_prefix("Basic ")
   Base64.decode64(encoded).split(":", 2)
@@ -300,7 +312,7 @@ def jellyfin_identity_contract_failures
   role_path = File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml")
   identity_path = File.join(ROOT, "roles", "jellyfin", "tasks", "primary_identity.yml")
   inventory_path = File.join(ROOT, "roles", "jellyfin", "tasks", "library_inventory.yml")
-  main_tasks = YAML.safe_load_file(role_path, aliases: false)
+  main_tasks = PolicySupport.static_role_tasks(role_path, aliases: false)
   identity_tasks = File.file?(identity_path) ?
     YAML.safe_load_file(identity_path, aliases: false) : []
   inventory_tasks = YAML.safe_load_file(inventory_path, aliases: false)

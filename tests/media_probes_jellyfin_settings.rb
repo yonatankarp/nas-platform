@@ -124,9 +124,7 @@ def exercise_jellyfin_settings(failures)
 end
 
 def exercise_jellyfin_server_configuration_refresh(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   selected_names = [
     "Refresh Jellyfin server configuration before name update",
     "Require complete refreshed Jellyfin server configuration",
@@ -180,9 +178,7 @@ def exercise_jellyfin_server_configuration_refresh(failures)
 end
 
 def exercise_jellyfin_policy_preflight(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   policy_task = main.find do |task|
     task_name(task) == "Require explicit Jellyfin acceleration and plugin policy"
   end
@@ -847,9 +843,7 @@ def exercise_jellyfin_qsv_probe(failures)
     end
   end
 
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   probe_includes = main.select do |task|
     include_value = task["ansible.builtin.include_tasks"]
     include_value == "qsv_probe.yml" ||
@@ -863,9 +857,7 @@ def exercise_jellyfin_qsv_probe(failures)
 end
 
 def exercise_jellyfin_opensubtitles_ordering(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   settings = YAML.safe_load_file(
     File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml"), aliases: false
   )

@@ -133,7 +133,11 @@ RENDER_DEVICE_ASSERTS = {
 }.freeze
 RENDER_DEVICE_ASSERTS.each do |(role_name, task_name), pins_fail_msg|
   relative_tasks = File.join("roles", role_name, "tasks", "main.yml")
-  task = YAML.safe_load_file(File.join(ROOT, relative_tasks), aliases: true).find do |candidate|
+  # Read through static_role_tasks: a role whose main.yml is an index of
+  # statically imported stage files still has to be searched as one task list.
+  task = PolicySupport.static_role_tasks(
+    File.join(ROOT, relative_tasks), aliases: true
+  ).find do |candidate|
     candidate.is_a?(Hash) && candidate["name"] == task_name
   end
   guard = task&.dig("ansible.builtin.assert")

@@ -1303,8 +1303,13 @@ check(failures,
 
 # /System/Info/Public answers 503 while Jellyfin initializes, and the preceding
 # wait polls a different endpoint that can succeed earlier.
+#
+# Read through static_role_tasks, not main.yml: the role is one stage per file
+# now, and the property below is guarded by `jellyfin_startup.nil? ||`, so a
+# reader that stops at the index would report the property holding on a role it
+# never looked at.
 jellyfin_tasks_path = File.join(ROOT, "roles/jellyfin/tasks/main.yml")
-jellyfin_tasks = File.exist?(jellyfin_tasks_path) ? YAML.safe_load_file(jellyfin_tasks_path) : []
+jellyfin_tasks = File.exist?(jellyfin_tasks_path) ? static_role_tasks(jellyfin_tasks_path) : []
 jellyfin_startup = jellyfin_tasks.find do |task|
   task.dig("ansible.builtin.uri", "url").to_s.include?("/System/Info/Public")
 end

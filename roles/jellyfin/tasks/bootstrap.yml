@@ -1,0 +1,136 @@
+---
+# First-run bootstrap. Reads the one-time startup state, and on a fresh server
+# materializes the lazily created first user, sets the startup configuration,
+# creates the vault-named administrator and completes the wizard. Everything
+# here is gated on jellyfin_wizard_completed, so a converged server runs the
+# reads and skips the writes.
+
+# The wait above polls /Startup/Configuration and accepts 401 and 403, which
+# Jellyfin can answer before it has finished loading. This endpoint is a
+# different one and returns 503 until initialization completes, so it needs its
+# own wait rather than inheriting the previous task's.
+- name: Read Jellyfin startup state
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Info/Public"
+    return_content: true
+    status_code: "{{ range(100, 600) | list }}"
+  register: jellyfin_public_info
+  until: jellyfin_public_info.status | default(0) | int == 200
+  retries: "{{ jellyfin_startup_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+
+- name: Resolve Jellyfin startup state
+  ansible.builtin.set_fact:
+    jellyfin_wizard_completed: "{{ jellyfin_public_info.json.StartupWizardCompleted | bool }}"
+
+- name: Report planned Jellyfin administrator creation
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_WIZARD
+  when:
+    - ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+# Pinned 10.11.11 creates the default first user lazily. POST /Startup/User
+# updates that user and answers 404 when it does not exist yet, so this read is
+# a required part of the wizard rather than a diagnostic.
+- name: Materialize the Jellyfin first user
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/User"
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Set the Jellyfin startup configuration
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Configuration"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      ServerName: "{{ jellyfin_server_name }}"
+      UICulture: en-US
+      PreferredMetadataLanguage: "{{ jellyfin_library_options.PreferredMetadataLanguage }}"
+      MetadataCountryCode: "{{ jellyfin_library_options.MetadataCountryCode }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+- name: Create the vault Jellyfin administrator
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/User"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Name: "{{ vault_jellyfin_admin_username }}"
+      Password: "{{ vault_jellyfin_admin_password }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+  no_log: true
+
+- name: Complete the Jellyfin startup wizard
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Startup/Complete"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+# Deliberately not redacted, on the same reasoning as the acceleration policy assert
+# above: unlooped, so nothing but condition source text reaches the result dict, and
+# the fail_msg names four unrelated causes without saying which one fired. The only
+# vault reference is the administrator username, which this same task pins to the
+# repository literal 'Yonatan' and so is not secret.
+- name: Require the fixed Jellyfin ownership declaration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_admin_username == 'Yonatan'
+      - vault_jellyfin_admin_username == jellyfin_admin_username
+      - jellyfin_server_name == 'Yonflix 2.0'
+      - jellyfin_admin_avatar_sha256 is match('^[a-f0-9]{64}$')
+      - jellyfin_libraries | type_debug == 'list'
+      - jellyfin_libraries | length == 2
+      - jellyfin_libraries | map(attribute='name') | list == ['Movies', 'Shows']
+      - jellyfin_libraries | map(attribute='collection_type') | list == ['movies', 'tvshows']
+      - jellyfin_libraries | map(attribute='path') | list == ['/media/Movies', '/media/Series']
+      - jellyfin_libraries | selectattr('name', 'equalto', 'Collections') | list | length == 0
+    fail_msg: The fixed Jellyfin identity, branding, avatar, or library declaration differs.
+
+- name: Report planned Jellyfin administrator image upload after startup
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_ADMIN_IMAGE
+  when:
+    - ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true
+
+- name: Report planned Jellyfin managed library creation after startup
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_LIBRARY_CREATE {{ item.name }}"
+  loop: "{{ jellyfin_libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  when:
+    - ansible_check_mode
+    - not jellyfin_wizard_completed | bool
+  changed_when: true

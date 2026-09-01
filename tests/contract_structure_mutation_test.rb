@@ -310,8 +310,18 @@ rescue RuntimeError, SystemCallError => error
   failures << "#{suite} #{name} fixture failed: #{error.message}"
 end
 
-JELLYFIN_ROLE = "roles/jellyfin/tasks/main.yml"
-JELLYFIN_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
+# The Jellyfin role is one stage per file, imported from a main.yml index, so a
+# row names the stage that owns the text it breaks. apply_substitutions requires
+# exactly one match, so a row left pointing at main.yml would fail loudly with
+# "0 matches" rather than pass while mutating nothing.
+JELLYFIN_DEPLOY = "roles/jellyfin/tasks/deploy.yml"
+JELLYFIN_AUTHENTICATION = "roles/jellyfin/tasks/authentication.yml"
+JELLYFIN_PREFLIGHT = "roles/jellyfin/tasks/preflight.yml"
+JELLYFIN_IDENTITY = "roles/jellyfin/tasks/identity.yml"
+JELLYFIN_LIBRARIES = "roles/jellyfin/tasks/libraries.yml"
+JELLYFIN_VERIFY = "roles/jellyfin/tasks/verify.yml"
+# The rename helper identity.yml calls, not the stage above it.
+JELLYFIN_PRIMARY_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
 JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
 PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
@@ -369,7 +379,7 @@ end
 
 check_rejected(
   failures, :jellyfin, "a required task that survives only as a comment",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_VERIFY,
     "- name: Verify exact Jellyfin owned state\n",
     "# - name: Verify exact Jellyfin owned state\n" \
     "- name: Verify exact Jellyfin owned state after rename\n"]],
@@ -378,7 +388,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "a mutation task declared before the identity preflight",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "- name: Update the Jellyfin server name\n" \
     "  ansible.builtin.debug:\n" \
@@ -390,8 +400,8 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "a DELETE verb that belongs to an unrelated request",
-  [[JELLYFIN_ROLE, "    method: DELETE\n", "    method: POST\n"],
-   [JELLYFIN_ROLE,
+  [[JELLYFIN_LIBRARIES, "    method: DELETE\n", "    method: POST\n"],
+   [JELLYFIN_VERIFY,
     "- name: Remove the exact Jellyfin administrator image probe\n",
     "- name: Remove an unrelated Jellyfin resource\n" \
     "  ansible.builtin.uri:\n" \
@@ -404,7 +414,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "an unconditional avatar upload beside conditional siblings",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_IDENTITY,
     "    body: \"{{ jellyfin_admin_avatar_staged.content }}\"\n" \
     "    status_code: [204]\n" \
     "  when:\n" \
@@ -417,7 +427,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "a server configuration overwrite whose merge moved into a comment",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_IDENTITY,
     "    body: >-\n" \
     "      {{ jellyfin_server_configuration_for_update.json |\n" \
     "         combine({'ServerName': jellyfin_server_name}) }}\n",
@@ -429,7 +439,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "an opaque database reference in an unscoped task",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_IDENTITY,
     "    msg: JELLYFIN_PLAN_SERVER_NAME\n",
     "    msg: JELLYFIN_PLAN_SERVER_NAME jellyfin.db\n"]],
   "role must not edit an opaque database"
@@ -454,7 +464,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "a recovery marker read that no longer requires private mode",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_AUTHENTICATION,
     "      - not jellyfin_primary_recovery_marker_state.stat.exists or\n" \
     "        jellyfin_primary_recovery_marker_state.stat.mode == '0600'\n",
     "      - true\n"]],
@@ -463,7 +473,7 @@ check_rejected(
 
 check_rejected(
   failures, :jellyfin, "a primary identity rename with no recovery path",
-  [[JELLYFIN_IDENTITY, "  rescue:\n", "  always:\n"]],
+  [[JELLYFIN_PRIMARY_IDENTITY, "  rescue:\n", "  always:\n"]],
   "primary identity rename lacks recovery"
 )
 
@@ -480,7 +490,7 @@ check_accepted(
 # phase violation that did not exist.
 check_accepted(
   failures, :jellyfin, "a mutation task name mentioned in an early comment",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "# - name: Update the Jellyfin server name\n" \
     "- name: Wait for the Jellyfin startup API\n"]]
@@ -577,7 +587,7 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "an explicitly managed Collections library",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "- name: Manage the Jellyfin Collections library\n" \
     "  ansible.builtin.set_fact:\n" \
@@ -589,8 +599,8 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "a DELETE verb that belongs to an unrelated request",
-  [[JELLYFIN_ROLE, "    method: DELETE\n", "    method: POST\n"],
-   [JELLYFIN_ROLE,
+  [[JELLYFIN_LIBRARIES, "    method: DELETE\n", "    method: POST\n"],
+   [JELLYFIN_VERIFY,
     "- name: Remove the exact Jellyfin administrator image probe\n",
     "- name: Remove an unrelated Jellyfin resource\n" \
     "  ansible.builtin.uri:\n" \
@@ -603,17 +613,17 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "an image endpoint renamed on every request that uses it",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_IDENTITY,
     "    url: \"{{ jellyfin_api }}/UserImage?userId=" \
     "{{ jellyfin_primary_authenticated_id | urlencode }}\"\n",
     "    url: \"{{ jellyfin_api }}/UserImageUpload?userId=" \
     "{{ jellyfin_primary_authenticated_id | urlencode }}\"\n"],
-   [JELLYFIN_ROLE,
+   [JELLYFIN_PREFLIGHT,
     "      {{ jellyfin_api ~ '/UserImage?userId=' ~\n" \
     "         (jellyfin_primary_authenticated_id | urlencode) ~ '&tag=' ~\n",
     "      {{ jellyfin_api ~ '/UserImageRead?userId=' ~\n" \
     "         (jellyfin_primary_authenticated_id | urlencode) ~ '&tag=' ~\n"],
-   [JELLYFIN_ROLE,
+   [JELLYFIN_VERIFY,
     "      {{ jellyfin_api ~ '/UserImage?userId=' ~\n" \
     "         (jellyfin_verified_primary_user.Id | string | urlencode) ~ '&tag=' ~\n",
     "      {{ jellyfin_api ~ '/UserImageRead?userId=' ~\n" \
@@ -623,7 +633,7 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "a server configuration overwrite whose merge moved into a comment",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_IDENTITY,
     "    body: >-\n" \
     "      {{ jellyfin_server_configuration_for_update.json |\n" \
     "         combine({'ServerName': jellyfin_server_name}) }}\n",
@@ -635,7 +645,7 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "a temporary recovery match whose exact form moved into a comment",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_PREFLIGHT,
     "    jellyfin_primary_temporary_matches: >-\n" \
     "      {{ jellyfin_primary_temporary_matches +\n" \
     "         ([item] if item.Name == jellyfin_primary_temporary_name else []) }}\n",
@@ -648,22 +658,22 @@ check_rejected(
 
 check_rejected(
   failures, :media_probes, "a primary identity rename with no recovery path",
-  [[JELLYFIN_IDENTITY, "  rescue:\n", "  always:\n"]],
+  [[JELLYFIN_PRIMARY_IDENTITY, "  rescue:\n", "  always:\n"]],
   "Jellyfin primary rename is not guarded by block/rescue recovery"
 )
 
 check_rejected(
   failures, :media_probes, "a library rename that suppresses its identity refresh",
-  [[JELLYFIN_ROLE, "'&refreshLibrary=true' }}\n", "'&refreshLibrary=false' }}\n"]],
+  [[JELLYFIN_LIBRARIES, "'&refreshLibrary=true' }}\n", "'&refreshLibrary=false' }}\n"]],
   "Jellyfin library rename does not request identity refresh"
 )
 
 check_rejected(
   failures, :media_probes, "image digest comparisons removed from both assertions",
-  [[JELLYFIN_ROLE,
+  [[JELLYFIN_PREFLIGHT,
     "      - jellyfin_admin_avatar_source_state.stat.checksum == jellyfin_admin_avatar_sha256\n",
     "      - true\n"],
-   [JELLYFIN_ROLE,
+   [JELLYFIN_VERIFY,
     "      - jellyfin_verified_admin_avatar_state.stat.checksum == jellyfin_admin_avatar_sha256\n",
     "      - true\n"]],
   "Jellyfin role has no authoritative image byte verification"

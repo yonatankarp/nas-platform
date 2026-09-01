@@ -1,0 +1,119 @@
+---
+# Names and faces. Reconciles the primary administrator's name through the
+# temporary-name hop in primary_identity.yml, the server name, and the
+# administrator image, each gated on the requirement preflight resolved.
+
+- name: Report planned Jellyfin primary administrator rename
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_ADMIN_RENAME
+  when:
+    - ansible_check_mode
+    - jellyfin_primary_rename_required | default(false) | bool
+  changed_when: true
+
+# Pinned 10.11.11 rejects a direct case-only rename. The helper uses the
+# authenticated stable ID, a deterministic collision-checked temporary name,
+# and block/rescue read-back so an interrupted hop is safely rerunnable.
+- name: Reconcile Jellyfin primary administrator identity
+  ansible.builtin.include_tasks: primary_identity.yml
+  when: not ansible_check_mode
+
+- name: Report planned Jellyfin server name update
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_SERVER_NAME
+  when:
+    - ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+  changed_when: true
+
+- name: Refresh Jellyfin server configuration before name update
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_server_configuration_for_update
+  when:
+    - not ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Deliberately not redacted, for the same reasons as the preflight read of the same
+# document above. This one guards the write: it runs immediately before the server name
+# is POSTed back, so knowing which of the three shape checks failed is what distinguishes
+# a Jellyfin that lost the document from one that changed the field's type.
+- name: Require complete refreshed Jellyfin server configuration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_server_configuration_for_update.json is mapping
+      - jellyfin_server_configuration_for_update.json.ServerName is defined
+      - jellyfin_server_configuration_for_update.json.ServerName is string
+    fail_msg: >-
+      Jellyfin returned an incomplete refreshed server configuration; the server
+      name was not changed.
+  when:
+    - not ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+
+- name: Update the Jellyfin server name
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body: >-
+      {{ jellyfin_server_configuration_for_update.json |
+         combine({'ServerName': jellyfin_server_name}) }}
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - jellyfin_server_name_update_required | default(false) | bool
+  changed_when: true
+  no_log: true
+
+- name: Report planned Jellyfin primary administrator image upload
+  ansible.builtin.debug:
+    msg: JELLYFIN_PLAN_ADMIN_IMAGE
+  when:
+    - ansible_check_mode
+    - jellyfin_admin_avatar_upload_required | default(false) | bool
+  changed_when: true
+
+- name: Stage the approved Jellyfin primary administrator image
+  ansible.builtin.copy:
+    src: yonatan-avatar.jpeg
+    dest: "{{ jellyfin_admin_avatar_remote }}"
+    mode: "0600"
+  when:
+    - not ansible_check_mode
+    - jellyfin_admin_avatar_upload_required | default(false) | bool
+  no_log: true
+
+- name: Read the staged Jellyfin primary administrator image
+  ansible.builtin.slurp:
+    src: "{{ jellyfin_admin_avatar_remote }}"
+  register: jellyfin_admin_avatar_staged
+  when:
+    - not ansible_check_mode
+    - jellyfin_admin_avatar_upload_required | default(false) | bool
+  changed_when: false
+  no_log: true
+
+- name: Upload the Jellyfin primary administrator image
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/UserImage?userId={{ jellyfin_primary_authenticated_id | urlencode }}"
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+      Content-Type: image/jpeg
+    body: "{{ jellyfin_admin_avatar_staged.content }}"
+    status_code: [204]
+  when:
+    - not ansible_check_mode
+    - jellyfin_admin_avatar_upload_required | default(false) | bool
+  changed_when: true
+  no_log: true

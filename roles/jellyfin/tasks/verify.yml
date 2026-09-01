@@ -1,0 +1,246 @@
+---
+# Verification. The sixteen platform_verify_jellyfin tasks: they authenticate
+# independently of the reconciliation token, read the users, the server
+# configuration, the libraries and the administrator image back, and assert the
+# owned state is exactly what the role declares.
+
+- name: Prove Jellyfin QSV during exact verification
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.include_tasks:
+    file: qsv_probe.yml
+    apply:
+      tags: [platform_verify_jellyfin]
+  when:
+    - platform_kind == 'nas'
+    - >-
+      not ((platform_compose_kind | default('') == 'integration') and
+           (deployment_bundle_test_mode | default(false) | bool))
+
+- name: Authenticate to Jellyfin for exact verification
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users/AuthenticateByName"
+    method: POST
+    headers:
+      Authorization: "{{ jellyfin_client_header }}"
+    body_format: json
+    body:
+      Username: "{{ jellyfin_admin_username }}"
+      Pw: "{{ vault_jellyfin_admin_password }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: jellyfin_verify_login
+  when: not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require the Jellyfin primary administrator during exact verification
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verify_login.status | default(0) | int == 200
+      - jellyfin_verify_login.json.User.Name == jellyfin_admin_username
+      - jellyfin_verify_login.json.User.Policy.IsAdministrator | bool
+      - jellyfin_verify_login.json.User.PrimaryImageTag | default('') | length > 0
+      - >-
+        jellyfin_primary_authenticated_id is not defined or
+        jellyfin_verify_login.json.User.Id | string == jellyfin_primary_authenticated_id
+    fail_msg: The Jellyfin primary administrator is absent, drifted, or has no image.
+  when: not ansible_check_mode
+
+- name: Resolve the Jellyfin verification token
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.set_fact:
+    jellyfin_verification_token: >-
+      {{ jellyfin_verify_login.json.AccessToken }}
+    jellyfin_verified_primary_user: "{{ jellyfin_verify_login.json.User }}"
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Verify Jellyfin acceleration and plugins
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.include_tasks:
+    file: settings.yml
+    apply:
+      tags: [platform_verify_jellyfin]
+  vars:
+    jellyfin_settings_phase: verify
+    jellyfin_settings_token: "{{ jellyfin_verification_token }}"
+  when: not ansible_check_mode
+
+- name: Verify managed Jellyfin users
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.include_tasks:
+    file: managed_users.yml
+    apply:
+      tags: [platform_verify_jellyfin]
+  vars:
+    jellyfin_managed_users_phase: verify
+    jellyfin_managed_users_token: "{{ jellyfin_verification_token }}"
+  when: not ansible_check_mode
+
+- name: Read exact Jellyfin users
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Users"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_verified_users
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read exact Jellyfin server configuration
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/System/Configuration"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_verified_server_configuration
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read exact Jellyfin libraries
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/Library/VirtualFolders"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_verified_libraries
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Initialize exact Jellyfin library inventory
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.set_fact:
+    jellyfin_verified_library_inventory: []
+  when: not ansible_check_mode
+
+- name: Resolve exact Jellyfin library inventory
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.set_fact:
+    jellyfin_verified_library_inventory: >-
+      {{ jellyfin_verified_library_inventory + [{
+        'raw': item,
+        'normalized_paths':
+          ((((item.Locations
+              if item.Locations | default(none) | type_debug == 'list' else []) |
+             select('string') | map('regex_replace', '/+$', '') | list) +
+            ((item.LibraryOptions.PathInfos
+              if (item.LibraryOptions | default(none) is mapping and
+                  item.LibraryOptions.PathInfos | default(none) | type_debug == 'list')
+              else []) |
+             select('mapping') | selectattr('Path', 'defined') |
+             map(attribute='Path') | select('string') |
+             map('regex_replace', '/+$', '') | list)) | unique)
+      }] }}
+  loop: "{{ jellyfin_verified_libraries.json }}"
+  loop_control:
+    label: jellyfin-library
+  when: not ansible_check_mode
+  no_log: true
+
+- name: Remove stale exact Jellyfin administrator image probe
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.file:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    state: absent
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+
+- name: Read exact Jellyfin primary administrator image
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/UserImage?userId=' ~
+         (jellyfin_verified_primary_user.Id | string | urlencode) ~ '&tag=' ~
+         (jellyfin_verified_primary_user.PrimaryImageTag | urlencode) ~ '&format=original' }}
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    dest: "{{ jellyfin_admin_avatar_probe }}"
+    status_code: [200]
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Inspect exact Jellyfin primary administrator image bytes
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.stat:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    checksum_algorithm: sha256
+  register: jellyfin_verified_admin_avatar_state
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+
+- name: Verify exact Jellyfin owned state
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verified_users.json | type_debug == 'list'
+      - jellyfin_verified_primary_id_matches | length == 1
+      - jellyfin_verified_primary_normalized_matches | length == 1
+      - jellyfin_verified_server_configuration.json.ServerName == jellyfin_server_name
+      - jellyfin_verified_name_matches | length == 1
+      - jellyfin_verified_path_matches | length == 1
+      - jellyfin_verified_name_matches[0].raw.ItemId == jellyfin_verified_path_matches[0].raw.ItemId
+      - >-
+        jellyfin_preflight_target | length == 0 or
+        jellyfin_preflight_target[0].path_matches | length == 0 or
+        jellyfin_verified_path_matches[0].raw.ItemId ==
+          jellyfin_preflight_target[0].path_matches[0].raw.ItemId
+      - jellyfin_verified_path_matches[0].raw.CollectionType == item.collection_type
+      - jellyfin_verified_path_matches[0].raw.Locations == [item.path]
+      - >-
+        jellyfin_verified_path_matches[0].raw.LibraryOptions.PathInfos |
+        map(attribute='Path') | list == [item.path]
+      - >-
+        (jellyfin_verified_path_matches[0].raw.LibraryOptions | dict2items
+         | selectattr('key', 'in', jellyfin_library_options.keys())
+         | items2dict) == jellyfin_library_options
+      - jellyfin_verified_admin_avatar_state.stat.checksum == jellyfin_admin_avatar_sha256
+    fail_msg: The Jellyfin primary identity, branding, image, or managed library is drifted.
+  loop: "{{ jellyfin_libraries }}"
+  loop_control:
+    label: "{{ item.name }}"
+  vars:
+    jellyfin_verified_primary_id_matches: >-
+      {{ jellyfin_verified_users.json |
+         selectattr('Id', 'equalto', jellyfin_verified_primary_user.Id) | list }}
+    jellyfin_verified_primary_normalized_matches: >-
+      {{ jellyfin_verified_users.json | selectattr('Name', 'defined') |
+         selectattr('Name', 'equalto', jellyfin_admin_username) | list }}
+    jellyfin_verified_name_matches: >-
+      {{ jellyfin_verified_library_inventory |
+         selectattr('raw.Name', 'equalto', item.name) | list }}
+    jellyfin_verified_path_matches: >-
+      {{ jellyfin_verified_library_inventory |
+         selectattr('normalized_paths', 'contains', item.path | regex_replace('/+$', '')) | list }}
+    jellyfin_preflight_target: >-
+      {{ jellyfin_library_targets | default([]) |
+         selectattr('desired.name', 'equalto', item.name) | list }}
+  when: not ansible_check_mode
+
+- name: Remove the exact Jellyfin administrator image probe
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.file:
+    path: "{{ jellyfin_admin_avatar_probe }}"
+    state: absent
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false

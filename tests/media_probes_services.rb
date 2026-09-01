@@ -270,9 +270,7 @@ def exercise_check_mode(failures)
 end
 
 def exercise_jellyfin_fresh_check_mode(failures)
-  main = YAML.safe_load_file(
-    File.join(ROOT, "roles", "jellyfin", "tasks", "main.yml"), aliases: false
-  )
+  main = jellyfin_role_tasks
   first_application_task = main.index do |task|
     task_name(task) == "Wait for the Jellyfin startup API"
   end
