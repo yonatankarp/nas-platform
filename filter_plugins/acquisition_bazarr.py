@@ -350,6 +350,9 @@ def _bazarr_current_connection(
             "use_sonarr": _strict_boolean(
                 general.get("use_sonarr"), "Bazarr Sonarr enablement"
             ),
+            "use_jellyfin": _strict_boolean(
+                general.get("use_jellyfin"), "Bazarr Jellyfin enablement"
+            ),
             "path_mappings": _bazarr_path_mappings(
                 general.get("path_mappings"), "Bazarr series path mappings"
             ),
@@ -496,6 +499,42 @@ def acquisition_bazarr_owned_projections(
         "general": {
             "use_radarr": True,
             "use_sonarr": True,
+            # Bazarr's Jellyfin integration is deliberately NOT used, and false
+            # is declared rather than left alone so a tick in Bazarr's web
+            # interface is reverted by the next run -- the property that makes
+            # this repository describe reality. Do not "finish" this by adding a
+            # URL and a token. The reasons, strongest first:
+            #
+            # 1. It needs a credential class this platform does not have. No
+            #    Jellyfin API key exists in the vault at all: `roles/jellyfin`
+            #    logs in and uses the returned AccessToken. Obtaining a key means
+            #    reading a value back out of a running service, which is the one
+            #    thing the architecture forbids -- credentials are authored in
+            #    the vault and pushed outward, which is why a run converges in a
+            #    single pass. `jellyfin.apikey` is also absent from
+            #    `app/config.py`'s `str_keys`, so the token would be exposed to
+            #    the int()-cast 406 `roles/arr/tasks/reconcile_bazarr.yml`
+            #    documents.
+            #
+            # 2. It buys little. The only entry point is `jellyfin_refresh_item`,
+            #    called from four sites (`subtitles/processing.py`,
+            #    `subtitles/upload.py`, `api/subtitles/subtitles.py`,
+            #    `subtitles/tools/delete.py`), each behind
+            #    `general.use_jellyfin and jellyfin.update_*_library`, all three
+            #    flags defaulting false in 1.6.0. Bazarr's inventory, searching
+            #    and downloading come from Radarr and Sonarr, so no function of
+            #    Bazarr's is lost by leaving it off.
+            #
+            # 3. What IS lost is real, and belongs elsewhere. Jellyfin runs with
+            #    `EnableRealtimeMonitor: false` and learns about new files only
+            #    on its undeclared 12-hour scan, so a subtitle Bazarr writes is
+            #    invisible until that scan runs, and this nudge would shorten
+            #    exactly that. It still loses: nothing notifies Jellyfin when
+            #    Radarr or Sonarr import an episode either, so wiring this up
+            #    would make subtitles more current than the episodes they belong
+            #    to -- treating one symptom of a gap whose cause is Jellyfin's
+            #    missing scan declaration. That gap is issue #273, not this flag.
+            "use_jellyfin": False,
             "path_mappings": [],
             "path_mappings_movie": [],
             "enabled_providers": sorted(declared_names),
@@ -618,6 +657,8 @@ def acquisition_bazarr_connection_body(
         "settings-auth-password": _required_string(password, "Bazarr administrator password"),
         "settings-general-use_radarr": "true",
         "settings-general-use_sonarr": "true",
+        # Pinned off on purpose; the reasoning is with the desired projection.
+        "settings-general-use_jellyfin": "false",
         "settings-radarr-ip": "radarr",
         "settings-radarr-port": "7878",
         "settings-radarr-base_url": "",

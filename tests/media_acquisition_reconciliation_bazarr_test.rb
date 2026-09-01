@@ -22,6 +22,7 @@ bazarr_mutations = {
   "auth.username" => ->(state) { state.dig("bazarr", "auth")["username"] = "legacy" },
   "general.use_radarr" => ->(state) { state.dig("bazarr", "general")["use_radarr"] = false },
   "general.use_sonarr" => ->(state) { state.dig("bazarr", "general")["use_sonarr"] = false },
+  "general.use_jellyfin" => ->(state) { state.dig("bazarr", "general")["use_jellyfin"] = true },
   "radarr.ip" => ->(state) { state.dig("bazarr", "radarr")["ip"] = "legacy-radarr" },
   "radarr.port" => ->(state) { state.dig("bazarr", "radarr")["port"] = 9999 },
   "radarr.base_url" => ->(state) { state.dig("bazarr", "radarr")["base_url"] = "/legacy" },

@@ -346,7 +346,7 @@ BAZARR = {
     "password" => SECRETS.fetch("bazarr_admin")
   },
   "general" => {
-    "use_radarr" => true, "use_sonarr" => true,
+    "use_radarr" => true, "use_sonarr" => true, "use_jellyfin" => false,
     "path_mappings" => [], "path_mappings_movie" => [], "enabled_providers" => []
   },
   "radarr" => {
@@ -1445,7 +1445,7 @@ def bazarr_projection(settings, provider_declarations = [])
   {
     "auth" => settings.fetch("auth").slice("type", "username", "password"),
     "general" => settings.fetch("general").slice(
-      "use_radarr", "use_sonarr", "path_mappings", "path_mappings_movie"
+      "use_radarr", "use_sonarr", "use_jellyfin", "path_mappings", "path_mappings_movie"
     ).merge(
       "enabled_providers" => normalized_list(
         Array(settings.dig("general", "enabled_providers")).select do |name|
@@ -2220,6 +2220,7 @@ class AcquisitionApi
     settings["general"] = {
       "use_radarr" => boolean(values.fetch("settings-general-use_radarr")),
       "use_sonarr" => boolean(values.fetch("settings-general-use_sonarr")),
+      "use_jellyfin" => boolean(values.fetch("settings-general-use_jellyfin")),
       "path_mappings" => list_value(values.fetch("settings-general-path_mappings")),
       "path_mappings_movie" => list_value(values.fetch("settings-general-path_mappings_movie")),
       "enabled_providers" => list_value(values.fetch("settings-general-enabled_providers"))
@@ -2331,6 +2332,7 @@ def canonical_bazarr_connection_body?(request, providers)
     "settings-auth-username" => "fixture-bazarr-admin",
     "settings-auth-password" => SECRETS.fetch("bazarr_admin"),
     "settings-general-use_radarr" => "true", "settings-general-use_sonarr" => "true",
+    "settings-general-use_jellyfin" => "false",
     "settings-radarr-ip" => "radarr", "settings-radarr-port" => "7878",
     "settings-radarr-base_url" => "", "settings-radarr-ssl" => "false",
     "settings-radarr-apikey" => SECRETS.fetch("radarr"),

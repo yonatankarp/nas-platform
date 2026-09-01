@@ -93,6 +93,7 @@ def collect_failures():
         ("auth.username", lambda s: s["auth"].update(username="someone-else")),
         ("auth.type", lambda s: s["auth"].update(type=None)),
         ("general.use_radarr", lambda s: s["general"].update(use_radarr=False)),
+        ("general.use_jellyfin", lambda s: s["general"].update(use_jellyfin=True)),
         ("radarr.port", lambda s: s["radarr"].update(port=1234)),
         ("sonarr.ssl", lambda s: s["sonarr"].update(ssl=True)),
         ("radarr.base_url", lambda s: s["radarr"].update(base_url="/stale")),
@@ -278,6 +279,9 @@ def collect_failures():
     check(failures, body["settings-general-use_radarr"] == "true"
           and body["settings-general-use_sonarr"] == "true",
           "Bazarr's form takes booleans as the strings 'true' and 'false'")
+    check(failures, body["settings-general-use_jellyfin"] == "false",
+          "the Jellyfin integration is pinned off, not left to whatever a "
+          "human last clicked")
     check(failures, body["settings-radarr-port"] == "7878"
           and body["settings-sonarr-port"] == "8989",
           "the form takes ports as strings, at this platform's fixed ports")

@@ -60,6 +60,7 @@
       ],
       "path_mappings": [],
       "path_mappings_movie": [],
+      "use_jellyfin": false,
       "use_radarr": true,
       "use_sonarr": true
     },
