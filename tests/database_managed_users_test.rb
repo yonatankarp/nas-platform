@@ -300,7 +300,11 @@ def primary_beszel_user_tasks
     "Reconcile managed application user role and verification",
     "Report planned managed application user reconciliation"
   ]
-  tasks = YAML.safe_load_file(
+  # Read through static_role_tasks: the role is one stage per file and main.yml is
+  # an index of static imports, so these four tasks live in application_user.yml.
+  # A bare read of the index selects nothing, and the fixtures below would run an
+  # empty playbook rather than the primary-user reconciliation they assert on.
+  tasks = PolicySupport.static_role_tasks(
     File.join(ROOT, "roles", "beszel", "tasks", "main.yml"), aliases: false
   )
   tasks.select { |task| names.include?(task_name(task)) }

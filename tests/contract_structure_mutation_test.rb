@@ -331,7 +331,11 @@ PAPERLESS_COMPOSE = "services/paperless-ngx/compose.yml"
 PAPERLESS_MAC_COMPOSE = "services/paperless-ngx/compose.mac.yml"
 GENERATOR = "generate-secrets.yml"
 BESZEL_VARS = "roles/beszel/vars/main.yml"
-BESZEL_ROLE = "roles/beszel/tasks/main.yml"
+# The Beszel role is one stage per file, so a row names the stage that owns the
+# text it breaks rather than main.yml, which is now an index of static imports.
+BESZEL_DEPLOY = "roles/beszel/tasks/deploy.yml"
+BESZEL_APPLICATION_USER = "roles/beszel/tasks/application_user.yml"
+BESZEL_CONFIGURE = "roles/beszel/tasks/configure.yml"
 AUDIOBOOKSHELF_MAIN = "roles/audiobookshelf/tasks/main.yml"
 AUDIOBOOKSHELF_VERIFY = "roles/audiobookshelf/tasks/verify.yml"
 AUDIOBOOKSHELF_ENVIRONMENT = "roles/audiobookshelf/templates/env.j2"
@@ -951,7 +955,7 @@ check_accepted(
 
 check_rejected(
   failures, :beszel, "a required task that survives only as a comment",
-  [[BESZEL_ROLE,
+  [[BESZEL_CONFIGURE,
     "    - name: Poll persisted Beszel telemetry collections\n",
     "    # - name: Poll persisted Beszel telemetry collections\n" \
     "    - name: Poll persisted Beszel telemetry collections twice\n"]],
@@ -962,7 +966,7 @@ check_rejected(
 # because the variable's name still appeared elsewhere in the file.
 check_rejected(
   failures, :beszel, "a telemetry poll that no longer registers its probe result",
-  [[BESZEL_ROLE,
+  [[BESZEL_CONFIGURE,
     "      register: beszel_telemetry_probe_result\n",
     "      changed_when: false\n"]],
   "role treats live health as persisted telemetry"
@@ -1092,7 +1096,7 @@ check_rejected(
 # anywhere else in the file.
 check_rejected(
   failures, :policy, "a container CPU include that names another service",
-  [[BESZEL_ROLE,
+  [[BESZEL_DEPLOY,
     "    container_cpu_service_name: beszel\n",
     "    container_cpu_service_name: dozzle\n"]],
   "beszel: role must verify its effective container CPU policy exactly once"
@@ -1102,7 +1106,7 @@ check_rejected(
 # module further down its own argument list was past the end of it.
 check_rejected(
   failures, :policy, "a Compose shell-out past the end of the old scan window",
-  [[BESZEL_ROLE,
+  [[BESZEL_DEPLOY,
     "- name: Wait for the hub to report healthy\n",
     "- name: Restart the Beszel stack by hand\n" \
     "  ansible.builtin.command:\n" \
@@ -1115,7 +1119,7 @@ check_rejected(
     "  changed_when: false\n" \
     "\n" \
     "- name: Wait for the hub to report healthy\n"]],
-  "%REPO%/roles/beszel/tasks/main.yml: shells out to Compose; use community.docker.docker_compose_v2"
+  "%REPO%/roles/beszel/tasks/deploy.yml: shells out to Compose; use community.docker.docker_compose_v2"
 )
 
 # --- Arr Phase 1 API ownership ------------------------------------------------

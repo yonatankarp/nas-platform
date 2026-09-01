@@ -456,10 +456,10 @@ REDACTION_TRANSPARENT_MODULES = %w[
 # excused by a weaker rule, and asserted to be exactly this pair below, so an
 # entry that stops being needed fails here instead of quietly widening the rule.
 REDACTION_MESSAGE_EXCEPTIONS = {
-  ["roles/beszel/tasks/main.yml",
+  ["roles/beszel/tasks/superuser.yml",
    "Verify the advertised key matches vault, proving no read-back is needed"] =>
     "prints the public half of the agent keypair so the operator can compare it",
-  ["roles/beszel/tasks/main.yml",
+  ["roles/beszel/tasks/application_user.yml",
    "Refuse duplicate managed application users after reconciliation"] =>
     "names the vault email inside a filter chain that emits only record IDs"
 }.freeze

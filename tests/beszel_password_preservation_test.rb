@@ -152,7 +152,13 @@ def changed_count(output)
   output.scan(/changed=(\d+)/).flatten.last.to_i
 end
 
-tasks = YAML.safe_load_file(TASKS_PATH, aliases: false)
+# Read through static_role_tasks: the role is one stage per file and main.yml is
+# an index of static imports, so the superuser lifecycle this contract pins lives
+# in superuser.yml. Assembling the role the way Ansible does keeps the whole
+# lifecycle in one ordered list -- the ordering check below indexes into it -- and
+# keeps the self-test's own mutant fixture, a single flat file, readable the same
+# way.
+tasks = PolicySupport.static_role_tasks(TASKS_PATH, aliases: false)
 failures = []
 
 exec_tasks = tasks.filter_map do |task|
