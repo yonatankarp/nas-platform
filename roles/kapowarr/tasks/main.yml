@@ -108,6 +108,16 @@
 
 # Redacted: an unprotected Kapowarr answers this credential-free request with
 # the API key that authorizes every other route.
+#
+# The probe is conditional because Kapowarr records a credential-free auth POST
+# as a failed login, and at mode 2 its outcome is already known: the authored
+# pair is in force, so an empty body can only be refused. Asking anyway spent a
+# WARNING in the application's own security log on every converge, which is what
+# made that log useless for finding a real one. The gate leaves the probe for the
+# only case where it can answer anything, an instance that is genuinely open. Do
+# not drop it as redundant: the 401 at mode 2 is Confirmed against a running
+# container in docs/dossier-kapowarr.md and is proved live in every disposable
+# lane by tests/contracts/kapowarr.sh.
 - name: Probe Kapowarr for an unprotected application interface
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/auth"
@@ -117,6 +127,8 @@
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: kapowarr_anonymous_probe
+  when:
+    - (kapowarr_public.json.result | default({})).authentication_method | default(0) | int != 2
   failed_when: false
   changed_when: false
   check_mode: false
@@ -124,6 +136,9 @@
 
 # A bare password (mode 1) accepts any username, so the authored pair is only
 # actually in force at mode 2; reconciliation is required below that.
+# A skipped anonymous probe carries no status, so it defaults to 0 and the key
+# falls through to the empty string: at mode 2 the authored login is the only way
+# to hold one, and failing to hold it is the unrecoverable case asserted below.
 # Redacted: the resolved API key is the application's own authorization secret.
 - name: Resolve the Kapowarr administrator reconciliation
   ansible.builtin.set_fact:
@@ -328,7 +343,7 @@
 # The web interface is the writer: it renames and deletes the comics library and
 # queues downloads into it, and every route behind /api answers to the key a
 # successful login returns. These three reads prove the vault-authored identity
-# is the one Kapowarr accepts, that it refuses a caller without it, and that the
+# is the one Kapowarr accepts, that a caller without it is refused, and that the
 # library root the platform declared is still the only one it owns. All of them
 # accept any status so the assertion below is what fails, naming which outcome
 # differed: a probe that died on the HTTP code would report the failure from a
@@ -351,6 +366,13 @@
   check_mode: false
   no_log: true
 
+# Conditional for the same reason as the converge probe above: a credential-free
+# auth POST is a failed login in Kapowarr's own log, and the mode this playbook
+# has already read answers it. At mode 2 the refusal is what mode 2 means, and
+# the assertion below reads it from there; below mode 2 the probe runs and says
+# what an anonymous caller actually gets, which is the diagnosis that matters.
+# Keep the gate: the tagged path runs on every converge as well as from
+# verify.yml, so an ungated probe writes the warning twice per run.
 - name: Verify Kapowarr refuses an unauthenticated caller
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -361,6 +383,8 @@
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: kapowarr_verify_anonymous
+  when:
+    - (kapowarr_verify_public.json.result | default({})).authentication_method | default(0) | int != 2
   failed_when: false
   changed_when: false
   check_mode: false
@@ -402,13 +426,30 @@
   check_mode: false
   no_log: true
 
+# The mode condition is what now carries the refusal, and that is a change in
+# kind rather than a tightening: this playbook used to establish empirically,
+# against the running instance, that an anonymous caller is refused, and now
+# infers it from mode 2 -- with the entailment proved live in the disposable
+# lanes by the runtime half of tests/contracts/kapowarr.sh, which asks the same
+# question of a real converged Kapowarr without costing the NAS a log entry.
+#
+# The 401 comparison below cannot change this assertion's verdict while both
+# conditions stand, because the probe skips exactly when mode is 2 and mode 2 is
+# required unconditionally: below mode 2 the first condition has already failed.
+# It is kept deliberately rather than overlooked. It states the property being
+# claimed instead of the mode it is inferred from, it is load-bearing again the
+# moment the mode condition is relaxed or the probe's gate widens, and
+# tests/contracts/kapowarr.sh requires this assertion to name the anonymous
+# outcome, so dropping it fails the contract.
 - name: Require the exact Kapowarr verification results
   tags: [platform_verify_kapowarr]
   ansible.builtin.assert:
     that:
       - (kapowarr_verify_public.json.result | default({})).authentication_method | default(0) | int == 2
       - kapowarr_verify_identity.status | default(0) | int == 200
-      - kapowarr_verify_anonymous.status | default(0) | int == 401
+      - >-
+        kapowarr_verify_anonymous.skipped | default(false) | bool
+        or kapowarr_verify_anonymous.status | default(0) | int == 401
       - kapowarr_verify_roots.status | default(0) | int == 200
       - >-
         kapowarr_verify_roots.json.result | default([]) | map(attribute='folder') |

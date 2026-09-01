@@ -227,6 +227,24 @@ if failures.empty?
   failures << "the Kapowarr settings write must stay redacted" unless
     settings_write && settings_write["no_log"] == true
 
+  # Kapowarr records a credential-free auth POST as a failed login, so every
+  # anonymous probe is gated on the authentication mode the role has already
+  # read. At mode 2 the authored pair is in force and an empty body can only be
+  # refused, so an ungated probe writes a WARNING into the application's own
+  # security log on every converge and buries a real attempt among its own. The
+  # gate is asserted here because a comment cannot fail a run: the probe still
+  # has to exist for the instance that is genuinely open.
+  anonymous_probes = tasks.select do |task|
+    task.dig("ansible.builtin.uri", "url") == "{{ kapowarr_api }}/api/auth" &&
+      task.dig("ansible.builtin.uri", "body") == {}
+  end
+  failures << "Kapowarr must probe the login without a credential" if anonymous_probes.empty?
+  anonymous_probes.each do |task|
+    probe_conditions = Array(task["when"]).join(" ")
+    failures << "#{task.fetch('name')} must be gated on the authentication mode already read" unless
+      probe_conditions.include?("authentication_method") && probe_conditions.include?("2")
+  end
+
   verification = tasks.select { |task| Array(task["tags"]).include?("platform_verify_kapowarr") }
   verification_urls = verification.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
   failures << "Kapowarr verification must read its unauthenticated public endpoint" unless
