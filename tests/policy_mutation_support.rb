@@ -214,6 +214,39 @@ def static_task_files(root, role_root, relative = nil, seen = [])
   end
 end
 
+# The sibling Ruby programs a contract invokes, which since #147 are where a
+# contract's body lives -- the wrapper is its entry point. Exactly the same class
+# of path as a role's statically imported stage files above, and absent for
+# exactly the same reason: the list was stated as `<name>.sh` when a contract was
+# one file, and stayed stated when it stopped being one.
+#
+# The failure this prevents is not a missing-file crash, which would be loud. It
+# is a reader whose subjects are assembled by a glob over tests/contracts/, which
+# inside a sandbox holding only wrappers quietly has nothing to read.
+# policy_integration_test.rb requires every contract that runs a play of its own
+# to derive its project from the exported sandbox namespace; audiobookshelf is
+# the only contract that runs one, and when #147 moved that play into
+# audiobookshelf-runtime.rb the glob went from one subject to none. That check
+# carries its own "polices nothing" tripwire and so failed loudly -- every
+# expect_success row at once, on an unmutated tree. A reader without such a
+# tripwire would simply have stopped policing.
+#
+# Enumerated from the contract rather than stated, the way static_task_files is,
+# and by the same rule tests/run_contracts.rb:203 uses to find them: a
+# tests/contracts/*.rb path named anywhere in the wrapper except a commented-out
+# line. A stated list would have to be extended by every future extraction, which
+# is the mistake being fixed here rather than repeated.
+def contract_program_files(root, contract_relative)
+  source = File.join(root, contract_relative)
+  return [] unless File.file?(source)
+
+  File.read(source).each_line.reject { |line| line.lstrip.start_with?("#") }
+      .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
+      .map { |reference| Pathname.new(reference).cleanpath.to_s }
+      .uniq
+      .select { |relative| File.file?(File.join(root, relative)) }
+end
+
 def fixture_paths(root = ROOT)
   paths = BASE_FIXTURE_PATHS.dup
   paths.concat(%w[
@@ -288,6 +321,7 @@ def fixture_paths(root = ROOT)
                                                 entry.fetch("path") == expected_path
 
     paths << expected_path
+    paths.concat(contract_program_files(root, expected_path))
   end
 
   # tests/policy_ci_test.rb requires a static foundation contract beside every

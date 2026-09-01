@@ -10,7 +10,11 @@ include PolicySupport
 ROOT = File.expand_path("..", __dir__)
 ROLE_PATH = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 DEFAULTS_PATH = File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml")
-CONTRACT_PATH = File.join(ROOT, "tests", "contracts", "audiobookshelf.sh")
+# The runtime half of the contract, which is the half that would issue a scan.
+# It was inside tests/contracts/audiobookshelf.sh until issue #147 gave it a
+# file; a negative grep left pointing at the wrapper would go trivially true
+# against the 74 lines that remain there and assert nothing.
+CONTRACT_PATH = File.join(ROOT, "tests", "contracts", "audiobookshelf-runtime.rb")
 INTEGRATION_PATH = File.join(ROOT, "tests", "integration.sh")
 
 SCAN_TASK = "Request Audiobookshelf initial library scan"
