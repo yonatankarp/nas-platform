@@ -145,13 +145,13 @@ STATIC_ROWS = [
     expects: "Pinchflat must require BASIC_AUTH_PASSWORD from the rendered environment"
   },
   {
-    name: "a mount beyond the two it is allowed",
+    name: "a mount beyond the three it is allowed",
     break: lambda { |root|
       edit_yaml(root, "services/pinchflat/compose.yml") do |document|
         document["services"]["pinchflat"]["volumes"] << "${NAS_MEDIA_ROOT:?}:/media"
       end
     },
-    expects: "Pinchflat must mount exactly its config and YouTube library"
+    expects: "Pinchflat must mount exactly its config, library and extractor"
   },
   {
     name: "a drifted container port",

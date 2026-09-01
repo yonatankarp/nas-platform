@@ -6,3 +6,14 @@ pinchflat_downloads_host_path: "{{ nas_media_root }}/Media/YouTube"
 pinchflat_compose_project_name: >-
   {{ (platform_project_name ~ '-pinchflat')
      if platform_project_name | default('') | length > 0 else 'pinchflat' }}
+
+# The extractor is a declared artifact, not whatever the image was built with.
+# services/pinchflat/compose.yml records why: the release image's own yt-dlp is
+# frozen behind YouTube and upstream has published no newer release image.
+# Version and checksum move together -- get_url refuses a download that
+# disagrees with the pin, and that refusal is the whole guarantee. The upstream
+# `yt-dlp` release asset is a Python zipapp, so this one value serves the
+# amd64 NAS and an arm64 Mac lane alike.
+pinchflat_ytdlp_version: "2026.08.19"
+pinchflat_ytdlp_sha256: "1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6"
+pinchflat_ytdlp_host_path: "{{ nas_docker_root }}/pinchflat/bin/yt-dlp"

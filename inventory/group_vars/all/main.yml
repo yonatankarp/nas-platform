@@ -299,6 +299,11 @@ nas_storage:
     mode: "0755"
     recovery: critical
     media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/pinchflat/bin"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
   - path: "{{ nas_docker_root }}/trailarr/config"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"

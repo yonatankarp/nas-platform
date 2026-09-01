@@ -94,6 +94,19 @@
       "matchPackageNames": ["docker.io/library/postgres", "docker.io/valkey/valkey"],
       "matchUpdateTypes": ["major"],
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "The yt-dlp build Pinchflat runs is pinned by version and sha256 together, and a bot cannot compute the checksum. A version bump whose checksum was not updated by hand fails the converge at get_url, so these never automerge: the pull request is a prompt to copy the new SHA2-256SUMS entry, not a finished change.",
+      "matchDatasources": [
+        "github-releases"
+      ],
+      "matchPackageNames": [
+        "yt-dlp/yt-dlp"
+      ],
+      "addLabels": [
+        "needs-manual-coupling"
+      ],
+      "automerge": false
     }
   ],
   "customDatasources": {
@@ -103,6 +116,19 @@
     }
   },
   "customManagers": [
+    {
+      "description": "The yt-dlp build Pinchflat runs, pinned in the role defaults because the release image's own copy is frozen behind YouTube and upstream ships no newer release image. Loose versioning is required, not cosmetic: yt-dlp tags like 2026.08.19 are invalid semver because of the zero-padded month, so under the github-releases default this manager matches the line and then silently proposes nothing.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^roles/pinchflat/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "pinchflat_ytdlp_version: \"(?<currentValue>[0-9]{4}\\.[0-9]{2}\\.[0-9]{2})\""
+      ],
+      "datasourceTemplate": "github-releases",
+      "depNameTemplate": "yt-dlp/yt-dlp",
+      "versioningTemplate": "loose"
+    },
     {
       "description": "Ansible tooling pinned in the CI workflow's pip install step.",
       "customType": "regex",

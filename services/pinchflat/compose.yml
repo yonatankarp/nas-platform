@@ -42,6 +42,22 @@ services:
     volumes:
       - ${PINCHFLAT_CONFIG_PATH:?}:/config
       - ${PINCHFLAT_DOWNLOADS_PATH:?}:/downloads
+      # yt-dlp is mounted over the copy the image ships, because the image ships
+      # a frozen one. v2025.6.6 carries yt-dlp 2025.05.22, which reads a current
+      # YouTube playlist page as zero entries since YouTube moved playlist items
+      # to "lockup view models", and Pinchflat refuses a source it cannot
+      # resolve. Upstream has published no release image since 2025-06, so the
+      # extractor cannot be kept current by bumping the image. It is a Python
+      # zipapp against the image's own python3, so one artifact serves amd64 and
+      # arm64 alike and the pin stays multi-arch. roles/pinchflat owns it by
+      # version and sha256, which is what makes the deployed extractor a
+      # declared value rather than whatever the image was built with.
+      #
+      # Read-only, because nothing inside the container may rewrite the
+      # extractor. Ansible must create the file before Compose starts: Docker
+      # bind-mounts a *directory* onto a missing source path, and the container
+      # then cannot exec it.
+      - ${PINCHFLAT_YTDLP_PATH:?}:/usr/local/bin/yt-dlp:ro
     environment:
       TZ: ${TZ:?}
       UMASK: "022"

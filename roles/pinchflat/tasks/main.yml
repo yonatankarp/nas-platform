@@ -8,6 +8,7 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ pinchflat_config_host_path }}"
+      - "{{ pinchflat_ytdlp_host_path | dirname }}"
 
 # Redacted: the conditions name the two halves of the Pinchflat basic-auth
 # identity. Compose reads the rendered .env line by line, so a value carrying a
@@ -27,6 +28,28 @@
     dest: "{{ platform_runtime_dir }}/services/pinchflat/.env"
     mode: "0600"
   no_log: true
+
+# The extractor is deployed as a checksummed artifact because the image's own
+# copy is frozen behind YouTube: v2025.6.6 ships yt-dlp 2025.05.22, which reads a
+# current playlist page as zero entries, and Pinchflat refuses a source it cannot
+# resolve. get_url compares the checksum against the file already on disk, so an
+# unchanged version is a no-op that reports so, and a tampered or truncated
+# download fails here rather than silently becoming the thing that resolves every
+# source.
+#
+# This must precede the Compose deployment. The Compose file bind-mounts this
+# path over /usr/local/bin/yt-dlp, and Docker materialises a *directory* for a
+# bind source that does not exist, which the container then cannot exec.
+- name: Deploy the declared yt-dlp build for Pinchflat
+  ansible.builtin.get_url:
+    url: >-
+      https://github.com/yt-dlp/yt-dlp/releases/download/{{
+        pinchflat_ytdlp_version }}/yt-dlp
+    dest: "{{ pinchflat_ytdlp_host_path }}"
+    checksum: "sha256:{{ pinchflat_ytdlp_sha256 }}"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
 
 - name: Deploy Pinchflat
   community.docker.docker_compose_v2:
@@ -125,3 +148,64 @@
     fail_msg: >-
       Pinchflat is unhealthy, or its web interface no longer accepts exactly the
       vault-authored administrator and refuses everyone else.
+
+# The mount is the only reason the deployed extractor differs from the image's,
+# so it is the thing worth verifying. A future image that ships yt-dlp
+# differently -- a PyInstaller binary, or a module earlier on $PATH -- would
+# leave this mount in place and quietly keep using its own frozen copy, and the
+# only symptom would be sources failing to resolve again, which is exactly the
+# fault this indirection exists to prevent.
+#
+# Read-only and check-mode-safe: under --check no stack was started, so there is
+# no container to ask and the run reports the intent instead.
+- name: Verify the yt-dlp build Pinchflat runs
+  tags: [platform_verify_pinchflat]
+  when: not ansible_check_mode
+  block:
+    - name: List the running Pinchflat container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - ls
+          - --quiet
+          - --filter
+          - "label=com.docker.compose.project={{ pinchflat_compose_project_name }}"
+          - --filter
+          - label=com.docker.compose.service=pinchflat
+      register: pinchflat_verify_container
+      changed_when: false
+      check_mode: false
+
+    - name: Read the yt-dlp build inside the Pinchflat container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - exec
+          - "{{ pinchflat_verify_container.stdout_lines | first }}"
+          - yt-dlp
+          - --version
+      register: pinchflat_verify_ytdlp
+      changed_when: false
+      check_mode: false
+
+    - name: Require the declared yt-dlp build
+      ansible.builtin.assert:
+        that:
+          - pinchflat_verify_container.stdout_lines | length == 1
+          - pinchflat_verify_ytdlp.stdout | trim == pinchflat_ytdlp_version
+        fail_msg: >-
+          Pinchflat is not running the declared yt-dlp
+          {{ pinchflat_ytdlp_version }}; it reports
+          {{ pinchflat_verify_ytdlp.stdout | default('nothing') | trim }}. The
+          bind mount over /usr/local/bin/yt-dlp is not in effect, so source
+          resolution is running on whatever the image shipped.
+
+- name: Report the yt-dlp verification check mode defers
+  tags: [platform_verify_pinchflat]
+  ansible.builtin.debug:
+    msg: >-
+      A live run would assert that the Pinchflat container executes yt-dlp
+      {{ pinchflat_ytdlp_version }}. The mount belongs to a container this run
+      did not start, so check mode reports the intent instead.
+  when: ansible_check_mode
