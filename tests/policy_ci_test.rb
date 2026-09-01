@@ -363,6 +363,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/reader_platform_identity_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
+  ruby\ tests/audiobookshelf_contract_test.rb
+  ruby\ tests/audiobookshelf_contract_test.rb\ --self-test
   ruby\ tests/paperless_mail_reconciliation_test.rb
   PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.production_auto_deploy_test
   ruby\ tests/production_auto_deploy_role_test.rb

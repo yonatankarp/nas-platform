@@ -215,7 +215,14 @@ check(failures,
 # halves of the propagation — the harness exports the namespace to every such
 # contract, and the contract derives its play's project from that export rather
 # than naming a project of its own.
-playing_contracts = Dir[File.join(ROOT, "tests", "contracts", "*.sh")].sort.select do |path|
+#
+# The glob covers the sibling Ruby programs as well as the wrappers, because
+# since #147 a contract's body is as likely to be a .rb beside it as a heredoc
+# inside it -- audiobookshelf is the only contract that runs a play, and its play
+# moved into tests/contracts/audiobookshelf-runtime.rb. A .sh-only glob went
+# straight from policing one contract to policing none, which is what the first
+# check below exists to say out loud.
+playing_contracts = Dir[File.join(ROOT, "tests", "contracts", "*.{sh,rb}")].sort.select do |path|
   File.read(path).include?("ansible-playbook")
 end
 check(failures, !playing_contracts.empty?,
@@ -230,7 +237,11 @@ check(failures, unnamespaced_contracts.empty?,
       "namespace: #{unnamespaced_contracts.map { |path| File.basename(path) }.join(', ')}")
 contract_launcher = controller_library[/^run_contract\(\) \{.*?^\}/m].to_s
 unexported_namespace = playing_contracts.reject do |path|
-  service = File.basename(path, ".sh")
+  # The launcher's case arms are named for the service, and a sibling program is
+  # named <service>-<half>.rb, so the half has to come off before the arm can be
+  # found. Reading the file name rather than the registry keeps this working for
+  # a contract whose wrapper does not run the play its own program does.
+  service = File.basename(path).sub(/\.(?:sh|rb)\z/, "").sub(/-(?:static|runtime)\z/, "")
   # The per-service extras now live in a case arm of the single launcher, so
   # read the arm that names this contract rather than a wrapper of its own.
   contract_launcher[

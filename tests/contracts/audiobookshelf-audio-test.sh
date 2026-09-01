@@ -109,8 +109,11 @@ if [ -z "$preseed_line" ] || [ -z "$deploy_line" ] || [ "$preseed_line" -ge "$de
   exit 1
 fi
 
+# The runtime half is a file of its own since issue #147, and it is the half
+# that would issue a scan. Grepping the 74-line wrapper instead would be a
+# negative match that can no longer fail.
 if grep -Eq 'request\([[:space:]]*"post",[[:space:]]*"/api/libraries/.*/scan"' \
-    "$repo_dir/tests/contracts/audiobookshelf.sh"; then
+    "$repo_dir/tests/contracts/audiobookshelf-runtime.rb"; then
   printf '%s\n' 'Audiobookshelf audio test failed: contract still owns a library scan' >&2
   exit 1
 fi
