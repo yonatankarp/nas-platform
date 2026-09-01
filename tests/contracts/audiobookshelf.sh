@@ -24,7 +24,9 @@ role=$repo_dir/roles/audiobookshelf/tasks/main.yml
 defaults=$repo_dir/roles/audiobookshelf/defaults/main.yml
 argument_specs=$repo_dir/roles/audiobookshelf/meta/argument_specs.yml
 environment_template=$repo_dir/roles/audiobookshelf/templates/env.j2
-integration=$repo_dir/tests/integration.sh
+# The six scenario markers the static half insists the integration lane prints
+# are spelled in the controller program, not in the launcher that starts it.
+integration=$repo_dir/tests/integration_controller.sh
 storage_inventory=$repo_dir/inventory/group_vars/all/main.yml
 # The static half reads the runtime half's source for its drift-commit
 # branch. That source was this file; it is audiobookshelf-runtime.rb now, and
