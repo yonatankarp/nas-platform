@@ -19,8 +19,7 @@
       A live run would assert that every running container of Compose project
       {{ container_cpu_project_name }} applies the
       {{ container_cpu_service_name }} Compose CPU limits on CPUs
-      {{ platform_effective_container_cpuset }}, and that each one's applied
-      capability set matches the cap_drop and cap_add its Compose definition
-      declares. Docker's applied controls belong to containers this run did not
-      start, so check mode reports the intent instead of inspecting them.
+      {{ platform_effective_container_cpuset }}. Docker's applied controls
+      belong to containers this run did not start, so check mode reports the
+      intent instead of inspecting them.
   when: ansible_check_mode
