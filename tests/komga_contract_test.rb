@@ -657,7 +657,7 @@ RUNTIME_ROWS = [
   { name: "the pre-deployment fixture seed", mode: "seed-fixture-only",
     expects: nil, wants: "Komga comic fixture prepared before deployment" },
   { name: "a fixture seed repeated over its own bytes", mode: "seed-fixture-only",
-    before: ->(paths) { seed_the_fixture(paths) },
+    before: ->(paths, program) { seed_the_fixture(paths, program) },
     expects: nil, wants: "Komga comic fixture prepared before deployment" },
   { name: "a comic fixture whose bytes drifted", mode: "seed-fixture-only",
     before: lambda { |paths|
@@ -797,11 +797,13 @@ RUNTIME_ROWS = [
     expects: "the migration replaced the Comics library instead of repointing it" }
 ].freeze
 
-# The exact bytes the runtime program writes, so the drift row can be arranged
-# without asking the program to write it first.
-def seed_the_fixture(paths)
-  _out, _err, status = run_runtime(RUNTIME_PROGRAM, "seed-fixture-only", {}, paths, 1,
-                                   extra_env: {})
+# Arranges the comic fixture the repeated-seed row needs, using the program
+# under test rather than the checkout's. Threading `program` through matters
+# even though no plant reaches seed_fixture today: a helper that quietly used
+# the real program would let a future plant there pass vacuously, which is the
+# whole shape this file exists to prevent.
+def seed_the_fixture(paths, program)
+  _out, _err, status = run_runtime(program, "seed-fixture-only", {}, paths, 1)
   raise "arranging the comic fixture failed" unless status.success?
 end
 
@@ -815,7 +817,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
       # :before runs against the real report directory; the symlink row then
       # repoints PLATFORM_REPORT_ROOT at the link its :before created, which is
       # the only way to hand the program an unsafe root it can still resolve.
-      row[:before]&.call(paths)
+      before = row[:before]
+      before&.arity == 2 ? before.call(paths, program) : before&.call(paths)
       if state.fetch(:report_root_link, false)
         state = state.merge(report_root_override: File.join(paths.fetch(:sandbox), "report-link"))
       end
