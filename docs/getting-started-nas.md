@@ -204,7 +204,7 @@ A pass is permission denied, or the path not being visible at all. Listing
 `usenet torrents` is the finding, and the fix is in ADM share permissions rather
 than in this repository. Record only pass/fail and the tested identity class,
 never directory listings, ACL dumps containing private account details, or
-secrets. Docker Desktop cannot prove this boundary at all; see
+secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 [what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
 The platform provisions three ntfy topics for humans, severity first then

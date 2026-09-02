@@ -338,8 +338,19 @@ check(failures, verify_tags.split(",").all? { |tag| tag.match?(/\Aplatform_verif
 check(failures,
       auto_deploy_section.include?("the installed\npoller cannot select a verification tag that exists only in the candidate until\nthat candidate has been activated"),
       "NAS automatic deployment guide must require manual verification for first foundation rollout")
+# This used to pin the literal sentence "ordinary SMB users cannot access
+# either Media/.acquisition or Books/.acquisition", which stated the denial as
+# settled fact. Per #121 the platform cannot establish that: both trees are
+# declared mode 0755 under a NAS-owned media root, so o+rx means no POSIX
+# permission refuses an ordinary local account and the denial rests on ADM
+# share configuration that Ansible does not own. The requirement was the
+# coverage, not that sentence, so it is re-expressed rather than dropped, and
+# it is now stricter: the guide must reserve the check for BOTH hidden trees by
+# giving the command for each, must say the platform cannot make it, and must
+# name the non-administrator account without which the check proves nothing.
 check(failures,
-      nas_guide.match?(/ordinary SMB users cannot access either.*Media\/\.acquisition.*Books\/\.acquisition/im),
+      nas_guide.match?(/ADM share check that the platform\s+cannot make for you/im) &&
+        nas_guide.match?(/non-administrator.*ls \/Volumes\/Media\/\.acquisition.*ls \/Volumes\/Books\/\.acquisition/im),
       "NAS guide must reserve acquisition ACL acceptance for both hidden trees")
 check(failures,
       nas_guide.match?(/Docker Desktop cannot prove.*NAS ACL/im),
