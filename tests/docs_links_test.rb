@@ -1,9 +1,11 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "open3"
 require "pathname"
 require "tmpdir"
 require "uri"
+require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__))
 SOURCES = [ROOT.join("README.md"), *ROOT.join("docs").glob("**/*.md")].freeze
@@ -455,6 +457,32 @@ def check_sources(root, sources)
   failures
 end
 
+# The lanes CLAUDE.md documents, from the one backticked span that names them.
+# Read out of the raw source rather than out of the whitespace-flattened copy the
+# regex contracts below use, because the span wraps a line and its own content is
+# whitespace separated: flattening first would leave nothing to tell the two
+# apart. nil means the sentence no longer has the shape this can read, which is a
+# distinct failure from a lane list that disagrees.
+def documented_integration_lanes(claude_md)
+  span = claude_md[/^Lanes: `([^`]+)`/, 1]
+  span&.split
+end
+
+# The lanes that exist, from the command CLAUDE.md tells the reader to run. Going
+# through the harness rather than reading tests/ci/suites.conf directly means the
+# doc is pinned against exactly what a reader is told to compare it to, and a
+# change to the table's format cannot make this agree with a doc the harness
+# would contradict.
+def real_integration_lanes(root)
+  output, _stderr, status = Open3.capture3(
+    "sh", root.join("tests/integration.sh").to_s, "--list-suites"
+  )
+  return unless status.success?
+
+  lanes = output.split
+  lanes unless lanes.empty?
+end
+
 def self_test
   unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
     warn "docs links hostile-unmatched self-test failed"
@@ -849,6 +877,44 @@ else
   readme = ROOT.join("README.md").read.gsub("`", "").gsub(/\s+/, " ")
   failures << "README.md must not describe every manifest service stack as implemented" if
     readme.match?(/service stacks in .*services\/manifest\.yml.* are implemented/i)
+  # The two claims below are derived and compared, not matched by regex, because
+  # a regex contract can only require the wording it already names. CLAUDE.md
+  # documented a lane for a service retired months earlier while omitting seven
+  # real ones, and called the platform nine service stacks while the manifest
+  # held fifteen; both are lists a reader trusts and nothing checked, and the
+  # stale lane list cost a change its strongest evidence (issue #276). Equality
+  # in both directions is the only shape that fails on an omission — "every
+  # documented lane exists" would have passed throughout that drift.
+  claude_md = ROOT.join("CLAUDE.md").read
+  real_lanes = real_integration_lanes(ROOT)
+  documented_lanes = documented_integration_lanes(claude_md)
+  if real_lanes.nil?
+    failures << "tests/integration.sh --list-suites must print the integration lane roster"
+  elsif documented_lanes.nil?
+    failures << "CLAUDE.md must name the integration lanes as a single backticked, " \
+                "whitespace-separated list on a line beginning \"Lanes: \""
+  else
+    missing = real_lanes - documented_lanes
+    extra = documented_lanes - real_lanes
+    failures << "CLAUDE.md must document the integration lanes it omits and " \
+                "tests/integration.sh --list-suites prints: #{missing.join(', ')}" if missing.any?
+    failures << "CLAUDE.md must not list integration lanes " \
+                "tests/integration.sh --list-suites does not print: #{extra.join(', ')}" if extra.any?
+  end
+  implemented_services = YAML.safe_load_file(ROOT.join("services/manifest.yml"))
+                             .fetch("services")
+                             .count { |service| service.fetch("status") == "implemented" }
+  service_stack_count = claude_md[/control plane for an? [^.]*?NAS running (\S+)\s+Compose service stacks/m, 1]
+  counted_in_words = %w[
+    zero one two three four five six seven eight nine ten eleven twelve thirteen
+    fourteen fifteen sixteen seventeen eighteen nineteen twenty
+  ][implemented_services]
+  if counted_in_words.nil?
+    failures << "tests/docs_links_test.rb cannot spell #{implemented_services} implemented services"
+  elsif service_stack_count != counted_in_words
+    failures << "CLAUDE.md must call the platform #{counted_in_words} Compose service stacks, " \
+                "the number services/manifest.yml marks implemented, not #{service_stack_count.inspect}"
+  end
   # Deliberately source text. Both subjects are the wording of a comment, which
   # is what a reader of the file sees and what YAML parsing erases; there is no
   # parsed structure that carries it.
