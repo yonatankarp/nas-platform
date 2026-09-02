@@ -8,6 +8,13 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ kapowarr_config_host_path }}"
+      # The comics library is named because the volume folder migration below
+      # moves directories inside it. Naming it here is what runs this role's
+      # containment check against it before anything moves: a symlink anywhere
+      # between the media root and the library, or a library that canonically
+      # resolves outside the media root, refuses the run rather than letting a
+      # rename follow the link out of the tree the platform owns.
+      - "{{ kapowarr_comics_host_path }}"
 
 # The ComicVine key is the one Kapowarr credential this platform authors but
 # does not push. Kapowarr validates `comicvine_api_key` by calling
@@ -415,16 +422,63 @@
 - name: Reset the pending Kapowarr volume folder migrations
   ansible.builtin.set_fact:
     kapowarr_volume_folder_migrations: []
+    kapowarr_volume_folders_unconfined: []
 
+# Confinement, and it is the property this migration is reviewed on rather than a
+# tidiness rule: the comics library is the only tree a restore covers, so nothing
+# outside kapowarr_library_root may be moved, emptied or removed. Both ends are
+# required to be inside it -- the folder the volume holds now, because that is
+# the directory the move empties and Kapowarr then removes, and the folder
+# Kapowarr previews for it, because that is where the files land. A volume
+# failing either is refused rather than migrated, and named by the report below
+# instead of dropping out silently.
+#
+# Neither test is a substitute for the root-folder refusal further down. Kapowarr
+# derives a volume's new folder from *that volume's own* root folder, not from
+# the root this platform declares, so a second root folder is what could put a
+# derived target outside the comics library in the first place.
 - name: Resolve the pending Kapowarr volume folder migrations
   ansible.builtin.set_fact:
     kapowarr_volume_folder_migrations: "{{ kapowarr_volume_folder_migrations + [item] }}"
   when:
-    - item.folder | length > 0
+    - item.folder is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')
+    - item.target | length == 0 or
+      item.target is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')
     - item.target | length > 0 or item.nested | bool
   loop: "{{ kapowarr_volume_folder_plan }}"
   loop_control:
     label: "{{ item.id }}"
+
+- name: Resolve the Kapowarr volume folders outside the declared library root
+  ansible.builtin.set_fact:
+    kapowarr_volume_folders_unconfined: "{{ kapowarr_volume_folders_unconfined + [item] }}"
+  when:
+    - item.target | length > 0 or item.nested | bool
+    - not (item.folder is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')) or
+      (item.target | length > 0 and
+       not (item.target is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')))
+  loop: "{{ kapowarr_volume_folder_plan }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# Reported, never migrated. This platform cannot repair a volume stored outside
+# the library root without moving a directory the confinement promise excludes,
+# so it says which volume and stops. It cannot arise from anything this role
+# does: every folder the migration writes is one Kapowarr derived from the root
+# asserted below.
+- name: Report each Kapowarr volume folder outside the declared library root
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
+      {{ ('and Kapowarr would derive ' ~ item.target) if item.target | length > 0
+      else 'and Kapowarr previews no target for it' }}, and one of those is outside the
+      declared library root {{ kapowarr_library_root }}. The migration refuses it: moving it
+      would touch a directory outside the comics library. Repair it in Kapowarr, by pointing
+      the volume at the declared root folder, before this platform can converge it.
+  loop: "{{ kapowarr_volume_folders_unconfined }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
 
 # One line per volume, and the reason this is a loop rather than one message:
 # `--check --diff` is the review the comics share gets before anything moves, so
@@ -475,6 +529,27 @@
 # The application accepts the key on the same request and applies it after the
 # move. Confirmed against the pinned image: custom_folder reads back 0.
 #
+# The request names no path, so the folder it installs is whatever Kapowarr
+# derives -- and Kapowarr derives it from the root folder the *volume* is
+# attached to, not from the root this platform declares. Those are the same root
+# only while Kapowarr owns exactly the declared one, so that is asserted here,
+# immediately before the only mutation that depends on it, rather than left to
+# the verification at the end of this role. A second root folder is refused
+# instead of migrated: it is the one state in which a derived target could land
+# outside the comics library.
+- name: Refuse a Kapowarr volume folder migration beyond the declared library root
+  ansible.builtin.assert:
+    that:
+      - >-
+        kapowarr_root_folders.json.result | default([]) | map(attribute='folder') |
+        map('regex_replace', '/+$', '') | list == [kapowarr_library_root]
+    fail_msg: >-
+      Kapowarr owns library roots other than the declared
+      {{ kapowarr_library_root }}, and it derives a volume's new folder from the root that
+      volume is attached to, so a migration could move a directory outside the comics
+      library. Remove the undeclared root folder in Kapowarr first. No volume was moved.
+  when: kapowarr_volume_folder_migrations | length > 0
+
 # This is the only mutation in this repository that moves a directory in the
 # comics library, which is why it is gated. Kapowarr removes the emptied source
 # directory and any parent that becomes empty, up to but never including the
@@ -747,4 +822,7 @@
       | map(attribute='folder') | list }}. Komga builds a series from the directory that
       directly contains the books, so each of those is a series it titles after the wrong
       directory. Review the migration with --check --diff, then rerun that one convergence
-      with kapowarr_volume_folder_migration_allowed=true.
+      with kapowarr_volume_folder_migration_allowed=true. A folder in that list which is
+      not under {{ kapowarr_library_root }} is the one case the migration refuses rather
+      than repairs, because moving it would leave the comics library; repair that volume's
+      root folder in Kapowarr instead.

@@ -270,6 +270,68 @@ if failures.empty?
     failures << "#{task.fetch('name')} must be a redacted, real, changeless read" unless
       task["changed_when"] == false && task["check_mode"] == false && task["no_log"] == true
   end
+  # Confinement. The comics library is the only tree a restore of this data
+  # covers, so the migration must be unable to move, empty or remove anything
+  # outside it. Four properties carry that, and each is asserted here because a
+  # comment cannot fail a run.
+  #
+  # First: the role names the comics library among the paths it touches, which is
+  # what runs deployment_bundle's containment check against it -- a symlink
+  # between the media root and the library would otherwise let a rename follow
+  # the link out of the tree.
+  target_paths = tasks.find do |task|
+    task.dig("vars", "deployment_target_service") == "kapowarr"
+  end&.dig("vars", "deployment_target_extra_paths")
+  failures << "Kapowarr must name the comics library among the paths it touches" unless
+    Array(target_paths).include?("{{ kapowarr_comics_host_path }}")
+  # Second: a volume enters the plan only if the folder it holds and the folder
+  # Kapowarr previews for it are both under the declared library root. The first
+  # is the directory the move empties and Kapowarr then removes; the second is
+  # where the files land.
+  migration_plan = tasks.find do |task|
+    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_volume_folder_migrations") &&
+      task.key?("when")
+  end
+  plan_conditions = Array(migration_plan&.fetch("when", nil))
+  failures << "the Kapowarr migration plan must confine the folder it moves from" unless
+    plan_conditions.any? do |value|
+      value.to_s.include?("item.folder is match") &&
+        value.to_s.include?("kapowarr_library_root | regex_escape")
+    end
+  failures << "the Kapowarr migration plan must confine the folder it moves to" unless
+    plan_conditions.any? do |value|
+      value.to_s.include?("item.target is match") &&
+        value.to_s.include?("kapowarr_library_root | regex_escape")
+    end
+  # Third: a volume refused by either test is named rather than dropped, because
+  # a silent exclusion is indistinguishable from a converged library.
+  unconfined_report = tasks.find do |task|
+    task.key?("ansible.builtin.debug") &&
+      task["loop"].to_s.include?("kapowarr_volume_folders_unconfined")
+  end
+  failures << "Kapowarr must report each volume folder it refuses as unconfined" if
+    unconfined_report.nil?
+  # Fourth, and the one the other three rest on: the request names no path, so
+  # the folder it installs is the one Kapowarr derives from the root folder that
+  # *volume* is attached to. That is the declared root only while Kapowarr owns
+  # exactly the declared one, so a second root folder must refuse the migration
+  # rather than run it.
+  root_refusal = tasks.find do |task|
+    task.key?("ansible.builtin.assert") &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+        value.to_s.include?("kapowarr_root_folders") &&
+          value.to_s.include?("kapowarr_library_root")
+      end
+  end
+  failures << "a second Kapowarr library root must refuse the volume folder migration" unless
+    root_refusal &&
+    Array(root_refusal["when"]).join(" ").include?("kapowarr_volume_folder_migrations")
+  # The refusal is worthless after the fact, so it must precede the move.
+  if root_refusal && folder_migration
+    failures << "the Kapowarr library root refusal must precede the volume folder move" unless
+      tasks.index(root_refusal) < tasks.index(folder_migration)
+  end
+
   # And the review itself: one report per volume, naming the folder it holds and
   # the folder the migration would move it to.
   migration_report = tasks.find do |task|
