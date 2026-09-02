@@ -196,9 +196,62 @@ if failures.empty?
       task.dig("ansible.builtin.uri", "url").to_s
           .include?("vault_downloaders_sabnzbd_server_password")
     end
+  # An undeclared Usenet provider is a valid state, and the owned-server
+  # verification is therefore a *pair* of assertions rather than one gated
+  # assertion. That distinction is the whole guard. A single assertion carrying
+  # `when: downloaders_usenet_provider_declared` would skip on the undeclared
+  # target and assert nothing at all, which is the silence issue #269 closed:
+  # SABnzbd ran with zero servers for as long as the stack existed and nothing
+  # failed. So both branches must exist, and their conditions must be each
+  # other's negation -- two conditions that could both be false is the same
+  # silence wearing a second task.
+  verify = role_tasks(root, "roles/downloaders/tasks/verify.yml")
+  owned_server_gate = "downloaders_usenet_provider_declared | bool"
+  owned_server_branches = verify.select do |task|
+    task["ansible.builtin.assert"].is_a?(Hash) &&
+      Array(task["when"]).any? { |condition| condition.to_s.include?(owned_server_gate) } &&
+      role_strings(task["vars"]).any? do |value|
+        value.include?("selectattr('name', 'equalto', downloaders_sabnzbd_server_name)")
+      end
+  end
+  branch_conditions = owned_server_branches.map { |task| Array(task["when"]).map(&:to_s) }
+  failures << "the owned Usenet server must be verified in both provider states" unless
+    branch_conditions.sort == [[owned_server_gate], ["not #{owned_server_gate}"]].sort
+  # A branch is only worth having if it claims something about the server list,
+  # and the two claims are inverses: exactly one owned server when a provider is
+  # declared, none when one is not. Read the counts rather than trusting the
+  # conditions, so a branch reduced to a shape check alone fails here.
+  branch_claims = owned_server_branches.to_h do |task|
+    [Array(task["when"]).map(&:to_s).first,
+     role_strings(task.dig("ansible.builtin.assert", "that")).grep(
+       /downloaders_verify_sabnzbd_server_matches \| length ==/
+     )]
+  end
+  failures << "each owned Usenet server branch must claim its own server count" unless
+    branch_claims[owned_server_gate].to_a.any? { |claim| claim.include?("length == 1") } &&
+      branch_claims["not #{owned_server_gate}"].to_a.any? { |claim| claim.include?("length == 0") }
+
+  # The credential guard and the `section=servers` reconciliation are gated on
+  # the same derived fact, and on nothing else. A second spelling of "is a
+  # provider declared" is how the four gates drift out of agreement.
+  main_provider_gates = main.select do |task|
+    role_strings(task).any? { |value| value.include?("vault_downloaders_sabnzbd_server_password") }
+  end
+  failures << "the provider credential guard must be gated on the declared fact" unless
+    main_provider_gates.length == 1 &&
+      Array(main_provider_gates.first["when"]) == [owned_server_gate]
+  server_block = reconcile.find do |task|
+    task["block"].is_a?(Array) &&
+      role_strings(task["block"]).any? do |value|
+        value.include?("vault_downloaders_sabnzbd_server_password")
+      end
+  end
+  failures << "the Usenet server reconciliation must be gated on the declared fact" unless
+    server_block && Array(server_block["when"]) == [owned_server_gate]
+
   category_schema_scalars = [
     role_strings(reconcile),
-    role_strings(role_tasks(root, "roles/downloaders/tasks/verify.yml"))
+    role_strings(verify)
   ]
   failures << "SABnzbd categories must be reconciled from the API list schema" unless
     category_schema_scalars.all? do |scalars|

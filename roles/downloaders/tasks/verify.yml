@@ -83,6 +83,14 @@
 # edits the password in the web interface. A provider password changed there
 # stands until the vault value itself changes, which is the one hand edit this
 # platform does not revert. docs/secrets.md records it.
+#
+# This is one of a complementary pair, and the pair is the point: a declared
+# provider must be present and match, an undeclared one must be absent, and
+# `downloaders_usenet_provider_declared` sends every run into exactly one of the
+# two. Neither branch can be reached with nothing asserted, which is what a
+# single gated assertion would have restored -- the same silence issue #269
+# closed. tests/contracts/downloaders.sh pins both branches and pins their
+# conditions as each other's negation.
 - name: Verify the operator-owned SABnzbd Usenet server
   ansible.builtin.assert:
     that:
@@ -97,6 +105,7 @@
     fail_msg: >-
       SABnzbd has no owned Usenet server, or one that differs from the
       vault-authored provider connection.
+  when: downloaders_usenet_provider_declared | bool
   vars:
     downloaders_verify_sabnzbd_servers: >-
       {{ downloaders_sabnzbd_verification.json.config.servers | default([]) }}
@@ -114,6 +123,36 @@
          }) }}
   tags: [platform_verify_downloaders]
   no_log: true
+
+# The other half of the pair. An undeclared provider means the platform owns no
+# server, so this reads the same `get_config` response and asserts the inverse
+# claim against it: the response still carries a well-formed server list, and no
+# entry in it carries the name the platform reconciles. A server standing under
+# that name with nothing declared is a real inconsistency and it fails here --
+# either the declaration was removed from the vault while the server it created
+# still stands, or something outside this platform wrote one. Neither is quietly
+# converged over, and neither is deleted: the reconciliation above only ever
+# upserts, so removing that server is an operator decision, not a side effect of
+# emptying a vault value.
+- name: Verify SABnzbd owns no Usenet server while none is declared
+  ansible.builtin.assert:
+    that:
+      - downloaders_verify_sabnzbd_servers is sequence
+      - downloaders_verify_sabnzbd_servers is not mapping
+      - downloaders_verify_sabnzbd_servers is not string
+      - downloaders_verify_sabnzbd_server_matches | length == 0
+    fail_msg: >-
+      SABnzbd carries a platform-owned Usenet server while no provider is
+      declared. Author the six provider credentials in the vault, or remove that
+      server in SABnzbd.
+  when: not downloaders_usenet_provider_declared | bool
+  vars:
+    downloaders_verify_sabnzbd_servers: >-
+      {{ downloaders_sabnzbd_verification.json.config.servers | default([]) }}
+    downloaders_verify_sabnzbd_server_matches: >-
+      {{ downloaders_verify_sabnzbd_servers |
+         selectattr('name', 'equalto', downloaders_sabnzbd_server_name) | list }}
+  tags: [platform_verify_downloaders]
 
 - name: Read Arr download clients for downloader verification
   ansible.builtin.uri:

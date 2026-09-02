@@ -96,6 +96,26 @@ actual_foundation_expectations =
 check(failures, actual_foundation_expectations == FOUNDATION_KEYS + OPERATOR_SUPPLIED_KEYS,
       "arr and downloaders expectations must carry the exact ordered foundation key set")
 
+# An undeclared Usenet provider is a valid state, and these two files are what
+# make it one. The shared inventory has to carry all six names as empty strings,
+# because vault_contract declares them required and runs before any target
+# mutation: a missing name there fails the whole converge, for every service,
+# on a target that simply has no subscription. And the filter's optional group
+# has to be exactly the same six, because that is what stops the empty strings
+# from failing the shape rules four tasks later. Either half alone is a broken
+# converge, so both are pinned here against one list.
+shared_inventory = YAML.safe_load_file(
+  File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
+)
+check(failures,
+      OPERATOR_SUPPLIED_KEYS.all? { |key| shared_inventory.fetch(key, :absent) == "" },
+      "shared inventory must declare every operator-supplied key as an empty string")
+optional_groups = File.read(
+  File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
+)[/^OPTIONAL_KEY_GROUPS = \((.*?)^\)$/m, 1].to_s.scan(/"(vault_[a-z0-9_]+)"/).flatten
+check(failures, optional_groups == OPERATOR_SUPPLIED_KEYS,
+      "the credential filter's optional group must be exactly the operator-supplied keys")
+
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt

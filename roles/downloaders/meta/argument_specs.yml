@@ -42,6 +42,9 @@ argument_specs:
       downloaders_sabnzbd_owned_server:
         type: dict
         required: false
+      downloaders_usenet_provider_declared:
+        type: bool
+        required: false
       vault_downloaders_sabnzbd_api_key:
         type: str
         required: true

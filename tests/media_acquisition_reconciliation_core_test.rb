@@ -372,6 +372,82 @@ with_api(deep_copy(clean_production_client_state)) do |api|
   end
 end
 
+# The state that broke a production converge, and that nothing tested: the
+# operator owns no Usenet subscription, so all six provider credentials are
+# empty and SABnzbd answers `get_config` with no `servers` key at all. The claim
+# is not merely that the run exits zero -- a run where both owned-server branches
+# skipped would also exit zero. It is that the undeclared branch executed, the
+# declared branch skipped, and both digests were still recorded, so the
+# undeclared state converges with something asserted about it.
+undeclared_provider_state = deep_copy(clean_production_client_state).merge(
+  "sabnzbd" => deep_copy(SABNZBD_WITHOUT_SERVERS)
+)
+with_api(undeclared_provider_state) do |api|
+  result = run_tasks(
+    :download_client_production, api, deep_copy(UNDECLARED_USENET_PROVIDER),
+    prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "undeclared Usenet provider", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "undeclared Usenet provider did not converge" unless
+      result.fetch("status").success?
+    events = result.fetch("task_events")
+    undeclared_events = events.select do |event|
+      event.fetch("task") == DOWNLOADER_UNDECLARED_SERVER_TASK_NAME
+    end
+    declared_events = events.select do |event|
+      event.fetch("task") == DOWNLOADER_DECLARED_SERVER_TASK_NAME
+    end
+    failures << "undeclared Usenet provider did not assert the declared-nothing state" unless
+      undeclared_events.length == 1 && undeclared_events.first.fetch("event") == "ok"
+    failures << "undeclared Usenet provider ran the declared-server assertion" unless
+      declared_events.length == 1 && declared_events.first.fetch("event") == "skipped"
+    owned_files = DOWNLOADER_FINGERPRINT_SUBSET.map do |input|
+      input == "servarr_sabnzbd" ? FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
+                                 : DOWNLOADER_USENET_FINGERPRINT_FILE
+    end
+    # A digest over six empty strings is still a digest, so the undeclared state
+    # records both of them exactly as a declared one does. That is what keeps a
+    # later verify-only run from comparing a real desired digest against an
+    # absent installed one, and what makes declaring a provider move the digest
+    # and force a reconcile.
+    failures << "undeclared Usenet provider did not record the downloaders-owned digests" unless
+      DOWNLOADER_FINGERPRINT_SUBSET.zip(owned_files).all? do |input, filename|
+        entry = result.fetch("fingerprints").fetch(filename)
+        expected = result.fetch("expected_fingerprints").fetch(input)
+        entry && entry.fetch("content") == "#{expected}\n"
+      end
+  end
+end
+
+# The same undeclared declaration against a SABnzbd that still carries the owned
+# server. Emptying the vault values does not delete what the platform created, so
+# the undeclared branch has to fail rather than converge over it -- that failure
+# is the whole reason the branch is not a shape check.
+with_api(deep_copy(clean_production_client_state)) do |api|
+  result = run_tasks(
+    :download_client_production, api, deep_copy(UNDECLARED_USENET_PROVIDER),
+    prepare_fingerprints: false
+  )
+  sane = check_sanity(
+    failures, "undeclared Usenet provider with a standing server", result, api,
+    kind: :download_client_production
+  )
+  if sane
+    failures << "a standing Usenet server was accepted while none is declared" if
+      result.fetch("status").success?
+    failed = result.fetch("task_events").select do |event|
+      event.fetch("task") == DOWNLOADER_UNDECLARED_SERVER_TASK_NAME &&
+        event.fetch("event") == "failed"
+    end
+    failures << "a standing Usenet server was not reported by the undeclared branch" unless
+      failed.length == 1
+  end
+end
+
 malformed_later_production_client_state = {
   "radarr_download_clients" => [deep_copy(DOWNLOAD_CLIENT).merge("enable" => false)],
   "sonarr_download_clients" => [deep_copy(SONARR_DOWNLOAD_CLIENT).merge("priority" => nil)]

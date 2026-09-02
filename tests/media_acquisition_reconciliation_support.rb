@@ -128,6 +128,13 @@ NON_SECRET_TASK_NAMES = [
   "Refuse ambiguous Servarr SABnzbd ownership",
   "Resolve Servarr SABnzbd name and URL ownership before mutation",
   "Mark downloader relationship verification successful",
+  # The undeclared half of the owned-server pair. Its declared sibling is
+  # redacted because its `vars` carry the whole vault-authored provider
+  # connection; this one names only the server list and the platform's own
+  # server name, so redacting it would hide which of its four conditions failed
+  # and nothing else. `tests/policy_vault_test.rb` refuses the redaction from
+  # the other direction.
+  "Verify SABnzbd owns no Usenet server while none is declared",
   # Both read a Bazarr 406 body that echoes the credential it refused, and both
   # render only the setting name dynaconf named -- everything before the first
   # " must ". Redacting them would censor exactly that name and put the run back
@@ -144,6 +151,14 @@ VERIFICATION_GATE_INIT_TASK_NAME = "Initialize Arr reconciliation verification g
 VERIFICATION_GATE_SUCCESS_TASK_NAME = "Mark Arr reconciliation verification successful"
 DOWNLOADER_GATE_INIT_TASK_NAME = "Initialize downloader relationship verification gate"
 DOWNLOADER_GATE_SUCCESS_TASK_NAME = "Mark downloader relationship verification successful"
+
+# The complementary pair that verifies the one Usenet server the platform owns.
+# Exactly one of the two runs, and which one is the operator's declaration
+# rather than anything the platform decides, so both names are pinned: a run
+# where neither executed is the shape that used to pass over zero servers.
+DOWNLOADER_DECLARED_SERVER_TASK_NAME = "Verify the operator-owned SABnzbd Usenet server"
+DOWNLOADER_UNDECLARED_SERVER_TASK_NAME =
+  "Verify SABnzbd owns no Usenet server while none is declared"
 FINGERPRINT_STAT_RESULTS = "{{ arr_reconciliation_fingerprint_stats.results }}"
 FINGERPRINT_FILE_SAFETY_PREDICATES = {
   "regular" => "not item.stat.exists or item.stat.isreg",
@@ -330,6 +345,15 @@ SABNZBD = {
       }
     ]
   }
+}.freeze
+
+# SABnzbd creates the `servers` section only once a server exists, so a target
+# that has never had a Usenet provider answers `get_config` with no `servers` key
+# at all. That is what the NAS actually looks like, and it is a different fixture
+# from an empty list: the undeclared verification has to survive the key being
+# absent, not merely empty.
+SABNZBD_WITHOUT_SERVERS = {
+  "config" => SABNZBD.fetch("config").reject { |key, _value| key == "servers" }
 }.freeze
 
 INDEXER_DECLARATION = {
@@ -2498,8 +2522,30 @@ def base_variables(port)
     }
   }
   variables["arr_servarr_instances"] = [deep_copy(variables.fetch("arr_servarr_instance"))]
+  variables["downloaders_usenet_provider_declared"] = usenet_provider_declared?(variables)
   variables
 end
+
+# The role derives this in `roles/downloaders/defaults/main.yml`, and a probe
+# loads no role defaults, so the derivation is repeated rather than hardcoded:
+# a case that empties the six provider credentials gets the matching gate on its
+# own, and a case that declares them keeps the declared one. Hardcoding `true`
+# here would leave the undeclared branch unreachable by any probe.
+def usenet_provider_declared?(variables)
+  !variables.fetch("vault_downloaders_sabnzbd_server_host").to_s.empty?
+end
+
+# What an operator who has bought no Usenet subscription declares. The role reads
+# the host to decide, and the credential contract refuses a partial declaration,
+# so the six move together and this is the only shape of "no provider".
+UNDECLARED_USENET_PROVIDER = {
+  "vault_downloaders_sabnzbd_server_host" => "",
+  "vault_downloaders_sabnzbd_server_port" => "",
+  "vault_downloaders_sabnzbd_server_username" => "",
+  "vault_downloaders_sabnzbd_server_password" => "",
+  "vault_downloaders_sabnzbd_server_connections" => "",
+  "vault_downloaders_sabnzbd_server_ssl" => ""
+}.freeze
 
 def write_fake_configarr_module(collection_root)
   module_directory = File.join(
@@ -2849,6 +2895,9 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     runtime ||= File.join(directory, "runtime")
     FileUtils.mkdir_p(File.join(runtime, "services", "arr"))
     variables = base_variables(api.port).merge(extra_variables)
+    # After the merge, so a case that empties the provider credentials cannot
+    # leave the gate behind claiming a provider is still declared.
+    variables["downloaders_usenet_provider_declared"] = usenet_provider_declared?(variables)
     if (fixture_servarr_instance = variables.delete("fixture_servarr_instance"))
       variables["arr_servarr_instance"] = fixture_servarr_instance.merge(
         "api" => "http://127.0.0.1:#{api.port}/api/v3"

@@ -49,6 +49,7 @@ from vault_credential_schema import (  # noqa: E402
     NONEMPTY,
     NOT_PLACEHOLDER,
     NTFY_TOKEN,
+    OPTIONAL_KEY_GROUPS,
     OPENSUBTITLES_PASSWORD_PLACEHOLDERS,
     OPENSUBTITLES_USERNAME_PLACEHOLDERS,
     OPENSSH_PRIVATE_KEY_MARKER,
@@ -567,6 +568,53 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                 self.assertTrue(errors, f"{key} produced no diagnostic")
                 self.assertTrue(keys_named(errors) <= known,
                                 f"{key} named something unknown: {errors}")
+
+    def test_every_optional_group_key_has_rules_of_its_own(self):
+        # A key in a group but not in the table would have nothing suppressed,
+        # and a group is only meaningful as a set of rules to switch off.
+        for key_group in OPTIONAL_KEY_GROUPS:
+            for key in key_group:
+                with self.subTest(key):
+                    self.assertIn(key, CREDENTIAL_RULES)
+
+    def test_an_entirely_undeclared_optional_group_is_accepted(self):
+        # The state that broke a production converge: the operator owns no
+        # Usenet subscription, so all six provider keys are the empty strings
+        # inventory/group_vars/all/main.yml declares.
+        for key_group in OPTIONAL_KEY_GROUPS:
+            with self.subTest(key_group):
+                self.assertEqual(
+                    errors_for(**{key: "" for key in key_group}), [])
+
+    def test_a_partly_declared_optional_group_is_reported_field_by_field(self):
+        # One declared value means a provider is being declared, so every other
+        # field of the group is named. Suppression is all-or-nothing precisely so
+        # that a forgotten field cannot ride in behind a declared one.
+        for key_group in OPTIONAL_KEY_GROUPS:
+            for declared in key_group:
+                with self.subTest(declared):
+                    blank = {key: "" for key in key_group}
+                    blank[declared] = VALID[declared]
+                    named = keys_named(errors_for(**blank))
+                    self.assertEqual(named, set(key_group) - {declared})
+
+    def test_a_fully_declared_optional_group_is_held_to_every_rule(self):
+        # Suppression must not survive a declaration: each field's own rule has
+        # to fire again once the group is declared.
+        for key_group in OPTIONAL_KEY_GROUPS:
+            for key in key_group:
+                with self.subTest(key):
+                    rejected = _rejected_value(key, CREDENTIAL_RULES[key])
+                    self.assertIn(key, keys_named(errors_for(**{key: rejected})))
+
+    def test_an_optional_group_key_with_no_length_is_still_declared(self):
+        # `none` has no length to measure, so it must not read as a declaration
+        # of nothing; NONEMPTY reports it instead of the group going quiet.
+        for key_group in OPTIONAL_KEY_GROUPS:
+            with self.subTest(key_group):
+                blank = {key: "" for key in key_group}
+                blank[key_group[0]] = None
+                self.assertTrue(errors_for(**blank))
 
     def test_the_role_submits_every_credential_the_table_covers(self):
         # The mapping in the role is what states the key set under validation, so

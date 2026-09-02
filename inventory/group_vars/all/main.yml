@@ -27,6 +27,21 @@ media_arr_indexers: []
 media_bazarr_languages: []
 media_bazarr_providers: []
 
+# The Usenet provider is the same kind of declaration, and it is the one no
+# generator can mint: it is a paid third-party subscription. All six names are
+# carried here as empty strings, which is what starts SABnzbd with no server on a
+# target that has not bought one -- exactly as an empty media_arr_indexers starts
+# Prowlarr with no indexer. The vault wins over these, so authoring real values
+# there declares the provider without removing the default. The credential
+# contract accepts all six empty or all six valid and refuses a half-declared
+# provider field by field.
+vault_downloaders_sabnzbd_server_host: ""
+vault_downloaders_sabnzbd_server_port: ""
+vault_downloaders_sabnzbd_server_username: ""
+vault_downloaders_sabnzbd_server_password: ""
+vault_downloaders_sabnzbd_server_connections: ""
+vault_downloaders_sabnzbd_server_ssl: ""
+
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home
 # for the three values; the role declares them required rather than defaulting them
