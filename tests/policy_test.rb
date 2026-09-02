@@ -1335,7 +1335,11 @@ check(failures,
         (jellyfin_startup.key?("until") && resolved_startup_retries > 0),
       "reading Jellyfin startup state must retry until the server finishes loading")
 
-paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless.sh"))
+# Every subject below is a property of the Paperless contract's runtime half,
+# which is tests/contracts/paperless-runtime.rb since issue #147 gave it a file.
+# Reading the wrapper instead would leave all eight checks matching nothing and
+# refusing the repository forever.
+paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless-runtime.rb"))
 paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
 root_version_checksum = %r{
   document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*

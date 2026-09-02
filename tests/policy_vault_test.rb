@@ -538,7 +538,7 @@ REDACTION_ASSERTION_EXCEPTIONS = {
    "Require unique authoritative configured-password target identifiers"] => "tests/contracts/immich-static.rb",
   ["roles/paperless_ngx/tasks/mail_state.yml",
    "Require the installed Paperless Gmail credential fingerprint"] =>
-    "tests/contracts/paperless.sh",
+    "tests/contracts/paperless-static.rb",
   ["roles/arr/tasks/reconciliation_fingerprints.yml",
    "Validate the selected Arr desired-input fingerprint subset"] =>
     "tests/media_acquisition_reconciliation_core_test.rb",
