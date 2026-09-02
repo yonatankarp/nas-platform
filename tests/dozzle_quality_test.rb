@@ -11,6 +11,19 @@ require_relative "policy_support"
 include TestScaffold
 
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
+# Since issue #147 the contract's Ruby lives in six files beside the wrapper, so
+# a check that reads "the contract" has to say which part of it. The wrapper is
+# still what you run; the diagnostics below are spelled in its live half.
+RUNTIME = File.join(ROOT, "tests", "contracts", "dozzle-runtime.rb")
+# Derived from the wrapper's own text rather than restated, by the same rule
+# tests/run_contracts.rb and tests/policy_mutation_support.rb use, so a seventh
+# program is covered on the day it is added. The floor below is what keeps this
+# list from going quiet: a regex that stopped matching would otherwise turn every
+# absence assertion into a vacuous truth.
+CONTRACT_PROGRAMS = File.read(CONTRACT).each_line
+                        .reject { |line| line.lstrip.start_with?("#") }
+                        .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
+                        .uniq.map { |relative| File.join(ROOT, relative) }
 ROLE = File.join(ROOT, "roles", "dozzle", "tasks", "main.yml")
 PAPERLESS_COMPOSE = File.join("services", "paperless-ngx", "compose.yml")
 BASE_COMPOSE_FILES = %w[
@@ -194,7 +207,18 @@ end
   check(failures, !duplicate_status.success?, "#{mode} accepted an incorrect per-category occurrence count")
 end
 
-contract = File.read(CONTRACT)
+check(failures, CONTRACT_PROGRAMS.length >= 6,
+      "the Dozzle wrapper must still name its six Ruby programs, found " \
+      "#{CONTRACT_PROGRAMS.length}")
+check(failures, CONTRACT_PROGRAMS.all? { |path| File.file?(path) },
+      "the Dozzle wrapper names a Ruby program that is absent: " \
+      "#{CONTRACT_PROGRAMS.reject { |path| File.file?(path) }.join(', ')}")
+
+# Positive assertions: each of these sentences is spelled in the live half and
+# nowhere else in the repository, so this is the file that has to hold them. Left
+# pointed at the wrapper they announce their own breakage; the ten rows in
+# tests/dozzle_contract_test.rb prove each still fires against a plant here.
+runtime = File.read(RUNTIME)
 fixed_diagnostics = [
   "OOM drift fixture differs",
   "managed dispatcher template differs",
@@ -207,8 +231,14 @@ fixed_diagnostics = [
   "relay exposed its event envelope as ntfy message text"
 ]
 fixed_diagnostics.each do |diagnostic|
-  check(failures, contract.include?(diagnostic), "Dozzle contract is missing fixed diagnostic: #{diagnostic}")
+  check(failures, runtime.include?(diagnostic), "Dozzle contract is missing fixed diagnostic: #{diagnostic}")
 end
+# Absence assertions, and they are the dangerous half: pointed at the 180-line
+# wrapper they would be trivially true forever. The subject of "the contract must
+# not interpolate this" is the whole contract, which after #147 is the wrapper
+# plus its programs -- so the whole of it is read here rather than only the file
+# that happens to spell the variables today.
+whole_contract = ([CONTRACT] + CONTRACT_PROGRAMS).map { |path| File.read(path) }.join("\n")
 unsafe_diagnostic_fragments = [
   "template differs: expected #{'#'}{expected_template.inspect}",
   "webhook test failed: #{'#'}{webhook_test.inspect}",
@@ -217,10 +247,11 @@ unsafe_diagnostic_fragments = [
   "trigger counters #{'#'}{counters.inspect}"
 ]
 unsafe_diagnostic_fragments.each do |fragment|
-  check(failures, !contract.include?(fragment), "Dozzle contract retains unsafe diagnostic interpolation: #{fragment}")
+  check(failures, !whole_contract.include?(fragment),
+        "Dozzle contract retains unsafe diagnostic interpolation: #{fragment}")
 end
 check(failures,
-      contract.include?('rule.dig("dispatcher", "id").to_s == dispatcher["id"].to_s'),
+      runtime.include?('rule.dig("dispatcher", "id").to_s == dispatcher["id"].to_s'),
       "Dozzle contract does not normalize opaque dispatcher IDs as strings")
 
 _stdout, stderr, status = run_static(ROOT)
