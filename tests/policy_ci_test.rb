@@ -364,6 +364,10 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/paperless_contract_test.rb\ --self-test
   ruby\ tests/dozzle_contract_test.rb
   ruby\ tests/dozzle_contract_test.rb\ --self-test
+  ruby\ tests/arr_contract_test.rb
+  ruby\ tests/arr_contract_test.rb\ --self-test
+  ruby\ tests/downloaders_contract_test.rb
+  ruby\ tests/downloaders_contract_test.rb\ --self-test
   ruby\ tests/database_managed_users_test.rb
   ruby\ tests/database_managed_users_test.rb\ --self-test
   ruby\ tests/immich_configured_password_test.rb
