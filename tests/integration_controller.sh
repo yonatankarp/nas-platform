@@ -84,8 +84,35 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     vault_password_file="$vault_directory/password"
     mkdir "$vault_directory"
     chmod 0700 "$vault_directory"
-    TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
-      --output "$vault_file" --password-file "$vault_password_file"
+    # The downloaders lane is the one lane that converges without a Usenet
+    # provider, which is the state every real target starts in and the state
+    # #274 broke: it declared the six provider credentials `required: true`,
+    # merged with this lane green because the generator had already stood them
+    # in, and then failed the NAS's next converge in `vault_contract` before any
+    # service could deploy. A fixture that supplies a credential cannot catch a
+    # bug about that credential's absence, so this lane stops supplying it.
+    #
+    # The declared provider is not left unconverged: the bindery lane converges
+    # the same arr and downloaders stacks from a fully declared vault, runs the
+    # role's declared verification branch inline and asserts its idempotence and
+    # its check mode, and tests/ci/classify_changes.rb routes a change inside
+    # roles/downloaders/ to both lanes so neither branch is left with no runtime
+    # lane of its own. The two states cannot share a sandbox: the
+    # `section=servers` reconciliation only ever upserts, so a provider declared
+    # once stands after it is emptied, and `verify.yml`'s undeclared branch
+    # rightly refuses that. Whichever state a lane wants, it has to converge it
+    # from the start.
+    case $INTEGRATION_SUITE in
+      downloaders)
+        TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
+          --undeclared usenet \
+          --output "$vault_file" --password-file "$vault_password_file"
+        ;;
+      *)
+        TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
+          --output "$vault_file" --password-file "$vault_password_file"
+        ;;
+    esac
 
     fixture_input_directory="$sandbox/protected-inputs"
     fixture_vars_file="$fixture_input_directory/immich-fixture-vars.yml"
@@ -588,10 +615,16 @@ EOF
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/downloaders.sh static
       run_arr_verify_only
+      # This lane's vault declares no Usenet provider, so every downloader
+      # assertion below is the undeclared half of the pair: SABnzbd started and
+      # stayed healthy with no server block, `verify.yml` asserts that no server
+      # carries the owned name, the second converge changes nothing with the
+      # reconciliation live, and check mode works. That is the whole of what
+      # issue #295 found no lane converged.
       run_downloaders_verify_only
       run_enabled_idempotence arr,downloaders
       run_play --tags arr,downloaders --check --diff
-      printf 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED\n'
+      printf 'DOWNLOADERS_UNDECLARED_PROVIDER_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0
     fi
@@ -601,6 +634,14 @@ EOF
       /repo/tests/contracts/downloaders.sh static
       /repo/tests/contracts/bindery.sh static
       run_bindery_contract run
+      # The declared half of the downloader pair. This lane converges the same
+      # arr and downloaders stacks from a fully declared vault, so it is where
+      # `verify.yml`'s declared branch is asserted as a play of its own now that
+      # the downloaders lane converges the undeclared state instead. The inline
+      # verification already ran during the converge above; this is the
+      # standalone pass, and it is the reason a change inside roles/downloaders/
+      # selects this lane too.
+      run_downloaders_verify_only
       run_bindery_verify_only
       run_enabled_idempotence arr,downloaders,bindery
       run_play --tags arr,downloaders,bindery --check --diff

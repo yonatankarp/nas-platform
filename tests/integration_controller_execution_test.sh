@@ -159,15 +159,21 @@ if [ "${1:-}" = --cleanup ]; then
 fi
 vault_output=
 vault_password_output=
+vault_undeclared=
 while [ $# -gt 0 ]; do
   case $1 in
     --output) vault_output=$2; shift 2 ;;
     --password-file) vault_password_output=$2; shift 2 ;;
+    # Which credential groups the lane asked to leave undeclared. Logged rather
+    # than acted on: the stub writes no credentials, so the assertion a lane can
+    # make here is that it requested the state it claims to converge.
+    --undeclared) vault_undeclared=$2; shift 2 ;;
     *) printf 'unexpected ephemeral vault argument: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
-printf 'ephemeral-vault argv=[--output][%s][--password-file][%s]\n' \
-  "$vault_output" "$vault_password_output" >> "${CONTROLLER_STUB_LOG:?}"
+printf 'ephemeral-vault argv=[--undeclared][%s][--output][%s][--password-file][%s]\n' \
+  "$vault_undeclared" "$vault_output" "$vault_password_output" \
+  >> "${CONTROLLER_STUB_LOG:?}"
 printf '%s\n' '$ANSIBLE_VAULT;1.1;AES256' > "${vault_output:?}"
 printf '%s\n' 'ephemeral-vault-password' > "${vault_password_output:?}"
 STUB
@@ -503,7 +509,10 @@ case_idempotence_check() {
   # the checkout's own encrypted file and as the exported password file. Nothing
   # is read back out of a running service, so this is the whole credential path.
   expect_log_count 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE={sandbox}/nas-platform-vault.000000/password]' 3
-  expect_log 'ephemeral-vault argv=[--output][{sandbox}/nas-platform-vault.000000/vault.yml][--password-file][{sandbox}/nas-platform-vault.000000/password]'
+  # Empty between the first pair of brackets: every lane but downloaders asks
+  # for the whole credential set stood in, which is what makes the downloaders
+  # lane's request below the exception it is meant to be.
+  expect_log 'ephemeral-vault argv=[--undeclared][][--output][{sandbox}/nas-platform-vault.000000/vault.yml][--password-file][{sandbox}/nas-platform-vault.000000/password]'
   expect_log 'ephemeral-vault argv=[--cleanup][{sandbox}/nas-platform-vault.000000]'
   if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml")" != \
        '$ANSIBLE_VAULT;1.1;AES256' ]; then
@@ -577,7 +586,38 @@ case_downloaders() {
   expect_log '[site.yml][--tags][arr,downloaders][--check][--diff]'
   expect_log_order '[site.yml][--tags][arr,downloaders]' \
     '[site.yml][--tags][arr,downloaders][--check][--diff]'
-  expect_output 'DOWNLOADERS_PHASE1_RUNTIME_VERIFIED'
+  # The property this lane exists for after #295: its vault declares no Usenet
+  # provider, so its converge, its verification, its second converge and its
+  # check-mode run are all the undeclared half of the pair. The request has to
+  # be asserted here rather than inferred from the lane passing, because a lane
+  # handed the stood-in credentials would pass exactly the same way -- that is
+  # the whole shape of the bug #274 shipped.
+  expect_log 'ephemeral-vault argv=[--undeclared][usenet][--output]'
+  expect_output 'DOWNLOADERS_UNDECLARED_PROVIDER_RUNTIME_VERIFIED'
+}
+
+# The other half of that pair. Bindery converges the same arr and downloaders
+# stacks, and it converges them from a fully declared vault, so it is where the
+# declared provider's verification branch is asserted as a play of its own. The
+# two `--undeclared` assertions are each other's negation on purpose: a lane
+# that quietly stopped asking for the state it claims to converge is the exact
+# failure #274 shipped, and neither lane can report it alone.
+case_bindery() {
+  run_controller bindery \
+    host_prep,deployment_bundle,ntfy,arr,downloaders,bindery true true site.yml
+  expect_status 0
+  expect_log 'ephemeral-vault argv=[--undeclared][][--output]'
+  expect_log 'contract arr argv=[static]'
+  expect_log 'contract downloaders argv=[static]'
+  expect_log 'contract bindery argv=[static]'
+  expect_log 'contract bindery argv=[run]'
+  expect_log '[{repo}/verify.yml][--tags][platform_verify_downloaders]'
+  expect_log '[{repo}/verify.yml][--tags][platform_verify_bindery]'
+  expect_log '[site.yml][--tags][arr,downloaders,bindery]'
+  expect_log '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
+  expect_log_order '[site.yml][--tags][arr,downloaders,bindery]' \
+    '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
+  expect_output 'BINDERY_PHASE2_RUNTIME_VERIFIED'
 }
 
 # Seerr is the last acquisition project, so the shared inert foundation's own
@@ -742,7 +782,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders seerr jellyfin komga toolchain_install refuses_missing_roots; do
+    downloaders bindery seerr jellyfin komga toolchain_install \
+    refuses_missing_roots; do
   current_case=$healthy_case
   "case_$healthy_case"
 done
@@ -792,6 +833,10 @@ plant 'downloaders check mode runs before its idempotence converge' \
   'run_enabled_idempotence arr,downloaders\n      run_play --tags arr,downloaders --check --diff\n' \
   'run_play --tags arr,downloaders --check --diff\n      run_enabled_idempotence arr,downloaders\n' \
   1 regexp
+plant 'undeclared provider request dropped' downloaders program \
+  '--undeclared usenet' '' 1
+plant 'declared downloader verification-only play dropped' bindery program \
+  'run_downloaders_verify_only' ':' 2
 plant 'acquisition foundation contract dropped' seerr program \
   '/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static' ':' 1
 plant 'acquisition reader prerequisites dropped' seerr program \

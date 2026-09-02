@@ -110,11 +110,31 @@ shared_inventory = YAML.safe_load_file(
 check(failures,
       OPERATOR_SUPPLIED_KEYS.all? { |key| shared_inventory.fetch(key, :absent) == "" },
       "shared inventory must declare every operator-supplied key as an empty string")
-optional_groups = File.read(
+optional_group_source = File.read(
   File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
-)[/^OPTIONAL_KEY_GROUPS = \((.*?)^\)$/m, 1].to_s.scan(/"(vault_[a-z0-9_]+)"/).flatten
+)[/^OPTIONAL_KEY_GROUPS = \((.*?)^\)$/m, 1].to_s
+optional_groups = optional_group_source.scan(/"(vault_[a-z0-9_]+)"/).flatten
 check(failures, optional_groups == OPERATOR_SUPPLIED_KEYS,
       "the credential filter's optional group must be exactly the operator-supplied keys")
+
+# There is a third half, and it is the one issue #295 was filed about: a fixture
+# that supplies a credential can never catch a bug about that credential's
+# absence. The ephemeral generator has to know which groups may legitimately be
+# left undeclared, or no lane can be asked to converge the state their absence
+# describes -- which is how #274 merged with every lane green and then failed the
+# NAS's next converge in vault_contract before any service could deploy.
+#
+# The group *names* cannot be derived from the filter's key tuples, so what is
+# pinned is that the generator carries one name per tuple. A group added to the
+# filter with no name added here is a state nothing converges.
+ephemeral_generator_source =
+  File.read(File.join(ROOT, "tests", "generate-ephemeral-vault.sh"))
+generator_optional_groups =
+  ephemeral_generator_source[/^optional_credential_groups='([^']*)'$/, 1].to_s.split
+check(failures,
+      generator_optional_groups.length == optional_group_source.scan(/\(/).length &&
+        generator_optional_groups == %w[usenet],
+      "the ephemeral generator must name one optional credential group per filter group")
 
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
@@ -415,7 +435,7 @@ check(failures,
 check(failures, ci_commands.any? { |line| line.include?("tests/generate-secrets-redaction-test.sh") },
       "CI must execute the generated-secret redaction test")
 
-ephemeral_helper = File.read(File.join(ROOT, "tests", "generate-ephemeral-vault.sh"))
+ephemeral_helper = ephemeral_generator_source
 helper_safety_evidence = {
   "pre-existing output refusal" => "self-test generation accepted a pre-existing output",
   "vault leaf symlink refusal" => "self-test generation accepted a vault output symlink",
@@ -429,7 +449,19 @@ helper_safety_evidence = {
   "unsafe mode refusal" => "self-test generation accepted a world-writable directory",
   "ownership refusal" => "self-test generation accepted a foreign-owned directory",
   "failure cleanup" => "self-test failed generation left credential material",
-  "mid-validation cleanup" => "self-test mid-validation failure left credential material"
+  "mid-validation cleanup" => "self-test mid-validation failure left credential material",
+  # The undeclared shape's own three properties. Proved here rather than only in
+  # the integration lane that consumes it, because a break in it would otherwise
+  # be visible only after a Docker suite has run: that all six provider values
+  # really come out empty, that the resulting vault still satisfies the shared
+  # credential contract, and that a group list the generator cannot honour is
+  # refused rather than silently standing everything in.
+  "undeclared provider emptiness" =>
+    "self-test undeclared vault still declares a Usenet provider",
+  "undeclared vault contract" =>
+    "self-test undeclared vault fell outside the shared contract",
+  "undeclared group refusal" =>
+    "self-test accepted an invalid undeclared credential group list"
 }
 helper_safety_evidence.each do |property, evidence|
   check(failures, ephemeral_helper.include?(evidence),
