@@ -6,7 +6,11 @@
 #
 # The read is gated the way preflight.yml's are: jellyfin_reconcile_token only
 # exists once authentication.yml has run, which on a fresh server under --check
-# it has not.
+# it has not. That gate is also why the loops below read
+# jellyfin_scheduled_task_targets through default([]): on that one path the fact
+# is never set, and a POST over no targets is the correct outcome there rather
+# than a failure. It is the only place a gate change would turn this file's hard
+# failure on a missing key into a silent skip, so keep the two gates identical.
 
 - name: Read the Jellyfin scheduled tasks
   ansible.builtin.uri:
