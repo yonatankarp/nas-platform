@@ -27,6 +27,20 @@ COMPOSE = File.join(ROOT, "services/komga/compose.yml")
 ARGUMENT_SPECS = File.join(ROOT, "roles/komga/meta/argument_specs.yml")
 DEFAULTS_PATH = File.join(ROOT, "roles/komga/defaults/main.yml")
 CONTRACT = File.join(ROOT, "tests/contracts/komga.sh")
+
+# The contract is three files: a shell wrapper and the two Ruby halves #147 gave
+# their own files. The program list is derived from the wrapper's own text by the
+# same rule tests/run_contracts.rb and tests/policy_mutation_support.rb use, so a
+# third program is covered on the day it is added rather than on the day someone
+# remembers to edit a list here. A derived subject list with no floor is how an
+# absence assertion goes quiet, so the floor and the existence of every entry are
+# asserted rather than assumed.
+def contract_program_paths(wrapper_source)
+  wrapper_source.each_line.reject { |line| line.lstrip.start_with?("#") }
+                .flat_map { |line| line.scan(%r{tests/contracts/[A-Za-z0-9_./-]+\.rb}) }
+                .uniq
+                .map { |relative| File.join(ROOT, relative) }
+end
 # The Mac wrapper and the Mac seed hook are both shared across services now: one
 # runner resolves every contract through tests/contracts/registry.yml, and one
 # hook seeds every service from a table of phases. The properties asserted below
@@ -140,8 +154,15 @@ else
   raise "#{label} health mutation was not rejected"
 end
 
+# `contract` is the shell wrapper, `runtime_program` is tests/contracts/
+# komga-runtime.rb, and `whole_contract` is the wrapper and its programs
+# concatenated. Each assertion below reads whichever of the three actually owns
+# its subject: a positive check pointed at the wrong file fails loudly, but an
+# absence check pointed at the wrong file goes trivially true forever, so the one
+# negative here reads the whole contract on purpose.
 def validate_runtime_health_paths!(sources)
-  contract, wrapper, seed_hook, integration, integration_library = sources
+  contract, wrapper, seed_hook, integration, integration_library,
+    runtime_program, whole_contract = sources
   base_policy = [
     "  base)",
     "    PLATFORM_KOMGA_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}komga",
@@ -156,8 +177,10 @@ def validate_runtime_health_paths!(sources)
   raise "Komga runtime contexts do not derive exact container health policies" unless
     contract.include?(base_policy) && contract.include?(mac_policy) &&
       contract.scan(/PLATFORM_KOMGA_CONTAINER=/).length == 2 &&
-      !contract.include?('[ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]') &&
-      contract.include?('DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch(')
+      !whole_contract.include?('[ -z "${PLATFORM_KOMGA_CONTAINER:-}" ]') &&
+      runtime_program.include?(
+        'DOCKER_HEALTH_REQUIRED = { "true" => true, "false" => false }.fetch('
+      )
   raise "integration Komga contexts do not allow only base" unless
     contract.include?(': "${PLATFORM_KOMGA_RUNTIME_CONTEXT:=base}"') &&
       contract.include?('base) ;;') &&
@@ -172,18 +195,21 @@ def validate_runtime_health_paths!(sources)
     wait_for_api
   RUBY
   raise "Komga health gates are not selected before actuator readiness" unless
-    contract.include?(managed_health)
+    runtime_program.include?(managed_health)
   raise "managed Komga runtime no longer requires Docker healthy" unless
-    contract.include?('"{{.State.Health.Status}}", KOMGA_CONTAINER') &&
-      contract.include?('status.success? && stdout.strip == "healthy"')
+    runtime_program.include?('"{{.State.Health.Status}}", KOMGA_CONTAINER') &&
+      runtime_program.include?('status.success? && stdout.strip == "healthy"')
   raise "Komga runtime cannot prove an absent Docker healthcheck" unless
-    contract.include?('"{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER') &&
-      contract.include?('status.success? && stdout.strip == "absent"')
+    runtime_program.include?(
+      '"{{if .State.Health}}present{{else}}absent{{end}}", KOMGA_CONTAINER'
+    ) && runtime_program.include?('status.success? && stdout.strip == "absent"')
   raise "actuator readiness no longer requires an exact UP mapping" unless
-    contract.include?('payload.is_a?(Hash) && payload["status"] == "UP"')
+    runtime_program.include?('payload.is_a?(Hash) && payload["status"] == "UP"')
 
-  auth_index = contract.index('request("get", "/api/v2/users/me"')
-  gate_index = contract.index(managed_health)
+  # Both subjects live in the runtime program, so the ordering is asserted within
+  # that one file. Across a concatenation an index comparison means nothing.
+  auth_index = runtime_program.index('request("get", "/api/v2/users/me"')
+  gate_index = runtime_program.index(managed_health)
   raise "Komga health gates no longer precede authenticated assertions" unless
     gate_index && auth_index && gate_index < auth_index
   raise "Komga invoking harnesses do not bind exact runtime contexts" unless
@@ -208,7 +234,7 @@ end
 # The two-library model, as declared rather than as reconciled.
 # ---------------------------------------------------------------------------
 
-def model_failures(defaults_source, argument_specs, role_source, contract, drift_hook)
+def model_failures(defaults_source, argument_specs, role_source, contract_text, drift_hook)
   failures = []
   defaults = begin
     YAML.safe_load(defaults_source, aliases: false)
@@ -288,19 +314,29 @@ def model_failures(defaults_source, argument_specs, role_source, contract, drift
     report&.dig("ansible.builtin.debug", "msg").to_s.include?("KOMGA_ROOT_MIGRATION_ALLOWED") &&
     report["when"].to_s.include?("#{MIGRATION_INPUT} | bool")
 
-  # The four below stay source text. tests/contracts/komga.sh and the Mac drift
-  # hook are shell scripts carrying embedded Ruby, so they have no parsed
-  # structure to read; what the values they pin should be is asserted against the
-  # parsed defaults above, and this only asks that the contract and the lane still
-  # pin them.
+  # The four below stay source text: the contract and the Mac drift hook state
+  # these as literals a running lane compares against, so there is no parsed
+  # structure to read; what the values should be is asserted against the parsed
+  # defaults above, and this only asks that the contract and the lane still pin
+  # them.
+  #
+  # `contract_text` is the whole contract -- since #147 that is the shell wrapper
+  # and both Ruby halves concatenated -- because these subjects are genuinely
+  # spread across it. The three literals of the two-library model in particular
+  # sit in *both* halves: `LIBRARY_MODEL = [` is the runtime half's, while the
+  # Comics and Ebooks root literals are the static half's `expected_libraries`.
+  # One whole-file `include?` had been answering for whichever half held each,
+  # which the split made visible. Narrowing these to one file would be a
+  # strengthening rather than a move, so the subject stays the whole contract and
+  # the split is recorded here instead.
   failures << "the contract does not pin the two-library model" unless
-    contract.include?('LIBRARY_MODEL = [') &&
-      contract.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
-      contract.include?("\"Ebooks\", \"root\" => \"#{EBOOKS_ROOT}\"")
+    contract_text.include?('LIBRARY_MODEL = [') &&
+      contract_text.include?("\"Comics\", \"root\" => \"#{COMICS_ROOT}\"") &&
+      contract_text.include?("\"Ebooks\", \"root\" => \"#{EBOOKS_ROOT}\"")
   failures << "the contract does not pin the hourly scan schedule" unless
-    contract.include?('"scanInterval" => "HOURLY"')
+    contract_text.include?('"scanInterval" => "HOURLY"')
   failures << "the contract does not pin the .acquisition scan exclusion" unless
-    contract.include?('"scanDirectoryExclusions" => [".acquisition"]')
+    contract_text.include?('"scanDirectoryExclusions" => [".acquisition"]')
 
   failures << "the Mac drift lane does not prove the refused root migration" unless
     drift_hook.include?("#{MIGRATION_INPUT}=true") &&
@@ -508,15 +544,30 @@ argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
 validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
 
 contract = File.read(CONTRACT)
+contract_programs = contract_program_paths(contract)
+raise "the Komga contract wrapper names fewer than two sibling Ruby programs" unless
+  contract_programs.length >= 2
+absent = contract_programs.reject { |path| File.file?(path) }
+raise "the Komga contract names Ruby programs that do not exist: #{absent.inspect}" unless
+  absent.empty?
+runtime_program_path = contract_programs.find { |path| path.end_with?("komga-runtime.rb") }
+raise "the Komga contract no longer names a runtime program" unless runtime_program_path
+runtime_program = File.read(runtime_program_path)
+whole_contract = ([contract] + contract_programs.map { |path| File.read(path) }).join("\n")
 drift_hook = File.read(DRIFT_HOOK)
 mac_contract_wrapper = File.read(MAC_CONTRACT_WRAPPER)
 seed_hook = File.read(SEED_HOOK)
+# Positional, and the two #147 entries are APPENDED: the mutation rows below
+# index this array, so inserting anywhere but the end moves a row onto the wrong
+# source.
 runtime_sources = [
   contract,
   mac_contract_wrapper,
   seed_hook,
   File.read(INTEGRATION_HARNESS),
-  File.read(INTEGRATION_LIBRARY)
+  File.read(INTEGRATION_LIBRARY),
+  runtime_program,
+  whole_contract
 ]
 validate_runtime_health_paths!(runtime_sources)
 
@@ -532,7 +583,7 @@ if self_test
      lambda do
        source = DEFAULTS_SOURCE.sub("scanInterval: HOURLY", "scanInterval: DISABLED")
        abort "self-test could not plant a disabled scan interval" if source == DEFAULTS_SOURCE
-       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+       model_failures(source, argument_specs, ROLE_SOURCE, whole_contract, drift_hook)
      end,
      "scanInterval"],
     ["a dropped .acquisition exclusion",
@@ -540,14 +591,14 @@ if self_test
        source = DEFAULTS_SOURCE.sub("  scanDirectoryExclusions:\n    - .acquisition\n",
                                     "  scanDirectoryExclusions: []\n")
        abort "self-test could not plant an empty exclusion list" if source == DEFAULTS_SOURCE
-       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+       model_failures(source, argument_specs, ROLE_SOURCE, whole_contract, drift_hook)
      end,
      ".acquisition"],
     ["a migration input that defaults to true",
      lambda do
        source = DEFAULTS_SOURCE.sub("#{MIGRATION_INPUT}: false", "#{MIGRATION_INPUT}: true")
        abort "self-test could not plant a persistent migration input" if source == DEFAULTS_SOURCE
-       model_failures(source, argument_specs, ROLE_SOURCE, contract, drift_hook)
+       model_failures(source, argument_specs, ROLE_SOURCE, whole_contract, drift_hook)
      end,
      MIGRATION_INPUT]
   ]
@@ -569,7 +620,7 @@ if self_test
   abort "self-test failed: an ungated guard no longer names the input in the file" unless
     ungated.include?("#{MIGRATION_INPUT} | bool")
   abort "self-test failed: an ungated root migration was accepted" unless
-    model_failures(DEFAULTS_SOURCE, argument_specs, ungated, contract, drift_hook)
+    model_failures(DEFAULTS_SOURCE, argument_specs, ungated, whole_contract, drift_hook)
       .any? { |failure| failure.include?("gates the root move") }
 
   commented_banner = ROLE_SOURCE.sub(
@@ -585,7 +636,8 @@ if self_test
   abort "self-test failed: a commented banner no longer appears in the file" unless
     commented_banner.include?("KOMGA_ROOT_MIGRATION_ALLOWED")
   abort "self-test failed: a banner that survives only as a comment was accepted" unless
-    model_failures(DEFAULTS_SOURCE, argument_specs, commented_banner, contract, drift_hook)
+    model_failures(DEFAULTS_SOURCE, argument_specs, commented_banner, whole_contract,
+                 drift_hook)
       .any? { |failure| failure.include?("one-convergence only") }
 
   # And the behavioural half: an ungated guard also lets the refusal fixture through.
@@ -627,7 +679,8 @@ if self_test
   exit
 end
 
-failures.concat(model_failures(DEFAULTS_SOURCE, argument_specs, ROLE_SOURCE, contract, drift_hook))
+failures.concat(model_failures(DEFAULTS_SOURCE, argument_specs, ROLE_SOURCE,
+                               whole_contract, drift_hook))
 
 # The disposable lanes deploy Komga under a project namespace and name the
 # container after it, so a base context pinned to the canonical Compose name
