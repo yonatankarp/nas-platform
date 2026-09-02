@@ -102,13 +102,53 @@ jellyfin_libraries:
 jellyfin_library_options:
   # /media is mounted read-only, so writing NFOs beside the media would fail.
   SaveLocalMetadata: false
-  # External media writers own the adjacent metadata that Jellyfin reads.
+  # Deprecated in this version's own LibraryOptions schema, and inert. The
+  # string occurs in exactly one assembly the pinned image ships,
+  # MediaBrowser.Model.dll, which is the one that declares the property; a .NET
+  # assembly names the members it calls, so nothing on the server reads it.
+  # EnableRealtimeMonitor below occurs in two assemblies and SaveLocalMetadata
+  # above in five, which is what a honoured option looks like. jellyfin-web no
+  # longer offers a checkbox either and hardcodes true. It is pinned here only
+  # so the stored value is this repository's rather than Jellyfin's own; it
+  # disables nothing. What actually selects metadata providers in 10.11 is the
+  # per-type TypeOptions, which this platform does not declare.
   EnableInternetProviders: false
   # Watching a large NAS share for changes costs inotify handles for no gain;
-  # the library is refreshed explicitly instead.
+  # the library is scanned on the jellyfin_scheduled_task_triggers interval
+  # below instead.
   EnableRealtimeMonitor: false
   EnableChapterImageExtraction: false
   EnableTrickplayImageExtraction: false
   AutomaticRefreshIntervalDays: 0
   PreferredMetadataLanguage: en
   MetadataCountryCode: DE
+
+# Scheduled task triggers this platform owns, keyed by Jellyfin's task Key.
+#
+# Jellyfin holds every one of its twenty tasks' triggers as a compiled in-memory
+# default and writes nothing to /config for them until a trigger set is posted,
+# so a schedule this repository does not declare is one it cannot see and would
+# not notice changing under a version bump. Measured against the pinned 10.11.11
+# image on a /config that was empty seconds earlier: RefreshLibrary ships one
+# IntervalTrigger of 432000000000 ticks, exactly twelve hours. POST
+# /ScheduledTasks/{id}/Triggers replaces that set, persists it to
+# /config/config/ScheduledTasks/<id>.js -- a sibling of the
+# /config/data/ScheduledTasks/<id>.js that holds only last-execution results --
+# and it survives a container restart.
+#
+# RefreshLibrary is the only one of the twenty declared here, because it is the
+# only one that decides how long imported media stays invisible: with
+# EnableRealtimeMonitor false, nothing else looks at /media, and the role's own
+# POST /Library/Refresh fires only when Ansible changed a managed library. One
+# hour is the interval roles/komga settled on for the same failure one service
+# over, where six-hour polling hid a working Kapowarr download for an evening
+# and read as a failed import rather than as a schedule. No StartupTrigger, for
+# the same reason Komga declares scanOnStartup false; an interval's phase is set
+# at server start, so an hour is a ceiling measured from the last start rather
+# than a wall-clock schedule.
+#
+# A tick is 100ns, so 36000000000 is one hour.
+jellyfin_scheduled_task_triggers:
+  RefreshLibrary:
+    - Type: IntervalTrigger
+      IntervalTicks: 36000000000

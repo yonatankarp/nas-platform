@@ -1,0 +1,110 @@
+---
+# The scheduled task triggers. Reads the server's twenty tasks, resolves the
+# declared keys against them, and posts the declared trigger set for any key
+# whose triggers differ. jellyfin_scheduled_task_triggers carries what is
+# declared and why; this file is only how it is reconciled.
+#
+# The read is gated the way preflight.yml's are: jellyfin_reconcile_token only
+# exists once authentication.yml has run, which on a fresh server under --check
+# it has not.
+
+- name: Read the Jellyfin scheduled tasks
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/ScheduledTasks"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_scheduled_tasks_before
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Unlooped and unredacted on the same reasoning as bootstrap.yml's ownership
+# assert: nothing but condition source text reaches the result dict, and none of
+# these values is a credential. The tick literal is pinned rather than merely
+# type-checked because the failure this declaration exists to prevent is a
+# silent one, and a unit slip of three zeroes is silent too.
+- name: Require the fixed Jellyfin scheduled task declaration
+  ansible.builtin.assert:
+    that:
+      - jellyfin_scheduled_task_triggers | type_debug == 'dict'
+      - jellyfin_scheduled_task_triggers.keys() | list == ['RefreshLibrary']
+      - jellyfin_scheduled_task_triggers.RefreshLibrary | length == 1
+      - jellyfin_scheduled_task_triggers.RefreshLibrary[0].keys() | sort == ['IntervalTicks', 'Type']
+      - jellyfin_scheduled_task_triggers.RefreshLibrary[0].Type == 'IntervalTrigger'
+      - jellyfin_scheduled_task_triggers.RefreshLibrary[0].IntervalTicks == 36000000000
+    fail_msg: The fixed Jellyfin scheduled task declaration differs.
+
+- name: Initialize the Jellyfin scheduled task targets
+  ansible.builtin.set_fact:
+    jellyfin_scheduled_task_targets: []
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Resolve the Jellyfin scheduled task targets
+  ansible.builtin.set_fact:
+    jellyfin_scheduled_task_targets: >-
+      {{ jellyfin_scheduled_task_targets + [{
+           'key': item.key,
+           'triggers': item.value,
+           'matches': jellyfin_scheduled_task_key_matches
+         }] }}
+  loop: "{{ jellyfin_scheduled_task_triggers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    jellyfin_scheduled_task_key_matches: >-
+      {{ jellyfin_scheduled_tasks_before.json | default([]) |
+         selectattr('Key', 'defined') | selectattr('Key', 'equalto', item.key) | list }}
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+  no_log: true
+
+# A declared key that the server does not offer is the version bump this whole
+# declaration exists to catch, so it fails the run rather than skipping the
+# post and leaving the compiled default in force unmentioned.
+- name: Require the declared Jellyfin scheduled tasks to exist
+  ansible.builtin.assert:
+    that:
+      - item.matches | length == 1
+      - item.matches[0].Id | default('') is match('^[0-9a-f]{32}$')
+    fail_msg: >-
+      Jellyfin offers no single scheduled task with the declared key; the pinned
+      image has renamed, removed or duplicated it.
+  loop: "{{ jellyfin_scheduled_task_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode or jellyfin_wizard_completed | bool
+
+- name: Report planned Jellyfin scheduled task declarations
+  ansible.builtin.debug:
+    msg: "JELLYFIN_PLAN_SCHEDULED_TASK {{ item.key }}"
+  loop: "{{ jellyfin_scheduled_task_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - ansible_check_mode
+    - item.matches | length == 1
+    - item.matches[0].Triggers | default([]) != item.triggers
+  changed_when: true
+
+- name: Declare the Jellyfin scheduled task triggers
+  ansible.builtin.uri:
+    url: >-
+      {{ jellyfin_api ~ '/ScheduledTasks/' ~
+         (item.matches[0].Id | string | urlencode) ~ '/Triggers' }}
+    method: POST
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_reconcile_token }}"'
+    body_format: json
+    body: "{{ item.triggers }}"
+    status_code: [204]
+  loop: "{{ jellyfin_scheduled_task_targets | default([]) }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - not ansible_check_mode
+    - item.matches | length == 1
+    - item.matches[0].Triggers | default([]) != item.triggers
+  changed_when: true
+  no_log: true
