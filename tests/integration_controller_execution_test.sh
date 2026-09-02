@@ -61,6 +61,20 @@ pristine_library=$work/library.pristine
 planted_program=$work/controller.planted
 planted_library=$work/library.planted
 
+# Read back rather than restated: Renovate bumps both of these in the launcher,
+# and a copy of either here would turn the next bump into a red gate that says
+# nothing about the controller. The two package pins below are this test's own
+# fixture values, so they stay literals.
+ansible_core_version=$(sed -n 's/^ansible_core_version=//p' \
+  "$repo_dir/tests/integration.sh")
+requests_version=$(sed -n 's/^requests_version=//p' "$repo_dir/tests/integration.sh")
+[ -n "$ansible_core_version" ] && [ -n "$requests_version" ] || {
+  printf '%s\n' 'cannot read the controller toolchain pins from the launcher' >&2
+  exit 1
+}
+ruby_package=ruby=3.2.9-r0
+curl_package=curl=8.14.1-r2
+
 failures=0
 probe_failures=0
 assert_mode=report
@@ -187,8 +201,14 @@ STUB
   # One stub per contract the lanes below reach. run_contract prepends the
   # environment ABI, so the contract records the two variables whose derivation
   # from the disposable namespace is the property under test.
+  #
+  # jellyfin-foundation and komga-foundation exist for a lane that must never
+  # reach them. The acquisition foundation dispatch is a *closed* case arm, and
+  # a closedness assertion that only holds because the stub is absent would be
+  # detecting a missing fixture rather than an opened arm -- so the fixture is
+  # present and the absence of the invocation is what is asserted.
   for contract_name in arr downloaders bindery trailarr seerr seerr-foundation \
-      kapowarr pinchflat jellyfin komga; do
+      kapowarr pinchflat jellyfin jellyfin-foundation komga komga-foundation; do
     {
       stub_preamble
       cat <<STUB
@@ -300,10 +320,10 @@ export_controller_environment() {
   CONTROLLER_REPO_DIR=${CASE_REPO_DIR-$checkout}
   CONTROLLER_SANDBOX=$sandbox
   CONTROLLER_PROJECT_NAMESPACE=$namespace
-  CONTROLLER_RUBY_PACKAGE=ruby=3.2.9-r0
-  CONTROLLER_CURL_PACKAGE=curl=8.14.1-r2
-  CONTROLLER_ANSIBLE_CORE_VERSION=2.21.3
-  CONTROLLER_REQUESTS_VERSION=2.34.2
+  CONTROLLER_RUBY_PACKAGE=$ruby_package
+  CONTROLLER_CURL_PACKAGE=$curl_package
+  CONTROLLER_ANSIBLE_CORE_VERSION=$ansible_core_version
+  CONTROLLER_REQUESTS_VERSION=$requests_version
   CONTROLLER_EXPECTED_RELEASE_ID=0000000000000000000000000000000000000abc
   CONTROLLER_ACTIVE_RELEASE_DIR=$sandbox/volume1/Docker/nas-platform/releases/0000000000000000000000000000000000000abc
   CONTROLLER_STALE_DOCKER_ROOT=$sandbox/stale/Docker
@@ -599,6 +619,15 @@ case_jellyfin() {
   expect_log 'contract jellyfin argv=[run]'
   expect_log_order 'contract jellyfin argv=[seed]' 'contract jellyfin argv=[run]'
   expect_log 'contract jellyfin env=[PLATFORM_PROJECT_NAME=<unset>][PLATFORM_JELLYFIN_CONTAINER={ns}-jellyfin][PLATFORM_KIND=integration]'
+  # The acquisition foundation dispatch is a closed case arm: no lane but the
+  # last acquisition project's runs the shared foundation's static contract, its
+  # reader prerequisites or its verification. The text assertion this replaces
+  # -- `grep -qF 'seerr)'` -- could not see that, because the same string also
+  # appears in the `arr|downloaders|bindery|trailarr|seerr)` arm forty lines
+  # earlier, so it would have passed with the dispatch arm deleted outright.
+  expect_no_log 'contract jellyfin-foundation'
+  expect_no_log '[--tags][host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin]'
+  expect_no_log '[--tags][platform_verify_media_acquisition_foundation]'
 }
 
 case_komga() {
@@ -616,8 +645,8 @@ case_toolchain_install() {
   run_controller smoke host_prep,deployment_bundle,ntfy,beszel true false \
     site.yml
   expect_status 0
-  expect_log 'apk argv=[add][--no-cache][--quiet][docker-cli][docker-cli-compose][git][tar][openssl][apache2-utils][openssh-client][ruby=3.2.9-r0][curl=8.14.1-r2]'
-  expect_log 'pip argv=[install][--quiet][--no-input][ansible-core==2.21.3][requests==2.34.2]'
+  expect_log "apk argv=[add][--no-cache][--quiet][docker-cli][docker-cli-compose][git][tar][openssl][apache2-utils][openssh-client][$ruby_package][$curl_package]"
+  expect_log "pip argv=[install][--quiet][--no-input][ansible-core==$ansible_core_version][requests==$requests_version]"
   expect_log 'ansible-galaxy argv=[collection][install][-r][{repo}/requirements.yml]'
   expect_log_count 'ansible-playbook argv=' 1
   expect_no_log '[--check][--diff]'
@@ -773,6 +802,8 @@ plant 'verification supplies the transport fact it asserts against' seerr \
   library 'set -- /repo/verify.yml --tags "platform_verify_$verification_tag"' \
   'set -- -e platform_media_control_network=nas-media /repo/verify.yml --tags "platform_verify_$verification_tag"' \
   1
+plant 'acquisition foundation dispatch opened to every suite' jellyfin program \
+  '\n      seerr\)\n' '\n      *)\n' 1 regexp
 plant 'suite_is matches only the full lane' jellyfin program \
   '[ $INTEGRATION_SUITE = full ] || [ $INTEGRATION_SUITE = $1 ]' \
   '[ $INTEGRATION_SUITE = full ]' 1
