@@ -63,7 +63,17 @@
       - "{{ platform_release_dir }}"
       - "{{ platform_current_dir }}"
       - "{{ platform_deploy_root }}/.current-{{ platform_release_id }}"
-      - "{{ (deployment_target_require_current_release | bool) | ternary('1', '0') }}"
+      # Relaxed under --check, and only there. Activating the release is a
+      # command task, which check mode skips, so `current` still names the
+      # previous release when this runs -- requiring the new one would fail every
+      # --check on a host that has ever deployed, which is every real target.
+      # Containment is not weakened: the current-pointer branch still refuses a
+      # pointer that escapes releases/ or whose basename is not a release id. Only
+      # the equality check that check mode structurally cannot satisfy is dropped,
+      # and a real run still passes 1.
+      - >-
+        {{ ((deployment_target_require_current_release | bool) and
+            not ansible_check_mode) | ternary('1', '0') }}
       - "{{ deployment_target_candidate_paths | to_json }}"
   changed_when: false
   check_mode: false

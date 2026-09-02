@@ -6,7 +6,9 @@
 # bundle's Compose selection must resolve before activation. Split out of
 # policy_test.rb: these checks police roles/deployment_bundle and change with it.
 
+require "fileutils"
 require "open3"
+require "tmpdir"
 require "rbconfig"
 require "set"
 require "yaml"
@@ -691,5 +693,70 @@ target_include_sites.each do |relative_path, task|
         "but role #{owning_role} never deploys that project from them")
 end
 
+
+# Activating a release is a command task, which check mode skips, so `current`
+# still names the previous release while target validation runs for real under
+# --check. Requiring the new release there made every --check fail on any host
+# that had ever deployed -- which no lane could see, because a fresh sandbox has
+# no stale pointer to trip over. Both directions are asserted: check mode accepts
+# a stale pointer, and a real run still refuses one.
+def probe_stale_current_pointer(check_mode)
+  old_release = "b" * 40
+  new_release = "c" * 40
+  Dir.mktmpdir("nas-platform-deployment-target-") do |raw_directory|
+    # The validator refuses a storage-root ancestor that is a symlink, and on
+    # macOS mktmpdir hands back a path under /var, which is one.
+    directory = File.realpath(raw_directory)
+    docker_root = File.join(directory, "dock")
+    media_root = File.join(directory, "media")
+    deploy_root = File.join(docker_root, "nas-platform")
+    FileUtils.mkdir_p([File.join(deploy_root, "releases", old_release),
+                       File.join(deploy_root, "releases", new_release),
+                       File.join(deploy_root, "runtime"), media_root])
+    File.symlink(File.join(deploy_root, "releases", old_release),
+                 File.join(deploy_root, "current"))
+    playbook = File.join(directory, "probe.yml")
+    File.write(playbook, YAML.dump([{
+      "name" => "Probe target containment against a stale current pointer",
+      "hosts" => "localhost", "connection" => "local", "gather_facts" => true,
+      "vars" => {
+        "nas_docker_root" => docker_root, "nas_media_root" => media_root,
+        "platform_release_id" => new_release, "platform_kind" => "nas",
+        "platform_compose_kind" => "{{ platform_kind }}",
+        "platform_deploy_root" => "{{ nas_docker_root }}/nas-platform",
+        "platform_release_dir" => "{{ platform_deploy_root }}/releases/{{ platform_release_id }}",
+        "platform_current_dir" => "{{ platform_deploy_root }}/current",
+        "platform_runtime_dir" => "{{ platform_deploy_root }}/runtime"
+      },
+      "tasks" => [{
+        "name" => "Validate target paths",
+        "ansible.builtin.include_role" => { "name" => "deployment_bundle", "tasks_from" => "target" },
+        "vars" => { "deployment_target_service" => "",
+                    "deployment_target_require_current_release" => true,
+                    "deployment_target_extra_paths" => [] }
+      }]
+    }]))
+    command = ["ansible-playbook", "-i", "localhost,", playbook]
+    command << "--check" if check_mode
+    stdout, stderr, status = Open3.capture3(
+      { "ANSIBLE_NOCOLOR" => "1", "ANSIBLE_CONFIG" => File.join(ROOT, "ansible.cfg"),
+        "ANSIBLE_ROLES_PATH" => File.join(ROOT, "roles") },
+      *command, chdir: directory
+    )
+    [status.success?, stdout + stderr]
+  end
+end
+
+check_mode_passes, _check_output = probe_stale_current_pointer(true)
+check(failures, check_mode_passes,
+      "check mode must not require a current release it is structurally unable to activate")
+real_run_passes, real_output = probe_stale_current_pointer(false)
+check(failures, !real_run_passes,
+      "a real run must still refuse a current pointer naming a different release")
+# Asserted by its message, not merely by failing: the fixture can fail for
+# reasons that have nothing to do with release containment, and a negative test
+# that passes for the wrong reason stops guarding anything.
+check(failures, real_output.include?("does not resolve to"),
+      "the real-run refusal must name the release the current pointer failed to reach")
 
 report(failures, "deployment policy: all properties hold", "deployment policy violation(s)")
