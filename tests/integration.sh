@@ -26,7 +26,7 @@ runner_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f1e433d968
 # revision is also what lets Renovate track these, since repology reports
 # Alpine versions without one.
 ruby_package='ruby~3.4.9'
-curl_package='curl~8.21.0'
+curl_package='curl~8.22.0'
 
 # Where the pre-built controller toolchain is published. The image is the five
 # pins above plus tests/integration.Dockerfile and requirements.yml, already
