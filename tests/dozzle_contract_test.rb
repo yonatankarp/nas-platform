@@ -527,13 +527,21 @@ STACK_ROWS = [
   {
     name: "a relay running as root", argument: "services/dozzle/compose.yml",
     edit: lambda { |root|
-      # Both services declare the same identity, so the anchor carries the line
-      # below it: a bare `user:` substitution would hit Dozzle's copy instead and
-      # the row would refuse for a reason it did not plant.
+      # Both services declare the same identity -- a bare `user:` substitution
+      # matches twice and would hit Dozzle's copy, refusing for a reason it did
+      # not plant -- so the anchor carries a neighbouring line to disambiguate.
+      #
+      # It carries the line ABOVE rather than below. The `command:` line that
+      # used to sit directly beneath `user:` no longer does: a cap_drop comment
+      # block came between them (#196) and this anchor silently addressed
+      # nothing until `substitute` refused the count. The script-sha256 label is
+      # unique to the relay, is contiguous with `user:`, and is a declaration
+      # rather than prose, so it does not move when someone explains something.
       edit_yaml_text(root, "services/dozzle/compose.yml",
-                     "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n" \
-                     "    command: [python, /app/alert_relay.py]\n",
-                     "    user: \"0:0\"\n    command: [python, /app/alert_relay.py]\n")
+                     "      dev.nas-platform.alert-relay.script-sha256: ${ALERT_RELAY_SCRIPT_SHA256:?}\n" \
+                     "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
+                     "      dev.nas-platform.alert-relay.script-sha256: ${ALERT_RELAY_SCRIPT_SHA256:?}\n" \
+                     "    user: \"0:0\"\n")
     },
     expects: "alert relay runtime identity differs"
   },

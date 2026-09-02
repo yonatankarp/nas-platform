@@ -809,6 +809,7 @@ def implement_paperless(root)
         restart: unless-stopped
         security_opt:
           - no-new-privileges:true
+        cap_drop: [ALL]
         logging:
           driver: json-file
           options:
@@ -821,6 +822,7 @@ def implement_paperless(root)
         restart: unless-stopped
         security_opt:
           - no-new-privileges:true
+        cap_drop: [ALL]
         logging:
           driver: json-file
           options:

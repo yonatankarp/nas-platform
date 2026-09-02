@@ -32,6 +32,17 @@ services:
     labels:
       dev.dozzle.name: audiobookshelf
     user: "${NAS_UID:?}:${NAS_GID:?}"
+    # Nothing here can consume a capability. `user:` above makes PID 1
+    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
+    # only the bounding set is left to clear, and this image carries no
+    # file-capability binary whose exec a cleared bounding set would refuse.
+    # Both halves were measured, not assumed; see issue #196.
+    #
+    # As with ntfy, the container port is 80 and that is not a capability
+    # question: Docker sets net.ipv4.ip_unprivileged_port_start to 0 in the
+    # container's network namespace, so an unprivileged process binds 80
+    # identically with and without this key. Measured both ways.
+    cap_drop: [ALL]
     ports:
       - "13378:80"
     volumes:
