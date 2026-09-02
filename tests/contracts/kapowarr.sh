@@ -227,6 +227,122 @@ if failures.empty?
   failures << "the Kapowarr settings write must stay redacted" unless
     settings_write && settings_write["no_log"] == true
 
+  # The volume folder migration is the only mutation in this repository that
+  # moves a directory inside a media library, and the one the operator reviews
+  # with --check --diff before it runs. Three properties keep that reviewable.
+  failures << "the Kapowarr volume folder migration must be pinned closed" unless
+    defaults.fetch("kapowarr_volume_folder_migration_allowed", nil) == false
+  migration_option = YAML.safe_load_file(
+    File.join(root, "roles/kapowarr/meta/argument_specs.yml")
+  ).dig("argument_specs", "main", "options", "kapowarr_volume_folder_migration_allowed")
+  failures << "the Kapowarr volume folder migration input must be a declared bool" unless
+    migration_option.is_a?(Hash) && migration_option["type"] == "bool"
+
+  # First: the move is gated on both the one-convergence input and check mode,
+  # so neither an ordinary converge nor a review can move a directory.
+  folder_migration = tasks.find do |task|
+    body = task.dig("ansible.builtin.uri", "body")
+    task.dig("ansible.builtin.uri", "method") == "PUT" &&
+      body.is_a?(Hash) && body.key?("volume_folder")
+  end
+  migration_conditions = Array(folder_migration&.fetch("when", nil)).join(" ")
+  failures << "Kapowarr must migrate volume folders through the application" if
+    folder_migration.nil?
+  failures << "the Kapowarr volume folder move must be gated on the one-convergence input" unless
+    folder_migration &&
+    migration_conditions.include?("kapowarr_volume_folder_migration_allowed") &&
+    migration_conditions.include?("ansible_check_mode")
+  # Second: it asks for the folder the application derives rather than naming
+  # one, and repairs the custom-folder flag the same call would otherwise set --
+  # a volume marked as carrying an operator-chosen folder is one Kapowarr stops
+  # re-deriving, so the next template change would converge silently wrong.
+  migration_body = folder_migration&.dig("ansible.builtin.uri", "body") || {}
+  failures << "the Kapowarr volume folder move must take the derived folder" unless
+    migration_body["volume_folder"].nil? && migration_body["custom_folder"] == false
+  # Third: the plan is read from the application's own rename preview, and that
+  # read must really run under --check, or the review reports nothing.
+  rename_reads = tasks.select do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.include?("/rename?api_key=")
+  end
+  failures << "Kapowarr must read the application's own rename plan per volume" if
+    rename_reads.length < 2
+  rename_reads.each do |task|
+    failures << "#{task.fetch('name')} must be a redacted, real, changeless read" unless
+      task["changed_when"] == false && task["check_mode"] == false && task["no_log"] == true
+  end
+  # Confinement. The comics library is the only tree a restore of this data
+  # covers, so the migration must be unable to move, empty or remove anything
+  # outside it. Four properties carry that, and each is asserted here because a
+  # comment cannot fail a run.
+  #
+  # First: the role names the comics library among the paths it touches, which is
+  # what runs deployment_bundle's containment check against it -- a symlink
+  # between the media root and the library would otherwise let a rename follow
+  # the link out of the tree.
+  target_paths = tasks.find do |task|
+    task.dig("vars", "deployment_target_service") == "kapowarr"
+  end&.dig("vars", "deployment_target_extra_paths")
+  failures << "Kapowarr must name the comics library among the paths it touches" unless
+    Array(target_paths).include?("{{ kapowarr_comics_host_path }}")
+  # Second: a volume enters the plan only if the folder it holds and the folder
+  # Kapowarr previews for it are both under the declared library root. The first
+  # is the directory the move empties and Kapowarr then removes; the second is
+  # where the files land.
+  migration_plan = tasks.find do |task|
+    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_volume_folder_migrations") &&
+      task.key?("when")
+  end
+  plan_conditions = Array(migration_plan&.fetch("when", nil))
+  failures << "the Kapowarr migration plan must confine the folder it moves from" unless
+    plan_conditions.any? do |value|
+      value.to_s.include?("item.folder is match") &&
+        value.to_s.include?("kapowarr_library_root | regex_escape")
+    end
+  failures << "the Kapowarr migration plan must confine the folder it moves to" unless
+    plan_conditions.any? do |value|
+      value.to_s.include?("item.target is match") &&
+        value.to_s.include?("kapowarr_library_root | regex_escape")
+    end
+  # Third: a volume refused by either test is named rather than dropped, because
+  # a silent exclusion is indistinguishable from a converged library.
+  unconfined_report = tasks.find do |task|
+    task.key?("ansible.builtin.debug") &&
+      task["loop"].to_s.include?("kapowarr_volume_folders_unconfined")
+  end
+  failures << "Kapowarr must report each volume folder it refuses as unconfined" if
+    unconfined_report.nil?
+  # Fourth, and the one the other three rest on: the request names no path, so
+  # the folder it installs is the one Kapowarr derives from the root folder that
+  # *volume* is attached to. That is the declared root only while Kapowarr owns
+  # exactly the declared one, so a second root folder must refuse the migration
+  # rather than run it.
+  root_refusal = tasks.find do |task|
+    task.key?("ansible.builtin.assert") &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+        value.to_s.include?("kapowarr_root_folders") &&
+          value.to_s.include?("kapowarr_library_root")
+      end
+  end
+  failures << "a second Kapowarr library root must refuse the volume folder migration" unless
+    root_refusal &&
+    Array(root_refusal["when"]).join(" ").include?("kapowarr_volume_folder_migrations")
+  # The refusal is worthless after the fact, so it must precede the move.
+  if root_refusal && folder_migration
+    failures << "the Kapowarr library root refusal must precede the volume folder move" unless
+      tasks.index(root_refusal) < tasks.index(folder_migration)
+  end
+
+  # And the review itself: one report per volume, naming the folder it holds and
+  # the folder the migration would move it to.
+  migration_report = tasks.find do |task|
+    task.key?("ansible.builtin.debug") &&
+      task["loop"].to_s.include?("kapowarr_volume_folder_migrations")
+  end
+  failures << "Kapowarr must report each volume folder it would move" unless
+    migration_report &&
+    migration_report.dig("ansible.builtin.debug", "msg").to_s.include?("item.folder") &&
+    migration_report.dig("ansible.builtin.debug", "msg").to_s.include?("item.target")
+
   # Kapowarr records a credential-free auth POST as a failed login, so every
   # anonymous probe is gated on the authentication mode the role has already
   # read. At mode 2 the authored pair is in force and an empty body can only be
@@ -304,6 +420,35 @@ if failures.empty?
   # The diagnosis is the point of deferring, so it must not be redacted away.
   failures << "the Kapowarr outcome assertion must stay readable" if
     outcome_assertion && outcome_assertion["no_log"]
+
+  # The folder shape is verified, not merely migrated: a volume added while a
+  # hand-edited template was in force, or a folder renamed in the web interface,
+  # puts a series back under a name Komga titles wrongly, and nothing in
+  # Kapowarr reports it. The migration alone would fix the library once and go
+  # quiet.
+  folder_assertion = verification.select { |task| task.key?("ansible.builtin.assert") }.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_verify_volume_folder_drift")
+    end
+  end
+  failures << "Kapowarr verification must assert every volume folder is the derived one" if
+    folder_assertion.nil?
+  # The drift list is resolved from a loop over what the application reported, so
+  # an empty list is a real verdict only when both reads answered for every
+  # volume. Without that floor a 401 verifies a library of nothing.
+  folder_conditions = Array(folder_assertion&.dig("ansible.builtin.assert", "that")).join(" ")
+  failures << "the Kapowarr volume folder assertion must require both reads to have answered" unless
+    folder_assertion && folder_conditions.include?("kapowarr_verify_volumes.status") &&
+    folder_conditions.include?("kapowarr_verify_rename_plans.results")
+  # An unauthorized Kapowarr answers `result: {}` where the library was, and a
+  # loop over that mapping dies with a type error instead of with the assertion's
+  # diagnosis. The per-volume verification read loops the normalized list for
+  # that reason, not for tidiness.
+  failures << "the Kapowarr verification must loop a normalized volume list" unless
+    rename_reads.any? do |task|
+      Array(task["tags"]).include?("platform_verify_kapowarr") &&
+        task["loop"].to_s.include?("kapowarr_verify_volume_list")
+    end
 
   failures << "Kapowarr verification reads must not claim a change" unless
     verification.all? do |task|

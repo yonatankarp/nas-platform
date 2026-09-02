@@ -8,6 +8,13 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ kapowarr_config_host_path }}"
+      # The comics library is named because the volume folder migration below
+      # moves directories inside it. Naming it here is what runs this role's
+      # containment check against it before anything moves: a symlink anywhere
+      # between the media root and the library, or a library that canonically
+      # resolves outside the media root, refuses the run rather than letting a
+      # rename follow the link out of the tree the platform owns.
+      - "{{ kapowarr_comics_host_path }}"
 
 # The ComicVine key is the one Kapowarr credential this platform authors but
 # does not push. Kapowarr validates `comicvine_api_key` by calling
@@ -329,6 +336,244 @@
   changed_when: true
   no_log: true
 
+# Declaring volume_folder_naming does not migrate the library. Kapowarr stores
+# each volume's absolute folder in its own database at add time and re-derives
+# it for nothing: update_settings() writes the config table and enqueues no
+# work, so every volume added before a template change keeps the folder the old
+# template gave it, and a later download lands in that stored folder. On this
+# platform's library every one of them was `<Series>/Volume NN (YYYY)`, which is
+# the nested shape Komga reads as a series called "Volume 01 (YYYY)".
+#
+# The migration below is a converge rather than an operator step because the
+# requirement is universally quantified -- *every* volume's folder must be the
+# one the declared template derives -- so it needs no identifier the platform
+# has to know in advance, and it is a fixed point.
+#
+# Redacted: the request carries the application API key in its query string.
+- name: Read the Kapowarr library volumes
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/volumes?api_key={{ kapowarr_settings_api_key }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_volumes
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Kapowarr's own answer to "where would this volume's files go", and the only
+# read that gives it. `GET /api/volumes/<id>/rename` runs preview_mass_rename(),
+# which re-derives the volume folder from the current template unless the volume
+# carries a custom folder, and builds every suggested file path underneath it --
+# so a suggested path that lies outside the volume's stored folder is Kapowarr
+# saying the folder itself has to move, and names where to. Deriving the folder
+# in Jinja instead would mean reimplementing an arbitrary format string and the
+# application's illegal-character rules, and a reimplementation that disagreed
+# by one character would report drift forever and never converge.
+#
+# It renames nothing: the route only previews. Redacted for the API key.
+- name: Read the Kapowarr rename plan for every volume
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/volumes/{{ item.id }}/rename?api_key={{ kapowarr_settings_api_key }}
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_volume_rename_plans
+  loop: "{{ kapowarr_volumes.json.result | default([]) }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reset the Kapowarr volume folder plan
+  ansible.builtin.set_fact:
+    kapowarr_volume_folder_plan: []
+
+# `target` is the shallowest folder among the suggested paths that fall outside
+# the volume's stored folder, which is the folder Kapowarr would move the volume
+# to; it is empty when every suggested path is already inside the stored folder,
+# and also when the volume holds no files at all, because the route previews
+# nothing for a volume with nothing in it. `nested` is the independent, template
+# agnostic reading of the same defect: the declared template names one directory
+# level, so a folder Kapowarr derived is always a direct child of the library
+# root, and a deeper one cannot be template-derived whatever the template says.
+# Neither can lie about a converged volume, which is what makes the pair a fixed
+# point; a volume Kapowarr reports without a stored folder is not migratable
+# through this route at all and is excluded below.
+- name: Resolve the Kapowarr volume folder plan
+  ansible.builtin.set_fact:
+    kapowarr_volume_folder_plan: >-
+      {{ kapowarr_volume_folder_plan + [{
+           'id': item.item.id,
+           'title': item.item.title,
+           'folder': item.item.folder | default('', true),
+           'target': (item.json.result | default({}) | dict2items | map(attribute='value')
+                      | reject('match', '\A' ~ (item.item.folder | default('', true) | regex_escape) ~ '/')
+                      | map('dirname') | sort | first | default('', true)),
+           'nested': ((item.item.folder | default('', true) | dirname) != kapowarr_library_root),
+         }] }}
+  loop: "{{ kapowarr_volume_rename_plans.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.id | default('') }}"
+  no_log: true
+
+- name: Reset the pending Kapowarr volume folder migrations
+  ansible.builtin.set_fact:
+    kapowarr_volume_folder_migrations: []
+    kapowarr_volume_folders_unconfined: []
+
+# Confinement, and it is the property this migration is reviewed on rather than a
+# tidiness rule: the comics library is the only tree a restore covers, so nothing
+# outside kapowarr_library_root may be moved, emptied or removed. Both ends are
+# required to be inside it -- the folder the volume holds now, because that is
+# the directory the move empties and Kapowarr then removes, and the folder
+# Kapowarr previews for it, because that is where the files land. A volume
+# failing either is refused rather than migrated, and named by the report below
+# instead of dropping out silently.
+#
+# Neither test is a substitute for the root-folder refusal further down. Kapowarr
+# derives a volume's new folder from *that volume's own* root folder, not from
+# the root this platform declares, so a second root folder is what could put a
+# derived target outside the comics library in the first place.
+- name: Resolve the pending Kapowarr volume folder migrations
+  ansible.builtin.set_fact:
+    kapowarr_volume_folder_migrations: "{{ kapowarr_volume_folder_migrations + [item] }}"
+  when:
+    - item.folder is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')
+    - item.target | length == 0 or
+      item.target is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')
+    - item.target | length > 0 or item.nested | bool
+  loop: "{{ kapowarr_volume_folder_plan }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: Resolve the Kapowarr volume folders outside the declared library root
+  ansible.builtin.set_fact:
+    kapowarr_volume_folders_unconfined: "{{ kapowarr_volume_folders_unconfined + [item] }}"
+  when:
+    - item.target | length > 0 or item.nested | bool
+    - not (item.folder is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')) or
+      (item.target | length > 0 and
+       not (item.target is match('\A' ~ (kapowarr_library_root | regex_escape) ~ '/')))
+  loop: "{{ kapowarr_volume_folder_plan }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# One line per volume, and the reason this is a loop rather than one message:
+# `--check --diff` is the review the comics share gets before anything moves, so
+# it has to name the current folder and the folder the migration would move it
+# to, per volume, rather than a count. It reports on every run, gated or not,
+# because a closed gate is the state the report is for.
+- name: Report each pending Kapowarr volume folder migration
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
+      {{ ('and the declared naming template derives ' ~ item.target)
+      if item.target | length > 0 else
+      ('and holds no files, so Kapowarr previews no target for it: a live run would move it to
+      the name the declared template derives, directly under ' ~ kapowarr_library_root) }}.
+      {{ 'This run moves it.' if kapowarr_volume_folder_migration_allowed | bool else
+      'A run carrying kapowarr_volume_folder_migration_allowed=true would move it.' }}
+  loop: "{{ kapowarr_volume_folder_migrations }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
+
+# Reported, never migrated. This platform cannot repair a volume stored outside
+# the library root without moving a directory the confinement promise excludes,
+# so it says which volume and stops. It cannot arise from anything this role
+# does: every folder the migration writes is one Kapowarr derived from the root
+# asserted below.
+- name: Report each Kapowarr volume folder outside the declared library root
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
+      {{ ('and Kapowarr would derive ' ~ item.target) if item.target | length > 0
+      else 'and Kapowarr previews no target for it' }}, and one of those is outside the
+      declared library root {{ kapowarr_library_root }}. The migration refuses it: moving it
+      would touch a directory outside the comics library. Repair it in Kapowarr, by pointing
+      the volume at the declared root folder, before this platform can converge it.
+  loop: "{{ kapowarr_volume_folders_unconfined }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
+
+# How the role says that this input is not a setting. It is reported on every run
+# that carries it, including the run where it turns out to have nothing left to
+# do, so a flag left on is visible in the output rather than silent.
+- name: Report the one-convergence Kapowarr volume folder migration input
+  ansible.builtin.debug:
+    msg: >-
+      KAPOWARR_VOLUME_FOLDER_MIGRATION_ALLOWED: pending volume folder moves
+      {{ kapowarr_volume_folder_migrations | map(attribute='folder') | list }}.
+      kapowarr_volume_folder_migration_allowed is a one-convergence input, not a platform
+      setting: drop it from the next run and never store it in a host variable file. An empty
+      list here means it is already stale. Komga indexes the directories these moves rename,
+      so rescan its Comics library once this run finishes.
+  when: kapowarr_volume_folder_migration_allowed | bool
+  changed_when: false
+
+# `volume_folder: null` is Kapowarr's own "use the folder the template derives":
+# change_volume_folder() regenerates the path from the current template, moves
+# the files onto it with a rename rather than a copy, updates their paths in its
+# database and returns early when the derived path is the one already stored --
+# so a second converge is a no-op inside the application as well as here.
+#
+# `custom_folder: false` repairs the same call's own bookkeeping. It sets
+# custom_folder from a variable it has already overwritten with the generated
+# path, so it marks every volume it derives a folder for as carrying an operator
+# chosen one, and a volume marked that way is one preview_mass_rename() stops
+# re-deriving -- the next template change would then converge silently wrong.
+# The application accepts the key on the same request and applies it after the
+# move. Confirmed against the pinned image: custom_folder reads back 0.
+#
+# The request names no path, so the folder it installs is whatever Kapowarr
+# derives -- and Kapowarr derives it from the root folder the *volume* is
+# attached to, not from the root this platform declares. Those are the same root
+# only while Kapowarr owns exactly the declared one, so that is asserted here,
+# immediately before the only mutation that depends on it, rather than left to
+# the verification at the end of this role. A second root folder is refused
+# instead of migrated: it is the one state in which a derived target could land
+# outside the comics library.
+- name: Refuse a Kapowarr volume folder migration beyond the declared library root
+  ansible.builtin.assert:
+    that:
+      - >-
+        kapowarr_root_folders.json.result | default([]) | map(attribute='folder') |
+        map('regex_replace', '/+$', '') | list == [kapowarr_library_root]
+    fail_msg: >-
+      Kapowarr owns library roots other than the declared
+      {{ kapowarr_library_root }}, and it derives a volume's new folder from the root that
+      volume is attached to, so a migration could move a directory outside the comics
+      library. Remove the undeclared root folder in Kapowarr first. No volume was moved.
+  when: kapowarr_volume_folder_migrations | length > 0
+
+# This is the only mutation in this repository that moves a directory in the
+# comics library, which is why it is gated. Kapowarr removes the emptied source
+# directory and any parent that becomes empty, up to but never including the
+# library root, and stops at any directory that still holds something -- it
+# never touches a file and never touches a directory that is not a volume's.
+# Redacted: the request carries the application API key in its query string.
+- name: Migrate Kapowarr volume folders onto the declared naming template
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/volumes/{{ item.id }}?api_key={{ kapowarr_settings_api_key }}"
+    method: PUT
+    body_format: json
+    body:
+      volume_folder: null
+      custom_folder: false
+    status_code: [200]
+  loop: "{{ kapowarr_volume_folder_migrations }}"
+  loop_control:
+    label: "{{ item.id }}"
+  when:
+    - not ansible_check_mode
+    - kapowarr_volume_folder_migration_allowed | bool
+  changed_when: true
+  no_log: true
+
 - name: Verify the Kapowarr service endpoint
   tags: [platform_verify_kapowarr]
   ansible.builtin.uri:
@@ -470,3 +715,114 @@
       administrator, refuses everyone else, owns exactly the declared comics
       library root, and holds the declared application settings in the declared
       service order.
+
+# The library's folder shape is verified rather than only migrated, because the
+# defect this repairs is not a one-off: a volume added while a hand-edited
+# template was in force, or a folder renamed in the web interface, puts a series
+# back under a name Komga cannot read, and nothing in Kapowarr reports it. These
+# reads repeat the converge's own two -- the tagged path reaches none of its
+# facts -- and take the API key the login above returned.
+# Redacted: the request carries the application API key the login returned.
+- name: Read the Kapowarr library volumes for verification
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/volumes?api_key={{
+         kapowarr_verify_identity.json.result.api_key | default('') }}
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_volumes
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The read above accepts any status so that the assertion below is what fails,
+# and an unauthorized Kapowarr answers `{"error": "ApiKeyInvalid", "result": {}}`
+# -- a mapping where the library was. Looping over that dies with `The loop value
+# must resolve to a 'list', not 'dict'` from the task below instead of with the
+# diagnosis this block exists to give, so the list is normalized here and the
+# assertion reads the status. Confirmed against the pinned image.
+- name: Resolve the Kapowarr volumes reported for verification
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.set_fact:
+    kapowarr_verify_volume_list: >-
+      {{ kapowarr_verify_volumes.json.result
+         if (kapowarr_verify_volumes.json.result | default(none)) is sequence
+            and (kapowarr_verify_volumes.json.result | default(none)) is not mapping
+            and (kapowarr_verify_volumes.json.result | default(none)) is not string
+         else [] }}
+
+# Redacted: the request carries the application API key the login returned.
+- name: Read the Kapowarr rename plan for every volume for verification
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/volumes/{{ item.id }}/rename?api_key={{
+         kapowarr_verify_identity.json.result.api_key | default('') }}
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_rename_plans
+  loop: "{{ kapowarr_verify_volume_list }}"
+  loop_control:
+    label: "{{ item.id }}"
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Reset drifted Kapowarr volume folders
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.set_fact:
+    kapowarr_verify_volume_folder_drift: []
+
+# The same two readings as the converge, for the same reason: a suggested path
+# outside the volume's stored folder is Kapowarr saying the folder must move, and
+# a folder deeper than one level under the library root cannot be one the
+# declared template derived. A volume Kapowarr reports without a folder is drift
+# too here -- the converge cannot repair it, so the verification must say so
+# rather than pass over it.
+- name: Resolve drifted Kapowarr volume folders
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.set_fact:
+    kapowarr_verify_volume_folder_drift: >-
+      {{ kapowarr_verify_volume_folder_drift + [{
+           'id': item.item.id,
+           'folder': item.item.folder | default('', true),
+         }] }}
+  when: >-
+    (item.item.folder | default('', true) | length == 0) or
+    ((item.item.folder | default('', true) | dirname) != kapowarr_library_root) or
+    ((item.json.result | default({}) | dict2items | map(attribute='value')
+      | reject('match', '\A' ~ (item.item.folder | default('', true) | regex_escape) ~ '/')
+      | list | length) > 0)
+  loop: "{{ kapowarr_verify_rename_plans.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item.id | default('') }}"
+  no_log: true
+
+# An empty library asserts nothing here, and that is the honest verdict: a
+# platform that owns no volume owns no misnamed folder. The floor the assertion
+# does hold is that both reads answered, so a 401 or an unreachable application
+# fails with a diagnosis instead of resolving an empty drift list from nothing.
+- name: Require converged Kapowarr volume folders
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.assert:
+    that:
+      - kapowarr_verify_volumes.status | default(0) | int == 200
+      - >-
+        kapowarr_verify_rename_plans.results | default([]) | length ==
+        kapowarr_verify_volume_list | length
+      - kapowarr_verify_volume_folder_drift | length == 0
+    fail_msg: >-
+      Kapowarr is unreachable, or it holds volume folders the declared
+      volume_folder_naming does not derive: {{ kapowarr_verify_volume_folder_drift
+      | map(attribute='folder') | list }}. Komga builds a series from the directory that
+      directly contains the books, so each of those is a series it titles after the wrong
+      directory. Review the migration with --check --diff, then rerun that one convergence
+      with kapowarr_volume_folder_migration_allowed=true. A folder in that list which is
+      not under {{ kapowarr_library_root }} is the one case the migration refuses rather
+      than repairs, because moving it would leave the comics library; repair that volume's
+      root folder in Kapowarr instead.

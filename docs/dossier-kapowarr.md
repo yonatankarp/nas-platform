@@ -229,6 +229,92 @@ above failed as `FolderNotFound` because `/comics/sub` did not exist on disk,
 which says nothing about the parent/child rule. It may well be true; this
 investigation did not test it. Unverified.
 
+## Renaming an existing volume folder, and why it is not the rename task
+
+The sharpest item this file used to leave open. A settings write renames
+nothing, so a `volume_folder_naming` change reaches only volumes added after it
+— and Kapowarr offers **two** surfaces that re-derive an existing volume's
+folder, which are not interchangeable.
+
+```
+POST /api/system/tasks {"cmd": "mass_rename", "volume_id": 1}   → a queued task id
+PUT  /api/volumes/1    {"volume_folder": null}                  → 200, synchronous
+```
+
+Both are Confirmed to exist against the pinned image. `roles/kapowarr` uses the
+second, and the reasons are worth keeping because the first is the one the name
+suggests:
+
+- **`mass_rename` renames every file as well as the folder.** It is
+  `preview_mass_rename()` applied, so it moves the volume folder *and* renames
+  each file onto `file_naming`. On a 4 TB library that is thousands of file
+  renames to fix a directory name.
+- **`mass_rename` skips the folder for a volume carrying a custom folder.**
+  `preview_mass_rename()` re-derives the folder only `if not
+  volume_data.custom_folder`, so a library-imported volume is silently left
+  nested. `change_volume_folder(None)` ignores that flag and always re-derives.
+- **`mass_rename` is a queued task**, so a converge would have to poll
+  `GET /api/system/tasks` for completion. The `PUT` runs in the request thread
+  and answers when the move is done.
+- **`mass_rename` deletes more.** It calls `delete_empty_parent_folders()`
+  unconditionally after any rename.
+
+What `PUT /api/volumes/<id> {"volume_folder": null}` does, all Confirmed against
+the pinned image with a seeded nested library: it regenerates the folder path
+from the *current* template, moves the files with a rename rather than a copy,
+updates their paths in its database, and **returns early when the derived path
+is the one already stored** — so a second call is a no-op inside the application
+as well as in Ansible. It renames no file. It answers `{"error": null, "result":
+null}`, which says nothing about what it did; the folder has to be read back.
+
+Two behaviours a caller has to know about.
+
+**It deletes the directory it empties, and empty parents above it.** Not the
+files — `delete_empty_child_folders()` then `delete_empty_parent_folders()` walk
+up from the old folder, stop at the library root, and stop at the first
+directory that still holds anything. Confirmed: with two volumes under one
+`Invincible/` parent, moving the first left the parent alone and moving the
+second removed it, and an empty `extras/` subdirectory of a moved volume folder
+went with it. A directory belonging to no volume is never reached —
+`/comics/_oneshots/…` survived the whole migration untouched. There is no way to
+move a volume folder through Kapowarr without this cleanup, and moving the
+directory behind Kapowarr's back instead would desynchronise the absolute path
+it stores per volume.
+
+**It marks the volume as carrying a custom folder, which is a bug.**
+`change_volume_folder()` overwrites its `new_volume_folder` argument with the
+generated path before computing `'custom_folder': new_volume_folder is not
+None`, so the flag is set for a folder the application derived itself. A volume
+marked that way is one `preview_mass_rename()` stops re-deriving, so the next
+template change would converge silently wrong. Sending `custom_folder: false` on
+the same request repairs it: the route applies leftover keys through
+`Volume.update()` *after* the folder move, and `custom_folder` is an accepted
+`VolumeData` field. Confirmed — the flag reads back `0` in the database
+afterwards.
+
+`GET /api/volumes/<id>/rename` is the read that makes this convergent. It is
+`preview_mass_rename()` without the apply, and it builds every suggested file
+path underneath the folder the current template derives — so a suggested path
+outside the volume's stored folder is Kapowarr saying the folder must move, and
+names where to. Confirmed: a nested volume previewed
+`/comics/Invincible (2003)/…`, and the same volume after the move previewed
+paths inside its own folder. That is what lets a role compare against the
+application's own derivation instead of reimplementing an arbitrary format
+string and the illegal-character rules in Jinja.
+
+Its one blind spot: a volume holding no files previews `{}`, because the route
+returns only file renames and there are none — the new folder it computed is
+discarded by the route. Confirmed. So a file-less volume needs the second,
+template-agnostic reading that `roles/kapowarr` also uses: the declared template
+names one directory level, so a folder Kapowarr derived is always a direct child
+of the library root.
+
+Finally, the move does not touch ownership, permissions or file dates on this
+platform. `change_volume_folder()` ends in `mass_process_files()`, but all three
+of its steps return early on an unset setting, and `chmod_folder`, `chown_group`
+and `change_file_date` are all unset at v1.3.1's defaults, which is what this
+platform declares. Confirmed by reading them back from the running container.
+
 ## What the promotion left unowned
 
 Everything below is reachable through `PUT /api/settings`, typed, validated, and
@@ -270,19 +356,31 @@ a second platform service sees, and nothing reverts it.
 - Whether the placeholder set accepted by the naming templates is stable across
   versions. If it is not, a declared template can start failing on an upgrade,
   which turns a good validation property into an upgrade hazard.
-- Whether a converge that writes naming templates against a **populated**
-  library triggers a rename of existing files. This is the sharpest item in the
-  file, because it decides whether settings reconciliation is safe to run on the
-  NAS at all, and it could not be settled: populating a library needs a valid
-  ComicVine key and real downloads.
+- Whether `mass_rename` is safe to trigger against this library. It is not used
+  and its blast radius is the reason, but it was never *run*: everything above
+  about it is read from `backend/implementations/naming.py` and
+  `backend/features/tasks.py` rather than executed. If a file-naming migration
+  is ever wanted, that route needs its own investigation, including how a queued
+  task reports completion.
+- What a rename does while Komga is mid-scan. Komga sees every series move at
+  once, and the migration does not coordinate with it; the operator rescans
+  afterwards. Whether a scan running *during* the move leaves Komga with
+  duplicate or orphaned series was not tested.
+- Whether the suggested paths a rename preview returns can all sit below the
+  volume folder rather than in it. `preview_mass_rename()` puts a loose image
+  file that belongs to an issue in a subfolder of its own, so a volume whose
+  every file is a loose page would preview one level deeper than its folder.
+  This library holds archives, so it was not observed; a role reading the
+  shallowest previewed directory as the target would name a subfolder in that
+  case. The other rewriter of a suggested path, `same_name_indexing()`, is not a
+  risk here: it appends ` (N)` to the basename through `splitext` and never
+  touches the directory. Confirmed by reading it.
 
-  What *is* Confirmed is one piece of negative evidence. The task queue was
-  empty before and after a naming write, and the task history gained nothing —
-  it still held only the `update_all` and `search_all` entries from container
-  start. So a settings write does not enqueue work of its own at this version;
-  renaming is a separate operation with its own route. That is evidence, not
-  proof, and it was gathered against an empty library where there was nothing to
-  rename.
+  Settled by the section above, and no longer open: that a settings write does
+  not rename an existing library. Confirmed twice over — the task queue and
+  history gained nothing across a naming write on an empty library, and on the
+  NAS a download that completed after the template changed still landed in its
+  volume's stored folder.
 - The accepted range for each numeric key. `volume_padding` refused `4` and took
   `3`; nothing else was probed.
 
@@ -321,4 +419,49 @@ curl -s http://127.0.0.1:15656/api/public                          # method 2
 curl -s -X POST http://127.0.0.1:15656/api/auth \
   -H 'Content-Type: application/json' -d '{}'                      # 401
 # and the credentials read back as ******** from here on
+```
+
+The rename confirmations need a *populated* library, which is what blocked them
+before: adding a volume through the application needs a valid ComicVine key and
+real downloads. Seeding Kapowarr's own database instead needs neither, and the
+API reads the library from there.
+
+```sh
+# nested volumes, mirroring the shape the NAS library was in, plus a directory
+# under the root that belongs to no volume
+mkdir -p comics/'Invincible/Volume 01 (2003)/extras' comics/'Invincible/Volume 01 (2018)' \
+         comics/_oneshots/Avatar
+: > comics/'Invincible/Volume 01 (2003)/Invincible 001.cbr'
+: > comics/'Invincible/Volume 01 (2018)/Invincible 001.cbr'
+: > comics/_oneshots/Avatar/avatar.cbr
+
+docker exec -i kw-probe python3 - <<'PY'
+import sqlite3
+c = sqlite3.connect("/app/db/Kapowarr.db")
+c.execute("INSERT INTO volumes (id, comicvine_id, title, year, publisher, volume_number,"
+          " description, site_url, monitored, monitor_new_issues, root_folder, folder,"
+          " custom_folder, special_version, special_version_locked)"
+          " VALUES (1,900001,'Invincible',2003,'Image',1,'','',1,1,1,"
+          "'/comics/Invincible/Volume 01 (2003)',0,NULL,0);")
+c.execute("INSERT INTO issues (id, volume_id, comicvine_id, issue_number,"
+          " calculated_issue_number, title, date, description, monitored)"
+          " VALUES (1,1,910001,'1',1.0,'Issue','2003-01-01','',1);")
+c.execute("INSERT INTO files (id, filepath, size)"
+          " VALUES (1,'/comics/Invincible/Volume 01 (2003)/Invincible 001.cbr',10);")
+c.execute("INSERT INTO issues_files (file_id, issue_id, forced) VALUES (1,1,0);")
+c.commit()
+PY
+docker restart kw-probe        # the application caches the library on start
+
+# the preview names the folder the template derives, and renames nothing
+curl -s "http://127.0.0.1:15656/api/volumes/1/rename?api_key=$K"
+
+# the move, and the bookkeeping repair on the same request
+curl -s -X PUT "http://127.0.0.1:15656/api/volumes/1?api_key=$K" \
+  -H 'Content-Type: application/json' \
+  -d '{"volume_folder": null, "custom_folder": false}'
+
+# repeat it: the same 200, and nothing on disk or in the database changes
+docker exec kw-probe python3 -c "import sqlite3; print(sqlite3.connect(
+  '/app/db/Kapowarr.db').execute('SELECT folder, custom_folder FROM volumes').fetchall())"
 ```

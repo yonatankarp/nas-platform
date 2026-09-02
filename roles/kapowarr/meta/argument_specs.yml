@@ -24,6 +24,9 @@ argument_specs:
       kapowarr_library_root:
         type: path
         required: false
+      kapowarr_volume_folder_migration_allowed:
+        type: bool
+        required: false
       kapowarr_settings:
         type: dict
         required: false
