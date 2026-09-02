@@ -1,6 +1,6 @@
 #!/bin/sh
 
-cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:3f818d6811ff5f3f2b5e5d836df3d25c2dd2e588d3b4981338a8ba17e422f74f
+cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f1e433d968853b7a769989117115b728874824e6c0a27cb96fc
 # Every sandbox resource is namespace-derived, so nothing is deleted by a fixed
 # production name: containers and networks are discovered through exact Compose
 # ownership labels and then matched against the exact namespaced identity
