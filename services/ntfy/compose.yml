@@ -38,6 +38,13 @@ services:
     # only the bounding set is left to clear, and this image carries no
     # file-capability binary whose exec a cleared bounding set would refuse.
     # Both halves were measured, not assumed; see issue #196.
+    #
+    # The container port below is 80, which looks like it should need
+    # NET_BIND_SERVICE and therefore break here. It does not: Docker sets
+    # net.ipv4.ip_unprivileged_port_start to 0 in the container's network
+    # namespace, so any user may bind any port, and a sysctl is not a
+    # capability. Measured both ways -- an unprivileged process binds 80
+    # identically with and without this key.
     cap_drop: [ALL]
     ports:
       - "2586:80"
