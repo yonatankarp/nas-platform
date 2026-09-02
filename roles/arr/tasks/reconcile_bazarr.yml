@@ -64,19 +64,23 @@
 
 # Bazarr 1.6.0 answers a settings POST it cannot validate with 406, not 4xx-with-
 # detail, and the run then reads only "Status code was 406 and not [204]" -- a
-# failure with no name on it. `app/config.py` casts every submitted string with
-# `int()` unless the last dash-segment of its key is one of its `str_keys`
-# (`chmod`, `log_include_filter`, `log_exclude_filter`, `password`, `f_password`,
-# `hashed_password` -- `apikey` is not among them), and dynaconf then validates
-# the whole schema, so a Radarr or Sonarr API key of only decimal digits arrives
-# as an `int`, fails `is_type_of str`, and is refused for good.
+# failure with no name on it. 406 is therefore accepted from the request and
+# refused by the assertion below, which prints the setting name dynaconf named
+# and nothing after it. Retrying would buy only a slower failure: identical
+# schema validation over an identical body answers 406 every time. The response
+# body echoes the offending value, and for `sonarr.apikey` that value is the
+# credential itself, which is why the request stays redacted and only the
+# extracted name is ever rendered.
 #
-# 406 is therefore accepted from the request and refused by the assertion below,
-# which prints the setting name dynaconf named and nothing after it. Retrying
-# would buy only a slower failure: identical schema validation over an identical
-# body answers 406 every time. The response body echoes the offending value, and
-# for `sonarr.apikey` that value is the credential itself, which is why the
-# request stays redacted and only the extracted name is ever rendered.
+# What a 406 does *not* say is why. `app/config.py` casts every submitted string
+# with `int()` unless the last dash-segment of its key is one of its `str_keys`,
+# so a submitted value of only decimal digits can arrive as an `int` and fail
+# `is_type_of str` -- but dynaconf revalidates the *whole* schema on any submit,
+# so a 406 can equally name a setting this request never carried. Naming that
+# cause unconditionally sent two sessions after an all-digit Radarr API key that
+# `roles/vault_contract` already refuses to accept, over a refusal of
+# `general.hostname`, which nothing here submits. The report below therefore
+# blames the cast only for what this request submits.
 - name: Reconcile Bazarr authentication and identical-path Arr connections
   ansible.builtin.uri:
     url: "{{ arr_bazarr_api }}/system/settings"
@@ -96,18 +100,41 @@
   changed_when: true
   no_log: true
 
+- name: Sort what a rejected Bazarr connection request named
+  ansible.builtin.set_fact:
+    arr_bazarr_connection_rejection: >-
+      {{ arr_bazarr_connection_reconciled.content | default('') |
+         acquisition_bazarr_rejection_report(
+           arr_bazarr_connection_body.keys() | list) }}
+  when: arr_bazarr_connection_reconciled.status | default(204) == 406
+  changed_when: false
+  no_log: true
+
 - name: Refuse a rejected Bazarr connection request by the setting it named
+  vars:
+    arr_bazarr_rejection_cast_clause: >-
+      Bazarr casts every submitted value with int() unless the last
+      dash-segment of its key is one of the str_keys in config.py, so a
+      submitted value of only decimal digits arrives as an int and fails
+      is_type_of str; that can explain
+      {{ arr_bazarr_connection_rejection.cast | default([]) | join(', ') }}.
+    arr_bazarr_rejection_stored_clause: >-
+      This request submits no value Bazarr casts for
+      {{ arr_bazarr_connection_rejection.stored | default([]) | join(', ') }},
+      so that cast is not what refused it; dynaconf revalidates the whole
+      schema on any submit, so a refusal can name a setting this request never
+      carried at all.
   ansible.builtin.assert:
     that:
       - arr_bazarr_connection_reconciled.status | default(204) != 406
     fail_msg: >-
       Bazarr refused the connection settings request with 406 over
-      {{ arr_bazarr_connection_reconciled.content | default('') |
-         acquisition_bazarr_rejected_settings | join(', ') }}.
-      Bazarr casts every submitted value with int() unless its key's last
-      dash-segment is one of config.py's str_keys, so an API key of only
-      decimal digits fails the schema's is_type_of str. The refused value is
-      a credential and is deliberately not printed.
+      {{ arr_bazarr_connection_rejection.settings | default([]) | join(', ') }}.
+      {{ arr_bazarr_connection_rejection.cast | default([]) |
+         ternary(arr_bazarr_rejection_cast_clause, '') }}
+      {{ arr_bazarr_connection_rejection.stored | default([]) |
+         ternary(arr_bazarr_rejection_stored_clause, '') }}
+      The refused values can be credentials and are deliberately not printed.
     success_msg: Bazarr accepted the connection settings request.
 
 - name: Reconcile operator-owned Bazarr provider settings

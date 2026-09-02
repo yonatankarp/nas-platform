@@ -63,6 +63,11 @@ BAZARR_ARRAY_SETTINGS = {
 }
 
 
+# Bazarr 1.6.0's own `str_keys` (`app/bazarr/app/config.py`), the last
+# dash-segments it does *not* cast with `int()`. Membership decides both what a
+# desired value may be and, in `acquisition_bazarr_rejection_report`, whether
+# that cast can be blamed for a 406, so it must stay Bazarr's list rather than
+# grow a convenient entry.
 BAZARR_STRING_SETTINGS = {
     "chmod", "log_include_filter", "log_exclude_filter", "password",
     "f_password", "hashed_password",
@@ -118,6 +123,42 @@ def acquisition_bazarr_rejected_settings(value: Any) -> list[str]:
         if name not in named:
             named.append(name)
     return named
+
+
+def acquisition_bazarr_rejection_report(
+    value: Any, submitted_keys: Any = None
+) -> dict[str, list[str]]:
+    """Sort what a Bazarr 406 named by what this request can be blamed for.
+
+    dynaconf revalidates every validator on any submit, so a 406 names a setting
+    the *schema* refused, not necessarily one the request carried. Only a setting
+    this request submits, and whose key Bazarr casts, can be explained by that
+    cast; everything else was already in Bazarr's configuration when the request
+    arrived. `settings` is every name, `cast` and `stored` are that split, and
+    `BAZARR_REJECTION_WITHHELD` is in neither because an unnamed setting cannot
+    be attributed either way.
+
+    `submitted_keys` is the request's form keys — never its values. Unusable
+    input leaves every name in `stored`, because the failure this is printed
+    from must not become a second failure.
+    """
+    settings = acquisition_bazarr_rejected_settings(value)
+    if isinstance(submitted_keys, (list, tuple, set, frozenset)):
+        submitted = {key for key in submitted_keys if isinstance(key, str)}
+    else:
+        submitted = set()
+
+    cast: list[str] = []
+    stored: list[str] = []
+    for name in settings:
+        if name == BAZARR_REJECTION_WITHHELD:
+            continue
+        key = "settings-" + name.replace(".", "-")
+        if key in submitted and key.rsplit("-", 1)[-1] not in BAZARR_STRING_SETTINGS:
+            cast.append(name)
+        else:
+            stored.append(name)
+    return {"settings": settings, "cast": cast, "stored": stored}
 
 
 def _provider_desired_value(value: Any, label: str, setting_name: str) -> Any:
@@ -694,4 +735,5 @@ class FilterModule:
             ),
             "acquisition_bazarr_connection_body": acquisition_bazarr_connection_body,
             "acquisition_bazarr_rejected_settings": acquisition_bazarr_rejected_settings,
+            "acquisition_bazarr_rejection_report": acquisition_bazarr_rejection_report,
         }
