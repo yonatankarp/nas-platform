@@ -422,8 +422,16 @@
       - >-
         (bindery_verify_storage.json.dirs | default([])
          | selectattr('exists') | selectattr('writable') | list | length) == 4
+      # Bindery links a probe file between each library and its staging root and
+      # reports the result. It is the only reading that separates one bind mount
+      # per host share from one per directory: the four paths, their device IDs
+      # and their permissions are identical either way, and an import across the
+      # boundary still succeeds -- by copying every byte. A false here is that
+      # cost, and this is where it surfaces (issue #264).
+      - bindery_verify_storage.json.hardlinkable | default(false) | bool
     fail_msg: >-
       Bindery is unreachable, or it no longer enforces authentication, accepts
       exactly the vault-authored administrator, refuses an unauthenticated
       caller, owns exactly the declared ebook and audiobook destination roots,
-      and reports all four configured directories present and writable.
+      reports all four configured directories present and writable, and can
+      hardlink from each staging root into the library it feeds.

@@ -327,13 +327,21 @@ in the `recovery: critical` class it already carries.
   trusted-proxy entry disables the per-IP rate limiter, and upstream warns about
   it at boot.
 - The live hardlink probe reported `hardlinkable: false` with an EXDEV
-  explanation, but that was on Docker Desktop for macOS, a known source of
-  spurious EXDEV. Whether it reproduces on the NAS kernel is **unverified**.
-  Moot for the initial transport, and not only because `auto` and `hardlink` are
-  both remapped to `move` for a usenet client: `MoveFileCtx` catches EXDEV and
-  falls back to a copy (`internal/importer/renamer.go`), so an import across two
-  separate bind mounts still completes. Confirmed. It matters when qBittorrent
-  arrives and seeding must be preserved.
+  explanation. That was read at the time as a Docker Desktop for macOS artifact,
+  with "whether it reproduces on the NAS kernel" left unverified. **It was not an
+  artifact — it was the mount layout, and the reading was correct.** Issue #264
+  measured EXDEV on the NAS kernel for the sibling Kapowarr stack, and running
+  this image twice on one macOS host, changing nothing but the mounts, answers
+  `hardlinkable: false` for four mounts of four directories and
+  `hardlinkable: true` for two mounts of the two parent shares. `rename(2)` and
+  `link(2)` refuse to cross a mount boundary even when both sides are the same
+  filesystem, which the probe's own reason string says. The consequence was never
+  a failed import — `auto` and `hardlink` are both remapped to `move` for a
+  usenet client, and `MoveFileCtx` catches EXDEV and falls back to a copy
+  (`internal/importer/renamer.go`) — it was a full byte copy of every import and
+  no possibility of hardlinking. `services/bindery/compose.yml` now mounts the
+  two parent shares, and the verification asserts `hardlinkable` so the property
+  cannot regress silently.
 - `tests/expected/bindery.yml` currently carries `vault_keys: []`, and the
   planned-tree guard fails a `planned` project whose role or service directory
   exists — so the directory tree, the status flips and the expectations file all

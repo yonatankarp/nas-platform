@@ -2,13 +2,26 @@
 bindery_port: 8787
 bindery_api: "http://127.0.0.1:{{ bindery_port }}/api/v1"
 bindery_config_host_path: "{{ nas_docker_root }}/bindery/config"
-bindery_ebooks_host_path: "{{ nas_media_root }}/Books/Ebooks"
-bindery_audiobooks_host_path: "{{ nas_media_root }}/Media/Audiobooks"
-# Staging lands beside each library on the same volume and under the same
-# container path SABnzbd reports a finished download at, so an import needs no
-# path remap. The acquisition foundation already declares both directories.
-bindery_ebook_downloads_host_path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
-bindery_audiobook_downloads_host_path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
+# The two host shares each library shares with its own staging directory, and
+# the reason they are mounted as parents rather than four leaves: Ebooks sits
+# beside .acquisition/usenet/ebooks under Books, and Audiobooks beside
+# .acquisition/usenet/audiobooks under Media, so one bind mount per share puts
+# each pair inside one mount. rename(2) refuses to cross a mount boundary even
+# when both sides are the same filesystem, so a mount per leaf turned every
+# import into a full byte copy plus unlink and made hardlinking impossible.
+# Staging still lands under the same container path SABnzbd reports a finished
+# download at, so an import needs no path remap. The four leaves are reached
+# through the container paths below rather than mounted by name.
+#
+# nas_storage declares the two staging directories, both libraries and the Books
+# share; the Media share itself is deliberately not declared, exactly as the
+# identical Media mount Radarr and Sonarr take is not, because a media parent
+# mount is legitimate and the declared leaves below it are where a mode and a
+# recovery class belong. The cost is that Bindery now sees the whole Media share
+# rather than Audiobooks alone, which is the same reach the arr stack has had
+# since Phase 1 and the price of putting each pair inside one mount.
+bindery_books_host_path: "{{ nas_media_root }}/Books"
+bindery_media_host_path: "{{ nas_media_root }}/Media"
 # The container paths the two libraries are mounted at, which are what Bindery
 # stores as its destination root folders. Ebooks and audiobooks must stay
 # separate roots; a single root is the collapse the design forbids.

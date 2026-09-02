@@ -18,16 +18,10 @@ argument_specs:
       bindery_config_host_path:
         type: path
         required: false
-      bindery_ebooks_host_path:
+      bindery_books_host_path:
         type: path
         required: false
-      bindery_audiobooks_host_path:
-        type: path
-        required: false
-      bindery_ebook_downloads_host_path:
-        type: path
-        required: false
-      bindery_audiobook_downloads_host_path:
+      bindery_media_host_path:
         type: path
         required: false
       bindery_ebooks_root:

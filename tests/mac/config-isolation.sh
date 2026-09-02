@@ -174,10 +174,8 @@ render() {
     NAS_UID=1000 NAS_GID=100 TZ=UTC \
     BINDERY_API_KEY=00000000000000000000000000000000 \
     BINDERY_CONFIG_PATH="$temporary_dir/$label-bindery-config" \
-    BINDERY_EBOOKS_PATH="$temporary_dir/$label-media/Books/Ebooks" \
-    BINDERY_AUDIOBOOKS_PATH="$temporary_dir/$label-media/Media/Audiobooks" \
-    BINDERY_EBOOK_DOWNLOADS_PATH="$temporary_dir/$label-media/Books/.acquisition/usenet/ebooks" \
-    BINDERY_AUDIOBOOK_DOWNLOADS_PATH="$temporary_dir/$label-media/Media/.acquisition/usenet/audiobooks" \
+    BINDERY_BOOKS_PATH="$temporary_dir/$label-media/Books" \
+    BINDERY_MEDIA_PATH="$temporary_dir/$label-media/Media" \
     BINDERY_HOST_PORT="$bindery_port" \
     docker compose --project-name "$base_name-bindery" \
       -f "$repo_dir/services/bindery/compose.yml" \

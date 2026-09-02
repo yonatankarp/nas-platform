@@ -86,17 +86,18 @@ if failures.empty?
       service.dig("environment", name) == expected
   end
 
-  # The two libraries and the two staging directories are mounted at the same
-  # absolute paths SABnzbd uses for the same host directories, because SABnzbd
-  # reports a finished download by its own container path and Bindery reads that
-  # path off the filesystem.
-  failures << "Bindery must mount its database, both libraries and both staging roots" unless
+  # One bind mount per host share, not one per leaf: each library and its own
+  # staging directory have to land inside a single mount, because rename(2)
+  # refuses to cross a mount boundary even when both sides are the same
+  # filesystem. The container paths below are still the absolute paths SABnzbd
+  # uses for the same host directories, because SABnzbd reports a finished
+  # download by its own container path and Bindery reads that path off the
+  # filesystem.
+  failures << "Bindery must mount its database and each library's whole host share" unless
     Array(service["volumes"]) == [
       "${BINDERY_CONFIG_PATH:?}:/config",
-      "${BINDERY_EBOOKS_PATH:?}:/data/books/Ebooks",
-      "${BINDERY_AUDIOBOOKS_PATH:?}:/data/media/Audiobooks",
-      "${BINDERY_EBOOK_DOWNLOADS_PATH:?}:/data/books/.acquisition/usenet/ebooks",
-      "${BINDERY_AUDIOBOOK_DOWNLOADS_PATH:?}:/data/media/.acquisition/usenet/audiobooks"
+      "${BINDERY_BOOKS_PATH:?}:/data/books",
+      "${BINDERY_MEDIA_PATH:?}:/data/media"
     ]
 
   # Omitting either audiobook variable silently falls back to its ebook
@@ -136,12 +137,8 @@ if failures.empty?
 
   defaults = YAML.safe_load_file(File.join(root, "roles/bindery/defaults/main.yml"))
   {
-    "bindery_ebooks_host_path" => "{{ nas_media_root }}/Books/Ebooks",
-    "bindery_audiobooks_host_path" => "{{ nas_media_root }}/Media/Audiobooks",
-    "bindery_ebook_downloads_host_path" =>
-      "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks",
-    "bindery_audiobook_downloads_host_path" =>
-      "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks",
+    "bindery_books_host_path" => "{{ nas_media_root }}/Books",
+    "bindery_media_host_path" => "{{ nas_media_root }}/Media",
     "bindery_config_host_path" => "{{ nas_docker_root }}/bindery/config",
     "bindery_ebooks_root" => "/data/books/Ebooks",
     "bindery_audiobooks_root" => "/data/media/Audiobooks"
@@ -367,7 +364,11 @@ if failures.empty?
     "the refused anonymous caller" => ["bindery_verify_anonymous.status", "401"],
     "the accepted vault administrator" => ["bindery_verify_identity.status", "200"],
     "the owned destination roots" => ["bindery_verify_roots", "bindery_library_roots"],
-    "the writable configured storage" => ["bindery_verify_storage", "writable"]
+    "the writable configured storage" => ["bindery_verify_storage", "writable"],
+    # The service's own EXDEV probe, and the only reading that tells one bind
+    # mount per host share from one per directory: everything else about the
+    # four paths is identical either way and an import still reports success.
+    "the hardlinkable staging layout" => ["bindery_verify_storage", "hardlinkable"]
   }.each do |label, (needle, value)|
     failures << "Bindery verification must assert #{label}" unless
       conditions.any? { |condition| condition.include?(needle) && condition.include?(value) }
@@ -551,6 +552,15 @@ storage = parsed(get("/api/v1/system/storage", key_headers), "storage")
   fail_contract("Bindery reports no #{name} directory") if entry.nil?
   fail_contract("Bindery cannot write its #{name} directory at #{entry['path']}") unless
     entry["exists"] && entry["writable"]
+end
+# Bindery links a probe file from each staging root into the library it feeds and
+# reports whether it worked. rename(2) and link(2) refuse to cross a mount
+# boundary even when both sides are one filesystem, so mounting a library and its
+# staging directory separately makes every import a full byte copy while every
+# other reading above stays identical. The reason string is the diagnosis.
+unless storage["hardlinkable"] == true
+  reason = storage.fetch("hardlinkReason", "no reason reported")
+  fail_contract("Bindery cannot hardlink from its staging roots into its libraries: #{reason}")
 end
 
 settings = parsed(get("/api/v1/setting", key_headers), "settings")
