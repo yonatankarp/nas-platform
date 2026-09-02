@@ -375,6 +375,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/immich_selective_helper_integrity_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb\ --self-test
+  ruby\ tests/komga_contract_test.rb
+  ruby\ tests/komga_contract_test.rb\ --self-test
   ruby\ tests/reader_platform_identity_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
