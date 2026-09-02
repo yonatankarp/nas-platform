@@ -51,8 +51,8 @@ grep -q '^UNRELATED_LIBRARY_ROOT = "/config/\.nas-platform-unmanaged"$' "$runtim
 # built from the fixture config path's environment name -- along with the
 # adoption lane that seeded it, leaving two guards over a variable no code
 # reads. The sibling of the one below, a plain grep for that fetch reading "$0",
-# was deleted with this commit: its pattern was its own only subject, so no
-# content of the contract could make it fail. This one is kept because it still
+# was deleted here rather than by 02d60e2: its pattern was its own only subject,
+# so no content of the contract could make it fail. This one is kept because it still
 # bites -- a fallback planted in the runtime program is refused -- and it pairs
 # with tests/mac/run.sh, which reserves the same variable as required-unset.
 # What the deleted guard was really protecting is a platform property, not a

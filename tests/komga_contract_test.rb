@@ -1041,6 +1041,13 @@ SELF_READ_ROWS = [
 
 def self_read_failures(wrapper_source: File.read(CONTRACT))
   failures = []
+  # A floor rather than non-emptiness. The summary line below derives its count
+  # from this list, so a list that shrank to nothing would report "all 0
+  # self-read guards bite" and pass -- and shrinking is exactly what happened to
+  # this set, once already.
+  failures << "self-read: the guard set has shrunk to #{SELF_READ_ROWS.length} row(s); " \
+              "a guard was deleted without its property moving somewhere that can fail" if
+    SELF_READ_ROWS.length < 3
   in_parallel_cases(failures, SELF_READ_ROWS) do |row, collected|
     program = File.read(row.fetch(:file) == :runtime ? RUNTIME_PROGRAM : STATIC_PROGRAM)
     found = program.scan(row.fetch(:from)).length
