@@ -26,6 +26,7 @@ mac_compose=$repo_dir/services/komga/compose.mac.yml
 role=$repo_dir/roles/komga/tasks/main.yml
 defaults=$repo_dir/roles/komga/defaults/main.yml
 argument_specs=$repo_dir/roles/komga/meta/argument_specs.yml
+environment=$repo_dir/roles/komga/templates/env.j2
 
 fail_contract() {
   printf 'Komga contract failed: %s\n' "$1" >&2
@@ -37,25 +38,28 @@ fail_contract() {
 [ -f "$argument_specs" ] || fail_contract 'roles/komga/meta/argument_specs.yml is absent'
 [ -f "$compose" ] || fail_contract 'services/komga/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/komga/compose.mac.yml is absent'
+[ -f "$environment" ] || fail_contract 'roles/komga/templates/env.j2 is absent'
 grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 240' "$runtime_program" ||
   fail_contract 'fixture scan timeout differs'
 
 ruby -ryaml "$static_program" "$compose" "$mac_compose" "$role" "$defaults" \
-  "$argument_specs" </dev/null
+  "$argument_specs" "$environment" </dev/null
 
 grep -q '^UNRELATED_LIBRARY_ROOT = "/config/\.nas-platform-unmanaged"$' "$runtime_program" ||
   fail_contract 'unrelated library fixture API root can collide with /data'
-# This guard is a tautology, and has been one since 02d60e2 (2026-08-17) removed
-# the unrelated-library fixture root -- a Pathname built from that environment
-# name -- from the runtime half along with the adoption lane that seeded it. The
-# literal now occurs nowhere in this contract but the grep line below, so the
-# pattern and its only subject are the same text and no content of the contract
-# can make it fail. Deliberately still reading "$0", because that is exactly
-# what it does today: repointing it at the runtime program would make the
-# contract refuse a clean tree, which is a repair rather than a move. The three
-# greps around it have their subject in the runtime program and moved with it.
-grep -F 'ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH")' "$0" >/dev/null ||
-  fail_contract 'Komga fixture config path must be explicit'
+# 02d60e2 (2026-08-17) removed the unrelated-library fixture root -- a Pathname
+# built from the fixture config path's environment name -- along with the
+# adoption lane that seeded it, leaving two guards over a variable no code
+# reads. The sibling of the one below, a plain grep for that fetch reading "$0",
+# was deleted with this commit: its pattern was its own only subject, so no
+# content of the contract could make it fail. This one is kept because it still
+# bites -- a fallback planted in the runtime program is refused -- and it pairs
+# with tests/mac/run.sh, which reserves the same variable as required-unset.
+# What the deleted guard was really protecting is a platform property, not a
+# fixture one: config storage must not land under the media root, or Komga's
+# database ends up inside the read-only library it indexes. That is asserted in
+# komga-static.rb against roles/komga/templates/env.j2, which is what decides
+# the two host paths today.
 if grep -E 'ENV\.fetch\("PLATFORM_KOMGA_CONFIG_PATH",[[:space:]]*MEDIA_ROOT' \
     "$runtime_program" >/dev/null; then
   fail_contract 'Komga fixture config path has an unsafe media-root fallback'

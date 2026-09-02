@@ -3,12 +3,13 @@
 # Mac override, the role's task order and its declared inputs, all decided from
 # the repository alone with nothing deployed.
 #
-# usage: komga-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS ARGUMENT_SPECS
+# usage: komga-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS ARGUMENT_SPECS ENV_TEMPLATE
 #
 # PLATFORM_CONTRACT_REPO_DIR names the tree being inspected, which is where
 # tests/policy_support.rb is required from -- not the checkout this file lives
 # in. Run it through tests/contracts/komga.sh rather than directly.
-compose_path, mac_path, role_path, defaults_path, argument_specs_path = ARGV
+compose_path, mac_path, role_path, defaults_path, argument_specs_path,
+  environment_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 
@@ -46,6 +47,37 @@ abort "Komga contract failed: storage contract differs" unless service.fetch("vo
   "${KOMGA_CONFIG_PATH:?}:/config",
   "${KOMGA_LIBRARY_PATH:?}:/data:ro"
 ]
+
+# Where those two mount sources come from, which the volume list above cannot
+# say: it pins the container side of each mount and leaves the host side to a
+# variable. 02d60e2 (2026-08-17) deleted the fixture config path that two
+# wrapper guards named, along with the adoption lane that seeded it, and one of
+# those two -- a grep whose pattern was its own only subject -- went with it.
+# The property they were written for outlives the fixture, because the volume
+# list above is what makes it matter: config is mounted at /config and the
+# library at /data:ro, so a config path resolving under the media root can land
+# inside the library Komga indexes and put its database in a read-only tree.
+#
+# Deliberately source text, the same altitude tests/policy_test.rb reads these
+# templates at: there is no one structure to parse across a rendered env file,
+# and the render is what the container is given. Whitespace inside the Jinja
+# expression is tolerated so a reformatted template cannot fail for a reason
+# other than the one named.
+environment = File.read(environment_path)
+env_value = lambda do |name|
+  values = environment.scan(/^#{Regexp.escape(name)}=(.*)$/).flatten
+  abort "Komga contract failed: #{name} is not rendered exactly once" unless values.length == 1
+  values.first.strip
+end
+rooted_at = lambda { |value, root| value.match?(%r{\A\{\{\s*#{root}\s*\}\}/}) }
+# Both halves are load-bearing and neither implies the other. Config outside
+# the media root protects nothing once the library leaves it, and a library
+# inside the media root is no safer if config follows it there.
+abort "Komga contract failed: config storage is not rooted outside the media tree" unless
+  rooted_at.call(env_value.call("KOMGA_CONFIG_PATH"), "nas_docker_root")
+abort "Komga contract failed: the library is not rooted in the media tree" unless
+  rooted_at.call(env_value.call("KOMGA_LIBRARY_PATH"), "nas_media_root")
+
 abort "Komga contract failed: restart policy differs" unless service.fetch("restart") == "unless-stopped"
 abort "Komga contract failed: logging policy differs" unless service.fetch("logging") == {
   "driver" => "json-file", "options" => { "max-size" => "10m", "max-file" => "3" }
