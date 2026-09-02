@@ -22,8 +22,31 @@ concurrency:
   # nightly sweep -- not a push, so still cancelling -- would kill an in-flight
   # post-merge run once a night and reintroduce exactly what the predicate below
   # removes. Keyed apart, a merge and the nightly sweep neither cancel nor block
-  # one another, and two merges landing together queue instead of racing.
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
+  # one another.
+  #
+  # The push fallback is `github.sha`, not `github.ref`, because the predicate
+  # below was necessary but not sufficient. It did stop mid-flight cancellation:
+  # every `main` push run cancelled before it landed carries 23-25 cancelled jobs,
+  # and every one cancelled after it carries **zero**, having never left the
+  # pending queue. What kept cancelling them is the queue itself. A shared
+  # `refs/heads/main` group serialises every merge, and GitHub's default
+  # `queue: single` permits exactly one *pending* run per group: when a third
+  # merge arrives while one run is executing and one is waiting, the waiting run
+  # is cancelled to make room. That cost 5 of 57 push runs -- 8.8% -- after the
+  # predicate landed, in bursts rather than steadily, because eviction needs
+  # three merges overlapping and so tracks merge cadence.
+  #
+  # Keying pushes per commit makes eviction structurally impossible instead of
+  # merely reconfigured: every merge is its own group of one, so it neither
+  # supersedes nor waits behind another. `queue: max` (up to 100 pending) would
+  # have kept the serialisation, but the only way to find out whether GitHub
+  # rejects it alongside an *expression* for `cancel-in-progress` -- the
+  # combination with a literal `true` is a documented validation error -- is to
+  # push to `main` and see, and a workflow that refuses to start is the same
+  # untested tree with a louder failure. Serialising merges bought nothing worth
+  # that: the runs contend for one account-wide job budget either way, and that
+  # queue is at the job level, where waiting does not evict.
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:

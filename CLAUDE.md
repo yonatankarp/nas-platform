@@ -207,8 +207,12 @@ its pull request already tested. `--full` is what the nightly `schedule` and
 `workflow_dispatch` request, and what a push falls back to when it has no base
 to diff against, because routing fails open: an unmapped path runs every lane,
 so a missed CI entry costs time rather than correctness. Only a pull request
-cancels its own superseded runs; a push to `main` queues instead, since its run
-is the only one that will ever see the tree it merged.
+cancels its own superseded runs, and only a pull request shares a concurrency
+group. Each push to `main` is keyed on its own commit, because its run is the
+only one that will ever see the tree it merged: a shared group serialises merges,
+and GitHub holds at most one *pending* run per group, so a third merge arriving
+cancels the waiting one before it runs a single job. That is not the same failure
+as cancelling an in-flight run and is not prevented by disabling that.
 `tests/ci/workflow_test.rb` pins the workflow's own shape, and
 `tests/ci/classify_changes_test.rb` runs the classify step's own shell against
 synthetic histories.
