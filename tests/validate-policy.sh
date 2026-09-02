@@ -146,6 +146,10 @@ ruby tests/arr_contract_test.rb
 ruby tests/arr_contract_test.rb --self-test
 ruby tests/downloaders_contract_test.rb
 ruby tests/downloaders_contract_test.rb --self-test
+ruby tests/seerr_contract_test.rb
+ruby tests/seerr_contract_test.rb --self-test
+ruby tests/trailarr_contract_test.rb
+ruby tests/trailarr_contract_test.rb --self-test
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
