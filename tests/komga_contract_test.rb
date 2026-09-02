@@ -812,29 +812,28 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
     state = { libraries: (row[:libraries] || method(:converged_libraries)).call }
              .merge(row.fetch(:state, {}))
     with_runtime_sandbox(state) do |paths|
-      effective = paths
-      if state.fetch(:report_root_link, false)
-        state = state.merge("report_root_override" => nil)
-      end
+      # :before runs against the real report directory; the symlink row then
+      # repoints PLATFORM_REPORT_ROOT at the link its :before created, which is
+      # the only way to hand the program an unsafe root it can still resolve.
       row[:before]&.call(paths)
       if state.fetch(:report_root_link, false)
         state = state.merge(report_root_override: File.join(paths.fetch(:sandbox), "report-link"))
       end
       with_http_fixture(lambda { |port|
         if row.fetch(:seed_first, false)
-          _out, err, seeded = run_runtime(program, "seed", state, effective, port)
+          _out, err, seeded = run_runtime(program, "seed", state, paths, port)
           collected << "#{label}: the seed this row builds on failed: #{err.strip}" unless
             seeded.success?
           row[:mutate_after_seed]&.call(state)
         end
-        stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, effective, port)
+        stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths, port)
         judge(collected, label, row.fetch(:expects), stdout, stderr, status)
         if row[:wants] && !(stdout + stderr).include?(row.fetch(:wants))
           collected << "#{label}: did not report #{row.fetch(:wants).inspect}, " \
                        "got #{(stdout + stderr).strip.inspect}"
         end
         after = row[:after]
-        after&.arity == 2 ? after.call(effective, collected) : after&.call(effective, collected, state)
+        after&.arity == 2 ? after.call(paths, collected) : after&.call(paths, collected, state)
       }, &komga_responder(state))
     end
   end
@@ -1072,9 +1071,8 @@ PROBE
 
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  [[:static, "static", STDIN_PROBE, { static: STDIN_PROBE }],
-   [:runtime, "run", RUNTIME_STDIN_PROBE, { runtime: RUNTIME_STDIN_PROBE }]].each do |
-     layer, mode, _probe, replacement|
+  [[:static, "static", { static: STDIN_PROBE }],
+   [:runtime, "run", { runtime: RUNTIME_STDIN_PROBE }]].each do |layer, mode, replacement|
     with_contract_copy(wrapper: wrapper_source, **replacement) do |contract, copy_root|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
