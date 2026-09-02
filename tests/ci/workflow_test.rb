@@ -219,16 +219,29 @@ concurrency = workflow.fetch("concurrency", {})
 # The event name belongs in the key. Without it `push` and `schedule` both resolve
 # to refs/heads/main, and the nightly sweep -- which still cancels, because it is
 # not a push -- would kill an in-flight post-merge run once a night.
+#
+# The fallback belongs in the key too, and must be per-commit. A `github.ref`
+# fallback puts every merge in one group, and a group serialises: GitHub keeps at
+# most one *pending* run per group and cancels it when a third arrives, which
+# cancelled 8.8% of post-merge runs before they ran a single job. Asserting the
+# whole expression is what fails if the fallback is narrowed back to the ref --
+# the predicate below cannot catch that, because eviction happens with
+# cancel-in-progress already false.
 check(
   failures,
   expression(concurrency["group"]) ==
     'ci-${{ github.workflow }}-${{ github.event_name }}-' \
-    '${{ github.event.pull_request.number || github.ref }}',
-  "concurrency group must separate events and use PR number with a ref fallback"
+    '${{ github.event.pull_request.number || github.sha }}',
+  "concurrency group must separate events and fall back to the commit, not the " \
+  "ref: a shared push group evicts pending merges: " \
+  "#{expression(concurrency['group']).inspect}"
 )
 # Only a pull request supersedes itself. A push to main is the only run that will
 # ever see the tree it merged, and cancelling those ended 21% of recent main runs
 # without a verdict. This is an expression, so it parses as a string, not a boolean.
+# It is honoured -- post-merge runs demonstrably queue rather than cancel -- but it
+# governs only in-flight runs, which is why the group above has to keep pushes out
+# of a shared group as well.
 check(failures, expression(concurrency["cancel-in-progress"]) == "${{ github.event_name == 'pull_request' }}",
       "only pull requests may cancel their own superseded runs")
 check(failures, workflow.dig("permissions", "contents") == "read", "contents permission must be read-only")
