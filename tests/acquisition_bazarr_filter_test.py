@@ -354,6 +354,65 @@ def collect_failures():
     check(failures, named(b"sonarr.apikey must be a str") == ["sonarr.apikey"],
           "a bytes body must be decoded rather than reported as its repr")
 
+    # --- acquisition_bazarr_rejection_report ------------------------------
+    # The refusal a 406 reports and the cause it can be blamed on are two
+    # different questions. dynaconf revalidates every validator on any submit,
+    # so `general.hostname` was refused once by a request that never carried it
+    # while the message explained an all-digit API key -- a cause the vault
+    # contract already makes unmintable. The cast is blamed only for a setting
+    # this request submits under a key Bazarr casts, and nothing else is.
+    report = plugin.acquisition_bazarr_rejection_report
+    fixture_body = plugin.acquisition_bazarr_connection_body(
+        fixture["declarations"], fixture["username"], fixture["password"],
+        "radarrkey", "sonarrkey",
+    )
+    submitted = list(fixture_body.keys())
+    check(failures, "settings-general-hostname" not in submitted,
+          "the connection request must not submit general.hostname")
+
+    unsubmitted = report(
+        f"general.hostname must is_type_of <class 'str'> but it is {secret}",
+        submitted,
+    )
+    check(failures, unsubmitted["settings"] == ["general.hostname"],
+          "a refusal must still be reported by the setting it named")
+    check(failures, unsubmitted["cast"] == [],
+          "a setting this request never submits must not be blamed on the cast")
+    check(failures, unsubmitted["stored"] == ["general.hostname"],
+          "a setting this request never submits must be reported as already stored")
+
+    cast = report(f"sonarr.apikey must is_type_of <class 'str'> but it is {secret}",
+                  submitted)
+    check(failures, cast["cast"] == ["sonarr.apikey"] and cast["stored"] == [],
+          "a submitted key Bazarr casts must be blamed on the cast")
+
+    # `password` is one of Bazarr's own `str_keys`, so it reaches the schema as
+    # the string it was submitted as and the cast cannot be what refused it.
+    uncast = report(f"auth.password must is_type_of <class 'str'> but it is {secret}",
+                    submitted)
+    check(failures, uncast["cast"] == [] and uncast["stored"] == ["auth.password"],
+          "a submitted key Bazarr does not cast must not be blamed on the cast")
+
+    # An unnamed setting cannot be attributed either way, so it is named and
+    # nothing is said about it.
+    opaque_report = report(f"<html>{secret}</html>", submitted)
+    check(failures, opaque_report["settings"] == [withheld]
+          and opaque_report["cast"] == [] and opaque_report["stored"] == [],
+          "a withheld body must be named without a cause being claimed")
+
+    for unusable in (None, "settings-sonarr-apikey", 406, {"a": 1}):
+        degraded = report(
+            f"sonarr.apikey must is_type_of <class 'str'> but it is {secret}",
+            unusable,
+        )
+        check(failures,
+              degraded["cast"] == [] and degraded["stored"] == ["sonarr.apikey"],
+              f"unusable submitted keys must claim no cause: {unusable!r}")
+
+    for result in (unsubmitted, cast, uncast, opaque_report):
+        check(failures, secret not in json.dumps(result),
+              "the value a 406 echoes must never reach the report")
+
     return failures
 
 
