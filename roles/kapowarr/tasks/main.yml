@@ -663,6 +663,22 @@
   check_mode: false
   no_log: true
 
+# The read above accepts any status so that the assertion below is what fails,
+# and an unauthorized Kapowarr answers `{"error": "ApiKeyInvalid", "result": {}}`
+# -- a mapping where the library was. Looping over that dies with `The loop value
+# must resolve to a 'list', not 'dict'` from the task below instead of with the
+# diagnosis this block exists to give, so the list is normalized here and the
+# assertion reads the status. Confirmed against the pinned image.
+- name: Resolve the Kapowarr volumes reported for verification
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.set_fact:
+    kapowarr_verify_volume_list: >-
+      {{ kapowarr_verify_volumes.json.result
+         if (kapowarr_verify_volumes.json.result | default(none)) is sequence
+            and (kapowarr_verify_volumes.json.result | default(none)) is not mapping
+            and (kapowarr_verify_volumes.json.result | default(none)) is not string
+         else [] }}
+
 # Redacted: the request carries the application API key the login returned.
 - name: Read the Kapowarr rename plan for every volume for verification
   tags: [platform_verify_kapowarr]
@@ -674,7 +690,7 @@
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: kapowarr_verify_rename_plans
-  loop: "{{ kapowarr_verify_volumes.json.result | default([]) }}"
+  loop: "{{ kapowarr_verify_volume_list }}"
   loop_control:
     label: "{{ item.id }}"
   failed_when: false
@@ -723,7 +739,7 @@
       - kapowarr_verify_volumes.status | default(0) | int == 200
       - >-
         kapowarr_verify_rename_plans.results | default([]) | length ==
-        kapowarr_verify_volumes.json.result | default([]) | length
+        kapowarr_verify_volume_list | length
       - kapowarr_verify_volume_folder_drift | length == 0
     fail_msg: >-
       Kapowarr is unreachable, or it holds volume folders the declared

@@ -378,6 +378,15 @@ if failures.empty?
   failures << "the Kapowarr volume folder assertion must require both reads to have answered" unless
     folder_assertion && folder_conditions.include?("kapowarr_verify_volumes.status") &&
     folder_conditions.include?("kapowarr_verify_rename_plans.results")
+  # An unauthorized Kapowarr answers `result: {}` where the library was, and a
+  # loop over that mapping dies with a type error instead of with the assertion's
+  # diagnosis. The per-volume verification read loops the normalized list for
+  # that reason, not for tidiness.
+  failures << "the Kapowarr verification must loop a normalized volume list" unless
+    rename_reads.any? do |task|
+      Array(task["tags"]).include?("platform_verify_kapowarr") &&
+        task["loop"].to_s.include?("kapowarr_verify_volume_list")
+    end
 
   failures << "Kapowarr verification reads must not claim a change" unless
     verification.all? do |task|
