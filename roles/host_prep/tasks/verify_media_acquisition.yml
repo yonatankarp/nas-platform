@@ -49,9 +49,9 @@
 - name: Require the exact classified media acquisition storage declaration
   ansible.builtin.assert:
     that:
-      - host_prep_media_acquisition_storage | length == 28
-      - host_prep_media_acquisition_storage | map(attribute='path') | unique | length == 28
-      - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'cache') | list | length == 10
+      - host_prep_media_acquisition_storage | length == 30
+      - host_prep_media_acquisition_storage | map(attribute='path') | unique | length == 30
+      - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'cache') | list | length == 12
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'user') | list | length == 7
       - host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11
       - host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']
@@ -82,13 +82,76 @@
 - name: Require every media acquisition path to be a real mode 0755 directory
   ansible.builtin.assert:
     that:
-      - host_prep_media_acquisition_storage_stats.results | length == 28
+      - host_prep_media_acquisition_storage_stats.results | length == 30
       - item.stat.exists
       - item.stat.isdir
       - not item.stat.islnk
       - item.stat.mode == '0755'
     fail_msg: "Media acquisition foundation path is absent or unsafe: {{ item.item.path }}"
   loop: "{{ host_prep_media_acquisition_storage_stats.results }}"
+  loop_control:
+    label: "{{ item.item.path }}"
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+- name: Select the acquisition tree roots from the inspected paths
+  ansible.builtin.set_fact:
+    host_prep_media_acquisition_tree_roots: >-
+      {{ host_prep_media_acquisition_storage_stats.results |
+         selectattr('item.path', 'search', '/[.]acquisition$') |
+         list }}
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+# Unlooped on purpose, and it must stay that way. The per-path assertion below
+# iterates this list, so a selector that matched nothing would run zero
+# iterations and pass while proving nothing at all. The floor is the only thing
+# standing between that and a guard that can never fail.
+- name: Require both acquisition tree roots to have been inspected
+  ansible.builtin.assert:
+    that:
+      - host_prep_media_acquisition_tree_roots | length == 2
+      - host_prep_media_acquisition_tree_roots |
+        map(attribute='item.path') | map('basename') | unique | list == ['.acquisition']
+    fail_msg: >-
+      Expected exactly two inspected acquisition tree roots, got
+      {{ host_prep_media_acquisition_tree_roots | length }}:
+      {{ host_prep_media_acquisition_tree_roots | map(attribute='item.path') | list }}.
+      Both {{ nas_media_root }}/Media/.acquisition and
+      {{ nas_media_root }}/Books/.acquisition must be declared in nas_storage
+      as media acquisition foundation storage.
+  changed_when: false
+  tags: [platform_verify_media_acquisition_foundation]
+
+# The two directories the Phase 1 acceptance item names. Selecting them out of
+# the stat results proves they were actually inspected above rather than
+# reaching the filesystem as implicit parents nothing declared.
+#
+# `mode == '0755'` is the load-bearing condition, and it is what makes the
+# handoff wording checkable rather than merely written down: other=5 is r-x, so
+# no POSIX permission refuses an ordinary local account and the denial rests
+# entirely on ADM share configuration. Tighten the declaration and this fails,
+# which is the point. The docs claim must not outlive the mode it describes.
+# Deliberately no separate `roth`/`xoth` conditions: other=5 already means
+# exactly r-x, so they could never fail beside the mode condition, and a
+# condition that cannot fail is worse than no condition at all.
+- name: Verify the acquisition tree roots the acceptance item names
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.isdir
+      - not item.stat.islnk
+      - item.stat.mode == '0755'
+      - item.item.owner is not defined
+      - item.item.group is not defined
+    fail_msg: >-
+      Acquisition tree root {{ item.item.path }} is absent, is a symlink, no
+      longer carries its declared world-traversable mode 0755, or has started
+      claiming owner/group under the NAS-owned media root. If the mode was
+      deliberately tightened, update the manual ADM share check in
+      docs/getting-started-nas.md and docs/media-acquisition-phase1.md, which
+      both state that POSIX does not enforce the denial.
+  loop: "{{ host_prep_media_acquisition_tree_roots }}"
   loop_control:
     label: "{{ item.item.path }}"
   changed_when: false

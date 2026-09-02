@@ -142,9 +142,18 @@ listings, or private filenames. Acceptance requires all of the following:
 - one episode completes through SABnzbd and imports into Series;
 - Bazarr writes one required-language subtitle sidecar beside each applicable
   proof item, and Jellyfin detects the sidecar;
-- an ordinary SMB account cannot access `Media/.acquisition` or
-  `Books/.acquisition`, while the service identity can traverse its required
-  paths;
+- a **manual** ADM share check, from a client signed in as a
+  non-administrator SMB account, confirms that `ls /Volumes/Media/.acquisition`
+  and `ls /Volumes/Books/.acquisition` are denied or invisible. This one is not
+  automatable and the platform does not claim it: both trees are declared mode
+  `0755` under a NAS-owned media root, so `o+rx` means no POSIX permission
+  refuses an ordinary local account and the denial rests on ADM share
+  configuration alone. Listing `usenet torrents` is the finding, and the fix is
+  in ADM share permissions rather than in this repository. What the tagged
+  verification run does assert is that both directories exist by name, are real
+  directories rather than symlinks, carry mode `0755`, and claim no owner or
+  group; see
+  [the NAS handoff](getting-started-nas.md#7-verify-and-prove-idempotence);
 - a second convergence without the adoption override succeeds, followed by a
   passing tagged verification run.
 

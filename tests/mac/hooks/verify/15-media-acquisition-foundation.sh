@@ -36,6 +36,6 @@ for catalog in radarr sonarr prowlarr bazarr configarr sabnzbd unpackerr gluetun
   [ -z "$(docker ps -aq --filter "name=^/$PLATFORM_PROJECT_NAME-$catalog$")" ]
 done
 
-# The standalone verifier proves all 28 media_acquisition_foundation entries by
+# The standalone verifier proves all 30 media_acquisition_foundation entries by
 # stat without listing any directory contents.
 printf '%s\n' 'media acquisition verify: exact storage, transports, network, and readers hold'

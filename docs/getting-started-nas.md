@@ -169,12 +169,43 @@ against the production deployment without exercising external integrations; for
 ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
 Dozzle.
 
-Media acquisition also requires a NAS-only ACL acceptance check: using an ordinary SMB
-account, confirm that ordinary SMB users cannot access either
-`Media/.acquisition` or `Books/.acquisition`, while the intended service identity
-can traverse the required directories. Record only pass/fail and the tested
-identity class—never directory listings, ACL dumps containing private account
-details, or secrets. Docker Desktop cannot prove this NAS ACL boundary.
+Media acquisition also requires a NAS-only ADM share check that the platform
+cannot make for you. Be precise about which half is which.
+
+What the platform asserts, on every tagged verification run:
+
+```sh
+ansible-playbook -i inventory/local.yml verify.yml \
+  --tags platform_verify_media_acquisition_foundation
+```
+
+Every classified `media_acquisition_foundation` path exists, is a real
+directory rather than a symlink, and carries its declared mode `0755`. The two
+directories this check names, `Media/.acquisition` and `Books/.acquisition`, are
+asserted by name, and their ownership declaration is asserted to be absent
+because the NAS owns everything under the media root.
+
+What no part of the platform asserts: that an ordinary account is refused.
+Mode `0755` grants `o+rx`, so every local account may list and traverse both
+trees, and the verification run above proves exactly that rather than
+contradicting it. The denial rests entirely on ADM share configuration, which
+Ansible does not own and no test in this repository inspects. A check run from
+an account in `administrators` proves nothing either way.
+
+Verify it by hand, from a client signed in as a **non-administrator** SMB
+account:
+
+```sh
+ls /Volumes/Media/.acquisition
+ls /Volumes/Books/.acquisition
+```
+
+A pass is permission denied, or the path not being visible at all. Listing
+`usenet torrents` is the finding, and the fix is in ADM share permissions rather
+than in this repository. Record only pass/fail and the tested identity class,
+never directory listings, ACL dumps containing private account details, or
+secrets. Docker Desktop cannot prove this boundary at all; see
+[what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
 The platform provisions three ntfy topics for humans, severity first then
 subject, plus one nobody reads.

@@ -213,6 +213,21 @@ nas_storage:
     recovery: user
     media_acquisition_foundation: true
     media_acquisition_writer: true
+  # The two acquisition tree roots are declared ahead of their leaves so their
+  # mode is owned rather than inherited. `ansible.builtin.file` applies the
+  # declared mode to intermediate parents only at the moment it creates them,
+  # so a root left undeclared keeps whatever the first converge produced and no
+  # later change to a leaf ever revisits it. Declared, they are re-asserted
+  # every run. They are not `media_acquisition_writer`: download clients write
+  # into `<transport>/<category>`, never into the root.
+  - path: "{{ nas_media_root }}/Media/.acquisition"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
   - path: "{{ nas_media_root }}/Media/.acquisition/usenet/movies"
     mode: "0755"
     recovery: cache
