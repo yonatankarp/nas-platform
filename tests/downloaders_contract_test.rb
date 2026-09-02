@@ -765,12 +765,24 @@ if ARGV.include?("--self-test")
   mismatches = []
   planted = 0
 
-  in_parallel_cases(mismatches, PROGRAM_MUTATIONS) do |mutation, collected|
+  # Every plant is prepared on the main thread, before the pool. `plant` and
+  # `rows_named` abort with a sentence naming what they could not find, and an
+  # abort inside a worker raises SystemExit there: the thread dies without
+  # recording its result and the pool's own `collected.fetch` then reports a
+  # KeyError instead of that sentence. Nine copies of this helper are coming, so
+  # the ordering is the fix rather than a rescue.
+  program_cases = PROGRAM_MUTATIONS.map do |mutation|
+    [mutation,
+     plant(File.read(STATIC_PROGRAM), mutation, occurrences: mutation.fetch(:occurrences, 1)),
+     rows_named(STATIC_ROWS, mutation.fetch(:rows))]
+  end
+  wrapper_cases = WRAPPER_MUTATIONS.map { |mutation| [mutation, plant(File.read(CONTRACT), mutation)] }
+
+  in_parallel_cases(mismatches, program_cases) do |(mutation, source, rows), collected|
     Dir.mktmpdir("nas-platform-downloaders-mutant.") do |directory|
       path = File.join(directory, "downloaders-static.rb")
-      File.write(path, plant(File.read(STATIC_PROGRAM), mutation,
-                             occurrences: mutation.fetch(:occurrences, 1)))
-      caught = static_failures(path, rows_named(STATIC_ROWS, mutation.fetch(:rows)))
+      File.write(path, source)
+      caught = static_failures(path, rows)
       detects = mutation.fetch(:detects, "accepted what it must refuse")
       if caught.empty?
         collected << "removing #{mutation.fetch(:label)} was accepted"
@@ -782,8 +794,7 @@ if ARGV.include?("--self-test")
   end
   planted += PROGRAM_MUTATIONS.length
 
-  in_parallel_cases(mismatches, WRAPPER_MUTATIONS) do |mutation, collected|
-    source = plant(File.read(CONTRACT), mutation)
+  in_parallel_cases(mismatches, wrapper_cases) do |(mutation, source), collected|
     caught = case mutation.fetch(:layer)
              when :stdin then stdin_failures(wrapper_source: source)
              when :two_roots then two_roots_failures(wrapper_source: source)
