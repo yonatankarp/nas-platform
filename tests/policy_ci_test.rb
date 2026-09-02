@@ -354,6 +354,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/docs_links_test.rb\ --self-test
   ruby\ tests/run_contracts_test.rb
   ruby\ tests/run_contracts.rb\ --validate-only
+  ruby\ tests/jellyfin_contract_test.rb
+  ruby\ tests/jellyfin_contract_test.rb\ --self-test
   ruby\ tests/pinchflat_contract_test.rb
   ruby\ tests/pinchflat_contract_test.rb\ --self-test
   ruby\ tests/immich_contract_test.rb

@@ -43,7 +43,7 @@
       - -init_hw_device
       # This runs inside the container, but the host variable is still the right
       # source: services/jellyfin/compose.yml maps the render device onto itself
-      # rather than renaming it, and tests/contracts/jellyfin.sh pins that exact
+      # rather than renaming it, and tests/contracts/jellyfin-static.rb pins that exact
       # identity mapping, so the container path is the host path.
       - vaapi=va:{{ platform_render_device_path }},driver=iHD
       - -init_hw_device

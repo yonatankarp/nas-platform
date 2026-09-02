@@ -11,7 +11,14 @@ require_relative "policy_support"
 
 include TestScaffold
 
-CONTRACT = File.join(ROOT, "tests", "contracts", "jellyfin.sh")
+# The contract's runtime half, which this file slices rather than runs. It was
+# a <<'RUBY' heredoc inside tests/contracts/jellyfin.sh until issue #147 gave it
+# a file; the eval below reads it directly now, and its backtraces name a real
+# path instead of `-`.
+RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "jellyfin-runtime.rb")
+# The runtime half's first top-level statement, and so the line the eval below
+# must stop before.
+RUNTIME_TOP_LEVEL = /^vault_yaml, vault_error, vault_status = /
 VALIDATE_POLICY = File.join(ROOT, "tests", "validate-policy.sh")
 SECRET = "JELLYFIN-TRANSCODE-SECRET-DO-NOT-LEAK"
 Response = Struct.new(:code, :body)
@@ -380,10 +387,23 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     "PLATFORM_JELLYFIN_TRANSCODE_ROOT" => transcodes
   )
   ARGV.replace(["seed"])
-  runtime_marker = %q{exec ruby - "$mode" "$@" <<'RUBY'} + "\n"
-  runtime = File.read(CONTRACT).split(runtime_marker, 2).fetch(1)
-  library = runtime.split(/^vault_yaml, vault_error, vault_status = /, 2).fetch(0)
-  eval(library, TOPLEVEL_BINDING, CONTRACT)
+  # Two splits used to be needed: one to cut the runtime half out of the shell
+  # file it was a heredoc in, and one to stop before it starts running. Issue
+  # #147 gave the runtime half a file, so only the second remains -- and it is
+  # what keeps this eval a LOAD rather than a run. Everything above the vault
+  # read is definitions and constants; the first statement that acts on a real
+  # Jellyfin is that read, so truncating there is the whole safety property.
+  #
+  # RUNTIME_TOP_LEVEL must therefore match exactly once. A zero-match split
+  # returns the file whole and this eval would execute the contract against the
+  # developer's machine; that is the failure this count refuses.
+  runtime = File.read(RUNTIME_PROGRAM)
+  check(failures, runtime.scan(RUNTIME_TOP_LEVEL).length == 1,
+        "the runtime program's top-level marker is not unique, so the load below would run it")
+  library = runtime.split(RUNTIME_TOP_LEVEL, 2).fetch(0)
+  check(failures, library.length < runtime.length,
+        "the runtime program was not truncated before its top level")
+  eval(library, TOPLEVEL_BINDING, RUNTIME_PROGRAM)
   Object.send(:remove_const, :LIBRARY_RENAME_POLL_INTERVAL_SECONDS)
   Object.const_set(:LIBRARY_RENAME_POLL_INTERVAL_SECONDS, 0.01)
   grace_overridden = Object.const_defined?(:TRANSCODE_OBSERVATION_GRACE_SECONDS)
@@ -538,7 +558,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
       check(failures, mutant_source != wait_source,
             "renamed-library #{label} mutation did not alter production source")
       mutant = Class.new(LibraryWaitScenario)
-      mutant.class_eval(mutant_source, CONTRACT)
+      mutant.class_eval(mutant_source, RUNTIME_PROGRAM)
       mutant_scenario = mutant.new(scenario.responses)
       check(failures, library_wait_failure(mutant_scenario).nil?,
             "removing the renamed-library #{label} survived behavioral tests")
@@ -550,7 +570,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     check(failures, deadline_mutant_source != wait_source,
           "renamed-library deadline-propagation mutation did not alter production source")
     deadline_mutant = Class.new(LibraryWaitScenario)
-    deadline_mutant.class_eval(deadline_mutant_source, CONTRACT)
+    deadline_mutant.class_eval(deadline_mutant_source, RUNTIME_PROGRAM)
     delayed = deadline_mutant.new(
       [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
     )
@@ -569,7 +589,7 @@ Dir.mktmpdir("nas-platform-jellyfin-transcode-") do |directory|
     check(failures, deadline_guard_source != wait_source,
           "renamed-library deadline-guard mutation did not alter production source")
     deadline_guard_mutant = Class.new(LibraryWaitScenario)
-    deadline_guard_mutant.class_eval(deadline_guard_source, CONTRACT)
+    deadline_guard_mutant.class_eval(deadline_guard_source, RUNTIME_PROGRAM)
     late_success = deadline_guard_mutant.new(
       [[complete_library]], delay: LIBRARY_WAIT_TIMEOUT_SECONDS * 2
     )
