@@ -131,6 +131,8 @@ ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
 ruby tests/run_contracts_test.rb
 ruby tests/run_contracts.rb --validate-only
 ruby tests/dozzle_quality_test.rb
+ruby tests/dozzle_contract_test.rb
+ruby tests/dozzle_contract_test.rb --self-test
 ruby tests/jellyfin_transcode_contract_test.rb
 ruby tests/jellyfin_contract_test.rb
 ruby tests/jellyfin_contract_test.rb --self-test

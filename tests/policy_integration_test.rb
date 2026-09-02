@@ -67,7 +67,11 @@ check(failures,
       "tests/integration.sh must run the controller as a file, handing " \
       "it the playbook and the remaining arguments as argv")
 dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
-check(failures, dozzle_contract.include?('exec ruby - "$mode" "$@"'),
+# `- "$mode" "$@"` until issue #147 gave the live half a file of its own. The
+# property is unchanged and still lives in the wrapper: whatever mode the caller
+# asked for, plus the arguments after it, reach the program that talks to the
+# deployed API. Only the token naming that program moved, from `-` to the path.
+check(failures, dozzle_contract.include?('exec ruby "$runtime_program" "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
 integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
 integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
