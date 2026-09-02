@@ -46,6 +46,13 @@ argument_specs:
       jellyfin_library_options:
         type: dict
         required: false
+      # Keyed by Jellyfin's scheduled task Key, each value the exact trigger
+      # list posted to /ScheduledTasks/{id}/Triggers and compared back. A dict
+      # rather than a list because the key is the identity the role resolves
+      # against the server's own task list.
+      jellyfin_scheduled_task_triggers:
+        type: dict
+        required: false
       jellyfin_encoding_profiles:
         type: dict
         required: false

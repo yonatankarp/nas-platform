@@ -1,8 +1,9 @@
 ---
-# Verification. The sixteen platform_verify_jellyfin tasks: they authenticate
+# Verification. The eighteen platform_verify_jellyfin tasks: they authenticate
 # independently of the reconciliation token, read the users, the server
-# configuration, the libraries and the administrator image back, and assert the
-# owned state is exactly what the role declares.
+# configuration, the libraries, the scheduled task triggers and the
+# administrator image back, and assert the owned state is exactly what the role
+# declares.
 
 - name: Prove Jellyfin QSV during exact verification
   tags: [platform_verify_jellyfin]
@@ -122,6 +123,45 @@
   changed_when: false
   check_mode: false
   no_log: true
+
+- name: Read exact Jellyfin scheduled tasks
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.uri:
+    url: "{{ jellyfin_api }}/ScheduledTasks"
+    headers:
+      Authorization: '{{ jellyfin_client_header }}, Token="{{ jellyfin_verification_token }}"'
+    status_code: [200]
+    return_content: true
+  register: jellyfin_verified_scheduled_tasks
+  when: not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Every condition reads the registered result directly rather than a vars-held
+# selection of it, so the task satisfies the verification convention on its own
+# terms: the declaration is compared against what the server reports, and a
+# declared key the server no longer offers fails here as well as in
+# scheduled_tasks.yml. Comparing the whole trigger list, not just the interval,
+# is what makes a trigger nobody declared -- a StartupTrigger added by hand in
+# the dashboard -- drift rather than an addition.
+- name: Verify the exact Jellyfin scheduled task triggers
+  tags: [platform_verify_jellyfin]
+  ansible.builtin.assert:
+    that:
+      - jellyfin_verified_scheduled_tasks.json | type_debug == 'list'
+      - >-
+        jellyfin_verified_scheduled_tasks.json | selectattr('Key', 'defined') |
+        selectattr('Key', 'equalto', item.key) | list | length == 1
+      - >-
+        jellyfin_verified_scheduled_tasks.json | selectattr('Key', 'defined') |
+        selectattr('Key', 'equalto', item.key) | map(attribute='Triggers') |
+        list == [item.value]
+    fail_msg: The Jellyfin scheduled task schedule this platform declares is absent or drifted.
+  loop: "{{ jellyfin_scheduled_task_triggers | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: not ansible_check_mode
 
 - name: Initialize exact Jellyfin library inventory
   tags: [platform_verify_jellyfin]

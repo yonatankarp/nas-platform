@@ -6,7 +6,7 @@
 # tags: [never], and a role-level tag reaches a statically imported task exactly
 # as it reaches an inline one, so each verification task still carries
 # [never, platform_verify_jellyfin] and --tags platform_verify_jellyfin selects
-# the same sixteen tasks it selected when they lived here. A dynamic include is
+# the same eighteen tasks it selected when they lived here. A dynamic include is
 # skipped under never before its file is ever read, which is why roles/arr pairs
 # include_tasks with apply: tags: -- and why this role does not need to. Static
 # imports are also expanded by --list-tasks, so the transcript an operator reads
@@ -87,6 +87,9 @@
 
 - name: Reconcile the managed Jellyfin libraries
   ansible.builtin.import_tasks: libraries.yml
+
+- name: Declare the Jellyfin scheduled task triggers
+  ansible.builtin.import_tasks: scheduled_tasks.yml
 
 - name: Reconcile managed Jellyfin users
   ansible.builtin.include_tasks: managed_users.yml
