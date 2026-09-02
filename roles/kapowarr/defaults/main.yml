@@ -14,6 +14,16 @@ kapowarr_compose_project_name: >-
   {{ (platform_project_name ~ '-kapowarr')
      if platform_project_name | default('') | length > 0 else 'kapowarr' }}
 
+# One-convergence input. False is the only value this repository stores. Pass
+# `-e kapowarr_volume_folder_migration_allowed=true` for the single reviewed run
+# that moves the volume folders an earlier volume_folder_naming derived onto the
+# one declared below, then drop it again: with it set, every volume whose stored
+# folder the declared template does not derive has its directory moved inside the
+# comics library, which is the only directory move in this repository and the one
+# mutation `--check --diff` exists to review. It is never written to a host
+# variable file.
+kapowarr_volume_folder_migration_allowed: false
+
 # The application settings this platform declares. Kapowarr's settings interface
 # is a partial merge -- a request carrying two keys changes those two and drops
 # nothing -- so this mapping is the whole of what a converge writes, and a key
@@ -31,8 +41,10 @@ kapowarr_compose_project_name: >-
 # backend/internals/settings.py validates, writes the config table, sets the log
 # level and clears the cache; it enqueues no task and never calls mass_rename.
 # So a template change here is safe against a populated library and equally does
-# not migrate it -- existing volume folders keep their old shape until a rename
-# is triggered per volume, or in bulk from the mass editor.
+# not migrate it -- existing volume folders keep the shape the template they were
+# added under gave them. Migrating them is a separate, gated mutation that
+# tasks/main.yml performs per volume behind
+# kapowarr_volume_folder_migration_allowed.
 #
 # Numeric keys are range-checked rather than type-checked, and a request is
 # refused whole if any single key in it is invalid, so a wrong value here fails
