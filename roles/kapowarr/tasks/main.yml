@@ -434,13 +434,13 @@
 - name: Report each pending Kapowarr volume folder migration
   ansible.builtin.debug:
     msg: >-
-      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}; the declared
-      naming template derives
-      {{ item.target if item.target | length > 0 else
-         ('a name Kapowarr previews for no volume that holds no files, directly under '
-          ~ kapowarr_library_root) }}.
+      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
+      {{ ('and the declared naming template derives ' ~ item.target)
+      if item.target | length > 0 else
+      ('and holds no files, so Kapowarr previews no target for it: a live run would move it to
+      the name the declared template derives, directly under ' ~ kapowarr_library_root) }}.
       {{ 'This run moves it.' if kapowarr_volume_folder_migration_allowed | bool else
-         'A run carrying kapowarr_volume_folder_migration_allowed=true would move it.' }}
+      'A run carrying kapowarr_volume_folder_migration_allowed=true would move it.' }}
   loop: "{{ kapowarr_volume_folder_migrations }}"
   loop_control:
     label: "{{ item.id }}"
