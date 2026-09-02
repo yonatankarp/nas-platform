@@ -14,7 +14,7 @@
 #
 # Three layers, because the contract has three kinds of property:
 #
-#   Static -- build a fixture repository from the five files the static program
+#   Static -- build a fixture repository from the six files the static program
 #   reads, break exactly one thing in it, and require the program to name that
 #   thing. The assertion text is the interface: a guard that fails for the wrong
 #   reason has stopped guarding what it names, so every row pins the exact
@@ -25,7 +25,7 @@
 #   None of this had any test at all before the cut.
 #
 #   Wrapper -- tests/contracts/komga.sh is what turns a mode into an invocation.
-#   Its rows prove the mode guard, the runtime-context derivation, the four `$0`
+#   Its rows prove the mode guard, the runtime-context derivation, the three
 #   self-read greps, that both programs come from the checkout while the tree
 #   they inspect does not, and that neither can consume the caller's stdin.
 #
@@ -52,7 +52,7 @@ CONTRACT = File.join(ROOT, "tests", "contracts", "komga.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-runtime.rb")
 
-# Exactly what the static program reads: five paths handed to it as argv, plus
+# Exactly what the static program reads: six paths handed to it as argv, plus
 # the shared flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR. This
 # list is the whole of it -- unlike arr and trailarr, komga's static half reads
 # nothing its own argv does not name, so the fixture is not quietly narrower
@@ -63,6 +63,7 @@ FIXTURE_FILES = %w[
   roles/komga/tasks/main.yml
   roles/komga/defaults/main.yml
   roles/komga/meta/argument_specs.yml
+  roles/komga/templates/env.j2
   tests/policy_support.rb
 ].freeze
 
@@ -193,6 +194,38 @@ STATIC_ROWS = [
                   "${KOMGA_LIBRARY_PATH:?}:/data:ro", "${KOMGA_LIBRARY_PATH:?}:/data")
     },
     expects: "storage contract differs"
+  },
+  {
+    # The property 02d60e2 left unasserted, planted at the mechanism that
+    # implements it: a config path resolving under the media root can land
+    # inside the library mounted /data:ro, which puts Komga's database in a
+    # read-only tree.
+    name: "config storage moved under the media root",
+    break: lambda { |root|
+      mutate_text(root, "roles/komga/templates/env.j2",
+                  "KOMGA_CONFIG_PATH={{ nas_docker_root }}/komga/config",
+                  "KOMGA_CONFIG_PATH={{ nas_media_root }}/Books/config")
+    },
+    expects: "config storage is not rooted outside the media tree"
+  },
+  {
+    # The other half. Rooting config outside the media tree only separates it
+    # from the library while the library is still in the media tree.
+    name: "a library moved out of the media root",
+    break: lambda { |root|
+      mutate_text(root, "roles/komga/templates/env.j2",
+                  "KOMGA_LIBRARY_PATH={{ nas_media_root }}/Books",
+                  "KOMGA_LIBRARY_PATH={{ nas_docker_root }}/komga/Books")
+    },
+    expects: "the library is not rooted in the media tree"
+  },
+  {
+    name: "a config path the environment template no longer renders",
+    break: lambda { |root|
+      mutate_text(root, "roles/komga/templates/env.j2",
+                  "KOMGA_CONFIG_PATH={{ nas_docker_root }}/komga/config\n", "")
+    },
+    expects: "KOMGA_CONFIG_PATH is not rendered exactly once"
   },
   {
     name: "a restart policy that is not unless-stopped",
@@ -436,6 +469,7 @@ def static_argv(root)
     roles/komga/tasks/main.yml
     roles/komga/defaults/main.yml
     roles/komga/meta/argument_specs.yml
+    roles/komga/templates/env.j2
   ].map { |relative| File.join(root, relative) }
 end
 
@@ -966,12 +1000,15 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
-# --- the four $0 self-read greps -------------------------------------------
+# --- the three self-read greps ---------------------------------------------
 #
-# This is the reason komga was saved for its own tranche. Three of the four have
-# their subject in the runtime program and moved with it. The fourth is a
-# tautology whose subject 02d60e2 deleted, and it is left alone -- so its row
-# asserts the tautology rather than pretending the guard bites.
+# This is the reason komga was saved for its own tranche. All three have their
+# subject in the runtime program and moved with it, so all three get a plant.
+# There was a fourth, a grep -F whose pattern was its own only subject after
+# 02d60e2 (2026-08-17) deleted the fixture config path it named; it was deleted
+# rather than repointed, and with it the row that asserted its tautology. What
+# it was protecting is a platform property and is asserted in the static layer
+# above, against roles/komga/templates/env.j2.
 
 SELF_READ_ROWS = [
   {
@@ -1004,6 +1041,13 @@ SELF_READ_ROWS = [
 
 def self_read_failures(wrapper_source: File.read(CONTRACT))
   failures = []
+  # A floor rather than non-emptiness. The summary line below derives its count
+  # from this list, so a list that shrank to nothing would report "all 0
+  # self-read guards bite" and pass -- and shrinking is exactly what happened to
+  # this set, once already.
+  failures << "self-read: the guard set has shrunk to #{SELF_READ_ROWS.length} row(s); " \
+              "a guard was deleted without its property moving somewhere that can fail" if
+    SELF_READ_ROWS.length < 3
   in_parallel_cases(failures, SELF_READ_ROWS) do |row, collected|
     program = File.read(row.fetch(:file) == :runtime ? RUNTIME_PROGRAM : STATIC_PROGRAM)
     found = program.scan(row.fetch(:from)).length
@@ -1021,32 +1065,6 @@ def self_read_failures(wrapper_source: File.read(CONTRACT))
             stdout, stderr, status)
     end
   end
-
-  # The fourth guard, asserted as what it is. `grep -F` for
-  # ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH") reads "$0" and that literal occurs
-  # nowhere in the contract but the grep line itself, so the pattern and its only
-  # subject are the same text: the guard cannot fail for any content of the
-  # contract. 02d60e2 removed its subject from the runtime half on 2026-08-17
-  # along with the adoption lane that seeded it, and repointing the guard at the
-  # runtime program would make the contract refuse a clean tree -- a repair
-  # rather than a move, so this asserts the tautology instead of pinning a
-  # diagnostic the guard cannot produce. Delete the guard, or give it back a
-  # subject, and this row is what says the state changed.
-  literal = %(ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH"))
-  counts = {
-    "the wrapper" => wrapper_source.scan(literal).length,
-    "the static program" => File.read(STATIC_PROGRAM).scan(literal).length,
-    "the runtime program" => File.read(RUNTIME_PROGRAM).scan(literal).length
-  }
-  failures << "self-read: the grep -F guard's literal no longer occurs exactly once in the " \
-              "wrapper: #{counts.inspect}" unless counts.fetch("the wrapper") == 1
-  failures << "self-read: the grep -F guard's literal has a subject outside its own line " \
-              "again, so it is no longer a tautology and this row should become a plant: " \
-              "#{counts.inspect}" unless
-    counts.fetch("the static program").zero? && counts.fetch("the runtime program").zero?
-  failures << "self-read: the grep -F guard no longer reads \"$0\", so it now has a real " \
-              "subject and needs a planted regression instead of this row" unless
-    wrapper_source.include?(%(grep -F 'ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH")' "$0"))
   failures
 end
 
@@ -1161,6 +1179,29 @@ STATIC_MUTATIONS = [
     from: 'abort "Komga contract failed: storage contract differs" unless service.fetch("volumes") == [',
     to: 'abort "Komga contract failed: storage contract differs" unless true || service.fetch("volumes") == [',
     rows: ["a library mount that is not read-only"]
+  },
+  {
+    label: "the config storage root check",
+    from: '  rooted_at.call(env_value.call("KOMGA_CONFIG_PATH"), "nas_docker_root")',
+    to: '  true || rooted_at.call(env_value.call("KOMGA_CONFIG_PATH"), "nas_docker_root")',
+    rows: ["config storage moved under the media root"]
+  },
+  {
+    label: "the library storage root check",
+    from: '  rooted_at.call(env_value.call("KOMGA_LIBRARY_PATH"), "nas_media_root")',
+    to: '  true || rooted_at.call(env_value.call("KOMGA_LIBRARY_PATH"), "nas_media_root")',
+    rows: ["a library moved out of the media root"]
+  },
+  {
+    # Removing this one does not make the row pass: an absent line reaches
+    # `values.first.strip` and dies of a NoMethodError, so the contract still
+    # refuses -- for a reason that names nothing. `detects` is what pins the
+    # difference between refusing and refusing usefully.
+    label: "the exactly-once render check",
+    from: '  abort "Komga contract failed: #{name} is not rendered exactly once" unless values.length == 1',
+    to: "  nil",
+    rows: ["a config path the environment template no longer renders"],
+    detects: "refused for the wrong reason"
   },
   {
     label: "the restart policy check",
@@ -1486,8 +1527,8 @@ RUNTIME_MUTATIONS = [
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect on the static invocation",
-    from: %(  "$argument_specs" </dev/null\n),
-    to: %(  "$argument_specs"\n),
+    from: %(  "$argument_specs" "$environment" </dev/null\n),
+    to: %(  "$argument_specs" "$environment"\n),
     layer: :stdin
   },
   {
@@ -1658,6 +1699,6 @@ unless failures.empty?
 end
 
 puts "komga contract: #{STATIC_ROWS.length} static and #{RUNTIME_ROWS.length} runtime " \
-     "properties hold, three of the four self-read guards bite and the fourth is still the " \
-     "tautology 02d60e2 left, and the wrapper reaches both programs from its own checkout, " \
-     "against the inspected tree, with an empty stdin"
+     "properties hold, all #{SELF_READ_ROWS.length} self-read guards bite now that " \
+     "02d60e2's tautology is gone, and the wrapper reaches both programs from its own " \
+     "checkout, against the inspected tree, with an empty stdin"
