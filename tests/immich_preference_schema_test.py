@@ -26,6 +26,7 @@ from immich_preference_schema import (  # noqa: E402
     SCOPES,
     STRING,
     immich_preference_errors,
+    immich_quota_errors,
 )
 
 EMAIL = "reader@example.invalid"
@@ -193,6 +194,47 @@ class ImmichPreferenceSchemaTest(unittest.TestCase):
                 joined = " ".join(found)
                 self.assertNotIn(secret, joined,
                                  f"the diagnostic disclosed a key or value: {joined}")
+
+    def test_an_unlimited_quota_is_accepted(self):
+        # null is the only value that lifts the cap: Immich skips the quota
+        # check exactly when quotaSizeInBytes is null.
+        self.assertEqual(immich_quota_errors({}, None, []), [])
+        self.assertEqual(
+            immich_quota_errors({"reader@example.invalid": None}, None,
+                                ["Reader@Example.Invalid"]), [])
+
+    def test_a_positive_byte_count_is_accepted(self):
+        self.assertEqual(
+            immich_quota_errors({"reader@example.invalid": 1073741824}, 2048,
+                                ["reader@example.invalid"]), [])
+
+    def test_a_zero_quota_is_rejected(self):
+        # 0 refuses every upload of a non-empty file; it is never a wanted state.
+        for candidate in ({"reader@example.invalid": 0}, {}):
+            default = None if candidate else 0
+            errors = immich_quota_errors(candidate, default,
+                                         ["reader@example.invalid"])
+            self.assertTrue(any("must not be 0" in error for error in errors))
+
+    def test_a_non_integer_quota_is_rejected(self):
+        for value in ("1073741824", True, 1.5, -1):
+            errors = immich_quota_errors({"reader@example.invalid": value}, None,
+                                         ["reader@example.invalid"])
+            self.assertTrue(errors, f"{value!r} was accepted")
+
+    def test_a_selector_must_name_a_managed_user(self):
+        # A managed user absent from the map takes the default and is fine; a key
+        # naming nobody is a typo that would silently leave an account capped.
+        self.assertEqual(immich_quota_errors({}, None, ["reader@example.invalid"]), [])
+        errors = immich_quota_errors({"typo@example.invalid": None}, None,
+                                     ["reader@example.invalid"])
+        self.assertTrue(any("does not name a managed" in error for error in errors))
+
+    def test_no_quota_diagnostic_carries_a_key_or_a_value(self):
+        errors = immich_quota_errors({"secret@example.invalid": 0}, None, [])
+        joined = "; ".join(errors)
+        self.assertTrue(errors)
+        self.assertNotIn("secret@example.invalid", joined)
 
     def test_every_scope_in_the_table_is_reachable(self):
         self.assertEqual(sorted(SCOPES), sorted([

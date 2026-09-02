@@ -50,6 +50,22 @@ paperless_ai_enabled: false
 paperless_ai_llm_endpoint: http://192.0.2.1:11434
 paperless_ai_llm_model: gemma3:4b
 
+# Managed Immich user storage quotas are nonsecret policy, like the preferences
+# below, so they are declared here rather than in the vault: a quota is reviewable
+# in a diff and changing one needs no vault password. Every managed identity takes
+# the default unless its email selects another value.
+#
+# null lifts the cap entirely and is the only value that does -- Immich skips the
+# quota check exactly when quotaSizeInBytes is null. A positive integer is a byte
+# ceiling. 0 is refused by the schema: its only effect is to reject every upload
+# of a non-empty file, and it does so with no symptom but photos that stop
+# arriving.
+#
+# An address here is a plaintext email in git; leaving the map empty and letting
+# the default apply keeps every managed address in the vault alone.
+immich_managed_user_quota_default: null
+immich_managed_user_quota_by_email: {}
+
 # Managed Immich user preferences are nonsecret policy. Every encrypted managed
 # identity uses this profile unless its email selects another declared profile;
 # per-email overrides may replace only leaves in the pinned v3.1.0 schema.

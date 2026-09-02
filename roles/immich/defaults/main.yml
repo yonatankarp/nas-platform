@@ -54,6 +54,10 @@ immich_admin_name: NAS Platform Administrator
 
 # Safe standalone defaults mirror the portable normal-inventory policy. These
 # values remain outside the encrypted managed-user records.
+# null lifts the storage cap entirely, and is the only value that does; 0 would
+# reject every upload of a non-empty file and the schema refuses it.
+immich_managed_user_quota_default: null
+immich_managed_user_quota_by_email: {}
 immich_managed_user_preference_profile_default: standard
 immich_managed_user_preference_profile_by_email: {}
 immich_managed_user_preference_overrides: {}

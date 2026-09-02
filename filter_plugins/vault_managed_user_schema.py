@@ -206,30 +206,22 @@ def _dozzle(errors, path, entry):
 
 
 def _immich(errors, path, entry):
-    if not exact_keys(errors, path, entry, ["email", "password", "name", "quota_size"]):
+    # A quota is nonsecret policy and no longer lives here. Named explicitly
+    # before exact_keys, because the generic unexpected-key message would leave
+    # an operator with a run that fails at vault_contract and no statement of
+    # where the value went.
+    if _GUARDS.is_mapping(entry) and "quota_size" in entry:
+        errors.append(
+            f"{path}.quota_size: is no longer a vault field; declare the quota as "
+            "immich_managed_user_quota_by_email in inventory/group_vars/all/main.yml, "
+            "or delete the key to take immich_managed_user_quota_default"
+        )
+        return
+    if not exact_keys(errors, path, entry, ["email", "password", "name"]):
         return
     string(errors, f"{path}.email", entry["email"], pattern=EMAIL)
     string(errors, f"{path}.password", entry["password"], nonempty=True)
     string(errors, f"{path}.name", entry["name"], nonempty=True)
-    # null is Immich's own representation of an unlimited quota, and the only
-    # value that expresses one. The server skips the check entirely when
-    # quotaSizeInBytes is null; 0 is the opposite of unlimited and rejects every
-    # upload of a non-empty file.
-    if entry["quota_size"] is not None:
-        if not _GUARDS.is_integer(entry["quota_size"]):
-            errors.append(f"{path}.quota_size: must be an integer or null")
-        elif entry["quota_size"] < 0:
-            errors.append(f"{path}.quota_size: must not be negative")
-        elif entry["quota_size"] == 0:
-            # 0 is rejected rather than merely documented because its only
-            # effect is to refuse every upload of a non-empty file, and it does
-            # so silently -- the client reports a failure, the server logs
-            # "Quota has been exceeded!", and nothing names the quota. Failing
-            # the run is the loud version of a state nobody wants.
-            errors.append(
-                f"{path}.quota_size: must not be 0, which rejects every upload "
-                "of a non-empty file; use null for no limit"
-            )
 
 
 def _jellyfin(errors, path, entry):

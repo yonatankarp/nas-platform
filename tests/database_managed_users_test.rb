@@ -279,7 +279,7 @@ def managed_includes(service, extra_vars = {}, path: nil)
     defaults = YAML.safe_load_file(
       File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
     )
-    role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
+    role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_") }
   end
   # include_tasks does not set role_path, but the production path reaches these
   # tasks through include_role, which does. Scripts loaded from the role's files/
@@ -467,10 +467,8 @@ def exercise_immich(failures)
     )
   }
   managed = [
-    { "email" => "reader@example.invalid", "password" => "reader-secret", "name" => "Reader",
-      "quota_size" => 1024 },
-    { "email" => "new@example.invalid", "password" => "new-secret", "name" => "New",
-      "quota_size" => 2048 }
+    { "email" => "reader@example.invalid", "password" => "reader-secret", "name" => "Reader" },
+    { "email" => "new@example.invalid", "password" => "new-secret", "name" => "New" }
   ]
   responder = lambda do |request|
     case [request["method"], request["target"]]
@@ -524,6 +522,12 @@ def exercise_immich(failures)
       },
       "immich_managed_user_preference_overrides" => {
         " Reader@Example.Invalid " => { "people" => { "minimumFaces" => 7 } }
+      },
+      # Keyed with the same casing and padding as the preference selectors, so
+      # the quota resolution's own normalization is exercised here too.
+      "immich_managed_user_quota_default" => nil,
+      "immich_managed_user_quota_by_email" => {
+        " READER@EXAMPLE.INVALID " => 1024
       }
     }
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
@@ -609,7 +613,7 @@ end
 
 def exercise_immich_normalized_duplicate_refusal(failures)
   managed = [{ "email" => "reader@example.invalid", "password" => "secret",
-               "name" => "Reader", "quota_size" => 1024 }]
+               "name" => "Reader" }]
   users = [
     { "id" => "11111111-1111-4111-8111-111111111111", "email" => "Reader@Example.Invalid",
       "name" => "Reader", "quotaSizeInBytes" => 1024, "status" => "active", "isAdmin" => false },
@@ -667,9 +671,9 @@ def exercise_immich_schema_fail_closed(failures, resource:)
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => [
                { "email" => "absent@example.invalid", "password" => "absent-secret",
-                 "name" => "Absent", "quota_size" => 2048 },
+                 "name" => "Absent" },
                { "email" => "reader@example.invalid", "password" => "secret",
-                 "name" => "Reader", "quota_size" => 1024 }
+                 "name" => "Reader" }
              ] }
     stdout, stderr, status = run_playbook(
       [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
@@ -698,7 +702,7 @@ def exercise_immich_invalid_avatar_policy(failures)
     { "avatar" => { "color" => "cyan" } }
   )
   managed = [{ "email" => "absent@example.invalid", "password" => "secret",
-               "name" => "Absent", "quota_size" => 1024 }]
+               "name" => "Absent" }]
   with_http_service(->(_request) { [200, []] }) do |port, requests|
     preference_vars = {
       "immich_managed_user_preference_profiles" => { "invalid" => invalid_profile },
@@ -959,7 +963,7 @@ def exercise_fail_closed_and_check_mode(failures)
                   "email" => "reader@example.invalid", "name" => "Old",
                   "quotaSizeInBytes" => 0, "status" => "active", "isAdmin" => false }
   immich_managed = [{ "email" => "reader@example.invalid", "password" => "wrong",
-                      "name" => "Reader", "quota_size" => 1024 }]
+                      "name" => "Reader" }]
   with_http_service(lambda { |request|
     request["target"] == "/api/admin/users?withDeleted=true" ? [200, [immich_user]] : [401, {}]
   }) do |port, requests|
@@ -1135,7 +1139,7 @@ def exercise_mangled_created_credentials(failures)
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => [
                { "email" => "new@example.invalid", "password" => "expected",
-                 "name" => "New", "quota_size" => 1024 }
+                 "name" => "New" }
              ] }
     stdout, stderr, status = run_playbook(
       [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
@@ -1219,7 +1223,7 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     vars = { "immich_api" => "http://127.0.0.1:#{port}/api",
              "immich_managed_users_token" => "admin", "vault_managed_immich_users" => [
                { "email" => "reader@example.invalid", "password" => "secret",
-                 "name" => "Reader", "quota_size" => 1024 }
+                 "name" => "Reader" }
              ] }
     stdout, stderr, status = run_playbook(
       [managed_includes("immich", { "immich_managed_users_token" => "admin" },

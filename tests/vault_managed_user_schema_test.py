@@ -36,8 +36,7 @@ VALID = {
                 "verified": True}],
     "dozzle": [{"username": "viewer", "password": "pw", "password_hash": HASH,
                 "email": "", "name": "Viewer", "filter": "", "roles": "user"}],
-    "immich": [{"email": "i@example.invalid", "password": "pw", "name": "I",
-                "quota_size": 1073741824}],
+    "immich": [{"email": "i@example.invalid", "password": "pw", "name": "I"}],
     "jellyfin": [{"username": "watcher", "password": "pw",
                   "policy": {"EnableMediaPlayback": True, "IsDisabled": False}}],
     "komga": [{"email": "k@example.invalid", "password": "pw",
@@ -74,10 +73,8 @@ REJECTED = {
     "dozzle empty name": lambda v: v["dozzle"][0].update(name=""),
     "dozzle unsupported roles": lambda v: v["dozzle"][0].update(roles="root"),
     "dozzle filter not a string": lambda v: v["dozzle"][0].update(filter=1),
-    "immich negative quota": lambda v: v["immich"][0].update(quota_size=-1),
-    "immich boolean quota": lambda v: v["immich"][0].update(quota_size=True),
-    "immich string quota": lambda v: v["immich"][0].update(quota_size="0"),
-    "immich zero quota": lambda v: v["immich"][0].update(quota_size=0),
+    "immich vault quota": lambda v: v["immich"][0].update(quota_size=1073741824),
+    "immich vault null quota": lambda v: v["immich"][0].update(quota_size=None),
     "immich no users": lambda v: v.update(immich=[]),
     "jellyfin unsupported policy field": lambda v: v["jellyfin"][0]["policy"].update(Bogus=True),
     "jellyfin credential policy field": lambda v: v["jellyfin"][0]["policy"].update(password=True),
@@ -125,13 +122,16 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_the_valid_contract_is_accepted(self):
         self.assertEqual(vault_managed_user_errors(VALID, RESERVED), [])
 
-    def test_an_unlimited_immich_quota_is_accepted(self):
-        # null is the only way to express "no limit": the server skips the quota
-        # check on null and refuses every upload on 0, so a schema that rejected
-        # null would leave an unlimited account undeclarable.
+    def test_a_vault_quota_names_where_the_declaration_moved(self):
+        # The quota is nonsecret policy and left the vault. A generic
+        # unexpected-key message would leave an operator with a run that stops
+        # at vault_contract and nothing saying where to put the value.
         candidate = copy.deepcopy(VALID)
-        candidate["immich"][0]["quota_size"] = None
-        self.assertEqual(vault_managed_user_errors(candidate, RESERVED), [])
+        candidate["immich"][0]["quota_size"] = 1073741824
+        errors = vault_managed_user_errors(candidate, RESERVED)
+        self.assertEqual(len(errors), 1)
+        self.assertIn("immich_managed_user_quota_by_email", errors[0])
+        self.assertNotIn("1073741824", errors[0])
 
     def test_every_violation_is_rejected(self):
         for label, mutate in REJECTED.items():

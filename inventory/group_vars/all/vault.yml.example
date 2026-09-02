@@ -175,9 +175,6 @@ vault_managed_users:
     - email: reader@immich.example.invalid
       password: example-reader-password
       name: Synthetic Reader
-      # A byte count caps the account; null lifts the cap entirely. 0 is
-      # rejected by the schema -- it refuses every upload of a non-empty file.
-      quota_size: 10737418240
   jellyfin:
     - username: reader-example-invalid
       password: example-reader-password

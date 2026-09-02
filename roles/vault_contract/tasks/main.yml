@@ -66,6 +66,32 @@
     - immich_managed_user_preference_profiles is defined
   no_log: true
 
+- name: Resolve Immich managed-user quota violations
+  ansible.builtin.set_fact:
+    vault_contract_immich_quota_errors: >-
+      {{ immich_managed_user_quota_by_email |
+         immich_quota_errors(immich_managed_user_quota_default,
+                             vault_managed_users.immich |
+                             map(attribute='email') | list) }}
+  when:
+    - immich_managed_user_quota_by_email is defined
+    - immich_managed_user_quota_default is defined
+  no_log: true
+
+# Keyed by managed-user email like the preference collections above, so the
+# filter reports a key's position rather than its text.
+- name: Require a valid Immich managed-user quota schema
+  ansible.builtin.assert:
+    that:
+      - vault_contract_immich_quota_errors | length == 0
+    fail_msg: >-
+      Immich managed-user quotas are invalid. Offending fields, values and keys
+      not shown: {{ vault_contract_immich_quota_errors | join('; ') }}
+  when:
+    - immich_managed_user_quota_by_email is defined
+    - immich_managed_user_quota_default is defined
+  no_log: true
+
 - name: Resolve validated managed-user service lists
   ansible.builtin.set_fact:
     vault_managed_audiobookshelf_users: "{{ vault_managed_users.audiobookshelf }}"

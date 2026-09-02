@@ -20,7 +20,12 @@ VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
 PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
 SHARED_VARS_PATH = File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
 
-IMMICH_PREFERENCE_KEYS = %w[
+# The nonsecret Immich policy declared in group_vars rather than the vault. Every
+# validate_with_role document carries these, because vault_contract validates
+# them alongside the encrypted managed-user records.
+IMMICH_POLICY_KEYS = %w[
+  immich_managed_user_quota_default
+  immich_managed_user_quota_by_email
   immich_managed_user_preference_profile_default
   immich_managed_user_preference_profile_by_email
   immich_managed_user_preference_overrides
@@ -31,7 +36,7 @@ ENTRY_FIELDS = {
   "audiobookshelf" => %w[username password type is_active permissions],
   "beszel" => %w[email password role verified],
   "dozzle" => %w[username password password_hash email name filter roles],
-  "immich" => %w[email password name quota_size],
+  "immich" => %w[email password name],
   "jellyfin" => %w[username password policy],
   "komga" => %w[email password roles],
   "ntfy" => %w[username password password_hash role access tokens],
@@ -60,6 +65,10 @@ TEXT_FIELDS = {
   "paperless_ngx" => %w[username password email]
 }.freeze
 
+# Fields an argument spec still accepts only in order to reject them with a
+# message naming where the declaration moved to.
+DEPRECATED_FIELDS = { "immich" => %w[quota_size] }.freeze
+
 BCRYPT = /^\$2[aby]\$\d{2}\$[.\/A-Za-z0-9]{53}$/
 TOKEN = /^tk_[a-z0-9]{29}$/
 NTFY_USERNAME = /^[-_.+@A-Za-z0-9]+$/
@@ -82,7 +91,7 @@ ARGUMENT_FIELDS = {
   },
   "immich" => {
     "email" => ["str", nil], "password" => ["str", nil],
-    "name" => ["str", nil], "quota_size" => ["raw", nil]
+    "name" => ["str", nil]
   },
   "jellyfin" => {
     "username" => ["str", nil], "password" => ["str", nil],
@@ -132,7 +141,7 @@ def validate_with_role(document, preference_overrides = {})
     path = File.join(directory, "vault.yml")
     playbook = File.join(directory, "validate-vault.yml")
     shared_vars = YAML.safe_load_file(SHARED_VARS_PATH, aliases: false)
-    preferences = IMMICH_PREFERENCE_KEYS.to_h { |key| [key, shared_vars[key]] }
+    preferences = IMMICH_POLICY_KEYS.to_h { |key| [key, shared_vars[key]] }
     variables = preferences.merge(document).merge(preference_overrides)
     File.write(path, YAML.dump(variables), mode: "w", perm: 0o600)
     FileUtils.cp(File.join(ROOT, "validate-vault.yml"), playbook)
@@ -238,17 +247,6 @@ managed.fetch("dozzle", []).each do |entry|
         "dozzle roles must be supported")
 end
 
-managed.fetch("immich", []).each do |entry|
-  next unless entry.is_a?(Hash)
-  # null is Immich's own representation of an unlimited quota and the only value
-  # that lifts the limit; 0 is its opposite and refuses every non-empty upload.
-  quota = entry["quota_size"]
-  check(failures, quota.nil? || (quota.is_a?(Integer) && quota >= 0),
-        "immich quota_size must be a non-negative integer or null")
-  check(failures, quota != 0,
-        "immich quota_size must not be 0, which rejects every upload")
-end
-
 managed.fetch("jellyfin", []).each do |entry|
   next unless entry.is_a?(Hash)
   check(failures, entry["policy"].is_a?(Hash), "jellyfin policy must be a mapping")
@@ -337,7 +335,10 @@ ARGUMENT_FIELDS.each do |service, expected_fields|
           service_spec["elements"] == "dict" && service_spec["required"] == true,
         "#{service} argument must be a required list of dictionaries")
   field_specs = service_spec.is_a?(Hash) ? service_spec["options"] : nil
-  check(failures, field_specs.is_a?(Hash) && field_specs.keys.sort == expected_fields.keys.sort,
+  # immich carries one field beyond the contract: a deprecated quota_size, kept
+  # only so the schema filter refuses it by name. Asserted separately below.
+  declared = field_specs.is_a?(Hash) ? field_specs.keys - DEPRECATED_FIELDS.fetch(service, []) : nil
+  check(failures, declared&.sort == expected_fields.keys.sort,
         "#{service} argument fields differ")
   expected_fields.each do |field, (type, elements)|
     field_spec = field_specs.is_a?(Hash) ? field_specs[field] : nil
@@ -374,7 +375,15 @@ check(failures,
 immich_fields = managed_options.is_a?(Hash) ?
   managed_options.dig("immich", "options")&.keys&.sort : nil
 check(failures, immich_fields == %w[email name password quota_size],
-      "Immich preference policy must not enter the encrypted user records")
+      "Immich policy must not enter the encrypted user records")
+# Not required, and not typed: this key exists so a vault written before the
+# quota moved to group_vars fails with a message naming its destination rather
+# than a bare "unsupported parameter".
+check(failures,
+      managed_options.is_a?(Hash) &&
+        managed_options.dig("immich", "options", "quota_size") ==
+          { "type" => "raw", "required" => false },
+      "the deprecated Immich quota_size argument must be optional and untyped")
 
 vault_options = spec.dig("argument_specs", "main", "options") || {}
 %w[
@@ -690,23 +699,27 @@ koreader_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["KOREADER
 _stdout, _stderr, koreader_status = validate_with_role(koreader_komga_role)
 check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual role evaluation")
 
-# The argument spec runs before any task, so a schema that accepts null is not
-# enough on its own: `type: int` rejected an explicit null outright and failed
-# the run before vault_managed_user_errors was ever reached. Only role
-# evaluation proves the whole path accepts an unlimited quota.
-unlimited_immich_quota = duplicate(runtime_vault)
-unlimited_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = nil
-_stdout, _stderr, unlimited_status = validate_with_role(unlimited_immich_quota)
-check(failures, unlimited_status.success?,
-      "unlimited Immich quota must pass actual role evaluation")
+# A vault still carrying quota_size must fail, and must say where the value went.
+# exact_keys alone would report only an unexpected key, leaving an operator with a
+# run that stops at vault_contract and no statement of the destination.
+migrated_quota_vault = duplicate(runtime_vault)
+migrated_quota_vault.dig("vault_managed_users", "immich", 0)["quota_size"] = 1_073_741_824
+stdout, stderr, migrated_status = validate_with_role(migrated_quota_vault)
+check(failures, !migrated_status.success?,
+      "a vault carrying quota_size must be rejected by role evaluation")
+check(failures, (stdout + stderr).include?("immich_managed_user_quota_by_email"),
+      "the quota_size rejection must name where the declaration moved to")
+check(failures, !(stdout + stderr).include?("1073741824"),
+      "the quota_size rejection disclosed a managed-user value")
 
-# `type: raw` buys that null, at the cost of the coercion `type: int` performed.
-# The schema filter is what refuses a non-integer now, so prove it still does
-# through the role rather than in isolation.
-string_immich_quota = duplicate(runtime_vault)
-string_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = "1073741824"
-expect_role_rejection(failures, "string Immich quota", string_immich_quota,
-                      "example-reader-password")
+# The quota is nonsecret and now declared in group_vars, but it is still keyed by
+# managed-user email, so a bad value must be refused without printing the key.
+zero_quota_policy = duplicate(runtime_vault)
+_stdout, _stderr, zero_status = validate_with_role(
+  zero_quota_policy, { "immich_managed_user_quota_default" => 0 }
+)
+check(failures, !zero_status.success?,
+      "a 0 Immich quota must be rejected by role evaluation")
 
 integer_username = duplicate(runtime_vault)
 integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242

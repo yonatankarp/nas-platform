@@ -755,17 +755,25 @@ template update uses Ansible's atomic writer with unsafe writes disabled.
 #### immich managed users
 
 `email` is the normalized login identity; `password` is its preserved clear
-credential; `name` is the displayed name; and `quota_size` is a positive integer
-of bytes, or `null` for no limit at all. `null` is the only value that lifts the
-limit: Immich skips the quota check entirely when it is null. `0` is the
-opposite of unlimited -- it rejects every upload of a non-empty file with "Quota
-has been exceeded!" -- so the schema refuses it outright rather than documenting
-it as a trap, because its only symptom is uploads that silently stop arriving.
-The argument spec types this field `raw` rather than `int`, since an argument
-spec cannot express "integer or null" and `type: int` rejects an explicit null
-before any task runs; the shape is enforced by the managed-user schema filter in
-`filter_plugins/vault_managed_user_schema.py` instead.
-Administrator status is not part of this allowlist contract.
+credential; and `name` is the displayed name. Administrator status is not part
+of this allowlist contract.
+
+A storage quota is **not** part of it either. `quota_size` was a field here and
+is not one now: a quota is nonsecret policy, so it is declared as
+`immich_managed_user_quota_default` and `immich_managed_user_quota_by_email` in
+`inventory/group_vars/all/main.yml`, where it is reviewable in a diff and needs
+no vault password to change. A vault still carrying `quota_size` fails the
+vault contract role with a message naming that destination.
+
+`null` lifts the cap entirely and is the only value that does: Immich skips the
+quota check exactly when `quotaSizeInBytes` is null. A positive integer is a byte
+ceiling. `0` is the opposite of unlimited -- it rejects every upload of a
+non-empty file with "Quota has been exceeded!" -- so the schema refuses it
+outright rather than documenting it as a trap, because its only symptom is
+uploads that silently stop arriving. Both roles type the default `raw` rather
+than `int`, since an argument spec cannot express "integer or null" and
+`type: int` rejects an explicit null before any task runs; the shape is enforced
+by `immich_quota_errors` instead.
 
 #### jellyfin managed users
 

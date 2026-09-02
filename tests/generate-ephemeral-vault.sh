@@ -286,7 +286,6 @@ vault_managed_users:
     - email: reader@immich.ephemeral.example.invalid
       password: '$(random_password)'
       name: Synthetic Ephemeral Reader
-      quota_size: 10737418240
   jellyfin:
     - username: reader-ephemeral-example-invalid
       password: '$(random_password)'

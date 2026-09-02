@@ -103,6 +103,32 @@
   no_log: true
 
 # Redacted: the mapping keys are the managed users' email addresses.
+- name: Normalize Immich managed user quota policy emails
+  ansible.builtin.set_fact:
+    immich_managed_user_quota_by_normalized_email: >-
+      {{ dict(
+           immich_managed_user_quota_by_email.keys() |
+           map('trim') | map('lower') |
+           zip(immich_managed_user_quota_by_email.values())
+         ) }}
+  no_log: true
+
+# A managed user absent from the map takes the default, which is null: no cap.
+- name: Resolve Immich managed user quotas
+  ansible.builtin.set_fact:
+    immich_managed_user_desired_quotas: >-
+      {{ (immich_managed_user_desired_quotas | default({})) |
+         combine({item.email:
+           immich_managed_user_quota_by_normalized_email.get(
+             item.email | trim | lower, immich_managed_user_quota_default
+           )
+         }) }}
+  loop: "{{ vault_managed_immich_users }}"
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+# Redacted: the mapping keys are the managed users' email addresses.
 - name: Normalize Immich managed user preference policy emails
   ansible.builtin.set_fact:
     immich_managed_user_profile_by_normalized_email: >-
@@ -493,7 +519,8 @@
     - immich_effective_managed_user_matches[item.email] | length == 1
     - >-
       immich_effective_managed_user_matches[item.email][0].name != item.name or
-      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes != item.quota_size
+      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes !=
+      immich_managed_user_desired_quotas[item.email]
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -602,7 +629,7 @@
     body_format: json
     body:
       name: "{{ item.name }}"
-      quotaSizeInBytes: "{{ item.quota_size }}"
+      quotaSizeInBytes: "{{ immich_managed_user_desired_quotas[item.email] }}"
     status_code: [200]
   when:
     - immich_managed_users_phase == 'reconcile'
@@ -610,7 +637,8 @@
     - immich_effective_managed_user_matches[item.email] | length == 1
     - >-
       immich_effective_managed_user_matches[item.email][0].name != item.name or
-      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes != item.quota_size
+      immich_effective_managed_user_matches[item.email][0].quotaSizeInBytes !=
+      immich_managed_user_desired_quotas[item.email]
   loop: "{{ vault_managed_immich_users }}"
   loop_control:
     label: immich-managed-user
@@ -790,7 +818,9 @@
       - immich_managed_user_matches[item.email] | length == 1
       - immich_managed_user_matches[item.email][0].email | trim | lower == item.email | trim | lower
       - immich_managed_user_matches[item.email][0].name == item.name
-      - immich_managed_user_matches[item.email][0].quotaSizeInBytes == item.quota_size
+      - >-
+        immich_managed_user_matches[item.email][0].quotaSizeInBytes ==
+        immich_managed_user_desired_quotas[item.email]
       - immich_managed_user_matches[item.email][0].status == 'active'
       - >-
         immich_managed_user_matches[item.email][0].id ==

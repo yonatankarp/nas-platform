@@ -311,6 +311,16 @@ def desired_managed_user_profile(policy, email)
   deep_merge(profile, overrides.fetch(normalized, {}))
 end
 
+# Mirrors the role: the by-email map wins, otherwise the default. A managed user
+# absent from the map is not an error -- it takes the default, which is null.
+def desired_managed_user_quota(policy, email)
+  normalized = email.strip.downcase
+  quota_by_email = policy.fetch("immich_managed_user_quota_by_email").to_h do |key, value|
+    [key.strip.downcase, value]
+  end
+  quota_by_email.fetch(normalized, policy.fetch("immich_managed_user_quota_default"))
+end
+
 def supported_unowned_preference_sentinel(profile)
   preferences = profile.reject { |key, _value| key == "avatar" }
   SUPPORTED_UNOWNED_PREFERENCE_SENTINELS.find do |path, _value|
@@ -369,7 +379,8 @@ def seed_managed_user_state(token, managed_users, policy)
     id = safe_id(target.fetch("id"))
     profile = desired_managed_user_profile(policy, managed.fetch("email"))
     user_patch = {
-      "name" => managed.fetch("name"), "quotaSizeInBytes" => managed.fetch("quota_size"),
+      "name" => managed.fetch("name"),
+      "quotaSizeInBytes" => desired_managed_user_quota(policy, managed.fetch("email")),
       "storageLabel" => MANAGED_SENTINEL
     }
     user_patch["avatarColor"] = profile.dig("avatar", "color") if

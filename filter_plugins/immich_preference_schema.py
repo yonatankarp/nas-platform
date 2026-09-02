@@ -200,8 +200,58 @@ def immich_preference_errors(profiles, overrides=None, profile_by_email=None,
     return errors
 
 
+def _quota(errors, label, value):
+    """Require a quota to be null or a positive byte count.
+
+    null is Immich's own representation of an unlimited quota and the only value
+    that lifts the cap: the server skips the check exactly when quotaSizeInBytes
+    is null. 0 is refused rather than merely discouraged because its whole effect
+    is to reject every upload of a non-empty file, and it does so with no symptom
+    beyond uploads that stop arriving.
+    """
+    if value is None:
+        return
+    if not _GUARDS.is_integer(value):
+        errors.append(f"{label}: must be an integer or null")
+    elif value < 0:
+        errors.append(f"{label}: must not be negative")
+    elif value == 0:
+        errors.append(f"{label}: must not be 0, which rejects every upload of a "
+                      "non-empty file; use null for no limit")
+
+
+def immich_quota_errors(quota_by_email, quota_default=None, managed_emails=None):
+    """Return every Immich managed-user quota violation, as field paths.
+
+    Quotas are nonsecret policy declared in group_vars, but the selector keys are
+    managed-user email addresses, so this follows `immich_preference_errors` in
+    naming a key's position rather than its text.
+
+    A managed user absent from the map is not an error -- it takes the default.
+    A key naming no managed user is, because it would otherwise be a typo that
+    silently leaves that account on the default.
+    """
+    errors = []
+    quota_by_email = {} if quota_by_email is None else quota_by_email
+    _quota(errors, "quota_default", quota_default)
+
+    if not _GUARDS.is_mapping(quota_by_email):
+        errors.append("quota_by_email: must be a mapping")
+        return errors
+
+    _collection(errors, "quota_by_email", quota_by_email)
+    normalized_emails = {_normalize(email) for email in (managed_emails or [])
+                         if _GUARDS.is_string(email)}
+    _selector_keys(errors, "quota_by_email", quota_by_email, normalized_emails)
+    for index, value in enumerate(quota_by_email.values()):
+        _quota(errors, f"quota_by_email[{index}]", value)
+
+    return errors
+
+
 class FilterModule:
-    """Expose the Immich preference schema validator to Ansible."""
+    """Expose the Immich preference schema validators to Ansible."""
 
     def filters(self):
-        return {"immich_preference_errors": immich_preference_errors}
+        return {"immich_preference_errors": immich_preference_errors,
+                "immich_quota_errors": immich_quota_errors}

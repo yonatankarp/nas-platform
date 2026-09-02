@@ -48,6 +48,16 @@ argument_specs:
       immich_restore_database_wait_timeout:
         type: int
         required: false
+      immich_managed_user_quota_default:
+        # raw, not int, because null is a meaningful declaration: Immich skips
+        # the quota check exactly when quotaSizeInBytes is null, and an argument
+        # spec cannot express "int or null" -- type: int rejects an explicit
+        # null outright. immich_quota_errors enforces the shape.
+        type: raw
+        required: false
+      immich_managed_user_quota_by_email:
+        type: dict
+        required: false
       immich_managed_user_preference_profile_default:
         type: str
         required: false
