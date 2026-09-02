@@ -29,6 +29,11 @@
 # equal the declared one. The asterisk rule is `OptionPassword.set`, which
 # silently discards a value that is all asterisks because that is what its own
 # masked read-back looks like.
+#
+# These rules reject an empty value, which is what an undeclared provider is, so
+# the guard is gated rather than relaxed: a declared provider is held to every
+# rule and an undeclared one has no credential to hold. Left ungated it refused
+# to deploy anything at all on a target with no Usenet subscription.
 - name: Require INI-safe SABnzbd Usenet provider credentials
   ansible.builtin.assert:
     that:
@@ -38,6 +43,7 @@
     fail_msg: >-
       SABnzbd Usenet provider credentials must be single-line values without
       leading or trailing whitespace, and the password must not be only asterisks.
+  when: downloaders_usenet_provider_declared | bool
   no_log: true
 
 - name: Render the private downloader environment

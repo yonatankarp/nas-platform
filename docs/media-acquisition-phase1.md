@@ -52,15 +52,39 @@ from a running service. This repository does not choose a Usenet provider,
 indexer, subtitle language, or Bazarr provider; it does record what a chosen one
 requires.
 
-The Usenet server SABnzbd downloads through is one of those declarations. Its
-six fields are vault-authored (`vault_downloaders_sabnzbd_server_host`,
-`_port`, `_username`, `_password`, `_connections` and `_ssl`, documented in
-[secrets](secrets.md)) and the downloaders role reconciles them into SABnzbd's
-`servers` section on every run, so a server added or edited in the web interface
-is replaced by the declared one. Verification asserts the declared server is
-present, which is what makes a SABnzbd with no provider fail a run instead of
-converging quietly. Nothing has to be configured by hand before a proof
-download; the provider account has to exist and be recorded in the vault.
+The Usenet server SABnzbd downloads through is one of those declarations, and it
+is the one that costs money: it is a paid third-party subscription. Its six
+fields are vault-authored (`vault_downloaders_sabnzbd_server_host`, `_port`,
+`_username`, `_password`, `_connections` and `_ssl`, documented in
+[secrets](secrets.md)), and `group_vars/all/main.yml` carries the same six names
+as empty strings for the same reason it carries the three empty lists above.
+
+**An undeclared provider is a valid state.** With the six left empty, SABnzbd
+starts with no server, exactly as an empty `media_arr_indexers` starts Prowlarr
+with no indexer. Nothing else about the platform is affected: this is a
+declaration the operator has not made, not a broken one, and the other eight
+service stacks deploy as usual. The credential contract accepts all six empty or
+all six valid, and refuses a half-declared provider field by field, so there is
+no state in between.
+
+Declaring one changes three things. The provider credentials are held to
+SABnzbd's own INI and normalization rules before anything is pushed; the
+downloaders role reconciles the six into SABnzbd's `servers` section on every
+run, so a server added or edited in the web interface is replaced by the declared
+one; and verification asserts the declared server is present and matches, which
+is what makes a SABnzbd with no provider fail a run instead of converging
+quietly. With none declared, verification asserts the complement — that no server
+carries the name the platform owns — so neither state converges with nothing
+checked.
+
+Emptying the six again does not delete a server the platform already created:
+the reconciliation only ever upserts. Verification then fails and names both
+remedies, because a server standing with nothing declared is a real
+inconsistency and removing it is an operator decision rather than a side effect
+of clearing a vault value.
+
+Nothing has to be configured by hand before a proof download; the provider
+account has to exist and be recorded in the vault.
 
 Do not put provider credentials in a command-line `-e` value, a plaintext
 inventory file, or shell history.

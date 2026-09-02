@@ -205,6 +205,31 @@ CREDENTIAL_RULES = {
     "vault_seerr_api_key": ((PATTERN, HEX_32),),
 }
 
+# The Usenet provider account belongs to a paid third-party subscription, so a
+# target that has not bought one has nothing to declare. That is a valid state,
+# the same one an empty `media_arr_indexers` describes, and
+# `inventory/group_vars/all/main.yml` expresses it by declaring all six of these
+# as empty strings so the vault can win over them without the contract losing a
+# required key.
+#
+# The group is all-or-nothing on purpose. Every rule below is suppressed only
+# when all six are empty; one non-empty value means a provider is being declared
+# and every rule applies again, so a half-declared provider is reported field by
+# field rather than accepted. That naming is why a partial declaration does not
+# get a group-level message of its own: "which field did I forget" is the
+# question an operator actually has, and the per-field rules answer it.
+#
+# tests/policy_vault_test.rb pins this tuple against its own OPERATOR_SUPPLIED_KEYS
+# so the two cannot drift.
+OPTIONAL_KEY_GROUPS = (
+    ("vault_downloaders_sabnzbd_server_host",
+     "vault_downloaders_sabnzbd_server_port",
+     "vault_downloaders_sabnzbd_server_username",
+     "vault_downloaders_sabnzbd_server_password",
+     "vault_downloaders_sabnzbd_server_connections",
+     "vault_downloaders_sabnzbd_server_ssl"),
+)
+
 # The four publisher tokens authenticate four different ntfy identities. A
 # duplicate would authorize one publisher as another, and the role's own
 # publisher separation rule for managed users would then have nothing to
@@ -229,6 +254,31 @@ def _text(value):
     have to apply to reach the same verdicts.
     """
     return value if isinstance(value, str) else str(value)
+
+
+def _is_undeclared(value):
+    """Report whether a value declares nothing, as `NONEMPTY` measures emptiness.
+
+    A zero length is the only undeclared shape, so `""` is undeclared and `"0"`
+    is not. A value with no length to measure -- `none` above all -- stays
+    declared, so `NONEMPTY` still reports it rather than an absent credential
+    silently suppressing its own group's rules.
+    """
+    try:
+        return len(value) == 0
+    except TypeError:
+        return False
+
+
+def _suppressed_keys(value):
+    """Return the keys whose rules an entirely undeclared group switches off."""
+    suppressed = set()
+    for key_group in OPTIONAL_KEY_GROUPS:
+        if not all(key in value for key in key_group):
+            continue
+        if all(_is_undeclared(value[key]) for key in key_group):
+            suppressed.update(key_group)
+    return suppressed
 
 
 def _apply(errors, key, value, kind, argument):
@@ -271,7 +321,9 @@ def vault_credential_errors(value):
     reported here rather than silently losing its rule.
 
     Never includes a value or a comparand, so the result is safe to print from a
-    `fail_msg`. An empty list means every credential satisfies the contract.
+    `fail_msg`. An empty list means every credential satisfies the contract,
+    which includes an `OPTIONAL_KEY_GROUPS` group left entirely empty: that is a
+    declaration of nothing, not a missing credential.
     """
     if not isinstance(value, dict):
         return ["vault credentials: must be a mapping"]
@@ -284,8 +336,9 @@ def vault_credential_errors(value):
     if unexpected:
         errors.append(f"vault credentials: unexpected {', '.join(unexpected)}")
 
+    suppressed = _suppressed_keys(value)
     for key, rules in CREDENTIAL_RULES.items():
-        if key not in value:
+        if key not in value or key in suppressed:
             continue
         for kind, argument in rules:
             _apply(errors, key, value[key], kind, argument)

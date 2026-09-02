@@ -12,6 +12,17 @@ downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
 media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
 
+# Whether an operator has declared a Usenet provider at all. An undeclared one is
+# a valid state: `inventory/group_vars/all/main.yml` carries the six provider
+# credentials as empty strings and the vault wins over them, so the host is what
+# says which of the two states this target is in. The credential contract refuses
+# a half-declared provider, so one non-empty host means all six are declared and
+# this single fact is the whole test -- the provider credential guard, the
+# `section=servers` reconciliation and the two owned-server verification branches
+# all read it rather than repeating an emptiness check.
+downloaders_usenet_provider_declared: >-
+  {{ vault_downloaders_sabnzbd_server_host | length > 0 }}
+
 downloaders_sabnzbd_categories:
   movies: /data/media/.acquisition/usenet/movies
   series: /data/media/.acquisition/usenet/series
