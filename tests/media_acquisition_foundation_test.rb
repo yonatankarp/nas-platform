@@ -201,6 +201,8 @@ EXPECTED_IMPLEMENTED_PORTS = [
 ].freeze
 
 EXPECTED_STORAGE = {
+  "{{ nas_media_root }}/Media/.acquisition" => "cache",
+  "{{ nas_media_root }}/Books/.acquisition" => "cache",
   "{{ nas_media_root }}/Media/.acquisition/usenet/movies" => "cache",
   "{{ nas_media_root }}/Media/.acquisition/usenet/series" => "cache",
   "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks" => "cache",

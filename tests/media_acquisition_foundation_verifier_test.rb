@@ -12,8 +12,12 @@ include TestScaffold
 TASKS_PATH = File.join(ROOT, "roles", "host_prep", "tasks", "verify_media_acquisition.yml")
 VERIFY_PATH = File.join(ROOT, "verify.yml")
 
-EXPECTED_CLASSES = { "cache" => 10, "user" => 7, "critical" => 11 }.freeze
+EXPECTED_CLASSES = { "cache" => 12, "user" => 7, "critical" => 11 }.freeze
 EXPECTED_READERS = %w[audiobookshelf jellyfin].freeze
+LEAF_ASSERTION_NAME = "Require every media acquisition path to be a real mode 0755 directory"
+ROOT_ASSERTION_NAME = "Verify the acquisition tree roots the acceptance item names"
+ROOT_SELECTOR_NAME = "Select the acquisition tree roots from the inspected paths"
+ROOT_FLOOR_NAME = "Require both acquisition tree roots to have been inspected"
 
 def reader_name_expression(reader)
   "{{ #{reader}_container_name | default((platform_project_name ~ '-#{reader}') if platform_project_name | default('') | length > 0 else '#{reader}', true) }}"
@@ -29,6 +33,17 @@ end
 
 def normalize_expression(value)
   value.to_s.gsub(/\s+/, " ").strip
+end
+
+# Scoped to one named assertion's own conditions, never the union across every
+# assert in the file. Two assertions now carry the same per-path stat
+# conditions, so a union membership test would let either one supply what the
+# other dropped, and both guards would pass while checking nothing.
+def assertion_conditions(flat, name)
+  task = flat.find { |item| item["name"] == name }
+  return nil unless task
+
+  Array(task.dig("ansible.builtin.assert", "that"))
 end
 
 def verifier_problems(tasks, verify_play)
@@ -49,22 +64,55 @@ def verifier_problems(tasks, verify_play)
   assertions = flat.select { |task| task["ansible.builtin.assert"] }
   conditions = assertions.flat_map { |task| Array(task.dig("ansible.builtin.assert", "that")) }
   required = [
-    "host_prep_media_acquisition_storage | length == 28",
-    "host_prep_media_acquisition_storage | map(attribute='path') | unique | length == 28",
-    "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'cache') | list | length == 10",
+    "host_prep_media_acquisition_storage | length == 30",
+    "host_prep_media_acquisition_storage | map(attribute='path') | unique | length == 30",
+    "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'cache') | list | length == 12",
     "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'user') | list | length == 7",
     "host_prep_media_acquisition_storage | selectattr('recovery', 'equalto', 'critical') | list | length == 11",
     "host_prep_media_acquisition_storage | map(attribute='mode') | unique | list == ['0755']",
-    "host_prep_media_acquisition_storage_stats.results | length == 28",
+    "host_prep_media_acquisition_storage_stats.results | length == 30",
     # Usenet is deliberately absent: the NAS enabled it through Phase 1, and a
     # verifier that required it off would fail the host that completed the
     # handoff. Torrent remains inert on every host.
     "not (media_torrent_enabled | bool)"
   ]
   required.each { |condition| problems << "verifier omits exact assertion: #{condition}" unless conditions.include?(condition) }
+
+  leaf_conditions = assertion_conditions(flat, LEAF_ASSERTION_NAME)
   problems << "verifier must require each path to be an existing real directory with mode 0755" unless
-    conditions.include?("item.stat.exists") && conditions.include?("item.stat.isdir") &&
-      conditions.include?("not item.stat.islnk") && conditions.include?("item.stat.mode == '0755'")
+    leaf_conditions && ["item.stat.exists", "item.stat.isdir", "not item.stat.islnk",
+                        "item.stat.mode == '0755'"].all? { |condition| leaf_conditions.include?(condition) }
+
+  # The two paths the Phase 1 acceptance item names. The floor must live in its
+  # own UNLOOPED assert: a looped assert whose list is empty runs zero
+  # iterations, so a floor placed inside the loop it guards can never fire. That
+  # is the whole reason these are two tasks rather than one.
+  floor_task = flat.find { |task| task["name"] == ROOT_FLOOR_NAME }
+  floor_conditions = assertion_conditions(flat, ROOT_FLOOR_NAME)
+  problems << "the acquisition tree-root floor must be asserted without a loop" if
+    floor_task && (floor_task.key?("loop") || floor_task.key?("with_items"))
+  problems << "verifier must assert a floor of exactly two inspected acquisition tree roots" unless
+    floor_conditions&.include?("host_prep_media_acquisition_tree_roots | length == 2")
+
+  root_task = flat.find { |task| task["name"] == ROOT_ASSERTION_NAME }
+  problems << "the acquisition tree-root assertion must iterate the selected roots" unless
+    root_task && root_task["loop"] == "{{ host_prep_media_acquisition_tree_roots }}"
+  root_conditions = assertion_conditions(flat, ROOT_ASSERTION_NAME)
+  problems << "verifier must prove both acquisition tree roots by mode, world traversal, and absent ownership" unless
+    root_conditions && ["item.stat.exists", "item.stat.isdir", "not item.stat.islnk",
+                        "item.stat.mode == '0755'", "item.item.owner is not defined",
+                        "item.item.group is not defined"].all? { |condition| root_conditions.include?(condition) }
+  # other=5 is exactly r-x, so a roth/xoth condition beside the mode condition
+  # could never fail on its own. Refuse the restatement rather than bank it as
+  # independent proof.
+  problems << "the tree-root assertion must not restate mode 0755 as separate roth/xoth conditions" if
+    root_conditions && (root_conditions.include?("item.stat.roth") || root_conditions.include?("item.stat.xoth"))
+
+  root_selector = flat.find { |task| task["name"] == ROOT_SELECTOR_NAME }
+  selected_roots = root_selector&.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_tree_roots").to_s
+  problems << "the tree-root selector must filter the inspected stat results, not re-read the declaration" unless
+    selected_roots.include?("host_prep_media_acquisition_storage_stats.results") &&
+      selected_roots.include?("selectattr('item.path', 'search', '/[.]acquisition$')")
 
   network_info = flat.find { |task| task["community.docker.docker_network_info"] }
   problems << "verifier must inspect the exact derived media-control network" unless
@@ -304,8 +352,43 @@ unless failures.any?
   readers = selector.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_readers")
   mutation_cases = {
     "missing storage leaf assertion" => proc do |copy|
-      assertion = copy.find { |task| task["name"] == "Require every media acquisition path to be a real mode 0755 directory" }
+      assertion = copy.find { |task| task["name"] == LEAF_ASSERTION_NAME }
       assertion.dig("ansible.builtin.assert", "that").delete("item.stat.exists")
+    end,
+    # One row per condition the tree-root guard rests on. The first two are the
+    # ones that matter: without the length floor the loop can iterate zero
+    # times, and without the stat-results source the selector would re-read the
+    # declaration and prove the paths were declared rather than inspected.
+    "missing tree-root length floor" => proc do |copy|
+      assertion = copy.find { |task| task["name"] == ROOT_FLOOR_NAME }
+      assertion.dig("ansible.builtin.assert", "that").delete("host_prep_media_acquisition_tree_roots | length == 2")
+    end,
+    # The vacuous shape itself: the floor still present, but moved inside the
+    # loop it is supposed to guard, where an empty list means it never runs.
+    "tree-root floor moved inside the loop it guards" => proc do |copy|
+      floor = copy.find { |task| task["name"] == ROOT_FLOOR_NAME }
+      floor["loop"] = "{{ host_prep_media_acquisition_tree_roots }}"
+    end,
+    "unlooped tree-root path assertion" => proc do |copy|
+      assertion = copy.find { |task| task["name"] == ROOT_ASSERTION_NAME }
+      assertion.delete("loop")
+    end,
+    "tree-root selector re-reading the declaration" => proc do |copy|
+      selector = copy.find { |task| task["name"] == ROOT_SELECTOR_NAME }
+      selector["ansible.builtin.set_fact"]["host_prep_media_acquisition_tree_roots"] =
+        "{{ host_prep_media_acquisition_storage | selectattr('path', 'search', '/[.]acquisition$') | list }}"
+    end,
+    "missing tree-root symlink refusal" => proc do |copy|
+      assertion = copy.find { |task| task["name"] == ROOT_ASSERTION_NAME }
+      assertion.dig("ansible.builtin.assert", "that").delete("not item.stat.islnk")
+    end,
+    "tree-root mode restated as a condition that cannot fail" => proc do |copy|
+      assertion = copy.find { |task| task["name"] == ROOT_ASSERTION_NAME }
+      assertion.dig("ansible.builtin.assert", "that") << "item.stat.xoth"
+    end,
+    "missing tree-root ownership contract" => proc do |copy|
+      assertion = copy.find { |task| task["name"] == ROOT_ASSERTION_NAME }
+      assertion.dig("ansible.builtin.assert", "that").delete("item.item.owner is not defined")
     end,
     "audiobookshelf missing default network" => proc do |copy|
       copy.first.dig("ansible.builtin.set_fact", "host_prep_media_acquisition_readers").first["networks"].shift

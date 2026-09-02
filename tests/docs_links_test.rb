@@ -831,9 +831,26 @@ else
       /four labeled.*MEDIA_ACQUISITION_FOUNDATION.*MEDIA_ACQUISITION_STORAGE.*MEDIA_ACQUISITION_TRANSPORTS.*MEDIA_ACQUISITION_CONTAINERS/im =>
         "describe the bounded four-line acquisition evidence"
     },
+    # The handoff used to state ordinary-user denial as an acceptance item the
+    # platform provides no way to check. These four contracts pin the honest
+    # replacement instead: what the tagged run asserts, that POSIX does not
+    # enforce the denial, the exact manual command, and what a pass looks like.
+    # Dropping any one of them would let the old overclaim return.
     "docs/getting-started-nas.md" => {
-      /ordinary SMB users cannot access either.*\.acquisition/im =>
-        "require ordinary-user denial for both acquisition trees"
+      /What the platform asserts.*platform_verify_media_acquisition_foundation.*Media\/\.acquisition.*Books\/\.acquisition.*asserted\s+by name/im =>
+        "name what the tagged verification run asserts about both acquisition trees",
+      /What no part of the platform asserts.*0755.*o\+rx.*denial rests entirely on ADM share\s+configuration/im =>
+        "state plainly that no POSIX permission enforces the acquisition denial",
+      /non-administrator.*ls \/Volumes\/Media\/\.acquisition.*ls \/Volumes\/Books\/\.acquisition/im =>
+        "give the exact manual command from a non-administrator SMB account",
+      # Backticks are stripped from the document before matching, so the
+      # pattern must not contain them.
+      /A pass is permission denied.*Listing\s*usenet torrents is the finding/im =>
+        "name both the pass and the finding for the manual ADM share check"
+    },
+    "docs/media-acquisition-phase1.md" => {
+      /manual.*ADM share check.*non-administrator SMB account.*the platform does not claim it/im =>
+        "mark the ADM share acceptance item as manual and unclaimed by the platform"
     },
     "docs/adding-a-service.md" => {
       /planned acquisition projects.*role.*Compose directories.*must remain absent/im =>

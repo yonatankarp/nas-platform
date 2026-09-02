@@ -222,7 +222,7 @@ def media_acquisition_foundation_report(report)
 
   [
     "MEDIA_ACQUISITION_FOUNDATION: network present, bridge driver, isolated project name, Jellyfin and Audiobookshelf attached to default and media-control",
-    "MEDIA_ACQUISITION_STORAGE: 28 exact classified paths present",
+    "MEDIA_ACQUISITION_STORAGE: 30 exact classified paths present",
     "MEDIA_ACQUISITION_TRANSPORTS: usenet=false torrent=false",
     "MEDIA_ACQUISITION_CONTAINERS: none declared or started"
   ]
