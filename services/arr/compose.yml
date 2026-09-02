@@ -103,7 +103,7 @@ services:
   bazarr:
     <<: *service-defaults
     container_name: bazarr
-    image: lscr.io/linuxserver/bazarr:1.6.0@sha256:3a820372f19fcb2981ea19fe4b5382934d67414afaba974bce831ddda0a64a02
+    image: lscr.io/linuxserver/bazarr:1.6.0@sha256:a20fb11a440d704a9d61c283aa26462aad33dc63223b173f8d8c77d33e8e9d59
     cpus: 1.0
     labels:
       dev.dozzle.name: bazarr
