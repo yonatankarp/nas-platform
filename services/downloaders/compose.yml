@@ -73,12 +73,6 @@ services:
     labels:
       dev.dozzle.name: unpackerr
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196.
-    cap_drop: [ALL]
     volumes:
       - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
       - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition

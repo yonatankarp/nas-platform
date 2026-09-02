@@ -122,12 +122,6 @@ services:
     profiles: [jobs]
     image: ghcr.io/raydak-labs/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196.
-    cap_drop: [ALL]
     cpus: 0.5
     environment:
       GIT_CONFIG_COUNT: "2"

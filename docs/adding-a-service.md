@@ -550,10 +550,6 @@ x-service-defaults: &service-defaults
     - no-new-privileges:true
   restart: unless-stopped
   logging: *default-logging
-  # cap_drop is deliberately not in this fragment. It is declared per container,
-  # because a stack can hold both an unprivileged container that drops
-  # everything and a root-entrypoint one whose add-back list is not derived yet,
-  # and a shared value would force the two to move together.
 
 x-healthcheck-defaults: &healthcheck-defaults
   interval: 30s
@@ -615,22 +611,6 @@ The policy test enforces every one of these properties:
   image ever does need the escalation, it belongs in an allowlist beside the
   check in `tests/policy_test.rb` with the reason stated, never omitted in
   silence.
-- `cap_drop: [ALL]`, on every container in the stack, or the container's name in
-  `CAPABILITY_DROP_PENDING` in `tests/policy_test.rb` with the reason it cannot
-  drop capabilities yet. This is the third part of the same boundary and the one
-  the other two do not cover: `no_new_privs` does **not** neutralise a file
-  capability, so a binary carrying `+ep` still execs and still gets its
-  capabilities under it, and only an empty bounding set refuses that.
-  A container whose PID 1 is unprivileged — anything with `user:` — can drop
-  everything for free, because the kernel already reports its permitted and
-  effective sets empty and no image on the platform carries a file-capability
-  binary. A container that starts as root and reaches its service account itself
-  needs an add-back list, and that list has to be *derived by measurement*
-  rather than guessed: run the container with `cap_drop: [ALL]`, exercise it
-  against a config directory that already has files owned by another uid, and
-  remove each candidate capability in turn to prove it is really required.
-  Whatever survives goes in `CAPABILITY_ADD_BACK` with the reason. Issue #196
-  records the instruments and why a fresh empty volume gives a false negative.
 - `restart: unless-stopped`.
 - `logging` with the `json-file` driver and both `max-size` and `max-file`, and
   the same two values every other container uses. Presence alone would let

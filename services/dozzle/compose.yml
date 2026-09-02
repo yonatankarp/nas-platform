@@ -33,14 +33,6 @@ services:
       dev.dozzle.name: alert-relay
       dev.nas-platform.alert-relay.script-sha256: ${ALERT_RELAY_SCRIPT_SHA256:?}
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196. The scan covers
-    # the image, not the bind-mounted alert_relay.py, which is a Python script
-    # and so cannot carry a file capability in the first place.
-    cap_drop: [ALL]
     command: [python, /app/alert_relay.py]
     volumes:
       - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
@@ -75,12 +67,6 @@ services:
       dev.dozzle.group: dozzle
       dev.dozzle.name: dozzle
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196.
-    cap_drop: [ALL]
     ports:
       - "8080:8080"
     volumes:

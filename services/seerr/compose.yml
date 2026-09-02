@@ -53,12 +53,6 @@ services:
     # happens to equal this platform's nas_uid; the gid does not, and left
     # alone Seerr would group-own its files outside the platform's media group.
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196.
-    cap_drop: [ALL]
     # npm start forks, and without an init the container accumulates zombies.
     init: true
     ports:

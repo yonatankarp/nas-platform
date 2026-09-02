@@ -30,12 +30,6 @@ services:
     # `user:` line into a loud boot failure instead of files silently written
     # as the image's uid 65532.
     user: "${NAS_UID:?}:${NAS_GID:?}"
-    # Nothing here can consume a capability. `user:` above makes PID 1
-    # unprivileged, so the kernel already reports CapPrm and CapEff empty and
-    # only the bounding set is left to clear, and this image carries no
-    # file-capability binary whose exec a cleared bounding set would refuse.
-    # Both halves were measured, not assumed; see issue #196.
-    cap_drop: [ALL]
     ports:
       - "8787:8787"
     # Each library arrives with its own staging directory inside one bind mount
