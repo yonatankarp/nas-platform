@@ -461,25 +461,6 @@
   loop_control:
     label: "{{ item.id }}"
 
-# Reported, never migrated. This platform cannot repair a volume stored outside
-# the library root without moving a directory the confinement promise excludes,
-# so it says which volume and stops. It cannot arise from anything this role
-# does: every folder the migration writes is one Kapowarr derived from the root
-# asserted below.
-- name: Report each Kapowarr volume folder outside the declared library root
-  ansible.builtin.debug:
-    msg: >-
-      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
-      {{ ('and Kapowarr would derive ' ~ item.target) if item.target | length > 0
-      else 'and Kapowarr previews no target for it' }}, and one of those is outside the
-      declared library root {{ kapowarr_library_root }}. The migration refuses it: moving it
-      would touch a directory outside the comics library. Repair it in Kapowarr, by pointing
-      the volume at the declared root folder, before this platform can converge it.
-  loop: "{{ kapowarr_volume_folders_unconfined }}"
-  loop_control:
-    label: "{{ item.id }}"
-  changed_when: false
-
 # One line per volume, and the reason this is a loop rather than one message:
 # `--check --diff` is the review the comics share gets before anything moves, so
 # it has to name the current folder and the folder the migration would move it
@@ -496,6 +477,25 @@
       {{ 'This run moves it.' if kapowarr_volume_folder_migration_allowed | bool else
       'A run carrying kapowarr_volume_folder_migration_allowed=true would move it.' }}
   loop: "{{ kapowarr_volume_folder_migrations }}"
+  loop_control:
+    label: "{{ item.id }}"
+  changed_when: false
+
+# Reported, never migrated. This platform cannot repair a volume stored outside
+# the library root without moving a directory the confinement promise excludes,
+# so it says which volume and stops. It cannot arise from anything this role
+# does: every folder the migration writes is one Kapowarr derived from the root
+# asserted below.
+- name: Report each Kapowarr volume folder outside the declared library root
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr volume {{ item.id }} ({{ item.title }}) holds {{ item.folder }}
+      {{ ('and Kapowarr would derive ' ~ item.target) if item.target | length > 0
+      else 'and Kapowarr previews no target for it' }}, and one of those is outside the
+      declared library root {{ kapowarr_library_root }}. The migration refuses it: moving it
+      would touch a directory outside the comics library. Repair it in Kapowarr, by pointing
+      the volume at the declared root folder, before this platform can converge it.
+  loop: "{{ kapowarr_volume_folders_unconfined }}"
   loop_control:
     label: "{{ item.id }}"
   changed_when: false
