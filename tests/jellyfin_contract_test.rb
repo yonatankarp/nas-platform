@@ -826,11 +826,18 @@ RUNTIME_ROWS = [
     then: lambda { |media|
       path = File.join(media, FIXTURE_RELATIVE)
       next "the fixture was not written" unless File.file?(path)
-      # Jellyfin reads the fixture as the container user, so it has to be
-      # world-readable and not group- or world-writable. 0o644 exactly.
-      next format("the fixture was written with mode 0o%o, not 0o644",
-                  File.stat(path).mode & 0o777) unless
-        (File.stat(path).mode & 0o777) == 0o644
+
+      # Jellyfin reads the fixture as the container user, so seed_fixture opens
+      # it 0o644. What lands on disk is 0o644 masked by the process umask, and
+      # the umask belongs to the ENVIRONMENT rather than to the contract -- the
+      # same mistake as pinning a shell's wording. Deriving the expectation is
+      # what keeps this row about the mode the program asked for. Under an
+      # unusually tight umask (0o077) the mutation to 0o600 becomes invisible;
+      # the self-test then aborts with "was accepted", which is loud.
+      expected = 0o644 & ~File.umask
+      actual = File.stat(path).mode & 0o777
+      next format("the fixture was written with mode 0o%o, not the 0o%o that 0o644 masks to",
+                  actual, expected) unless actual == expected
 
       nil
     }
@@ -1106,15 +1113,33 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
 
   # The three `:?` environment refusals the wrapper makes before it execs the
   # runtime half. Each names itself, and static mode must reach none of them.
+  #
+  # `<NAME>: parameter` is the portable part of a POSIX `:?` diagnostic and the
+  # only part this row may assert. The rest of the sentence belongs to the
+  # SHELL, not to the contract: bash writes "parameter null or not set" and dash
+  # writes "parameter not set or null", the same words in a different order. An
+  # earlier version of this row pinned bash's order, passed on a macOS box whose
+  # /bin/sh is bash, and failed CI's Ubuntu runner where /bin/sh is dash --
+  # asserting which shell the machine had rather than what the contract did.
   with_contract_copy(wrapper: wrapper_source) do |contract|
     with_runtime_sandbox do |_root, environment, _media|
       %w[PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT].each do |name|
         partial = environment.merge("PLATFORM_CONTRACT_REPO_DIR" => ROOT, name => nil)
         stdout, stderr, status = Open3.capture3(partial, contract, "run")
+        output = stdout + stderr
         failures << "wrapper: #{name} unset was accepted" if status.success?
         failures << "wrapper: #{name} unset was refused without naming it: " \
-                    "#{(stdout + stderr).strip.inspect}" unless
-          status.success? || (stdout + stderr).include?("#{name}: parameter null or not set")
+                    "#{output.strip.inspect}" unless
+          status.success? || output.include?("#{name}: parameter")
+        # The substantive property the wording was standing in for, and the
+        # reason the guards are `:?` rather than `:-`: an unset root must stop
+        # the wrapper before it execs the runtime half, so the runtime program
+        # never starts against a relative or empty path. Both sentences below
+        # are the runtime half's own, so either one appearing means it ran.
+        failures << "wrapper: #{name} unset still reached the runtime half: " \
+                    "#{output.strip.inspect}" if
+          output.include?("encrypted vault could not be read") ||
+          output.include?("Jellyfin video fixture prepared before deployment")
       end
       # static mode exits before those three are demanded, which is what lets
       # tests/contract_structure_mutation_test.rb run this contract with no
@@ -1550,7 +1575,7 @@ PROGRAM_MUTATIONS = [
     from: "    FIXTURE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o644) do |file|",
     to: "    FIXTURE_PATH.open(File::WRONLY | File::CREAT | File::EXCL, 0o600) do |file|",
     rows: ["an absent fixture is seeded"],
-    detects: "not 0o644"
+    detects: "that 0o644 masks to"
   }
 ].freeze
 
@@ -1627,6 +1652,23 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
+  # The three `:?` guards, one at a time. `:-` in place of `:?` is the realistic
+  # weakening -- it leaves the variable unset instead of refusing -- and it is
+  # what proves those rows can still fail now that they no longer pin a shell's
+  # choice of words. Without this the portable assertion could have gone
+  # vacuously true and nothing would have said so.
+  planted_guards = 0
+  %w[PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT].each do |name|
+    pristine = File.read(CONTRACT)
+    from = %(: "${#{name}:?}"\n)
+    abort "self-test could not plant a dropped :? guard for #{name}" unless
+      pristine.scan(from).length == 1
+
+    caught = wrapper_failures(wrapper_source: pristine.sub(from, %(: "${#{name}:-}"\n)))
+    abort "self-test failed: a dropped :? guard for #{name} was accepted" if caught.empty?
+    planted_guards += 1
+  end
+
   # The defect #251 shipped one version of and #259 found a second site for:
   # resolving a program from the tree being inspected rather than from the
   # script's own checkout, and the inverse -- rebinding to the checkout something
@@ -1680,7 +1722,7 @@ if ARGV.include?("--self-test")
   end
 
   puts "jellyfin contract: self-test detects " \
-       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_roots + planted_self_reads} " \
+       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_guards + planted_roots + planted_self_reads} " \
        "planted regressions"
   exit
 end
