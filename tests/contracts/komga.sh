@@ -45,14 +45,15 @@ ruby -ryaml "$static_program" "$compose" "$mac_compose" "$role" "$defaults" \
 
 grep -q '^UNRELATED_LIBRARY_ROOT = "/config/\.nas-platform-unmanaged"$' "$runtime_program" ||
   fail_contract 'unrelated library fixture API root can collide with /data'
-# This guard is a tautology and has been one since 02d60e2 (2026-08-17), which
-# removed `Pathname.new(ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH"))...` from the
-# runtime half along with the adoption lane that seeded it. The literal now
-# occurs nowhere but the grep line below, so the pattern and its only subject
-# are the same text and no content of this contract can make it fail. It is
-# left reading "$0" because that is exactly what it does today: repointing it
-# at the runtime program would make the contract refuse a clean tree, which is
-# a repair rather than a move. The three greps around it are live.
+# This guard is a tautology, and has been one since 02d60e2 (2026-08-17) removed
+# the unrelated-library fixture root -- a Pathname built from that environment
+# name -- from the runtime half along with the adoption lane that seeded it. The
+# literal now occurs nowhere in this contract but the grep line below, so the
+# pattern and its only subject are the same text and no content of the contract
+# can make it fail. Deliberately still reading "$0", because that is exactly
+# what it does today: repointing it at the runtime program would make the
+# contract refuse a clean tree, which is a repair rather than a move. The three
+# greps around it have their subject in the runtime program and moved with it.
 grep -F 'ENV.fetch("PLATFORM_KOMGA_CONFIG_PATH")' "$0" >/dev/null ||
   fail_contract 'Komga fixture config path must be explicit'
 if grep -E 'ENV\.fetch\("PLATFORM_KOMGA_CONFIG_PATH",[[:space:]]*MEDIA_ROOT' \
