@@ -11,6 +11,10 @@
       configarr_opaque_context: .configarr-opaque-context.sha256
       prowlarr_applications: .prowlarr-applications-input.sha256
       servarr_sabnzbd: .servarr-sabnzbd-input.sha256
+      # The Usenet provider connection SABnzbd itself holds, as opposed to the
+      # Arr download clients that point at SABnzbd. It lives here because the
+      # downloaders role drives it through this same subset loader.
+      downloaders_usenet_server: .downloaders-usenet-server-input.sha256
       prowlarr_indexers: .prowlarr-indexers-input.sha256
       bazarr_providers: .bazarr-providers-input.sha256
     arr_reconciliation_fingerprint_subset_effective: >-
@@ -21,6 +25,7 @@
            'configarr_opaque_context',
            'prowlarr_applications',
            'servarr_sabnzbd',
+           'downloaders_usenet_server',
            'prowlarr_indexers',
            'bazarr_providers'
          ]) }}
@@ -37,6 +42,24 @@
             'api_key': vault_downloaders_sabnzbd_api_key,
             'username': vault_downloaders_sabnzbd_admin_username,
             'password': vault_downloaders_sabnzbd_admin_password
+          } | to_json | hash('sha256')
+        }}
+      # SABnzbd masks the provider password on read, so no comparison against
+      # the running service can notice a rotation. This digest is the only thing
+      # that does, which is why every vault-authored field is in it. It carries
+      # only vault material: the server's name and its non-credential fields are
+      # downloaders-role defaults, they are compared field by field against the
+      # running service, and hashing them here would make this digest depend on
+      # a variable that is not in scope when the Arr role computes it.
+      downloaders_usenet_server: >-
+        {{
+          {
+            'host': vault_downloaders_sabnzbd_server_host,
+            'port': vault_downloaders_sabnzbd_server_port,
+            'username': vault_downloaders_sabnzbd_server_username,
+            'password': vault_downloaders_sabnzbd_server_password,
+            'connections': vault_downloaders_sabnzbd_server_connections,
+            'ssl': vault_downloaders_sabnzbd_server_ssl
           } | to_json | hash('sha256')
         }}
       prowlarr_indexers: >-
@@ -239,6 +262,7 @@
     arr_installed_reconciliation_fingerprints:
       prowlarr_applications: ""
       servarr_sabnzbd: ""
+      downloaders_usenet_server: ""
       prowlarr_indexers: ""
       bazarr_providers: ""
       configarr: ""

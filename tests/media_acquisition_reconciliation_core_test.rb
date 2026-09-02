@@ -344,12 +344,21 @@ with_api(deep_copy(clean_production_client_state)) do |api|
     failures << "clean production-order Servarr clients did not converge Sonarr" unless
       download_client_projection(api.state.fetch("sonarr_download_clients").first) ==
       download_client_projection(SONARR_DOWNLOAD_CLIENT)
-    servarr_file = FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
-    entry = result.fetch("fingerprints").fetch(servarr_file)
-    expected = result.fetch("expected_fingerprints").fetch("servarr_sabnzbd")
-    failures << "clean production-order Servarr clients did not record only the Servarr digest" unless
-      entry && entry.fetch("content") == "#{expected}\n" &&
-      (FINGERPRINT_FILES - [servarr_file]).all? do |filename|
+    # The downloaders role records both of the digests it owns, so the expected
+    # set is two. The claim is still closed-world: every fingerprint file outside
+    # that set must be absent, so a stray Configarr, indexer or Bazarr digest
+    # written by a download-client run fails here exactly as it did before.
+    owned_files = DOWNLOADER_FINGERPRINT_SUBSET.map do |input|
+      input == "servarr_sabnzbd" ? FINGERPRINT_FILE_BY_KIND.fetch(:download_client)
+                                 : DOWNLOADER_USENET_FINGERPRINT_FILE
+    end
+    failures << "clean production-order run did not record only the downloaders-owned digests" unless
+      DOWNLOADER_FINGERPRINT_SUBSET.zip(owned_files).all? do |input, filename|
+        entry = result.fetch("fingerprints").fetch(filename)
+        expected = result.fetch("expected_fingerprints").fetch(input)
+        entry && entry.fetch("content") == "#{expected}\n"
+      end &&
+      (FINGERPRINT_FILES - owned_files).all? do |filename|
         result.fetch("fingerprints").fetch(filename).nil?
       end
     success_index = result.fetch("task_events").index do |event|

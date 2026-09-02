@@ -153,15 +153,27 @@ FINGERPRINT_FILE_SAFETY_PREDICATES = {
   "group" => "not item.stat.exists or item.stat.gid | int == nas_gid | int"
 }.freeze
 
+# The subset the downloaders role loads and records, pinned whole and by exact
+# equality. It is deliberately not an `include?`: the loader and the recorder
+# must agree with each other and with the role, and a key silently added to or
+# dropped from either is exactly what this is here to catch. Widening it is a
+# deliberate edit, which is how this list last changed.
+DOWNLOADER_FINGERPRINT_SUBSET = %w[
+  servarr_sabnzbd
+  downloaders_usenet_server
+].freeze
+
 FINGERPRINT_FILES = %w[
   .configarr-input.sha256
   .configarr-owned-state.sha256
   .configarr-opaque-context.sha256
   .prowlarr-applications-input.sha256
   .servarr-sabnzbd-input.sha256
+  .downloaders-usenet-server-input.sha256
   .prowlarr-indexers-input.sha256
   .bazarr-providers-input.sha256
 ].freeze
+DOWNLOADER_USENET_FINGERPRINT_FILE = ".downloaders-usenet-server-input.sha256"
 CONFIGARR_STATE_FINGERPRINT_FILE = ".configarr-owned-state.sha256"
 CONFIGARR_OPAQUE_FINGERPRINT_FILE = ".configarr-opaque-context.sha256"
 FINGERPRINT_FILE_BY_KIND = {
@@ -204,7 +216,8 @@ SECRETS = {
   "bazarr_admin" => "fixture-bazarr-admin-secret",
   "radarr" => "fixture-radarr-api-secret",
   "sonarr" => "fixture-sonarr-api-secret",
-  "provider" => "fixture-provider-password-secret"
+  "provider" => "fixture-provider-password-secret",
+  "usenet_password" => "fixture-usenet-provider-password-secret"
 }.freeze
 SECRET_SENTINELS = (SECRETS.values + [
   "fixture-prowlarr-control-key", "fixture-bazarr-control-key",
@@ -299,6 +312,22 @@ SABNZBD = {
     "categories" => [
       { "name" => "movies", "dir" => "movies" },
       { "name" => "series", "dir" => "series" }
+    ],
+    # The password is ten asterisks because that is what `get_config` returns for
+    # it, which is the whole reason the reconciliation projects it out and the
+    # fingerprint carries it instead. A fixture that returned the real one would
+    # let a comparison pass here that cannot pass against SABnzbd.
+    "servers" => [
+      {
+        "name" => "usenet", "displayname" => "usenet",
+        "host" => "news.fixture.invalid", "port" => 563,
+        "username" => "fixture-usenet-username", "password" => "*" * 10,
+        "connections" => 8, "ssl" => 1, "ssl_verify" => 3, "ssl_ciphers" => "",
+        "enable" => 1, "required" => 0, "optional" => 0,
+        "pipelining_requests" => 1, "retention" => 0, "expire_date" => "",
+        "quota" => "", "usage_at_start" => 0, "priority" => 0, "notes" => "",
+        "timeout" => 60
+      }
     ]
   }
 }.freeze
@@ -1051,7 +1080,8 @@ def production_order_contract_failures(site, arr_main, arr_verify, downloader_ma
   failures << "downloaders.loader" unless
     load&.dig("ansible.builtin.include_role", "name") == "arr" &&
     load&.dig("ansible.builtin.include_role", "tasks_from") == "reconciliation_fingerprints" &&
-    Array(load&.dig("vars", "arr_reconciliation_fingerprint_subset")) == ["servarr_sabnzbd"]
+    Array(load&.dig("vars", "arr_reconciliation_fingerprint_subset")) ==
+      DOWNLOADER_FINGERPRINT_SUBSET
   failures << "downloaders.initialize" unless
     init&.dig("ansible.builtin.set_fact", "downloaders_relationship_verification_succeeded") == false &&
     init["changed_when"] == false
@@ -1061,7 +1091,7 @@ def production_order_contract_failures(site, arr_main, arr_verify, downloader_ma
     record&.dig("ansible.builtin.include_role", "tasks_from") ==
       "record_reconciliation_fingerprints" &&
     Array(record&.dig("vars", "arr_reconciliation_fingerprint_subset")) ==
-      ["servarr_sabnzbd"] &&
+      DOWNLOADER_FINGERPRINT_SUBSET &&
     record_when.include?(normalized_ansible_expression(
       "downloaders_relationship_verification_succeeded is sameas true"
     ))
@@ -2428,8 +2458,18 @@ def base_variables(port)
     "vault_downloaders_sabnzbd_api_key" => SECRETS.fetch("sab_api"),
     "vault_downloaders_sabnzbd_admin_username" => SECRETS.fetch("sab_username"),
     "vault_downloaders_sabnzbd_admin_password" => SECRETS.fetch("sab_password"),
+    "vault_downloaders_sabnzbd_server_host" => "news.fixture.invalid",
+    "vault_downloaders_sabnzbd_server_port" => "563",
+    "vault_downloaders_sabnzbd_server_username" => "fixture-usenet-username",
+    "vault_downloaders_sabnzbd_server_password" => SECRETS.fetch("usenet_password"),
+    "vault_downloaders_sabnzbd_server_connections" => "8",
+    "vault_downloaders_sabnzbd_server_ssl" => "1",
     "downloaders_sabnzbd_api" => "http://127.0.0.1:#{port}/sabnzbd/api",
     "downloaders_sabnzbd_categories" => { "movies" => "movies", "series" => "series" },
+    "downloaders_sabnzbd_server_name" => "usenet",
+    "downloaders_sabnzbd_owned_server" => {
+      "enable" => 1, "priority" => 0, "ssl_verify" => 3, "timeout" => 60
+    },
     "downloaders_sabnzbd_owned_misc" => {
       "complete_dir" => "/data/complete", "download_dir" => "/data/incomplete"
     },
@@ -2710,6 +2750,17 @@ def desired_fingerprint_values(variables)
       "username" => variables.fetch("vault_downloaders_sabnzbd_admin_username"),
       "password" => variables.fetch("vault_downloaders_sabnzbd_admin_password")
     },
+    # Mirrors the role's dict literal, key order included: `ansible_json`
+    # serializes in insertion order, so a reordering here would hash differently
+    # from Jinja and the digests would never match.
+    "downloaders_usenet_server" => {
+      "host" => variables.fetch("vault_downloaders_sabnzbd_server_host"),
+      "port" => variables.fetch("vault_downloaders_sabnzbd_server_port"),
+      "username" => variables.fetch("vault_downloaders_sabnzbd_server_username"),
+      "password" => variables.fetch("vault_downloaders_sabnzbd_server_password"),
+      "connections" => variables.fetch("vault_downloaders_sabnzbd_server_connections"),
+      "ssl" => variables.fetch("vault_downloaders_sabnzbd_server_ssl")
+    },
     "prowlarr_indexers" => variables.fetch("media_arr_indexers"),
     "bazarr_providers" => {
       "providers" => variables.fetch("media_bazarr_providers"),
@@ -2757,6 +2808,15 @@ def seed_fingerprint_baseline(runtime, variables, kind:, state:)
       mode: "w", perm: 0o600
     )
   end
+  # Not in FINGERPRINT_FILE_BY_KIND because it is not a probe kind: no probe
+  # reconciles the Usenet server on its own. It is one of the two digests the
+  # downloaders role records, so a baseline without it leaves a verify-only run
+  # comparing a real desired digest against an absent installed one.
+  File.write(
+    File.join(directory, DOWNLOADER_USENET_FINGERPRINT_FILE),
+    "#{desired.fetch('downloaders_usenet_server')}\n", mode: "w", perm: 0o600
+  )
+
   return unless kind == :configarr
 
   verified_state = state.fetch("configarr_desired", state.fetch("configarr"))
@@ -2797,7 +2857,7 @@ def run_tasks(kind, api, extra_variables = {}, runtime: nil, prepare_fingerprint
     variables["arr_servarr_instances"] = [deep_copy(variables.fetch("arr_servarr_instance"))]
     variables["arr_reconciliation_fingerprint_subset"] =
       if %i[download_client download_client_production].include?(kind)
-        ["servarr_sabnzbd"]
+        DOWNLOADER_FINGERPRINT_SUBSET
       elsif kind == :configarr
         %w[configarr configarr_owned_state configarr_opaque_context
            prowlarr_applications prowlarr_indexers bazarr_providers]

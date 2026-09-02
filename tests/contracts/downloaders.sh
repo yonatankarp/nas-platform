@@ -108,6 +108,12 @@ if failures.empty?
       defaults["downloaders_sabnzbd_owned_misc"]["cache_limit"] == "256M"
   failures << "SABnzbd concurrent unpack work must be explicitly bounded" unless
     defaults.dig("downloaders_sabnzbd_owned_misc", "direct_unpack_threads") == 1
+  # 3 is ConfigServer's Strict: the only ssl_verify value that checks the
+  # provider's certificate chain and hostname. The other three leave a TLS
+  # connection that authenticates nothing, and nothing else would notice.
+  failures << "SABnzbd must verify the provider's TLS certificate" unless
+    defaults.dig("downloaders_sabnzbd_owned_server", "ssl_verify") == 3 &&
+      defaults.dig("downloaders_sabnzbd_owned_server", "enable") == 1
 
   # Order is task position, not byte offset. A task named in a comment sorts
   # ahead of the task it names, and a byte offset cannot tell the two apart.
@@ -148,11 +154,48 @@ if failures.empty?
     ].all? { |assignment| env_assignments.include?(assignment) }
 
   reconcile = role_tasks(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml")
+  # A credential-bearing task is selected from the whole request, not from its
+  # URL. This selector used to read only `uri.url`, and moving the provider push
+  # to a form-urlencoded body dropped that one task out of the selection while
+  # the check stayed green, because the other credential-bearing tasks still
+  # matched and kept the set non-empty.
   secret_tasks = reconcile.select do |task|
-    task.dig("ansible.builtin.uri", "url").to_s.include?("vault_downloaders_sabnzbd_api_key")
+    request = task["ansible.builtin.uri"]
+    request.is_a?(Hash) && role_strings(request).any? do |value|
+      value.include?("vault_downloaders_sabnzbd_api_key") ||
+        value.include?("vault_downloaders_sabnzbd_server_password")
+    end
   end
+  # The floor is the point, and it is why this is not `!secret_tasks.empty?`.
+  # A dynamically assembled subject list fails by going quiet: when a subject
+  # moves out of reach of the selector, the rule keeps passing over whatever is
+  # left. Non-empty is exactly the assertion a *partially* blinded selector still
+  # satisfies, so the count has to be an assertion too. Four tasks carry a
+  # credential today; the floor sits below that deliberately, so that deleting a
+  # task is a decision rather than an accident, while blinding the selector to
+  # most of them is still caught. Raise it when tasks are added.
   failures << "every SABnzbd credential-bearing API task must use no_log" unless
-    !secret_tasks.empty? && secret_tasks.all? { |task| task["no_log"] == true }
+    secret_tasks.length >= 2 && secret_tasks.all? { |task| task["no_log"] == true }
+  # A floor cannot say *which* task must stay in reach, and the provider push is
+  # the one that matters: it is the only task here sending a third-party secret,
+  # and the only one whose credential does not appear in a URL. Name it directly
+  # rather than inferring it from a count.
+  provider_pushes = secret_tasks.select do |task|
+    role_strings(task["ansible.builtin.uri"]).any? do |value|
+      value.include?("vault_downloaders_sabnzbd_server_password")
+    end
+  end
+  failures << "the Usenet provider push must stay inside the credential guard" unless
+    provider_pushes.length == 1
+  # SABnzbd keeps no access log in this deployment, but a URL is the part of a
+  # request every future proxy, log and history records, and the provider
+  # password is the one credential here whose exposure reaches outside the
+  # platform. It travels in a body or not at all.
+  failures << "the Usenet provider password must never travel in a URL" if
+    reconcile.any? do |task|
+      task.dig("ansible.builtin.uri", "url").to_s
+          .include?("vault_downloaders_sabnzbd_server_password")
+    end
   category_schema_scalars = [
     role_strings(reconcile),
     role_strings(role_tasks(root, "roles/downloaders/tasks/verify.yml"))

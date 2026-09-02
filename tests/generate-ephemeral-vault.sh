@@ -217,6 +217,12 @@ vault_arr_bazarr_admin_password: '$(random_password)'
 vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: '$(random_password)'
+vault_downloaders_sabnzbd_server_host: news.usenet.invalid
+vault_downloaders_sabnzbd_server_port: '563'
+vault_downloaders_sabnzbd_server_username: ephemeral-usenet-username
+vault_downloaders_sabnzbd_server_password: '$(random_password)'
+vault_downloaders_sabnzbd_server_connections: '8'
+vault_downloaders_sabnzbd_server_ssl: '1'
 vault_bindery_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_bindery_admin_username: nasadmin
 vault_bindery_admin_password: '$(random_password)'

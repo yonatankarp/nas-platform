@@ -21,6 +21,25 @@
     fail_msg: SABnzbd administrator credentials must be nonempty single-line values.
   no_log: true
 
+# SABnzbd writes what it is given into `sabnzbd.ini`, whose grammar is one key
+# per line. It hex-encodes a password carrying a control character but does
+# nothing of the sort for the account name, so a newline there corrupts the file
+# SABnzbd itself writes. The surrounding whitespace rule is `OptionStr`, which
+# strips the name before storing it, and a value SABnzbd rewrites can never
+# equal the declared one. The asterisk rule is `OptionPassword.set`, which
+# silently discards a value that is all asterisks because that is what its own
+# masked read-back looks like.
+- name: Require INI-safe SABnzbd Usenet provider credentials
+  ansible.builtin.assert:
+    that:
+      - vault_downloaders_sabnzbd_server_username is match('^\S([^\r\n]*\S)?\Z')
+      - vault_downloaders_sabnzbd_server_password is match('^\S([^\r\n]*\S)?\Z')
+      - vault_downloaders_sabnzbd_server_password is not match('^\*+\Z')
+    fail_msg: >-
+      SABnzbd Usenet provider credentials must be single-line values without
+      leading or trailing whitespace, and the password must not be only asterisks.
+  no_log: true
+
 - name: Render the private downloader environment
   ansible.builtin.template:
     src: env.j2
@@ -78,7 +97,7 @@
     apply:
       tags: [platform_verify_downloaders]
   vars:
-    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd]
+    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd, downloaders_usenet_server]
   when: media_usenet_enabled | bool
   tags: [platform_verify_downloaders]
 
@@ -135,7 +154,7 @@
     name: arr
     tasks_from: record_reconciliation_fingerprints
   vars:
-    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd]
+    arr_reconciliation_fingerprint_subset: [servarr_sabnzbd, downloaders_usenet_server]
   when:
     - media_usenet_enabled | bool
     - not ansible_check_mode

@@ -25,3 +25,25 @@ downloaders_sabnzbd_owned_misc:
   direct_unpack_threads: 1
   direct_write: 1
   max_art_tries: 3
+
+# SABnzbd keys a Usenet server by its INI section name, and `set_config`
+# upserts on that name, so this is the identity the reconciliation merges into.
+# It names the platform's role for the server, not the provider: which provider
+# it points at is vault-authored and never written down here.
+downloaders_sabnzbd_server_name: usenet
+
+# The non-credential half of the owned server block. SABnzbd reads every one of
+# these back unmasked, so every one of them is compared and reverted. `enable`
+# is 0/1 rather than a boolean because `set_config` parses a server flag with
+# `bool_conv(int_conv())` -- `true` is stored as 0, which for the TLS flag beside
+# it would silently disable TLS.
+#
+# `ssl_verify` is not a flag. `ConfigServer` documents its four values as
+# 0=No, 1=Minimal, 2=Medium, 3=Strict, and 3 is both SABnzbd's own default and
+# the only one that verifies the provider's certificate chain and hostname; a
+# TLS connection that authenticates nothing is what the other three buy.
+downloaders_sabnzbd_owned_server:
+  enable: 1
+  priority: 0
+  ssl_verify: 3
+  timeout: 60

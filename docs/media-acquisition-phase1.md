@@ -50,8 +50,17 @@ Replace the empty lists only with values reviewed for this target.
 deployed Bazarr accepts, derived from the pinned version rather than exported
 from a running service. This repository does not choose a Usenet provider,
 indexer, subtitle language, or Bazarr provider; it does record what a chosen one
-requires. Configure the SABnzbd server connection through its protected
-application configuration before attempting a proof download.
+requires.
+
+The Usenet server SABnzbd downloads through is one of those declarations. Its
+six fields are vault-authored (`vault_downloaders_sabnzbd_server_host`,
+`_port`, `_username`, `_password`, `_connections` and `_ssl`, documented in
+[secrets](secrets.md)) and the downloaders role reconciles them into SABnzbd's
+`servers` section on every run, so a server added or edited in the web interface
+is replaced by the declared one. Verification asserts the declared server is
+present, which is what makes a SABnzbd with no provider fail a run instead of
+converging quietly. Nothing has to be configured by hand before a proof
+download; the provider account has to exist and be recorded in the vault.
 
 Do not put provider credentials in a command-line `-e` value, a plaintext
 inventory file, or shell history.
