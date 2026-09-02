@@ -49,6 +49,21 @@ vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 
+# The Usenet provider account. It belongs to a third-party subscription the
+# platform cannot mint, so these six are the one credential group an operator
+# has to bring rather than generate. SABnzbd lowercases and strips the host and
+# clamps the numbers into range, so the vault contract requires values it will
+# store unchanged -- otherwise the stored value never equals the declared one and
+# every run pushes it again. The port and connection count are strings, and the
+# TLS flag is "1" or "0", because that is SABnzbd's own wire and INI form: a
+# server flag is parsed with int(), so `true` is stored as 0.
+vault_downloaders_sabnzbd_server_host: news.example.invalid
+vault_downloaders_sabnzbd_server_port: "563"
+vault_downloaders_sabnzbd_server_username: example-usenet-username
+vault_downloaders_sabnzbd_server_password: example-usenet-password
+vault_downloaders_sabnzbd_server_connections: "8"
+vault_downloaders_sabnzbd_server_ssl: "1"
+
 # Bindery's API key seeds the application's own on its first boot, which is what
 # lets the platform claim the administrator account before anyone else can: the
 # first-run setup route is anonymous until a user exists and refuses everyone

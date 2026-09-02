@@ -74,10 +74,26 @@ FOUNDATION_KEYS = %w[
   vault_downloaders_sabnzbd_admin_password
 ].freeze
 
+# The Usenet provider account is the one credential group in the acquisition path
+# that no generator can mint: it belongs to a third-party subscription, so
+# generate-secrets.yml writes documented stand-ins for the operator to replace
+# rather than values. That is why it is pinned apart from FOUNDATION_KEYS instead
+# of appended to it -- the foundation parity below asserts every foundation key
+# reaches the secret generator, and a key the generator cannot produce would have
+# to be faked there to pass.
+OPERATOR_SUPPLIED_KEYS = %w[
+  vault_downloaders_sabnzbd_server_host
+  vault_downloaders_sabnzbd_server_port
+  vault_downloaders_sabnzbd_server_username
+  vault_downloaders_sabnzbd_server_password
+  vault_downloaders_sabnzbd_server_connections
+  vault_downloaders_sabnzbd_server_ssl
+].freeze
+
 actual_foundation_expectations =
   SERVICE_EXPECTATIONS.fetch("arr").fetch("vault_keys") +
   SERVICE_EXPECTATIONS.fetch("downloaders").fetch("vault_keys")
-check(failures, actual_foundation_expectations == FOUNDATION_KEYS,
+check(failures, actual_foundation_expectations == FOUNDATION_KEYS + OPERATOR_SUPPLIED_KEYS,
       "arr and downloaders expectations must carry the exact ordered foundation key set")
 
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
@@ -107,6 +123,22 @@ BAZARR_SUBMITTED_EXAMPLE_KEYS = %w[
   vault_arr_radarr_api_key
   vault_arr_sonarr_api_key
 ].freeze
+
+# Pinned the way the foundation values are, because these six are the ones an
+# operator has to bring: a value that stopped being an obvious stand-in is how a
+# real provider account reaches the repository.
+OPERATOR_SUPPLIED_EXAMPLE = {
+  "vault_downloaders_sabnzbd_server_host" => "news.example.invalid",
+  "vault_downloaders_sabnzbd_server_port" => "563",
+  "vault_downloaders_sabnzbd_server_username" => "example-usenet-username",
+  "vault_downloaders_sabnzbd_server_password" => "example-usenet-password",
+  "vault_downloaders_sabnzbd_server_connections" => "8",
+  "vault_downloaders_sabnzbd_server_ssl" => "1"
+}.freeze
+check(failures,
+      OPERATOR_SUPPLIED_EXAMPLE.keys == OPERATOR_SUPPLIED_KEYS &&
+        OPERATOR_SUPPLIED_EXAMPLE.all? { |key, value| example[key] == value },
+      "vault example must use the exact sanitized operator-supplied values")
 
 foundation_example = FOUNDATION_KEYS.to_h do |key|
   value = if key.end_with?("_api_key")
@@ -148,6 +180,7 @@ example.each do |key, value|
   next if key == "vault_seerr_api_key" && value == "7" * 32
   next if value.include?("example-only-not-a-real-private-key")
   next if foundation_example[key] == value
+  next if OPERATOR_SUPPLIED_EXAMPLE[key] == value
 
   check(failures, false, "#{example_path}: #{key} looks like a real value, not a placeholder")
 end
@@ -198,6 +231,19 @@ foundation_parity_sources.each do |label, path|
   check(failures,
         positions.none?(&:nil?) && positions.each_cons(2).all? { |left, right| left < right },
         "#{label} must carry foundation credentials in contract order")
+end
+
+operator_supplied_parity_sources =
+  foundation_parity_sources.reject { |label, _path| label == "secret generator" }
+operator_supplied_parity_sources.each do |label, path|
+  body = File.read(path)
+  positions = OPERATOR_SUPPLIED_KEYS.map { |key| body.index(key) }
+  OPERATOR_SUPPLIED_KEYS.zip(positions).each do |key, position|
+    check(failures, !position.nil?, "#{label} is missing operator-supplied credential #{key}")
+  end
+  check(failures,
+        positions.none?(&:nil?) && positions.each_cons(2).all? { |left, right| left < right },
+        "#{label} must carry operator-supplied credentials in contract order")
 end
 
 check(failures, vault_contract_sources.values.map { |path| vault_keys(path) }.uniq.length == 1,

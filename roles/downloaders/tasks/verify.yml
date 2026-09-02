@@ -6,6 +6,10 @@
         downloaders_reconciliation_cycle_started | default(false) | bool or
         arr_installed_reconciliation_fingerprints.servarr_sabnzbd ==
         arr_desired_reconciliation_fingerprints.servarr_sabnzbd
+      - >-
+        downloaders_reconciliation_cycle_started | default(false) | bool or
+        arr_installed_reconciliation_fingerprints.downloaders_usenet_server ==
+        arr_desired_reconciliation_fingerprints.downloaders_usenet_server
     fail_msg: Verify-only downloader execution found stale opaque desired-input state.
   tags: [platform_verify_downloaders]
   no_log: true
@@ -64,6 +68,50 @@
   loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
   loop_control:
     label: sabnzbd-owned-misc-setting
+  tags: [platform_verify_downloaders]
+  no_log: true
+
+# Zero Usenet servers is what SABnzbd looked like on this platform for as long
+# as the downloader stack existed, and nothing failed. These assertions are the
+# reason that cannot happen again: an absent `servers` key, a server under
+# another name, and a drifted host, port, account name, connection count, TLS
+# setting, priority or timeout all fail here.
+#
+# The password is the exception, and it is not a fixable one. SABnzbd answers
+# with ten asterisks in its place, so it cannot be compared, and both sides of
+# the fingerprint are computed from the vault, so neither moves when someone
+# edits the password in the web interface. A provider password changed there
+# stands until the vault value itself changes, which is the one hand edit this
+# platform does not revert. docs/secrets.md records it.
+- name: Verify the operator-owned SABnzbd Usenet server
+  ansible.builtin.assert:
+    that:
+      - downloaders_verify_sabnzbd_servers is sequence
+      - downloaders_verify_sabnzbd_servers is not mapping
+      - downloaders_verify_sabnzbd_servers is not string
+      - downloaders_verify_sabnzbd_server_matches | length == 1
+      - >-
+        downloaders_verify_sabnzbd_server_matches | first | dict2items |
+        selectattr('key', 'in', downloaders_verify_sabnzbd_server_desired.keys() | list) |
+        items2dict == downloaders_verify_sabnzbd_server_desired
+    fail_msg: >-
+      SABnzbd has no owned Usenet server, or one that differs from the
+      vault-authored provider connection.
+  vars:
+    downloaders_verify_sabnzbd_servers: >-
+      {{ downloaders_sabnzbd_verification.json.config.servers | default([]) }}
+    downloaders_verify_sabnzbd_server_matches: >-
+      {{ downloaders_verify_sabnzbd_servers |
+         selectattr('name', 'equalto', downloaders_sabnzbd_server_name) | list }}
+    downloaders_verify_sabnzbd_server_desired: >-
+      {{ downloaders_sabnzbd_owned_server |
+         combine({
+           'host': vault_downloaders_sabnzbd_server_host,
+           'port': vault_downloaders_sabnzbd_server_port | int,
+           'username': vault_downloaders_sabnzbd_server_username,
+           'connections': vault_downloaders_sabnzbd_server_connections | int,
+           'ssl': vault_downloaders_sabnzbd_server_ssl | int
+         }) }}
   tags: [platform_verify_downloaders]
   no_log: true
 

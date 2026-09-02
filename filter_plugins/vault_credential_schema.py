@@ -62,6 +62,19 @@ HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 # key about once in 3e-7, but the operator also mints these by hand, and this is
 # the only place that sees a hand-authored one before it deploys.
 HEX_LETTER = re.compile(r"[a-f]")
+
+# SABnzbd normalizes a Usenet server it is given: `all_lowercase` lowercases and
+# strips the host, `OptionStr` strips the account name, and `OptionNumber` clamps
+# the port and the connection count into range. A value it would rewrite can
+# never equal the value the vault declares, so the reconciliation would push it
+# on every run for as long as it stood. These rules accept only what SABnzbd
+# stores unchanged: a bare lowercase host with no scheme, a port in 1-65535, a
+# connection count in 1-500, and the 0/1 form its server flags are parsed in.
+USENET_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
+USENET_PORT = re.compile(r"^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}"
+                         r"|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])\Z")
+USENET_CONNECTIONS = re.compile(r"^(?:[1-9][0-9]?|[1-4][0-9]{2}|500)\Z")
+USENET_FLAG = re.compile(r"^[01]\Z")
 NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
@@ -168,6 +181,12 @@ CREDENTIAL_RULES = {
     "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
     "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
+    "vault_downloaders_sabnzbd_server_host": ((PATTERN, USENET_HOST),),
+    "vault_downloaders_sabnzbd_server_port": ((PATTERN, USENET_PORT),),
+    "vault_downloaders_sabnzbd_server_username": ((NONEMPTY, None),),
+    "vault_downloaders_sabnzbd_server_password": ((NONEMPTY, None),),
+    "vault_downloaders_sabnzbd_server_connections": ((PATTERN, USENET_CONNECTIONS),),
+    "vault_downloaders_sabnzbd_server_ssl": ((PATTERN, USENET_FLAG),),
     "vault_bindery_api_key": ((PATTERN, HEX_32),),
     "vault_bindery_admin_username": ((NONEMPTY, None),),
     "vault_bindery_admin_password": ((NONEMPTY, None),),

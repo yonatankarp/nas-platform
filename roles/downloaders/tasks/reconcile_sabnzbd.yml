@@ -57,3 +57,98 @@
     first | default('') != item.value
   changed_when: true
   no_log: true
+
+# SABnzbd creates the `servers` section only when a server exists, so a NAS that
+# has never had a provider answers `get_config` with no `servers` key at all.
+# That is the bootstrap case this reconciliation exists for, so the lookup
+# defaults rather than indexing.
+- name: Find the operator-owned SABnzbd Usenet server
+  ansible.builtin.set_fact:
+    downloaders_sabnzbd_server_matches: >-
+      {{ downloaders_sabnzbd_config_before.json.config.servers | default([]) |
+         selectattr('name', 'equalto', downloaders_sabnzbd_server_name) | list }}
+    downloaders_sabnzbd_server_desired: >-
+      {{ downloaders_sabnzbd_owned_server |
+         combine({
+           'host': vault_downloaders_sabnzbd_server_host,
+           'port': vault_downloaders_sabnzbd_server_port | int,
+           'username': vault_downloaders_sabnzbd_server_username,
+           'password': vault_downloaders_sabnzbd_server_password,
+           'connections': vault_downloaders_sabnzbd_server_connections | int,
+           'ssl': vault_downloaders_sabnzbd_server_ssl | int
+         }) }}
+  changed_when: false
+  no_log: true
+
+# `get_dict(for_public_api=True)` replaces the password with ten asterisks and
+# leaves every other field plain, so the password is the one owned field that
+# cannot be compared. It is projected out of both sides and the vault-side
+# fingerprint below is what notices a rotation.
+- name: Build the owned SABnzbd Usenet server projections
+  ansible.builtin.set_fact:
+    downloaders_sabnzbd_server_current_projection: >-
+      {{ (downloaders_sabnzbd_server_matches | first | default({}) | dict2items |
+          selectattr('key', 'in', downloaders_sabnzbd_server_comparable_keys) |
+          items2dict) if downloaders_sabnzbd_server_matches | length == 1 else {} }}
+    downloaders_sabnzbd_server_desired_projection: >-
+      {{ downloaders_sabnzbd_server_desired | dict2items |
+         selectattr('key', 'in', downloaders_sabnzbd_server_comparable_keys) |
+         items2dict }}
+  vars:
+    downloaders_sabnzbd_server_comparable_keys: >-
+      {{ downloaders_sabnzbd_server_desired.keys() |
+         reject('equalto', 'password') | list }}
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the SABnzbd Usenet server differs
+  ansible.builtin.set_fact:
+    downloaders_sabnzbd_server_needs_update: >-
+      {{ downloaders_sabnzbd_server_matches | length != 1 or
+         downloaders_sabnzbd_server_current_projection !=
+           downloaders_sabnzbd_server_desired_projection or
+         arr_installed_reconciliation_fingerprints.downloaders_usenet_server !=
+           arr_desired_reconciliation_fingerprints.downloaders_usenet_server }}
+  changed_when: false
+  no_log: true
+
+# `mode=set_config&section=servers` is an upsert keyed by `keyword`: SABnzbd
+# merges the parameters it recognises into an existing server of that name and
+# creates one otherwise, then calls `Downloader.update_server`, so a single
+# request is the whole operation and no restart or second mode is needed. Only
+# the fields named here are touched.
+#
+# This is the one call in the role that carries a third-party credential, and it
+# is the one that does not put its parameters in the URL. SABnzbd's own request
+# log prints the whole parameter dict either way once debug logging is on, so
+# the form body is not what keeps the password out of `sabnzbd.log`; it keeps it
+# out of anything that records a URL, which is every access log, proxy and
+# history this platform does not control today and might tomorrow. CherryPy
+# merges a form-urlencoded body into the handler's keyword arguments, so the
+# request SABnzbd sees is identical.
+- name: Reconcile the operator-owned SABnzbd Usenet server
+  ansible.builtin.uri:
+    url: "{{ downloaders_sabnzbd_api }}"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      mode: set_config
+      section: servers
+      keyword: "{{ downloaders_sabnzbd_server_name }}"
+      host: "{{ vault_downloaders_sabnzbd_server_host }}"
+      port: "{{ vault_downloaders_sabnzbd_server_port }}"
+      username: "{{ vault_downloaders_sabnzbd_server_username }}"
+      password: "{{ vault_downloaders_sabnzbd_server_password }}"
+      connections: "{{ vault_downloaders_sabnzbd_server_connections }}"
+      ssl: "{{ vault_downloaders_sabnzbd_server_ssl }}"
+      enable: "{{ downloaders_sabnzbd_owned_server.enable }}"
+      priority: "{{ downloaders_sabnzbd_owned_server.priority }}"
+      ssl_verify: "{{ downloaders_sabnzbd_owned_server.ssl_verify }}"
+      timeout: "{{ downloaders_sabnzbd_owned_server.timeout }}"
+      output: json
+      apikey: "{{ vault_downloaders_sabnzbd_api_key }}"
+    status_code: [200]
+    return_content: true
+  when: downloaders_sabnzbd_server_needs_update | bool
+  changed_when: true
+  no_log: true

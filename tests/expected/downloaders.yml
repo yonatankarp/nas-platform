@@ -9,3 +9,9 @@ vault_keys:
   - vault_downloaders_sabnzbd_api_key
   - vault_downloaders_sabnzbd_admin_username
   - vault_downloaders_sabnzbd_admin_password
+  - vault_downloaders_sabnzbd_server_host
+  - vault_downloaders_sabnzbd_server_port
+  - vault_downloaders_sabnzbd_server_username
+  - vault_downloaders_sabnzbd_server_password
+  - vault_downloaders_sabnzbd_server_connections
+  - vault_downloaders_sabnzbd_server_ssl
