@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running nine
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running fifteen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -65,8 +65,13 @@ tests/integration.sh --suite <lane> site.yml
 tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/scenarios line
 ```
 
-Lanes: `foundation smoke beszel dozzle audiobookshelf komga tinymediamanager
-jellyfin immich paperless idempotence-check full`. The harness runs Ansible
+Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
+idempotence-check full` — the roster is `tests/ci/suites.conf`, and
+`tests/docs_links_test.rb` fails if this list disagrees with what
+`tests/integration.sh --list-suites` prints. Every service and acquisition lane
+converges `ntfy` as well, because each service role reports its own deployment
+there; it is not a lane of its own. The harness runs Ansible
 inside a pinned Linux container against a disposable sandbox so the plays meet a
 real `/proc/mounts`, real numeric uid/gid and a real Docker socket. It asserts
 three properties: the run converges, a second run changes nothing, and
@@ -140,8 +145,12 @@ by construction.
 `${NAS_MEDIA_ROOT:?}`-derived variables rather than absolute paths, so the same
 file runs unmodified on the NAS, a Mac sandbox and CI. The `:?` suffix makes an
 unset value fail loudly instead of silently creating a relative bind mount.
-Platform overrides live in `services/<name>/compose.<kind>.yml` and **must not
-contain an `image:` key** (the exception allowlist holds only tinyMediaManager).
+Platform overrides live in `services/<name>/compose.<kind>.yml`. They add
+host-specific capabilities — devices, mounts, profiles — and **an `image:` key in
+one must equal the canonical `compose.yml` image exactly**, so the version is
+still written in only one place; a differing or newly introduced image fails
+`tests/policy_test.rb`. There is no allowlist and no override currently carries
+the key, so the simplest override is one that omits it.
 
 **Compose project names are derived** from `platform_project_name` so a sandbox
 can run several isolated copies of the platform side by side.

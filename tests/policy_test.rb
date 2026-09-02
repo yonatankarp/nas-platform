@@ -155,7 +155,12 @@ active_prefixes = %w[
   tests/
   scripts/
 ].freeze
+# CLAUDE.md is here because it was the one place the retired declaration
+# survived: it named the retired service as an integration lane and as a Compose
+# allowlist exception long after both were gone, and the guard below did not read
+# it (issue #276).
 active_root_files = %w[
+  CLAUDE.md
   README.md
   site.yml
   verify.yml
