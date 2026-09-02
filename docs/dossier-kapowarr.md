@@ -372,7 +372,9 @@ a second platform service sees, and nothing reverts it.
   every file is a loose page would preview one level deeper than its folder.
   This library holds archives, so it was not observed; a role reading the
   shallowest previewed directory as the target would name a subfolder in that
-  case.
+  case. The other rewriter of a suggested path, `same_name_indexing()`, is not a
+  risk here: it appends ` (N)` to the basename through `splitext` and never
+  touches the directory. Confirmed by reading it.
 
   Settled by the section above, and no longer open: that a settings write does
   not rename an existing library. Confirmed twice over — the task queue and
