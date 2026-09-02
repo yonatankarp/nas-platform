@@ -77,6 +77,7 @@ REJECTED = {
     "immich negative quota": lambda v: v["immich"][0].update(quota_size=-1),
     "immich boolean quota": lambda v: v["immich"][0].update(quota_size=True),
     "immich string quota": lambda v: v["immich"][0].update(quota_size="0"),
+    "immich zero quota": lambda v: v["immich"][0].update(quota_size=0),
     "immich no users": lambda v: v.update(immich=[]),
     "jellyfin unsupported policy field": lambda v: v["jellyfin"][0]["policy"].update(Bogus=True),
     "jellyfin credential policy field": lambda v: v["jellyfin"][0]["policy"].update(password=True),

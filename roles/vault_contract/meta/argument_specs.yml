@@ -132,7 +132,13 @@ argument_specs:
               email: {type: str, required: true}
               password: {type: str, required: true}
               name: {type: str, required: true}
-              quota_size: {type: int, required: true}
+              # raw, not int, because null is a meaningful declaration here:
+              # Immich skips the quota check only when quotaSizeInBytes is null.
+              # An argument spec cannot express "int or null" -- type: int
+              # rejects an explicit null outright -- so the shape is validated by
+              # vault_managed_user_errors below, which requires a positive
+              # integer or null and nothing else.
+              quota_size: {type: raw, required: true}
           jellyfin:
             type: list
             elements: dict

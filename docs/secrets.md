@@ -755,12 +755,17 @@ template update uses Ansible's atomic writer with unsafe writes disabled.
 #### immich managed users
 
 `email` is the normalized login identity; `password` is its preserved clear
-credential; `name` is the displayed name; and `quota_size` is a non-negative
-integer of bytes, or `null` for no limit at all. `null` is the only value that
-lifts the limit: Immich skips the quota check entirely when it is null, and `0`
-is the opposite of unlimited -- it rejects every upload of a non-empty file with
-"Quota has been exceeded!". Administrator status is not part of this allowlist
-contract.
+credential; `name` is the displayed name; and `quota_size` is a positive integer
+of bytes, or `null` for no limit at all. `null` is the only value that lifts the
+limit: Immich skips the quota check entirely when it is null. `0` is the
+opposite of unlimited -- it rejects every upload of a non-empty file with "Quota
+has been exceeded!" -- so the schema refuses it outright rather than documenting
+it as a trap, because its only symptom is uploads that silently stop arriving.
+The argument spec types this field `raw` rather than `int`, since an argument
+spec cannot express "integer or null" and `type: int` rejects an explicit null
+before any task runs; the shape is enforced by the managed-user schema filter in
+`filter_plugins/vault_managed_user_schema.py` instead.
+Administrator status is not part of this allowlist contract.
 
 #### jellyfin managed users
 
