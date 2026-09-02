@@ -82,7 +82,7 @@ ARGUMENT_FIELDS = {
   },
   "immich" => {
     "email" => ["str", nil], "password" => ["str", nil],
-    "name" => ["str", nil], "quota_size" => ["int", nil]
+    "name" => ["str", nil], "quota_size" => ["raw", nil]
   },
   "jellyfin" => {
     "username" => ["str", nil], "password" => ["str", nil],
@@ -240,8 +240,13 @@ end
 
 managed.fetch("immich", []).each do |entry|
   next unless entry.is_a?(Hash)
-  check(failures, entry["quota_size"].is_a?(Integer) && entry["quota_size"] >= 0,
-        "immich quota_size must be a non-negative integer")
+  # null is Immich's own representation of an unlimited quota and the only value
+  # that lifts the limit; 0 is its opposite and refuses every non-empty upload.
+  quota = entry["quota_size"]
+  check(failures, quota.nil? || (quota.is_a?(Integer) && quota >= 0),
+        "immich quota_size must be a non-negative integer or null")
+  check(failures, quota != 0,
+        "immich quota_size must not be 0, which rejects every upload")
 end
 
 managed.fetch("jellyfin", []).each do |entry|
@@ -684,6 +689,24 @@ koreader_komga_role = duplicate(runtime_vault)
 koreader_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["KOREADER_SYNC"]
 _stdout, _stderr, koreader_status = validate_with_role(koreader_komga_role)
 check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual role evaluation")
+
+# The argument spec runs before any task, so a schema that accepts null is not
+# enough on its own: `type: int` rejected an explicit null outright and failed
+# the run before vault_managed_user_errors was ever reached. Only role
+# evaluation proves the whole path accepts an unlimited quota.
+unlimited_immich_quota = duplicate(runtime_vault)
+unlimited_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = nil
+_stdout, _stderr, unlimited_status = validate_with_role(unlimited_immich_quota)
+check(failures, unlimited_status.success?,
+      "unlimited Immich quota must pass actual role evaluation")
+
+# `type: raw` buys that null, at the cost of the coercion `type: int` performed.
+# The schema filter is what refuses a non-integer now, so prove it still does
+# through the role rather than in isolation.
+string_immich_quota = duplicate(runtime_vault)
+string_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = "1073741824"
+expect_role_rejection(failures, "string Immich quota", string_immich_quota,
+                      "example-reader-password")
 
 integer_username = duplicate(runtime_vault)
 integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242

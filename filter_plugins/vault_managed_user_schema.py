@@ -220,6 +220,16 @@ def _immich(errors, path, entry):
             errors.append(f"{path}.quota_size: must be an integer or null")
         elif entry["quota_size"] < 0:
             errors.append(f"{path}.quota_size: must not be negative")
+        elif entry["quota_size"] == 0:
+            # 0 is rejected rather than merely documented because its only
+            # effect is to refuse every upload of a non-empty file, and it does
+            # so silently -- the client reports a failure, the server logs
+            # "Quota has been exceeded!", and nothing names the quota. Failing
+            # the run is the loud version of a state nobody wants.
+            errors.append(
+                f"{path}.quota_size: must not be 0, which rejects every upload "
+                "of a non-empty file; use null for no limit"
+            )
 
 
 def _jellyfin(errors, path, entry):
