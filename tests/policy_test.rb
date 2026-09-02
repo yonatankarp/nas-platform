@@ -938,6 +938,10 @@ storage_declared = lambda do |path|
     declared_paths.any? { |declared| path.start_with?("#{declared}/") }
 end
 
+# How many library/staging pairs the same-mount import check below found. It
+# derives its own subject list, so the count is asserted after the sweep.
+import_pairs = 0
+
 service_dirs.each do |dir|
   name = File.basename(dir)
   compose_path = File.join(dir, "compose.yml")
@@ -1070,8 +1074,63 @@ service_dirs.each do |dir|
       check(failures, storage_declared.call(expected),
             "#{label}: #{source} is not declared in nas_storage (expected #{expected})")
     end
+
+    # A library and the staging directory that feeds it must land inside one bind
+    # mount. rename(2) refuses to cross a mount boundary even when both sides are
+    # the same filesystem, so mounting each directory separately turns every
+    # import into a full byte copy plus unlink and puts hardlinking out of reach.
+    # Nothing in the container's own view says so -- the paths look like
+    # neighbours and the import still reports success -- which is how two stacks
+    # carried the defect while their roles claimed the opposite in a comment.
+    #
+    # The pairs are derived, not listed. A container path in the environment
+    # naming a `.acquisition` staging root identifies the share it stages for;
+    # every other environment path beneath that share is a library it can import
+    # to, and both sides must resolve to the same longest-prefix mount. So a
+    # third mount reintroduced at a library path is caught the same way the
+    # original four were, and a downloader that mounts only staging pairs with
+    # nothing and is not asked to.
+    mount_targets = Array(spec["volumes"]).filter_map do |mount|
+      mount.match(%r{\A.*?:(?<target>/[^:]*)(?::(?:ro|rw))?\z})&.[](:target)
+    end
+    covering_mount = lambda do |path|
+      mount_targets.select { |target| path == target || path.start_with?("#{target}/") }
+                   .max_by(&:length)
+    end
+    environment = spec["environment"].is_a?(Hash) ? spec["environment"] : {}
+    container_paths = environment.select do |_name, value|
+      value.is_a?(String) && value.match?(%r{\A/[A-Za-z0-9._/-]+\z})
+    end
+    staging = %r{\A(?<share>.+?)/\.acquisition(?:/|\z)}
+    container_paths.each do |staging_name, staging_path|
+      share = staging_path[staging, :share]
+      next if share.nil?
+
+      container_paths.each do |library_name, library_path|
+        next if library_path.match?(staging)
+        next unless library_path.start_with?("#{share}/")
+
+        import_pairs += 1
+        library_mount = covering_mount.call(library_path)
+        staging_mount = covering_mount.call(staging_path)
+        check(failures, !library_mount.nil? && library_mount == staging_mount,
+              "#{label}: #{library_name} and #{staging_name} must share one bind mount so an " \
+              "import is a rename rather than a cross-device copy " \
+              "(#{library_path} is inside #{library_mount || 'no mount'}, " \
+              "#{staging_path} inside #{staging_mount || 'no mount'})")
+      end
+    end
   end
 end
+
+# The pairing above discovers its own subjects, so an empty sweep would report a
+# clean repository having compared nothing: an environment variable renamed to a
+# value the path pattern no longer matches, or a staging root moved out from
+# under `.acquisition`, is enough to empty it silently. Bindery declares both of
+# the pairs the platform has today, so the floor is two rather than one.
+check(failures, import_pairs >= 2,
+      "the same-mount import check paired #{import_pairs} libraries with their staging roots; " \
+      "at least the two Bindery declares must stay discoverable")
 
 # Service templates write their storage paths as literals, and Compose takes
 # those rendered values straight through as bind sources. That makes the

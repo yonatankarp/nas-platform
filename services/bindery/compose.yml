@@ -32,18 +32,20 @@ services:
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
       - "8787:8787"
-    # The two libraries and the two staging directories are mounted at the same
-    # absolute paths SABnzbd uses for the same host directories. SABnzbd reports
-    # a completed download by its own container path, and Bindery reads that
-    # path straight off the filesystem, so agreeing on the layout is what makes
-    # an import work without a path remap. Each pair is a separate bind mount,
-    # so a rename across it returns EXDEV and the importer falls back to a copy.
+    # Each library arrives with its own staging directory inside one bind mount
+    # of their common host share, which is what makes an import a rename:
+    # rename(2) refuses to cross a mount boundary even when both sides are the
+    # same filesystem, so a separate mount per directory made every import a
+    # full byte copy plus unlink and put hardlinking out of reach. The container
+    # paths are unchanged by that and stay the absolute paths SABnzbd uses for
+    # the same host directories — SABnzbd reports a completed download by its
+    # own container path and Bindery reads that path straight off the
+    # filesystem, so an import needs no path remap. Radarr and Sonarr mount
+    # ${MEDIA_ROOT:?}/Media the same way and for the same reason.
     volumes:
       - ${BINDERY_CONFIG_PATH:?}:/config
-      - ${BINDERY_EBOOKS_PATH:?}:/data/books/Ebooks
-      - ${BINDERY_AUDIOBOOKS_PATH:?}:/data/media/Audiobooks
-      - ${BINDERY_EBOOK_DOWNLOADS_PATH:?}:/data/books/.acquisition/usenet/ebooks
-      - ${BINDERY_AUDIOBOOK_DOWNLOADS_PATH:?}:/data/media/.acquisition/usenet/audiobooks
+      - ${BINDERY_BOOKS_PATH:?}:/data/books
+      - ${BINDERY_MEDIA_PATH:?}:/data/media
     environment:
       TZ: ${TZ:?}
       BINDERY_PUID: ${NAS_UID:?}
