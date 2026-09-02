@@ -491,6 +491,14 @@ check(failures,
       "the policy mutation harness belongs to its own CI job, not to validate-policy.sh")
 check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
       "CI must run ruby tests/policy_manifest_test.rb")
+# The controller's dispatch is proved by running it against stubs, not by
+# reading its source text. The gate must run that file: a property asserted
+# against argv is only a guard while something executes the program, and unlike
+# a grep it leaves no trace in the file it guards to say it stopped.
+check(failures,
+      validation_commands.count("tests/integration_controller_execution_test.sh") == 1,
+      "validate-policy.sh must run tests/integration_controller_execution_test.sh " \
+      "exactly once")
 check(failures,
       validation_commands.count("python3 -m unittest -v tests/dozzle_alert_relay_test.py") == 1,
       "validate-policy.sh must run the Dozzle alert relay unit test exactly once")

@@ -13,15 +13,16 @@ controller_library=$repo_dir/tests/integration_controller_lib.sh
   exit 1
 }
 # The controller program itself is a file too, for the same reason. What it
-# does is asserted there; tests/integration.sh is read only for what the
-# launcher does -- the sandbox, the mounts, the environment it hands across.
+# *does* is proved by running it: tests/integration_controller_execution_test.sh
+# drives it against stubbed ansible-playbook, docker, contracts and helpers and
+# asserts on the argv and environment those stubs observe, with a planted defect
+# per property. This file reads tests/integration.sh for what the launcher does
+# -- the sandbox, the mounts, the environment it hands across -- and reads the
+# controller only for the few properties execution cannot reach, each of which
+# says below why it stayed text.
 controller_program=$repo_dir/tests/integration_controller.sh
 [ -r "$controller_program" ] || {
   printf '%s\n' 'integration controller program is missing' >&2
-  exit 1
-}
-grep -qF '. /repo/tests/integration_controller_lib.sh' "$controller_program" || {
-  printf '%s\n' 'integration controller does not source its launcher library' >&2
   exit 1
 }
 grep -qF -- '-e PLATFORM_INTEGRATION_SANDBOX="$sandbox"' "$integration" &&
@@ -364,17 +365,13 @@ assert_output \
   --describe-suite seerr
 # The acquisition catalog is fully implemented, so the shared foundation's own
 # runtime proof lives in the last project's lane rather than in a lane of its
-# own. The dispatch arm is still a closed case arm; what changed is that it
-# falls through to that project's service proof instead of exiting.
-grep -qF 'seerr)' "$controller_program" || {
-  printf '%s\n' 'integration runner has no closed acquisition foundation dispatch' >&2
-  exit 1
-}
-grep -qF '/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static' \
-  "$controller_program" || {
-  printf '%s\n' 'acquisition foundation suites do not run their matching static contract' >&2
-  exit 1
-}
+# own. That dispatch -- the static foundation contract, the reader prerequisites
+# converge and the foundation verification, in that order, falling through to
+# the project's own arm rather than exiting -- is executed by
+# tests/integration_controller_execution_test.sh (case_seerr), with a plant per
+# step. The guard below stays where it is: what it reads is
+# tests/integration_controller_lib.sh, and it carries its own planted-defect
+# check already.
 acquisition_runtime_contract_holds() {
   source_path=$1
   library_path=$2
@@ -462,7 +459,14 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
 grep -qF -- 'sh /repo/tests/integration_controller.sh "$playbook" "$@"' \
   "$integration"
 grep -qF -- '"$playbook" "$@"' "$controller_library"
-grep -qF -- 'run_play --tags "$INTEGRATION_TAGS" "$@"' "$controller_program"
+# The tagged branch of run_selected_play is asserted by running it: the
+# execution test observes `--tags` arriving as one argv word in all three
+# phases. Its other two branches are unreachable as the program is spelled --
+# `[ -n $INTEGRATION_TAGS ]` is `[ -n ]` on an empty value, a one-argument test
+# on a non-empty string, so the condition is true either way (SC2070, one of the
+# three codes the controller's shellcheck line excludes). Nothing can execute a
+# branch no input reaches, so the fallback stays a text assertion until the
+# quoting fix lands and makes it reachable.
 grep -qF -- 'run_play "$@"' "$controller_program"
 
 # The controller and every acquisition resource share one strict namespace
@@ -602,36 +606,14 @@ assert_idempotence_recap_rejected 'duplicate target recap' \
 assert_idempotence_recap_rejected 'task-output false match before failed recap' \
   'TASK [debug] ********************************************************************\nok: [nas] => {"msg":"changed=0 unreachable=0 failed=0"}\nPLAY RECAP *********************************************************************\nnas : ok=3 changed=1 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
 
-arr_enabled_block=$(sed -n '/if \[ \$INTEGRATION_SUITE = arr \]; then/,/^    fi$/p' \
-  "$controller_program")
-downloaders_enabled_block=$(sed -n \
-  '/if \[ \$INTEGRATION_SUITE = downloaders \]; then/,/^    fi$/p' \
-  "$controller_program")
-printf '%s\n' "$arr_enabled_block" | grep -qF 'run_enabled_idempotence arr'
-printf '%s\n' "$downloaders_enabled_block" |
-  grep -qF 'run_enabled_idempotence arr,downloaders'
-arr_idempotence_line=$(printf '%s\n' "$arr_enabled_block" |
-  grep -nF 'run_enabled_idempotence arr' | cut -d: -f1)
-arr_check_line=$(printf '%s\n' "$arr_enabled_block" |
-  grep -nF 'run_play --tags arr --check --diff' | cut -d: -f1)
-downloaders_idempotence_line=$(printf '%s\n' "$downloaders_enabled_block" |
-  grep -nF 'run_enabled_idempotence arr,downloaders' | cut -d: -f1)
-downloaders_check_line=$(printf '%s\n' "$downloaders_enabled_block" |
-  grep -nF 'run_play --tags arr,downloaders --check --diff' | cut -d: -f1)
-[ "$arr_idempotence_line" -lt "$arr_check_line" ] || {
-  printf '%s\n' 'Arr enabled idempotence play does not precede check mode' >&2
-  exit 1
-}
-[ "$downloaders_idempotence_line" -lt "$downloaders_check_line" ] || {
-  printf '%s\n' 'downloaders enabled idempotence play does not precede check mode' >&2
-  exit 1
-}
+# Which order the enabled lanes run their idempotence converge and their check
+# mode in is a property of what they *do*, and the source-order read that used
+# to stand here could not tell a reordered pair from a deleted one. Both are
+# planted in tests/integration_controller_execution_test.sh -- case_arr and
+# case_downloaders each swap the two lines and require the observed order of the
+# plays to catch it.
 grep -qF 'requests_version=2.34.2' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
-  exit 1
-}
-grep -qF '"requests==$requests_version"' "$controller_program" || {
-  printf '%s\n' 'integration controller does not install docker_container_info runtime support' >&2
   exit 1
 }
 
@@ -701,24 +683,26 @@ if immich_negative_order_holds "$immich_order_mutant"; then
   exit 1
 fi
 
-for suite in komga jellyfin immich; do
-  grep -qF "suite_is $suite" "$controller_program" || {
-    printf '%s\n' "$suite has no independent scenario dispatch" >&2
-    exit 1
-  }
-done
-jellyfin_scenarios=$(sed -n '/suite_is jellyfin/,/^    fi$/p' "$controller_program")
-printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract seed'
-printf '%s\n' "$jellyfin_scenarios" | grep -qF 'run_jellyfin_contract run'
+# Komga's and Jellyfin's independent scenario dispatch -- a fixture seed for
+# every lane that reaches the service and the owning contract only for the lane
+# named after it -- is executed by tests/integration_controller_execution_test.sh
+# (case_komga, case_jellyfin), which also plants a suite_is that matches only
+# the full lane. Immich's arm stays a text assertion: reaching it means
+# emulating a Redis round trip, five negative restore fixtures and container
+# identity across `docker inspect`, which is a Docker daemon rather than a stub,
+# and the immich integration lane is what proves that arm for real.
+grep -qF 'suite_is immich' "$controller_program" || {
+  printf '%s\n' 'immich has no independent scenario dispatch' >&2
+  exit 1
+}
 # The committed deployment vault is intentionally encrypted with an operator
 # password unavailable to CI. Every suite must use an isolated controller copy,
 # replace only that copy with its generated ephemeral vault, and export the
-# matching password before any Ansible invocation.
+# matching password before any Ansible invocation. The controller's half of that
+# is executed rather than read: the execution test asserts the checkout's
+# vault.yml carries the generated bytes and that every observed play saw
+# ANSIBLE_VAULT_PASSWORD_FILE pointing at the generated password file.
 grep -qF -- 'controller_mount=$sandbox/repo' "$integration"
-grep -qF -- 'install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml' \
-  "$controller_program"
-grep -qF -- 'export ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file"' \
-  "$controller_program"
 grep -qF -- '-e @"$fixture_vars_file"' "$controller_library" || {
   printf '%s\n' 'integration deployment does not consume the protected Immich fixture policy' >&2
   exit 1
@@ -862,9 +846,9 @@ fi
   prepull_fail 'both collision endpoints must explicitly refuse implicit pulls'
 grep -qF 'MEDIA_CONTROL_COLLISION_IMAGE="$collision_image"' "$integration" ||
   prepull_fail 'the owning integration lane does not pass its pre-pulled fixture image'
-grep -qF '/repo/tests/media_control_network_collision_test.sh live' \
-  "$controller_program" ||
-  prepull_fail 'the owning integration lane does not execute the live collision test'
+# That the owning lane actually runs the live collision test is executed rather
+# than read: case_arr in tests/integration_controller_execution_test.sh observes
+# the contract invoked with `live`, and plants its removal.
 
 compose_images() {
   sed -n 's/^[[:space:]]*image:[[:space:]]*//p' "$repo_dir/services/$1/compose.yml"

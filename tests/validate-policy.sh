@@ -145,6 +145,7 @@ ruby tests/paperless_contract_test.rb --self-test
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh
+tests/integration_controller_execution_test.sh
 tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/mac/config-isolation.sh
 tests/mac/run-phase-status-test.sh
