@@ -252,6 +252,24 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
+    # The operator-owned half of the provider, which stopped being vault
+    # material in #298 and so can no longer arrive through the ephemeral vault.
+    # It is passed explicitly rather than left to inventory, for the same reason
+    # the credential half is: a lane has to *request* the state it claims to
+    # converge, or a lane handed the other state passes identically and proves
+    # nothing (#295).
+    #
+    # The two halves have to agree -- roles/downloaders refuses a host with no
+    # account and an account with no host -- so this host is empty exactly where
+    # `--undeclared usenet` empties the credentials, and set everywhere else.
+    integration_media_usenet_host=news.usenet.invalid
+    if [ "$INTEGRATION_SUITE" = downloaders ]; then
+      integration_media_usenet_host=
+    fi
+    integration_media_usenet_provider="{\"media_usenet_provider\":\
+{\"host\":\"$integration_media_usenet_host\",\"port\":563,\
+\"connections\":8,\"ssl\":true}}"
+
     # Every play, contract and verification the controller launches is
     # defined in a file of its own. Inside this argument the definitions were
     # escaped shell inside a shell string, which no syntax check, no linter

@@ -53,35 +53,48 @@ indexer, subtitle language, or Bazarr provider; it does record what a chosen one
 requires.
 
 The Usenet server SABnzbd downloads through is one of those declarations, and it
-is the one that costs money: it is a paid third-party subscription. Its six
-fields are vault-authored (`vault_downloaders_sabnzbd_server_host`, `_port`,
-`_username`, `_password`, `_connections` and `_ssl`, documented in
-[secrets](secrets.md)), and `group_vars/all/main.yml` carries the same six names
-as empty strings for the same reason it carries the three empty lists above.
+is the one that costs money: it is a paid third-party subscription. It arrives
+in two halves, because only one is secret. The account name and its password are
+vault-authored (`vault_downloaders_sabnzbd_server_username` and `_password`,
+documented in [secrets](secrets.md)). The host, port, connection count and TLS
+flag are not credentials -- the host is published by the provider, the port is
+563 or 119, the connection count is a subscription tier -- so they are ordinary
+operator policy in `group_vars/all/main.yml` under `media_usenet_provider`,
+beside the three empty lists above and for the same reason.
 
-**An undeclared provider is a valid state.** With the six left empty, SABnzbd
-starts with no server, exactly as an empty `media_arr_indexers` starts Prowlarr
-with no indexer. Nothing else about the platform is affected: this is a
-declaration the operator has not made, not a broken one, and the other eight
-service stacks deploy as usual. The credential contract accepts all six empty or
-all six valid, and refuses a half-declared provider field by field, so there is
-no state in between.
+They are typed there rather than carried as strings: `port` and `connections`
+are integers and `ssl` is a boolean. The boolean matters more than it looks,
+because SABnzbd parses a server flag with `bool_conv(int_conv())` and stores any
+other spelling as 0 -- so a declaration reading as TLS-on would deploy TLS-off
+in silence. The role renders it as an integer at the request.
+
+**An undeclared provider is a valid state.** With `media_usenet_provider.host`
+empty and the credential pair empty, SABnzbd starts with no server, exactly as
+an empty `media_arr_indexers` starts Prowlarr with no indexer. Nothing else
+about the platform is affected: this is a declaration the operator has not made,
+not a broken one, and the other eight service stacks deploy as usual. The useful
+consequence of the split is that "is a provider declared?" is now answerable
+without the vault password, because the host is state rather than secret.
+
+The two halves must agree. The credential contract accepts both credentials
+empty or both valid, and the downloaders role refuses a host with no account and
+an account with no host, so there is no state in between.
 
 Declaring one changes three things. The provider credentials are held to
 SABnzbd's own INI and normalization rules before anything is pushed; the
-downloaders role reconciles the six into SABnzbd's `servers` section on every
-run, so a server added or edited in the web interface is replaced by the declared
-one; and verification asserts the declared server is present and matches, which
-is what makes a SABnzbd with no provider fail a run instead of converging
-quietly. With none declared, verification asserts the complement — that no server
-carries the name the platform owns — so neither state converges with nothing
-checked.
+downloaders role reconciles both halves into SABnzbd's `servers` section on
+every run, so a server added or edited in the web interface is replaced by the
+declared one; and verification asserts the declared server is present and
+matches, which is what makes a SABnzbd with no provider fail a run instead of
+converging quietly. With none declared, verification asserts the complement —
+that no server carries the name the platform owns — so neither state converges
+with nothing checked.
 
-Emptying the six again does not delete a server the platform already created:
-the reconciliation only ever upserts. Verification then fails and names both
-remedies, because a server standing with nothing declared is a real
+Emptying the declaration again does not delete a server the platform already
+created: the reconciliation only ever upserts. Verification then fails and names
+both remedies, because a server standing with nothing declared is a real
 inconsistency and removing it is an operator decision rather than a side effect
-of clearing a vault value.
+of clearing a declaration.
 
 Nothing has to be configured by hand before a proof download; the provider
 account has to exist and be recorded in the vault.

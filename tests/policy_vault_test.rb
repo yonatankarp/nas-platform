@@ -81,14 +81,26 @@ FOUNDATION_KEYS = %w[
 # of appended to it -- the foundation parity below asserts every foundation key
 # reaches the secret generator, and a key the generator cannot produce would have
 # to be faked there to pass.
+#
+# Two keys rather than six since #298: the host, port, connection count and TLS
+# flag are not credentials and are operator policy in inventory, validated by
+# POLICY_PROVIDER_SHAPE below rather than by the credential contract.
 OPERATOR_SUPPLIED_KEYS = %w[
-  vault_downloaders_sabnzbd_server_host
-  vault_downloaders_sabnzbd_server_port
   vault_downloaders_sabnzbd_server_username
   vault_downloaders_sabnzbd_server_password
-  vault_downloaders_sabnzbd_server_connections
-  vault_downloaders_sabnzbd_server_ssl
 ].freeze
+
+# The operator-owned half, and the whole of what #298 corrected: four values
+# that are not secret had a prefix promising they were vault-authored, and the
+# prefix is the only reason the plaintext default looked wrong. Pinned as one
+# literal because every part of it is load-bearing -- the empty host is the
+# undeclared state roles/downloaders reads without the vault password, and the
+# integer port, integer connection count and *boolean* ssl are what stop
+# SABnzbd's `bool_conv(int_conv())` from storing a stringy flag as 0 and
+# silently disabling TLS.
+POLICY_PROVIDER_SHAPE = {
+  "host" => "", "port" => 563, "connections" => 8, "ssl" => true
+}.freeze
 
 actual_foundation_expectations =
   SERVICE_EXPECTATIONS.fetch("arr").fetch("vault_keys") +
@@ -97,13 +109,13 @@ check(failures, actual_foundation_expectations == FOUNDATION_KEYS + OPERATOR_SUP
       "arr and downloaders expectations must carry the exact ordered foundation key set")
 
 # An undeclared Usenet provider is a valid state, and these two files are what
-# make it one. The shared inventory has to carry all six names as empty strings,
-# because vault_contract declares them required and runs before any target
-# mutation: a missing name there fails the whole converge, for every service,
-# on a target that simply has no subscription. And the filter's optional group
-# has to be exactly the same six, because that is what stops the empty strings
-# from failing the shape rules four tasks later. Either half alone is a broken
-# converge, so both are pinned here against one list.
+# make it one. The shared inventory has to carry both credential names as empty
+# strings, because vault_contract declares them required and runs before any
+# target mutation: a missing name there fails the whole converge, for every
+# service, on a target that simply has no subscription. And the filter's optional
+# group has to be exactly the same two, because that is what stops the empty
+# strings from failing the shape rules four tasks later. Either half alone is a
+# broken converge, so both are pinned here against one list.
 shared_inventory = YAML.safe_load_file(
   File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
 )
@@ -116,6 +128,39 @@ optional_group_source = File.read(
 optional_groups = optional_group_source.scan(/"(vault_[a-z0-9_]+)"/).flatten
 check(failures, optional_groups == OPERATOR_SUPPLIED_KEYS,
       "the credential filter's optional group must be exactly the operator-supplied keys")
+
+# The policy half, pinned in the same place and for the same reason: a converge
+# needs both halves to exist, and after #298 only one of them is a credential.
+check(failures,
+      shared_inventory.fetch("media_usenet_provider", :absent) ==
+        POLICY_PROVIDER_SHAPE,
+      "shared inventory must declare the undeclared Usenet provider policy with "\
+      "an empty host, integer port and connections, and a boolean ssl")
+
+# The correction itself, asserted rather than described. #298 was filed because
+# `grep -c '^vault_'` on the shared inventory returned six, four of which were
+# not credentials. Every name that keeps the prefix here has to be one the
+# credential contract actually validates, or the prefix is lying again.
+inventory_vault_keys =
+  shared_inventory.keys.select { |key| key.start_with?("vault_") }
+check(failures, inventory_vault_keys.sort == OPERATOR_SUPPLIED_KEYS.sort,
+      "every vault_-prefixed name in the shared inventory must be a credential "\
+      "the contract validates")
+
+# And the four must be gone from the credential side entirely, not merely
+# dropped from the optional group: a rule left behind in CREDENTIAL_RULES would
+# make vault_contract demand a key nothing authors any more.
+credential_schema_source = File.read(
+  File.join(ROOT, "filter_plugins", "vault_credential_schema.py")
+)
+%w[host port connections ssl].each do |field|
+  check(failures,
+        !credential_schema_source.include?(
+          "vault_downloaders_sabnzbd_server_#{field}"
+        ),
+        "the credential filter must not name the non-credential provider "\
+        "field #{field}")
+end
 
 # There is a third half, and it is the one issue #295 was filed about: a fixture
 # that supplies a credential can never catch a bug about that credential's
@@ -164,16 +209,12 @@ BAZARR_SUBMITTED_EXAMPLE_KEYS = %w[
   vault_arr_sonarr_api_key
 ].freeze
 
-# Pinned the way the foundation values are, because these six are the ones an
+# Pinned the way the foundation values are, because these two are the ones an
 # operator has to bring: a value that stopped being an obvious stand-in is how a
 # real provider account reaches the repository.
 OPERATOR_SUPPLIED_EXAMPLE = {
-  "vault_downloaders_sabnzbd_server_host" => "news.example.invalid",
-  "vault_downloaders_sabnzbd_server_port" => "563",
   "vault_downloaders_sabnzbd_server_username" => "example-usenet-username",
-  "vault_downloaders_sabnzbd_server_password" => "example-usenet-password",
-  "vault_downloaders_sabnzbd_server_connections" => "8",
-  "vault_downloaders_sabnzbd_server_ssl" => "1"
+  "vault_downloaders_sabnzbd_server_password" => "example-usenet-password"
 }.freeze
 check(failures,
       OPERATOR_SUPPLIED_EXAMPLE.keys == OPERATOR_SUPPLIED_KEYS &&

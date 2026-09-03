@@ -23,6 +23,7 @@ vault_file=${vault_file?}
 vault_password_file=${vault_password_file?}
 fixture_vars_file=${fixture_vars_file?}
 integration_media_usenet_enabled=${integration_media_usenet_enabled?}
+integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
 
 run_play() {
@@ -40,6 +41,7 @@ run_play() {
     -e downloaders_platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
     -e media_usenet_enabled="$integration_media_usenet_enabled" \
+    -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
