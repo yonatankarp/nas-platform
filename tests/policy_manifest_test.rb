@@ -5,11 +5,15 @@
 #
 # Every row names the policy scripts that actually detect its planted defect, so
 # its sandbox runs one or two of them rather than all eight. Those sets were
-# derived by measurement, not by reading the scripts: 218 of the 242 mutations
-# here are detected by exactly one script, and only 17 by the one that dominates
-# a sandbox's cost. `--audit` runs all eight again and fails on any call site
-# whose declared set has drifted from what the scripts now do -- run it after
-# adding a check to a policy script.
+# derived by measurement, not by reading the scripts: 222 of the 243 mutations
+# here are detected by exactly one script, and only 14 by
+# tests/policy_integration_test.rb, the one that dominates a sandbox's cost
+# because it boots Ansible twice to render role defaults. Both figures count
+# mutations, not call sites, and they are smaller than the declared sets suggest:
+# a loop declaring three scripts can still be one script per iteration, which is
+# exactly what the validate-policy.sh row removal below is. `--audit` runs all
+# eight again and fails on any call site whose declared set has drifted from what
+# the scripts now do -- run it after adding a check to a policy script.
 
 require_relative "policy_mutation_support"
 
@@ -1340,16 +1344,52 @@ expect_failure(failures, "unregistered contract", "ntfy: implemented service has
   write_contract(root, "ntfy", "#!/bin/sh\nendpoint=/ntfy/health\ncurl --fail \"$endpoint\"\n")
 end
 
+# A contract counts as verification only when tests/contracts/registry.yml
+# names it: contract_has_verification? in tests/policy_support.rb takes the
+# registry entries and asks whether they contain {service, path} exactly, so a
+# line that merely spells the contract's path somewhere the harness reads is not
+# registration. These rows plant that line in the shapes a careless grep would
+# accept -- a shell assignment, an echoed argument, a YAML value -- and require
+# the service to still be reported as unverified.
+#
+# The controller row is here because the file that invokes contracts moved.
+# Contract execution lived in tests/integration.sh until 7ae023c gave the
+# controller a file of its own, so the central case of this table -- a mention
+# inside the program that actually runs contracts -- was being planted in a file
+# that no longer runs any. The property is placement-blind by construction and
+# the row proves it rather than asserting it: registration is a registry entry,
+# wherever the spoof is written.
+#
+# detected_by is %i[policy] and not %i[policy integration], which is what issue
+# #314 came from. tests/policy_integration_test.rb never detected a spoofed
+# registration; it detected an appended line. Until 7ae023c it walked the quoting
+# of the `sh -eu -c "..."` argument in tests/integration.sh and exempted only the
+# regions on the file's final line, which is where the operands
+# `integration-run "$playbook" "$@"` sat. Appending anything at all moved the
+# final line, so those operands became a non-final region containing whitespace
+# and the check failed -- naming `integration-run`, never the contract path.
+# Measured on the 5316b03 tree where the declaration was derived: appending this
+# row's own line reports "controller script escapes its quoted argument at line
+# 2359". That walker went away with the argument it policed, and the declaration
+# it had made true outlived it, visible only to `--audit`.
 {
   "assignment registration spoof" => ["tests/integration.sh", "contract=tests/contracts/ntfy.sh\n"],
   "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/ntfy.sh\n"],
+  "controller registration spoof" => ["tests/integration_controller.sh",
+                                      "contract=tests/contracts/ntfy.sh\n"],
   "YAML name registration spoof" => [".github/workflows/ci.yml", "\nname: tests/contracts/ntfy.sh\n"]
 }.each do |label, (relative_harness, registration)|
   expect_failure(failures, label, "ntfy: implemented service has no automated verification",
-                 detected_by: %i[policy integration]) do |root|
+                 detected_by: %i[policy]) do |root|
     File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
     write_contract(root, "ntfy", "#!/bin/sh\ntrue\n")
     harness = File.join(root, relative_harness)
+    # Appending to a path that has moved would create the file rather than raise,
+    # planting the spoof somewhere nothing reads while the row still passed --
+    # the silent no-op mutate_text was introduced to stop for the substituting
+    # rows. Appending cannot use mutate_text, so state the same requirement here.
+    raise "#{label}: #{relative_harness} is not a file to append to" unless File.file?(harness)
+
     File.open(harness, "a") { |file| file.write(registration) }
   end
 end
