@@ -102,17 +102,22 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     # once stands after it is emptied, and `verify.yml`'s undeclared branch
     # rightly refuses that. Whichever state a lane wants, it has to converge it
     # from the start.
-    case $INTEGRATION_SUITE in
-      downloaders)
-        TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
-          --undeclared usenet \
-          --output "$vault_file" --password-file "$vault_password_file"
-        ;;
-      *)
-        TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
-          --output "$vault_file" --password-file "$vault_password_file"
-        ;;
-    esac
+    #
+    # One invocation, with only the optional group varying. Spelling the call
+    # twice would name the output and password arguments twice, and
+    # tests/policy_manifest_test.rb plants its "ephemeral helper bypassed"
+    # mutation on the output argument as a single occurrence, so a second copy
+    # stops that mutation from being placeable at all.
+    undeclared_provider_argument=
+    if [ "$INTEGRATION_SUITE" = downloaders ]; then
+      undeclared_provider_argument='--undeclared usenet'
+    fi
+    # Unquoted on purpose: the flag and its group are the two words they look
+    # like, and every other lane expands them to no word at all. This file is
+    # linted with SC2086 excluded for exactly that.
+    TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
+      $undeclared_provider_argument \
+      --output "$vault_file" --password-file "$vault_password_file"
 
     fixture_input_directory="$sandbox/protected-inputs"
     fixture_vars_file="$fixture_input_directory/immich-fixture-vars.yml"
