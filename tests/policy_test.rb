@@ -241,7 +241,13 @@ check(failures, !File.exist?(retired_role) && !File.symlink?(retired_role),
 check(failures, !File.exist?(retired_service) && !File.symlink?(retired_service),
       "retired service directory must be absent")
 
-beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
+# tests/contracts/beszel-runtime.rb, not the wrapper: #147 moved the contract's
+# runtime body out of a `<<'RUBY'` heredoc into that file, and all three subjects
+# below -- the captured message ID, the anti-replay comparison and the absence of
+# a timestamp-based poll -- travelled with it. The negated conjunct matters most
+# here: "iso8601" matches nothing today, which makes it satisfied rather than
+# vacuous, and left reading the 54-line wrapper it could never match again.
+beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 check(failures,
       beszel_contract.include?('since: baseline_id') &&

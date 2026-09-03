@@ -1085,11 +1085,20 @@ expect_failure(failures, "missing Beszel system ownership guard",
   File.write(path, body)
 end
 
+# tests/contracts/beszel-runtime.rb, not the wrapper. #147 moved the contract's
+# runtime body out of a `<<'RUBY'` heredoc into that file, and URI.encode_www_form
+# went with it -- twice. Left pointing at the 54-line wrapper this gsub matches
+# nothing, plants nothing, and the row reports the mutation as accepted. Found by
+# the indirection pass of the reader sweep, not by the filename pass: the path is
+# built with File.join, so `grep contracts/beszel` never sees it.
 expect_failure(failures, "unencoded Beszel contract filters",
                "Beszel contract must use complete encoded identity filters and enforce system ownership",
                detected_by: %i[beszel]) do |root|
-  path = File.join(root, "tests", "contracts", "beszel.sh")
-  File.write(path, File.read(path).gsub("URI.encode_www_form", "removed_form_encoding"))
+  path = File.join(root, "tests", "contracts", "beszel-runtime.rb")
+  body = File.read(path)
+  raise "Beszel contract mutation subject moved" unless body.include?("URI.encode_www_form")
+
+  File.write(path, body.gsub("URI.encode_www_form", "removed_form_encoding"))
 end
 
 {
