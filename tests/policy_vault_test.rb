@@ -481,7 +481,6 @@ helper_guard_sources = {
   "cleanup leaf-symlink guard" => '[ ! -L "$directory/vault.yml" ] && [ ! -L "$directory/password" ]',
   "failure trap isolation" => "generate_vault() (",
   "failure cleanup trap" => 'trap \'rm -f -- "$plain" "$private_key" "$private_key.pub" "$password_file" "$output"\' EXIT',
-  "self-test cleanup trap" => "trap self_test_cleanup_on_exit EXIT",
   # An ephemeral Radarr or Sonarr key of only decimal digits is cast to an int by
   # Bazarr's settings form and refused with 406 for the life of that vault. The
   # redraw is what stops it; dropping it back to a bare `openssl rand -hex 16`
@@ -494,6 +493,24 @@ helper_guard_sources.each do |property, source|
   check(failures, ephemeral_helper.include?(source),
         "ephemeral vault helper must preserve #{property}")
 end
+
+# The self-test's cleanup trap is counted rather than merely found. Each fixture
+# region names its directory to the handler and must arm the handler on the very
+# next line, because between those two lines an interrupt leaves credential
+# material behind. Asserting the trap string appears *somewhere* is what let a
+# second region land relying on the first region's install: removing either one
+# left the other for `include?` to find, so the mutation that plants exactly that
+# removal went undetected. The floor is asserted too -- a regex that silently
+# stops matching would otherwise pass on nothing at all.
+named_fixture_regions =
+  ephemeral_helper.scan(/^[ \t]*self_test_fixture_directory=\$\S+$/).length
+armed_fixture_regions = ephemeral_helper.scan(
+  /^[ \t]*self_test_fixture_directory=\$\S+\n[ \t]*trap self_test_cleanup_on_exit EXIT$/
+).length
+check(failures,
+      named_fixture_regions >= 2 &&
+        armed_fixture_regions == named_fixture_regions,
+      "ephemeral vault helper must preserve self-test cleanup trap")
 check(failures,
       ephemeral_helper.include?('kernel_name=$(uname -s)') &&
         ephemeral_helper.include?('stat -f') && ephemeral_helper.include?('stat -c') &&
