@@ -156,6 +156,8 @@ ruby tests/bindery_contract_test.rb
 ruby tests/bindery_contract_test.rb --self-test
 ruby tests/kapowarr_contract_test.rb
 ruby tests/kapowarr_contract_test.rb --self-test
+ruby tests/beszel_contract_test.rb
+ruby tests/beszel_contract_test.rb --self-test
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
 tests/integration_suite_test.sh

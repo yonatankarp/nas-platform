@@ -19,7 +19,16 @@ failures = []
 
 # Re-derived rather than shared: these are file reads, so each script that needs
 # them opens the file itself instead of threading state between scripts.
-beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel.sh")
+#
+# The runtime program, not tests/contracts/beszel.sh. Until #147 the contract's
+# 314-line runtime body lived in a `<<'RUBY'` heredoc inside that wrapper, so
+# reading the wrapper reached it; the wrapper is 54 lines now and holds none of
+# it. Every subject the two checks below name -- the drift fixture's role patch,
+# its verified-prerequisite readback, the encoded identity filters and the
+# wrong-owner refusal -- moved into this file, so this is where they are read
+# from. The `? :` fallback is kept: with "" the positive conjuncts go false and
+# both checks fail loudly, which is what a fixture missing the program should do.
+beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
 # The launcher is tests/integration.sh; the program it runs in the controller
