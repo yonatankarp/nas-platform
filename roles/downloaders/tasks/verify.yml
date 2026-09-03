@@ -133,7 +133,7 @@
 # still stands, or something outside this platform wrote one. Neither is quietly
 # converged over, and neither is deleted: the reconciliation above only ever
 # upserts, so removing that server is an operator decision, not a side effect of
-# emptying a vault value.
+# emptying a declaration.
 - name: Verify SABnzbd owns no Usenet server while none is declared
   ansible.builtin.assert:
     that:
@@ -143,8 +143,8 @@
       - downloaders_verify_sabnzbd_server_matches | length == 0
     fail_msg: >-
       SABnzbd carries a platform-owned Usenet server while no provider is
-      declared. Author the six provider credentials in the vault, or remove that
-      server in SABnzbd.
+      declared. Declare media_usenet_provider.host in inventory with the
+      matching account in the vault, or remove that server in SABnzbd.
   when: not downloaders_usenet_provider_declared | bool
   vars:
     downloaders_verify_sabnzbd_servers: >-

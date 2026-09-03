@@ -604,6 +604,12 @@ case_downloaders() {
   # converge nothing -- roles/downloaders refuses the pair. Asserted as the
   # negation of the arr lane's line above.
   expect_log '[-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}]'
+  # And the verification play, which is a separate ansible-playbook invocation
+  # with an argv of its own. verify.yml branches on this value, so a converge
+  # that gets it and a verification that does not is a lane asserting the wrong
+  # branch against its own converge -- which is exactly how the bindery lane
+  # failed before this was passed here too.
+  expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_output 'DOWNLOADERS_UNDECLARED_PROVIDER_RUNTIME_VERIFIED'
 }
 
@@ -624,6 +630,10 @@ case_bindery() {
   expect_log 'contract bindery argv=[run]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_bindery]'
+  # The declared half of the same property: this lane's verification has to see
+  # the declared host its converge saw, or it asserts that no owned server
+  # exists against the server it just created.
+  expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[site.yml][--tags][arr,downloaders,bindery]'
   expect_log '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
   expect_log_order '[site.yml][--tags][arr,downloaders,bindery]' \
@@ -858,6 +868,11 @@ plant 'declared provider policy host dropped' arr program \
 plant 'undeclared provider policy branch dropped' downloaders program \
   'downloaders) integration_media_usenet_host=' \
   'never) integration_media_usenet_host=' 1
+# The verification play's own copy. Dropping it leaves the converge correct and
+# the verification reading inventory's default instead, which is the shape that
+# reached CI: a lane asserting the undeclared branch against a declared converge.
+plant 'verification provider policy dropped' bindery library \
+  '-e "$integration_media_usenet_provider" "$@"' '"$@"' 1
 plant 'declared downloader verification-only play dropped' bindery program \
   'run_downloaders_verify_only' ':' 2
 plant 'acquisition foundation contract dropped' seerr program \

@@ -439,7 +439,14 @@ run_verification() {
   set -- /repo/verify.yml --tags "platform_verify_$verification_tag"
   case "$verification_tag" in
     arr|downloaders)
-      set -- -e media_usenet_enabled=true "$@"
+      # The provider policy travels with the transport flag. This is a separate
+      # ansible-playbook invocation from run_play with an argv of its own, so a
+      # value passed only there reaches the converge and not the verification --
+      # and verify.yml branches on exactly that value. The bindery lane found it
+      # the hard way: it converged a declared provider and then asserted the
+      # undeclared branch against the server it had just created.
+      set -- -e media_usenet_enabled=true \
+        -e "$integration_media_usenet_provider" "$@"
       ;;
   esac
   PLATFORM_VAULT_FILE="$vault_file" ansible-playbook \
