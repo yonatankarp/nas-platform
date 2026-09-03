@@ -506,7 +506,9 @@ self_test() {
   trap - EXIT HUP INT TERM
 
   refusal_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
-  for refused_groups in '' unknown-group usenet,usenet usenet, ,usenet; do
+  # Each malformed list is quoted so the trailing and leading commas read as
+  # part of the value rather than as separators a reader has to squint at.
+  for refused_groups in '' unknown-group 'usenet,usenet' 'usenet,' ',usenet'; do
     if "$0" --undeclared "$refused_groups" \
         --output "$refusal_directory/vault.yml" \
         --password-file "$refusal_directory/password" >/dev/null 2>&1; then
