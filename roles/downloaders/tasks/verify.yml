@@ -115,11 +115,11 @@
     downloaders_verify_sabnzbd_server_desired: >-
       {{ downloaders_sabnzbd_owned_server |
          combine({
-           'host': vault_downloaders_sabnzbd_server_host,
-           'port': vault_downloaders_sabnzbd_server_port | int,
+           'host': media_usenet_provider.host,
+           'port': media_usenet_provider.port,
            'username': vault_downloaders_sabnzbd_server_username,
-           'connections': vault_downloaders_sabnzbd_server_connections | int,
-           'ssl': vault_downloaders_sabnzbd_server_ssl | int
+           'connections': media_usenet_provider.connections,
+           'ssl': media_usenet_provider.ssl | int
          }) }}
   tags: [platform_verify_downloaders]
   no_log: true

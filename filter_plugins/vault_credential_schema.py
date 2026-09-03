@@ -63,18 +63,10 @@ HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 # the only place that sees a hand-authored one before it deploys.
 HEX_LETTER = re.compile(r"[a-f]")
 
-# SABnzbd normalizes a Usenet server it is given: `all_lowercase` lowercases and
-# strips the host, `OptionStr` strips the account name, and `OptionNumber` clamps
-# the port and the connection count into range. A value it would rewrite can
-# never equal the value the vault declares, so the reconciliation would push it
-# on every run for as long as it stood. These rules accept only what SABnzbd
-# stores unchanged: a bare lowercase host with no scheme, a port in 1-65535, a
-# connection count in 1-500, and the 0/1 form its server flags are parsed in.
-USENET_HOST = re.compile(r"^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\Z")
-USENET_PORT = re.compile(r"^(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}"
-                         r"|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])\Z")
-USENET_CONNECTIONS = re.compile(r"^(?:[1-9][0-9]?|[1-4][0-9]{2}|500)\Z")
-USENET_FLAG = re.compile(r"^[01]\Z")
+# SABnzbd's normalization rules used to live here, for the four provider values
+# that are not credentials. They moved to filter_plugins/media_usenet_provider.py
+# with those values (#298); `OptionStr` still strips the account name, which is
+# why the two rules below are NONEMPTY rather than a pattern.
 NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
@@ -181,12 +173,8 @@ CREDENTIAL_RULES = {
     "vault_downloaders_sabnzbd_api_key": ((PATTERN, HEX_32),),
     "vault_downloaders_sabnzbd_admin_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_admin_password": ((NONEMPTY, None),),
-    "vault_downloaders_sabnzbd_server_host": ((PATTERN, USENET_HOST),),
-    "vault_downloaders_sabnzbd_server_port": ((PATTERN, USENET_PORT),),
     "vault_downloaders_sabnzbd_server_username": ((NONEMPTY, None),),
     "vault_downloaders_sabnzbd_server_password": ((NONEMPTY, None),),
-    "vault_downloaders_sabnzbd_server_connections": ((PATTERN, USENET_CONNECTIONS),),
-    "vault_downloaders_sabnzbd_server_ssl": ((PATTERN, USENET_FLAG),),
     "vault_bindery_api_key": ((PATTERN, HEX_32),),
     "vault_bindery_admin_username": ((NONEMPTY, None),),
     "vault_bindery_admin_password": ((NONEMPTY, None),),
@@ -208,26 +196,27 @@ CREDENTIAL_RULES = {
 # The Usenet provider account belongs to a paid third-party subscription, so a
 # target that has not bought one has nothing to declare. That is a valid state,
 # the same one an empty `media_arr_indexers` describes, and
-# `inventory/group_vars/all/main.yml` expresses it by declaring all six of these
-# as empty strings so the vault can win over them without the contract losing a
+# `inventory/group_vars/all/main.yml` expresses it by declaring both of these as
+# empty strings so the vault can win over them without the contract losing a
 # required key.
 #
-# The group is all-or-nothing on purpose. Every rule below is suppressed only
-# when all six are empty; one non-empty value means a provider is being declared
-# and every rule applies again, so a half-declared provider is reported field by
-# field rather than accepted. That naming is why a partial declaration does not
-# get a group-level message of its own: "which field did I forget" is the
-# question an operator actually has, and the per-field rules answer it.
+# The group is all-or-nothing on purpose: the rules are suppressed only when both
+# are empty, so an account name with no password is reported field by field
+# rather than accepted. "Which field did I forget" is the question an operator
+# actually has, and the per-field rules answer it.
+#
+# What this group can no longer see is the host, because the host is operator
+# policy rather than a credential (#298). So it can no longer be the thing that
+# refuses a provider declared on one side and not the other. That agreement is
+# asserted in roles/downloaders/tasks/main.yml, before anything reads
+# `downloaders_usenet_provider_declared` -- three consumers take that variable
+# as proof the credentials exist, and this tuple used to be why they could.
 #
 # tests/policy_vault_test.rb pins this tuple against its own OPERATOR_SUPPLIED_KEYS
 # so the two cannot drift.
 OPTIONAL_KEY_GROUPS = (
-    ("vault_downloaders_sabnzbd_server_host",
-     "vault_downloaders_sabnzbd_server_port",
-     "vault_downloaders_sabnzbd_server_username",
-     "vault_downloaders_sabnzbd_server_password",
-     "vault_downloaders_sabnzbd_server_connections",
-     "vault_downloaders_sabnzbd_server_ssl"),
+    ("vault_downloaders_sabnzbd_server_username",
+     "vault_downloaders_sabnzbd_server_password"),
 )
 
 # The four publisher tokens authenticate four different ntfy identities. A

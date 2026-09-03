@@ -79,12 +79,12 @@
         downloaders_sabnzbd_server_desired: >-
           {{ downloaders_sabnzbd_owned_server |
              combine({
-               'host': vault_downloaders_sabnzbd_server_host,
-               'port': vault_downloaders_sabnzbd_server_port | int,
+               'host': media_usenet_provider.host,
+               'port': media_usenet_provider.port,
                'username': vault_downloaders_sabnzbd_server_username,
                'password': vault_downloaders_sabnzbd_server_password,
-               'connections': vault_downloaders_sabnzbd_server_connections | int,
-               'ssl': vault_downloaders_sabnzbd_server_ssl | int
+               'connections': media_usenet_provider.connections,
+               'ssl': media_usenet_provider.ssl | int
              }) }}
       changed_when: false
       no_log: true
@@ -144,12 +144,17 @@
           mode: set_config
           section: servers
           keyword: "{{ downloaders_sabnzbd_server_name }}"
-          host: "{{ vault_downloaders_sabnzbd_server_host }}"
-          port: "{{ vault_downloaders_sabnzbd_server_port }}"
+          host: "{{ media_usenet_provider.host }}"
+          port: "{{ media_usenet_provider.port }}"
           username: "{{ vault_downloaders_sabnzbd_server_username }}"
           password: "{{ vault_downloaders_sabnzbd_server_password }}"
-          connections: "{{ vault_downloaders_sabnzbd_server_connections }}"
-          ssl: "{{ vault_downloaders_sabnzbd_server_ssl }}"
+          connections: "{{ media_usenet_provider.connections }}"
+          # `| int` is load-bearing. `set_config` parses a server flag with
+          # `bool_conv(int_conv())`, so the boolean rendered as `True` would be
+          # stored as 0 -- a TLS connection silently disabled on a server that
+          # still reads as configured for it. The declaration is a boolean
+          # because that is the only spelling this cannot go wrong from.
+          ssl: "{{ media_usenet_provider.ssl | int }}"
           enable: "{{ downloaders_sabnzbd_owned_server.enable }}"
           priority: "{{ downloaders_sabnzbd_owned_server.priority }}"
           ssl_verify: "{{ downloaders_sabnzbd_owned_server.ssl_verify }}"

@@ -41,12 +41,8 @@ argument_specs:
       vault_downloaders_sabnzbd_api_key: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_username: {type: str, required: true}
       vault_downloaders_sabnzbd_admin_password: {type: str, required: true}
-      vault_downloaders_sabnzbd_server_host: {type: str, required: true}
-      vault_downloaders_sabnzbd_server_port: {type: str, required: true}
       vault_downloaders_sabnzbd_server_username: {type: str, required: true}
       vault_downloaders_sabnzbd_server_password: {type: str, required: true}
-      vault_downloaders_sabnzbd_server_connections: {type: str, required: true}
-      vault_downloaders_sabnzbd_server_ssl: {type: str, required: true}
       vault_bindery_api_key: {type: str, required: true}
       vault_bindery_admin_username: {type: str, required: true}
       vault_bindery_admin_password: {type: str, required: true}

@@ -13,15 +13,24 @@ media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
 
 # Whether an operator has declared a Usenet provider at all. An undeclared one is
-# a valid state: `inventory/group_vars/all/main.yml` carries the six provider
-# credentials as empty strings and the vault wins over them, so the host is what
-# says which of the two states this target is in. The credential contract refuses
-# a half-declared provider, so one non-empty host means all six are declared and
-# this single fact is the whole test -- the provider credential guard, the
-# `section=servers` reconciliation and the two owned-server verification branches
-# all read it rather than repeating an emptiness check.
+# a valid state: `inventory/group_vars/all/main.yml` carries an empty host and an
+# empty credential pair, and the vault wins over the pair, so the host is what
+# says which of the two states this target is in.
+#
+# The host is operator policy rather than a credential now (#298), so this fact
+# is answerable without the vault password -- which is the useful half of that
+# move, because "is a provider declared?" is state, not secret.
+#
+# It also means the credential contract can no longer be what makes this one
+# fact sufficient. It used to hold all six values in a single all-or-nothing
+# group, so a non-empty host proved the credentials existed too. It now sees only
+# the two credentials and cannot see the host at all, so the agreement between
+# the halves is asserted in tasks/main.yml before this variable is read. Three
+# consumers depend on that agreement -- the provider credential guard, the
+# `section=servers` reconciliation and the two owned-server verification
+# branches -- and all three still read this rather than repeating a check.
 downloaders_usenet_provider_declared: >-
-  {{ vault_downloaders_sabnzbd_server_host | length > 0 }}
+  {{ media_usenet_provider.host | length > 0 }}
 
 downloaders_sabnzbd_categories:
   movies: /data/media/.acquisition/usenet/movies

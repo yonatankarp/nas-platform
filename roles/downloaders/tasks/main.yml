@@ -21,6 +21,48 @@
     fail_msg: SABnzbd administrator credentials must be nonempty single-line values.
   no_log: true
 
+# The operator-owned half of the provider, held to the rules SABnzbd's own
+# normalization imposes: it lowercases and strips the host and clamps the port
+# and the connection count, and a value it would rewrite can never equal the
+# declared one, so the reconciliation below would push it again on every run for
+# as long as it stood. These rules moved out of the credential contract with the
+# values (#298); the filter names the offending field and never echoes a value,
+# so this message is safe to print in full.
+#
+# Ungated on purpose. An undeclared provider is a valid state but a *malformed*
+# declaration is not, and the filter already treats an empty host as the
+# undeclared shape rather than as a bad one.
+- name: Require a SABnzbd-storable Usenet provider policy
+  ansible.builtin.assert:
+    that: media_usenet_provider | media_usenet_provider_errors | length == 0
+    fail_msg: >-
+      The declared Usenet provider policy is malformed:
+      {{ (media_usenet_provider | media_usenet_provider_errors) | join('; ') }}
+
+# The invariant three consumers below depend on, and the one the split
+# dissolved. The credential contract used to hold all six provider values in a
+# single all-or-nothing group, so a non-empty host proved the credentials existed
+# too and `downloaders_usenet_provider_declared` was sufficient on its own. The
+# contract now sees only the two credentials and cannot see the host, so nothing
+# else would notice a host declared with no account, or an account with no host
+# -- the first reconciles a server that cannot authenticate, the second leaves a
+# paid subscription silently unused.
+#
+# This runs before the provider credential guard below, before
+# reconcile_sabnzbd.yml and before verify.yml, because every one of them reads
+# that variable as proof the credentials are there.
+- name: Require both halves of the Usenet provider declaration to agree
+  ansible.builtin.assert:
+    that:
+      - (media_usenet_provider.host | length > 0)
+        == (vault_downloaders_sabnzbd_server_username | length > 0)
+    fail_msg: >-
+      A Usenet provider is half declared. media_usenet_provider.host in
+      inventory and vault_downloaders_sabnzbd_server_username in the vault must
+      either both be set or both be empty; the host says a subscription exists
+      and the account name says who it belongs to.
+  no_log: true
+
 # SABnzbd writes what it is given into `sabnzbd.ini`, whose grammar is one key
 # per line. It hex-encodes a password carrying a control character but does
 # nothing of the sort for the account name, so a newline there corrupts the file
