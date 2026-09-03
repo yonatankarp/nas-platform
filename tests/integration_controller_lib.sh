@@ -437,14 +437,19 @@ run_paperless_snapshot() {
 run_verification() {
   verification_tag=$1
   set -- /repo/verify.yml --tags "platform_verify_$verification_tag"
+  # The provider policy travels with the transport flag below. This is a separate
+  # ansible-playbook invocation from run_play with an argv of its own, so a value
+  # passed only there reaches the converge and not the verification -- and
+  # verify.yml branches on exactly that value. The bindery lane found it the hard
+  # way: it converged a declared provider and then asserted the undeclared branch
+  # against the server it had just created.
+  #
+  # The comment sits above the `case` rather than inside the arm on purpose:
+  # tests/integration_suite_test.sh reads the line immediately preceding the
+  # forced fact and requires it to be the arm itself, so that the lane cannot
+  # quietly widen which tags get a fact the inventory should be supplying.
   case "$verification_tag" in
     arr|downloaders)
-      # The provider policy travels with the transport flag. This is a separate
-      # ansible-playbook invocation from run_play with an argv of its own, so a
-      # value passed only there reaches the converge and not the verification --
-      # and verify.yml branches on exactly that value. The bindery lane found it
-      # the hard way: it converged a declared provider and then asserted the
-      # undeclared branch against the server it had just created.
       set -- -e media_usenet_enabled=true \
         -e "$integration_media_usenet_provider" "$@"
       ;;
