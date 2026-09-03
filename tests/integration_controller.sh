@@ -260,12 +260,13 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     # nothing (#295).
     #
     # The two halves have to agree -- roles/downloaders refuses a host with no
-    # account and an account with no host -- so this host is empty exactly where
-    # `--undeclared usenet` empties the credentials, and set everywhere else.
+    # account and an account with no host -- so this host is empty on exactly
+    # the lane whose credentials the generator is asked to leave undeclared
+    # above, and set on every other lane.
     integration_media_usenet_host=news.usenet.invalid
-    if [ "$INTEGRATION_SUITE" = downloaders ]; then
-      integration_media_usenet_host=
-    fi
+    case $INTEGRATION_SUITE in
+      downloaders) integration_media_usenet_host= ;;
+    esac
     integration_media_usenet_provider="{\"media_usenet_provider\":\
 {\"host\":\"$integration_media_usenet_host\",\"port\":563,\
 \"connections\":8,\"ssl\":true}}"
