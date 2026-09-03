@@ -166,6 +166,23 @@ module ClassifyChanges
   # and a file added to any of them must select the contract without an edit
   # here.
   RECONCILIATION_LANES = %w[arr downloaders].freeze
+  # Lanes that cannot prove their own subject alone, and the lane that proves the
+  # rest of it.
+  #
+  # The Usenet provider is declared in the vault or it is not, and the two states
+  # are not reachable from one sandbox: SABnzbd's `section=servers` reconciliation
+  # only ever upserts, so a server declared once stands after the declaration is
+  # emptied. The `downloaders` lane therefore converges the undeclared state from
+  # the start -- tests/integration_controller.sh builds its vault with
+  # `--undeclared usenet`, which is the state every real target starts in and the
+  # one #274 broke -- and the `bindery` lane converges the same arr and
+  # downloaders stacks from a fully declared vault. Each lane asserts one branch
+  # of roles/downloaders/tasks/verify.yml, so a change inside that role has to
+  # select both or one branch is routed to no runtime lane at all. Selecting at
+  # lane granularity rather than per file is deliberate: whatever selects the
+  # downloaders lane needs the declared branch too, and a file added to the role
+  # must not need an edit here to get it.
+  COMPANION_LANES = { "downloaders" => %w[bindery] }.freeze
   # The contract's own files. They are read by no play and by no integration
   # suite, so they select the contract alone rather than falling open to every
   # lane in the repository. The support file is listed because all three legs
@@ -229,6 +246,7 @@ module ClassifyChanges
       end
 
       tagged_lanes << lane
+      tagged_lanes.concat(COMPANION_LANES.fetch(lane, []))
     end
 
     unless tagged_lanes.empty?

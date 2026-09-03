@@ -21,6 +21,13 @@ ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr
 # files it owns. Both are stated here rather than imported so that widening the
 # classifier's own list is a failure here rather than a silent change of scope.
 RECONCILIATION_LANES = %w[arr downloaders].freeze
+# The lane a selected lane cannot prove its subject without. Stated here for the
+# same reason: the downloaders lane converges the Usenet provider undeclared and
+# the bindery lane converges it declared, each asserting one branch of
+# roles/downloaders/tasks/verify.yml, so anything selecting the first has to
+# select the second or a branch is routed to no runtime lane at all. Widening
+# this in the classifier must fail here.
+COMPANION_LANES = { "downloaders" => %w[bindery] }.freeze
 RECONCILIATION_OWNED_PATHS = %w[
   tests/media_acquisition_reconciliation_support.rb
   tests/media_acquisition_reconciliation_core_test.rb
@@ -67,7 +74,10 @@ if defined?(ClassifyChanges)
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
     ["roles/arr/tasks/main.yml"] => %w[static reconciliation arr idempotence_check],
-    ["services/downloaders/compose.yml"] => %w[static reconciliation downloaders idempotence_check],
+    # Plus bindery: the downloaders lane converges the Usenet provider
+    # undeclared now, so the lane that converges it declared has to come with it.
+    ["services/downloaders/compose.yml"] =>
+      %w[static reconciliation downloaders bindery idempotence_check],
     ["tests/expected/bindery.yml"] => %w[static bindery idempotence_check],
     ["tests/contracts/kapowarr-foundation.sh"] => %w[static kapowarr idempotence_check],
     ["tests/media_control_network_collision_test.sh"] => %w[static reconciliation arr idempotence_check],
@@ -107,7 +117,7 @@ if defined?(ClassifyChanges)
       "tests/contracts/#{project}-foundation.sh"
     ].each do |path|
       expected = ["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)), project,
-                  "idempotence_check"]
+                  *COMPANION_LANES.fetch(project, []), "idempotence_check"]
       check(failures, selected_lanes([path]) == expected,
             "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
     end

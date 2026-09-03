@@ -87,6 +87,65 @@ validate_output_path() {
     die 'refusing to overwrite ephemeral credential material'
 }
 
+# Credential groups a target may legitimately leave undeclared, and which this
+# generator can therefore be asked not to stand in for.
+#
+# A group qualifies because `inventory/group_vars/all/main.yml` carries every key
+# in it as an empty string and `OPTIONAL_KEY_GROUPS` in
+# filter_plugins/vault_credential_schema.py suppresses that group's shape rules
+# when all of them are empty. Both halves are what make the undeclared state
+# valid rather than a failed converge, and tests/policy_vault_test.rb pins this
+# list against the filter's tuple so a group added there cannot be missed here.
+#
+# The reason this exists at all: a fixture that supplies a credential can never
+# catch a bug about that credential's absence. Standing in for all six Usenet
+# provider values unconditionally is what let #274 merge with every lane green
+# and then fail the NAS's next converge in `vault_contract`, before any service
+# could deploy (#295).
+optional_credential_groups='usenet'
+
+# Which of them this run leaves undeclared. Set by --undeclared.
+undeclared_credential_groups=
+
+optional_credential_group_known() {
+  for known_group in $optional_credential_groups; do
+    [ "$1" != "$known_group" ] || return 0
+  done
+  return 1
+}
+
+credential_group_is_undeclared() {
+  for undeclared_group in $undeclared_credential_groups; do
+    [ "$1" != "$undeclared_group" ] || return 0
+  done
+  return 1
+}
+
+select_undeclared_credential_groups() {
+  requested=$1
+  [ -n "$requested" ] || die '--undeclared requires at least one credential group'
+  case $requested in
+    ,*|*,|*,,*) die 'malformed undeclared credential group list' ;;
+  esac
+  # Split on the comma with `tr` rather than by reassigning IFS, so nothing has
+  # to be restored around the validation the loop body performs. `set -f` is
+  # still needed: an unquoted expansion is what splits the list, and a group
+  # spelled `*` would otherwise reach the known-group check as a directory
+  # listing rather than as the one word it is.
+  set -f
+  for requested_group in $(printf '%s' "$requested" | tr ',' ' '); do
+    set +f
+    optional_credential_group_known "$requested_group" ||
+      die "unknown optional credential group: $requested_group"
+    if credential_group_is_undeclared "$requested_group"; then
+      die "repeated optional credential group: $requested_group"
+    fi
+    undeclared_credential_groups="${undeclared_credential_groups:+$undeclared_credential_groups }$requested_group"
+    set -f
+  done
+  set +f
+}
+
 random_password() {
   openssl rand -base64 24 2>/dev/null | tr -d '\n'
 }
@@ -173,6 +232,33 @@ generate_vault() (
   managed_ntfy_password=$(random_password)
   radarr_api_key=$(random_api_key) || die 'failed to generate a Radarr API key'
   sonarr_api_key=$(random_api_key) || die 'failed to generate a Sonarr API key'
+
+  # The Usenet provider group, computed before the heredoc because it is the one
+  # group whose values depend on --undeclared. Each of the six key names appears
+  # exactly once below: tests/policy_vault_test.rb refuses a duplicate vault key
+  # in this file, so a declared and an undeclared arm each spelling the six is
+  # not available -- only the values may branch.
+  #
+  # Undeclared is six empty strings rather than six omitted lines.
+  # roles/vault_contract declares all six required and this generator's own
+  # --self-test validates the vault with no group_vars in play, so an omitted key
+  # would have nothing to satisfy that requirement. An empty string is also the
+  # exact value a real undeclared target sees, because
+  # inventory/group_vars/all/main.yml supplies one there.
+  usenet_server_host=news.usenet.invalid
+  usenet_server_port=563
+  usenet_server_username=ephemeral-usenet-username
+  usenet_server_password=$(random_password)
+  usenet_server_connections=8
+  usenet_server_ssl=1
+  if credential_group_is_undeclared usenet; then
+    usenet_server_host=
+    usenet_server_port=
+    usenet_server_username=
+    usenet_server_password=
+    usenet_server_connections=
+    usenet_server_ssl=
+  fi
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
     >/dev/null 2>&1 || die 'failed to generate ephemeral key material'
 
@@ -217,12 +303,12 @@ vault_arr_bazarr_admin_password: '$(random_password)'
 vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: '$(random_password)'
-vault_downloaders_sabnzbd_server_host: news.usenet.invalid
-vault_downloaders_sabnzbd_server_port: '563'
-vault_downloaders_sabnzbd_server_username: ephemeral-usenet-username
-vault_downloaders_sabnzbd_server_password: '$(random_password)'
-vault_downloaders_sabnzbd_server_connections: '8'
-vault_downloaders_sabnzbd_server_ssl: '1'
+vault_downloaders_sabnzbd_server_host: '$usenet_server_host'
+vault_downloaders_sabnzbd_server_port: '$usenet_server_port'
+vault_downloaders_sabnzbd_server_username: '$usenet_server_username'
+vault_downloaders_sabnzbd_server_password: '$usenet_server_password'
+vault_downloaders_sabnzbd_server_connections: '$usenet_server_connections'
+vault_downloaders_sabnzbd_server_ssl: '$usenet_server_ssl'
 vault_bindery_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_bindery_admin_username: nasadmin
 vault_bindery_admin_password: '$(random_password)'
@@ -382,6 +468,56 @@ self_test() {
   [ -f "$trap_marker" ] || die 'self-test generation did not preserve its caller trap'
   rm -f -- "$trap_marker"
   self_test_trap_marker=
+
+  # The undeclared shape, proved here rather than only in the integration lane
+  # that consumes it: it is the state issue #295 found nothing converged, and a
+  # break in it would otherwise be visible only after a Docker suite has run.
+  # Both halves are asserted -- that all six values really are empty, and that
+  # the resulting vault still satisfies the shared credential contract, which is
+  # what OPTIONAL_KEY_GROUPS in filter_plugins/vault_credential_schema.py exists
+  # to make true.
+  undeclared_directory=$(mktemp -d "$temporary_parent_input/nas-platform-vault.XXXXXX")
+  self_test_fixture_directory=$undeclared_directory
+  trap self_test_cleanup_on_exit EXIT
+  trap 'exit 130' HUP INT TERM
+  (
+    "$0" --undeclared usenet \
+      --output "$undeclared_directory/vault.yml" \
+      --password-file "$undeclared_directory/password" ||
+      die 'self-test could not generate an undeclared vault'
+    undeclared_view=$(ansible-vault view \
+      --vault-password-file "$undeclared_directory/password" \
+      "$undeclared_directory/vault.yml" 2>/dev/null) ||
+      die 'self-test could not decrypt the undeclared vault'
+    for undeclared_key in host port username password connections ssl; do
+      printf '%s\n' "$undeclared_view" |
+        grep -qx "vault_downloaders_sabnzbd_server_$undeclared_key: ''" ||
+        die 'self-test undeclared vault still declares a Usenet provider'
+    done
+    ansible-playbook -i localhost, -c local "$repo_dir/validate-vault.yml" \
+      --vault-password-file "$undeclared_directory/password" \
+      -e @"$undeclared_directory/vault.yml" \
+      -e platform_vault_file="$undeclared_directory/vault.yml" \
+      >/dev/null 2>&1 ||
+      die 'self-test undeclared vault fell outside the shared contract'
+    cleanup_vault "$undeclared_directory"
+  )
+  self_test_fixture_directory=
+  trap - EXIT HUP INT TERM
+
+  refusal_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  # Each malformed list is quoted so the trailing and leading commas read as
+  # part of the value rather than as separators a reader has to squint at.
+  for refused_groups in '' unknown-group 'usenet,usenet' 'usenet,' ',usenet'; do
+    if "$0" --undeclared "$refused_groups" \
+        --output "$refusal_directory/vault.yml" \
+        --password-file "$refusal_directory/password" >/dev/null 2>&1; then
+      die 'self-test accepted an invalid undeclared credential group list'
+    fi
+    [ -z "$(find "$refusal_directory" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+      die 'self-test undeclared-group refusal left credential material'
+  done
+  cleanup_vault "$refusal_directory"
 
   validation_parent=$(mktemp -d "$temporary_parent/nas-platform-vault-validation.XXXXXX")
   validation_tools=$(mktemp -d "$temporary_parent/nas-platform-vault-validation-tools.XXXXXX")
@@ -573,6 +709,12 @@ case ${1:-} in
       die 'usage: generate-ephemeral-vault.sh --output PATH --password-file PATH'
     generate_vault "$2" "$4"
     ;;
+  --undeclared)
+    [ "$#" -eq 6 ] && [ "$3" = --output ] && [ "$5" = --password-file ] ||
+      die 'usage: generate-ephemeral-vault.sh --undeclared GROUP[,GROUP] --output PATH --password-file PATH'
+    select_undeclared_credential_groups "$2"
+    generate_vault "$4" "$6"
+    ;;
   --cleanup)
     [ "$#" -eq 2 ] || die 'usage: generate-ephemeral-vault.sh --cleanup DIRECTORY'
     cleanup_vault "$2"
@@ -582,6 +724,6 @@ case ${1:-} in
     self_test
     ;;
   *)
-    die 'usage: generate-ephemeral-vault.sh --output PATH --password-file PATH | --cleanup DIRECTORY | --self-test'
+    die 'usage: generate-ephemeral-vault.sh [--undeclared GROUP[,GROUP]] --output PATH --password-file PATH | --cleanup DIRECTORY | --self-test'
     ;;
 esac
