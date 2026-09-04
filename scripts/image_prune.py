@@ -271,6 +271,32 @@ def _write_private(path: Path, payload: bytes) -> None:
     os.chmod(path, 0o600)
 
 
+def _record_lock_holder(descriptor: int, holder: str) -> None:
+    """Write who holds the lock, for a refused deployment to name.
+
+    Mirrors scripts/production_auto_deploy.py, whose record this is a second
+    writer of: roles/deployment_bundle probes this file at the first task of
+    every role, and a holder it cannot identify is one it will not refuse. Left
+    unwritten, "no record" would mean either a prune or a poller too old to
+    write one, and a converge would race a prune every Sunday to keep the
+    upgrade window open. Written by the prune too, "no record" means exactly
+    the pre-upgrade poller and nothing else.
+
+    Best effort and advisory, like the poller's. The flock is the liveness
+    truth. Written with pwrite after truncating so no reader can observe a
+    half-replaced record at offset zero, and the payload is ASCII because the
+    probe decodes it as ASCII.
+    """
+
+    payload = json.dumps(
+        {"pid": os.getpid(), "holder": holder, "started": _timestamp()},
+        sort_keys=True,
+    )
+    with contextlib.suppress(OSError):
+        os.ftruncate(descriptor, 0)
+        os.pwrite(descriptor, payload.encode("ascii") + b"\n", 0)
+
+
 @contextmanager
 def deployment_lock(config: Config) -> Iterator[bool]:
     """Hold the poller's deployment lock; yield False when a deployment has it.
@@ -295,7 +321,15 @@ def deployment_lock(config: Config) -> Iterator[bool]:
                 time.sleep(min(LOCK_POLL_SECONDS, remaining))
                 continue
             break
-        yield True
+        _record_lock_holder(descriptor, "image prune")
+        try:
+            yield True
+        finally:
+            # Cleared while the lock is still held, exactly as the poller
+            # clears its own, so nothing reads this prune's record from under
+            # a lock it no longer holds.
+            with contextlib.suppress(OSError):
+                os.ftruncate(descriptor, 0)
     finally:
         os.close(descriptor)
 
