@@ -111,7 +111,26 @@ task of every role and refuses — in check mode too — with *"A deployment is
 already running on this host"*, naming the holder. Read that message literally:
 it is a scheduling conflict, not the integrity refusal it used to be mistaken
 for. Wait for the running deployment and re-run; re-running immediately only adds
-a third converge.
+a third converge. A holder that recorded no identity is reported and tolerated
+rather than refused, for the reason below.
+
+**`site.yml` must never depend on anything `install-production-auto-deploy.yml`
+installs.** The poller runs `validate-vault.yml`, `site.yml`, `verify.yml`, and
+only then `install-production-auto-deploy.yml`, so every play but the last meets
+the *previously* installed poller, not the one shipping in the revision being
+deployed. #327 crossed that line: it added a guard to `deployment_bundle` that
+refused a lock whose holder wrote no record, and shipped the record-writing
+poller in the same commit. On the NAS the old poller took the lock, wrote
+nothing, `site.yml` refused after 38 seconds, the install play never ran, and
+every five-minute tick afterwards failed identically — the upgrade deadlocked on
+itself. Anything a new play needs on the target must therefore tolerate its
+absence for one deployment, or be installed by `site.yml` itself.
+
+What made that recoverable is worth knowing before you need it: the poller checks
+out the candidate revision and runs the plays *from that checkout*, so a fix
+merged to `main` is picked up on the next tick and heals the host with nobody
+touching it. A broken `site.yml` is never a reason to change anything by hand on
+the NAS — the repository is still the only way in.
 
 Never apply to the NAS without reading `--check --diff` first. `--check` is a
 review, not a guarantee: external systems that cannot be simulated are reported
