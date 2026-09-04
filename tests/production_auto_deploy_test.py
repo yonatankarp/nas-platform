@@ -1361,8 +1361,18 @@ class PollBlindnessTest(PollerTestCase):
             return True
 
         state = production_auto_deploy.read_state(config)
+        # fetch_ci_runs is stubbed because poll() reaches api.github.com through
+        # it, and a unit test must not. Unstubbed, this helper made a real
+        # request on every call: it passed while the network answered and raised
+        # EligibilityError -- "GitHub request failed" -- the moment a runner's
+        # connection to GitHub timed out, failing `static` on a diff that had
+        # nothing to do with the poller. An empty page of runs is the same
+        # decision the real one produced here anyway, because attempted_shas
+        # already claims the head.
         with mock.patch.object(
             production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
+        ), mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs", return_value=()
         ), mock.patch.object(
             production_auto_deploy, "attempted_shas", return_value={MAIN_SHA}
         ), mock.patch.object(production_auto_deploy, "publish", fake_notify):
