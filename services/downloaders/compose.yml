@@ -90,12 +90,39 @@ services:
       UN_RADARR_0_API_KEY: ${RADARR_API_KEY:?}
       UN_RADARR_0_PATHS_0: /data/media/.acquisition/usenet/movies
       UN_RADARR_0_PROTOCOLS: usenet
+      # The only endpoint the binary can be asked to expose, and the only reason
+      # it is asked. `metrics` is upstream's on-switch for the whole web server
+      # rather than a separate exporter — WebServer.Enabled() is `Metrics &&
+      # ListenAddr != ""` — so it is what turns the listener on. The address is
+      # the loopback of the container's own network namespace, which is where
+      # the health check runs and nowhere else: no port is published, the
+      # media-control network cannot reach it, and there is no credential on it
+      # to protect.
+      UN_WEBSERVER_METRICS: "true"
+      UN_WEBSERVER_LISTEN_ADDR: 127.0.0.1:5656
     healthcheck:
       <<: *healthcheck-defaults
-      test: [CMD-SHELL, "kill -0 1"]
+      # PID 1 in this container is Unpackerr itself, so the `kill -0 1` this
+      # replaces asked the process whether it existed and was answered by the
+      # fact that it was asking — and a container whose PID 1 is gone is a
+      # container Docker has stopped probing. The probe could not fail. This one
+      # can: it is served by the same process, from a goroutine started before
+      # the work loop, so a dead, deadlocked or unschedulable Unpackerr answers
+      # nothing and the container goes unhealthy for Dozzle's rule to see.
+      # It reads the index handler, which is a static string; /metrics would
+      # walk the live extraction map from the HTTP goroutine, and the probe is
+      # not the place to exercise that. busybox wget is what the alpine base
+      # provides — there is no curl in this image — and the GET is deliberate,
+      # because the router registers GET only and answers --spider's HEAD 405.
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:5656/"]
       # Deviation carried over unchanged from before the defaults existed; the
-      # repository records no reason for it, and a de-duplication is not where a
-      # readiness window gets renegotiated.
+      # repository still records no reason for it, and replacing the probe is
+      # not where a readiness window gets renegotiated either. The value is kept
+      # rather than explained, and the new probe is comfortable inside it: the
+      # listener binds during startup, before the first queue poll, so this
+      # container is ready in about a second. Keeping it also keeps a broken
+      # probe reporting unhealthy at ~105s, inside the 180s Compose deploy wait,
+      # where the shared 60s/5 tuple would time the deployment out instead.
       retries: 3
       start_period: 15s
 

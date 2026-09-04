@@ -349,6 +349,23 @@ STATIC_ROWS = [
                   'UN_FILE_MODE: "0644"', 'UN_FILE_MODE: "0666"')
     },
     expects: "Unpackerr file and directory modes drifted"
+  },
+  {
+    name: "an Unpackerr probe aimed past its own listener",
+    break: lambda { |root|
+      mutate_text(root, "services/downloaders/compose.yml",
+                  "UN_WEBSERVER_LISTEN_ADDR: 127.0.0.1:5656",
+                  "UN_WEBSERVER_LISTEN_ADDR: 127.0.0.1:5657")
+    },
+    expects: "Unpackerr's health probe must fetch the web server it enables, on loopback"
+  },
+  {
+    name: "an Unpackerr listener switched off under a probe that needs it",
+    break: lambda { |root|
+      mutate_text(root, "services/downloaders/compose.yml",
+                  'UN_WEBSERVER_METRICS: "true"', 'UN_WEBSERVER_METRICS: "false"')
+    },
+    expects: "Unpackerr's health probe must fetch the web server it enables, on loopback"
   }
 ].freeze
 
@@ -710,6 +727,18 @@ PROGRAM_MUTATIONS = [
     from: 'unpackerr.dig("environment", "UN_FILE_MODE") == "0644" &&',
     to: "true &&",
     rows: ["drifted Unpackerr file and directory modes"]
+  },
+  {
+    label: "the Unpackerr probe-reaches-its-listener check",
+    from: 'unpackerr.dig("environment", "UN_WEBSERVER_METRICS") == "true" &&',
+    to: "true &&",
+    rows: ["an Unpackerr listener switched off under a probe that needs it"]
+  },
+  {
+    label: "the Unpackerr probe address read",
+    from: 'probe.include?("http://#{listen_addr}/")',
+    to: "probe.include?(\"http://\")",
+    rows: ["an Unpackerr probe aimed past its own listener"]
   }
 ].freeze
 

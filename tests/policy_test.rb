@@ -919,6 +919,19 @@ PLATFORM_HEALTHCHECK_DEFAULTS = {
   "start_period" => "60s"
 }.freeze
 
+# What a health-check command has to do to be one. Timing says how often the
+# probe runs and presence says there is a probe; neither says the probe can
+# report the service broken, and unpackerr's could not: `kill -0 1` asks whether
+# PID 1 exists, PID 1 is the container's own entrypoint, and a container whose
+# PID 1 has exited is one Docker has stopped probing. It was a health check by
+# every structural measure above and by no useful one. So require the command to
+# reach the service -- an HTTP or HTTPS URL, a TCP connection, a readiness
+# client, or the image's own health subcommand -- rather than to observe the
+# process table it is running inside. Stated as what
+# a probe must contain and not as a list of no-ops, because the next no-op is
+# never the one a denylist names.
+HEALTHCHECK_PROBE = %r{https?://|/dev/tcp/|\bping\b|isready|\bhealth(check)?\b}
+
 # The keys every long-running container on the platform shares. A stack may add
 # to its own fragment -- networks, or a shutdown window every consumer genuinely
 # wants -- but never disagree about these four. stop_grace_period is deliberately
@@ -1037,6 +1050,21 @@ service_dirs.each do |dir|
       dozzle_name = labels.is_a?(Hash) ? labels["dev.dozzle.name"] : nil
       check(failures, dozzle_name.is_a?(String) && !dozzle_name.empty?,
             "#{label}: long-running services must declare a Dozzle event identity")
+    end
+
+    # And the probe has to be able to say no. Read the command whatever shape
+    # Compose allows -- a bare shell string, or a list whose first element is
+    # the CMD/CMD-SHELL marker -- and hold it to HEALTHCHECK_PROBE. A container
+    # deferring to its image's own HEALTHCHECK carries `disable: false` and no
+    # `test:` at all, which is a different decision and not one this reads.
+    probe = spec.dig("healthcheck", "test")
+    unless probe.nil?
+      words = Array(probe).map(&:to_s)
+      words = words.drop(1) if %w[CMD CMD-SHELL].include?(words.first)
+      check(failures, words.join(" ").match?(HEALTHCHECK_PROBE),
+            "#{label}: health check must reach the service -- an HTTP or TCP endpoint, " \
+            "a readiness client, or the image's own health command -- not merely " \
+            "observe that a process exists")
     end
 
     logging = spec["logging"] || {}
