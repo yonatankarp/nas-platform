@@ -194,8 +194,9 @@ platform_readiness_delay: 3
 # genuinely down, and a short read timeout is what turns the first case into the
 # second -- the failure in #330 reported elapsed: 10, which is get_url's own
 # default. So the ladder is few attempts with a generous timeout rather than
-# many attempts with a tight one: at worst 5 x (30 + 5), under three minutes
-# before the run is allowed to fail for real.
+# many attempts with a tight one. Ansible attempts an until loop `retries` times
+# in total, so the worst case is five timeouts and the four delays between them,
+# 5 x 30 + 4 x 5 = 170 seconds, before the run is allowed to fail for real.
 #
 # tests/policy_test.rb requires every get_url task to carry all four keywords
 # and refuses a literal for any of them. It enforces the timeout there rather
