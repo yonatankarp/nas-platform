@@ -1,15 +1,16 @@
 ---
-- name: Validate the controller service manifest before parsing it
+# Two batches rather than one, and the split is the ordering property rather
+# than a stylistic choice. Everything this file interpolates a manifest service
+# name into has to be proved safe first, so the manifest and the catalog are
+# validated, then parsed, then their path components asserted, and only then are
+# the derived paths validated. Collapsing all of it into a single task would
+# hand the validator paths built from a manifest nothing had yet vouched for.
+- name: Validate the controller manifest and catalog before parsing either
   ansible.builtin.include_tasks: controller_input.yml
   vars:
-    deployment_controller_input_path: "{{ playbook_dir }}/services/manifest.yml"
-    deployment_controller_input_allow_missing: false
-
-- name: Validate the media acquisition catalog before parsing inputs
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: "{{ playbook_dir }}/config/media-acquisition.yml"
-    deployment_controller_input_allow_missing: false
+    deployment_controller_inputs: >-
+      {{ [[playbook_dir ~ '/services/manifest.yml', '0'],
+          [playbook_dir ~ '/config/media-acquisition.yml', '0']] }}
 
 - name: Resolve implemented services from the validated controller manifest
   ansible.builtin.set_fact:
@@ -17,6 +18,10 @@
       {{ (lookup('file', playbook_dir ~ '/services/manifest.yml') | from_yaml).services
          | selectattr('status', 'in', ['implemented', 'accepted']) | list }}
 
+# platform_compose_kind is asserted here alongside the service names, and for the
+# same reason: the batch below builds the override suffix from it, so it is a
+# path component this file interpolates. target.yml asserts the same shape, but
+# that is a different play's guard and cannot vouch for this one.
 - name: Validate manifest service path components before interpolation
   ansible.builtin.assert:
     that:
@@ -24,6 +29,7 @@
       - item.name is match('^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$')
       - item.role is string
       - item.role is match('^[a-z][a-z0-9_]*$')
+      - platform_compose_kind is match('^[a-z][a-z0-9_-]*$')
     fail_msg: >-
       Manifest service names and roles must be safe single-path components
       before they are interpolated into controller or target paths.
@@ -31,48 +37,39 @@
   loop_control:
     label: "{{ item.name | default('<invalid>') }}"
 
-- name: Validate canonical controller Compose inputs
+# Every derived input, in one invocation and in exactly the order the per-input
+# inclusions ran in before: the canonical Compose file of every implemented
+# service, then every optional platform override, then the tracked Configarr
+# declaration when the Arr stack is deployed, then the two tracked runtime
+# helpers. The order decides which refusal an operator sees when more than one
+# input is bad, because the validator stops at the first, and
+# tests/integration_controller.sh pins that choice -- its override fixture is a
+# checkout whose platform override is a symlink out of the tree and which
+# carries no runtime helpers at all, so a list that reached the helpers first
+# would report a missing file instead of the escape.
+#
+# '0' and '1' are the allow_missing flags the single-path form has always taken,
+# paired onto each group with `product` so a group states its own optionality
+# once, beside the paths it applies to. Only the platform overrides may be
+# absent.
+- name: Validate every derived controller input in one pass
   ansible.builtin.include_tasks: controller_input.yml
   vars:
-    deployment_controller_input_path: >-
-      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml
-    deployment_controller_input_allow_missing: false
-  loop: "{{ deployment_bundle_services }}"
-  loop_control:
-    loop_var: deployment_controller_service
-    label: "{{ deployment_controller_service.name }}"
-
-- name: Validate optional platform controller Compose inputs
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: >-
-      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.{{ platform_compose_kind }}.yml
-    deployment_controller_input_allow_missing: true
-  loop: "{{ deployment_bundle_services }}"
-  loop_control:
-    loop_var: deployment_controller_service
-    label: "{{ deployment_controller_service.name }}"
-
-- name: Validate the tracked Configarr declaration
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: "{{ playbook_dir }}/roles/arr/files/configarr/config.yml"
-    deployment_controller_input_allow_missing: false
-  when: >-
-    deployment_bundle_services |
-    selectattr('name', 'equalto', 'arr') | list | length == 1
-
-- name: Validate the tracked Dozzle alert relay input
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: "{{ playbook_dir }}/services/dozzle/alert_relay.py"
-    deployment_controller_input_allow_missing: false
-
-- name: Validate the tracked Immich restore classifier input
-  ansible.builtin.include_tasks: controller_input.yml
-  vars:
-    deployment_controller_input_path: "{{ playbook_dir }}/services/immich/classify_restore.py"
-    deployment_controller_input_allow_missing: false
+    deployment_controller_inputs: >-
+      {{ (deployment_bundle_services | map(attribute='name')
+          | map('regex_replace', '^', playbook_dir ~ '/services/')
+          | map('regex_replace', '$', '/compose.yml')
+          | product(['0']) | list)
+         + (deployment_bundle_services | map(attribute='name')
+            | map('regex_replace', '^', playbook_dir ~ '/services/')
+            | map('regex_replace', '$', '/compose.' ~ platform_compose_kind ~ '.yml')
+            | product(['1']) | list)
+         + ([[playbook_dir ~ '/roles/arr/files/configarr/config.yml', '0']]
+            if deployment_bundle_services
+               | selectattr('name', 'equalto', 'arr') | list | length == 1
+            else [])
+         + [[playbook_dir ~ '/services/dozzle/alert_relay.py', '0'],
+            [playbook_dir ~ '/services/immich/classify_restore.py', '0']] }}
 
 - name: Record controller input validation
   ansible.builtin.set_fact:

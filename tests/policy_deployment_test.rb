@@ -181,7 +181,9 @@ controller_input_lookup =
 check(failures, controller_input_validation.one? &&
                 controller_input_argv[1] == "-c" &&
                 controller_input_argv[2] == controller_input_lookup &&
-                controller_input_argv.count(controller_input_lookup) == 1,
+                controller_input_argv.count(controller_input_lookup) == 1 &&
+                controller_input_argv[3] == "--batch" &&
+                controller_input_argv.include?("{{ deployment_controller_inputs | to_json }}"),
       "controller input task must execute the exact extracted validator source")
 controller_input_validator_path = File.join(ROOT, "roles", "deployment_bundle", "files",
                                             "validate_controller_input.py")
@@ -194,42 +196,48 @@ end
 inputs_path = File.join(ROOT, "roles", "deployment_bundle", "tasks", "inputs.yml")
 inputs_body = File.file?(inputs_path) ? File.read(inputs_path) : ""
 input_tasks = flatten_tasks(YAML.safe_load(inputs_body))
-# The inputs the role actually validates are the paths its controller_input.yml
-# inclusions name, not every path string that appears somewhere in the file. Read
-# them off the parsed tasks: a path that survives only in a comment, or that is
-# named by a task which no longer includes the validator, validates nothing.
-validated_input_paths = input_tasks.filter_map do |task|
+# The inputs the role actually validates are the ones named by the expression its
+# controller_input.yml inclusions evaluate, not every path string that appears
+# somewhere in the file. Read them off the parsed tasks: a path that survives only
+# in a comment, or that is named by a task which no longer includes the validator,
+# validates nothing.
+#
+# Batched since #333 -- one inclusion validating N inputs rather than N
+# inclusions validating one each -- so this reads each inclusion's list
+# expression, exactly the way the target validator's paths are read above, rather
+# than one path per inclusion. The include filter stays first: a task carrying a
+# deployment_controller_inputs var without handing it to the validator names
+# paths nothing checks.
+validated_input_batches = input_tasks.filter_map do |task|
   next unless task["ansible.builtin.include_tasks"] == "controller_input.yml"
 
-  path = task.dig("vars", "deployment_controller_input_path")
-  path.is_a?(String) ? path.strip : nil
+  task.dig("vars", "deployment_controller_inputs").to_s
 end
-check(failures, validated_input_paths.include?("{{ playbook_dir }}/services/manifest.yml") &&
-                validated_input_paths.include?(
-                  "{{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml"
-                ) &&
-                validated_input_paths.include?(
-                  "{{ playbook_dir }}/services/{{ deployment_controller_service.name }}/" \
-                  "compose.{{ platform_compose_kind }}.yml"
-                ),
+validated_inputs = validated_input_batches.join("\n")
+# The second element of each pair is the allow_missing flag the validator has
+# always taken, so pinning it beside the path is what asserts an input is
+# required rather than optional. Only the platform overrides carry '1'.
+check(failures, validated_inputs.include?("playbook_dir ~ '/services/manifest.yml', '0'") &&
+                validated_inputs.include?("deployment_bundle_services") &&
+                validated_inputs.include?("playbook_dir ~ '/services/'") &&
+                validated_inputs.include?("'/compose.yml'") &&
+                validated_inputs.include?("'/compose.' ~ platform_compose_kind ~ '.yml'"),
       "controller inputs must validate manifest, canonical Compose, and platform overrides")
-check(failures, validated_input_paths.include?("{{ playbook_dir }}/services/dozzle/alert_relay.py") &&
-                validated_input_paths.include?(
-                  "{{ playbook_dir }}/services/immich/classify_restore.py"
+check(failures, validated_inputs.include?("playbook_dir ~ '/services/dozzle/alert_relay.py', '0'") &&
+                validated_inputs.include?(
+                  "playbook_dir ~ '/services/immich/classify_restore.py', '0'"
                 ),
       "controller inputs must validate every tracked runtime helper")
 catalog_validation_index = input_tasks.index do |task|
-  task.dig("vars", "deployment_controller_input_path") ==
-    "{{ playbook_dir }}/config/media-acquisition.yml"
+  task["ansible.builtin.include_tasks"] == "controller_input.yml" &&
+    task.dig("vars", "deployment_controller_inputs").to_s
+        .include?("playbook_dir ~ '/config/media-acquisition.yml', '0'")
 end
 manifest_parse_index = input_tasks.index do |task|
   task["name"] == "Resolve implemented services from the validated controller manifest"
 end
-catalog_validation = catalog_validation_index && input_tasks[catalog_validation_index]
 check(failures,
-      !catalog_validation.nil? &&
-        catalog_validation["ansible.builtin.include_tasks"] == "controller_input.yml" &&
-        catalog_validation.dig("vars", "deployment_controller_input_allow_missing") == false &&
+      !catalog_validation_index.nil? &&
         !manifest_parse_index.nil? && catalog_validation_index < manifest_parse_index,
       "controller inputs must validate the required acquisition catalog before parsing inputs")
 
@@ -588,7 +596,7 @@ check(failures, deployment_defaults.keys.none? { |name| name.start_with?("deploy
 check(failures,
       !target_tasks_body.match?(/deployment_target_\w+\s*\|\s*default/) &&
         !File.read(File.join(ROOT, "roles", "deployment_bundle", "tasks", "controller_input.yml"))
-             .match?(/deployment_controller_input_\w+\s*\|\s*default/),
+             .match?(/deployment_controller_input\w*\s*\|\s*default/),
       "include-entry parameters must fail loudly rather than fall back to a default")
 
 # Enumerated rather than listed: a service role added without both parameters is

@@ -1527,31 +1527,42 @@ check_accepted(
 
 # --- Deployment bundle policy -------------------------------------------------
 #
-# The inputs the role validates are the paths its controller_input.yml inclusions
-# name. The old whole-file substring could not tell a validated path from a path
-# mentioned in a comment, so deleting the canonical Compose validation outright
-# left the check passing as long as the words survived somewhere in the file.
+# The inputs the role validates are the ones the expression its
+# controller_input.yml inclusions hand the validator names. The old whole-file
+# substring could not tell a validated path from a path mentioned in a comment,
+# so deleting the canonical Compose validation outright left the check passing as
+# long as the words survived somewhere in the file. Batched since #333: the
+# canonical Compose group leaves the batch expression, and the words survive in a
+# YAML comment above the task -- which is where a comment can still be one, since
+# a `#` inside the folded expression would be part of the string rather than a
+# comment.
 check_rejected(
   :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
   [[BUNDLE_INPUTS,
-    "- name: Validate canonical controller Compose inputs\n" \
+    "- name: Validate every derived controller input in one pass\n" \
     "  ansible.builtin.include_tasks: controller_input.yml\n" \
     "  vars:\n" \
-    "    deployment_controller_input_path: >-\n" \
-    "      {{ playbook_dir }}/services/{{ deployment_controller_service.name }}/compose.yml\n" \
-    "    deployment_controller_input_allow_missing: false\n",
-    "# deployment_controller_input_path: services/<name>/compose.yml\n" \
-    "- name: Assume canonical controller Compose inputs are fine\n" \
-    "  ansible.builtin.debug:\n" \
-    "    msg: canonical compose validation removed\n"]],
+    "    deployment_controller_inputs: >-\n" \
+    "      {{ (deployment_bundle_services | map(attribute='name')\n" \
+    "          | map('regex_replace', '^', playbook_dir ~ '/services/')\n" \
+    "          | map('regex_replace', '$', '/compose.yml')\n" \
+    "          | product(['0']) | list)\n" \
+    "         + (deployment_bundle_services",
+    "# canonical Compose inputs were services/<name>/compose.yml\n" \
+    "- name: Validate every derived controller input in one pass\n" \
+    "  ansible.builtin.include_tasks: controller_input.yml\n" \
+    "  vars:\n" \
+    "    deployment_controller_inputs: >-\n" \
+    "      {{ ([] | list)\n" \
+    "         + (deployment_bundle_services"]],
   "controller inputs must validate manifest, canonical Compose, and platform overrides"
 )
 
 check_rejected(
   :policy_deployment, "a runtime helper input no longer handed to the validator",
   [[BUNDLE_INPUTS,
-    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py\"\n",
-    "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py.bak\"\n"]],
+    "[playbook_dir ~ '/services/dozzle/alert_relay.py', '0'],\n",
+    "[playbook_dir ~ '/services/dozzle/alert_relay.py.bak', '0'],\n"]],
   "controller inputs must validate every tracked runtime helper"
 )
 

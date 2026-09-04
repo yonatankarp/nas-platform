@@ -1,13 +1,24 @@
 ---
+# One subprocess validating every input the caller names, rather than one per
+# input. The role used to include this file once per input -- twice of them over
+# all fifteen manifest services -- and each inclusion spent a serial Python
+# subprocess, which made this the largest cross-cutting cost in every integration
+# lane (#333).
+#
+# Batching changes only how many times the interpreter starts. The validator
+# holds each input to exactly the same check, in the order this list gives, and
+# stops at the first refusal naming that input's path, so the message an operator
+# reads is unchanged -- tests/integration_controller.sh greps for it literally.
+# The list order is therefore load-bearing rather than incidental: see inputs.yml.
 - name: Validate controller bundle input identity
   ansible.builtin.command:
     argv:
       - "{{ ansible_playbook_python }}"
       - -c
       - "{{ lookup('ansible.builtin.file', role_path ~ '/files/validate_controller_input.py') }}"
+      - --batch
       - "{{ playbook_dir }}"
-      - "{{ deployment_controller_input_path }}"
-      - "{{ (deployment_controller_input_allow_missing | bool) | ternary('1', '0') }}"
+      - "{{ deployment_controller_inputs | to_json }}"
   changed_when: false
   check_mode: false
   delegate_to: localhost
