@@ -281,10 +281,19 @@ a running Kapowarr, and the application caches the root folder mapping in
 process.
 
 ```sh
-# platform_current_dir, which is {{ nas_docker_root }}/nas-platform/current.
-current=/volume1/Docker/nas-platform/current
-docker compose --project-name kapowarr \
-  -f "$current/services/kapowarr/compose.yml" stop kapowarr
+# services/kapowarr/compose.yml pins container_name: kapowarr, so the container
+# is addressable by that name and no project, file list or environment is
+# needed. Reaching for `docker compose -f .../current/services/kapowarr/
+# compose.yml` instead fails before it stops anything, with `required variable
+# PLATFORM_CONTAINER_CPUSET is missing a value`: deployment_bundle deliberately
+# keeps the rendered .env out of the release, under platform_runtime_dir, so
+# there is no environment file beside the compose file to interpolate from. The
+# compose equivalent has to name it -- `--env-file {{ platform_runtime_dir
+# }}/services/kapowarr/.env`, which is
+# /volume1/Docker/nas-platform/runtime/services/kapowarr/.env -- and that file is
+# mode 0600 owned by the account Ansible connects as, so only that account or
+# root can read it. `docker stop` needs none of it.
+docker stop kapowarr
 
 # {{ nas_docker_root }}/kapowarr/config, and the capitalisation is load-bearing:
 # inventory/group_vars/nas_hosts/main.yml declares nas_docker_root as
@@ -338,8 +347,16 @@ database holding the old prefix reports five rows, rewrites the root folder to
 `extras/` file included — and prints `0|0|0`. The trailing separator on the
 root folder row is not optional — `RootFolders.add()` stores
 `force_suffix(abspath(folder))` and the application compares against that form.
-Then converge normally; the role finds the declared root, the refusal does not
-fire, and `--tags platform_verify_kapowarr` proves the result.
+**Leave the container stopped and converge; the converge is what starts it
+again.** `roles/kapowarr` deploys through `community.docker.docker_compose_v2`
+with `state: present`, which the module documents as equivalent to
+`docker compose up`, and `up` starts an existing stopped container rather than
+leaving it alone. So there is no manual start step, and there should not be one:
+starting it by hand needs the same environment file the stop above deliberately
+avoided, and a `docker start kapowarr` would bring it back on whatever mounts it
+last had rather than on the ones the release declares. Converge; the role finds
+the declared root, the refusal does not fire, and
+`--tags platform_verify_kapowarr` proves the result.
 
 No file moves. The comics never leave `Books/Comics` on the host — only the label
 Kapowarr reads them by changes — which is why the rollback is the copied database
@@ -576,13 +593,21 @@ real downloads. Seeding Kapowarr's own database instead needs neither, and the
 API reads the library from there.
 
 ```sh
+# The library root has to exist before a volume can reference it. Under the
+# post-#264 mount above it is /data/books/Comics, so these host paths sit under
+# books/Comics rather than under a comics/ of their own -- the transcripts
+# further up were captured before that and read /comics/... instead.
+curl -s -X POST "http://127.0.0.1:15656/api/rootfolder?api_key=$K" \
+  -H 'Content-Type: application/json' -d '{"folder": "/data/books/Comics"}'
+
 # nested volumes, mirroring the shape the NAS library was in, plus a directory
 # under the root that belongs to no volume
-mkdir -p comics/'Invincible/Volume 01 (2003)/extras' comics/'Invincible/Volume 01 (2018)' \
-         comics/_oneshots/Avatar
-: > comics/'Invincible/Volume 01 (2003)/Invincible 001.cbr'
-: > comics/'Invincible/Volume 01 (2018)/Invincible 001.cbr'
-: > comics/_oneshots/Avatar/avatar.cbr
+mkdir -p books/Comics/'Invincible/Volume 01 (2003)/extras' \
+         books/Comics/'Invincible/Volume 01 (2018)' \
+         books/Comics/_oneshots/Avatar
+: > books/Comics/'Invincible/Volume 01 (2003)/Invincible 001.cbr'
+: > books/Comics/'Invincible/Volume 01 (2018)/Invincible 001.cbr'
+: > books/Comics/_oneshots/Avatar/avatar.cbr
 
 docker exec -i kw-probe python3 - <<'PY'
 import sqlite3
@@ -591,12 +616,12 @@ c.execute("INSERT INTO volumes (id, comicvine_id, title, year, publisher, volume
           " description, site_url, monitored, monitor_new_issues, root_folder, folder,"
           " custom_folder, special_version, special_version_locked)"
           " VALUES (1,900001,'Invincible',2003,'Image',1,'','',1,1,1,"
-          "'/comics/Invincible/Volume 01 (2003)',0,NULL,0);")
+          "'/data/books/Comics/Invincible/Volume 01 (2003)',0,NULL,0);")
 c.execute("INSERT INTO issues (id, volume_id, comicvine_id, issue_number,"
           " calculated_issue_number, title, date, description, monitored)"
           " VALUES (1,1,910001,'1',1.0,'Issue','2003-01-01','',1);")
 c.execute("INSERT INTO files (id, filepath, size)"
-          " VALUES (1,'/comics/Invincible/Volume 01 (2003)/Invincible 001.cbr',10);")
+          " VALUES (1,'/data/books/Comics/Invincible/Volume 01 (2003)/Invincible 001.cbr',10);")
 c.execute("INSERT INTO issues_files (file_id, issue_id, forced) VALUES (1,1,0);")
 c.commit()
 PY
