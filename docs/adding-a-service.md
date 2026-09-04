@@ -198,8 +198,9 @@ tests/mac/report.rb                                   six sites: ROOT_KEYS, the
                                                       markdown key order, the initializer,
                                                       the self-test, and the option parser
 tests/mac/config-isolation.sh                         a render() positional, a compose
-                                                      render, two call sites, three
-                                                      collision assertions
+                                                      render, two call sites
+tests/mac/config-isolation.rb                         the two parsed documents and
+                                                      three collision assertions
 tests/mac/run-phase-status-test.sh                    the pinned report.rb invocation
 tests/mac/media-acquisition-foundation-report-test.rb the report fixture
 ```
@@ -1058,7 +1059,8 @@ silently drops the last port into nothing.
 So: when you add a port, read the whole chain top to bottom rather than copying
 the line above, and check that the last line names every port declared before it.
 Then propagate the port to the five files that carry it outside `run.sh` —
-`tests/mac/report.rb` (six sites of its own), `tests/mac/config-isolation.sh`,
+`tests/mac/report.rb` (six sites of its own), `tests/mac/config-isolation.sh`
+and the `tests/mac/config-isolation.rb` beside it,
 `tests/mac/run-phase-status-test.sh`,
 `tests/mac/media-acquisition-foundation-report-test.rb` and
 `inventory/group_vars/mac_hosts/main.yml`.

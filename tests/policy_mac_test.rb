@@ -83,6 +83,51 @@ check(failures, File.executable?(pin_path) &&
                 pin_source.scan(/in_directory\(parent_directory\)/).length >= 4,
       "Mac protected-input pin must hold its source through a directory descriptor")
 
+# The rest of #315's batch, held to the same three properties the pin is: the
+# script calls the sibling, the script no longer carries the body, and the
+# sibling is an executable program. Each pair also fixes which root the program
+# is resolved from -- the script's own directory, never the tree it inspects,
+# which is the defect #147 measured and that no ladder step catches.
+mac_ports_path = File.join(ROOT, "tests", "mac", "read-integration-ports.rb")
+check(failures, mac_run.include?('"$mac_script_dir/read-integration-ports.rb" ' \
+                                 '"$integration_ports_file" "$mac_repo_dir"') &&
+                !mac_run.include?('raise "unsafe"'),
+      "Mac lifecycle must read its integration ports through tests/mac/read-integration-ports.rb")
+check(failures, File.executable?(mac_ports_path),
+      "tests/mac/read-integration-ports.rb must be executable")
+
+[
+  ["snapshot-immich.sh",
+   ['exec "$mac_script_dir/snapshot-immich.rb" "$mode" "$snapshot_dir" </dev/null',
+    'exec "$mac_script_dir/snapshot-immich-test.rb" </dev/null'],
+   ["def verify_manifest", "Digest::SHA256.file"],
+   %w[snapshot-immich.rb snapshot-immich-test.rb]],
+  ["config-isolation.sh",
+   ['"$mac_test_dir/config-isolation.rb" "$temporary_dir" </dev/null'],
+   ["def assert_dozzle_aliases_and_distinct_names", "project namespaces collide"],
+   %w[config-isolation.rb]],
+  ["media-acquisition-foundation-hook-test.sh",
+   ['cp "$repo_dir/tests/mac/media-acquisition-foundation-hook-fake-docker.rb" ' \
+    '"$fixture/bin/docker"'],
+   ["unsupported fake docker command", "def formatted_network"],
+   %w[media-acquisition-foundation-hook-fake-docker.rb]],
+  ["media-acquisition-foundation-cleanup-test.sh",
+   ['cp "$repo_dir/tests/mac/media-acquisition-foundation-cleanup-fake-docker.rb"'],
+   ['ENV.fetch("FAKE_DOCKER_LOG")', 'state.delete("recreate_network")'],
+   %w[media-acquisition-foundation-cleanup-fake-docker.rb]]
+].each do |script_name, invocations, evicted, programs|
+  script_path = File.join(ROOT, "tests", "mac", script_name)
+  script = File.file?(script_path) ? File.read(script_path) : ""
+  check(failures, invocations.all? { |invocation| script.include?(invocation) },
+        "tests/mac/#{script_name} must run its Ruby through #{programs.join(' and ')}")
+  check(failures, evicted.none? { |literal| script.include?(literal) },
+        "tests/mac/#{script_name} must not re-embed that Ruby as a shell heredoc")
+  programs.each do |program|
+    check(failures, File.executable?(File.join(ROOT, "tests", "mac", program)),
+          "tests/mac/#{program} must be executable")
+  end
+end
+
 mac_cleanup_path = File.join(ROOT, "tests", "mac", "cleanup.sh")
 mac_cleanup = File.file?(mac_cleanup_path) ? File.read(mac_cleanup_path) : ""
 mac_lib_path = File.join(ROOT, "tests", "mac", "lib.sh")

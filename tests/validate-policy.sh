@@ -182,6 +182,8 @@ tests/mac/snapshot-immich.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
 ruby tests/mac/pin-protected-input-test.rb
 ruby tests/mac/pin-protected-input-test.rb --self-test
+ruby tests/mac/read-integration-ports-test.rb
+ruby tests/mac/read-integration-ports-test.rb --self-test
 POLICY_CHECKS
 }
 

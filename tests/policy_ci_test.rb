@@ -409,9 +409,12 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   tests/contracts/audiobookshelf-audio-test.sh
   ruby\ tests/mac/report.rb\ --self-test
   tests/mac/cleanup.sh\ --self-test
+  tests/mac/snapshot-immich.sh\ --self-test
   ruby\ tests/mac/sanitize-logs.rb\ --self-test
   ruby\ tests/mac/pin-protected-input-test.rb
   ruby\ tests/mac/pin-protected-input-test.rb\ --self-test
+  ruby\ tests/mac/read-integration-ports-test.rb
+  ruby\ tests/mac/read-integration-ports-test.rb\ --self-test
 ].each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
