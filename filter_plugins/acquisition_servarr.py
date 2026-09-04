@@ -325,6 +325,14 @@ def acquisition_indexer_body(declaration: Any) -> dict[str, Any]:
         "name": _string(declaration.get("name")),
         "enable": _boolean(declaration.get("enable", True)),
         "priority": _integer(declaration.get("priority", 25)),
+        # Prowlarr validates `AppProfileId` above zero on both create and
+        # update, and answers a body without it with 400 "Invalid request
+        # Validation failed" rather than defaulting it. Omitting it made every
+        # first declaration of an indexer fail at the POST, which nothing
+        # noticed while `media_arr_indexers` was empty on every host. 1 is the
+        # "Standard" sync profile Prowlarr creates itself on first start; a
+        # deployment with more than one may name another.
+        "appProfileId": _integer(declaration.get("app_profile_id", 1)),
         "implementation": implementation,
         "implementationName": _string(
             declaration.get("implementation_name", implementation)
@@ -354,6 +362,7 @@ _INDEXER = _Relationship(
     masked=acquisition_indexer_masked_fields,
     attributes=(
         ("name", _string), ("enable", _boolean), ("priority", _integer),
+        ("appProfileId", _integer),
         ("implementation", _string), ("implementationName", _string),
         ("configContract", _string),
     ),
