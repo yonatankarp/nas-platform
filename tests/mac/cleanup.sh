@@ -5,6 +5,7 @@ set +x
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
+cleanup_sandbox_repo_dir=$mac_repo_dir
 . "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
 

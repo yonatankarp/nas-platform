@@ -32,48 +32,16 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/seerr-verify-drift.XXXXXX")
 trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
+# The mutation is 58-seerr.rb beside this file. It arrived here as a
+# `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and a reader could reach
+# none of it. Resolve it from this hook's own checkout rather than from any tree
+# an argument or the environment supplies, and hold standard input at
+# end-of-file: a heredoc exhausted it by construction and a sibling program
+# would inherit the hook's.
 PLATFORM_SEERR_PORT=$PLATFORM_SEERR_PORT \
 PLATFORM_MAC_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_MAC_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
-  ruby - <<'RUBY'
-require "json"
-require "net/http"
-require "open3"
-require "uri"
-require "yaml"
-
-BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_SEERR_PORT'), 10)}")
-
-def request(message)
-  Net::HTTP.start(BASE.host, BASE.port, read_timeout: 20) { |http| http.request(message) }
-end
-
-vault_yaml, vault_error, vault_status = Open3.capture3(
-  "ansible-vault", "view", "--vault-password-file",
-  ENV.fetch("PLATFORM_MAC_VAULT_PASSWORD_FILE"), ENV.fetch("PLATFORM_MAC_VAULT_FILE")
-)
-abort "seerr drift: encrypted vault could not be read" unless vault_status.success?
-vault = YAML.safe_load(vault_yaml)
-vault_yaml.replace("\0" * vault_yaml.bytesize)
-vault_error.replace("\0" * vault_error.bytesize)
-key = vault.fetch("vault_seerr_api_key")
-
-public_settings = JSON.parse(request(Net::HTTP::Get.new(URI.join(BASE, "/api/v1/settings/public"))).body)
-abort "seerr drift: the deployed sign-in policy is not the platform's" unless
-  public_settings["newPlexLogin"] == false
-
-# POST /api/v1/settings/main is a deep merge, so this changes exactly the one
-# field and leaves the API key and everything else beside it intact.
-toggle = Net::HTTP::Post.new(
-  URI.join(BASE, "/api/v1/settings/main"), "X-Api-Key" => key, "Content-Type" => "application/json"
-)
-toggle.body = JSON.dump("newPlexLogin" => true)
-abort "seerr drift: the hand-made setting was refused" unless request(toggle).code == "200"
-
-confirmed = JSON.parse(request(Net::HTTP::Get.new(URI.join(BASE, "/api/v1/settings/public"))).body)
-abort "seerr drift: the hand-made setting was not applied" unless
-  confirmed["newPlexLogin"] == true
-RUBY
+  "$mac_repo_dir/tests/mac/hooks/drift/58-seerr.rb" </dev/null
 
 if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \

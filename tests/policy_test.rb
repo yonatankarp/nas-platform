@@ -1405,7 +1405,10 @@ check(failures,
 # Reading the wrapper instead would leave all eight checks matching nothing and
 # refusing the repository forever.
 paperless_contract = File.read(File.join(ROOT, "tests", "contracts", "paperless-runtime.rb"))
-paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.sh"))
+# The coordinated snapshot is snapshot-paperless.rb since #315; the .sh beside it
+# is the wrapper that validates the mode and exports the environment, and holds
+# none of the Ruby this reads.
+paperless_snapshot = File.read(File.join(ROOT, "tests", "mac", "snapshot-paperless.rb"))
 root_version_checksum = %r{
   document\.fetch\("versions"\)\.find\s*\{\s*\|version\|\s*
   version\.fetch\("is_root"\)\s*\}.*?

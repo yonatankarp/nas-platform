@@ -27,9 +27,18 @@ cp "$repo_dir/tests/mac/hooks/drift/20-dozzle.sh" \
   "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh"
 cp "$repo_dir/tests/mac/hooks/verify/20-dozzle.sh" \
   "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh"
+# This fixture copies *named* files into a narrow tree rather than the whole
+# repository, so a sibling program does not arrive for free. The verification
+# hook's label assertions became 20-dozzle-labels.rb in #315, and it resolves it
+# from its own checkout -- which, inside this fixture, is this tree. Without the
+# copy the hook would fail on a missing program rather than on the label
+# semantics the cases below exist to check.
+cp "$repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb" \
+  "$fixture_root/tests/mac/hooks/verify/20-dozzle-labels.rb"
 cp "$repo_dir/tests/mac/lib.sh" "$fixture_root/tests/mac/lib.sh"
 chmod 0755 "$fixture_root/tests/mac/hooks/drift/20-dozzle.sh" \
-  "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh"
+  "$fixture_root/tests/mac/hooks/verify/20-dozzle.sh" \
+  "$fixture_root/tests/mac/hooks/verify/20-dozzle-labels.rb"
 : > "$fixture_root/site.yml"
 : > "$fixture_root/verify.yml"
 : > "$fixture_root/inventory/mac.yml"

@@ -114,7 +114,8 @@ ALERTS_ARGUMENT_VARIABLES = {
   "roles/dozzle/tasks/main.yml" => "role",
   "tests/integration_controller.sh" => "integration",
   "tests/mac/hooks/drift/20-dozzle.sh" => "mac_drift",
-  "tests/mac/hooks/verify/20-dozzle.sh" => "mac_verify"
+  "tests/mac/hooks/verify/20-dozzle.sh" => "mac_verify",
+  "tests/mac/hooks/verify/20-dozzle-labels.rb" => "mac_verify_labels"
 }.freeze
 
 # Exactly what the contract reads out of the tree it inspects. A fixture holding
@@ -131,6 +132,7 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
   tests/integration_controller.sh
   tests/mac/hooks/drift/20-dozzle.sh
   tests/mac/hooks/verify/20-dozzle.sh
+  tests/mac/hooks/verify/20-dozzle-labels.rb
   tests/policy_support.rb
 ]).uniq.freeze
 
@@ -823,6 +825,19 @@ ALERTS_ROWS = [
     edit: lambda { |root|
       edit_yaml_text(root, "tests/mac/hooks/verify/20-dozzle.sh",
                      "docker container inspect", "docker container examine")
+    },
+    expects: "Mac runtime verification does not inspect Docker labels"
+  },
+  # The other half of that assertion since #315 split the hook: the inspection is
+  # the hook's and the label names are the program's, so a row for each is what
+  # keeps both readable. With one file and one `mac_verify` this row would have
+  # been indistinguishable from the one above it.
+  {
+    name: "Mac verification that stopped naming the managed labels", mode: "static",
+    argument: "tests/mac/hooks/verify/20-dozzle-labels.rb",
+    edit: lambda { |root|
+      edit_yaml_text(root, "tests/mac/hooks/verify/20-dozzle-labels.rb",
+                     "dev.dozzle.group", "dev.dozzle.cohort", count: 5)
     },
     expects: "Mac runtime verification does not inspect Docker labels"
   }
@@ -1972,10 +1987,19 @@ PROGRAM_MUTATIONS = [
   {
     label: "the Mac verification label proof",
     program: :alerts,
-    from: "    mac_verify.include?(\"docker container inspect\") && " \
-          "mac_verify.include?(\"dev.dozzle.group\") &&\n",
+    from: "    mac_verify.include?(\"docker container inspect\") &&\n",
     to: "    true ||\n",
     rows: ["Mac verification that stopped reading Docker labels"]
+  },
+  # The half that moved to the sibling program in #315. Deleting it leaves the
+  # hook's own half standing, so only the row that plants its defect in the
+  # program can see it -- which is the point of having two rows.
+  {
+    label: "the Mac verification managed-label proof",
+    program: :alerts,
+    from: "      mac_verify_labels.include?(\"dev.dozzle.group\") &&\n",
+    to: "      true &&\n",
+    rows: ["Mac verification that stopped naming the managed labels"]
   },
   {
     label: "the per-marker count comparison",
@@ -2215,7 +2239,8 @@ if ARGV.include?("--self-test")
      "\"$repo_dir/services/paperless-ngx/compose.yml\"\n"],
     ["\"$deployment_inputs\" \"$deployment_bundle\" </dev/null\n",
      "\"$deployment_inputs\" \"$deployment_bundle\"\n"],
-    ["\"$mac_verify\" \"$mode\" </dev/null\n", "\"$mac_verify\" \"$mode\"\n"],
+    ["\"$mac_verify\" \"$mac_verify_labels\" \"$mode\" </dev/null\n",
+     "\"$mac_verify\" \"$mac_verify_labels\" \"$mode\"\n"],
     ["exec ruby \"$planned_output_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$planned_output_program\" \"$mode\" \"$@\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",

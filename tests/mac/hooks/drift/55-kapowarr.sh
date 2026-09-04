@@ -26,49 +26,16 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/kapowarr-verify-drift.XXXXXX")
 trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
+# The mutation is 55-kapowarr.rb beside this file. It arrived here as a
+# `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and a reader could reach
+# none of it. Resolve it from this hook's own checkout rather than from any tree
+# an argument or the environment supplies, and hold standard input at
+# end-of-file: a heredoc exhausted it by construction and a sibling program
+# would inherit the hook's.
 PLATFORM_KAPOWARR_PORT=$PLATFORM_KAPOWARR_PORT \
 PLATFORM_MAC_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_MAC_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
-  ruby - <<'RUBY'
-require "json"
-require "net/http"
-require "open3"
-require "uri"
-require "yaml"
-
-base = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KAPOWARR_PORT'), 10)}")
-
-def post(base, path, payload)
-  request = Net::HTTP::Post.new(URI.join(base, path), "Content-Type" => "application/json")
-  request.body = JSON.generate(payload)
-  Net::HTTP.start(base.host, base.port, read_timeout: 15) { |http| http.request(request) }
-end
-
-def put(base, path, payload)
-  request = Net::HTTP::Put.new(URI.join(base, path), "Content-Type" => "application/json")
-  request.body = JSON.generate(payload)
-  Net::HTTP.start(base.host, base.port, read_timeout: 15) { |http| http.request(request) }
-end
-
-vault_yaml, vault_error, vault_status = Open3.capture3(
-  "ansible-vault", "view", "--vault-password-file",
-  ENV.fetch("PLATFORM_MAC_VAULT_PASSWORD_FILE"), ENV.fetch("PLATFORM_MAC_VAULT_FILE")
-)
-abort "kapowarr drift: encrypted vault could not be read" unless vault_status.success?
-vault = YAML.safe_load(vault_yaml)
-vault_yaml.replace("\0" * vault_yaml.bytesize)
-vault_error.replace("\0" * vault_error.bytesize)
-
-login = post(base, "/api/auth",
-             "username" => vault.fetch("vault_kapowarr_admin_username"),
-             "password" => vault.fetch("vault_kapowarr_admin_password"))
-abort "kapowarr drift: the deployed identity is not the vault's" unless login.code == "200"
-api_key = JSON.parse(login.body).fetch("result").fetch("api_key")
-
-cleared = put(base, "/api/settings?api_key=#{api_key}",
-              "auth_username" => "", "auth_password" => "")
-abort "kapowarr drift: the login could not be cleared" unless cleared.code == "200"
-RUBY
+  "$mac_repo_dir/tests/mac/hooks/drift/55-kapowarr.rb" </dev/null
 
 if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \

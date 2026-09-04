@@ -31,43 +31,16 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/bindery-verify-drift.XXXXXX")
 trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
+# The mutation is 56-bindery.rb beside this file. It arrived here as a
+# `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and a reader could reach
+# none of it. Resolve it from this hook's own checkout rather than from any tree
+# an argument or the environment supplies, and hold standard input at
+# end-of-file: a heredoc exhausted it by construction and a sibling program
+# would inherit the hook's.
 PLATFORM_BINDERY_PORT=$PLATFORM_BINDERY_PORT \
 PLATFORM_MAC_VAULT_FILE=$PLATFORM_MAC_VAULT_FILE \
 PLATFORM_MAC_VAULT_PASSWORD_FILE=$PLATFORM_MAC_VAULT_PASSWORD_FILE \
-  ruby - <<'RUBY'
-require "json"
-require "net/http"
-require "open3"
-require "uri"
-require "yaml"
-
-BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BINDERY_PORT'), 10)}")
-AUDIOBOOK_ROOT = "/data/media/Audiobooks"
-
-def request(message)
-  Net::HTTP.start(BASE.host, BASE.port, read_timeout: 15) { |http| http.request(message) }
-end
-
-vault_yaml, vault_error, vault_status = Open3.capture3(
-  "ansible-vault", "view", "--vault-password-file",
-  ENV.fetch("PLATFORM_MAC_VAULT_PASSWORD_FILE"), ENV.fetch("PLATFORM_MAC_VAULT_FILE")
-)
-abort "bindery drift: encrypted vault could not be read" unless vault_status.success?
-vault = YAML.safe_load(vault_yaml)
-vault_yaml.replace("\0" * vault_yaml.bytesize)
-vault_error.replace("\0" * vault_error.bytesize)
-headers = { "X-Api-Key" => vault.fetch("vault_bindery_api_key") }
-
-listing = request(Net::HTTP::Get.new(URI.join(BASE, "/api/v1/rootfolder"), headers))
-abort "bindery drift: the declared roots could not be read" unless listing.code == "200"
-audiobook = JSON.parse(listing.body).find { |entry| entry["path"] == AUDIOBOOK_ROOT }
-abort "bindery drift: the deployed audiobook root is not the platform's" if audiobook.nil?
-
-removed = request(
-  Net::HTTP::Delete.new(URI.join(BASE, "/api/v1/rootfolder/#{audiobook.fetch('id')}"), headers)
-)
-abort "bindery drift: the audiobook root could not be removed" unless removed.code == "204"
-RUBY
+  "$mac_repo_dir/tests/mac/hooks/drift/56-bindery.rb" </dev/null
 
 if mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" "$mac_repo_dir/verify.yml" \
     --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \

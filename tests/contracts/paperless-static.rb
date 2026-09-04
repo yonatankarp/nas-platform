@@ -4,7 +4,18 @@
 #
 # usage: ruby -ryaml paperless-static.rb COMPOSE MAC_COMPOSE INTEGRATION_COMPOSE \
 #          ROLE DEFAULTS ARGUMENT_SPECS STORAGE_INVENTORY HOST_PREP GENERATOR \
-#          ENVIRONMENT_TEMPLATE SNAPSHOT
+#          ENVIRONMENT_TEMPLATE SNAPSHOT SNAPSHOT_PROGRAM
+#
+# SNAPSHOT and SNAPSHOT_PROGRAM are the two halves of the coordinated snapshot,
+# and both are read: until #315 the Ruby lived in a heredoc inside the shell
+# wrapper, so one `snapshot_text` covered everything this file asserts. Splitting
+# them and repointing every assertion at the program would have made the one
+# assertion that is genuinely the wrapper's -- the recovery deadline's default,
+# which is a shell parameter expansion -- a substring search that can no longer
+# match, and a positive grep that cannot fail is not a check. So the split is
+# spelled out here: the recovery-deadline default is the wrapper's, and the
+# ensure-block ordering, the retried flushall, the readiness wait, the deadline
+# floor and the drill poll are the program's.
 #
 # The -ryaml preload is load-bearing: the body calls YAML.safe_load_file
 # without requiring yaml itself, exactly as the heredoc it came from did, and
@@ -12,7 +23,8 @@
 # and PLATFORM_CONTRACT_REPO_DIR -- which the require below reads
 # tests/policy_support from -- names that same tree, never this checkout.
 compose_path, mac_path, integration_path, role_path, defaults_path, argument_specs_path,
-  storage_inventory_path, host_prep_path, generator_path, environment_template_path, snapshot_path = ARGV
+  storage_inventory_path, host_prep_path, generator_path, environment_template_path, snapshot_path,
+  snapshot_program_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 integration = YAML.safe_load_file(integration_path, aliases: true)
@@ -70,6 +82,7 @@ environment_assignments = File.readlines(environment_template_path).filter_map d
   [name, value] if line.strip.match?(/\A[A-Z][A-Z0-9_]*=/)
 end
 snapshot_text = File.read(snapshot_path)
+snapshot_program_text = File.read(snapshot_program_path)
 
 def refuse(message)
   abort "Paperless contract failed: #{message}"
@@ -317,7 +330,7 @@ end
   refuse("Paperless assertion #{name} must keep static failures visible") if task["no_log"] == true
 end
 refuse("Paperless restore must recover both services from an ensure block") unless
-  snapshot_text.match?(/if MODE == "restore".*?begin.*?ensure.*?\["docker", "start", REDIS\].*?\["docker", "start", WEBSERVER\].*?wait_healthy\(REDIS, WEBSERVER\)/m)
+  snapshot_program_text.match?(/if MODE == "restore".*?begin.*?ensure.*?\["docker", "start", REDIS\].*?\["docker", "start", WEBSERVER\].*?wait_healthy\(REDIS, WEBSERVER\)/m)
 # The ordering above is necessary but was not sufficient: it matched equally well
 # when the flushall between the two starts was a one-shot exec, and a one-shot
 # exec there races the socket. docker start returns once the container process
@@ -333,15 +346,15 @@ refuse("Paperless restore must recover both services from an ensure block") unle
 # against a valkey that refuses a chosen number of connections. These assertions
 # exist so the mechanism cannot be deleted between runs of that proof.
 refuse("Paperless recovery must wait for valkey rather than one-shot the flushall") unless
-  snapshot_text.include?('[["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready]')
-readiness_wait = snapshot_text[/^def capture_until_ready\b.*?^end$/m].to_s
+  snapshot_program_text.include?('[["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready]')
+readiness_wait = snapshot_program_text[/^def capture_until_ready\b.*?^end$/m].to_s
 refuse("Paperless recovery readiness wait is absent") if readiness_wait.empty?
 refuse("Paperless recovery readiness wait must be bounded and must not die") unless
   readiness_wait.include?("limit = Time.now + deadline") &&
     readiness_wait.include?("return [stdout, stderr, status] if status.success? || Time.now >= limit") &&
     !readiness_wait.include?("die")
 refuse("Paperless recovery deadline must not be configurable down to no retry") unless
-  snapshot_text.match?(
+  snapshot_program_text.match?(
     /Integer\(ENV\.fetch\("PLATFORM_PAPERLESS_RECOVERY_DEADLINE"\), 10\), 1\s*\n\]\.max/
   )
 # The default is pinned as well as the floor, because shortening it is the silent
@@ -365,7 +378,7 @@ refuse("Paperless recovery deadline default differs") unless
 # tests/mac/snapshot-paperless-drill-throttle-test.sh, which drives the real
 # script against a stub that throttles the way Paperless does; this assertion
 # keeps the shape from being edited back between runs of that proof.
-drill_mutation = snapshot_text.scan(/^if MODE == "drill"\n.*?^end$/m).find do |block|
+drill_mutation = snapshot_program_text.scan(/^if MODE == "drill"\n.*?^end$/m).find do |block|
   block.include?('request("delete", "/api/documents/')
 end.to_s
 refuse("Paperless drill mutation block is absent") if drill_mutation.empty?

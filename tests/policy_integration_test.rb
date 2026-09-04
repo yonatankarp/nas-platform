@@ -320,6 +320,33 @@ check(failures, named_stacks.positive?,
 # those containers, so a renamed or added service cannot leave cleanup looking
 # for a container that is never created, or ignoring one that is.
 cleanup_source = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
+# The sandbox-clearing program moved out of a `cat <<'PY'` heredoc and into
+# tests/sandbox_cleanup_contents.py in #315, and POSIX sh gives a sourced file no
+# way to find itself -- "$0" is the sourcing script. So every caller names the
+# checkout on the line above its `.`, and that is only a convention until
+# something requires it: a caller that forgot would fall through to a fallback
+# meant for the one caller that runs this file, and find out when a cleanup it
+# was relying on refused. The refusal is loud rather than silent by construction,
+# which is why this is a check rather than a redesign.
+%w[
+  tests/integration.sh
+  tests/integration_cleanup_test.sh
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
+  tests/mac/cleanup.sh
+].each do |relative|
+  source = File.read(File.join(ROOT, relative))
+  sourcing_line = source.lines.index { |line| line.match?(%r{\A\.\s+".*sandbox_cleanup\.sh"}) }
+  check(failures, !sourcing_line.nil? && sourcing_line.positive? &&
+                  source.lines[sourcing_line - 1].start_with?("cleanup_sandbox_repo_dir="),
+        "#{relative} must set cleanup_sandbox_repo_dir on the line above it sources " \
+        "tests/sandbox_cleanup.sh")
+end
+check(failures,
+      cleanup_source.include?('cleanup_sandbox_program=$cleanup_sandbox_repo_dir/' \
+                              "tests/sandbox_cleanup_contents.py") &&
+        cleanup_source.include?('< "$cleanup_sandbox_program"') &&
+        !cleanup_source.include?("cat <<'PY'"),
+      "sandbox cleanup must read its clearing program from a file, not a heredoc")
 registered_services = cleanup_source.scan(
   /^cleanup_sandbox_([a-z]+)_services='([^']*)'/
 ).to_h { |kind, services| [kind, services.split] }

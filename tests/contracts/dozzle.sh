@@ -45,6 +45,10 @@ deployment_bundle=$repo_dir/roles/deployment_bundle/tasks/main.yml
 integration=$repo_dir/tests/integration_controller.sh
 mac_drift=$repo_dir/tests/mac/hooks/drift/20-dozzle.sh
 mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
+# The verification hook's label assertions are a program beside it since #315.
+# Both are read out of the tree under inspection: the hook for the inspection it
+# performs, the program for the labels it names.
+mac_verify_labels=$repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb
 
 fail_contract() {
   printf 'Dozzle contract failed: %s\n' "$1" >&2
@@ -159,7 +163,7 @@ ruby -ryaml "$stack_program" "$compose" "$role" "$env_template" \
   "$deployment_inputs" "$deployment_bundle" </dev/null
 
 ruby -ryaml "$alerts_program" "$defaults" "$role" "$integration" "$mac_drift" \
-  "$mac_verify" "$mode" </dev/null
+  "$mac_verify" "$mac_verify_labels" "$mode" </dev/null
 
 [ "$mode" = static ] && { printf '%s\n' 'Dozzle static contract passed'; exit 0; }
 

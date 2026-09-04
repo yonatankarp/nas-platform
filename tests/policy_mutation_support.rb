@@ -96,6 +96,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/ci/classify_changes.rb
   tests/integration.Dockerfile
   tests/integration.sh
+  tests/integration_cleanup_test.sh
   tests/integration_controller.sh
   tests/integration_controller_lib.sh
   tests/integration_lock.sh
@@ -103,6 +104,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/immich_release_helper_test.rb
   tests/immich_selective_helper_integrity_test.rb
   tests/sandbox_cleanup.sh
+  tests/sandbox_cleanup_contents.py
   tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
@@ -152,6 +154,8 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/snapshot-immich.rb
   tests/mac/snapshot-immich-test.rb
   tests/mac/snapshot-paperless.sh
+  tests/mac/snapshot-paperless.rb
+  tests/mac/snapshot-paperless-test.rb
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/mac/hooks/drift/30-audiobookshelf.sh
   tests/mac/sanitize-logs.rb

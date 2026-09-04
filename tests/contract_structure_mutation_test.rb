@@ -375,7 +375,8 @@ JELLYFIN_VERIFY = "roles/jellyfin/tasks/verify.yml"
 JELLYFIN_PRIMARY_IDENTITY = "roles/jellyfin/tasks/primary_identity.yml"
 JELLYFIN_SETTINGS = "roles/jellyfin/tasks/settings.yml"
 KOMGA_ROLE = "roles/komga/tasks/main.yml"
-PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.sh"
+# The coordinated snapshot is the program, not the wrapper beside it, since #315.
+PAPERLESS_SNAPSHOT = "tests/mac/snapshot-paperless.rb"
 # The Paperless role is one stage per file, imported from a main.yml index, so a
 # row names the stage that owns the text it breaks -- same reason as Jellyfin
 # above.

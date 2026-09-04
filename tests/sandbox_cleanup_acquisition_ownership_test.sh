@@ -2,6 +2,7 @@
 set -eu
 
 repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+cleanup_sandbox_repo_dir=$repo_dir
 . "$repo_dir/tests/sandbox_cleanup.sh"
 real_docker=$(command -v docker) || {
   printf '%s\n' 'docker is required for the acquisition cleanup fixture' >&2

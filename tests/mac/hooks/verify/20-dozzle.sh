@@ -3,8 +3,17 @@ set -eu
 
 mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
+mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
 
+# The per-container label assertions are 20-dozzle-labels.rb beside this file.
+# They arrived here as a `<<'RUBY'` heredoc until #315, where sh -n, ruby -c and
+# a reader could reach none of them, and the `-rjson` preload is now a require
+# inside the program. tests/contracts/dozzle-alerts.rb reads that file for the
+# two label names, so the contract now asserts on the assertions rather than on
+# the wrapper they left. Resolve it from this hook's own checkout rather than
+# from any tree an argument or the environment supplies, and hold standard input
+# at end-of-file: a heredoc exhausted it by construction.
 verify_dozzle_labels() {
   expected_group=$1
   shift
@@ -14,27 +23,9 @@ verify_dozzle_labels() {
     shift 2
     labels=$(docker container inspect --format '{{json .Config.Labels}}' "$container") ||
       mac_die "Dozzle label verification could not inspect $container"
-    DOZZLE_RUNTIME_LABELS=$labels ruby -rjson - \
-      "$expected_group" "$expected_name" "$container" <<'RUBY'
-expected_group, expected_name, container = ARGV
-begin
-  labels = JSON.parse(ENV.fetch("DOZZLE_RUNTIME_LABELS"))
-rescue JSON::ParserError
-  abort "#{container} returned invalid Docker labels"
-end
-abort "#{container} returned non-object Docker labels" unless labels.is_a?(Hash)
-abort "#{container} has an incorrect dev.dozzle.name label" unless
-  labels["dev.dozzle.name"] == expected_name
-if expected_group.empty?
-  abort "#{container} has an unexpected dev.dozzle.group label" if
-    labels.key?("dev.dozzle.group")
-else
-  abort "#{container} has an incorrect dev.dozzle.group label" unless
-    labels["dev.dozzle.group"] == expected_group
-end
-abort "#{container} retained the unmanaged Dozzle drift sentinel" if
-  labels.key?("dev.dozzle.contract.sentinel")
-RUBY
+    DOZZLE_RUNTIME_LABELS=$labels \
+      "$mac_repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb" \
+      "$expected_group" "$expected_name" "$container" </dev/null
   done
 }
 

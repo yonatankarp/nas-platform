@@ -21,9 +21,20 @@ chmod 0600 "$sandbox/.nas-platform-mac-owned"
 # The integration adoption drill deploys the namespaced Compose identities the
 # Mac lane deploys, so the drill must resolve the owned project prefix rather
 # than the canonical production names.
+#
+# The stub is `ruby` because the coordinated snapshot is a `#!/usr/bin/env ruby`
+# program since #315, so the wrapper's exec resolves this file first and hands it
+# the program's own path. Until then the wrapper ran `exec ruby - drill DIR` and
+# the first argument was the heredoc's `-`; asserting the path instead is
+# stronger, because it also proves the wrapper reached the extracted program
+# rather than some other one.
 cat > "$fixture/bin/ruby" <<'SH'
 #!/bin/sh
-[ "$1" = - ] && [ "$2" = drill ] || exit 81
+case $1 in
+  */tests/mac/snapshot-paperless.rb) ;;
+  *) exit 81 ;;
+esac
+[ "$2" = drill ] || exit 81
 [ "$PLATFORM_PAPERLESS_WEBSERVER_CONTAINER" = \
   "$PLATFORM_PROJECT_NAME-paperless-webserver" ] || exit 82
 [ "$PLATFORM_PAPERLESS_POSTGRES_CONTAINER" = \
