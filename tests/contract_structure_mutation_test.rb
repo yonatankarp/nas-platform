@@ -20,6 +20,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -187,8 +188,21 @@ end
 #
 # `.git` is excluded from the comparison but kept in the copy: policy_test.rb
 # enumerates its own sources with git, and running git legitimately writes there.
-PRISTINE = { directory: nil, repo: nil, manifest: nil }
+#
+# One copy per *worker*, since the rows run through a pool. A copy is a mutable
+# fixture and two rows breaking different things in the same tree would prove
+# nothing about either, so the reuse is per thread rather than global: a worker
+# builds its copy on its first row and restores it after every row, exactly as
+# the serial version did. The pool is capped at the core count, so this is a
+# handful of copies rather than one per row, and the printed accounting below is
+# what says so.
 COPY_ACCOUNTING = { copies: 0, rows: 0, rebuilt: [] }
+# Guards the shared accounting only. Each worker's copy is reached through its
+# own thread-local, so the fixtures themselves need no lock.
+ACCOUNTING_LOCK = Mutex.new
+# Every copy any thread built, so at_exit removes all of them and not merely the
+# main thread's.
+PRISTINE_DIRECTORIES = []
 
 def tree_manifest(repo)
   Dir.glob("**/*", File::FNM_DOTMATCH, base: repo).each_with_object({}) do |relative, manifest|
@@ -209,14 +223,31 @@ def tree_manifest(repo)
   end
 end
 
+# The calling thread's own copy, so a worker discarding a contaminated tree
+# never takes another worker's fixture away with it.
 def discard_repo
-  FileUtils.remove_entry(PRISTINE[:directory]) if PRISTINE[:directory]
-  PRISTINE[:directory] = PRISTINE[:repo] = PRISTINE[:manifest] = nil
+  state = Thread.current[:pristine]
+  return unless state
+
+  FileUtils.remove_entry(state[:directory])
+  ACCOUNTING_LOCK.synchronize { PRISTINE_DIRECTORIES.delete(state[:directory]) }
+  Thread.current[:pristine] = nil
 end
-at_exit { discard_repo }
+# The pool is drained before this runs, so every directory still listed is one no
+# worker discarded. Removal is not rescued, for the same reason the serial
+# version did not rescue it: there is no condition under which a copy this
+# process created and owns legitimately refuses to be removed, and a run that
+# leaks eight copies of the repository per invocation should say so rather than
+# fill a runner's disk quietly.
+at_exit do
+  ACCOUNTING_LOCK.synchronize { PRISTINE_DIRECTORIES.dup }.each do |directory|
+    FileUtils.remove_entry(directory)
+  end
+end
 
 def pristine_repo
-  return PRISTINE if PRISTINE[:repo]
+  existing = Thread.current[:pristine]
+  return existing if existing
 
   directory = Dir.mktmpdir("nas-platform-contract-structure-")
   repo = File.join(directory, "repo")
@@ -225,17 +256,19 @@ def pristine_repo
   (children - ignored_children(children)).each do |entry|
     FileUtils.cp_r(File.join(ROOT, entry), File.join(repo, entry))
   end
-  PRISTINE[:directory] = directory
-  PRISTINE[:repo] = repo
-  PRISTINE[:manifest] = tree_manifest(repo)
-  COPY_ACCOUNTING[:copies] += 1
-  PRISTINE
+  state = { directory: directory, repo: repo, manifest: tree_manifest(repo) }
+  Thread.current[:pristine] = state
+  ACCOUNTING_LOCK.synchronize do
+    PRISTINE_DIRECTORIES << directory
+    COPY_ACCOUNTING[:copies] += 1
+  end
+  state
 end
 
 def with_copied_repo(mutated = [], label = nil)
   state = pristine_repo
   repo = state[:repo]
-  COPY_ACCOUNTING[:rows] += 1
+  ACCOUNTING_LOCK.synchronize { COPY_ACCOUNTING[:rows] += 1 }
   begin
     yield repo
   ensure
@@ -243,7 +276,7 @@ def with_copied_repo(mutated = [], label = nil)
       FileUtils.cp(File.join(ROOT, relative_path), File.join(repo, relative_path))
     end
     unless tree_manifest(repo) == state[:manifest]
-      COPY_ACCOUNTING[:rebuilt] << (label || "unnamed row")
+      ACCOUNTING_LOCK.synchronize { COPY_ACCOUNTING[:rebuilt] << (label || "unnamed row") }
       discard_repo
     end
   end
@@ -283,9 +316,27 @@ def diagnostics(suite, stdout, stderr)
   SUITES.fetch(suite)[:stream] == :stdout ? stdout : stderr
 end
 
+# The rows are written below as straight-line calls, and each one copies the
+# repository and runs a policy script against it -- work this interpreter only
+# waits on. So a call queues its row rather than running it where it is written,
+# and the pool at the foot of the file runs the queue. Every row reports into the
+# one failure list this file has, which the pool concatenates in the order the
+# rows are written, so the report a developer reads is unchanged. Queueing also
+# means a row may name a constant declared further down the file than the call
+# itself, which is what the row bodies below already assume.
+ROWS = []
+
 # A few diagnostics name the file they are about, which lives under the copy, so
 # %REPO% in an expected diagnostic is replaced with the copy's root.
-def check_rejected(failures, suite, name, substitutions, diagnostic)
+def check_rejected(suite, name, substitutions, diagnostic)
+  ROWS << ->(failures) { rejected_row(failures, suite, name, substitutions, diagnostic) }
+end
+
+def check_accepted(suite, name, substitutions)
+  ROWS << ->(failures) { accepted_row(failures, suite, name, substitutions) }
+end
+
+def rejected_row(failures, suite, name, substitutions, diagnostic)
   with_copied_repo(substitutions.map(&:first), "#{suite} #{name}") do |repo|
     expected = SUITES.fetch(suite).fetch(:diagnostic).call(diagnostic).gsub("%REPO%", File.realpath(repo))
     apply_substitutions(repo, substitutions)
@@ -299,7 +350,7 @@ rescue RuntimeError, SystemCallError => error
   failures << "#{suite} #{name} mutation fixture failed: #{error.message}"
 end
 
-def check_accepted(failures, suite, name, substitutions)
+def accepted_row(failures, suite, name, substitutions)
   with_copied_repo(substitutions.map(&:first), "#{suite} #{name}") do |repo|
     apply_substitutions(repo, substitutions)
     stdout, stderr, status = run_static(suite, repo)
@@ -380,16 +431,18 @@ AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
 AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 
 SUITES.each_key do |suite|
-  with_copied_repo([], "#{suite} pristine baseline") do |repo|
-    stdout, stderr, status = run_static(suite, repo)
-    check(failures, status.success?,
-          "#{suite} static contract failed on a pristine copy: " \
-          "#{diagnostics(suite, stdout, stderr).lines.first&.strip}")
+  ROWS << lambda do |collected|
+    with_copied_repo([], "#{suite} pristine baseline") do |repo|
+      stdout, stderr, status = run_static(suite, repo)
+      check(collected, status.success?,
+            "#{suite} static contract failed on a pristine copy: " \
+            "#{diagnostics(suite, stdout, stderr).lines.first&.strip}")
+    end
   end
 end
 
 check_rejected(
-  failures, :jellyfin, "a required task that survives only as a comment",
+  :jellyfin, "a required task that survives only as a comment",
   [[JELLYFIN_VERIFY,
     "- name: Verify exact Jellyfin owned state\n",
     "# - name: Verify exact Jellyfin owned state\n" \
@@ -398,7 +451,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a mutation task declared before the identity preflight",
+  :jellyfin, "a mutation task declared before the identity preflight",
   [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "- name: Update the Jellyfin server name\n" \
@@ -410,7 +463,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a DELETE verb that belongs to an unrelated request",
+  :jellyfin, "a DELETE verb that belongs to an unrelated request",
   [[JELLYFIN_LIBRARIES, "    method: DELETE\n", "    method: POST\n"],
    [JELLYFIN_VERIFY,
     "- name: Remove the exact Jellyfin administrator image probe\n",
@@ -424,7 +477,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "an unconditional avatar upload beside conditional siblings",
+  :jellyfin, "an unconditional avatar upload beside conditional siblings",
   [[JELLYFIN_IDENTITY,
     "    body: \"{{ jellyfin_admin_avatar_staged.content }}\"\n" \
     "    status_code: [204]\n" \
@@ -437,7 +490,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a server configuration overwrite whose merge moved into a comment",
+  :jellyfin, "a server configuration overwrite whose merge moved into a comment",
   [[JELLYFIN_IDENTITY,
     "    body: >-\n" \
     "      {{ jellyfin_server_configuration_for_update.json |\n" \
@@ -449,7 +502,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "an opaque database reference in an unscoped task",
+  :jellyfin, "an opaque database reference in an unscoped task",
   [[JELLYFIN_IDENTITY,
     "    msg: JELLYFIN_PLAN_SERVER_NAME\n",
     "    msg: JELLYFIN_PLAN_SERVER_NAME jellyfin.db\n"]],
@@ -457,7 +510,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a version pin folded across the plugin install URL",
+  :jellyfin, "a version pin folded across the plugin install URL",
   [[JELLYFIN_SETTINGS,
     "         '&repositoryUrl=' ~ (item.RepositoryUrl | urlencode) }}\n",
     "         '&repositoryUrl=' ~ (item.RepositoryUrl | urlencode) ~\n" \
@@ -466,7 +519,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a package catalog preflight against a different endpoint",
+  :jellyfin, "a package catalog preflight against a different endpoint",
   [[JELLYFIN_SETTINGS,
     "    url: \"{{ jellyfin_api }}/Packages\"\n",
     "    url: \"{{ jellyfin_api }}/PackagesCatalog\"\n"]],
@@ -474,7 +527,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a recovery marker read that no longer requires private mode",
+  :jellyfin, "a recovery marker read that no longer requires private mode",
   [[JELLYFIN_AUTHENTICATION,
     "      - not jellyfin_primary_recovery_marker_state.stat.exists or\n" \
     "        jellyfin_primary_recovery_marker_state.stat.mode == '0600'\n",
@@ -483,13 +536,13 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :jellyfin, "a primary identity rename with no recovery path",
+  :jellyfin, "a primary identity rename with no recovery path",
   [[JELLYFIN_PRIMARY_IDENTITY, "  rescue:\n", "  always:\n"]],
   "primary identity rename lacks recovery"
 )
 
 check_accepted(
-  failures, :jellyfin, "a package catalog URL that changed only its quoting style",
+  :jellyfin, "a package catalog URL that changed only its quoting style",
   [[JELLYFIN_SETTINGS,
     "    url: \"{{ jellyfin_api }}/Packages\"\n",
     "    url: '{{ jellyfin_api }}/Packages'\n"]]
@@ -500,7 +553,7 @@ check_accepted(
 # moved the offset the old ordering assertions measured, so both suites reported a
 # phase violation that did not exist.
 check_accepted(
-  failures, :jellyfin, "a mutation task name mentioned in an early comment",
+  :jellyfin, "a mutation task name mentioned in an early comment",
   [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "# - name: Update the Jellyfin server name\n" \
@@ -508,7 +561,7 @@ check_accepted(
 )
 
 check_accepted(
-  failures, :komga, "a mutation task name mentioned in an early comment",
+  :komga, "a mutation task name mentioned in an early comment",
   [[KOMGA_ROLE,
     "- name: Deploy Komga\n",
     "# - name: Create the managed Komga library\n" \
@@ -516,7 +569,7 @@ check_accepted(
 )
 
 check_rejected(
-  failures, :komga, "a required task that survives only as a comment",
+  :komga, "a required task that survives only as a comment",
   [[KOMGA_ROLE,
     "- name: Require exact reconciled Komga library\n",
     "# - name: Require exact reconciled Komga library\n" \
@@ -525,7 +578,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :komga, "a mutation task declared before the library preflight",
+  :komga, "a mutation task declared before the library preflight",
   [[KOMGA_ROLE,
     "- name: Read Komga claim status\n",
     "- name: Create the managed Komga library\n" \
@@ -537,7 +590,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :komga, "a normalized root fact that dropped its trailing-slash filter",
+  :komga, "a normalized root fact that dropped its trailing-slash filter",
   [[KOMGA_ROLE,
     "           'normalized_root': item.root | default('', true) | string | regex_replace('/+$', ''),\n",
     "           'normalized_root': item.root | default('', true) | string,\n"]],
@@ -545,7 +598,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :komga, "a library repair whose selected identifier moved into a comment",
+  :komga, "a library repair whose selected identifier moved into a comment",
   [[KOMGA_ROLE,
     "    url: >-\n" \
     "      {{ komga_api }}/api/v1/libraries/{{ item.id | urlencode }}\n" \
@@ -560,7 +613,7 @@ check_rejected(
 # The root move is the one repair the ambiguity guard exists to refuse, so the
 # clause that opens it for a single convergence must not be able to vanish.
 check_rejected(
-  failures, :komga, "an ambiguity guard that lost its one-convergence migration clause",
+  :komga, "an ambiguity guard that lost its one-convergence migration clause",
   [[KOMGA_ROLE,
     "        komga_library_root_migration_allowed | bool\n",
     "        true\n"]],
@@ -568,7 +621,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :komga, "an opaque database reference in an unscoped task",
+  :komga, "an opaque database reference in an unscoped task",
   [[KOMGA_ROLE, "    msg: KOMGA_PLAN_CLAIM\n", "    msg: KOMGA_PLAN_CLAIM database.sqlite\n"]],
   "role must not edit an opaque database"
 )
@@ -578,7 +631,7 @@ check_rejected(
 # this row proves the cheap static half of the pair still rejects the shape, so the
 # assertion cannot rot into one that passes against the broken form too.
 check_rejected(
-  failures, :paperless, "a deletion poll that logs in again on every pass",
+  :paperless, "a deletion poll that logs in again on every pass",
   [[PAPERLESS_SNAPSHOT,
     "    break if catalogue(drill_token).empty?\n",
     "    break if catalogue(authenticate(admin_username, admin_password)).empty?\n"]],
@@ -586,7 +639,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "a managed-user include that survives only as a comment",
+  :media_probes, "a managed-user include that survives only as a comment",
   [[KOMGA_ROLE,
     "  ansible.builtin.include_tasks: managed_users.yml\n",
     "  # ansible.builtin.include_tasks: managed_users.yml\n" \
@@ -597,7 +650,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "an explicitly managed Collections library",
+  :media_probes, "an explicitly managed Collections library",
   [[JELLYFIN_DEPLOY,
     "- name: Wait for the Jellyfin startup API\n",
     "- name: Manage the Jellyfin Collections library\n" \
@@ -609,7 +662,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "a DELETE verb that belongs to an unrelated request",
+  :media_probes, "a DELETE verb that belongs to an unrelated request",
   [[JELLYFIN_LIBRARIES, "    method: DELETE\n", "    method: POST\n"],
    [JELLYFIN_VERIFY,
     "- name: Remove the exact Jellyfin administrator image probe\n",
@@ -623,7 +676,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "an image endpoint renamed on every request that uses it",
+  :media_probes, "an image endpoint renamed on every request that uses it",
   [[JELLYFIN_IDENTITY,
     "    url: \"{{ jellyfin_api }}/UserImage?userId=" \
     "{{ jellyfin_primary_authenticated_id | urlencode }}\"\n",
@@ -643,7 +696,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "a server configuration overwrite whose merge moved into a comment",
+  :media_probes, "a server configuration overwrite whose merge moved into a comment",
   [[JELLYFIN_IDENTITY,
     "    body: >-\n" \
     "      {{ jellyfin_server_configuration_for_update.json |\n" \
@@ -655,7 +708,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "a temporary recovery match whose exact form moved into a comment",
+  :media_probes, "a temporary recovery match whose exact form moved into a comment",
   [[JELLYFIN_PREFLIGHT,
     "    jellyfin_primary_temporary_matches: >-\n" \
     "      {{ jellyfin_primary_temporary_matches +\n" \
@@ -668,19 +721,19 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :media_probes, "a primary identity rename with no recovery path",
+  :media_probes, "a primary identity rename with no recovery path",
   [[JELLYFIN_PRIMARY_IDENTITY, "  rescue:\n", "  always:\n"]],
   "Jellyfin primary rename is not guarded by block/rescue recovery"
 )
 
 check_rejected(
-  failures, :media_probes, "a library rename that suppresses its identity refresh",
+  :media_probes, "a library rename that suppresses its identity refresh",
   [[JELLYFIN_LIBRARIES, "'&refreshLibrary=true' }}\n", "'&refreshLibrary=false' }}\n"]],
   "Jellyfin library rename does not request identity refresh"
 )
 
 check_rejected(
-  failures, :media_probes, "image digest comparisons removed from both assertions",
+  :media_probes, "image digest comparisons removed from both assertions",
   [[JELLYFIN_PREFLIGHT,
     "      - jellyfin_admin_avatar_source_state.stat.checksum == jellyfin_admin_avatar_sha256\n",
     "      - true\n"],
@@ -695,7 +748,7 @@ check_rejected(
 # Host networking makes the webserver occupy the host's whole port namespace, so
 # the port registry that guards every other publication cannot see it at all.
 check_rejected(
-  failures, :paperless, "a webserver that goes back to host networking",
+  :paperless, "a webserver that goes back to host networking",
   [[PAPERLESS_COMPOSE, "    ports:\n      - \"8000:8000\"\n", "    network_mode: host\n"]],
   "nas effective config must not use host networking"
 )
@@ -703,7 +756,7 @@ check_rejected(
 # The dependencies answer on the stack's own network, so a host publication for
 # one of them is surface with nothing behind it.
 check_rejected(
-  failures, :paperless, "a dependency that goes back to publishing a host port",
+  :paperless, "a dependency that goes back to publishing a host port",
   [[PAPERLESS_COMPOSE,
     "    volumes:\n      - ${PAPERLESS_REDIS_PATH:?}:/data\n",
     "    volumes:\n      - ${PAPERLESS_REDIS_PATH:?}:/data\n" \
@@ -716,13 +769,13 @@ check_rejected(
 # collision it exists to prevent comes back. The override's own structure cannot
 # say that; only the merged effective config can.
 check_rejected(
-  failures, :paperless, "a Mac override that lost its override tag",
+  :paperless, "a Mac override that lost its override tag",
   [[PAPERLESS_MAC_COMPOSE, "    ports: !override\n", "    ports:\n"]],
   "mac effective webserver publication differs"
 )
 
 check_rejected(
-  failures, :paperless, "a required task that survives only as a comment",
+  :paperless, "a required task that survives only as a comment",
   [[PAPERLESS_MAIL_RECONCILE,
     "- name: Repair the managed Paperless mail rule\n",
     "# - name: Repair the managed Paperless mail rule\n" \
@@ -734,7 +787,7 @@ check_rejected(
 # old whole-file substring satisfied twice over, once by the longer name that
 # contains it and once by the comparison that still spells both operands.
 check_rejected(
-  failures, :paperless, "a probe-state snapshot the probe no longer sits between",
+  :paperless, "a probe-state snapshot the probe no longer sits between",
   [[PAPERLESS_MAIL_STATE,
     "    paperless_managed_mail_probe_state_before:\n",
     "    paperless_managed_mail_probe_state_before_disabled:\n"]],
@@ -742,7 +795,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a probe-state comparison replaced by a tautology",
+  :paperless, "a probe-state comparison replaced by a tautology",
   [[PAPERLESS_MAIL_PROBE,
     "      - paperless_managed_mail_probe_state_before == paperless_managed_mail_probe_state_after\n",
     "      - true\n"]],
@@ -750,7 +803,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a renamed schema validation task",
+  :paperless, "a renamed schema validation task",
   [[PAPERLESS_MAIL_STATE,
     "- name: Validate Paperless mail account and rule schemas before mutation\n",
     "- name: Validate Paperless mail account and rule schemas after mutation\n"]],
@@ -758,7 +811,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a schema validation task named only in a comment",
+  :paperless, "a schema validation task named only in a comment",
   [[PAPERLESS_MAIL_STATE,
     "- name: Validate Paperless mail account and rule schemas before mutation\n",
     "# - name: Validate Paperless mail account and rule schemas before mutation\n" \
@@ -767,7 +820,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a sixth effective state source",
+  :paperless, "a sixth effective state source",
   [[PAPERLESS_STORAGE,
     "    paperless_effective_state_host_paths:\n" \
     "      - \"{{ paperless_effective_state_host_path }}/postgres\"\n",
@@ -782,7 +835,7 @@ check_rejected(
 # form. These two rows are the reason the absence invariants match the
 # whitespace-stripped scalar as well: read as source text, both were accepted.
 check_rejected(
-  failures, :paperless, "a consuming mail endpoint folded across two lines",
+  :paperless, "a consuming mail endpoint folded across two lines",
   [[PAPERLESS_MAIL_STATE,
     "- name: Refuse duplicate managed Paperless mail rules\n",
     "- name: Consume the managed Paperless mail account\n" \
@@ -797,7 +850,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a global task-count endpoint folded across two lines",
+  :paperless, "a global task-count endpoint folded across two lines",
   [[PAPERLESS_MAIL_STATE,
     "- name: Refuse duplicate managed Paperless mail accounts\n",
     "- name: Count global Paperless tasks\n" \
@@ -812,7 +865,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a generator that synthesizes the Gmail app password",
+  :paperless, "a generator that synthesizes the Gmail app password",
   [[GENERATOR,
     "    paperless_gmail_app_password: replace-with-google-app-password\n",
     "    paperless_gmail_app_password: \"{{ lookup('password', password_spec) }}\"\n"]],
@@ -820,7 +873,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "a generator sentinel that survives only as a comment",
+  :paperless, "a generator sentinel that survives only as a comment",
   [[GENERATOR,
     "    paperless_gmail_app_password: replace-with-google-app-password\n",
     "    # paperless_gmail_app_password: replace-with-google-app-password\n" \
@@ -832,7 +885,7 @@ check_rejected(
 # of the two places it is consumed and not the other left the old whole-file
 # substring satisfied by whichever one still did it.
 check_rejected(
-  failures, :paperless, "grouped app-password spacing kept out of the payload only",
+  :paperless, "grouped app-password spacing kept out of the payload only",
   [[PAPERLESS_MAIL_STATE,
     "           'password': vault_paperless_gmail_app_password | replace(' ', ''),\n",
     "           'password': vault_paperless_gmail_app_password,\n"]],
@@ -840,7 +893,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "grouped app-password spacing kept out of the fingerprint only",
+  :paperless, "grouped app-password spacing kept out of the fingerprint only",
   [[PAPERLESS_MAIL_STATE,
     "          (vault_paperless_gmail_app_password | replace(' ', ''))) | hash('sha256') }}\n",
     "          vault_paperless_gmail_app_password) | hash('sha256') }}\n"]],
@@ -848,7 +901,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "one dependency endpoint that goes back to a loopback address",
+  :paperless, "one dependency endpoint that goes back to a loopback address",
   [[PAPERLESS_ENVIRONMENT,
     "PAPERLESS_TIKA_ENDPOINT=http://tika:9998\n",
     "PAPERLESS_TIKA_ENDPOINT=http://127.0.0.1:9998\n"]],
@@ -859,7 +912,7 @@ check_rejected(
 # is the live one. A substring check for the escaped form still found the earlier
 # line and passed.
 check_rejected(
-  failures, :paperless, "an unescaped secret assignment appended after the escaped one",
+  :paperless, "an unescaped secret assignment appended after the escaped one",
   [[PAPERLESS_ENVIRONMENT,
     "PAPERLESS_AI_LLM_MODEL={{ paperless_ai_llm_model }}\n",
     "PAPERLESS_AI_LLM_MODEL={{ paperless_ai_llm_model }}\n" \
@@ -868,7 +921,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :paperless, "an escaping filter dropped from the admin password",
+  :paperless, "an escaping filter dropped from the admin password",
   [[PAPERLESS_ENVIRONMENT,
     "PAPERLESS_ADMIN_PASSWORD={{ vault_paperless_admin_password | replace('$', '$$') }}\n",
     "PAPERLESS_ADMIN_PASSWORD={{ vault_paperless_admin_password }}\n"]],
@@ -878,7 +931,7 @@ check_rejected(
 # --- Immich restore quality ---------------------------------------------------
 
 check_rejected(
-  failures, :immich_restore, "a sanitized refusal code that survives only as a comment",
+  :immich_restore, "a sanitized refusal code that survives only as a comment",
   [[IMMICH_ROLE,
     "             'incompatible-newest-backup',\n",
     "             # 'incompatible-newest-backup',\n"]],
@@ -886,7 +939,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich_restore, "a different refusal code dropped from the sanitized list",
+  :immich_restore, "a different refusal code dropped from the sanitized list",
   [[IMMICH_ROLE,
     "             ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',\n",
     "             ['unsafe-storage', 'missing-safe-backup',\n"]],
@@ -894,7 +947,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich_restore, "a real DELETE folded across two lines",
+  :immich_restore, "a real DELETE folded across two lines",
   [[IMMICH_RESTORE,
     "            SELECT json_build_object(\n",
     "            DELETE\n            FROM asset;\n            SELECT json_build_object(\n"]],
@@ -902,7 +955,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich_restore, "a task that removes the restore provenance marker",
+  :immich_restore, "a task that removes the restore provenance marker",
   [[IMMICH_RESTORE,
     "  rescue:\n",
     "  always:\n" \
@@ -916,7 +969,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich_restore, "a migration marker check deleted but kept in a comment",
+  :immich_restore, "a migration marker check deleted but kept in a comment",
   [[IMMICH_RESTORE,
     "            'schemaMarker', to_regclass('public.kysely_migrations') IS NOT NULL,\n",
     "            # public.kysely_migrations\n            'schemaMarker', true,\n"]],
@@ -927,7 +980,7 @@ check_rejected(
 # failed, which is the whole point of recording it. Both labels were still
 # present as substrings, so the old form could not see it.
 check_rejected(
-  failures, :immich_restore, "two failure stages collapsed onto one label",
+  :immich_restore, "two failure stages collapsed onto one label",
   [[IMMICH_RESTORE,
     "        immich_restore_stage: database-verification\n",
     "        immich_restore_stage: database-restore\n"]],
@@ -935,7 +988,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich_restore, "a rescue marker that stops recording the stage it reached",
+  :immich_restore, "a rescue marker that stops recording the stage it reached",
   [[IMMICH_RESTORE,
     "          {{ {'version': 1, 'stage': (immich_restore_stage | default('restore'))} | to_json }}\n",
     "          {{ {'version': 1, 'stage': 'restore'} | to_json }}\n"]],
@@ -945,14 +998,14 @@ check_rejected(
 # The other direction. Both of these are shapes the source-text form rejected as
 # violations that did not exist: a comment is not a statement and not a task.
 check_accepted(
-  failures, :immich_restore, "a comment warning against DELETE",
+  :immich_restore, "a comment warning against DELETE",
   [[IMMICH_RESTORE,
     "  rescue:\n",
     "  # The restore never issues DELETE or TRUNCATE against an application table.\n  rescue:\n"]]
 )
 
 check_accepted(
-  failures, :immich_restore, "the provenance-removal task named only in a comment",
+  :immich_restore, "the provenance-removal task named only in a comment",
   [[IMMICH_RESTORE,
     "  rescue:\n",
     "  # Deliberately no 'Remove the Immich restore failure marker' task here.\n  rescue:\n"]]
@@ -961,7 +1014,7 @@ check_accepted(
 # --- Beszel contract ----------------------------------------------------------
 
 check_rejected(
-  failures, :beszel, "a required task that survives only as a comment",
+  :beszel, "a required task that survives only as a comment",
   [[BESZEL_CONFIGURE,
     "    - name: Poll persisted Beszel telemetry collections\n",
     "    # - name: Poll persisted Beszel telemetry collections\n" \
@@ -972,7 +1025,7 @@ check_rejected(
 # #85's headline for this contract: the old form passed with the register deleted,
 # because the variable's name still appeared elsewhere in the file.
 check_rejected(
-  failures, :beszel, "a telemetry poll that no longer registers its probe result",
+  :beszel, "a telemetry poll that no longer registers its probe result",
   [[BESZEL_CONFIGURE,
     "      register: beszel_telemetry_probe_result\n",
     "      changed_when: false\n"]],
@@ -980,7 +1033,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :beszel, "a GPU inference reintroduced with different spacing",
+  :beszel, "a GPU inference reintroduced with different spacing",
   [[BESZEL_VARS,
     "beszel_effective_required_telemetry_categories: >-\n" \
     "  {{ ['core', 'disk', 'containers']\n",
@@ -992,7 +1045,7 @@ check_rejected(
 # --- Audiobookshelf contract --------------------------------------------------
 
 check_rejected(
-  failures, :audiobookshelf, "a duplicate backup path assignment appended to the env file",
+  :audiobookshelf, "a duplicate backup path assignment appended to the env file",
   [[AUDIOBOOKSHELF_ENVIRONMENT,
     "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}\n",
     "AUDIOBOOKSHELF_BACKUP_PATH={{ audiobookshelf_effective_backup_host_path }}\n" \
@@ -1009,7 +1062,7 @@ check_rejected(
 # deliberately does not follow an include, so the demotion removes the stage from
 # the role this contract inspects rather than quietly passing on a shorter list.
 check_rejected(
-  failures, :audiobookshelf, "a verification stage demoted to a dynamic include",
+  :audiobookshelf, "a verification stage demoted to a dynamic include",
   [[AUDIOBOOKSHELF_MAIN,
     "  ansible.builtin.import_tasks: verify.yml\n",
     "  ansible.builtin.include_tasks: verify.yml\n"]],
@@ -1017,7 +1070,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :audiobookshelf, "a required task that survives only as a comment",
+  :audiobookshelf, "a required task that survives only as a comment",
   [[AUDIOBOOKSHELF_VERIFY,
     "- name: Require exactly the managed Audiobookshelf library\n",
     "# - name: Require exactly the managed Audiobookshelf library\n" \
@@ -1028,7 +1081,7 @@ check_rejected(
 # --- Immich contract ----------------------------------------------------------
 
 check_rejected(
-  failures, :immich, "a required task that survives only as a comment",
+  :immich, "a required task that survives only as a comment",
   [[IMMICH_ROLE,
     "- name: Read Immich initialization state\n",
     "# - name: Read Immich initialization state\n" \
@@ -1037,7 +1090,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich, "a Docker API exec reintroduced as a task module",
+  :immich, "a Docker API exec reintroduced as a task module",
   [[IMMICH_ROLE,
     "- name: Read Immich initialization state\n",
     "- name: Reach into the Immich database directly\n" \
@@ -1050,7 +1103,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich, "an opaque container variable reintroduced in a task",
+  :immich, "an opaque container variable reintroduced in a task",
   [[IMMICH_ROLE,
     "- name: Read Immich initialization state\n",
     "- name: Report the opaque Immich container\n" \
@@ -1062,7 +1115,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :immich, "an onboarding task that shells into psql",
+  :immich, "an onboarding task that shells into psql",
   [[IMMICH_ONBOARDING,
     "- name: Initialize configured Immich onboarding accounts\n",
     "- name: Patch the Immich onboarding rows\n" \
@@ -1080,7 +1133,7 @@ check_rejected(
 # token", so this row is what the deleted second substring check was pretending
 # to prove.
 check_rejected(
-  failures, :dozzle, "a dispatcher header that borrows another publisher's token",
+  :dozzle, "a dispatcher header that borrows another publisher's token",
   [[DOZZLE_DEFAULTS,
     "Bearer {{ vault_ntfy_dozzle_token }}",
     "Bearer {{ vault_ntfy_deploy_token }}"]],
@@ -1090,7 +1143,7 @@ check_rejected(
 # --- Repository policy --------------------------------------------------------
 
 check_rejected(
-  failures, :policy, "a planned-change task that survives only as a comment",
+  :policy, "a planned-change task that survives only as a comment",
   [[DOZZLE_ROLE,
     "- name: Report planned managed Dozzle dispatcher creation\n",
     "# - name: Report planned managed Dozzle dispatcher creation\n" \
@@ -1102,7 +1155,7 @@ check_rejected(
 # matched any line spelling the include, and the service name could come from
 # anywhere else in the file.
 check_rejected(
-  failures, :policy, "a container CPU include that names another service",
+  :policy, "a container CPU include that names another service",
   [[BESZEL_DEPLOY,
     "    container_cpu_service_name: beszel\n",
     "    container_cpu_service_name: dozzle\n"]],
@@ -1112,7 +1165,7 @@ check_rejected(
 # The window this replaced was 120 characters wide, so a shell-out that named the
 # module further down its own argument list was past the end of it.
 check_rejected(
-  failures, :policy, "a Compose shell-out past the end of the old scan window",
+  :policy, "a Compose shell-out past the end of the old scan window",
   [[BESZEL_DEPLOY,
     "- name: Wait for the hub to report healthy\n",
     "- name: Restart the Beszel stack by hand\n" \
@@ -1136,13 +1189,13 @@ check_rejected(
 # to one task satisfying a check about another.
 
 check_rejected(
-  failures, :arr, "an activation downgraded while the module stays named in the file",
+  :arr, "an activation downgraded while the module stays named in the file",
   [[ARR_MAIN, "    state: present\n    wait: true\n", "    state: absent\n    wait: true\n"]],
   "Arr role must deploy through docker_compose_v2"
 )
 
 check_rejected(
-  failures, :arr, "the activation gate demoted to a comment",
+  :arr, "the activation gate demoted to a comment",
   [[ARR_MAIN,
     "  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
     "  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
@@ -1153,7 +1206,7 @@ check_rejected(
 # contained the words, so the Servarr task's force answered for the Bazarr task,
 # and the Bazarr half never asked about force at all.
 check_rejected(
-  failures, :arr, "a Bazarr seed that overwrites an operator's own configuration",
+  :arr, "a Bazarr seed that overwrites an operator's own configuration",
   [[ARR_BOOTSTRAP,
     "    dest: \"{{ arr_bazarr_config_host_path }}/config/config.yaml\"\n" \
     "    owner: \"{{ nas_uid }}\"\n" \
@@ -1168,7 +1221,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :arr, "authentication disabled with the old element left in a comment",
+  :arr, "authentication disabled with the old element left in a comment",
   [[ARR_CONFIG_XML,
     "  <AuthenticationRequired>Enabled</AuthenticationRequired>\n",
     "  <!-- <AuthenticationRequired>Enabled</AuthenticationRequired> -->\n" \
@@ -1177,7 +1230,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :arr, "an API key bound to the wrong service",
+  :arr, "an API key bound to the wrong service",
   [[ARR_ENVIRONMENT,
     "BAZARR_API_KEY={{ vault_arr_bazarr_api_key }}\n",
     "BAZARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
@@ -1186,7 +1239,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :arr, "one API request logging its payload while its siblings redact",
+  :arr, "one API request logging its payload while its siblings redact",
   [[ARR_BAZARR,
     "  register: arr_bazarr_settings_before\n  changed_when: false\n" \
     "  check_mode: false\n  no_log: true\n",
@@ -1197,7 +1250,7 @@ check_rejected(
 # The negative half of the old pair only matched an import or search named on the
 # same source line as the word command, which a JSON body on its own line is not.
 check_rejected(
-  failures, :arr, "a library scan command issued beside the root folder creation",
+  :arr, "a library scan command issued beside the root folder creation",
   [[ARR_SERVARR,
     "- name: Create the declared Servarr root without import or search\n",
     "- name: Trigger a Servarr library scan\n" \
@@ -1216,7 +1269,7 @@ check_rejected(
 # combine( appears in two requests in this file, so the old check was answered by
 # the naming request no matter what the host request did with unowned fields.
 check_rejected(
-  failures, :arr, "the host request replacing unowned fields instead of merging them",
+  :arr, "the host request replacing unowned fields instead of merging them",
   [[ARR_SERVARR,
     "      {{ arr_servarr_host_before.json | combine({\n" \
     "           'authenticationMethod': 'forms',\n",
@@ -1228,7 +1281,7 @@ check_rejected(
 # The forbidden-endpoint check used to read the file's text, so writing down that
 # the endpoint is deliberately not used was itself a violation.
 check_accepted(
-  failures, :arr, "a comment recording that no download client is created",
+  :arr, "a comment recording that no download client is created",
   [[ARR_PROWLARR,
     "---\n",
     "---\n# Prowlarr indexes; a download client is deliberately never created here.\n"]]
@@ -1239,7 +1292,7 @@ check_accepted(
 # decision that was never made. Without this row the assertion could stop biting
 # and every test would still pass.
 check_rejected(
-  failures, :arr, "the Jellyfin integration pin quietly deleted",
+  :arr, "the Jellyfin integration pin quietly deleted",
   [[ARR_BAZARR_FILTER,
     "        \"settings-general-use_jellyfin\": \"false\",\n",
     ""]],
@@ -1249,7 +1302,7 @@ check_rejected(
 # --- Compose identity, adoption guard and the Paperless environment -------------
 
 check_rejected(
-  failures, :reader_identity, "the platform identity moved into a comment",
+  :reader_identity, "the platform identity moved into a comment",
   [[KOMGA_COMPOSE,
     "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
     "    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
@@ -1259,14 +1312,14 @@ check_rejected(
 # The banned literal used to be searched for in the file's text, so recording
 # that it is banned was itself the ban being broken.
 check_accepted(
-  failures, :reader_identity, "a comment recording the banned literal identity",
+  :reader_identity, "a comment recording the banned literal identity",
   [[KOMGA_COMPOSE,
     "services:\n",
     "# The identity is never the literal 1000:100; it is supplied by the platform.\nservices:\n"]]
 )
 
 check_rejected(
-  failures, :acquisition_phase1, "the Unpackerr identity hard-coded",
+  :acquisition_phase1, "the Unpackerr identity hard-coded",
   [[DOWNLOADERS_COMPOSE,
     "    user: \"${NAS_UID:?}:${NAS_GID:?}\"\n",
     "    user: \"4242:4343\"\n    # user: \"${NAS_UID:?}:${NAS_GID:?}\"\n"]],
@@ -1277,7 +1330,7 @@ check_rejected(
 # writing module in one task and the variable in another. This plants both in
 # the same task, which is the only shape that actually persists the input.
 check_rejected(
-  failures, :acquisition_adoption, "the one-run adoption input written to disk",
+  :acquisition_adoption, "the one-run adoption input written to disk",
   [[ARR_STATE_GUARD,
     "- name: Detect existing movie library content\n",
     "- name: Remember the adoption bypass\n" \
@@ -1291,7 +1344,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy, "a Paperless worker assignment demoted to a comment",
+  :policy, "a Paperless worker assignment demoted to a comment",
   [[PAPERLESS_ENVIRONMENT,
     "PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n",
     "# PAPERLESS_TASK_WORKERS={{ paperless_task_workers }}\n" \
@@ -1306,13 +1359,13 @@ check_rejected(
 # the substring check could not tell the containment validator from the module
 # preflight that runs beside it.
 check_rejected(
-  failures, :policy_integration, "the Mac path fixture pointed at a different entry point",
+  :policy_integration, "the Mac path fixture pointed at a different entry point",
   [[MAC_PATH_FIXTURE, "        tasks_from: target\n", "        tasks_from: target_docker_dependencies\n"]],
   "integration must prove canonical Mac paths pass target validation"
 )
 
 check_rejected(
-  failures, :policy_integration, "the Arr project namespace unscoped in the environment",
+  :policy_integration, "the Arr project namespace unscoped in the environment",
   [[ARR_ENVIRONMENT,
     "PLATFORM_PROJECT_NAME={{ arr_platform_project_name }}\n",
     "PLATFORM_PROJECT_NAME={{ platform_project_name }}\n" \
@@ -1321,7 +1374,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy_integration, "the media-control network suffix changed",
+  :policy_integration, "the media-control network suffix changed",
   [[SHARED_INVENTORY,
     "  {{ (platform_project_name ~ '-media-control') if",
     "  {{ (platform_project_name ~ '-media') if"]],
@@ -1331,20 +1384,20 @@ check_rejected(
 # The leak check read three concatenated files, so a comment saying the scoped
 # variable does not apply here was itself the leak.
 check_accepted(
-  failures, :policy_integration, "a comment naming a role-scoped namespace variable",
+  :policy_integration, "a comment naming a role-scoped namespace variable",
   [[HOST_PREP,
     "---\n",
     "---\n# The media control network is shared; arr_platform_project_name never applies.\n"]]
 )
 
 check_rejected(
-  failures, :policy_mac, "a converging role added to verify.yml",
+  :policy_mac, "a converging role added to verify.yml",
   [[VERIFY_PLAY, "  roles:\n    - role: ntfy\n", "  roles:\n    - role: host_prep\n    - role: ntfy\n"]],
   "Mac verification must not deploy or converge services"
 )
 
 check_accepted(
-  failures, :policy_mac, "a comment naming the roles verify.yml refuses to run",
+  :policy_mac, "a comment naming the roles verify.yml refuses to run",
   [[VERIFY_PLAY,
     "  roles:\n",
     "  # Never: role: host_prep, role: deployment_bundle, community.docker.docker_compose_v2.\n" \
@@ -1352,7 +1405,7 @@ check_accepted(
 )
 
 check_rejected(
-  failures, :policy_vault, "the redaction test demoted from a run step to its name",
+  :policy_vault, "the redaction test demoted from a run step to its name",
   [[CI_WORKFLOW,
     "      - name: Check generated credential redaction\n" \
     "        run: tests/generate-secrets-redaction-test.sh\n",
@@ -1365,7 +1418,7 @@ check_rejected(
 # --- Managed-user vault contract ----------------------------------------------
 
 check_rejected(
-  failures, :managed_users_vault, "a published fact demoted to a comment",
+  :managed_users_vault, "a published fact demoted to a comment",
   [[VAULT_CONTRACT,
     "    vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n",
     "    # vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n"]],
@@ -1373,7 +1426,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :managed_users_vault, "a reserved identity dropped while its name stays in a comment",
+  :managed_users_vault, "a reserved identity dropped while its name stays in a comment",
   [[VAULT_CONTRACT,
     "      komga: [\"{{ vault_komga_admin_email }}\"]\n",
     "      # komga: [\"{{ vault_komga_admin_email }}\"]\n      komga: []\n"]],
@@ -1381,7 +1434,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :managed_users_vault, "an ntfy publisher token dropped from the ownership check",
+  :managed_users_vault, "an ntfy publisher token dropped from the ownership check",
   [[VAULT_CONTRACT,
     "         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,\n",
     "         vault_managed_user_errors([vault_ntfy_dozzle_token,\n"]],
@@ -1395,7 +1448,7 @@ check_rejected(
 # is a prefix of a longer identifier matches it.
 
 check_rejected(
-  failures, :downloaders, "the state guard replaced by a comment naming it",
+  :downloaders, "the state guard replaced by a comment naming it",
   [[DOWNLOADERS_MAIN,
     "- name: Guard downloader critical state before Phase 1 activation\n" \
     "  ansible.builtin.include_tasks: state_guard.yml\n",
@@ -1407,7 +1460,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "the CPU policy service renamed with the old name left in a comment",
+  :downloaders, "the CPU policy service renamed with the old name left in a comment",
   [[DOWNLOADERS_MAIN,
     "    container_cpu_service_name: downloaders\n",
     "    # container_cpu_service_name: downloaders\n" \
@@ -1416,7 +1469,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "the activation gate demoted to a comment",
+  :downloaders, "the activation gate demoted to a comment",
   [[DOWNLOADERS_MAIN,
     "  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
     "  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
@@ -1424,7 +1477,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "the Arr client reconciliation pointed at a different entry point",
+  :downloaders, "the Arr client reconciliation pointed at a different entry point",
   [[DOWNLOADERS_MAIN,
     "    tasks_from: reconcile_download_clients\n",
     "    tasks_from: reconcile_download_clients_disabled\n"]],
@@ -1432,7 +1485,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "an API key bound to the wrong service",
+  :downloaders, "an API key bound to the wrong service",
   [[DOWNLOADERS_ENVIRONMENT,
     "SONARR_API_KEY={{ vault_arr_sonarr_api_key }}\n",
     "SONARR_API_KEY={{ vault_arr_radarr_api_key }}\n" \
@@ -1441,7 +1494,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "SABnzbd bound to loopback with the old value left in a comment",
+  :downloaders, "SABnzbd bound to loopback with the old value left in a comment",
   [[DOWNLOADERS_INI,
     "host = 0.0.0.0\nport = 8080\n",
     "host = 127.0.0.1\nport = 8080\n# host = 0.0.0.0\n"]],
@@ -1449,7 +1502,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :downloaders, "a category destination fixed instead of declared",
+  :downloaders, "a category destination fixed instead of declared",
   [[DOWNLOADERS_INI,
     "dir = {{ directory }}\n",
     "dir = /data/media/.acquisition/usenet\n# dir = {{ directory }}\n"]],
@@ -1459,14 +1512,14 @@ check_rejected(
 # Both absence invariants used to read the file's text, so writing down that the
 # forbidden shape is deliberately absent was itself the forbidden shape.
 check_accepted(
-  failures, :downloaders, "a comment recording that no provider section is rendered",
+  :downloaders, "a comment recording that no provider section is rendered",
   [[DOWNLOADERS_INI,
     "[misc]\n",
     "# No [servers] section: providers are the operator's, never ours.\n[misc]\n"]]
 )
 
 check_accepted(
-  failures, :downloaders, "a comment explaining why categories are not a mapping",
+  :downloaders, "a comment explaining why categories are not a mapping",
   [[DOWNLOADERS_VERIFY,
     "---\n",
     "---\n# SABnzbd returns config.categories is mapping only on ancient builds.\n"]]
@@ -1479,7 +1532,7 @@ check_accepted(
 # mentioned in a comment, so deleting the canonical Compose validation outright
 # left the check passing as long as the words survived somewhere in the file.
 check_rejected(
-  failures, :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
+  :policy_deployment, "canonical Compose validation deleted with its path left in a comment",
   [[BUNDLE_INPUTS,
     "- name: Validate canonical controller Compose inputs\n" \
     "  ansible.builtin.include_tasks: controller_input.yml\n" \
@@ -1495,7 +1548,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy_deployment, "a runtime helper input no longer handed to the validator",
+  :policy_deployment, "a runtime helper input no longer handed to the validator",
   [[BUNDLE_INPUTS,
     "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py\"\n",
     "    deployment_controller_input_path: \"{{ playbook_dir }}/services/dozzle/alert_relay.py.bak\"\n"]],
@@ -1506,7 +1559,7 @@ check_rejected(
 # beside it. The file still contains the words; the validator no longer sees the
 # path.
 check_rejected(
-  failures, :policy_deployment, "a guarded leaf demoted to a comment beside the batch",
+  :policy_deployment, "a guarded leaf demoted to a comment beside the batch",
   [[BUNDLE_TARGET,
     "    deployment_target_paths: >-\n" \
     "      {{ [nas_docker_root,\n" \
@@ -1518,7 +1571,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy_deployment, "the runtime service leaves dropped from the batch",
+  :policy_deployment, "the runtime service leaves dropped from the batch",
   [[BUNDLE_TARGET,
     "         + (deployment_bundle_services | default([])\n" \
     "            | map(attribute='name')\n" \
@@ -1529,7 +1582,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy_deployment, "a behavior proof renamed while its old name stays in a comment",
+  :policy_deployment, "a behavior proof renamed while its old name stays in a comment",
   [[COMPOSE_METADATA_BEHAVIOR,
     "    - name: Require unknown YAML tags to fail closed\n",
     "    # Require unknown YAML tags to fail closed\n" \
@@ -1538,7 +1591,7 @@ check_rejected(
 )
 
 check_rejected(
-  failures, :policy_deployment, "the manifest's platform inputs key renamed",
+  :policy_deployment, "the manifest's platform inputs key renamed",
   [[BUNDLE_MANIFEST_TEMPLATE, "platform_inputs:\n", "platform_input:\n"]],
   "deployment manifest must bind the exact acquisition catalog path, mode, and checksum"
 )
@@ -1547,7 +1600,7 @@ check_rejected(
 # anywhere in the file, so a comment naming the later key sorted ahead of the key
 # itself and failed a template that renders in exactly the required order.
 check_accepted(
-  failures, :policy_deployment, "a template comment naming a key that renders later",
+  :policy_deployment, "a template comment naming a key that renders later",
   [[BUNDLE_MANIFEST_TEMPLATE,
     "---\n",
     "---\n{# platform_inputs is rendered before services: below #}\n"]]
@@ -1556,7 +1609,7 @@ check_accepted(
 # --- Platform policy ----------------------------------------------------------
 
 check_rejected(
-  failures, :policy_platform, "a capacity probe whose result nothing is derived from",
+  :policy_platform, "a capacity probe whose result nothing is derived from",
   [[PREFLIGHT,
     "  register: preflight_docker_info\n",
     "  register: preflight_docker_capacity_unused\n"]],
@@ -1566,7 +1619,7 @@ check_rejected(
 # The old pair only ruled out the one wrong path that had been used before, so any
 # other divergent path satisfied it.
 check_rejected(
-  failures, :policy_platform, "one probe task pointed at a divergent path",
+  :policy_platform, "one probe task pointed at a divergent path",
   [[PREFLIGHT,
     "    paths: \"{{ nas_docker_root }}/.nas-platform-preflight-probe\"\n",
     "    paths: \"{{ platform_deploy_root }}/.nas-platform-preflight-probe\"\n"]],
@@ -1580,7 +1633,7 @@ check_rejected(
 # outright and the old whole-file substring still passed, because the same path
 # appears in the poller's own command line and in a fail_msg.
 check_rejected(
-  failures, :auto_deploy, "a virtualenv probe deleted while its path stays in the command line",
+  :auto_deploy, "a virtualenv probe deleted while its path stays in the command line",
   [[AUTO_DEPLOY_ROLE,
     "- name: Require the controller virtualenv the poller runs Ansible from\n" \
     "  ansible.builtin.stat:\n" \
@@ -1598,7 +1651,7 @@ check_rejected(
 # required one appears; the rendered-artifact check two dozen lines below cannot
 # see it either, because a file carrying the token twice still contains it.
 check_rejected(
-  failures, :auto_deploy, "a duplicated Authorization directive",
+  :auto_deploy, "a duplicated Authorization directive",
   [[AUTO_DEPLOY_NOTIFIER,
     "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n",
     "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n" \
@@ -1606,13 +1659,16 @@ check_rejected(
   "the ntfy.curl config must present exactly the deploy publisher's own bearer token"
 )
 
+in_parallel_cases(failures, ROWS) { |row, collected| row.call(collected) }
+
 check(failures,
       File.readlines(VALIDATE_POLICY).include?("ruby tests/contract_structure_mutation_test.rb\n"),
       "contract structure mutation proofs are not registered in the policy suite")
 
-# Printed so the reuse is checkable from a build log rather than believed: one copy
+# Printed so the reuse is checkable from a build log rather than believed: a copy
 # for every row means the verification is rejecting the copy every time and the
-# rows are paying for a cache that is not working.
+# rows are paying for a cache that is not working. The floor is one copy per pool
+# worker rather than one for the whole run, because each worker owns its fixture.
 reuse = format("%<rows>d rows, %<copies>d repository copies", **COPY_ACCOUNTING.slice(:rows, :copies))
 unless COPY_ACCOUNTING[:rebuilt].empty?
   warn "contract structure copy rebuilt after: #{COPY_ACCOUNTING[:rebuilt].join(', ')}"
