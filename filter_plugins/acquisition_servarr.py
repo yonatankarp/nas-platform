@@ -333,6 +333,13 @@ def acquisition_indexer_body(declaration: Any) -> dict[str, Any]:
         # "Standard" sync profile Prowlarr creates itself on first start; a
         # deployment with more than one may name another.
         "appProfileId": _integer(declaration.get("app_profile_id", 1)),
+        # The second property Prowlarr validates and does not default: it
+        # refuses a Usenet indexer with "Redirect must be enabled for Usenet
+        # indexers". This platform declares Usenet indexers only --
+        # media_torrent_enabled is false on every host -- so true is the
+        # default, and a declaration may say otherwise for the day that stops
+        # being true, since the rule is protocol-specific rather than universal.
+        "redirect": _boolean(declaration.get("redirect", True)),
         "implementation": implementation,
         "implementationName": _string(
             declaration.get("implementation_name", implementation)
@@ -362,7 +369,7 @@ _INDEXER = _Relationship(
     masked=acquisition_indexer_masked_fields,
     attributes=(
         ("name", _string), ("enable", _boolean), ("priority", _integer),
-        ("appProfileId", _integer),
+        ("appProfileId", _integer), ("redirect", _boolean),
         ("implementation", _string), ("implementationName", _string),
         ("configContract", _string),
     ),

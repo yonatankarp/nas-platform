@@ -374,7 +374,7 @@ INDEXER = {
   # Prowlarr validates AppProfileId above zero and returns it on every read, so
   # a fixture without it is a Prowlarr that cannot exist. 1 is the Standard sync
   # profile the declaration above defaults to.
-  "appProfileId" => 1,
+  "appProfileId" => 1, "redirect" => true,
   "implementation" => "Newznab", "implementationName" => "Newznab",
   "configContract" => "NewznabSettings", "tags" => [3, 9],
   "fields" => INDEXER_DECLARATION.fetch("fields")
