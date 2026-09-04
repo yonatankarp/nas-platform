@@ -69,6 +69,7 @@ FIXTURE_FILES = %w[
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
   services/kapowarr/compose.integration.yml
+  inventory/group_vars/all/main.yml
   tests/policy_support.rb
 ].freeze
 
@@ -221,13 +222,21 @@ STATIC_ROWS = [
     expects: "Kapowarr must take the platform identity as PUID"
   },
   {
-    name: "a mount set that is not the database, staging and comics library",
+    # The leaf-per-directory layout this replaced, and the defect it carried:
+    # rename(2) refuses to cross a mount boundary even when both sides are the
+    # same filesystem, so a library and its staging directory in separate mounts
+    # made every import a full byte copy plus unlink.
+    name: "a mount per directory rather than one parent of the library and its staging",
     break: lambda { |root|
       compose_service(root) do |service, _|
-        service["volumes"] = ["${KAPOWARR_CONFIG_PATH:?}:/app/db", "${KAPOWARR_COMICS_PATH:?}:/comics"]
+        service["volumes"] = [
+          "${KAPOWARR_CONFIG_PATH:?}:/app/db",
+          "${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads",
+          "${KAPOWARR_COMICS_PATH:?}:/comics"
+        ]
       end
     },
-    expects: "Kapowarr must mount exactly its database, staging and comics library"
+    expects: "Kapowarr must mount its database and one parent of its library and staging"
   },
   {
     name: "a web UI port the platform does not publish",
@@ -255,22 +264,18 @@ STATIC_ROWS = [
     expects: "the Kapowarr health probe must use the interpreter the image ships"
   },
   {
+    name: "a bind source that is not the share the library and its staging share",
+    break: lambda { |root|
+      role_defaults(root) { |d| d["kapowarr_books_host_path"] = "{{ nas_media_root }}/Books/Comics" }
+    },
+    expects: "Kapowarr must mount the one host share its library and staging share"
+  },
+  {
     name: "a comics library root somewhere other than the declared one",
     break: lambda { |root|
       role_defaults(root) { |d| d["kapowarr_comics_host_path"] = "{{ nas_media_root }}/Comics" }
     },
     expects: "Kapowarr must write the declared comics library root"
-  },
-  {
-    # rename(2) refuses to cross a mount boundary, so staging outside the library
-    # share turns every import into a byte copy.
-    name: "downloads staged outside the library share they import into",
-    break: lambda { |root|
-      role_defaults(root) do |d|
-        d["kapowarr_downloads_host_path"] = "{{ nas_docker_root }}/kapowarr/downloads"
-      end
-    },
-    expects: "Kapowarr must stage downloads beside the library it imports into"
   },
   {
     name: "a database declared outside the docker root",
@@ -280,9 +285,80 @@ STATIC_ROWS = [
     expects: "Kapowarr must keep its database in the declared config root"
   },
   {
-    name: "a library root that is not the container path the library is mounted at",
-    break: ->(root) { role_defaults(root) { |d| d["kapowarr_library_root"] = "/comics/library" } },
-    expects: "the declared library root must be the container path the library is mounted at"
+    # The library moved out of the bind mount while the staging root stayed
+    # inside it, which is the two-mount defect restated in container paths.
+    name: "a library root outside the one bind mount the pair share",
+    break: ->(root) { role_defaults(root) { |d| d["kapowarr_library_root"] = "/comics" } },
+    expects: "the comics library must sit at /Comics inside the bind mount"
+  },
+  {
+    # rename(2) refuses to cross a mount boundary, so staging outside the mount
+    # the library is in turns every import back into a byte copy.
+    name: "downloads staged outside the bind mount they import into",
+    break: lambda { |root|
+      role_defaults(root) { |d| d["kapowarr_staging_root"] = "/app/temp_downloads" }
+    },
+    expects: "the download staging root must sit at /.acquisition/usenet/comics inside the bind mount"
+  },
+  {
+    # The container offset is only a real path if host_prep creates what it
+    # resolves to. Kapowarr answers a download folder that is not a directory
+    # with FolderNotFound, so an undeclared staging directory fails the converge
+    # in a redacted request rather than here.
+    name: "a staging offset resolving to a directory nas_storage does not declare",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        document["nas_storage"].reject! do |entry|
+          entry["path"] == "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
+        end
+      end
+    },
+    expects: "the download staging root resolves to " \
+             "{{ nas_media_root }}/Books/.acquisition/usenet/comics, " \
+             "which nas_storage does not declare"
+  },
+  {
+    # Kapowarr's own default is /app/temp_downloads, a directory inside the image
+    # that the mount this replaced used to cover.
+    name: "a download folder left at the application default the mount no longer covers",
+    break: lambda { |root|
+      role_defaults(root) { |d| d["kapowarr_settings"].delete("download_folder") }
+    },
+    expects: "Kapowarr must declare the download folder the parent mount moved"
+  },
+  {
+    # The application force-suffixes the stored value, so a declaration without
+    # the trailing separator reports drift on every converge and never converges.
+    name: "a download folder declared without the separator the application stores",
+    break: lambda { |root|
+      role_defaults(root) do |d|
+        d["kapowarr_settings"]["download_folder"] = d["kapowarr_staging_root"]
+      end
+    },
+    expects: "Kapowarr must declare the download folder the parent mount moved"
+  },
+  {
+    # The defect that reached CI: Ansible renders the reference and the role
+    # converges, while the runtime half of this contract reads the same mapping
+    # with a YAML parser and compares template text to a path. Correct on the
+    # target, unequal in the check that proves the target holds it.
+    name: "a declared setting written as a template the runtime comparison cannot render",
+    break: lambda { |root|
+      role_defaults(root) do |d|
+        d["kapowarr_settings"]["download_folder"] = "{{ kapowarr_staging_root }}/"
+      end
+    },
+    expects: "the declared Kapowarr settings must name values, not templates: download_folder"
+  },
+  {
+    name: "an environment still exporting a leaf path a reintroduced mount would resolve",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/templates/env.j2",
+                  "KAPOWARR_BOOKS_PATH={{ kapowarr_books_host_path }}",
+                  "KAPOWARR_BOOKS_PATH={{ kapowarr_books_host_path }}\n" \
+                  "KAPOWARR_COMICS_PATH={{ kapowarr_comics_host_path }}")
+    },
+    expects: "Kapowarr env must export the host share as the single media bind source"
   },
   {
     # Restores the substring search the line-oriented read replaced, which is the
@@ -624,6 +700,90 @@ STATIC_ROWS = [
     expects: "Kapowarr must report each volume folder it would move"
   },
   {
+    # Kapowarr v1.3.1 can relabel no stored prefix whose files no longer resolve,
+    # so a deployment holding the superseded one has to fail the run. Without the
+    # plan there is nothing for the refusal to read.
+    name: "no reading of the library roots the declared one supersedes",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.set_fact")&.key?("kapowarr_library_root_migrations")
+        end
+        task["ansible.builtin.set_fact"].delete("kapowarr_library_root_migrations")
+        task["ansible.builtin.set_fact"]["kapowarr_library_root_unused"] = "[]"
+      end
+    },
+    expects: "Kapowarr must resolve the library roots the declared one supersedes"
+  },
+  {
+    # The mutation the refusal exists to prevent: without it the role declares
+    # the new root beside the superseded one and reports success over a library
+    # no volume is attached to.
+    name: "a superseded library root the run converges around",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.key?("ansible.builtin.assert") &&
+            candidate.to_s.include?("kapowarr_library_root_migrations")
+        end
+        document.delete(task)
+      end
+    },
+    expects: "a superseded Kapowarr library root must refuse the run"
+  },
+  {
+    # A one-convergence input here would authorize a migration Kapowarr cannot
+    # perform, and would end in a second root folder and a failed verification.
+    name: "a superseded library root refusal a one-convergence input can open",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.key?("ansible.builtin.assert") &&
+            candidate.to_s.include?("kapowarr_library_root_migrations")
+        end
+        task["ansible.builtin.assert"]["that"] <<
+          "kapowarr_library_root_migration_allowed | bool"
+      end
+    },
+    expects: "the superseded library root refusal must take no one-convergence input"
+  },
+  {
+    # The empty library the web interface shows is the directory Kapowarr itself
+    # created on read, so an operator not told the comics are intact reaches for
+    # a restore.
+    name: "a refusal that does not say the comics on the host are intact",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.key?("ansible.builtin.assert") &&
+            candidate.to_s.include?("kapowarr_library_root_migrations")
+        end
+        task["ansible.builtin.assert"]["fail_msg"] =
+          "Kapowarr holds a library root this platform does not declare."
+      end
+    },
+    expects: "the superseded library root refusal must say the host library is intact"
+  },
+  {
+    # Worthless after the fact: the create is the mutation it prevents.
+    name: "a superseded library root refusal that runs after the root folder create",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.key?("ansible.builtin.assert") &&
+            candidate.to_s.include?("kapowarr_library_root_migrations")
+        end
+        document.delete(task)
+        create = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "POST" &&
+            candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/rootfolder")
+        end
+        document.insert(document.index(create) + 1, task)
+      end
+    },
+    expects: "the superseded library root refusal must precede the root folder create"
+  },
+  {
     # Kapowarr records a credential-free auth POST as a failed login, so an
     # ungated probe writes a WARNING into the application's own security log on
     # every converge and buries a real attempt among its own.
@@ -815,7 +975,7 @@ end
 ADMIN = "nasadmin"
 PASSWORD = "kapowarr-contract-admin-password"
 API_KEY = "a1b2c3d4e5f60718293a4b5c6d7e8f90"
-LIBRARY_ROOT = "/comics"
+LIBRARY_ROOT = "/data/books/Comics"
 
 DECLARED_SETTINGS = YAML.safe_load_file(
   File.join(ROOT, "roles", "kapowarr", "defaults", "main.yml")
@@ -997,7 +1157,7 @@ RUNTIME_ROWS = [
     # The migration installs the folder Kapowarr derives from the root folder the
     # volume is attached to, so a second root makes that derivation ambiguous.
     name: "a second library root beside the declared one",
-    given: { root_folders: [LIBRARY_ROOT, "/comics-archive"] },
+    given: { root_folders: [LIBRARY_ROOT, "/data/books/Comics-archive"] },
     expects: "Kapowarr does not own exactly the declared comics library root"
   },
   {
@@ -1406,11 +1566,10 @@ PROGRAM_MUTATIONS = [
     program: :static,
     from: 'Array(service["volumes"]) == [
       "${KAPOWARR_CONFIG_PATH:?}:/app/db",
-      "${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads",
-      "${KAPOWARR_COMICS_PATH:?}:/comics"
+      "${KAPOWARR_BOOKS_PATH:?}:/data/books"
     ]',
     to: "true",
-    rows: ["a mount set that is not the database, staging and comics library"]
+    rows: ["a mount per directory rather than one parent of the library and its staging"]
   },
   {
     label: "the shipped-interpreter health probe check",

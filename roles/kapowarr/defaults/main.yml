@@ -2,14 +2,60 @@
 kapowarr_port: 5656
 kapowarr_api: "http://127.0.0.1:{{ kapowarr_port }}"
 kapowarr_config_host_path: "{{ nas_docker_root }}/kapowarr/config"
-# Direct downloads land beside the library on the same volume, so an import is a
-# rename rather than a copy across filesystems. The acquisition foundation
-# already declares this directory as the comics staging root.
-kapowarr_downloads_host_path: "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
+# The one host share the comics library and its staging directory share, and the
+# reason it is mounted as a parent rather than as two leaves: Comics sits beside
+# .acquisition/usenet/comics under Books, so one bind mount per share puts the
+# pair inside one mount.
+#
+# The comment this replaces claimed the opposite -- "downloads land beside the
+# library on the same volume, so an import is a rename rather than a copy across
+# filesystems" -- and it was false for the whole life of this role. Same volume
+# is not the test. rename(2) refuses to cross a *mount* boundary even when both
+# sides are the same filesystem, so mounting the library and its staging
+# directory separately made every Kapowarr import a full byte copy plus unlink,
+# with transient double occupancy on a library at 4.19 TB, and put hardlinking
+# out of reach. Nothing in the container's own view says so: the paths look like
+# neighbours and the import still reports success, which is how the claim
+# survived. Bindery carried the identical defect and was repaired the same way
+# in #300.
+#
+# tests/policy_test.rb derives library/staging pairs from a container's
+# environment paths and requires each pair to share one mount, and it cannot see
+# this one: Kapowarr reads neither path from its environment, it stores both in
+# its own database. Adding environment variables nothing consumes to get under
+# that check would be the copy the contract's "no value nothing reads" rule
+# exists to refuse, so tests/contracts/kapowarr-static.rb pins the mount list
+# exactly instead. That is the guard for this service.
+#
+# nas_storage already declares this share, both acquisition leaves and the
+# library below it, exactly as it does for the identical Bindery and arr-stack
+# parent mounts. The cost is that Kapowarr now sees the whole Books share rather
+# than two directories -- the same reach Bindery has had since #300.
+kapowarr_books_host_path: "{{ nas_media_root }}/Books"
+# The comics library on the host. Nothing mounts it by name any more; it is
+# reached through the parent mount above. It stays declared because the role
+# names it among the paths it touches, which is what runs deployment_bundle's
+# containment check against the one tree the volume folder migration moves
+# directories inside.
 kapowarr_comics_host_path: "{{ nas_media_root }}/Books/Comics"
-# The container path the comics library is mounted at, which is what Kapowarr
-# stores as its root folder.
-kapowarr_library_root: /comics
+# The container paths below are the two the parent mount puts the pair at, and
+# both are stored by the application rather than read from the environment:
+# kapowarr_library_root is what Kapowarr keeps as its root folder and as the
+# prefix of every volume's absolute folder, and kapowarr_staging_root is the
+# download_folder setting declared below.
+#
+# Unlike Bindery, whose container paths already shared /data/books and so needed
+# no migration, Kapowarr's did not: the library was at /comics and staging at
+# /app/temp_downloads, which have no common parent but `/`. Both therefore move,
+# and because Kapowarr stores them, the move is a stored-path migration. The
+# tasks refuse to converge a deployment still holding the superseded prefix
+# rather than quietly adding a second root folder beside it.
+#
+# The staging path is byte-identical to the container path SABnzbd reports a
+# finished comics download at (roles/downloaders/defaults/main.yml), so an
+# external download client added later needs no remote path mapping.
+kapowarr_library_root: /data/books/Comics
+kapowarr_staging_root: /data/books/.acquisition/usenet/comics
 kapowarr_compose_project_name: >-
   {{ (platform_project_name ~ '-kapowarr')
      if platform_project_name | default('') | length > 0 else 'kapowarr' }}
@@ -29,9 +75,9 @@ kapowarr_volume_folder_migration_allowed: false
 # nothing -- so this mapping is the whole of what a converge writes, and a key
 # absent from it is left exactly as the application holds it.
 #
-# Every value here is Kapowarr v1.3.1's own default except
-# volume_folder_naming, which the comment on that key explains. Staying on the
-# application's defaults is deliberate: a converge reverts whatever was changed
+# Every value here is Kapowarr v1.3.1's own default except volume_folder_naming
+# and download_folder, which the comments on those two keys explain. Staying on
+# the application's defaults is deliberate: a converge reverts whatever was changed
 # in the web interface without inventing an opinion the platform does not hold.
 # Changing a value here is how an opinion is expressed, and the naming group is
 # the one with a consequence outside Kapowarr, because Komga indexes the
@@ -50,6 +96,49 @@ kapowarr_volume_folder_migration_allowed: false
 # refused whole if any single key in it is invalid, so a wrong value here fails
 # the converge loudly instead of half-applying.
 kapowarr_settings:
+  # Where Kapowarr's own direct downloader stages a comic before it imports it,
+  # and the second value here that is not an application default. It has to be
+  # declared because the parent mount moved it: the application's default is
+  # /app/temp_downloads, a directory inside the image that the bind mount this
+  # replaces used to cover, and leaving it declared nowhere would leave Kapowarr
+  # staging into the container's writable layer -- on the same "filesystem" as
+  # nothing, so every import would stay a cross-device copy and the download
+  # would vanish on the next recreate.
+  #
+  # The trailing separator is not cosmetic and must not be tidied away.
+  # Settings.__format_value() stores the value as force_suffix(abspath(value)),
+  # so the application reads back a path with a trailing separator whatever was
+  # submitted. A declaration without it could never equal what is read back, so
+  # the settings write would run on every converge and the role would never
+  # report a converged state -- the same trap the root folder comparison strips
+  # the separator to avoid.
+  #
+  # Written out rather than as `{{ kapowarr_staging_root }}/`, which is what it
+  # was and which CI caught: tests/contracts/kapowarr-runtime.rb compares this
+  # mapping to what a live Kapowarr returns, and it reads the mapping with a YAML
+  # parser that has no Jinja in it, so a reference here is compared as the
+  # eleven-character template text and can never equal a path. Ansible rendered
+  # it correctly and the role converged; only the contract saw the difference,
+  # which is exactly the read a contract exists to make. The relation to
+  # kapowarr_staging_root is kept by tests/contracts/kapowarr-static.rb, which
+  # requires this value to be that path plus the separator -- an assertion rather
+  # than an interpolation, so it holds in both readers. No value in this mapping
+  # may carry a template for the same reason; the static contract refuses one.
+  #
+  # Two validations apply and both are satisfied by the mount above.
+  # Settings.__format_value() refuses a download_folder that is not a directory
+  # *inside the container* with FolderNotFound, which the parent mount and
+  # nas_storage together satisfy: the share is declared, host_prep creates the
+  # leaf, and it arrives under the mount. And are_folders_colliding() refuses one
+  # that is a parent or child of any root folder -- siblings pass, which
+  # /data/books/Comics and this are.
+  #
+  # That second one is the trap the parent mount creates, so it is written down
+  # rather than left to be rediscovered: declaring kapowarr_library_root as
+  # /data/books itself now looks like a tempting simplification, and it would
+  # make this path a child of the root folder and every settings write fail with
+  # InvalidKeyValue. The library root must stay the Comics leaf.
+  download_folder: /data/books/.acquisition/usenet/comics/
   # Deliberately one directory level, and deliberately not Kapowarr's own
   # default of "{series_name}/Volume {volume_number} ({year})". Komga builds a
   # Series from the directory that *directly* contains books, so the nested
