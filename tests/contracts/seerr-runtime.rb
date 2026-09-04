@@ -15,7 +15,14 @@ require "open3"
 require "uri"
 require "yaml"
 
-READY_TIMEOUT_SECONDS = 180
+# How long a real Seerr is given to answer its status endpoint. Like every other
+# input to this half it arrives in the environment, because the one caller that
+# needs a different budget is a test: the run-mode environment rows in
+# tests/seerr_contract_test.rb reach this program only when a planted regression
+# let a refusal through, and there is no Seerr behind the port at all. Spending
+# the deployment's three minutes proving that was, twice over, the entire floor
+# of that check's self-test. Nothing in a deployment sets this.
+READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEERR_READY_TIMEOUT_SECONDS", "180"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_SEERR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_SEERR_CONTAINER")
 ARRS_EXPECTED = ENV.fetch("PLATFORM_SEERR_ARRS") == "true"

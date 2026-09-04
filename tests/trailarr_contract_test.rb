@@ -636,7 +636,17 @@ def run_env_failures(wrapper_source: File.read(CONTRACT))
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker"),
       "PLATFORM_MAC_VAULT_FILE" => nil,
-      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil
+      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
+      # Every invocation in this helper must end in a refusal, so none of them
+      # ever waits for a ready Trailarr and this budget is inert against an
+      # intact wrapper. A planted regression that drops one of the `:?`
+      # requirements is exactly what makes it reachable: the wrapper then execs
+      # the runtime half, which spends its whole readiness budget on a port
+      # nothing is listening on. At the shipped 120 seconds those mutants were
+      # the self-test's floor, and no amount of concurrency shortens one wait.
+      # Ten seconds is far more than the local fixture needs and still ends in
+      # the same refusal.
+      "PLATFORM_TRAILARR_READY_TIMEOUT_SECONDS" => "10"
     }
     REQUIRED_RUN_ENV.each do |name|
       # Set to "" rather than deleted: ${VAR:?} refuses null as well as unset,
