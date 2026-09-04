@@ -232,6 +232,21 @@ def collect_failures():
     )
     check(failures, explicit["enable"] is False and explicit["priority"] == 17,
           "a declared enable flag and priority must override the defaults")
+    # Prowlarr answers a body without appProfileId with 400, so its presence is
+    # the difference between an indexer this platform can create and one every
+    # converge fails on.
+    check(failures, indexer["appProfileId"] == 1,
+          "an indexer body must default to Prowlarr's Standard sync profile")
+    check(failures,
+          plugin.acquisition_indexer_body(
+              dict(INDEXER_DECLARATION, app_profile_id=3)
+          )["appProfileId"] == 3,
+          "a declared app_profile_id must override the default sync profile")
+    check(failures,
+          plugin.acquisition_indexer_body(
+              dict(INDEXER_DECLARATION, app_profile_id="2")
+          )["appProfileId"] == 2,
+          "a declared app_profile_id must be coerced to an integer")
     refuses(failures,
             lambda: plugin.acquisition_indexer_body(dict(
                 INDEXER_DECLARATION,
@@ -297,8 +312,8 @@ def collect_failures():
           "the client projection must compare its readable fields and its secrets")
     check(failures, list(plugin.acquisition_indexer_projection(
         live, INDEXER_DECLARATION)) == [
-            "name", "enable", "priority", "implementation", "implementationName",
-            "configContract", "tags", "fields"],
+            "name", "enable", "priority", "appProfileId", "implementation",
+            "implementationName", "configContract", "tags", "fields"],
         "the indexer projection must carry exactly its owned attributes, tags last")
     # A Servarr API omits `tags` from a resource that has none, and an explicit
     # null is a type that changed rather than an absence.
