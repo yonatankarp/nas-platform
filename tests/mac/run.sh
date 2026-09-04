@@ -307,39 +307,15 @@ allocate_service_port() {
 # ports file. The roster arrives as arguments rather than as a literal list so
 # that the emission order and the order the caller unpacks are the same list.
 read_integration_ports() {
+  # The reader is read-integration-ports.rb: a 30-line TOCTOU-safe program that
+  # ran from a `<<'RUBY'` heredoc here until #315, where sh -n, ruby -c and a
+  # unit test could reach none of it. Two roots meet on this line and must not be
+  # confused: the program is resolved from $mac_script_dir, this script's own
+  # checkout, while $mac_repo_dir is passed as the tree the ports file must not
+  # live inside. stdin stays at end-of-file because the heredoc exhausted it.
   # shellcheck disable=SC2086
-  ruby -rjson - "$integration_ports_file" "$mac_repo_dir" $MAC_SERVICE_PORT_ORDER <<'RUBY'
-path, repository, *services = ARGV
-expected = services.map { |service| "#{service}_port" }
-raise "unsafe" if expected.empty? || expected.uniq.length != expected.length
-flags = File::RDONLY
-flags |= File::NOFOLLOW if File.const_defined?(:NOFOLLOW)
-raise "unsafe" unless File.absolute_path(path) == path && !File.symlink?(path)
-parent = File.realpath(File.dirname(path))
-repository = File.realpath(repository)
-raise "unsafe" if parent == repository || parent.start_with?(repository + File::SEPARATOR)
-before = File.lstat(path)
-raise "unsafe" unless before.file? && before.uid == Process.uid &&
-  (before.mode & 0o777) == 0o600 && before.size <= 4096
-bytes = File.open(path, flags) do |input|
-  held = input.stat
-  raise "unsafe" unless [held.dev, held.ino, held.size, held.mode, held.uid] ==
-    [before.dev, before.ino, before.size, before.mode, before.uid]
-  value = input.read(4097)
-  raise "unsafe" if value.bytesize > 4096
-  after = input.stat
-  raise "unsafe" unless [after.dev, after.ino, after.size, after.mode, after.uid, after.mtime.to_r, after.ctime.to_r] ==
-    [held.dev, held.ino, held.size, held.mode, held.uid, held.mtime.to_r, held.ctime.to_r]
-  value
-end
-document = JSON.parse(bytes)
-raise "unsafe" unless document.is_a?(Hash) && document.keys.sort == (["schema"] + expected).sort &&
-  document["schema"] == 1
-ports = expected.map { |name| document.fetch(name) }
-raise "unsafe" unless ports.all? { |port| port.is_a?(Integer) && port.between?(1024, 65_535) } &&
-  ports.uniq.length == ports.length
-puts ports.join(" ")
-RUBY
+  "$mac_script_dir/read-integration-ports.rb" "$integration_ports_file" "$mac_repo_dir" \
+    $MAC_SERVICE_PORT_ORDER </dev/null
 }
 
 if [ "$proof_platform" = integration ]; then
