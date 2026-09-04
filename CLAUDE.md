@@ -277,8 +277,11 @@ Documentation is routed, not inert. This file is itself a gate input —
 `tests/docs_links_test.rb` checks the lane roster and the stack count above
 against the tree — so editing it selects `static` and `docs`, the two jobs those
 checks run in. Which documents owe which job is derived from the registered
-checks rather than listed, so a new check that reads a document by name fails
-`tests/ci/classify_changes_test.rb` until the document is routed (#346).
+checks rather than listed, so a document under `docs/` that a gate check reads
+fails `tests/ci/classify_changes_test.rb` until it is routed — and repository-root
+Markdown no lane map claims falls open to every lane rather than to none, which
+is the half a derived guard cannot catch because a run of everything satisfies
+it (#346).
 
 ### The `static` budget, and the one way it keeps being blown
 
