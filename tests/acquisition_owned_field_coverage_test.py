@@ -84,6 +84,11 @@ DOWNLOAD_CLIENT = {
 
 INDEXER = {
     "id": 31, "name": "Fixture Indexer", "enable": True, "priority": 17,
+    # Prowlarr validates both of these and returns both on every read: it
+    # refuses an indexer whose AppProfileId is not above zero, and a Usenet
+    # indexer whose Redirect is off. A fixture without them is a Prowlarr that
+    # cannot exist, and the projection says so by refusing to coerce the absence.
+    "appProfileId": 1, "redirect": True,
     "implementation": "Newznab", "implementationName": "Newznab",
     "configContract": "NewznabSettings", "tags": [3, 9],
     "fields": [
@@ -145,6 +150,8 @@ CASES = [
             ("name", lambda b: top(b, "name", "Legacy Indexer")),
             ("enable", lambda b: top(b, "enable", False)),
             ("priority", lambda b: top(b, "priority", 44)),
+            ("appProfileId", lambda b: top(b, "appProfileId", 44)),
+            ("redirect", lambda b: top(b, "redirect", False)),
             ("implementation", lambda b: top(b, "implementation", "Legacy")),
             ("implementationName", lambda b: top(b, "implementationName", "Legacy")),
             ("configContract", lambda b: top(b, "configContract", "LegacySettings")),
