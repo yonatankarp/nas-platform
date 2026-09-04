@@ -1543,18 +1543,18 @@ check_rejected(
     "  ansible.builtin.include_tasks: controller_input.yml\n" \
     "  vars:\n" \
     "    deployment_controller_inputs: >-\n" \
-    "      {{ (deployment_bundle_services | map(attribute='name')\n" \
-    "          | map('regex_replace', '^', playbook_dir ~ '/services/')\n" \
-    "          | map('regex_replace', '$', '/compose.yml')\n" \
+    "      {{ ([playbook_dir ~ '/services/']\n" \
+    "          | product(deployment_bundle_services | map(attribute='name') | list)\n" \
+    "          | map('join') | product(['/compose.yml']) | map('join')\n" \
     "          | product(['0']) | list)\n" \
-    "         + (deployment_bundle_services",
+    "         + ([playbook_dir ~ '/services/']",
     "# canonical Compose inputs were services/<name>/compose.yml\n" \
     "- name: Validate every derived controller input in one pass\n" \
     "  ansible.builtin.include_tasks: controller_input.yml\n" \
     "  vars:\n" \
     "    deployment_controller_inputs: >-\n" \
     "      {{ ([] | list)\n" \
-    "         + (deployment_bundle_services"]],
+    "         + ([playbook_dir ~ '/services/']"]],
   "controller inputs must validate manifest, canonical Compose, and platform overrides"
 )
 
@@ -1584,10 +1584,10 @@ check_rejected(
 check_rejected(
   :policy_deployment, "the runtime service leaves dropped from the batch",
   [[BUNDLE_TARGET,
-    "         + (deployment_bundle_services | default([])\n" \
-    "            | map(attribute='name')\n" \
-    "            | map('regex_replace', '^', platform_runtime_dir ~ '/services/')\n" \
-    "            | list) }}\n",
+    "         + ([platform_runtime_dir ~ '/services/']\n" \
+    "            | product(deployment_bundle_services | default([])\n" \
+    "                      | map(attribute='name') | list)\n" \
+    "            | map('join') | list) }}\n",
     "         }}\n"]],
   "target validator must guard every implemented runtime service leaf"
 )

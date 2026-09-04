@@ -225,10 +225,10 @@
           platform_current_dir,
           platform_deploy_root ~ '/.release-' ~ platform_release_id,
           platform_deploy_root ~ '/.current-' ~ platform_release_id]
-         + (deployment_bundle_services | default([])
-            | map(attribute='name')
-            | map('regex_replace', '^', platform_runtime_dir ~ '/services/')
-            | list) }}
+         + ([platform_runtime_dir ~ '/services/']
+            | product(deployment_bundle_services | default([])
+                      | map(attribute='name') | list)
+            | map('join') | list) }}
 
 # Lets deployment_bundle's own body skip a validation the play already ran,
 # while a playbook that uses the role without site.yml's pre_tasks still gets

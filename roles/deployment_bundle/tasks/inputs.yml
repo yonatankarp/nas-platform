@@ -52,17 +52,27 @@
 # paired onto each group with `product` so a group states its own optionality
 # once, beside the paths it applies to. Only the platform overrides may be
 # absent.
+#
+# Every path here is assembled by `product` and `join` -- plain string
+# concatenation -- rather than by anchoring a `regex_replace` at '^' and '$'.
+# The anchored form reads the same but puts playbook_dir in a regex REPLACEMENT
+# string, where a backslash is an escape and `\1` is a backreference, and puts
+# the suffix behind a '$' that Python also matches before a trailing newline.
+# Neither is reachable from a manifest name, which the assert above pins to
+# [a-z0-9-], but playbook_dir is the deployment's own root and is asserted
+# nowhere. Concatenation has no such reading of its inputs.
 - name: Validate every derived controller input in one pass
   ansible.builtin.include_tasks: controller_input.yml
   vars:
     deployment_controller_inputs: >-
-      {{ (deployment_bundle_services | map(attribute='name')
-          | map('regex_replace', '^', playbook_dir ~ '/services/')
-          | map('regex_replace', '$', '/compose.yml')
+      {{ ([playbook_dir ~ '/services/']
+          | product(deployment_bundle_services | map(attribute='name') | list)
+          | map('join') | product(['/compose.yml']) | map('join')
           | product(['0']) | list)
-         + (deployment_bundle_services | map(attribute='name')
-            | map('regex_replace', '^', playbook_dir ~ '/services/')
-            | map('regex_replace', '$', '/compose.' ~ platform_compose_kind ~ '.yml')
+         + ([playbook_dir ~ '/services/']
+            | product(deployment_bundle_services | map(attribute='name') | list)
+            | map('join')
+            | product(['/compose.' ~ platform_compose_kind ~ '.yml']) | map('join')
             | product(['1']) | list)
          + ([[playbook_dir ~ '/roles/arr/files/configarr/config.yml', '0']]
             if deployment_bundle_services
