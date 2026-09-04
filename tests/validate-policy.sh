@@ -17,10 +17,13 @@
 # a failure that only shows up under load.
 #
 # The gate reports its own wall time and its slowest checks on every run, pass or
-# fail. Its budget has been exceeded three times, and each time naming the check
-# responsible meant timing them by hand; the pool already knows, so it says so.
-# A check that has grown into the gate's floor is visible in that report before
-# it is visible as a cancelled job.
+# fail. Its budget has been exceeded four times, and the first three times naming
+# the check responsible meant timing them by hand; the pool already knows, so it
+# says so. A check that has grown into the gate's floor is visible in that report
+# before it is visible as a cancelled job. Read the seconds for what they are:
+# each is a check's wall time while POLICY_JOBS-1 others were running, so a total
+# cannot tell a gate bound by its work apart from one waiting on a timeout.
+# Changing the width and re-reading the list is what separates them.
 #
 # Unlike the sequential version this does not stop at the first failure: every
 # check runs and every failure is reported, so one broken check no longer hides

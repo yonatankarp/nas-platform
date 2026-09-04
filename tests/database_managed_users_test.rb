@@ -7,6 +7,7 @@ require "fileutils"
 require "open3"
 require "tmpdir"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 require_relative "http_fixture_support"
 
@@ -1449,26 +1450,34 @@ if ARGV == ["--self-test"]
   end
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }
-    exercise_immich(failures)
-    exercise_immich_normalized_duplicate_refusal(failures)
-    exercise_immich_schema_fail_closed(failures, resource: :preferences)
-    exercise_immich_schema_fail_closed(failures, resource: :preference_leaf)
-    exercise_immich_schema_fail_closed(failures, resource: :user)
-    exercise_immich_schema_fail_closed(failures, resource: :admin)
-    exercise_immich_invalid_avatar_policy(failures)
-    exercise_beszel(failures)
-    exercise_paperless(failures)
-    exercise_paperless(failures, scenario: :empty)
-    exercise_paperless(failures, scenario: :mangled)
-    exercise_paperless(failures, scenario: :create_failure)
-    exercise_paperless(failures, scenario: :auth_failure)
-    exercise_paperless(failures, scenario: :check)
-    exercise_fail_closed_and_check_mode(failures)
-    exercise_primary_beszel_drift(failures)
-    exercise_verify_tag_selection(failures)
-    exercise_disabled_paperless_target_rejection(failures)
-    exercise_mangled_created_credentials(failures)
-    exercise_identity_swap_refusal(failures)
+    # Each probe stands up its own stub service on an OS-assigned port and runs
+    # its own ansible-playbook in its own temporary directory, so they share
+    # nothing but the failure list and spend nearly all of their wall time
+    # waiting on that subprocess. Named as callables they go through the pool
+    # and are still reported in the order written here.
+    probes = [
+      ->(collected) { exercise_immich(collected) },
+      ->(collected) { exercise_immich_normalized_duplicate_refusal(collected) },
+      ->(collected) { exercise_immich_schema_fail_closed(collected, resource: :preferences) },
+      ->(collected) { exercise_immich_schema_fail_closed(collected, resource: :preference_leaf) },
+      ->(collected) { exercise_immich_schema_fail_closed(collected, resource: :user) },
+      ->(collected) { exercise_immich_schema_fail_closed(collected, resource: :admin) },
+      ->(collected) { exercise_immich_invalid_avatar_policy(collected) },
+      ->(collected) { exercise_beszel(collected) },
+      ->(collected) { exercise_paperless(collected) },
+      ->(collected) { exercise_paperless(collected, scenario: :empty) },
+      ->(collected) { exercise_paperless(collected, scenario: :mangled) },
+      ->(collected) { exercise_paperless(collected, scenario: :create_failure) },
+      ->(collected) { exercise_paperless(collected, scenario: :auth_failure) },
+      ->(collected) { exercise_paperless(collected, scenario: :check) },
+      ->(collected) { exercise_fail_closed_and_check_mode(collected) },
+      ->(collected) { exercise_primary_beszel_drift(collected) },
+      ->(collected) { exercise_verify_tag_selection(collected) },
+      ->(collected) { exercise_disabled_paperless_target_rejection(collected) },
+      ->(collected) { exercise_mangled_created_credentials(collected) },
+      ->(collected) { exercise_identity_swap_refusal(collected) }
+    ]
+    in_parallel_cases(failures, probes) { |probe, collected| probe.call(collected) }
   else
     failures << "ansible-playbook is required for database managed-user behavior fixtures"
   end

@@ -15,7 +15,14 @@ require "open3"
 require "uri"
 require "yaml"
 
-READY_TIMEOUT_SECONDS = 120
+# How long a real Trailarr is given to answer its status route. Like every other
+# input to this half it arrives in the environment, because the one caller that
+# needs a different budget is a test: the run-mode environment rows in
+# tests/trailarr_contract_test.rb reach this program only when a planted
+# regression let a refusal through, and there is no Trailarr behind the port at
+# all. Spending the deployment's two minutes proving that was, twice over, the
+# entire floor of that check's self-test. Nothing in a deployment sets this.
+READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_TRAILARR_READY_TIMEOUT_SECONDS", "120"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TRAILARR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_TRAILARR_CONTAINER")
 ARRS_EXPECTED = ENV.fetch("PLATFORM_TRAILARR_ARRS") == "true"

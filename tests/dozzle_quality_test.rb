@@ -6,6 +6,7 @@ require "fileutils"
 require "tmpdir"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -256,22 +257,11 @@ check(failures,
 
 _stdout, stderr, status = run_static(ROOT)
 check(failures, status.success?, "Dozzle static contract rejected effective Compose labels: #{stderr.lines.first&.strip}")
-check_label_complete_fixture(failures)
-check_name_mutation(
-  failures,
-  :missing,
-  "Dozzle contract failed: paperless-ngx base gotenberg name label is absent\n"
-)
-check_name_mutation(
-  failures,
-  :wrong,
-  "Dozzle contract failed: paperless-ngx base gotenberg name label differs\n"
-)
-check_name_mutation(
-  failures,
-  :duplicate,
-  "Dozzle contract failed: base Compose has duplicate dev.dozzle.name labels\n"
-)
+name_mutations = [
+  [:missing, "Dozzle contract failed: paperless-ngx base gotenberg name label is absent\n"],
+  [:wrong, "Dozzle contract failed: paperless-ngx base gotenberg name label differs\n"],
+  [:duplicate, "Dozzle contract failed: base Compose has duplicate dev.dozzle.name labels\n"]
+].freeze
 
 relay_mutations = [
   ["direct ntfy topic publishing", "roles/dozzle/defaults/main.yml",
@@ -326,9 +316,6 @@ relay_mutations = [
    "ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}\n", "",
    "environment does not render the single relay listener port"]
 ].freeze
-relay_mutations.each do |name, path, original, replacement, diagnostic|
-  check_static_mutation(failures, name, path, original, replacement, diagnostic)
-end
 
 role_safety_mutations = [
   ["child preflight follows symlinks",
@@ -356,16 +343,29 @@ role_safety_mutations = [
    "         not (dozzle_alert_relay_state_child_before_prepare.stat.islnk | default(false)))\n",
    "        dozzle_alert_relay_state_child_before_prepare.stat.isdir | default(false)\n"]
 ].freeze
-role_safety_mutations.each do |name, original, replacement|
-  check_static_mutation(
-    failures,
-    name,
-    "roles/dozzle/tasks/main.yml",
-    original,
-    replacement,
-    "role can mutate an unsafe relay state child"
-  )
-end
+
+# Every row above copies the repository into a temporary directory of its own,
+# breaks one thing in the copy and runs the static half of the contract against
+# it, so the rows share nothing and each one is a copy plus a subprocess the
+# interpreter is only waiting on. Run one after another that was this check's
+# whole cost; collected as callables they go through the pool in the order they
+# are declared, which is also the order their failures are reported in.
+copy_rows =
+  [->(collected) { check_label_complete_fixture(collected) }] +
+  name_mutations.map do |mutation, diagnostic|
+    ->(collected) { check_name_mutation(collected, mutation, diagnostic) }
+  end +
+  relay_mutations.map do |name, path, original, replacement, diagnostic|
+    ->(collected) { check_static_mutation(collected, name, path, original, replacement, diagnostic) }
+  end +
+  role_safety_mutations.map do |name, original, replacement|
+    lambda do |collected|
+      check_static_mutation(collected, name, "roles/dozzle/tasks/main.yml", original, replacement,
+                            "role can mutate an unsafe relay state child")
+    end
+  end
+
+in_parallel_cases(failures, copy_rows) { |row, collected| row.call(collected) }
 
 # An absence invariant over the whole role still has to reach every task, but it
 # reads the parsed scalars one at a time: a comment explaining why the role must

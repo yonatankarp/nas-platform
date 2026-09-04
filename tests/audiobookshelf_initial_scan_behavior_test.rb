@@ -9,6 +9,7 @@ require "timeout"
 require "tmpdir"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -343,9 +344,24 @@ def pending_marker_failure(config_root)
   nil
 end
 
+
+# Each scenario below is a whole convergence: its own temporary config root, its
+# own stub Audiobookshelf on an OS-assigned port and its own ansible-playbook
+# runs, sharing nothing with the others but the failure list. Declaring one
+# rather than opening the temporary directory inline is what lets the pool at
+# the foot of the file place them side by side -- almost all of their wall time
+# is spent waiting on those playbook subprocesses -- while their failures are
+# still concatenated in the order the scenarios are written.
+SCENARIOS = []
+def scenario(prefix, &body)
+  SCENARIOS << lambda do |failures|
+    Dir.mktmpdir(prefix) { |directory| body.call(directory, failures) }
+  end
+end
+
 failures = []
 
-Dir.mktmpdir("audiobookshelf-native-mac-marker-") do |config_root|
+scenario("audiobookshelf-native-mac-marker-") do |config_root, failures|
   fixture = ScanFixture.new(advance_last_scan: true, library: nil)
   begin
     _stdout, _stderr, interrupted = run_scan(
@@ -382,7 +398,7 @@ end
   ["normal", ->(root) { root }],
   ["adoption", ->(root) { File.join(root, "legacy", "audiobookshelf", "config") }]
 ].each do |layout, config_path|
-  Dir.mktmpdir("audiobookshelf-markerless-#{layout}-") do |root|
+  scenario("audiobookshelf-markerless-#{layout}-") do |root, failures|
     config_root = config_path.call(root)
     FileUtils.mkdir_p(config_root)
     fixture = ScanFixture.new(advance_last_scan: true)
@@ -400,7 +416,7 @@ end
   end
 end
 
-Dir.mktmpdir("audiobookshelf-overlapping-scan-") do |config_root|
+scenario("audiobookshelf-overlapping-scan-") do |config_root, failures|
   fixture = ScanFixture.new(
     advance_last_scan: true,
     library: exact_library(folder_paths: ["/old-audiobooks"], last_scan: 100),
@@ -436,7 +452,7 @@ Dir.mktmpdir("audiobookshelf-overlapping-scan-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-folder-repair-") do |config_root|
+scenario("audiobookshelf-folder-repair-") do |config_root, failures|
   fixture = ScanFixture.new(
     advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
   )
@@ -452,7 +468,7 @@ Dir.mktmpdir("audiobookshelf-folder-repair-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-post-repair-interruption-") do |config_root|
+scenario("audiobookshelf-post-repair-interruption-") do |config_root, failures|
   fixture = ScanFixture.new(
     advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
   )
@@ -479,7 +495,7 @@ Dir.mktmpdir("audiobookshelf-post-repair-interruption-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-create-interruption-") do |config_root|
+scenario("audiobookshelf-create-interruption-") do |config_root, failures|
   fixture = ScanFixture.new(advance_last_scan: true, library: nil)
   begin
     stdout, stderr, interrupted = run_scan(
@@ -511,7 +527,7 @@ Dir.mktmpdir("audiobookshelf-create-interruption-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-repair-interruption-") do |config_root|
+scenario("audiobookshelf-repair-interruption-") do |config_root, failures|
   fixture = ScanFixture.new(
     advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
   )
@@ -544,7 +560,7 @@ Dir.mktmpdir("audiobookshelf-repair-interruption-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-stale-repair-intent-") do |config_root|
+scenario("audiobookshelf-stale-repair-intent-") do |config_root, failures|
   stale = pending_state(library_id: "stale-library", folder_paths: ["/#{MEDIA_SENTINEL}"])
   marker = write_marker(config_root, stale)
   fixture = ScanFixture.new(
@@ -564,7 +580,7 @@ Dir.mktmpdir("audiobookshelf-stale-repair-intent-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-unsupported-repair-intent-") do |config_root|
+scenario("audiobookshelf-unsupported-repair-intent-") do |config_root, failures|
   marker = write_marker(config_root, {})
   fixture = ScanFixture.new(
     advance_last_scan: true, library: exact_library(folder_paths: ["/old-audiobooks"])
@@ -582,7 +598,7 @@ Dir.mktmpdir("audiobookshelf-unsupported-repair-intent-") do |config_root|
   end
 end
 
-Dir.mktmpdir("audiobookshelf-scan-state-") do |config_root|
+scenario("audiobookshelf-scan-state-") do |config_root, failures|
   fixture = ScanFixture.new(advance_last_scan: false, library: nil)
   begin
     stdout, stderr, status = run_scan(fixture, config_root)
@@ -615,7 +631,7 @@ Dir.mktmpdir("audiobookshelf-scan-state-") do |config_root|
 end
 
 [{ "bad" => "libraries" }, MEDIA_SENTINEL].each do |libraries_shape|
-  Dir.mktmpdir("audiobookshelf-library-shape-") do |config_root|
+  scenario("audiobookshelf-library-shape-") do |config_root, failures|
     write_marker(config_root, pending_state)
     fixture = ScanFixture.new(
       advance_last_scan: true,
@@ -638,7 +654,7 @@ end
 end
 
 [{ "bad" => "tasks" }, MEDIA_SENTINEL].each do |tasks_shape|
-  Dir.mktmpdir("audiobookshelf-task-shape-") do |config_root|
+  scenario("audiobookshelf-task-shape-") do |config_root, failures|
     fixture = ScanFixture.new(advance_last_scan: true, library: nil, tasks_shape: tasks_shape)
     begin
       stdout, stderr, status = run_scan(fixture, config_root)
@@ -655,7 +671,7 @@ end
 end
 
 [{ "bad" => "items" }, MEDIA_SENTINEL].each do |items_shape|
-  Dir.mktmpdir("audiobookshelf-item-shape-") do |config_root|
+  scenario("audiobookshelf-item-shape-") do |config_root, failures|
     fixture = ScanFixture.new(advance_last_scan: true, library: nil, items_shape: items_shape)
     begin
       stdout, stderr, status = run_scan(fixture, config_root)
@@ -677,7 +693,7 @@ end
   ),
   "completed" => pending_state.merge("state" => "completed")
 }.each do |kind, state|
-  Dir.mktmpdir("audiobookshelf-stale-intent-") do |config_root|
+  scenario("audiobookshelf-stale-intent-") do |config_root, failures|
     marker = write_marker(config_root, state)
     fixture = ScanFixture.new(advance_last_scan: true)
     begin
@@ -693,6 +709,8 @@ end
     end
   end
 end
+
+in_parallel_cases(failures, SCENARIOS) { |run, collected| run.call(collected) }
 
 report(failures, "Audiobookshelf initial scan behavior tests passed",
        "Audiobookshelf initial scan behavior failure(s)")
