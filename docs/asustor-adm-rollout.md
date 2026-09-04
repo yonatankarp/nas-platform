@@ -103,7 +103,7 @@ Run `validate-vault.yml`, `site.yml`, and `verify.yml` with the tag list from th
 then install the poller, declaring that scheduling is external:
 
 ```sh
-ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST" -e production_auto_deploy_external_scheduler=true
+ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_external_scheduler=true
 ```
 
 One flag covers both schedules. The weekly image prune this playbook also
@@ -261,5 +261,7 @@ reporting anything. Prefer re-running only failed jobs.
 `production_auto_deploy_external_scheduler=true` was omitted.
 
 An assertion about `production_auto_deploy_public_host` during installation means
-that variable was not passed. The poller replays it automatically for its own
-reinstall; only the first manual install needs it on the command line.
+`PLATFORM_PUBLIC_HOST` was not exported in the shell that ran the playbook. The
+role reads the same inventory variable every other role reads, so nothing has to
+be passed twice; unset, it fails here rather than publishing to a push topic
+nothing subscribes to.

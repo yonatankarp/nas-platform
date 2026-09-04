@@ -5,13 +5,25 @@ production_auto_deploy_workflow: ci.yml
 production_auto_deploy_workflow_name: CI
 production_auto_deploy_branch: main
 production_auto_deploy_github_api_base: https://api.github.com
+# No inventory-level analogue exists: inventory/remote.yml spends
+# PLATFORM_NAS_ADDRESS on ansible_host, which is a transport detail the local
+# and Mac inventories do not carry at all. So this stays a literal, and it is
+# the LAN address of the NAS rather than the address clients use.
 production_auto_deploy_nas_address: 192.168.0.139
 # The address clients actually use. ntfy hashes it into the mobile push topic,
 # so a wrong value publishes to a topic nothing subscribes to and reports no
-# error. Deliberately empty: the role fails rather than guessing.
-production_auto_deploy_public_host: ""
-# Only differs when containers reach the host at another address.
-production_auto_deploy_callback_host: "{{ production_auto_deploy_nas_address }}"
+# error. Every other role reads platform_public_host, declared once per
+# inventory from PLATFORM_PUBLIC_HOST; this role demanded a second `-e` for the
+# same value, which made reinstalling the poller irreproducible from the
+# repository alone. It reads the same variable now. `| default('')` rather than
+# a bare reference, so an inventory that never declared it fails on the
+# assertion below -- which says what to set and why -- instead of on an
+# undefined variable.
+production_auto_deploy_public_host: "{{ platform_public_host | default('') }}"
+# Only differs when containers reach the host at another address, which is
+# exactly what platform_callback_host declares, in the same inventory block.
+production_auto_deploy_callback_host: >-
+  {{ platform_callback_host | default(production_auto_deploy_nas_address, true) }}
 production_auto_deploy_log_retention_days: 30
 production_auto_deploy_cron_name: NAS platform production auto-deploy
 # Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the

@@ -15,6 +15,15 @@ import unittest
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
+# The reader of the record the prune writes about itself, run as the deployment
+# it has to be legible to runs it: as another process, against the real file.
+LOCK_PROBE = (
+    Path(__file__).resolve().parents[1]
+    / "roles"
+    / "deployment_bundle"
+    / "files"
+    / "probe_deployment_lock.py"
+)
 
 import image_prune  # noqa: E402
 
@@ -231,6 +240,42 @@ class LockTest(PruneTestCase):
         fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         self.addCleanup(os.close, descriptor)
         return descriptor
+
+    def probe_lock(self):
+        """Ask deployment_bundle's own probe who holds the lock."""
+
+        completed = subprocess.run(
+            [sys.executable, str(LOCK_PROBE), str(self.lock)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return json.loads(completed.stdout)
+
+    def test_a_holding_prune_names_itself_to_the_converge_that_finds_the_lock(self):
+        # Crossed against the reader that actually consumes this record.
+        # roles/deployment_bundle probes this lock at the first task of every
+        # role and tolerates a holder it cannot identify, because a holder that
+        # records nothing is a poller too old to write one and refusing it
+        # deadlocks the upgrade that installs the newer poller. A prune that
+        # recorded nothing would be indistinguishable from that, so every Sunday
+        # a converge would run straight through a prune deleting image layers
+        # underneath it. Naming itself is what keeps "no record" transient.
+        with image_prune.deployment_lock(self.config()) as acquired:
+            self.assertTrue(acquired)
+            reported = self.probe_lock()
+        self.assertTrue(reported["held"])
+        self.assertEqual(reported["holder"], "image prune")
+        self.assertEqual(reported["pid"], os.getpid())
+        self.assertIn("started", reported)
+
+    def test_the_record_does_not_outlive_the_prune_that_wrote_it(self):
+        # Cleared while the lock is still held, so the next reader cannot find a
+        # finished prune's pid under somebody else's lock.
+        with image_prune.deployment_lock(self.config()) as acquired:
+            self.assertTrue(acquired)
+        self.assertEqual(self.lock.read_bytes(), b"")
+        self.assertEqual(self.probe_lock(), {"state": "free", "held": False})
 
     def test_a_running_deployment_stops_the_prune_before_any_image_is_touched(self):
         self.hold_lock()

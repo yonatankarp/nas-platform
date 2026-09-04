@@ -638,10 +638,12 @@ def deployment_lock(config: Config, holder: str = "poll") -> Iterator[bool]:
             yield True
         finally:
             # Cleared while the lock is still held, so a reader that finds the
-            # lock taken by something which writes no record -- the weekly image
-            # prune takes this same lock -- reads an empty file rather than the
-            # last deployment's pid. Only a crash can leave a record behind now,
-            # and a reader must still ignore one it finds under a free lock.
+            # lock taken reads that holder's record or nothing -- never the last
+            # deployment's pid. The weekly image prune takes this same lock and
+            # records itself the same way, so an empty file under a held lock
+            # now means only a poller too old to write one. Only a crash can
+            # leave a record behind, and a reader must still ignore one it finds
+            # under a free lock.
             with contextlib.suppress(OSError):
                 os.ftruncate(descriptor, 0)
     finally:

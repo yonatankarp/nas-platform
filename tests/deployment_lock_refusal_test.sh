@@ -25,11 +25,15 @@ command -v "$python" >/dev/null || {
 # on a Mac the temporary directory hangs below /var, which is a symlink.
 fixture=$(CDPATH= cd -- "$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-deploy-lock.XXXXXX")" && pwd -P)
 holder_pid=
+unrecorded_pid=
+release_holder() {
+  [ -n "$1" ] || return 0
+  kill "$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
 cleanup() {
-  if [ -n "$holder_pid" ]; then
-    kill "$holder_pid" 2>/dev/null || true
-    wait "$holder_pid" 2>/dev/null || true
-  fi
+  release_holder "$unrecorded_pid"
+  release_holder "$holder_pid"
   rm -R -- "$fixture"
 }
 trap cleanup EXIT HUP INT TERM
@@ -67,6 +71,97 @@ grep -qF 'deployment lock probe accepted this converge' "$output" || {
   exit 1
 }
 
+# Bounded on the holder still being alive, not on the clock: the wait ends when
+# the record appears or when the process that would write it is gone.
+await_holder() {
+  while [ ! -s "$2" ]; do
+    kill -0 "$1" 2>/dev/null || {
+      printf '%s\n' 'the deployment lock holder exited before taking the lock' >&2
+      exit 1
+    }
+    sleep 0.2 2>/dev/null || sleep 1
+  done
+  [ "$(cat "$2")" = "$1" ] || {
+    printf '%s\n' 'the holder reported a pid that is not the process holding the lock' >&2
+    exit 1
+  }
+}
+
+# The case that took production down. PR #327 shipped this guard and the poller
+# that writes the holder record in one commit, but the poller installs itself only
+# after site.yml has succeeded, so the guard first meets the *previous* poller:
+# flock held, nothing written, no owner exported. Refusing that deadlocks the
+# upgrade that would install the record-writing poller, so it must converge. The
+# fixture is the real deployment_lock with the record truncated away while the
+# lock is still held, which is exactly the on-disk state the old poller leaves.
+unrecorded_record=$fixture/unrecorded-pid
+"$python" -c '
+import os, signal, sys, time
+from pathlib import Path
+from types import SimpleNamespace
+
+sys.path.insert(0, sys.argv[1])
+import production_auto_deploy
+
+config = SimpleNamespace(state_root=Path(sys.argv[2]))
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+with production_auto_deploy.deployment_lock(config, holder="operator converge") as acquired:
+    if not acquired:
+        raise SystemExit("the fixture lock was already held")
+    # A second descriptor: flock lives on the open file description that took it,
+    # so emptying the file through another one leaves this process holding it.
+    scribe = os.open(production_auto_deploy.lock_path(config), os.O_WRONLY)
+    os.ftruncate(scribe, 0)
+    Path(sys.argv[3]).write_text(f"{os.getpid()}\n", encoding="ascii")
+    time.sleep(900)
+' "$repo_dir/scripts" "$state_root" "$unrecorded_record" &
+unrecorded_pid=$!
+await_holder "$unrecorded_pid" "$unrecorded_record"
+[ ! -s "$lock_path" ] || {
+  printf '%s\n' 'the unrecorded holder fixture left a holder record behind' >&2
+  exit 1
+}
+
+output=$fixture/unrecorded
+set +e
+(cd "$repo_dir" && run_play "$output")
+status=$?
+set -e
+[ "$status" -eq 0 ] || {
+  cat "$output" >&2
+  printf '%s\n' 'a converge was refused by a lock holder that recorded no identity' >&2
+  exit 1
+}
+grep -qF 'recorded no identity' "$output" || {
+  cat "$output" >&2
+  printf '%s\n' 'the tolerated unidentifiable lock holder went unreported' >&2
+  exit 1
+}
+if grep -qF 'A deployment is already running on this host' "$output"; then
+  cat "$output" >&2
+  printf '%s\n' 'an unidentifiable lock holder was refused as a concurrent deployment' >&2
+  exit 1
+fi
+# A tolerated holder does not weaken containment: the validator the refusal path
+# stops short of is reached and passed here.
+grep -qF 'TASK [deployment_bundle : Validate target path ancestry and canonical containment]' "$output" || {
+  cat "$output" >&2
+  printf '%s\n' 'the tolerated converge never reached containment validation' >&2
+  exit 1
+}
+grep -qF 'deployment lock probe accepted this converge' "$output" || {
+  cat "$output" >&2
+  printf '%s\n' 'the tolerated converge stopped short of the end of target validation' >&2
+  exit 1
+}
+if grep -qF 'Unsafe deployment target /' "$output"; then
+  cat "$output" >&2
+  printf '%s\n' 'the tolerated converge surfaced a containment refusal' >&2
+  exit 1
+fi
+release_holder "$unrecorded_pid"
+unrecorded_pid=
+
 # The holder is the poller's own deployment_lock, not a hand-rolled flock: the
 # point of the guard is that both paths serialise on one mechanism, so a proof
 # that used a second one would prove nothing about the first.
@@ -90,20 +185,7 @@ with production_auto_deploy.deployment_lock(config, holder="operator converge") 
 ' "$repo_dir/scripts" "$state_root" "$holder_record" &
 holder_pid=$!
 
-# Bounded on the holder still being alive, not on the clock: the wait ends when
-# the record appears or when the process that would write it is gone.
-while [ ! -s "$holder_record" ]; do
-  kill -0 "$holder_pid" 2>/dev/null || {
-    printf '%s\n' 'the deployment lock holder exited before taking the lock' >&2
-    exit 1
-  }
-  sleep 0.2 2>/dev/null || sleep 1
-done
-holder_recorded_pid=$(cat "$holder_record")
-[ "$holder_recorded_pid" = "$holder_pid" ] || {
-  printf '%s\n' 'the holder reported a pid that is not the process holding the lock' >&2
-  exit 1
-}
+await_holder "$holder_pid" "$holder_record"
 
 output=$fixture/refused
 set +e
