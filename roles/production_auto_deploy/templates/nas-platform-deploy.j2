@@ -1,6 +1,18 @@
 #!/bin/sh
-# Operator entry point. The poller serialises itself with an flock on its state
-# directory, so this wrapper only needs to supply the configuration path.
+# Operator entry point. Supplies the configuration path and nothing else, so
+# every mode the poller has is reachable by hand: --poll, --status,
+# --retry-failed, and --converge.
+#
+# --converge is the one an operator runs: it takes the same flock on the poller's
+# state directory that a poll takes, then runs ansible-playbook with the
+# arguments after it. Issue #326: a hand-run ansible-playbook took no lock, so a
+# manual converge running longer than the five-minute poll interval overlapped a
+# poll, and the loser died 1463 tasks in on a containment guard reporting an
+# unsafe deployment target. Everything except the lock stays the operator's
+# choice -- inventory, tags, vault password provider, working directory -- because
+# the poller's checkout sits at whatever revision it last deployed.
+#
+#   nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
 set -eu
 exec "{{ production_auto_deploy_poller_path }}" \
   --config "{{ production_auto_deploy_config_path }}" "$@"

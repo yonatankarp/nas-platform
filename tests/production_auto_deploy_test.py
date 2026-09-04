@@ -712,6 +712,51 @@ class StateTest(PollerTestCase):
         with production_auto_deploy.deployment_lock(config) as second:
             self.assertTrue(second)
 
+    def test_the_holder_records_who_it_is_while_it_holds(self):
+        """Issue #326: the operator who lost the race could not tell what had
+        happened, because the only thing the lock said was that it was taken.
+        deployment_bundle reads this record to name the holder it refuses for."""
+
+        config = self.loaded_config()
+        with production_auto_deploy.deployment_lock(config, holder="operator converge"):
+            record = production_auto_deploy.read_lock_holder(config)
+        self.assertEqual(record["pid"], os.getpid())
+        self.assertEqual(record["holder"], "operator converge")
+        self.assertRegex(record["started"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+    def test_the_poll_records_itself_as_the_holder_by_default(self):
+        config = self.loaded_config()
+        with production_auto_deploy.deployment_lock(config):
+            self.assertEqual(
+                production_auto_deploy.read_lock_holder(config)["holder"], "poll"
+            )
+
+    def test_the_record_is_cleared_when_the_lock_is_released(self):
+        """scripts/image_prune.py takes this same lock and writes no record, so a
+        record left behind by the last deployment would name a finished process
+        as the holder of a lock something else is holding now."""
+
+        config = self.loaded_config()
+        with production_auto_deploy.deployment_lock(config):
+            pass
+        self.assertIsNone(production_auto_deploy.read_lock_holder(config))
+        self.assertEqual(production_auto_deploy.lock_path(config).read_bytes(), b"")
+
+    def test_an_illegible_record_is_reported_as_no_record(self):
+        config = self.loaded_config()
+        production_auto_deploy.lock_path(config).write_text("[]\n", encoding="ascii")
+        self.assertIsNone(production_auto_deploy.read_lock_holder(config))
+
+    def test_the_lock_path_is_the_one_the_role_probes(self):
+        """roles/deployment_bundle derives the same path from the account home,
+        so a rename here that was not made there would be a lock nobody shares."""
+
+        config = self.loaded_config()
+        self.assertEqual(
+            production_auto_deploy.lock_path(config),
+            Path(config.state_root) / "deployment.lock",
+        )
+
 
 class DeployTest(PollerTestCase):
     def record_runs(self, returncode=0, fail_on=None):
@@ -1004,6 +1049,17 @@ class DeployTest(PollerTestCase):
         environment = production_auto_deploy._ansible_environment(config)
         self.assertEqual(
             shutil.which("ansible-playbook", path=environment["PATH"]), str(fake)
+        )
+
+    def test_the_plays_are_told_the_poller_already_holds_the_lock(self):
+        """deploy() runs inside poll()'s lock, and deployment_bundle refuses a
+        converge another process is running. Without this declaration the poller
+        would be refused by the guard it installs, on every tick."""
+
+        config = self.loaded_config()
+        environment = production_auto_deploy._ansible_environment(config)
+        self.assertEqual(
+            environment[production_auto_deploy.LOCK_OWNER_ENVIRONMENT], str(os.getpid())
         )
 
 
@@ -1815,6 +1871,137 @@ class PollTest(PollerTestCase):
             self.assertTrue(acquired)
             probe = subprocess.run([sys.executable, "-c", program])
             self.assertEqual(probe.returncode, 0)
+
+
+class ConvergeTest(PollerTestCase):
+    """The operator entry point that closes issue #326.
+
+    A hand-run ansible-playbook took no lock, so a manual converge outliving the
+    five-minute poll interval overlapped a poll and died 1463 tasks in on a
+    containment guard. --converge is that same command under the poller's own
+    lock: everything but the lock stays the operator's.
+    """
+
+    def fake_playbook(self, exit_code=0):
+        """An ansible-playbook that reports what it was given and what it sees."""
+
+        binary = self.root / "bin"
+        binary.mkdir(exist_ok=True)
+        record = self.root / "playbook-invocation.json"
+        fake = binary / "ansible-playbook"
+        fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import fcntl, json, os, sys\n"
+            f"lock = {str(self.root / '.local/share/nas-platform/state/deployment.lock')!r}\n"
+            "descriptor = os.open(lock, os.O_RDONLY)\n"
+            "try:\n"
+            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    held = False\n"
+            "    fcntl.flock(descriptor, fcntl.LOCK_UN)\n"
+            "except OSError:\n"
+            "    held = True\n"
+            "record = {\n"
+            "    'argv': sys.argv[1:],\n"
+            "    'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
+            "    'held': held,\n"
+            "    'cwd': os.getcwd(),\n"
+            "    'lock_record': open(lock).read(),\n"
+            "}\n"
+            f"open({str(record)!r}, 'w').write(json.dumps(record))\n"
+            f"sys.exit({exit_code})\n",
+            encoding="utf-8",
+        )
+        fake.chmod(0o700)
+        path = f"{binary}{os.pathsep}{os.environ.get('PATH', '')}"
+        patched = mock.patch.dict(os.environ, {"PATH": path})
+        patched.start()
+        self.addCleanup(patched.stop)
+        return record
+
+    def test_converge_runs_the_operator_command_while_holding_the_lock(self):
+        record = self.fake_playbook()
+
+        code = production_auto_deploy.main(
+            [
+                "--config",
+                str(self.config_path),
+                "--converge",
+                "--",
+                "-i",
+                "inventory/local.yml",
+                "site.yml",
+                "--ask-vault-pass",
+            ]
+        )
+
+        self.assertEqual(code, 0)
+        invocation = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(
+            invocation["argv"],
+            ["-i", "inventory/local.yml", "site.yml", "--ask-vault-pass"],
+        )
+        self.assertTrue(invocation["held"], "the plays must run under the lock")
+        # The plays refuse a converge somebody else is running, so the converge
+        # that took the lock has to say the holder is its own.
+        self.assertEqual(invocation["owner"], str(os.getpid()))
+        self.assertEqual(invocation["cwd"], os.getcwd())
+        # Read from inside the child, while the lock is still held: the record is
+        # cleared on release precisely so nothing reads it afterwards.
+        record = json.loads(invocation["lock_record"])
+        self.assertEqual(record["holder"], "operator converge")
+        self.assertEqual(record["pid"], os.getpid())
+
+    def test_converge_reports_the_playbook_exit_code(self):
+        self.fake_playbook(exit_code=2)
+        code = production_auto_deploy.main(
+            ["--config", str(self.config_path), "--converge", "site.yml"]
+        )
+        self.assertEqual(code, 2)
+
+    def test_converge_passes_arguments_through_without_a_separator(self):
+        record = self.fake_playbook()
+        production_auto_deploy.main(
+            ["--config", str(self.config_path), "--converge", "site.yml", "--check"]
+        )
+        self.assertEqual(
+            json.loads(record.read_text(encoding="utf-8"))["argv"],
+            ["site.yml", "--check"],
+        )
+
+    def test_converge_is_refused_while_another_deployment_holds_the_lock(self):
+        self.fake_playbook()
+        config = self.loaded_config()
+        buffer = io.StringIO()
+        with production_auto_deploy.deployment_lock(config, holder="poll") as acquired:
+            self.assertTrue(acquired)
+            with contextlib.redirect_stderr(buffer):
+                code = production_auto_deploy.main(
+                    ["--config", str(self.config_path), "--converge", "site.yml"]
+                )
+        self.assertEqual(code, 1)
+        message = buffer.getvalue()
+        self.assertIn("refusing to converge", message)
+        self.assertIn(f"pid {os.getpid()}", message)
+        self.assertIn("poll", message)
+
+    def test_converge_without_a_command_is_an_invalid_invocation(self):
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge"]
+            )
+        self.assertEqual(code, 2)
+        self.assertIn("invalid arguments", buffer.getvalue())
+
+    def test_converge_reports_a_missing_ansible_playbook(self):
+        buffer = io.StringIO()
+        with mock.patch.dict(os.environ, {"PATH": str(self.root / "empty")}), \
+                contextlib.redirect_stderr(buffer):
+            code = production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge", "site.yml"]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("could not run ansible-playbook", buffer.getvalue())
 
 
 class CliTest(PollerTestCase):

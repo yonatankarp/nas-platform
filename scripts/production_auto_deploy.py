@@ -47,6 +47,16 @@ BLIND_POLL_THRESHOLD = 3
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
+# Announces to the plays that the process holding the deployment lock is this
+# run's own ancestor. roles/deployment_bundle probes the lock at the first task
+# of every service role and refuses a converge somebody else is already running;
+# without this, both the poller's own plays and an operator's --converge would
+# refuse themselves, because the holder they find is their own parent. The value
+# is the holder's pid, which the lock record below carries too. It is advisory,
+# not a credential: anyone able to export it can already run ansible-playbook by
+# hand, and the containment guard in the same task file remains the real
+# security control.
+LOCK_OWNER_ENVIRONMENT = "PLATFORM_DEPLOYMENT_LOCK_OWNER"
 
 
 class ConfigurationError(ValueError):
@@ -561,20 +571,79 @@ def read_state(config: Config) -> dict:
     return state
 
 
+def lock_path(config: Config) -> Path:
+    """The one file every deployment on this host serialises on.
+
+    Named here rather than in each caller because roles/deployment_bundle has to
+    find the same file from Ansible, and it derives it from the account's home
+    exactly as roles/production_auto_deploy derives state_root. Two spellings of
+    one path would be a lock nobody shares.
+    """
+
+    return config.state_root / "deployment.lock"
+
+
+def _record_lock_holder(descriptor: int, holder: str) -> None:
+    """Write who holds the lock, for a refused caller to name.
+
+    The flock alone says only that somebody is deploying, and #326 is exactly
+    the story of an operator who could not tell what was happening: the race
+    surfaced as a containment refusal naming an unsafe deployment target, so the
+    honest first reading was a corrupted deployment tree rather than a second
+    converge. A holder that says "pid 4711, operator converge, started at ..."
+    turns that into a fact.
+
+    Best effort and advisory. The flock is the liveness truth -- a crashed
+    holder leaves this record behind, and a reader that finds the lock free must
+    ignore whatever it says. Written with pwrite after truncating so no reader
+    can observe a half-replaced record at offset zero.
+    """
+
+    payload = json.dumps(
+        {"pid": os.getpid(), "holder": holder, "started": _timestamp()},
+        sort_keys=True,
+    )
+    with contextlib.suppress(OSError):
+        os.ftruncate(descriptor, 0)
+        os.pwrite(descriptor, payload.encode("ascii") + b"\n", 0)
+
+
+def read_lock_holder(config: Config) -> dict | None:
+    """The holder record, or None when there is nothing readable to report.
+
+    Advisory in both directions: absent when the holder could not write it, and
+    stale when the holder died. Only ever used to make a message specific.
+    """
+
+    try:
+        payload = json.loads(lock_path(config).read_text(encoding="ascii"))
+    except (OSError, UnicodeError, ValueError):
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 @contextmanager
-def deployment_lock(config: Config) -> Iterator[bool]:
+def deployment_lock(config: Config, holder: str = "poll") -> Iterator[bool]:
     """Serialise deployments; yield False when another holder already runs one."""
 
-    descriptor = os.open(
-        config.state_root / "deployment.lock", os.O_WRONLY | os.O_CREAT, 0o600
-    )
+    descriptor = os.open(lock_path(config), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             yield False
             return
-        yield True
+        _record_lock_holder(descriptor, holder)
+        try:
+            yield True
+        finally:
+            # Cleared while the lock is still held, so a reader that finds the
+            # lock taken by something which writes no record -- the weekly image
+            # prune takes this same lock -- reads an empty file rather than the
+            # last deployment's pid. Only a crash can leave a record behind now,
+            # and a reader must still ignore one it finds under a free lock.
+            with contextlib.suppress(OSError):
+                os.ftruncate(descriptor, 0)
     finally:
         os.close(descriptor)
 
@@ -610,6 +679,11 @@ def _ansible_environment(config: Config) -> dict[str, str]:
         "PLATFORM_CALLBACK_HOST": config.platform_callback_host,
         "ANSIBLE_CONFIG": str(config.checkout / "ansible.cfg"),
         "ANSIBLE_COLLECTIONS_PATH": str(_collections_path(config)),
+        # deploy() runs inside poll()'s deployment_lock, in this process, so the
+        # holder these plays will find is this pid. Saying so is what keeps the
+        # poller's own converge from being refused by the concurrency guard it
+        # installs.
+        LOCK_OWNER_ENVIRONMENT: str(os.getpid()),
     }
 
 
@@ -1225,6 +1299,72 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         return succeeded
 
 
+def _holder_description(holder: dict | None) -> str:
+    """Name the current holder as precisely as the record allows."""
+
+    if not holder:
+        return "another deployment"
+    pid = holder.get("pid")
+    what = holder.get("holder") or "deployment"
+    started = holder.get("started")
+    started_note = f", started {started}" if started else ""
+    pid_note = f" (pid {pid}{started_note})" if pid else ""
+    return f"{what}{pid_note}"
+
+
+def converge(config: Config, arguments: list[str]) -> int:
+    """Run one operator ansible-playbook invocation under the deployment lock.
+
+    Issue #326: the poller serialises itself, but the documented manual path was
+    a bare ansible-playbook that took no lock at all, so on a host polling every
+    five minutes any hand-run converge lasting longer than five minutes would
+    overlap the poller's. That is not hypothetical -- it happened, and it
+    surfaced 1463 tasks in as an unsafe-deployment-target refusal, because the
+    poller had repointed `current` underneath a run that was still converging
+    services against the release it had activated itself.
+
+    What this mode adds is the lock and nothing else. The arguments, the
+    inventory, the vault password provider, the tags and the working directory
+    stay the operator's, because the poller's checkout is at whatever revision
+    update_checkout last reset it to: imposing it here would silently converge a
+    different tree than the operator is reading. So this is deliberately not a
+    second deploy path -- it is `flock` around the operator's own command, using
+    the poller's own lock rather than a second scheme, and writing the holder
+    record that plain flock(1) cannot.
+
+    The child is run with the inherited terminal: --ask-vault-pass has to be able
+    to prompt, and the operator has to see the recap as it happens, so the output
+    is deliberately neither captured nor logged. There is no timeout for the same
+    reason -- a converge is an attended operation that legitimately runs for
+    hours, and killing one at an arbitrary deadline is the one thing worse than
+    letting it finish.
+    """
+
+    with deployment_lock(config, holder="operator converge") as acquired:
+        if not acquired:
+            print(
+                "production auto-deploy: refusing to converge, "
+                f"{_holder_description(read_lock_holder(config))} already holds "
+                f"{lock_path(config)}. Wait for it to finish, then re-run; "
+                "--status reports what the poller last did.",
+                file=sys.stderr,
+            )
+            return 1
+        environment = dict(os.environ)
+        environment[LOCK_OWNER_ENVIRONMENT] = str(os.getpid())
+        try:
+            completed = subprocess.run(
+                ["ansible-playbook", *arguments], env=environment, check=False
+            )
+        except OSError as error:
+            print(
+                f"production auto-deploy: could not run ansible-playbook: {error}",
+                file=sys.stderr,
+            )
+            return 1
+        return completed.returncode
+
+
 def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
     """Explain what the next poll would do, without doing any of it.
 
@@ -1306,6 +1446,7 @@ def _parse_arguments(argv):
     config_path = None
     mode = None
     retry_sha = None
+    playbook_arguments: list[str] = []
     remaining = list(argv)
     while remaining:
         argument = remaining.pop(0)
@@ -1318,6 +1459,17 @@ def _parse_arguments(argv):
         elif argument == "--retry-failed" and remaining and mode is None:
             mode = "retry"
             retry_sha = remaining.pop(0)
+        elif argument == "--converge" and mode is None:
+            # Everything after --converge belongs to ansible-playbook, not to
+            # this parser: the operator's own flags are passed through
+            # unexamined, and several of them (--check, --diff, --tags) collide
+            # with nothing here only because parsing stops at this point. The
+            # launcher supplies --config first, so it is always already seen.
+            mode = "converge"
+            playbook_arguments = list(remaining)
+            remaining = []
+            if playbook_arguments and playbook_arguments[0] == "--":
+                playbook_arguments = playbook_arguments[1:]
         else:
             return None
     if config_path is None or mode is None:
@@ -1326,7 +1478,9 @@ def _parse_arguments(argv):
         retry_sha is None or SHA_PATTERN.fullmatch(retry_sha) is None
     ):
         return None
-    return config_path, mode, retry_sha
+    if mode == "converge" and not playbook_arguments:
+        return None
+    return config_path, mode, retry_sha, playbook_arguments
 
 
 def main(argv=None) -> int:
@@ -1336,12 +1490,14 @@ def main(argv=None) -> int:
     if parsed is None:
         print("production auto-deploy: invalid arguments", file=sys.stderr)
         return 2
-    config_path, mode, retry_sha = parsed
+    config_path, mode, retry_sha, playbook_arguments = parsed
     try:
         config = load_config(config_path)
         if mode == "status":
             print_status(config)
             return 0
+        if mode == "converge":
+            return converge(config, playbook_arguments)
         outcome = poll(config, retry_sha=retry_sha)
     except ConfigurationError:
         print("production auto-deploy: unusable configuration", file=sys.stderr)
