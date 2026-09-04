@@ -615,26 +615,42 @@ REQUIRED_RUN_ENV = %w[
   PLATFORM_DOCKER_ROOT
 ].freeze
 
+# Stands in for the runtime half throughout this helper, because every
+# invocation here must end in a refusal by the wrapper *before* the exec that
+# would reach it. Against an intact wrapper the stub is therefore never run, and
+# substituting it changes nothing this helper observes: the wrapper's `:?` checks
+# sit between the static program and the exec, so the real static half still runs
+# unchanged on every row.
+#
+# A planted regression that drops one of the `:?` requirements is what makes the
+# exec reachable, and against the shipped runtime program that meant a wait: no
+# Seerr is listening on the port, so it spent its whole readiness budget --
+# 180 seconds, twice over -- proving what the row already knew. That was the
+# entire floor of this file's self-test, 368s of it unmoved by pools of 1, 4, 8
+# or 16 workers, because concurrency overlaps waits without shortening them.
+# #328 cut the budget to ten seconds for these rows; the stub deletes the wait
+# instead, which is what the row is entitled to: reaching the runtime half at
+# all is already the regression.
+#
+# It exits 0 deliberately, so a mutant that reaches it trips BOTH assertions
+# below -- the wrapper accepted an environment it must refuse, and it did so
+# without its own message -- and warns first, so the failure text says which
+# happened rather than showing an empty capture.
+RUNTIME_REFUSAL_STUB = <<~'STUB'
+  warn "runtime stub reached: the wrapper did not refuse this environment"
+  exit 0
+STUB
+
 def run_env_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
+  with_contract_copy(runtime: RUNTIME_REFUSAL_STUB, wrapper: wrapper_source) do |contract, copy_root|
     full = {
       "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
       "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
       "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker"),
       "PLATFORM_MAC_VAULT_FILE" => nil,
-      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
-      # Every invocation in this helper must end in a refusal, so none of them
-      # ever waits for a ready Seerr and this budget is inert against an intact
-      # wrapper. A planted regression that drops one of the `:?` requirements is
-      # exactly what makes it reachable: the wrapper then execs the runtime half,
-      # which spends its whole readiness budget on a port nothing is listening
-      # on. At the shipped 180 seconds those two mutants were the self-test's
-      # floor -- 368s of it, unmoved by pools of 1, 4, 8 or 16 workers, because
-      # no amount of concurrency shortens one wait. Ten seconds is fifty times
-      # what the local fixture needs and still ends in the same refusal.
-      "PLATFORM_SEERR_READY_TIMEOUT_SECONDS" => "10"
+      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil
     }
     REQUIRED_RUN_ENV.each do |name|
       # Set to "" rather than deleted: ${VAR:?} refuses null as well as unset,

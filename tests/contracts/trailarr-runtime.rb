@@ -16,12 +16,17 @@ require "uri"
 require "yaml"
 
 # How long a real Trailarr is given to answer its status route. Like every other
-# input to this half it arrives in the environment, because the one caller that
-# needs a different budget is a test: the run-mode environment rows in
-# tests/trailarr_contract_test.rb reach this program only when a planted
-# regression let a refusal through, and there is no Trailarr behind the port at
-# all. Spending the deployment's two minutes proving that was, twice over, the
-# entire floor of that check's self-test. Nothing in a deployment sets this.
+# input to this half it arrives in the environment rather than as a constant,
+# which is what let #319 shorten it for the one caller that ever wanted a
+# different budget: the run-mode environment rows in
+# tests/trailarr_contract_test.rb reached this program when a planted regression
+# let a refusal through, and there was no Trailarr behind the port at all.
+#
+# #331 removed that caller instead of shortening it -- those rows now substitute
+# a stub for this program, so reaching it is the regression rather than a wait --
+# and nothing in the tree sets this name any more. The override is kept because a
+# caller that must not sit out two minutes against a port nothing answers is a
+# recurring shape, and because a deployment reads the default either way.
 READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_TRAILARR_READY_TIMEOUT_SECONDS", "120"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_TRAILARR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_TRAILARR_CONTAINER")
