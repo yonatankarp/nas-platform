@@ -386,7 +386,7 @@ acquisition_runtime_contract_holds() {
     grep -B 1 -F -- '-e media_usenet_enabled=true' | head -n 1 | tr -d ' ')
   acquisition_dispatch=$(sed -n '/^      seerr)/,/;;/p' "$source_path" | tail -n 12)
   printf '%s\n' "$reader_converge" |
-    grep -qF -- '--tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin' &&
+    grep -qE -- '--tags audiobookshelf$' &&
     printf '%s\n' "$foundation_verify" |
       grep -qF 'run_verification media_acquisition_foundation' &&
     printf '%s\n' "$verification_launcher" | grep -qF '/repo/verify.yml' &&
