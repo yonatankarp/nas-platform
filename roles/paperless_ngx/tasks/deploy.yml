@@ -34,12 +34,23 @@
         if platform_compose_kind == 'nas' else
         (nas_docker_root ~ '/paperless-ngx')) ~ '/tessdata')
 
+# raw.githubusercontent.com is a third party, and a converge must not fail
+# because it was briefly unreachable: that is exactly what happened on
+# 2026-09-04 (#330), where the read timed out at get_url's own ten-second
+# default and took the whole run with it. The checksum is what makes retrying
+# safe -- an unchanged file is a no-op that reports so, and a truncated
+# download fails here rather than becoming the OCR model.
 - name: Install the pinned Hebrew OCR model
   ansible.builtin.get_url:
     url: "{{ paperless_hebrew_model_url }}"
     dest: "{{ paperless_tessdata_root }}/heb.traineddata"
     checksum: "{{ paperless_hebrew_model_checksum }}"
     mode: "0644"
+    timeout: "{{ platform_download_timeout }}"
+  register: paperless_hebrew_model_download
+  until: paperless_hebrew_model_download is not failed
+  retries: "{{ platform_download_retries }}"
+  delay: "{{ platform_download_delay }}"
 
 - name: Render the Paperless environment
   ansible.builtin.template:

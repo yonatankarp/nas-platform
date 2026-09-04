@@ -1288,6 +1288,75 @@ role_task_files.each do |path|
           "read platform_compose_wait_timeout or a role default that says why it differs")
   end
 end
+
+# A fetch from the public internet is the one task in a converge whose failure
+# is somebody else's outage, and #330 is what that costs: the Hebrew OCR model
+# was fetched with no retry and no timeout, raw.githubusercontent.com timed out
+# at get_url's ten-second default, and a run that had converged 1388 tasks
+# failed. On the NAS it compounds -- scripts/production_auto_deploy.py records
+# the revision as attempted and failed and refuses it thereafter -- so a blip
+# stalls automatic deployment until an operator intervenes.
+#
+# The class is get_url and nothing else today, and that was established by
+# looking rather than assumed: every ansible.builtin.uri task in the repository
+# addresses 127.0.0.1 or a Compose service name, because roles run on the target
+# by design, and the external URLs in roles/jellyfin are plugin-repository
+# values written into Jellyfin's own configuration for Jellyfin to fetch, not
+# Ansible fetches. So requiring the four keywords on get_url covers every task
+# that reaches a third party, and a future module that does needs its own entry
+# here.
+#
+# The timeout is required, and required not to be a literal, in this check
+# specifically: `timeout` is an ordinary module argument that local tasks pass
+# legitimately, so literal_wait_timeout above cannot claim it the way it claims
+# wait_timeout. retries and delay are only checked for presence here, because
+# that same policy already refuses a literal for them in any role task.
+#
+# `until` must name the registered result. A retry loop whose condition does not
+# read what the attempt produced is a loop that runs once and reports success,
+# which looks exactly like this policy being satisfied.
+EXTERNAL_FETCH_MODULES = %w[ansible.builtin.get_url get_url].freeze
+DOWNLOAD_KEYWORD_POLICY = {
+  "retries" => "platform_download_retries",
+  "delay" => "platform_download_delay"
+}.freeze
+external_fetch_tasks = 0
+role_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    fetch_module = EXTERNAL_FETCH_MODULES.find { |name| task.key?(name) }
+    next if fetch_module.nil?
+
+    external_fetch_tasks += 1
+    task_name = task["name"] || "an unnamed task"
+    arguments = task[fetch_module].is_a?(Hash) ? task[fetch_module] : {}
+    check(failures,
+          arguments.key?("timeout") && !arguments["timeout"].is_a?(Integer),
+          "#{relative_path}: \"#{task_name}\" fetches an external URL without a " \
+          "non-literal timeout; read platform_download_timeout or a role default that " \
+          "says why it differs")
+    DOWNLOAD_KEYWORD_POLICY.each do |keyword, shared_variable|
+      check(failures, task.key?(keyword),
+            "#{relative_path}: \"#{task_name}\" fetches an external URL without #{keyword}; " \
+            "read #{shared_variable} so one network blip cannot fail the converge")
+    end
+    registered = task["register"].to_s
+    check(failures,
+          !registered.empty? && task["until"].to_s.include?(registered),
+          "#{relative_path}: \"#{task_name}\" must register its result and retry " \
+          "until that result is not failed; retries without such an until run once")
+  end
+end
+
+# The sweep above discovers its own subjects, so an empty one would report a
+# clean repository having inspected nothing -- renaming the module key, or
+# collapsing these tasks into a loop the flattener does not walk, is enough to
+# empty it in silence. Paperless and Pinchflat are the two external fetches the
+# platform has, so the floor is two rather than one.
+check(failures, external_fetch_tasks >= 2,
+      "the external fetch policy inspected #{external_fetch_tasks} get_url tasks; " \
+      "at least the Paperless OCR model and the Pinchflat yt-dlp build must stay discoverable")
+
 check(failures, deploys_through_module,
       "no role deploys anything through docker_compose_v2")
 

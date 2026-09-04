@@ -40,6 +40,11 @@
 # This must precede the Compose deployment. The Compose file bind-mounts this
 # path over /usr/local/bin/yt-dlp, and Docker materialises a *directory* for a
 # bind source that does not exist, which the container then cannot exec.
+#
+# github.com is a third party that can be briefly unreachable, so the fetch
+# retries under the platform download policy rather than failing the converge on
+# one blip -- see #330, where the paperless equivalent did exactly that. The
+# checksum above is what makes a retry safe to repeat.
 - name: Deploy the declared yt-dlp build for Pinchflat
   ansible.builtin.get_url:
     url: >-
@@ -50,6 +55,11 @@
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0755"
+    timeout: "{{ platform_download_timeout }}"
+  register: pinchflat_ytdlp_download
+  until: pinchflat_ytdlp_download is not failed
+  retries: "{{ platform_download_retries }}"
+  delay: "{{ platform_download_delay }}"
 
 - name: Deploy Pinchflat
   community.docker.docker_compose_v2:
