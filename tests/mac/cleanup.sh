@@ -5,6 +5,7 @@ set +x
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
+cleanup_sandbox_repo_dir=$mac_repo_dir
 . "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
 
@@ -227,7 +228,18 @@ force_final_rmdir_failure() {
   mac_failure_name=$2
   mac_failure_preserve=$3
   mac_failure_program=$(mktemp "$mac_failure_parent/mac-cleanup-program.XXXXXX") || return 1
-  cleanup_sandbox_program > "$mac_failure_program"
+  # The sandbox-clearing program is a file rather than a heredoc-producing shell
+  # function since #315, so this copies it instead of calling it. Getting that
+  # wrong is silent in the wrong direction: `cleanup_sandbox_program >
+  # "$mac_failure_program"` against a missing function leaves an empty program,
+  # the forcing harness below execs nothing, the final rmdir is never reached and
+  # this reports "did not authenticate final rmdir failure" -- which reads as a
+  # broken rmdir contract rather than as a broken copy.
+  cp "$cleanup_sandbox_program_path" "$mac_failure_program" || return 1
+  [ -s "$mac_failure_program" ] || {
+    printf 'cleanup self-test could not stage the sandbox program\n' >&2
+    return 1
+  }
   mac_failure_program_name=$(basename -- "$mac_failure_program")
 
   docker run --rm -i -v "$mac_failure_parent:/sandbox-parent" \

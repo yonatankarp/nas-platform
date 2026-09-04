@@ -32,6 +32,12 @@ storage_inventory=$repo_dir/inventory/group_vars/all/main.yml
 host_prep=$repo_dir/roles/host_prep/tasks/main.yml
 generator=$repo_dir/generate-secrets.yml
 snapshot=$repo_dir/tests/mac/snapshot-paperless.sh
+# The coordinated snapshot has been a program beside its wrapper since #315, and
+# both are read out of the tree under inspection: the wrapper for the one
+# setting that is genuinely shell, the program for everything its heredoc held.
+# Grepping the wrapper for the program's text would be a positive match that can
+# no longer fail.
+snapshot_program=$repo_dir/tests/mac/snapshot-paperless.rb
 environment_template=$repo_dir/roles/paperless_ngx/templates/env.j2
 ocr_fixture=$repo_dir/tests/fixtures/paperless-ocr.png.base64
 
@@ -50,6 +56,8 @@ fail_contract() {
 [ -f "$storage_inventory" ] || fail_contract 'inventory/group_vars/all/main.yml is absent'
 [ -f "$host_prep" ] || fail_contract 'roles/host_prep/tasks/main.yml is absent'
 [ -x "$snapshot" ] || fail_contract 'tests/mac/snapshot-paperless.sh is absent or not executable'
+[ -x "$snapshot_program" ] ||
+  fail_contract 'tests/mac/snapshot-paperless.rb is absent or not executable'
 [ -f "$ocr_fixture" ] || fail_contract 'tests/fixtures/paperless-ocr.png.base64 is absent'
 grep -qx 'DOCUMENT_INDEX_TIMEOUT_SECONDS = 600' "$runtime_program" ||
   fail_contract 'document indexing timeout differs'
@@ -88,7 +96,7 @@ render_paperless_mounts integration -f "$compose" -f "$integration_compose"
 
 ruby -ryaml "$static_program" "$compose" "$mac_compose" "$integration_compose" \
   "$role" "$defaults" "$argument_specs" "$storage_inventory" "$host_prep" \
-  "$generator" "$environment_template" "$snapshot" </dev/null
+  "$generator" "$environment_template" "$snapshot" "$snapshot_program" </dev/null
 
 # Two of these three subjects live in the controller program that
 # tests/integration.sh runs inside the container; the fixture pre-seed is the
@@ -102,11 +110,11 @@ grep -qF '"$repo_dir/tests/contracts/paperless.sh" seed-fixture-only' \
   fail_contract 'integration does not prepare Paperless fixtures on the Docker host'
 grep -qF 'run_paperless_snapshot drill' "$repo_dir/tests/integration_controller.sh" ||
   fail_contract 'integration does not exercise coordinated Paperless recovery'
-grep -qF 'run("docker", "stop", WEBSERVER, REDIS)' "$snapshot" ||
+grep -qF 'run("docker", "stop", WEBSERVER, REDIS)' "$snapshot_program" ||
   fail_contract 'Paperless snapshot does not quiesce writers'
-grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot" ||
+grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot_program" ||
   fail_contract 'Paperless restore does not wait for application health'
-grep -qF 'request("delete", "/api/documents/' "$snapshot" ||
+grep -qF 'request("delete", "/api/documents/' "$snapshot_program" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
 if [ "$mode" = static ]; then
   # These two were vacuous while the runtime half shared this file: `grep -F`

@@ -94,6 +94,7 @@ FIXTURE_FILES = %w[
   inventory/group_vars/all/main.yml
   generate-secrets.yml
   tests/mac/snapshot-paperless.sh
+  tests/mac/snapshot-paperless.rb
   tests/fixtures/paperless-ocr.png.base64
   tests/integration.sh
   tests/integration_controller.sh
@@ -123,7 +124,8 @@ STATIC_ARGUMENT_VARIABLES = {
   "roles/host_prep/tasks/main.yml" => "host_prep",
   "generate-secrets.yml" => "generator",
   "roles/paperless_ngx/templates/env.j2" => "environment_template",
-  "tests/mac/snapshot-paperless.sh" => "snapshot"
+  "tests/mac/snapshot-paperless.sh" => "snapshot",
+  "tests/mac/snapshot-paperless.rb" => "snapshot_program"
 }.freeze
 STATIC_ARGUMENTS = STATIC_ARGUMENT_VARIABLES.keys.freeze
 
@@ -363,7 +365,10 @@ def build_fixture_repository(root)
     destination = File.join(root, relative)
     FileUtils.mkdir_p(File.dirname(destination))
     FileUtils.cp(File.join(ROOT, relative), destination)
-    File.chmod(relative.end_with?(".sh") ? 0o755 : 0o644, destination)
+    # The mode matters, not just the bytes: tests/contracts/paperless.sh refuses
+    # a coordinated snapshot that is not executable, and since #315 that is two
+    # files rather than one, only one of which ends in .sh.
+    File.chmod(File.executable?(File.join(ROOT, relative)) ? 0o755 : 0o644, destination)
   end
 end
 
@@ -554,6 +559,33 @@ STATIC_ROWS = [
                 ': "${PLATFORM_PAPERLESS_RECOVERY_DEADLINE:=30}"')
     },
     expects: "Paperless recovery deadline default differs"
+  },
+  # The pair that pins the wrapper/program split #315 created. The row above
+  # plants its defect in the shell wrapper and the one below in the Ruby program,
+  # so a static half that read only one of the two files would leave one of them
+  # passing on a planted regression. Before the split both were one file and one
+  # `snapshot_text`; a repoint that moved every assertion to the program would
+  # have made the deadline default above a positive grep that can no longer
+  # match.
+  {
+    name: "a one-shot flushall that races the valkey socket again",
+    argument: "tests/mac/snapshot-paperless.rb",
+    break: lambda { |root|
+      edit_text(root, "tests/mac/snapshot-paperless.rb",
+                '[["docker", "exec", REDIS, "valkey-cli", "flushall"], :until_ready]',
+                '[["docker", "exec", REDIS, "valkey-cli", "flushall"], :once]')
+    },
+    expects: "Paperless recovery must wait for valkey rather than one-shot the flushall"
+  },
+  {
+    name: "a drill poll that logs in on every pass again",
+    argument: "tests/mac/snapshot-paperless.rb",
+    break: lambda { |root|
+      edit_text(root, "tests/mac/snapshot-paperless.rb",
+                "break if catalogue(drill_token).empty?",
+                "break if catalogue(authenticate(admin_username, admin_password)).empty?")
+    },
+    expects: "Paperless drill poll must reuse the drill token rather than log in again"
   },
   {
     name: "a secret-bearing role task that stopped being redacted",
@@ -1237,8 +1269,8 @@ if ARGV.include?("--self-test")
   planted_redirects = 0
   [
     ["\"$render_program\" \"$variant\" </dev/null\n", "\"$render_program\" \"$variant\"\n"],
-    ["\"$generator\" \"$environment_template\" \"$snapshot\" </dev/null\n",
-     "\"$generator\" \"$environment_template\" \"$snapshot\"\n"],
+    ["\"$generator\" \"$environment_template\" \"$snapshot\" \"$snapshot_program\" </dev/null\n",
+     "\"$generator\" \"$environment_template\" \"$snapshot\" \"$snapshot_program\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"]
   ].each do |from, to|

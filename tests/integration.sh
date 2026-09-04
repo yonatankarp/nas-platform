@@ -843,6 +843,7 @@ if [ "${INTEGRATION_PREPULL_ONLY:-0}" = 1 ]; then
   exit "$prepull_status"
 fi
 
+cleanup_sandbox_repo_dir=$repo_dir
 . "$repo_dir/tests/sandbox_cleanup.sh"
 . "$repo_dir/tests/integration_lock.sh"
 

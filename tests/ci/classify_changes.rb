@@ -135,11 +135,14 @@ module ClassifyChanges
     tests/integration_controller_lib.sh
     tests/integration_lock.sh
     tests/mac/generate-immich-fixture-vars.rb
+    tests/mac/snapshot-paperless-test.rb
+    tests/mac/snapshot-paperless.rb
     tests/mac/snapshot-paperless.sh
     tests/mac_inventory_path_test.yml
     tests/policy_support.rb
     tests/run_contracts.rb
     tests/sandbox_cleanup.sh
+    tests/sandbox_cleanup_contents.py
     tests/verify_deployment_manifest.rb
   ].freeze
   # The contracts a suite runs, the document fixtures they upload and the Mac

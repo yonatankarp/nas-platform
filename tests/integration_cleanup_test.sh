@@ -2,6 +2,7 @@
 set -eu
 
 script_dir=$(CDPATH= cd -P "$(dirname "$0")" && pwd -P)
+cleanup_sandbox_repo_dir=$(CDPATH= cd -- "$script_dir/.." && pwd -P)
 . "$script_dir/sandbox_cleanup.sh"
 
 test_case=${1:-all}

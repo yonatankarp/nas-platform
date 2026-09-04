@@ -11,6 +11,12 @@ role_tasks = YAML.safe_load_file(ARGV.fetch(1), aliases: false)
 integration = File.read(ARGV.fetch(2))
 mac_drift = File.read(ARGV.fetch(3))
 mac_verify = File.read(ARGV.fetch(4))
+# The label assertions the verification hook makes have been a program beside it
+# since #315, so the hook is read for the inspection it performs and the program
+# for the labels it names. Reading only the hook would leave two positive
+# substring checks that can no longer match, which is the shape #291 removed from
+# this file when the runtime half moved out of it.
+mac_verify_labels = File.read(ARGV.fetch(5))
 expected = {
   "OOM" => ['name == "oom"', 300],
   "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])', 300],
@@ -72,7 +78,7 @@ markers = %w[
   DOZZLE_CHECK_MIXED_PLANNED_IMMUTABLE_AND_REPAIRED
   DOZZLE_CHECK_MISSING_PLANNED_IMMUTABLE_AND_REPAIRED
 ]
-if ARGV.fetch(5) == "static"
+if ARGV.fetch(6) == "static"
   planned_tasks.each do |name|
     abort "Dozzle contract failed: missing #{name}" unless
       role_tasks.any? { |task| task["name"] == name }
@@ -90,6 +96,7 @@ if ARGV.fetch(5) == "static"
   abort "Dozzle contract failed: Mac drift proof does not install an unrelated sentinel label" unless
     mac_drift.include?("dev.dozzle.contract.sentinel")
   abort "Dozzle contract failed: Mac runtime verification does not inspect Docker labels" unless
-    mac_verify.include?("docker container inspect") && mac_verify.include?("dev.dozzle.group") &&
-      mac_verify.include?("dev.dozzle.name")
+    mac_verify.include?("docker container inspect") &&
+      mac_verify_labels.include?("dev.dozzle.group") &&
+      mac_verify_labels.include?("dev.dozzle.name")
 end

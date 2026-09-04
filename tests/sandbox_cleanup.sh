@@ -26,105 +26,43 @@ cleanup_sandbox_pinchflat_services='pinchflat'
 cleanup_sandbox_trailarr_services='trailarr'
 cleanup_sandbox_seerr_services='seerr'
 
-cleanup_sandbox_program() {
-  cat <<'PY'
-import os
-import re
-import stat
-import sys
-
-
-name = sys.argv[1]
-preserve = sys.argv[2]
-supported_names = (
-    r"nas-platform-integration\.[A-Za-z0-9]{6}",
-    r"nas-platform-cleanup\.[A-Za-z0-9]{6}",
-    r"nas-platform-mac\.[A-Za-z0-9]{6}",
-    r"nas-platform-mac\.[A-Za-z0-9]{6}\.reports",
-)
-if not any(re.fullmatch(pattern, name) for pattern in supported_names):
-    raise ValueError("invalid sandbox basename")
-if preserve and not (
-    (re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}", name)
-     and preserve == ".nas-platform-mac-owned")
-    or (re.fullmatch(r"nas-platform-mac\.[A-Za-z0-9]{6}\.reports", name)
-        and preserve == ".nas-platform-mac-report-owned")
-):
-    raise ValueError("invalid preserved marker")
-
-open_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
-
-
-def clear_directory(directory_fd, preserved_entry=""):
-    for entry in os.listdir(directory_fd):
-        if entry == preserved_entry:
-            continue
-        entry_stat = os.stat(
-            entry, dir_fd=directory_fd, follow_symlinks=False
-        )
-        if stat.S_ISDIR(entry_stat.st_mode):
-            child_fd = os.open(entry, open_flags, dir_fd=directory_fd)
-            try:
-                clear_directory(child_fd)
-            finally:
-                os.close(child_fd)
-            os.rmdir(entry, dir_fd=directory_fd)
-        else:
-            os.unlink(entry, dir_fd=directory_fd)
-
-
-parent_fd = os.open("/sandbox-parent", open_flags)
-try:
-    sandbox_fd = os.open(name, open_flags, dir_fd=parent_fd)
-    try:
-        if preserve:
-            marker_fd = os.open(preserve, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=sandbox_fd)
-            try:
-                marker_stat = os.fstat(marker_fd)
-                if not stat.S_ISREG(marker_stat.st_mode):
-                    raise ValueError("preserved marker is not regular")
-                marker_data = os.read(marker_fd, 4097)
-                if len(marker_data) > 4096:
-                    raise ValueError("preserved marker is unexpectedly large")
-            finally:
-                os.close(marker_fd)
-
-            clear_directory(sandbox_fd, preserve)
-            os.unlink(preserve, dir_fd=sandbox_fd)
-            try:
-                os.rmdir(name, dir_fd=parent_fd)
-            except OSError:
-                recovery_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-                recovery_fd = os.open(
-                    preserve,
-                    recovery_flags,
-                    stat.S_IMODE(marker_stat.st_mode),
-                    dir_fd=sandbox_fd,
-                )
-                try:
-                    os.write(recovery_fd, marker_data)
-                    os.fchmod(recovery_fd, stat.S_IMODE(marker_stat.st_mode))
-                    os.fchown(recovery_fd, marker_stat.st_uid, marker_stat.st_gid)
-                finally:
-                    os.close(recovery_fd)
-                raise
-        else:
-            clear_directory(sandbox_fd)
-    finally:
-        os.close(sandbox_fd)
-finally:
-    os.close(parent_fd)
-PY
-}
+# The sandbox-clearing program is tests/sandbox_cleanup_contents.py, and the
+# container reads it on standard input exactly as it read the heredoc that used
+# to stand here.
+#
+# This file is sourced far more often than it is run, and POSIX sh gives a
+# sourced file no way to find itself -- "$0" is the sourcing script, not this
+# one. So the checkout is named by the caller, the same way tests/mac/lib.sh has
+# its caller set mac_script_dir, and every one of the four source sites sets it
+# on the line above its `.`. tests/policy_integration_test.rb requires that of
+# each of them, because a caller that forgot would find out only when a cleanup
+# it was relying on refused to run.
+#
+# The fallback covers the one caller that runs this file rather than sourcing
+# it, and is deliberately not relied on anywhere else.
+#
+# The name ends in _path because it used to be a shell function that cat-ed the
+# heredoc, and tests/mac/cleanup.sh called it as `cleanup_sandbox_program >
+# file`. A variable of the same name would have left that call site looking
+# fine, running a command that no longer exists and writing an empty program --
+# which is exactly what it did, and what tests/mac/cleanup.sh --self-test
+# caught. The rename makes any surviving call site fail loudly instead.
+: "${cleanup_sandbox_repo_dir:=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}"
+cleanup_sandbox_program_path=$cleanup_sandbox_repo_dir/tests/sandbox_cleanup_contents.py
 
 cleanup_sandbox_contents() {
   cleanup_contents_parent=$1
   cleanup_contents_name=$2
   cleanup_contents_preserve=${3-}
 
-  cleanup_sandbox_program | docker run --rm -i \
+  [ -f "$cleanup_sandbox_program_path" ] && [ ! -L "$cleanup_sandbox_program_path" ] || {
+    printf 'sandbox cleanup program is absent: %s\n' "$cleanup_sandbox_program_path" >&2
+    return 1
+  }
+  docker run --rm -i \
     -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_sandbox_image" \
-    python - "$cleanup_contents_name" "$cleanup_contents_preserve"
+    python - "$cleanup_contents_name" "$cleanup_contents_preserve" \
+    < "$cleanup_sandbox_program_path"
 }
 
 cleanup_sandbox_project_services() {
