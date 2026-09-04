@@ -56,6 +56,7 @@ FIXTURE_FILES = %w[
   roles/arr/tasks/reconcile_servarr_download_client.yml
   roles/arr/tasks/reconcile_prowlarr.yml
   roles/arr/tasks/reconcile_prowlarr_application.yml
+  roles/arr/tasks/reconcile_prowlarr_download_client.yml
   roles/arr/tasks/reconcile_bazarr.yml
   roles/arr/tasks/reconciliation_fingerprints.yml
   roles/arr/tasks/verify.yml
@@ -267,8 +268,13 @@ STATIC_ROWS = [
   },
   {
     name: "a Servarr download category that drifted",
+    # The indentation is the anchor: `category: movies` alone also matches
+    # `arr_prowlarr_client_category`, which is a different relationship's
+    # fallback and is covered by its own row. Two matches make mutate_text
+    # refuse rather than plant in whichever came first.
     break: lambda { |root|
-      mutate_text(root, "roles/arr/defaults/main.yml", "category: movies", "category: films")
+      mutate_text(root, "roles/arr/defaults/main.yml",
+                  "    category: movies", "    category: films")
     },
     expects: "Servarr reconciliation must own only the SABnzbd clients"
   },
@@ -328,15 +334,18 @@ STATIC_ROWS = [
     expects: "Prowlarr must own Radarr and Sonarr applications"
   },
   {
-    name: "a download client handed to Prowlarr",
+    # The inverse of the row this replaces. Phase 1 asserted that Prowlarr
+    # received no download client; it now must hold one, because without it a
+    # manual grab is refused with "Usenet Download client isn't configured yet".
+    # Breaking the request is what proves the rule reads the reconciliation
+    # rather than the file's existence.
+    name: "a Prowlarr download client that is no longer written",
     break: lambda { |root|
-      mutate_text(root, "roles/arr/tasks/reconcile_prowlarr.yml",
-                  "---\n- name: Read Prowlarr host configuration",
-                  "---\n- name: Push the Prowlarr /downloadclient list\n" \
-                  "  ansible.builtin.debug:\n    msg: seeded\n\n" \
-                  "- name: Read Prowlarr host configuration")
+      mutate_text(root, "roles/arr/tasks/reconcile_prowlarr_download_client.yml",
+                  "{{ arr_prowlarr_api }}/downloadclient",
+                  "{{ arr_prowlarr_api }}/indexer", occurrences: 2)
     },
-    expects: "Prowlarr must not receive a download client"
+    expects: "Prowlarr must own its SABnzbd download client"
   },
   {
     name: "a Bazarr link to one Arr service only",
@@ -719,10 +728,10 @@ PROGRAM_MUTATIONS = [
     rows: ["a Prowlarr application that no longer names Sonarr"]
   },
   {
-    label: "the Prowlarr download client refusal",
-    from: 'prowlarr_scalars.any? { |value| value.match?(%r{/downloadclient|download client}i) }',
-    to: "false",
-    rows: ["a download client handed to Prowlarr"]
+    label: "the Prowlarr download client ownership check",
+    from: 'prowlarr_client_scalars.any? { |value| value.include?("/downloadclient") } &&',
+    to: "true &&",
+    rows: ["a Prowlarr download client that is no longer written"]
   },
   {
     label: "the Bazarr dual-Arr link check",

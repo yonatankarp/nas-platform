@@ -192,8 +192,19 @@ if failures.empty?
     %w[Radarr Sonarr fullSync].all? do |token|
       prowlarr_scalars.any? { |value| value.include?(token) }
     end
-  failures << "Prowlarr must not receive a download client" if
-    prowlarr_scalars.any? { |value| value.match?(%r{/downloadclient|download client}i) }
+  # This rule was the inverse until the Prowlarr client landed: Phase 1 asserted
+  # that Prowlarr received no download client at all, with no reason recorded in
+  # the commit that introduced it. The reason it now holds one is that Prowlarr
+  # answers a manual grab with "Usenet Download client isn't configured yet" and
+  # sends nothing anywhere, so its search page could find releases and not act on
+  # one. The property worth pinning is not absence but ownership: exactly one
+  # client, reconciled here, pointing at the platform's own SABnzbd.
+  prowlarr_client_scalars = role_strings(
+    role_tasks(root, "roles/arr/tasks/reconcile_prowlarr_download_client.yml")
+  )
+  failures << "Prowlarr must own its SABnzbd download client" unless
+    prowlarr_client_scalars.any? { |value| value.include?("/downloadclient") } &&
+      prowlarr_client_scalars.any? { |value| value.include?("acquisition_prowlarr_client_body") }
 
   bazarr_scalars = role_strings(
     role_tasks(root, "roles/arr/tasks/reconcile_bazarr.yml") +
