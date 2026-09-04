@@ -342,11 +342,24 @@ cleanup_source = File.read(File.join(ROOT, "tests", "sandbox_cleanup.sh"))
         "tests/sandbox_cleanup.sh")
 end
 check(failures,
-      cleanup_source.include?('cleanup_sandbox_program=$cleanup_sandbox_repo_dir/' \
+      cleanup_source.include?('cleanup_sandbox_program_path=$cleanup_sandbox_repo_dir/' \
                               "tests/sandbox_cleanup_contents.py") &&
-        cleanup_source.include?('< "$cleanup_sandbox_program"') &&
+        cleanup_source.include?('< "$cleanup_sandbox_program_path"') &&
         !cleanup_source.include?("cat <<'PY'"),
       "sandbox cleanup must read its clearing program from a file, not a heredoc")
+# tests/mac/cleanup.sh's forced-rmdir probe stages the same program for a
+# container that shadows os.rmdir. It used to call cleanup_sandbox_program as a
+# shell function; against the variable that replaced it, `cleanup_sandbox_program
+# > file` ran a command that does not exist, left an empty program, and made the
+# self-test report "did not authenticate final rmdir failure" -- a broken copy
+# reading as a broken rmdir contract. Nothing else here would say so, so this
+# does.
+mac_cleanup_source = File.read(File.join(ROOT, "tests", "mac", "cleanup.sh"))
+check(failures,
+      mac_cleanup_source.include?('cp "$cleanup_sandbox_program_path" "$mac_failure_program"') &&
+        mac_cleanup_source.include?('[ -s "$mac_failure_program" ]') &&
+        !mac_cleanup_source.match?(/^\s*cleanup_sandbox_program\s*>/),
+      "the Mac forced-rmdir probe must stage the sandbox program by copying its file")
 registered_services = cleanup_source.scan(
   /^cleanup_sandbox_([a-z]+)_services='([^']*)'/
 ).to_h { |kind, services| [kind, services.split] }

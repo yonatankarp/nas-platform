@@ -40,22 +40,29 @@ cleanup_sandbox_seerr_services='seerr'
 #
 # The fallback covers the one caller that runs this file rather than sourcing
 # it, and is deliberately not relied on anywhere else.
+#
+# The name ends in _path because it used to be a shell function that cat-ed the
+# heredoc, and tests/mac/cleanup.sh called it as `cleanup_sandbox_program >
+# file`. A variable of the same name would have left that call site looking
+# fine, running a command that no longer exists and writing an empty program --
+# which is exactly what it did, and what tests/mac/cleanup.sh --self-test
+# caught. The rename makes any surviving call site fail loudly instead.
 : "${cleanup_sandbox_repo_dir:=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)}"
-cleanup_sandbox_program=$cleanup_sandbox_repo_dir/tests/sandbox_cleanup_contents.py
+cleanup_sandbox_program_path=$cleanup_sandbox_repo_dir/tests/sandbox_cleanup_contents.py
 
 cleanup_sandbox_contents() {
   cleanup_contents_parent=$1
   cleanup_contents_name=$2
   cleanup_contents_preserve=${3-}
 
-  [ -f "$cleanup_sandbox_program" ] && [ ! -L "$cleanup_sandbox_program" ] || {
-    printf 'sandbox cleanup program is absent: %s\n' "$cleanup_sandbox_program" >&2
+  [ -f "$cleanup_sandbox_program_path" ] && [ ! -L "$cleanup_sandbox_program_path" ] || {
+    printf 'sandbox cleanup program is absent: %s\n' "$cleanup_sandbox_program_path" >&2
     return 1
   }
   docker run --rm -i \
     -v "$cleanup_contents_parent:/sandbox-parent" "$cleanup_sandbox_image" \
     python - "$cleanup_contents_name" "$cleanup_contents_preserve" \
-    < "$cleanup_sandbox_program"
+    < "$cleanup_sandbox_program_path"
 }
 
 cleanup_sandbox_project_services() {

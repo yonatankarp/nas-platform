@@ -18,6 +18,13 @@ include TestScaffold
 NTFY_MAIN = File.join(ROOT, "roles", "ntfy", "tasks", "main.yml")
 NTFY_MANAGED = File.join(ROOT, "roles", "ntfy", "tasks", "managed_users.yml")
 NTFY_VERIFY_HOOK = File.join(ROOT, "tests", "mac", "hooks", "verify", "15-ntfy.sh")
+# The account verification itself has been a program beside the hook since #315.
+# Both are read, and the assertions below are split between them rather than
+# repointed wholesale: the topic roster is a shell default and stays on the
+# hook, and everything about the HTTP conversation is the programs. Moving all
+# of it to the program would leave the topic check searching a file that never
+# contained it, which is a positive grep that can no longer fail.
+NTFY_VERIFY_PROGRAM = File.join(ROOT, "tests", "mac", "hooks", "verify", "15-ntfy.rb")
 # The recreate group is one table-driven hook for every service now. ntfy is the
 # one entry in that table with no contract suite behind it, so the table
 # dispatches to the verify hook below, and that is still what this asserts.
@@ -229,15 +236,22 @@ end
 failures = []
 main_tasks = YAML.safe_load_file(NTFY_MAIN, aliases: false)
 verify_hook = File.exist?(NTFY_VERIFY_HOOK) ? File.read(NTFY_VERIFY_HOOK) : ""
+verify_program = File.exist?(NTFY_VERIFY_PROGRAM) ? File.read(NTFY_VERIFY_PROGRAM) : ""
 recreate_hook = File.read(NTFY_RECREATE_HOOK)
 failures << "ntfy verification hook is missing or not executable" unless
   File.file?(NTFY_VERIFY_HOOK) && File.executable?(NTFY_VERIFY_HOOK)
+failures << "ntfy verification program is missing or not executable" unless
+  File.file?(NTFY_VERIFY_PROGRAM) && File.executable?(NTFY_VERIFY_PROGRAM)
+failures << "ntfy verification hook does not provision the topic roster" unless
+  verify_hook.include?("nas-critical")
+failures << "ntfy verification hook does not run its account program" unless
+  verify_hook.include?("tests/mac/hooks/verify/15-ntfy.rb")
 failures << "ntfy verification hook does not inspect every eligible account subscription" unless
-  verify_hook.include?("vault_managed_users") && verify_hook.include?("nas-critical") &&
-    verify_hook.include?("base_url") && verify_hook.include?("subscriptions") &&
-    verify_hook.include?("Net::HTTP") && verify_hook.include?("basic_auth")
+  verify_program.include?("vault_managed_users") && verify_program.include?("base_url") &&
+    verify_program.include?("subscriptions") && verify_program.include?("Net::HTTP") &&
+    verify_program.include?("basic_auth")
 failures << "ntfy verification hook incorrectly manages browser-local notification state" if
-  verify_hook.match?(/web.?push|notification.?permission|local.?storage/i)
+  (verify_hook + verify_program).match?(/web.?push|notification.?permission|local.?storage/i)
 failures << "ntfy recreation does not verify synchronized account subscriptions" unless
   recreate_hook.include?("../verify/15-ntfy.sh")
 
