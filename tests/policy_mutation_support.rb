@@ -140,9 +140,17 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/media-acquisition-foundation-hook-test.sh
   tests/mac/media-acquisition-foundation-report-test.rb
   tests/mac/media-acquisition-foundation-cleanup-test.sh
+  tests/mac/media-acquisition-foundation-hook-fake-docker.rb
+  tests/mac/media-acquisition-foundation-cleanup-fake-docker.rb
   tests/mac/run.sh
   tests/mac/run-phase-status-test.sh
   tests/mac/pin-protected-input.rb
+  tests/mac/read-integration-ports.rb
+  tests/mac/config-isolation.sh
+  tests/mac/config-isolation.rb
+  tests/mac/snapshot-immich.sh
+  tests/mac/snapshot-immich.rb
+  tests/mac/snapshot-immich-test.rb
   tests/mac/snapshot-paperless.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/mac/hooks/drift/30-audiobookshelf.sh
