@@ -179,6 +179,34 @@ platform_compose_wait_timeout: 180
 platform_readiness_retries: 20
 platform_readiness_delay: 3
 
+# The same policy for the other kind of waiting: a fetch from a third party on
+# the public internet. Two tasks do that -- the Hebrew OCR model and the pinned
+# yt-dlp build -- and neither had a retry or a timeout, so one blip on
+# raw.githubusercontent.com failed the whole converge (#330). On the NAS that
+# compounds: scripts/production_auto_deploy.py records the revision as attempted
+# and failed and will not retry it without an operator, so a ten-second network
+# hiccup stalls automatic deployment.
+#
+# These are deliberately not the readiness numbers, because they are patience
+# for a different thing. Readiness waits on a container here that is already
+# healthy and will answer shortly, so it polls often and briefly. A download
+# waits on a host somewhere else that is either momentarily unreachable or
+# genuinely down, and a short read timeout is what turns the first case into the
+# second -- the failure in #330 reported elapsed: 10, which is get_url's own
+# default. So the ladder is few attempts with a generous timeout rather than
+# many attempts with a tight one. Ansible attempts an until loop `retries` times
+# in total, so the worst case is five timeouts and the four delays between them,
+# 5 x 30 + 4 x 5 = 170 seconds, before the run is allowed to fail for real.
+#
+# tests/policy_test.rb requires every get_url task to carry all four keywords
+# and refuses a literal for any of them. It enforces the timeout there rather
+# than through literal_wait_timeout, because `timeout` is an ordinary module
+# argument that several local tasks pass legitimately, while `wait_timeout` only
+# ever means this policy.
+platform_download_retries: 5
+platform_download_delay: 5
+platform_download_timeout: 30
+
 # Single declarative storage inventory. host_prep creates ordinary entries and
 # validates preservation-only entries, the policy test cross-checks them against
 # Compose volume sources, and the recovery class drives the disaster-recovery
