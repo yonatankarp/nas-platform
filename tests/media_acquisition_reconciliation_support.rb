@@ -2482,12 +2482,16 @@ def base_variables(port)
     "vault_downloaders_sabnzbd_api_key" => SECRETS.fetch("sab_api"),
     "vault_downloaders_sabnzbd_admin_username" => SECRETS.fetch("sab_username"),
     "vault_downloaders_sabnzbd_admin_password" => SECRETS.fetch("sab_password"),
-    "vault_downloaders_sabnzbd_server_host" => "news.fixture.invalid",
-    "vault_downloaders_sabnzbd_server_port" => "563",
+    # Typed, not stringy, because these four stopped being vault strings in #298
+    # and inventory carries them as an integer port, an integer connection count
+    # and a boolean flag. A probe that fed strings here would not exercise the
+    # `| int` the role renders ssl through.
+    "media_usenet_provider" => {
+      "host" => "news.fixture.invalid", "port" => 563,
+      "connections" => 8, "ssl" => true
+    },
     "vault_downloaders_sabnzbd_server_username" => "fixture-usenet-username",
     "vault_downloaders_sabnzbd_server_password" => SECRETS.fetch("usenet_password"),
-    "vault_downloaders_sabnzbd_server_connections" => "8",
-    "vault_downloaders_sabnzbd_server_ssl" => "1",
     "downloaders_sabnzbd_api" => "http://127.0.0.1:#{port}/sabnzbd/api",
     "downloaders_sabnzbd_categories" => { "movies" => "movies", "series" => "series" },
     "downloaders_sabnzbd_server_name" => "usenet",
@@ -2528,23 +2532,30 @@ end
 
 # The role derives this in `roles/downloaders/defaults/main.yml`, and a probe
 # loads no role defaults, so the derivation is repeated rather than hardcoded:
-# a case that empties the six provider credentials gets the matching gate on its
-# own, and a case that declares them keeps the declared one. Hardcoding `true`
-# here would leave the undeclared branch unreachable by any probe.
+# a case that leaves the provider undeclared gets the matching gate on its own,
+# and a case that declares one keeps the declared one. Hardcoding `true` here
+# would leave the undeclared branch unreachable by any probe.
+#
+# It reads the policy host rather than a vault key since #298, which is the
+# whole gain from that move: "is a provider declared?" needs no credential.
 def usenet_provider_declared?(variables)
-  !variables.fetch("vault_downloaders_sabnzbd_server_host").to_s.empty?
+  !variables.fetch("media_usenet_provider").fetch("host").to_s.empty?
 end
 
 # What an operator who has bought no Usenet subscription declares. The role reads
-# the host to decide, and the credential contract refuses a partial declaration,
-# so the six move together and this is the only shape of "no provider".
+# the host to decide, and refuses a half-declared provider, so both halves move
+# together and this is the only shape of "no provider".
+#
+# The port, connection count and TLS flag keep their values rather than being
+# emptied: they are typed policy with defaults now (#298), and the role treats an
+# empty host as undeclared without consulting them. Emptying them would be a
+# shape the filter rejects rather than the shape a real target has.
 UNDECLARED_USENET_PROVIDER = {
-  "vault_downloaders_sabnzbd_server_host" => "",
-  "vault_downloaders_sabnzbd_server_port" => "",
+  "media_usenet_provider" => {
+    "host" => "", "port" => 563, "connections" => 8, "ssl" => true
+  },
   "vault_downloaders_sabnzbd_server_username" => "",
-  "vault_downloaders_sabnzbd_server_password" => "",
-  "vault_downloaders_sabnzbd_server_connections" => "",
-  "vault_downloaders_sabnzbd_server_ssl" => ""
+  "vault_downloaders_sabnzbd_server_password" => ""
 }.freeze
 
 def write_fake_configarr_module(collection_root)
@@ -2799,13 +2810,13 @@ def desired_fingerprint_values(variables)
     # Mirrors the role's dict literal, key order included: `ansible_json`
     # serializes in insertion order, so a reordering here would hash differently
     # from Jinja and the digests would never match.
+    # Two fields since #298, matching the role: the four non-credential values are
+    # compared field by field against the API read-back, so only the password --
+    # which SABnzbd masks on read-back -- needs a digest to be noticed, and the
+    # username rides along as the other half of the account.
     "downloaders_usenet_server" => {
-      "host" => variables.fetch("vault_downloaders_sabnzbd_server_host"),
-      "port" => variables.fetch("vault_downloaders_sabnzbd_server_port"),
       "username" => variables.fetch("vault_downloaders_sabnzbd_server_username"),
-      "password" => variables.fetch("vault_downloaders_sabnzbd_server_password"),
-      "connections" => variables.fetch("vault_downloaders_sabnzbd_server_connections"),
-      "ssl" => variables.fetch("vault_downloaders_sabnzbd_server_ssl")
+      "password" => variables.fetch("vault_downloaders_sabnzbd_server_password")
     },
     "prowlarr_indexers" => variables.fetch("media_arr_indexers"),
     "bazarr_providers" => {

@@ -46,20 +46,29 @@
         }}
       # SABnzbd masks the provider password on read, so no comparison against
       # the running service can notice a rotation. This digest is the only thing
-      # that does, which is why every vault-authored field is in it. It carries
-      # only vault material: the server's name and its non-credential fields are
-      # downloaders-role defaults, they are compared field by field against the
-      # running service, and hashing them here would make this digest depend on
-      # a variable that is not in scope when the Arr role computes it.
+      # that does, which is why every vault-authored field is in it.
+      #
+      # It carries only vault material, and after #298 that is the account name
+      # and its password rather than all six provider values. Two reasons were
+      # given for excluding the non-credential fields and only one of them
+      # survives the move, so the surviving one is the reason: they are compared
+      # field by field against the running service. `reconcile_sabnzbd.yml`
+      # projects host, port, connections and ssl out of the API read-back and
+      # compares them directly, so a changed port is already a change it sees;
+      # the password is the only owned field SABnzbd masks on read-back
+      # (`get_dict(for_public_api=True)` returns ten asterisks) and therefore
+      # the only one that needs a digest to be noticed at all.
+      #
+      # The other reason -- that hashing them would make this digest depend on a
+      # variable out of scope where the Arr role computes it -- stopped applying:
+      # `media_usenet_provider` is inventory group_vars, so it is in scope
+      # everywhere. It is excluded because it does not need to be here, not
+      # because it cannot be.
       downloaders_usenet_server: >-
         {{
           {
-            'host': vault_downloaders_sabnzbd_server_host,
-            'port': vault_downloaders_sabnzbd_server_port,
             'username': vault_downloaders_sabnzbd_server_username,
-            'password': vault_downloaders_sabnzbd_server_password,
-            'connections': vault_downloaders_sabnzbd_server_connections,
-            'ssl': vault_downloaders_sabnzbd_server_ssl
+            'password': vault_downloaders_sabnzbd_server_password
           } | to_json | hash('sha256')
         }}
       prowlarr_indexers: >-

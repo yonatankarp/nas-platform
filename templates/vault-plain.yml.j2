@@ -42,12 +42,8 @@ vault_downloaders_sabnzbd_admin_password: {{ downloaders_sabnzbd_admin_password 
 {# A Usenet provider issues this account to a human subscription; the platform
    cannot generate one, so the stand-ins below are written out for the operator
    to replace before the downloader stack is enabled. #}
-vault_downloaders_sabnzbd_server_host: replace-with-usenet-host
-vault_downloaders_sabnzbd_server_port: "563"
 vault_downloaders_sabnzbd_server_username: replace-with-usenet-username
 vault_downloaders_sabnzbd_server_password: replace-with-usenet-password
-vault_downloaders_sabnzbd_server_connections: "8"
-vault_downloaders_sabnzbd_server_ssl: "1"
 vault_bindery_api_key: {{ bindery_api_key | to_json }}
 vault_bindery_admin_username: {{ bindery_admin_username }}
 vault_bindery_admin_password: {{ bindery_admin_password }}

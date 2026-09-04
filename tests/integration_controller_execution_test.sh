@@ -565,7 +565,12 @@ case_arr() {
   expect_output 'ARR_PHASE1_RUNTIME_VERIFIED'
   # The enabled lane converges with the transport on, which is what makes the
   # verification assert against real reader state rather than a skipped role.
-  expect_log '[-e][media_usenet_enabled=true][-e][media_acquisition_adopt_existing_libraries=true]'
+  # The provider policy rides between them: four of the provider's six values
+  # are inventory rather than vault material since #298, so this is the only
+  # place a lane can state them, and a lane that stated nothing would inherit
+  # inventory's undeclared host while the vault handed it an account -- a half
+  # declared provider, which the role refuses.
+  expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][-e][media_acquisition_adopt_existing_libraries=true]'
   expect_log_order 'collision argv=[live]' 'contract arr argv=[static]'
   # Idempotence is proved by a real play, and it must precede check mode: a
   # check-mode run cannot stand in for the converge it is meant to follow.
@@ -593,6 +598,18 @@ case_downloaders() {
   # handed the stood-in credentials would pass exactly the same way -- that is
   # the whole shape of the bug #274 shipped.
   expect_log 'ephemeral-vault argv=[--undeclared][usenet][--output]'
+  # And the policy half emptied with it. Both halves or neither: the vault
+  # supplies the account and inventory supplies the host, so a lane that asked
+  # the generator for an undeclared account while still declaring a host would
+  # converge nothing -- roles/downloaders refuses the pair. Asserted as the
+  # negation of the arr lane's line above.
+  expect_log '[-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}]'
+  # And the verification play, which is a separate ansible-playbook invocation
+  # with an argv of its own. verify.yml branches on this value, so a converge
+  # that gets it and a verification that does not is a lane asserting the wrong
+  # branch against its own converge -- which is exactly how the bindery lane
+  # failed before this was passed here too.
+  expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_output 'DOWNLOADERS_UNDECLARED_PROVIDER_RUNTIME_VERIFIED'
 }
 
@@ -613,6 +630,10 @@ case_bindery() {
   expect_log 'contract bindery argv=[run]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_bindery]'
+  # The declared half of the same property: this lane's verification has to see
+  # the declared host its converge saw, or it asserts that no owned server
+  # exists against the server it just created.
+  expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
   expect_log '[site.yml][--tags][arr,downloaders,bindery]'
   expect_log '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
   expect_log_order '[site.yml][--tags][arr,downloaders,bindery]' \
@@ -835,6 +856,23 @@ plant 'downloaders check mode runs before its idempotence converge' \
   1 regexp
 plant 'undeclared provider request dropped' downloaders program \
   '--undeclared usenet' '' 1
+# The per-lane host choice, planted in both directions because neither lane can
+# report the other's. Emptying the default makes the declared lanes converge a
+# host-less provider beside a vault account; never taking the downloaders branch
+# makes the undeclared lane converge an account-less host. Both are the
+# half-declared state roles/downloaders refuses, and each is invisible to the
+# lane that is already in the state being planted.
+plant 'declared provider policy host dropped' arr program \
+  'integration_media_usenet_host=news.usenet.invalid' \
+  'integration_media_usenet_host=' 1
+plant 'undeclared provider policy branch dropped' downloaders program \
+  'downloaders) integration_media_usenet_host=' \
+  'never) integration_media_usenet_host=' 1
+# The verification play's own copy. Dropping it leaves the converge correct and
+# the verification reading inventory's default instead, which is the shape that
+# reached CI: a lane asserting the undeclared branch against a declared converge.
+plant 'verification provider policy dropped' bindery library \
+  '-e "$integration_media_usenet_provider" "$@"' '"$@"' 1
 plant 'declared downloader verification-only play dropped' bindery program \
   'run_downloaders_verify_only' ':' 2
 plant 'acquisition foundation contract dropped' seerr program \

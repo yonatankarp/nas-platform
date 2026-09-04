@@ -234,30 +234,29 @@ generate_vault() (
   sonarr_api_key=$(random_api_key) || die 'failed to generate a Sonarr API key'
 
   # The Usenet provider group, computed before the heredoc because it is the one
-  # group whose values depend on --undeclared. Each of the six key names appears
-  # exactly once below: tests/policy_vault_test.rb refuses a duplicate vault key
-  # in this file, so a declared and an undeclared arm each spelling the six is
-  # not available -- only the values may branch.
+  # group whose values depend on --undeclared. Each key name appears exactly once
+  # below: tests/policy_vault_test.rb refuses a duplicate vault key in this file,
+  # so a declared and an undeclared arm each spelling the pair is not available
+  # -- only the values may branch.
   #
-  # Undeclared is six empty strings rather than six omitted lines.
-  # roles/vault_contract declares all six required and this generator's own
+  # The group is two keys rather than six because four of the provider's values
+  # are not credentials and are no longer vault-authored (#298). Those four are
+  # operator policy in inventory, so a lane declares them the way it declares any
+  # other inventory value -- tests/integration_controller.sh passes
+  # `media_usenet_provider` explicitly -- and this generator has nothing to say
+  # about them. What it still owns is the account behind the host.
+  #
+  # Undeclared is two empty strings rather than two omitted lines.
+  # roles/vault_contract declares both required and this generator's own
   # --self-test validates the vault with no group_vars in play, so an omitted key
   # would have nothing to satisfy that requirement. An empty string is also the
   # exact value a real undeclared target sees, because
   # inventory/group_vars/all/main.yml supplies one there.
-  usenet_server_host=news.usenet.invalid
-  usenet_server_port=563
   usenet_server_username=ephemeral-usenet-username
   usenet_server_password=$(random_password)
-  usenet_server_connections=8
-  usenet_server_ssl=1
   if credential_group_is_undeclared usenet; then
-    usenet_server_host=
-    usenet_server_port=
     usenet_server_username=
     usenet_server_password=
-    usenet_server_connections=
-    usenet_server_ssl=
   fi
   ssh-keygen -q -t ed25519 -N '' -C 'ephemeral beszel hub' -f "$private_key" \
     >/dev/null 2>&1 || die 'failed to generate ephemeral key material'
@@ -303,12 +302,8 @@ vault_arr_bazarr_admin_password: '$(random_password)'
 vault_downloaders_sabnzbd_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: '$(random_password)'
-vault_downloaders_sabnzbd_server_host: '$usenet_server_host'
-vault_downloaders_sabnzbd_server_port: '$usenet_server_port'
 vault_downloaders_sabnzbd_server_username: '$usenet_server_username'
 vault_downloaders_sabnzbd_server_password: '$usenet_server_password'
-vault_downloaders_sabnzbd_server_connections: '$usenet_server_connections'
-vault_downloaders_sabnzbd_server_ssl: '$usenet_server_ssl'
 vault_bindery_api_key: '$(openssl rand -hex 16 2>/dev/null)'
 vault_bindery_admin_username: nasadmin
 vault_bindery_admin_password: '$(random_password)'
@@ -489,7 +484,7 @@ self_test() {
       --vault-password-file "$undeclared_directory/password" \
       "$undeclared_directory/vault.yml" 2>/dev/null) ||
       die 'self-test could not decrypt the undeclared vault'
-    for undeclared_key in host port username password connections ssl; do
+    for undeclared_key in username password; do
       printf '%s\n' "$undeclared_view" |
         grep -qx "vault_downloaders_sabnzbd_server_$undeclared_key: ''" ||
         die 'self-test undeclared vault still declares a Usenet provider'

@@ -36,19 +36,42 @@ media_bazarr_languages: []
 media_bazarr_providers: []
 
 # The Usenet provider is the same kind of declaration, and it is the one no
-# generator can mint: it is a paid third-party subscription. All six names are
-# carried here as empty strings, which is what starts SABnzbd with no server on a
-# target that has not bought one -- exactly as an empty media_arr_indexers starts
-# Prowlarr with no indexer. The vault wins over these, so authoring real values
-# there declares the provider without removing the default. The credential
-# contract accepts all six empty or all six valid and refuses a half-declared
-# provider field by field.
-vault_downloaders_sabnzbd_server_host: ""
-vault_downloaders_sabnzbd_server_port: ""
+# generator can mint: it is a paid third-party subscription. Four of its six
+# values are not credentials -- the host is published by the provider, the port
+# is 563 or 119, the connection count is a subscription tier and TLS is a
+# protocol flag -- so those four are ordinary operator policy and live here,
+# typed and readable without the vault password. Only the account name and its
+# password are vault-authored, and the `vault_` prefix now promises exactly
+# that again (#298).
+#
+# An empty host is the undeclared state, which is what starts SABnzbd with no
+# server on a target that has not bought a subscription -- exactly as an empty
+# media_arr_indexers starts Prowlarr with no indexer. The useful consequence is
+# that "is a provider declared?" became answerable without decrypting anything,
+# which is state rather than secret and is what roles/downloaders now reads.
+#
+# The port and the connection count are integers and TLS is a boolean because
+# these are typed YAML rather than vault strings, and
+# roles/downloaders/meta/argument_specs.yml enforces that before any rule is
+# consulted. ssl is a boolean rather than 1/0 specifically: SABnzbd parses a
+# server flag with `bool_conv(int_conv())` and stores any other spelling as 0,
+# so a string here would read as TLS-on and deploy TLS-off in silence. The role
+# renders it as an integer at the request.
+media_usenet_provider:
+  host: ""
+  port: 563
+  connections: 8
+  ssl: true
+
+# The account behind that host, and the only half of the provider that must not
+# be disclosed. Carried empty for the same reason the host is: the vault wins
+# over these, so authoring the pair there declares the account without removing
+# the default. The two halves have to agree -- roles/downloaders refuses a
+# declared host with no credentials, and credentials with no host -- because the
+# credential contract can no longer see the host to refuse a half-declared
+# provider itself.
 vault_downloaders_sabnzbd_server_username: ""
 vault_downloaders_sabnzbd_server_password: ""
-vault_downloaders_sabnzbd_server_connections: ""
-vault_downloaders_sabnzbd_server_ssl: ""
 
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home

@@ -56,10 +56,6 @@ from vault_credential_schema import (  # noqa: E402
     PATTERN,
     SEARCH,
     SSH_ED25519_PUBLIC_KEY,
-    USENET_CONNECTIONS,
-    USENET_FLAG,
-    USENET_HOST,
-    USENET_PORT,
     UUID,
     vault_credential_errors,
 )
@@ -84,13 +80,6 @@ PATTERN_SAMPLES = {
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
-    # A longer hostname or a longer number is simply a different valid
-    # value for these rules, so the rejected half is a terminal newline:
-    # `$` would accept it and `\Z` does not.
-    USENET_HOST.pattern: ("news.example.invalid", "news.example.invalid\n"),
-    USENET_PORT.pattern: ("563", "563\n"),
-    USENET_CONNECTIONS.pattern: ("8", "8\n"),
-    USENET_FLAG.pattern: ("1", "1\n"),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -136,10 +125,6 @@ MALFORMED = {
     SSH_ED25519_PUBLIC_KEY.pattern: "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIA==",
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
-    USENET_HOST.pattern: "-news.example.invalid",
-    USENET_PORT.pattern: "65536",
-    USENET_CONNECTIONS.pattern: "501",
-    USENET_FLAG.pattern: "2",
 }
 
 FOUNDATION_KEYS = (
