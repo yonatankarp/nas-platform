@@ -392,6 +392,34 @@ check(failures,
       mac_policy_runner.lines.map(&:strip)
         .include?("tests/mac/snapshot-paperless-drill-throttle-test.sh"),
       "validate-policy.sh must run tests/mac/snapshot-paperless-drill-throttle-test.sh")
+# The rest of the Mac gate, held to the manifest for the same reason the four
+# above are. #315 audited every line of tests/validate-policy.sh against the
+# policy scripts and found six Mac checks in the manifest that no script
+# required -- the same shape as tests/mac/snapshot-immich.sh --self-test, which
+# #334 found in the manifest and asserted nowhere. A check that only the
+# manifest names is a check the next person to prune the manifest may delete
+# with every gate still green, which is exactly what these lines exist to
+# prevent for the scripts they run.
+#
+# tests/mac/dozzle-drift-hook-test.sh is the clearest case: its Audiobookshelf
+# twin was required in tests/policy_ci_test.rb from the day it landed and the
+# Dozzle one never was, so the pair drifted apart with nothing to say so.
+#
+# tests/mac/snapshot-paperless.sh --self-test is the sixth, and it was not in
+# the manifest at all: the Immich snapshot's offline self-test has been a gate
+# check since #334, its Paperless twin has existed the whole time, and the gate
+# has never run it.
+[
+  "tests/mac/config-isolation.sh",
+  "tests/mac/run-phase-status-test.sh",
+  "tests/mac/dozzle-drift-hook-test.sh",
+  "tests/mac/integration-context-test.sh",
+  "tests/mac/snapshot-paperless-context-test.sh",
+  "tests/mac/snapshot-paperless.sh --self-test"
+].each do |command|
+  check(failures, mac_policy_runner.lines.map(&:strip).include?(command),
+        "validate-policy.sh must run #{command}")
+end
 
 # The manual review is where a human exercises the credentials nothing automated
 # can hold: a sign-in with the deployed identity, and the refusal of anything

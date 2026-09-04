@@ -2206,6 +2206,30 @@ end
   end
 end
 
+# The six Mac gate checks #315 found in tests/validate-policy.sh that no policy
+# script required. Their own call site rather than the hash above, because that
+# hash's declared union is %i[policy ci mac] while every one of these is
+# detected by tests/policy_mac_test.rb alone -- measured by running all eight
+# against each mutation, not assumed -- and a row folded into the hash would pay
+# for two subprocesses that prove nothing. The audit keys declarations by call
+# site and takes their union, so a set that is right for these six is only
+# expressible as a site of their own.
+{
+  "Mac configuration isolation regression" => "tests/mac/config-isolation.sh",
+  "Mac phase status regression" => "tests/mac/run-phase-status-test.sh",
+  "Mac Dozzle drift hook regression" => "tests/mac/dozzle-drift-hook-test.sh",
+  "Mac integration context regression" => "tests/mac/integration-context-test.sh",
+  "Paperless snapshot context regression" => "tests/mac/snapshot-paperless-context-test.sh",
+  "Paperless snapshot self-test" => "tests/mac/snapshot-paperless.sh --self-test"
+}.each do |name, command|
+  expect_failure(failures, "#{name} removed from policy validation",
+                 "validate-policy.sh must run #{command}",
+                 detected_by: %i[mac]) do |root|
+    path = File.join(root, "tests", "validate-policy.sh")
+    File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+  end
+end
+
 expect_failure(failures, "filter input argument spec check removed from policy validation",
                "validate-policy.sh must run PYTHONDONTWRITEBYTECODE=1 \"$ansible_python\" " \
                "tests/filter_input_argument_spec_test.py exactly once",
