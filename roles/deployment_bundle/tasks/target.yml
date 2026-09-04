@@ -41,22 +41,20 @@
 # review that cannot be trusted is *why*: a deployment is running. Reviewing again
 # once it finishes costs a few minutes; acting on a diff taken mid-converge costs
 # more.
-- name: Refuse to converge a target another deployment is already converging
-  ansible.builtin.assert:
-    that:
-      - not (deployment_bundle_lock_state.held | bool) or
-        deployment_bundle_lock_held_by_this_run | bool
-    fail_msg: >-
-      A deployment is already running on this host: {{ deployment_bundle_lock_holder }}
-      holds {{ deployment_bundle_lock_path }}. That is the poller's five-minute
-      tick, another operator's converge, or the weekly image prune, which takes
-      the same lock. This run would race it -- both converge the same services
-      and repoint the same release, and the loser fails later, on a guard that
-      reports an unsafe deployment target rather than this. Wait for the running
-      deployment to finish, then re-run;
-      `nas-platform-deploy --status` reports what the poller last did, and
-      `nas-platform-deploy --converge -- <ansible-playbook arguments>` takes this
-      same lock so the poller skips its tick instead of racing you.
+#
+# Exactly one held lock is tolerated: the one whose holder recorded nothing about
+# itself. The record and this guard shipped in the same commit, but the poller
+# that writes the record is installed by install-production-auto-deploy.yml,
+# which the poller only reaches *after* site.yml succeeds. So on a host still
+# running the previous poller this guard met a held lock carrying no pid, refused,
+# and deadlocked the very upgrade that installs the record-writing poller -- the
+# run of 20f97a9 on the NAS died here, at "an unnamed holder". A record-less
+# holder is by definition one that predates that poller, and this guard is
+# advisory rather than a security control, so it says what it found and continues.
+# The load-bearing containment validator below is unchanged and still catches a
+# genuine bad pointer. What #326 was actually about -- a record naming a *different*
+# pid -- is still refused exactly as before.
+- name: Judge the deployment lock this host reports
   vars:
     deployment_bundle_lock_state: >-
       {{ deployment_bundle_lock_probe.stdout | from_json }}
@@ -77,6 +75,44 @@
       {{ (deployment_bundle_lock_owner | string | trim | length > 0) and
          (deployment_bundle_lock_owner | string | trim ==
           deployment_bundle_lock_state.pid | default('') | string) }}
+    # A pid is what makes a holder answerable. Without one there is nothing to
+    # tell apart from this run, so there is no second deployment to name and no
+    # refusal that could be justified by what was actually read.
+    deployment_bundle_lock_identified: >-
+      {{ deployment_bundle_lock_state.pid is defined }}
+  block:
+    - name: Refuse to converge a target another deployment is already converging
+      ansible.builtin.assert:
+        that:
+          - not (deployment_bundle_lock_state.held | bool) or
+            deployment_bundle_lock_held_by_this_run | bool or
+            not (deployment_bundle_lock_identified | bool)
+        fail_msg: >-
+          A deployment is already running on this host: {{ deployment_bundle_lock_holder }}
+          holds {{ deployment_bundle_lock_path }}. That is the poller's five-minute
+          tick, another operator's converge, or the weekly image prune, which takes
+          the same lock. This run would race it -- both converge the same services
+          and repoint the same release, and the loser fails later, on a guard that
+          reports an unsafe deployment target rather than this. Wait for the running
+          deployment to finish, then re-run;
+          `nas-platform-deploy --status` reports what the poller last did, and
+          `nas-platform-deploy --converge -- <ansible-playbook arguments>` takes this
+          same lock so the poller skips its tick instead of racing you.
+
+    - name: Continue past a deployment lock whose holder recorded no identity
+      ansible.builtin.debug:
+        msg: >-
+          {{ deployment_bundle_lock_path }} is held by a holder that recorded no
+          identity, so this run cannot tell it from itself and does not refuse it.
+          A holder that writes no record predates the poller this converge
+          installs; refusing it would deadlock that upgrade. Containment is
+          validated below regardless. If this repeats on a host whose poller is
+          current, look for a process holding the lock outside
+          scripts/production_auto_deploy.py and scripts/image_prune.py, which both
+          record themselves.
+      when:
+        - deployment_bundle_lock_state.held | bool
+        - not (deployment_bundle_lock_identified | bool)
 
 - name: Validate exact deployment path derivation
   ansible.builtin.assert:
