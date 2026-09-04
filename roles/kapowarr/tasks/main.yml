@@ -221,6 +221,67 @@
          map('regex_replace', '/+$', '') | select('equalto', kapowarr_library_root) |
          list | length == 1 }}
 
+# Every root the deployment holds that is not the declared one, which on a
+# deployment that predates the parent mount is the single superseded `/comics`.
+# It is derived from what the deployment holds rather than compared against a
+# stored constant, so a Kapowarr carrying any other undeclared root falls to the
+# same refusal. It is separate from the presence check above because the two
+# states those two separate are not the same failure: a Kapowarr with no root
+# folders at all is a fresh one and gets the declared root created below, while a
+# Kapowarr holding a different one already owns a library under a prefix that no
+# longer exists inside the container.
+- name: Resolve the Kapowarr library roots the declared one supersedes
+  ansible.builtin.set_fact:
+    kapowarr_library_root_migrations: >-
+      {{ kapowarr_root_folders.json.result | default([]) | map(attribute='folder') |
+         map('regex_replace', '/+$', '') | reject('equalto', kapowarr_library_root) |
+         list }}
+
+# The refusal, and it precedes every mutation this role performs against the
+# library. Without it the create below would add the declared root *beside* the
+# superseded one, leaving a Kapowarr with two roots, every volume still attached
+# to the dead one and a platform that reported success.
+#
+# It is unconditional, with no one-convergence input to open it, and that is a
+# decision rather than an omission. The obvious flag would authorize the platform
+# to relabel the stored prefix itself, and Kapowarr v1.3.1 exposes no route that
+# can: RootFolders.rename() moves every file with shutil.move, which fails on
+# rows whose paths no longer resolve in the container, and the only repair for
+# the file rows a caller would have to delete first is refresh_and_scan, which
+# needs ComicVine -- the one dependency roles/kapowarr already refuses to take on
+# for the ComicVine key itself, because it cannot be proved in any disposable
+# lane. A flag that ends in a second root folder and a failed verification would
+# instruct the operator into a worse state than refusing does.
+#
+# The failure is worded for the symptom, which is alarming and self-inflicted:
+# Kapowarr fabricates a missing root folder on read --
+# RootFolders.__gather_extra_data() calls create_folder() when the stored path is
+# not a directory -- so the read above has already created an empty /comics in
+# the container's writable layer, and the web interface now shows a library with
+# nothing in it. Nothing on the host moved. The message says so, because an
+# operator seeing an empty library after a deployment will otherwise reach for a
+# restore.
+- name: Refuse a Kapowarr deployment still holding a superseded library root
+  ansible.builtin.assert:
+    that:
+      - >-
+        kapowarr_library_root_present | bool or
+        kapowarr_library_root_migrations | length == 0
+    fail_msg: >-
+      Kapowarr holds {{ kapowarr_library_root_migrations | join(', ') }} rather than the
+      declared {{ kapowarr_library_root }}. This deployment mounts the whole
+      {{ kapowarr_books_host_path }} share at the parent of both the library and its
+      staging directory, so that an import is a rename instead of a cross-device copy,
+      and the container paths moved with it. Kapowarr stores the old prefix in its root
+      folder record and in every volume's folder, so the library has to be relabelled
+      before this platform can converge it, and no Kapowarr route can do that while the
+      old paths no longer resolve. Nothing on the host has moved and no comic has been
+      deleted: the empty library the web interface now shows is the empty directory
+      Kapowarr itself created when it read a root folder whose path no longer exists in
+      the container. Relabel the three stored columns with the container stopped, then
+      rerun -- docs/dossier-kapowarr.md, "Migrating the stored library prefix", is the
+      procedure. No root folder was created and no volume was moved.
+
 - name: Report the planned Kapowarr comics library root
   ansible.builtin.debug:
     msg: >-

@@ -18,6 +18,7 @@ required = %w[
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
   services/kapowarr/compose.integration.yml
+  inventory/group_vars/all/main.yml
 ]
 required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
@@ -63,11 +64,17 @@ if failures.empty?
       service.dig("environment", name) == expected
   end
 
-  failures << "Kapowarr must mount exactly its database, staging and comics library" unless
+  # The comics library and the staging directory that feeds it must arrive inside
+  # one bind mount of their common host share. rename(2) refuses to cross a mount
+  # boundary even when both sides are the same filesystem, so the mount per leaf
+  # this replaces made every import a full byte copy plus unlink and put
+  # hardlinking out of reach. tests/policy_test.rb derives the same property from
+  # a container's environment paths and cannot see Kapowarr, which reads neither
+  # path from its environment, so the mount list is pinned exactly here instead.
+  failures << "Kapowarr must mount its database and one parent of its library and staging" unless
     Array(service["volumes"]) == [
       "${KAPOWARR_CONFIG_PATH:?}:/app/db",
-      "${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads",
-      "${KAPOWARR_COMICS_PATH:?}:/comics"
+      "${KAPOWARR_BOOKS_PATH:?}:/data/books"
     ]
 
   # The published port and the container port are both pinned by
@@ -86,15 +93,49 @@ if failures.empty?
     health.include?("python3") && health.include?("/api/public")
 
   defaults = YAML.safe_load_file(File.join(root, "roles/kapowarr/defaults/main.yml"))
+  failures << "Kapowarr must mount the one host share its library and staging share" unless
+    defaults["kapowarr_books_host_path"] == "{{ nas_media_root }}/Books"
   failures << "Kapowarr must write the declared comics library root" unless
     defaults["kapowarr_comics_host_path"] == "{{ nas_media_root }}/Books/Comics"
-  failures << "Kapowarr must stage downloads beside the library it imports into" unless
-    defaults["kapowarr_downloads_host_path"] ==
-      "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
   failures << "Kapowarr must keep its database in the declared config root" unless
     defaults["kapowarr_config_host_path"] == "{{ nas_docker_root }}/kapowarr/config"
-  failures << "the declared library root must be the container path the library is mounted at" unless
-    defaults["kapowarr_library_root"] == "/comics"
+  # Both container paths are asserted as offsets of the one bind mount, because
+  # that relation is the whole fix: a path that is not below the mount is not in
+  # the mount, however it is spelled. Each is then followed back through the
+  # mount to the host directory it resolves to, and that directory must be one
+  # nas_storage declares -- which is what keeps the container's view of the pair
+  # and the inventory that creates them from drifting apart. A container offset
+  # naming a directory host_prep does not create is a mount that resolves to
+  # nothing, and Kapowarr answers a download folder that is not a directory with
+  # FolderNotFound rather than by creating it.
+  declared_paths = YAML.safe_load_file(
+    File.join(root, "inventory/group_vars/all/main.yml")
+  ).fetch("nas_storage").map { |entry| entry.fetch("path") }
+  {
+    "kapowarr_library_root" => ["/Comics", "the comics library"],
+    "kapowarr_staging_root" => ["/.acquisition/usenet/comics", "the download staging root"]
+  }.each do |key, (suffix, description)|
+    failures << "#{description} must sit at #{suffix} inside the bind mount, not #{defaults[key]}" unless
+      defaults[key] == "/data/books#{suffix}"
+    host_path = "#{defaults['kapowarr_books_host_path']}#{suffix}"
+    failures << "#{description} resolves to #{host_path}, which nas_storage does not declare" unless
+      declared_paths.include?(host_path)
+  end
+  # Kapowarr's own default download folder is /app/temp_downloads, a directory
+  # inside the image that the mount this replaces used to cover. Leaving it
+  # undeclared would stage every direct download into the container's writable
+  # layer, so the import would stay a cross-device copy and the file would vanish
+  # on the next recreate. Settings.__format_value() stores the value
+  # force-suffixed, so a declaration without the trailing separator could never
+  # equal what is read back and the settings write would run on every converge.
+  # Written as the literal path rather than as a reference to the variable above,
+  # and the relation between the two is asserted here instead. The runtime half
+  # of this contract compares this mapping to what a live Kapowarr returns and
+  # reads it with a YAML parser, so a Jinja reference would be compared as
+  # template text and could never match a path -- which is how this shipped once
+  # and failed only in the lane.
+  failures << "Kapowarr must declare the download folder the parent mount moved" unless
+    defaults.dig("kapowarr_settings", "download_folder") == "#{defaults['kapowarr_staging_root']}/"
 
   env_assignments = environment_assignments(
     File.join(root, "roles/kapowarr/templates/env.j2")
@@ -102,6 +143,13 @@ if failures.empty?
   failures << "Kapowarr env must render the CPU set exactly once" unless
     env_assignments.select { |name, _value| name == "PLATFORM_CONTAINER_CPUSET" } ==
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
+  # One bind mount reaches the target only if the environment exports its source,
+  # and only that one: an environment still exporting a leaf path is an
+  # environment a reintroduced leaf mount would resolve.
+  failures << "Kapowarr env must export the host share as the single media bind source" unless
+    env_assignments.select { |name, _value| name.start_with?("KAPOWARR_") && name.end_with?("_PATH") } ==
+      [["KAPOWARR_CONFIG_PATH", "{{ kapowarr_config_host_path }}"],
+       ["KAPOWARR_BOOKS_PATH", "{{ kapowarr_books_host_path }}"]]
   # Kapowarr reads no credential from its environment: every one lives in its own
   # database. A credential appearing here would be a copy nothing consumes.
   failures << "the Kapowarr environment must carry no vault credential" if
@@ -180,6 +228,16 @@ if failures.empty?
                 "#{named_credentials.join(', ')}" unless named_credentials.empty?
     failures << "the declared Kapowarr settings must not carry the service order" if
       declared_settings.key?("service_preference")
+    # No declared value may be a Jinja reference, and this is the general form of
+    # a defect that reached CI once. Ansible renders this mapping; the runtime
+    # half of this contract reads it with a YAML parser and compares it to what a
+    # live Kapowarr returns. A reference is therefore correct on the target and
+    # unequal to every possible stored value in the comparison that proves the
+    # target holds it -- so the role converges, the lane fails, and the two
+    # disagree about what "the application holds this" means. Declare the value.
+    templated = declared_settings.select { |_key, value| value.to_s.include?("{{") }
+    failures << "the declared Kapowarr settings must name values, not templates: " \
+                "#{templated.keys.join(', ')}" unless templated.empty?
     # Komga indexes the directory these name, so a change that drops them hands
     # a second service's view of the library back to the web interface.
     failures << "the declared Kapowarr settings must own the library naming templates" unless
@@ -331,6 +389,49 @@ if failures.empty?
     migration_report &&
     migration_report.dig("ansible.builtin.debug", "msg").to_s.include?("item.folder") &&
     migration_report.dig("ansible.builtin.debug", "msg").to_s.include?("item.target")
+
+  # The parent mount moved the container path Kapowarr stores as its root folder
+  # and as the prefix of every volume's folder, and Kapowarr v1.3.1 exposes no
+  # route that can relabel a stored prefix whose files no longer resolve --
+  # RootFolders.rename() moves every file with shutil.move. So a deployment
+  # holding the superseded prefix must fail the run, not be migrated and not be
+  # converged around: without the refusal the role would declare the new root
+  # *beside* the old one and report success over a library no volume is attached
+  # to. The refusal is unconditional by design; a one-convergence input would
+  # authorize a migration that cannot be performed.
+  root_migration_plan = tasks.find do |task|
+    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_library_root_migrations")
+  end
+  failures << "Kapowarr must resolve the library roots the declared one supersedes" if
+    root_migration_plan.nil?
+  failures << "the superseded library roots must be derived from what the deployment holds" unless
+    root_migration_plan.to_s.include?("kapowarr_root_folders") &&
+    root_migration_plan.to_s.include?("kapowarr_library_root")
+  root_migration_refusal = tasks.find do |task|
+    task.key?("ansible.builtin.assert") &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+        value.to_s.include?("kapowarr_library_root_migrations")
+      end
+  end
+  failures << "a superseded Kapowarr library root must refuse the run" if root_migration_refusal.nil?
+  failures << "the superseded library root refusal must take no one-convergence input" if
+    root_migration_refusal.to_s.include?("kapowarr_library_root_migration_allowed")
+  # An operator whose library reads as empty after this deployment has to be told
+  # the comics are untouched, because Kapowarr itself created the empty directory:
+  # RootFolders.__gather_extra_data() calls create_folder() on a stored root that
+  # is no longer a directory, so the role's own read conjures it.
+  failures << "the superseded library root refusal must say the host library is intact" unless
+    root_migration_refusal.to_s.match?(/no comic has been deleted/i)
+  # Worthless after the fact: the create is the mutation it exists to prevent.
+  root_create = tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "POST" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/rootfolder")
+  end
+  failures << "Kapowarr must create the declared library root when it owns none" if root_create.nil?
+  if root_migration_refusal && root_create
+    failures << "the superseded library root refusal must precede the root folder create" unless
+      tasks.index(root_migration_refusal) < tasks.index(root_create)
+  end
 
   # Kapowarr records a credential-free auth POST as a failed login, so every
   # anonymous probe is gated on the authentication mode the role has already

@@ -17,7 +17,11 @@ CONTAINER = ENV.fetch("PLATFORM_KAPOWARR_CONTAINER")
 # root. It is what has to survive a container recreation, and its absence is
 # what a wrongly owned or wrongly mounted config bind looks like.
 DATABASE = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "kapowarr", "config", "Kapowarr.db")
-LIBRARY_ROOT = "/comics"
+# The container path the comics library is reached at, which is the offset of the
+# one bind mount of the Books share rather than a mount of its own: the library
+# and the staging directory that feeds it have to share a mount or every import
+# is a cross-device copy.
+LIBRARY_ROOT = "/data/books/Comics"
 
 def fail_contract(message)
   warn "Kapowarr contract failed: #{message}"

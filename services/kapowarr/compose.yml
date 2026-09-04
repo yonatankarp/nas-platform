@@ -41,10 +41,34 @@ services:
       dev.dozzle.name: kapowarr
     ports:
       - "5656:5656"
+    # The comics library and the staging directory that feeds it arrive inside
+    # one bind mount of their common host share, which is what makes an import a
+    # rename: rename(2) refuses to cross a mount boundary even when both sides
+    # are the same filesystem, so the two mounts this replaces —
+    # ${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads beside
+    # ${KAPOWARR_COMICS_PATH:?}:/comics — turned every import into a full byte
+    # copy plus unlink, with transient double occupancy on a 4.19 TB library, and
+    # put hardlinking out of reach. Bindery took the same shape for the same
+    # reason in #300, and Radarr and Sonarr have mounted ${MEDIA_ROOT:?}/Media
+    # this way since Phase 1.
+    #
+    # Unlike Bindery's, Kapowarr's container paths could not be preserved across
+    # that change: its library was at /comics and its staging at
+    # /app/temp_downloads, neither of which has a common parent that is not `/`.
+    # Both therefore move under /data/books, and Kapowarr stores both — the root
+    # folder, an absolute folder per volume, and the download_folder setting — so
+    # the move is a stored-path migration rather than a remount. roles/kapowarr
+    # refuses to converge a deployment still holding the old prefix.
+    #
+    # One quieter consequence: the image's entrypoint chowns /app/db, /app/logs
+    # and /app/temp_downloads to PUID:PGID on every start, and the last of those
+    # is now an empty directory inside the image rather than the host staging
+    # tree. Kapowarr no longer rewrites ownership on a directory the NAS owns,
+    # which is the same arrangement SABnzbd's staging siblings have always had:
+    # host_prep creates them and the platform identity writes into them.
     volumes:
       - ${KAPOWARR_CONFIG_PATH:?}:/app/db
-      - ${KAPOWARR_DOWNLOADS_PATH:?}:/app/temp_downloads
-      - ${KAPOWARR_COMICS_PATH:?}:/comics
+      - ${KAPOWARR_BOOKS_PATH:?}:/data/books
     environment:
       TZ: ${TZ:?}
       # The entrypoint starts as root, remaps its own account to this pair and

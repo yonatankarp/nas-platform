@@ -7,6 +7,17 @@ a virgin container against an empty `/comics` mount. Read
 first: **Confirmed** was executed, **Inferred** was reasoned, **Unverified**
 was not settled.
 
+Every transcript below was captured under the mount layout this platform ran
+until #264 — the comics library bound at `/comics` and staging at
+`/app/temp_downloads` — and the container paths in them are quoted as they were
+executed rather than rewritten. That layout is gone: the library is reached at
+`/data/books/Comics` and staging at `/data/books/.acquisition/usenet/comics`,
+both inside one bind mount of the Books share, because `rename(2)` refuses to
+cross a mount boundary and a mount per directory made every import a byte copy.
+Nothing an observation established changed with the paths; only the paths did.
+[Migrating the stored library prefix](#migrating-the-stored-library-prefix)
+below is the consequence for a deployment that predates the change.
+
 Like [the Pinchflat dossier](dossier-pinchflat.md), this is written after the
 promotion rather than before it, and asks what the running application holds
 that Ansible does not own. Kapowarr answers that question almost exactly
@@ -229,6 +240,119 @@ above failed as `FolderNotFound` because `/comics/sub` did not exist on disk,
 which says nothing about the parent/child rule. It may well be true; this
 investigation did not test it. Unverified.
 
+## Migrating the stored library prefix
+
+#264 moved both container paths under one bind mount of the Books share. Kapowarr
+stores the old prefix, so a deployment that predates the change has to be
+relabelled before `roles/kapowarr` will converge it — the role refuses the run
+rather than declaring the new root beside the old one.
+
+**Three columns hold a path, and they are the whole migration.** Read from
+`DB_SCHEMA` in `backend/internals/db.py`: `root_folders.folder`, `volumes.folder`
+and `files.filepath`. A fourth, `remote_mappings.local_path`, exists only for
+external download clients and is empty on this platform, which declares none.
+The `download_folder` value in `config` is a fifth, and it is the one the
+platform owns: `kapowarr_settings` declares it and a converge writes it.
+
+**No API can do this.** Confirmed by reading v1.3.1:
+
+- `PUT /api/rootfolder/<id>` is `RootFolders.rename()`, which calls
+  `samefile(current, new)` before anything else. The old path no longer resolves
+  in the container, so the call raises rather than relabelling. Keeping the old
+  bind mount alongside the new one does not help: both paths then resolve to the
+  same inode, `samefile` returns True and the function returns having changed
+  nothing.
+- Past that, `rename()` hands every volume to `Volume.change_root_folder()`,
+  which moves each file with `shutil.move`. Every stored `filepath` points at a
+  path that no longer exists, so each move raises `FileNotFoundError`; with both
+  mounts present the destination exists instead and `shutil` raises
+  `Destination path already exists`. Either way it fails **after** the new root
+  folder row is inserted, leaving two roots.
+- Deleting the file rows first (`DELETE /api/files/<id>`, which removes only the
+  row when the path does not resolve) makes `change_root_folder()` a pure column
+  rewrite — but the only thing that rebuilds the issue-to-file matching is
+  `refresh_and_scan`, which fetches from ComicVine first and whose task swallows
+  `InvalidComicVineApiKey` silently. That is precisely the third-party dependency
+  this role refuses to take on for the ComicVine key itself, so it is not a
+  migration the platform will perform.
+
+**The procedure.** Stop the container first: SQLite is not safe to rewrite under
+a running Kapowarr, and the application caches the root folder mapping in
+process.
+
+```sh
+# platform_current_dir, which is {{ nas_docker_root }}/nas-platform/current.
+current=/volume1/Docker/nas-platform/current
+docker compose --project-name kapowarr \
+  -f "$current/services/kapowarr/compose.yml" stop kapowarr
+
+# {{ nas_docker_root }}/kapowarr/config, and the capitalisation is load-bearing:
+# inventory/group_vars/nas_hosts/main.yml declares nas_docker_root as
+# /volume1/Docker, the NAS is case-sensitive, and sqlite3 hands a missing path a
+# brand-new empty database rather than an error. Every UPDATE below would then
+# succeed against empty tables, COMMIT, print three zeroes and look exactly like
+# a finished migration. Both guards in this script exist for that one failure.
+db=/volume1/Docker/kapowarr/config/Kapowarr.db
+test -f "$db" || { printf 'no Kapowarr database at %s\n' "$db" >&2; exit 1; }
+cp -p "$db" "$db.pre-264"                           # the whole rollback
+
+# The rows to relabel, counted before anything is written and required to be
+# more than none. A zero-to-zero transition is indistinguishable from a
+# completed migration, so zero here means the migration has already run or this
+# is not the database you meant, and either way nothing below should execute.
+pending=$(sqlite3 -bail "$db" "
+  SELECT (SELECT count(*) FROM root_folders WHERE folder   =    '/comics/')
+       + (SELECT count(*) FROM volumes      WHERE folder   LIKE '/comics/%')
+       + (SELECT count(*) FROM files        WHERE filepath LIKE '/comics/%');")
+printf 'rows to relabel: %s\n' "$pending"
+[ "${pending:-0}" -gt 0 ] || { printf 'nothing is stored under /comics\n' >&2; exit 1; }
+
+sqlite3 -bail "$db" <<'SQL'
+BEGIN;
+UPDATE root_folders SET folder = '/data/books/Comics/'
+  WHERE folder = '/comics/';
+UPDATE volumes SET folder = '/data/books/Comics' || substr(folder, length('/comics') + 1)
+  WHERE folder LIKE '/comics/%';
+UPDATE files SET filepath = '/data/books/Comics' || substr(filepath, length('/comics') + 1)
+  WHERE filepath LIKE '/comics/%';
+COMMIT;
+SQL
+
+# Must print three zeroes. Deliberately '/comics%' rather than '/comics/%', so a
+# row left holding the bare prefix is counted too.
+sqlite3 -bail "$db" "
+  SELECT (SELECT count(*) FROM root_folders WHERE folder   LIKE '/comics%'),
+         (SELECT count(*) FROM volumes      WHERE folder   LIKE '/comics%'),
+         (SELECT count(*) FROM files        WHERE filepath LIKE '/comics%');"
+```
+
+The final `SELECT` must print three zeroes, and the `rows to relabel` line above
+it must have printed something other than `0` — a run that reports both zero and
+zero has migrated nothing and told you nothing.
+
+Confirmed, against three synthetic databases carrying the schema above rather
+than against the NAS: a mistyped path refuses and creates nothing, an
+already-migrated database reports `rows to relabel: 0` and refuses, and a
+database holding the old prefix reports five rows, rewrites the root folder to
+`/data/books/Comics/`, both volume folders and both file paths — the nested
+`extras/` file included — and prints `0|0|0`. The trailing separator on the
+root folder row is not optional — `RootFolders.add()` stores
+`force_suffix(abspath(folder))` and the application compares against that form.
+Then converge normally; the role finds the declared root, the refusal does not
+fire, and `--tags platform_verify_kapowarr` proves the result.
+
+No file moves. The comics never leave `Books/Comics` on the host — only the label
+Kapowarr reads them by changes — which is why the rollback is the copied database
+and nothing else.
+
+**The empty library is not data loss.** Between the deployment and the relabel,
+Kapowarr's web interface shows a library with nothing in it, and it created that
+emptiness itself: `RootFolders.__gather_extra_data()` calls `create_folder()`
+whenever a stored root folder is not a directory, so the first read of
+`GET /api/rootfolder` — the platform's own, or a browser's — conjures an empty
+`/comics` in the container's writable layer. Confirmed by reading
+`backend/implementations/root_folders.py`. It disappears with the container.
+
 ## Renaming an existing volume folder, and why it is not the rename task
 
 The sharpest item this file used to leave open. A settings write renames
@@ -339,6 +463,14 @@ currently set by hand on first login or left at the application's default:
   own `external_download_clients` and `credentials` tables rather than in
   `config`, and were not investigated
 
+That list is the surface as this investigation found it, before
+`roles/kapowarr` claimed most of it; `kapowarr_settings` in the role's defaults
+is what the platform declares today. `download_folder` is claimed for a reason
+worth naming here: the parent mount of #264 removed the `/app/temp_downloads`
+bind the application's default pointed into, so an undeclared download folder
+would stage into the container's writable layer — a cross-device copy on import,
+and a download lost on the next recreate.
+
 The naming group is the one with a consequence outside Kapowarr, because Komga
 indexes the directory Kapowarr writes. A hand-edited template there changes what
 a second platform service sees, and nothing reverts it.
@@ -386,9 +518,26 @@ a second platform service sees, and nothing reverts it.
 
 ## Reproducing the confirmations
 
+Several findings below and in
+[Migrating the stored library prefix](#migrating-the-stored-library-prefix) were
+settled by reading the application's own source rather than by probing it. The
+upstream git tag is **`V1.3.1`**, capital `V` — `v1.3.1` is a 404, even though
+the image tag this platform pins is lowercase. Both spellings appear on the same
+release, so check the case before concluding the tag is missing:
+
 ```sh
+curl -sSL -o kapowarr.tar.gz \
+  https://github.com/Casvt/Kapowarr/archive/refs/tags/V1.3.1.tar.gz
+```
+
+```sh
+# The mount shape the platform runs since #264: one bind of the Books share, with
+# the library and its staging directory inside it. The transcripts above were
+# captured with a leaf mount each, at /comics and /app/temp_downloads; the paths
+# in them read differently here, nothing else does.
+mkdir -p books/Comics books/.acquisition/usenet/comics db
 docker run -d --name kw-probe -p 15656:5656 -e TZ=UTC \
-  -v "$PWD/db:/app/db" -v "$PWD/dl:/app/temp_downloads" -v "$PWD/comics:/comics" \
+  -v "$PWD/db:/app/db" -v "$PWD/books:/data/books" \
   docker.io/mrcas/kapowarr:v1.3.1
 
 # the bootstrap window: an empty body returns the key that authorizes everything
