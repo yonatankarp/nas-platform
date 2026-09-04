@@ -83,6 +83,8 @@ tests/mac/snapshot-paperless-context-test.sh
 tests/mac/snapshot-paperless-recovery-test.sh
 tests/mac/snapshot-paperless-drill-throttle-test.sh
 python3 tests/deployment_target_validator_test.py
+python3 tests/deployment_lock_probe_test.py
+tests/deployment_lock_refusal_test.sh
 python3 tests/deployment_release_compare_test.py
 python3 tests/deployment_controller_input_test.py
 ruby tests/managed_user_capabilities_test.rb --self-test

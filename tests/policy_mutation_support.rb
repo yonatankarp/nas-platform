@@ -61,6 +61,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/files/validate_target.py
+  roles/deployment_bundle/files/probe_deployment_lock.py
   roles/deployment_bundle/files/compare_release_trees.py
   roles/deployment_bundle/files/validate_controller_input.py
   roles/deployment_bundle/tasks/controller.yml

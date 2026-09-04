@@ -49,6 +49,25 @@ argument_specs:
         type: path
         required: true
         description: Mutable runtime configuration outside immutable releases.
+      deployment_bundle_lock_path:
+        type: path
+        required: false
+        description: >-
+          The flock scripts/production_auto_deploy.py serialises deployments on.
+          Probed read-only before anything else this entry point does, so a
+          converge that would race a running one is refused at its first task
+          rather than at an integrity guard hundreds of tasks later. Defaulted
+          from the running account's home, exactly as roles/production_auto_deploy
+          derives it.
+      deployment_bundle_lock_owner:
+        type: str
+        required: false
+        description: >-
+          The pid of the process already holding that lock on this run's behalf,
+          exported as PLATFORM_DEPLOYMENT_LOCK_OWNER by nas-platform-deploy
+          --converge and by the poller's own plays. Empty for a bare
+          ansible-playbook, which holds no lock. Advisory: it decides only whether
+          the concurrency refusal applies, never what containment allows.
 
   # The three entry points site.yml re-includes before any role mutates the
   # target, plus the one verify.yml re-includes. include_role applies the entry
@@ -192,3 +211,22 @@ argument_specs:
         description: >-
           Implemented services published by the inputs entry point. Absent when a
           playbook validates target paths without parsing controller inputs.
+      deployment_bundle_lock_path:
+        type: path
+        required: false
+        description: >-
+          The flock scripts/production_auto_deploy.py serialises deployments on.
+          Probed read-only before anything else this entry point does, so a
+          converge that would race a running one is refused at its first task
+          rather than at an integrity guard hundreds of tasks later. Defaulted
+          from the running account's home, exactly as roles/production_auto_deploy
+          derives it.
+      deployment_bundle_lock_owner:
+        type: str
+        required: false
+        description: >-
+          The pid of the process already holding that lock on this run's behalf,
+          exported as PLATFORM_DEPLOYMENT_LOCK_OWNER by nas-platform-deploy
+          --converge and by the poller's own plays. Empty for a bare
+          ansible-playbook, which holds no lock. Advisory: it decides only whether
+          the concurrency refusal applies, never what containment allows.

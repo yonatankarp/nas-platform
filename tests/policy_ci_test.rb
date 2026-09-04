@@ -398,6 +398,8 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   PYTHONDONTWRITEBYTECODE=1\ "$ansible_python"\ -m\ unittest\ -v\ tests.image_prune_test
   ruby\ tests/image_prune_role_test.rb
   python3\ -m\ unittest\ -v\ tests/dozzle_alert_relay_test.py
+  python3\ tests/deployment_lock_probe_test.py
+  tests/deployment_lock_refusal_test.sh
   tests/dozzle_alert_state_symlink_test.sh
   tests/integration_lock_test.sh
   tests/integration_suite_test.sh
@@ -521,6 +523,18 @@ check(failures,
 check(failures,
       validation_commands.count("tests/dozzle_alert_state_symlink_test.sh") == 1,
       "validate-policy.sh must run the Dozzle alert state symlink test exactly once")
+# Issue #326: the deployment lock is the only thing standing between a hand-run
+# converge and the poller's five-minute tick, and both halves of it are invisible
+# to a syntax check. The probe test proves the reader never reports a held lock as
+# free, and the refusal proof runs the real role against a really held lock to
+# show the run stops at the first task naming a concurrent deployment rather than
+# at the containment guard 1463 tasks later.
+check(failures,
+      validation_commands.count("python3 tests/deployment_lock_probe_test.py") == 1,
+      "validate-policy.sh must run the deployment lock probe test exactly once")
+check(failures,
+      validation_commands.count("tests/deployment_lock_refusal_test.sh") == 1,
+      "validate-policy.sh must run the concurrent deployment refusal proof exactly once")
 check(failures,
       validation_commands.count("tests/sandbox_cleanup_acquisition_ownership_test.sh") == 1,
       "validate-policy.sh must run the acquisition cleanup ownership test exactly once")

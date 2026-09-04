@@ -1,0 +1,34 @@
+---
+# Drives the real deployment_bundle target entry point against a disposable
+# deployment tree, so the concurrency refusal is proved by running it rather
+# than by reading the task file. The shell harness beside this file holds -- or
+# does not hold -- the lock this play probes.
+- name: Prove a concurrent deployment is refused before containment is validated
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  vars:
+    platform_kind: nas
+    platform_compose_kind: nas
+    platform_release_id: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    nas_docker_root: "{{ lookup('env', 'DEPLOYMENT_LOCK_DOCKER_ROOT') }}"
+    nas_media_root: "{{ lookup('env', 'DEPLOYMENT_LOCK_MEDIA_ROOT') }}"
+    platform_deploy_root: "{{ nas_docker_root }}/nas-platform"
+    platform_release_dir: >-
+      {{ platform_deploy_root }}/releases/{{ platform_release_id }}
+    platform_current_dir: "{{ platform_deploy_root }}/current"
+    platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
+    deployment_bundle_lock_path: "{{ lookup('env', 'DEPLOYMENT_LOCK_PATH') }}"
+  tasks:
+    - name: Validate target containment as a service role would
+      ansible.builtin.include_role:
+        name: deployment_bundle
+        tasks_from: target
+      vars:
+        deployment_target_service: ""
+        deployment_target_require_current_release: false
+        deployment_target_extra_paths: []
+
+    - name: Report that the play reached the end of target validation
+      ansible.builtin.debug:
+        msg: deployment lock probe accepted this converge

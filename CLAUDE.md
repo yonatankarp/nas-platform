@@ -81,11 +81,37 @@ only here.
 
 ### Deploying / reviewing
 
+**The NAS deploys itself.** `roles/production_auto_deploy` installs a poller that
+converges the newest CI-released `main` revision **every five minutes**, and it
+serialises deployments with an flock on its state directory. A hand-run
+`ansible-playbook` takes no such lock, so a manual converge outliving one tick
+races the poller — which is exactly what happened in #326: the poller repointed
+`current` under a run still converging services, and that run died at its *last*
+role on a containment guard reporting an unsafe deployment target. So converge on
+the NAS through the launcher, which takes the poller's own lock and passes
+everything after `--` to `ansible-playbook` unchanged:
+
+```sh
+nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass
+nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
+nas-platform-deploy --status                 # what the poller last did, and what it would do next
+```
+
+From a workstation the plays still run over SSH, and these two cannot hold a lock
+that lives on the NAS:
+
 ```sh
 ansible-playbook -i inventory/remote.yml site.yml --check --diff --ask-vault-pass
 ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ansible-playbook -i inventory/local.yml verify.yml --tags platform_verify_<name>
 ```
+
+What protects them is `deployment_bundle`, which probes that lock at the first
+task of every role and refuses — in check mode too — with *"A deployment is
+already running on this host"*, naming the holder. Read that message literally:
+it is a scheduling conflict, not the integrity refusal it used to be mistaken
+for. Wait for the running deployment and re-run; re-running immediately only adds
+a third converge.
 
 Never apply to the NAS without reading `--check --diff` first. `--check` is a
 review, not a guarantee: external systems that cannot be simulated are reported
