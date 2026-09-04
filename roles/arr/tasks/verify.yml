@@ -173,7 +173,7 @@
   no_log: true
   tags: [platform_verify_arr]
 
-- name: Read Prowlarr applications and indexers for verification
+- name: Read Prowlarr applications, indexers and download clients for verification
   ansible.builtin.uri:
     url: "{{ arr_prowlarr_api }}/{{ item }}"
     method: GET
@@ -181,7 +181,7 @@
       X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
     status_code: [200]
     return_content: true
-  loop: [applications, indexer]
+  loop: [applications, indexer, downloadclient]
   loop_control:
     label: "prowlarr-{{ item }}"
   register: arr_prowlarr_verification
@@ -287,6 +287,50 @@
     arr_verify_prowlarr_indexer_masked_fields: >-
       {{ arr_verify_prowlarr_indexer_matches | first | default({}) |
          acquisition_indexer_masked_fields(item) }}
+  no_log: true
+  tags: [platform_verify_arr]
+
+- name: Verify the operator-owned Prowlarr download client exists exactly once
+  ansible.builtin.assert:
+    that:
+      - arr_verify_prowlarr_clients_raw is sequence
+      - arr_verify_prowlarr_clients_raw is not mapping
+      - arr_verify_prowlarr_clients_raw is not string
+      - arr_verify_prowlarr_client_matches | length == 1
+      - >-
+        arr_verify_prowlarr_client_matches[0] |
+        acquisition_prowlarr_client_projection(
+          arr_verify_prowlarr_client_masked_fields
+        ) ==
+        arr_verify_prowlarr_client_desired |
+        acquisition_prowlarr_client_projection(
+          arr_verify_prowlarr_client_masked_fields
+        )
+    fail_msg: >-
+      Prowlarr has no owned SABnzbd download client, or one that differs from
+      the declared connection. Without it Prowlarr answers a manual grab with
+      "Usenet Download client isn't configured yet".
+  vars:
+    arr_verify_prowlarr_clients_raw: >-
+      {{ arr_prowlarr_verification.results |
+         selectattr('item', 'equalto', 'downloadclient') |
+         map(attribute='json') | first | default([]) }}
+    arr_verify_prowlarr_client_matches: >-
+      {{ arr_verify_prowlarr_clients_raw |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    arr_verify_prowlarr_client_desired: >-
+      {{ acquisition_prowlarr_client_body(
+           arr_sabnzbd_client_name,
+           arr_sabnzbd_host,
+           arr_sabnzbd_port,
+           vault_downloaders_sabnzbd_api_key,
+           vault_downloaders_sabnzbd_admin_username,
+           vault_downloaders_sabnzbd_admin_password,
+           arr_prowlarr_client_category
+         ) }}
+    arr_verify_prowlarr_client_masked_fields: >-
+      {{ arr_verify_prowlarr_client_matches | first | default({}) |
+         acquisition_prowlarr_client_masked_fields }}
   no_log: true
   tags: [platform_verify_arr]
 

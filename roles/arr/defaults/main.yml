@@ -64,6 +64,20 @@ arr_servarr_instances:
     category: series
     rename_field: renameEpisodes
 
+# The SABnzbd category a manual Prowlarr grab is filed under. Prowlarr's own
+# schema suggests "prowlarr", which SABnzbd does not have: an unknown category
+# falls back to SABnzbd's default folder under /config, outside the acquisition
+# tree and outside the share ADM hides. This is one of the five categories
+# roles/downloaders declares, so a grab lands in the staging directory that
+# already exists with the right ownership. It is deliberately not a category of
+# its own: a sixth would need a storage path, a recovery class and a share rule
+# for a directory only a human ever reads.
+#
+# Nothing imports what lands there. A Prowlarr grab is not tracked by Radarr, so
+# Unpackerr ignores it and the file waits in the movies staging directory until
+# someone moves it -- which is what a manual grab is.
+arr_prowlarr_client_category: movies
+
 arr_prowlarr_applications:
   - name: Radarr
     implementation: Radarr

@@ -295,6 +295,86 @@ def acquisition_servarr_client_projection(
     return _owned_projection(value, _SERVARR_CLIENT, masked_fields)
 
 
+def acquisition_prowlarr_client_body(
+    name: Any,
+    host: Any,
+    port: Any,
+    api_key: Any,
+    username: Any,
+    password: Any,
+    category: Any,
+) -> dict[str, Any]:
+    """The SABnzbd client Prowlarr grabs through, which is not the Servarr one.
+
+    Prowlarr's download client resource is a different shape from the one
+    Radarr and Sonarr hold, and `/api/v1/downloadclient/schema` is where that
+    was read rather than inferred: it has no `removeCompletedDownloads` or
+    `removeFailedDownloads`, and its category field is the single `category`
+    fallback rather than the `movieCategory`/`tvCategory` pair. Sending the
+    Servarr body here would set two fields Prowlarr does not have and omit the
+    one it does, so the two bodies are held apart rather than parameterized.
+
+    `protocol`, `supportsCategories` and the `categories` mapping array are
+    left to Prowlarr: it derives the first from the implementation, reports the
+    second, and an empty mapping array is what makes `category` the destination
+    for every grab.
+    """
+
+    return {
+        "name": _string(name),
+        "enable": True,
+        "protocol": "usenet",
+        "priority": 1,
+        "implementation": "Sabnzbd",
+        "implementationName": "SABnzbd",
+        "configContract": "SabnzbdSettings",
+        "tags": [],
+        "fields": [
+            {"name": "host", "value": _string(host)},
+            {"name": "port", "value": _integer(port)},
+            {"name": "useSsl", "value": False},
+            {"name": "urlBase", "value": ""},
+            {"name": "apiKey", "value": api_key},
+            {"name": "username", "value": username},
+            {"name": "password", "value": password},
+            {"name": "category", "value": _string(category)},
+        ],
+    }
+
+
+def acquisition_prowlarr_client_masked_fields(value: Any) -> list[str]:
+    value = _mapping(value, "Prowlarr SABnzbd client")
+    fields = _fields(value.get("fields", []))
+    return [
+        name
+        for name in ["apiKey", "username", "password"]
+        if isinstance(fields.get(name), str) and MASKED_VALUE.fullmatch(fields[name])
+    ]
+
+
+_PROWLARR_CLIENT = _Relationship(
+    label="Prowlarr SABnzbd client",
+    masked_label="Prowlarr client",
+    masked=acquisition_prowlarr_client_masked_fields,
+    attributes=(
+        ("name", _string), ("enable", _boolean), ("protocol", _string),
+        ("priority", _integer), ("implementation", _string),
+        ("implementationName", _string), ("configContract", _string),
+    ),
+    readable_fields=(
+        ("host", _string), ("port", _integer), ("useSsl", _boolean),
+        ("urlBase", _string), ("category", _string),
+    ),
+    secret_fields=(("apiKey", _string), ("username", _string), ("password", _string)),
+)
+
+
+def acquisition_prowlarr_client_projection(
+    value: Any, masked_fields: Any = None
+) -> dict[str, Any]:
+    return _owned_projection(value, _PROWLARR_CLIENT, masked_fields)
+
+
 def acquisition_servarr_client_url_matches(
     collection: Any, host: Any, port: Any
 ) -> list[dict[str, Any]]:
@@ -417,6 +497,10 @@ class FilterModule:
             "acquisition_servarr_client_masked_fields":
                 acquisition_servarr_client_masked_fields,
             "acquisition_servarr_client_projection": acquisition_servarr_client_projection,
+            "acquisition_prowlarr_client_body": acquisition_prowlarr_client_body,
+            "acquisition_prowlarr_client_masked_fields":
+                acquisition_prowlarr_client_masked_fields,
+            "acquisition_prowlarr_client_projection": acquisition_prowlarr_client_projection,
             "acquisition_servarr_client_url_matches":
                 acquisition_servarr_client_url_matches,
             "acquisition_indexer_body": acquisition_indexer_body,

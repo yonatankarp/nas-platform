@@ -1229,16 +1229,16 @@ def verification_tasks(kind)
   case kind
   when :application
     task_slice(
-      "verify.yml", "Read Prowlarr applications and indexers for verification",
-      "Read Prowlarr applications and indexers for verification"
+      "verify.yml", "Read Prowlarr applications, indexers and download clients for verification",
+      "Read Prowlarr applications, indexers and download clients for verification"
     ) + task_slice(
       "verify.yml", "Verify both Prowlarr applications use fullSync",
       "Verify both Prowlarr applications use fullSync"
     )
   when :indexer
     task_slice(
-      "verify.yml", "Read Prowlarr applications and indexers for verification",
-      "Read Prowlarr applications and indexers for verification"
+      "verify.yml", "Read Prowlarr applications, indexers and download clients for verification",
+      "Read Prowlarr applications, indexers and download clients for verification"
     ) + task_slice(
       "verify.yml", "Verify operator-owned Prowlarr indexers exist exactly once",
       "Verify operator-owned Prowlarr indexers exist exactly once"
@@ -2011,6 +2011,11 @@ class AcquisitionApi
     when ["POST", "/api/v1/indexer"]
       item = create_item("indexers", body)
       send_json(client, 201, public_item(item, :indexer))
+    when ["GET", "/api/v1/downloadclient"]
+      send_json(client, 200, @state.fetch("prowlarr_clients", []).map { |item| public_item(item, :client) })
+    when ["POST", "/api/v1/downloadclient"]
+      item = create_item("prowlarr_clients", body)
+      send_json(client, 201, public_item(item, :client))
     when ["GET", "/api/v3/downloadclient"]
       send_json(client, 200, @state.fetch("download_clients", []).map { |item| public_item(item, :client) })
     when ["POST", "/api/v3/downloadclient"]
@@ -2054,6 +2059,9 @@ class AcquisitionApi
       elsif method == "PUT" && target.match?(%r{\A/api/v1/indexer/\d+\z})
         item = update_item("indexers", target, body)
         send_json(client, 200, public_item(item, :indexer))
+      elsif method == "PUT" && target.match?(%r{\A/api/v1/downloadclient/\d+\z})
+        item = update_item("prowlarr_clients", target, body)
+        send_json(client, 200, public_item(item, :client))
       elsif method == "PUT" && target.match?(%r{\A/api/v3/downloadclient/\d+\z})
         item = update_item("download_clients", target, body)
         send_json(client, 200, public_item(item, :client))

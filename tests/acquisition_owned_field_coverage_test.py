@@ -82,6 +82,22 @@ DOWNLOAD_CLIENT = {
     ],
 }
 
+PROWLARR_CLIENT = {
+    "id": 41, "name": "SABnzbd", "enable": True, "protocol": "usenet",
+    "priority": 1, "implementation": "Sabnzbd", "implementationName": "SABnzbd",
+    "configContract": "SabnzbdSettings", "tags": [2, 6],
+    "fields": [
+        {"name": "host", "value": "sabnzbd"},
+        {"name": "port", "value": 8080},
+        {"name": "useSsl", "value": False},
+        {"name": "urlBase", "value": ""},
+        {"name": "apiKey", "value": "fixture-sab-key"},
+        {"name": "username", "value": "fixture-sab-user"},
+        {"name": "password", "value": "fixture-sab-password"},
+        {"name": "category", "value": "movies"},
+    ],
+}
+
 INDEXER = {
     "id": 31, "name": "Fixture Indexer", "enable": True, "priority": 17,
     "appProfileId": 1, "redirect": True,
@@ -136,6 +152,26 @@ CASES = [
             ("fields.useSsl", lambda b: field(b, "useSsl", True)),
             ("fields.urlBase", lambda b: field(b, "urlBase", "/legacy")),
             ("fields.movieCategory", lambda b: field(b, "movieCategory", "legacy")),
+        ],
+    ),
+    (
+        "Prowlarr download client",
+        lambda body: plugin.acquisition_prowlarr_client_projection(body),
+        PROWLARR_CLIENT,
+        [
+            ("name", lambda b: top(b, "name", "Legacy SABnzbd")),
+            ("enable", lambda b: top(b, "enable", False)),
+            ("protocol", lambda b: top(b, "protocol", "torrent")),
+            ("priority", lambda b: top(b, "priority", 9)),
+            ("implementation", lambda b: top(b, "implementation", "Legacy")),
+            ("implementationName", lambda b: top(b, "implementationName", "Legacy")),
+            ("configContract", lambda b: top(b, "configContract", "LegacySettings")),
+            ("tags", lambda b: top(b, "tags", [44])),
+            ("fields.host", lambda b: field(b, "host", "legacy-host")),
+            ("fields.port", lambda b: field(b, "port", 9999)),
+            ("fields.useSsl", lambda b: field(b, "useSsl", True)),
+            ("fields.urlBase", lambda b: field(b, "urlBase", "/legacy")),
+            ("fields.category", lambda b: field(b, "category", "legacy")),
         ],
     ),
     (

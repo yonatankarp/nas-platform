@@ -106,6 +106,9 @@ argument_specs:
             type: list
             elements: int
             required: false
+      arr_prowlarr_client_category:
+        type: str
+        required: false
       arr_prowlarr_applications:
         type: list
         elements: dict

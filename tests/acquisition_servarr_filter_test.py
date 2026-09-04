@@ -217,6 +217,42 @@ def collect_failures():
     check(failures, plugin.acquisition_servarr_client_url_matches(None, "h", 1) == [],
           "an absent download-client collection must match nothing")
 
+    # --- acquisition_prowlarr_client_body ---------------------------------
+    prowlarr_client = plugin.acquisition_prowlarr_client_body(
+        "SABnzbd", "sabnzbd", 8080, "sab-key", "sab-user", "sab-password", "movies"
+    )
+    check(failures,
+          [f["name"] for f in prowlarr_client["fields"]] == [
+              "host", "port", "useSsl", "urlBase", "apiKey", "username",
+              "password", "category"],
+          "the Prowlarr client must carry the fields its own schema declares")
+    # Prowlarr's download client has neither of the removal flags Servarr's has,
+    # and one fallback category rather than a pair. Sending Servarr's body would
+    # set two fields Prowlarr does not have and omit the one it does.
+    check(failures,
+          "removeCompletedDownloads" not in prowlarr_client
+          and "removeFailedDownloads" not in prowlarr_client,
+          "the Prowlarr client must not carry the Servarr removal flags")
+    check(failures,
+          [f["name"] for f in prowlarr_client["fields"]
+           if f["name"] in ("movieCategory", "tvCategory")] == [],
+          "the Prowlarr client must not carry the Servarr category pair")
+    check(failures, prowlarr_client["protocol"] == "usenet",
+          "the Prowlarr client must declare the usenet protocol")
+    check(failures,
+          plugin.acquisition_prowlarr_client_masked_fields(prowlarr_client) == [],
+          "a readable Prowlarr client must report no masked fields")
+    hidden_client = copy.deepcopy(prowlarr_client)
+    hidden_client["fields"] = masked(hidden_client["fields"], "apiKey", "password")
+    check(failures,
+          plugin.acquisition_prowlarr_client_masked_fields(hidden_client)
+          == ["apiKey", "password"],
+          "asterisked Prowlarr client secrets must be reported as masked")
+    check(failures,
+          "apiKey" not in plugin.acquisition_prowlarr_client_projection(
+              hidden_client, ["apiKey"])["fields"],
+          "a masked Prowlarr client secret must be skipped by its projection")
+
     # --- acquisition_indexer_body -----------------------------------------
     indexer = plugin.acquisition_indexer_body(INDEXER_DECLARATION)
     check(failures, indexer["enable"] is True and indexer["priority"] == 25,

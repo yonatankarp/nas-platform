@@ -1,0 +1,137 @@
+---
+# The client Prowlarr grabs a manual search result through. Radarr and Sonarr
+# each hold their own, reconciled by reconcile_servarr_download_client.yml, and
+# neither is this one: Prowlarr's resource is a different shape and its own API
+# is the only place it can be written. Without it Prowlarr answers a grab with
+# "Usenet Download client isn't configured yet" and sends nothing anywhere,
+# which is a working search and a dead button.
+#
+# This resource needs no desired-input fingerprint of its own. The three values
+# SABnzbd masks on read-back -- the API key, the account name and its password
+# -- are the same three the `servarr_sabnzbd` digest already carries, so a
+# rotation of any of them is noticed there and repairs this client in the same
+# run. Everything else it owns is returned unmasked and compared below.
+- name: Read Prowlarr download clients
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: arr_prowlarr_clients_before
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Validate the Prowlarr download client response collection
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_clients_before.json is sequence
+      - arr_prowlarr_clients_before.json is not mapping
+      - arr_prowlarr_clients_before.json is not string
+    fail_msg: Prowlarr returned an unsupported download client collection schema.
+
+- name: Find the operator-owned Prowlarr download client
+  ansible.builtin.set_fact:
+    arr_prowlarr_client_matches: >-
+      {{ arr_prowlarr_clients_before.json |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+  changed_when: false
+  no_log: true
+
+- name: Refuse ambiguous Prowlarr download client ownership
+  ansible.builtin.assert:
+    that:
+      - arr_prowlarr_client_matches | length <= 1
+    fail_msg: >-
+      Prowlarr holds more than one download client named
+      {{ arr_sabnzbd_client_name }}. A duplicate cannot be reconciled by name;
+      remove the extra one before converging again.
+
+- name: Build the owned Prowlarr download client
+  ansible.builtin.set_fact:
+    arr_prowlarr_client_current: >-
+      {{ arr_prowlarr_client_matches | first | default({}) }}
+    arr_prowlarr_client_desired: >-
+      {{ acquisition_prowlarr_client_body(
+           arr_sabnzbd_client_name,
+           arr_sabnzbd_host,
+           arr_sabnzbd_port,
+           vault_downloaders_sabnzbd_api_key,
+           vault_downloaders_sabnzbd_admin_username,
+           vault_downloaders_sabnzbd_admin_password,
+           arr_prowlarr_client_category
+         ) }}
+  changed_when: false
+  no_log: true
+
+- name: Build the complete Prowlarr download client projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_client_masked_fields: >-
+      {{ arr_prowlarr_client_current | acquisition_prowlarr_client_masked_fields }}
+  changed_when: false
+  no_log: true
+
+- name: Finish the complete Prowlarr download client projections and body
+  ansible.builtin.set_fact:
+    arr_prowlarr_client_current_projection: >-
+      {{ (arr_prowlarr_client_current |
+          acquisition_prowlarr_client_projection(
+            arr_prowlarr_client_masked_fields
+          )) if arr_prowlarr_client_matches | length == 1 else {} }}
+    arr_prowlarr_client_desired_projection: >-
+      {{ arr_prowlarr_client_desired |
+         acquisition_prowlarr_client_projection(
+           arr_prowlarr_client_masked_fields
+         ) }}
+    arr_prowlarr_client_body: >-
+      {{ arr_prowlarr_client_current |
+         combine(arr_prowlarr_client_desired, recursive=True) |
+         combine({
+           'fields': arr_prowlarr_client_current.fields | default([]) |
+                     acquisition_merge_owned_fields(
+                       arr_prowlarr_client_desired.fields
+                     )
+         }, recursive=True) }}
+  changed_when: false
+  no_log: true
+
+- name: Determine whether the Prowlarr download client differs
+  ansible.builtin.set_fact:
+    arr_prowlarr_client_needs_update: >-
+      {{ arr_prowlarr_client_matches | length == 0 or
+         arr_prowlarr_client_current_projection !=
+           arr_prowlarr_client_desired_projection or
+         arr_installed_reconciliation_fingerprints.servarr_sabnzbd !=
+           arr_desired_reconciliation_fingerprints.servarr_sabnzbd }}
+  changed_when: false
+  no_log: true
+
+- name: Report the Prowlarr download client a live run would write
+  ansible.builtin.debug:
+    msg: >-
+      Prowlarr does not hold the declared SABnzbd download client
+      {{ arr_sabnzbd_client_name }} at {{ arr_sabnzbd_host }}:{{ arr_sabnzbd_port }};
+      a live run would {{ 'create' if arr_prowlarr_client_matches | length == 0
+                          else 'repair' }} it.
+  when:
+    - ansible_check_mode
+    - arr_prowlarr_client_needs_update | bool
+
+- name: Reconcile the operator-owned Prowlarr download client
+  ansible.builtin.uri:
+    url: >-
+      {{ arr_prowlarr_api }}/downloadclient{{
+         '/' ~ arr_prowlarr_client_matches[0].id
+         if arr_prowlarr_client_matches | length == 1 else '' }}
+    method: "{{ 'PUT' if arr_prowlarr_client_matches | length == 1 else 'POST' }}"
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    body_format: json
+    body: "{{ arr_prowlarr_client_body }}"
+    status_code: [200, 201, 202]
+    return_content: true
+  when: arr_prowlarr_client_needs_update | bool
+  changed_when: true
+  no_log: true
