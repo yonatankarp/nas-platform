@@ -1557,9 +1557,14 @@ expect_failure(failures, "acquisition catalog controller validation moved after 
                detected_by: %i[deployment]) do |root|
   path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
   tasks = YAML.safe_load_file(path)
+  # The catalog is one entry of a batch since #333, so the task that carries it
+  # is found by the expression it hands the validator rather than by a var of its
+  # own. Moving that whole batch past the parse is the same defect: the manifest
+  # the parse reads, and the catalog, are both unvalidated when it runs.
   validation_index = tasks.index do |task|
-    task.dig("vars", "deployment_controller_input_path") ==
-      "{{ playbook_dir }}/config/media-acquisition.yml"
+    task["ansible.builtin.include_tasks"] == "controller_input.yml" &&
+      task.dig("vars", "deployment_controller_inputs").to_s
+          .include?("config/media-acquisition.yml")
   end
   validation = tasks.delete_at(validation_index)
   parse_index = tasks.index do |task|

@@ -97,12 +97,24 @@ def classifier_uses_deployed_helper?(main_tasks, restore_tasks)
   invocations_valid && Array(target_paths).count(expected) == 1
 end
 
+# The classifier's controller input is one entry of a batch since #333, so it is
+# read off the list expression handed to the validator rather than off a task of
+# its own. The pair's second element is the allow_missing flag, so pinning '0'
+# beside the path asserts the input is required -- what the separate
+# deployment_controller_input_allow_missing: false used to assert. The
+# include_tasks filter is what makes it a validated input: a list carried by a
+# task that hands it to nothing validates nothing.
+def classifier_controller_input_required?(input_tasks)
+  input_tasks.any? do |candidate|
+    candidate["ansible.builtin.include_tasks"] == "controller_input.yml" &&
+      candidate.dig("vars", "deployment_controller_inputs").to_s
+               .include?("playbook_dir ~ '/services/immich/classify_restore.py', '0'")
+  end
+end
+
 def classifier_release_packaged?(input_tasks, bundle_tasks, manifest, verifier)
-  input = task(input_tasks, "Validate the tracked Immich restore classifier input")
   copy = task(bundle_tasks, "Copy the tracked Immich restore classifier from the controller")
-  input&.dig("vars", "deployment_controller_input_path") ==
-    "{{ playbook_dir }}/services/immich/classify_restore.py" &&
-    input&.dig("vars", "deployment_controller_input_allow_missing") == false &&
+  classifier_controller_input_required?(input_tasks) &&
     copy&.dig("ansible.builtin.copy", "src") ==
       "{{ playbook_dir }}/services/immich/classify_restore.py" &&
     copy&.dig("ansible.builtin.copy", "dest") ==
@@ -514,8 +526,21 @@ require_mutation_rejected("classifier target containment bypass") do
 end
 
 mutated_inputs = deep_copy(input_tasks)
-task(mutated_inputs, "Validate the tracked Immich restore classifier input")
-  .fetch("vars")["deployment_controller_input_allow_missing"] = true
+classifier_batch = mutated_inputs.find do |candidate|
+  candidate["ansible.builtin.include_tasks"] == "controller_input.yml" &&
+    candidate.dig("vars", "deployment_controller_inputs").to_s
+             .include?("/services/immich/classify_restore.py")
+end
+raise "classifier controller input batch is absent" if classifier_batch.nil?
+
+classifier_expression = classifier_batch.fetch("vars").fetch("deployment_controller_inputs")
+mutated_expression = classifier_expression.sub(
+  "playbook_dir ~ '/services/immich/classify_restore.py', '0'",
+  "playbook_dir ~ '/services/immich/classify_restore.py', '1'"
+)
+raise "classifier controller input flag did not move" if mutated_expression == classifier_expression
+
+classifier_batch.fetch("vars")["deployment_controller_inputs"] = mutated_expression
 require_mutation_rejected("optional classifier controller input") do
   classifier_release_packaged?(
     mutated_inputs, bundle_tasks, manifest_template, manifest_verifier
