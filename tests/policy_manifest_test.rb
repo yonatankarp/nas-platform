@@ -590,7 +590,7 @@ promote_arr_with_compose = lambda do |root|
       "cpuset" => "${PLATFORM_CONTAINER_CPUSET:?}",
       "cpus" => cpus,
       "labels" => { "dev.dozzle.name" => "service" },
-      "healthcheck" => { "test" => ["CMD", "true"] },
+      "healthcheck" => { "test" => ["CMD", "curl", "--fail", "http://127.0.0.1:8080/health"] },
       "security_opt" => ["no-new-privileges:true"],
       "restart" => "unless-stopped",
       "logging" => logging,
@@ -651,6 +651,16 @@ expect_failure(failures, "acquisition daemon claims healthcheck exemption",
                detected_by: %i[policy]) do |root|
   compose = promote_arr_with_compose.call(root)
   compose.dig("services", "radarr").delete("healthcheck")
+  File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
+end
+
+expect_failure(failures, "acquisition daemon keeps a probe that cannot fail",
+               "arr/radarr: health check must reach the service -- an HTTP or TCP endpoint, " \
+               "a readiness client, or the image's own health command -- not merely " \
+               "observe that a process exists",
+               detected_by: %i[policy]) do |root|
+  compose = promote_arr_with_compose.call(root)
+  compose.dig("services", "radarr")["healthcheck"] = { "test" => ["CMD-SHELL", "kill -0 1"] }
   File.write(File.join(root, "services", "arr", "compose.yml"), YAML.dump(compose))
 end
 
@@ -1417,7 +1427,7 @@ expect_success(failures, "paperless contract alias") do |root|
   implement_paperless(root)
   mutate_yaml_file(root, "services/paperless-ngx/compose.yml") do |compose|
     compose.fetch("services").each do |container, spec|
-      spec["healthcheck"] = { "test" => ["CMD", "true"] }
+      spec["healthcheck"] = { "test" => ["CMD", "curl", "--fail", "http://127.0.0.1:8080/health"] }
       spec["labels"] = { "dev.dozzle.name" => container }
     end
   end

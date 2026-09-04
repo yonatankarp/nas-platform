@@ -279,6 +279,19 @@ if failures.empty?
   failures << "Unpackerr file and directory modes drifted" unless
     unpackerr.dig("environment", "UN_FILE_MODE") == "0644" &&
       unpackerr.dig("environment", "UN_DIR_MODE") == "0755"
+  # The platform rule says a probe must reach a service; this says it must reach
+  # *this* one. Unpackerr has no liveness signal until its web server is turned
+  # on, so the switch and the address the probe fetches are one decision and
+  # drift apart silently: a probe aimed at a port nothing is listening on fails
+  # forever, and a listener nothing probes is surface for no reason. Reading the
+  # address out of the environment rather than repeating it keeps the two equal
+  # by construction.
+  listen_addr = unpackerr.dig("environment", "UN_WEBSERVER_LISTEN_ADDR").to_s
+  probe = Array(unpackerr.dig("healthcheck", "test")).join(" ")
+  failures << "Unpackerr's health probe must fetch the web server it enables, on loopback" unless
+    unpackerr.dig("environment", "UN_WEBSERVER_METRICS") == "true" &&
+      listen_addr.match?(/\A127\.0\.0\.1:\d+\z/) &&
+      probe.include?("http://#{listen_addr}/")
 end
 
 if failures.empty?
