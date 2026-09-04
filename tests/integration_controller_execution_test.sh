@@ -649,13 +649,13 @@ case_seerr() {
     true true site.yml
   expect_status 0
   expect_log 'contract seerr-foundation argv=[static]'
-  expect_log '[site.yml][--tags][host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin]'
+  expect_log '[site.yml][--tags][audiobookshelf]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_media_acquisition_foundation]'
   expect_output 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED'
   expect_log_order 'contract seerr-foundation argv=[static]' \
-    '[site.yml][--tags][host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin]'
+    '[site.yml][--tags][audiobookshelf]'
   expect_log_order \
-    '[site.yml][--tags][host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin]' \
+    '[site.yml][--tags][audiobookshelf]' \
     '[{repo}/verify.yml][--tags][platform_verify_media_acquisition_foundation]'
   # The foundation verification must not supply the facts it is meant to assert
   # against: a lane that forced the transport or the control network would be
@@ -687,7 +687,7 @@ case_jellyfin() {
   # appears in the `arr|downloaders|bindery|trailarr|seerr)` arm forty lines
   # earlier, so it would have passed with the dispatch arm deleted outright.
   expect_no_log 'contract jellyfin-foundation'
-  expect_no_log '[--tags][host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin]'
+  expect_no_log '[--tags][audiobookshelf]'
   expect_no_log '[--tags][platform_verify_media_acquisition_foundation]'
 }
 

@@ -509,8 +509,17 @@ run_seerr_verify_only() {
   run_verification seerr
 }
 
+# Audiobookshelf is the one reader the seerr lane's own suite tags leave
+# unconverged, so it is the only tag this play needs. It used to name
+# host_prep, deployment_bundle, ntfy and jellyfin as well, and measuring the
+# lane showed what that cost: of the play's 259s, 212s went to those four and
+# they changed nothing -- every one of the play's ten changed tasks was
+# Audiobookshelf's. They are converged by the initial converge above and their
+# state persists, so re-running them proved nothing this lane did not already
+# know. deployment_bundle's Compose selection is tagged always for exactly this
+# case, so the role still resolves the files it deploys.
 converge_media_acquisition_reader_prerequisites() {
-  run_play --tags host_prep,deployment_bundle,ntfy,audiobookshelf,jellyfin
+  run_play --tags audiobookshelf
 }
 
 run_media_acquisition_foundation_verify() {
