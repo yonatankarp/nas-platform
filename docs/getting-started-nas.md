@@ -374,8 +374,7 @@ five-minute cron entry:
 ```sh
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
+  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE"
 
 crontab -l
 $HOME/.local/bin/nas-platform-deploy --status
@@ -561,8 +560,7 @@ poller installs the prune with it:
 ```sh
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" \
-  -e production_auto_deploy_public_host="$PLATFORM_PUBLIC_HOST"
+  -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
 On a host where this account manages its own crontab, that installs the weekly

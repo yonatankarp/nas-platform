@@ -20,6 +20,7 @@ ROLE_TASKS = File.join(ROOT, "roles/production_auto_deploy/tasks/main.yml")
 POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
 TOKEN = "tk_#{'r' * 29}"
 PUBLIC_HOST = "100.64.0.1"
+CALLBACK_HOST = "10.88.0.1"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
@@ -215,6 +216,11 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   File.write(path, "placeholder\n")
   File.chmod(0o600, path)
 
+  # The two addresses are declared exactly where every inventory declares them,
+  # and nowhere else: the role used to demand a second `-e` for the same public
+  # host, which is what made reinstalling the poller irreproducible from the
+  # repository. Passing them here as host variables is what proves it no longer
+  # does -- the command line below names neither.
   inventory = File.join(root, "inventory.yml")
   File.write(inventory, <<~YAML)
     platform_hosts:
@@ -222,6 +228,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
         localhost:
           ansible_connection: local
           platform_kind: nas
+          platform_public_host: #{PUBLIC_HOST}
+          platform_callback_host: #{CALLBACK_HOST}
   YAML
   play = File.join(root, "play.yml")
   File.write(play, <<~YAML)
@@ -244,7 +252,6 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
-    "-e", "production_auto_deploy_public_host=#{PUBLIC_HOST}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
@@ -310,12 +317,14 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     # ntfy hashes the public host into the mobile push topic, so collapsing it
     # onto the LAN address silently publishes where nothing is subscribed.
     check(failures, config["platform_public_host"] == PUBLIC_HOST,
-          "platform_public_host must come from its own variable, got " \
+          "platform_public_host must be inherited from the inventory variable " \
+          "every other role reads, with no second -e, got " \
           "#{config['platform_public_host'].inspect}")
     check(failures, config["platform_nas_address"] != config["platform_public_host"],
           "platform_public_host must not be collapsed onto the LAN address")
-    check(failures, config["platform_callback_host"] == config["platform_nas_address"],
-          "platform_callback_host defaults to the NAS address")
+    check(failures, config["platform_callback_host"] == CALLBACK_HOST,
+          "platform_callback_host must be inherited from the inventory too, got " \
+          "#{config['platform_callback_host'].inspect}")
 
     notifier = File.join(config_root, "ntfy.curl")
     check(failures, (File.stat(notifier).mode & 0o777) == 0o600,
