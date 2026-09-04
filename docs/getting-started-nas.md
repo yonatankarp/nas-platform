@@ -131,6 +131,13 @@ backup and a service-specific rollback decision already written down:
 ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 ```
 
+If the production auto-deploy poller is already installed on this NAS, it
+converges the same host every five minutes and a run from a workstation cannot
+hold the lock that serialises them, because that lock lives on the NAS. Such a
+run is refused at the first task of the first role while a deployment is in
+flight; a converge that must hold the lock is run on the NAS through
+[the launcher](#converging-by-hand-while-the-poller-runs).
+
 Direct Jellyfin-only or Audiobookshelf-only runs require a completed foundation
 or full-site converge that created the external `media-control` network. This
 prerequisite applies only to those two reader services.
@@ -398,6 +405,35 @@ retry only that exact SHA manually:
 FAILED_SHA=0123456789abcdef0123456789abcdef01234567
 $HOME/.local/bin/nas-platform-deploy --retry-failed "$FAILED_SHA"
 ```
+
+### Converging by hand while the poller runs
+
+Once the poller is installed, this host converges itself every five minutes, so
+a hand-run converge that takes longer than that will overlap one. Deployments
+are serialised by an flock on the poller's state directory, and a bare
+`ansible-playbook` does not take it. Run converges through the launcher instead:
+it acquires that same lock, so the poll that arrives in the middle does nothing
+and tries again five minutes later, and passes everything after `--` to
+`ansible-playbook` unchanged — inventory, tags, vault password provider and
+working directory all stay yours.
+
+```sh
+cd /path/to/your/checkout
+$HOME/.local/bin/nas-platform-deploy --converge -- \
+  -i inventory/local.yml site.yml --check --diff --ask-vault-pass
+$HOME/.local/bin/nas-platform-deploy --converge -- \
+  -i inventory/local.yml site.yml --ask-vault-pass
+```
+
+A converge that starts while another one holds the lock is refused immediately,
+naming the holder, rather than starting and failing later. The same is true of a
+run started any other way, including over SSH from a workstation:
+`deployment_bundle` probes the lock at the first task of every role and stops the
+run with *"A deployment is already running on this host"*. Before this existed,
+the loser of that race ran to the last role and then failed on the deployment
+containment guard, reporting an unsafe deployment target — a message about
+integrity, for what was only a collision. Wait for the running deployment,
+confirm with `--status`, and then re-run.
 
 Attempt logs are protected mode-0600 files under
 `$HOME/.local/share/nas-platform/logs`, retained for 30 days. The controller
