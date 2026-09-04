@@ -3,3 +3,19 @@
 # checkout. The integration harness opts out because it validates pre-commit work.
 deployment_bundle_allow_dirty_controller: false
 deployment_bundle_test_mode: false
+
+# The flock scripts/production_auto_deploy.py serialises deployments on. Derived
+# the same way roles/production_auto_deploy derives its state root -- from the
+# home of the account the play runs as -- because that role is what installs the
+# poller and a second spelling of this path would be a lock nobody shares. A run
+# that connects as another account, or a host with no poller installed, finds no
+# file and is not guarded, which is correct: there is nothing there to race.
+deployment_bundle_lock_path: >-
+  {{ ansible_facts['user_dir'] }}/.local/share/nas-platform/state/deployment.lock
+# The pid of the process holding that lock on this run's behalf, exported by
+# `nas-platform-deploy --converge` and by the poller's own play environment. It
+# is what stops the guard from refusing the very converge that took the lock.
+# Read from the environment because it belongs to the invocation rather than to
+# the inventory, and empty for a bare ansible-playbook, which holds nothing.
+deployment_bundle_lock_owner: >-
+  {{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_LOCK_OWNER') }}

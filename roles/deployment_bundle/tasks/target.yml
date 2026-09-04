@@ -1,4 +1,83 @@
 ---
+# First, ahead of everything else this file checks, because it is the check that
+# explains the others. Issue #326: a hand-run ansible-playbook and the poller's
+# five-minute tick converged the same host at once. The poller repointed
+# `current` at its own release while the manual run was still deploying services
+# against the release that run had activated, and the manual run died 1463 tasks
+# in -- at the *last* role -- on the containment guard below, reporting an unsafe
+# deployment target whose pointer did not resolve to the expected release. That
+# message is a real security control and says exactly the right thing for the
+# cases it is for; it is simply not what was wrong. An operator cannot tell a
+# benign race from a path traversal by reading it, and the natural response to it
+# -- run it again -- adds a third converge to the two already running.
+#
+# So the probe runs here rather than only in site.yml's pre_tasks: every service
+# role re-includes this file as its first task, which is what makes a poller that
+# started *after* the manual run -- the ordering the #326 timestamps prove -- fail
+# the very next role with "a deployment is already running" instead of failing at
+# task 1463 with an integrity refusal.
+#
+# It is advisory, not a security control: the lock is cooperative, the owner
+# declaration below is an environment variable anyone able to run ansible-playbook
+# could export, and nothing here is load-bearing for containment. The guard that
+# is load-bearing is the containment validator further down, which is unchanged.
+- name: Probe the deployment lock for a concurrent deployment
+  ansible.builtin.command:
+    argv:
+      - "{{ ansible_facts.python.executable }}"
+      - -c
+      - "{{ lookup('ansible.builtin.file', role_path ~ '/files/probe_deployment_lock.py') }}"
+      - "{{ deployment_bundle_lock_path }}"
+  register: deployment_bundle_lock_probe
+  changed_when: false
+  # A read, and one that has to really happen under --check. Answering it from a
+  # simulation would report every host as unlocked, which is precisely the state
+  # this exists to disprove.
+  check_mode: false
+
+# Refused under --check too, deliberately. A check-mode review predicts against a
+# tree another converge is in the middle of rewriting, so its diff is stale before
+# it finishes printing -- and the thing the operator most needs to learn from a
+# review that cannot be trusted is *why*: a deployment is running. Reviewing again
+# once it finishes costs a few minutes; acting on a diff taken mid-converge costs
+# more.
+- name: Refuse to converge a target another deployment is already converging
+  ansible.builtin.assert:
+    that:
+      - not (deployment_bundle_lock_state.held | bool) or
+        deployment_bundle_lock_held_by_this_run | bool
+    fail_msg: >-
+      A deployment is already running on this host: {{ deployment_bundle_lock_holder }}
+      holds {{ deployment_bundle_lock_path }}. That is the poller's five-minute
+      tick, another operator's converge, or the weekly image prune, which takes
+      the same lock. This run would race it -- both converge the same services
+      and repoint the same release, and the loser fails later, on a guard that
+      reports an unsafe deployment target rather than this. Wait for the running
+      deployment to finish, then re-run;
+      `nas-platform-deploy --status` reports what the poller last did, and
+      `nas-platform-deploy --converge -- <ansible-playbook arguments>` takes this
+      same lock so the poller skips its tick instead of racing you.
+  vars:
+    deployment_bundle_lock_state: >-
+      {{ deployment_bundle_lock_probe.stdout | from_json }}
+    # Named rather than compared inline so the message can say "operator converge
+    # (pid 4711, started ...)" when the holder wrote a record, and still say
+    # something true when it did not.
+    deployment_bundle_lock_holder: >-
+      {{ (deployment_bundle_lock_state.holder | default('an unnamed holder')) ~
+         (' (pid ' ~ deployment_bundle_lock_state.pid ~
+          (', started ' ~ deployment_bundle_lock_state.started
+           if deployment_bundle_lock_state.started is defined else '') ~ ')'
+          if deployment_bundle_lock_state.pid is defined else '') }}
+    # The holder is this run's own ancestor when it says so and the pids agree:
+    # `nas-platform-deploy --converge` and the poller both take the lock and then
+    # run these plays, so without this every locked converge would refuse itself.
+    # An empty declaration -- a bare ansible-playbook -- can never match.
+    deployment_bundle_lock_held_by_this_run: >-
+      {{ (deployment_bundle_lock_owner | string | trim | length > 0) and
+         (deployment_bundle_lock_owner | string | trim ==
+          deployment_bundle_lock_state.pid | default('') | string) }}
+
 - name: Validate exact deployment path derivation
   ansible.builtin.assert:
     that:
