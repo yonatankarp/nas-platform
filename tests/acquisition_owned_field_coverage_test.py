@@ -84,6 +84,7 @@ DOWNLOAD_CLIENT = {
 
 INDEXER = {
     "id": 31, "name": "Fixture Indexer", "enable": True, "priority": 17,
+    "appProfileId": 1, "redirect": True,
     "implementation": "Newznab", "implementationName": "Newznab",
     "configContract": "NewznabSettings", "tags": [3, 9],
     "fields": [
@@ -145,6 +146,8 @@ CASES = [
             ("name", lambda b: top(b, "name", "Legacy Indexer")),
             ("enable", lambda b: top(b, "enable", False)),
             ("priority", lambda b: top(b, "priority", 44)),
+            ("appProfileId", lambda b: top(b, "appProfileId", 44)),
+            ("redirect", lambda b: top(b, "redirect", False)),
             ("implementation", lambda b: top(b, "implementation", "Legacy")),
             ("implementationName", lambda b: top(b, "implementationName", "Legacy")),
             ("configContract", lambda b: top(b, "configContract", "LegacySettings")),
@@ -157,8 +160,44 @@ CASES = [
     ),
 ]
 
+# A hand-written mutation list goes stale the moment a relationship gains an
+# attribute, and it goes stale silently: the new attribute is simply never
+# mutated. Adding `appProfileId` and `redirect` to `_INDEXER` turned this file
+# red only because the canonical body then failed to project at all, and the
+# complaint named a coercer rather than the missing keys. Pin every attribute of
+# every spec to a mutation of the same name so the next added attribute says so.
+SPECS = {
+    "Prowlarr application": plugin._APPLICATION,
+    "Servarr download client": plugin._SERVARR_CLIENT,
+    "Prowlarr indexer": plugin._INDEXER,
+}
+ATTRIBUTE_FLOOR = 20
+
 failures = []
 checked = 0
+attributes_pinned = 0
+for relationship, _project, body, mutations in CASES:
+    spec = SPECS[relationship]
+    mutated_names = {label for label, _ in mutations}
+    for name, _coerce in spec.attributes:
+        attributes_pinned += 1
+        if name not in mutated_names:
+            failures.append(
+                f"{relationship} owns attribute {name!r}, which no mutation covers, "
+                "so this file cannot prove its drift is detected"
+            )
+        if name not in body:
+            failures.append(
+                f"{relationship} owns attribute {name!r}, which the canonical body "
+                "omits, so the projection cannot read it"
+            )
+if attributes_pinned < ATTRIBUTE_FLOOR:
+    failures.append(
+        f"only {attributes_pinned} owned attributes were pinned to a mutation, "
+        f"fewer than the {ATTRIBUTE_FLOOR} these relationships declare; the spec "
+        "lookup has gone quiet rather than the attributes having disappeared"
+    )
+
 for relationship, project, body, mutations in CASES:
     try:
         baseline = project(body)
