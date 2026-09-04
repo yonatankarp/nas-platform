@@ -255,7 +255,7 @@ synthetic histories.
 
 ### The `static` budget, and the one way it keeps being blown
 
-`static` is expected to finish in 10–15 minutes and has blown that budget three
+`static` is expected to finish in 10–15 minutes and has blown that budget four
 times. Every time the cause was the same shape, so recognise it rather than
 rediscovering it:
 
@@ -285,25 +285,61 @@ The occurrences, and what actually fixed each:
   (5.5s → 3.45s per case) and moving the harness to its own `mutation` job. The
   gate went from 1472s to **630s wall, 2122s of check time across 107 checks on
   four workers**, with the slowest single check at 307s.
+- **2026-09-03** — `static` was 20m29s and the gate printed 1086s wall, 3955s of
+  check time across 147 checks. Read against the entry above that looks like the
+  total-work state — 3955s over four workers is a 989s floor, the run took 1086s,
+  and the slowest single check was 414s, well under it — and #319 read it that
+  way. It was wrong, and the arithmetic is why: **the seconds the gate records
+  for a check are its wall time while three other checks are running**, so
+  contention inflates the total and the floor derived from that total in the same
+  breath. Those numbers cannot tell a hundred slow checks apart from one check
+  waiting. Varying the pool width can: `tests/seerr_contract_test.rb --self-test`
+  took 554s at one case worker and 368s at four, eight and sixteen, while the
+  same file without `--self-test` took 10s. Two of its planted regressions drop a
+  `${VAR:?}` requirement from `tests/contracts/seerr.sh`, so the wrapper stops
+  refusing, execs the runtime half against a port nothing is listening on, and
+  spends `READY_TIMEOUT_SECONDS` there — 180 of them, twice.
+  `tests/trailarr_contract_test.rb --self-test` was the same shape at 120. Fixed
+  by making that budget an environment input, which is how those programs already
+  take every other input, and giving the run-mode environment rows ten seconds,
+  because every invocation in that helper must end in a refusal: 368s → 26s and
+  247s → 27s, both still detecting all 33 planted regressions. The rest of the
+  ten slowest were genuinely subprocess-per-case and went through the worker pool
+  the paragraph below prescribes, sharing one `tests/case_pool_support.rb` rather
+  than adding eight more copies of it — measured alone on a 12-core Mac: media
+  managed users 159s → 46s, contract structure mutations 231s → 42s, Dozzle
+  quality 141s → 32s, Audiobookshelf initial scan 81s → 15s, database managed
+  users 70s → 17s. On that Mac at `POLICY_JOBS=4` the gate went from **922s wall,
+  3134s of check time** to **492s wall, 1922s of check time** — both over the same
+  148 checks, measured an hour apart before `deployment_lock_probe_test.py` and
+  `deployment_lock_refusal_test.sh` landed, so a run today prints 150 and is not
+  comparable check-for-check — and no converted check is in its slowest ten any
+  more.
 
-That last measurement is the useful baseline, because it says the gate's
-constraint has changed. 2122s over four workers is a 531s floor and the run took
-630s, so the gate is now bound by its **total** work rather than by one item, and
-the ten slowest checks are two thirds of that total. Every one of them has the
-same subprocess-per-case shape, so the next win is running their cases through a
-worker pool — `in_parallel_cases` in
-`tests/media_acquisition_reconciliation_support.rb` is the pattern, and its
-comment records why the worker count must never exceed the core count. They do
-not share a helper, so that is one careful change per file, not one change.
+That last measurement is the useful baseline. Read it with the caveat the fourth
+occurrence paid for: the totals are sums of contended wall times, so they cannot
+separate a gate bound by its **total** work from a gate waiting on **one** item.
+Vary the width before believing either — `POLICY_JOBS` for the gate's own pool,
+`CASE_POOL_WORKERS` or a check's own `*_CASE_WORKERS` for a check's — and a cost
+that does not move when the width does is a wait, not work. There is nothing to
+parallelise in a wait: find the timeout and let the harness shorten it. For the
+work half, run the cases through a worker pool — `in_parallel_cases` in
+`tests/media_acquisition_reconciliation_support.rb` is the pattern and its
+comment records why the worker count must never exceed the core count;
+`tests/case_pool_support.rb` is the copy the checks converted for #319 share. The
+fourteen contract tests still carry their own copies, so a change there is still
+one careful change per file.
 
 Two consequences worth keeping:
 
 - **The gate reports its own slowest checks.** `tests/validate-policy.sh` prints
   its wall time, its total check time and its ten slowest checks on every run,
-  pass or fail. Read that first: each of the three fixes above began by timing
-  the checks by hand, because the gate printed nothing about where its time
-  went. `POLICY_JOBS=1` serialises the pool when a failure only appears under
-  load.
+  pass or fail. Read that first: the first three fixes above began by timing the
+  checks by hand, because the gate printed nothing about where its time went, and
+  the fourth began by reading that report and then varying the pool width to find
+  out which kind of cost it was naming. `POLICY_JOBS=1` serialises the pool when
+  a failure only appears under load, and reaches into `case_pool_support.rb` so
+  the converted checks serialise with it.
 - **Extraction is the fix, tuning is not.** Once a check is the floor, it moves
   to its own job so it gets a runner's four cores to itself. That costs four
   files kept in agreement: the manifest in `tests/validate-policy.sh`,
