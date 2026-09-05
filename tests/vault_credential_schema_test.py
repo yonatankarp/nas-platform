@@ -45,6 +45,7 @@ from vault_credential_schema import (  # noqa: E402
     EMAIL,
     EXACT,
     HEX_32,
+    HEX_64,
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
     NOT_PLACEHOLDER,
@@ -80,6 +81,7 @@ PATTERN_SAMPLES = {
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
+    HEX_64.pattern: ("0" * 64, "0" * 64 + "x"),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -107,6 +109,8 @@ LEGACY_REJECTED = (
     ("vault_ntfy_dozzle_token", True),
     ("vault_ntfy_dozzle_token", None),
     ("vault_ntfy_dozzle_token", ["tk_" + "a" * 29]),
+    ("vault_dozzle_alert_relay_token", True),
+    ("vault_dozzle_alert_relay_token", None),
     ("vault_dozzle_admin_password_hash", True),
     ("vault_beszel_agent_key", True),
     ("vault_beszel_universal_token", None),
@@ -125,6 +129,7 @@ MALFORMED = {
     SSH_ED25519_PUBLIC_KEY.pattern: "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIA==",
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
+    HEX_64.pattern: "A" * 64,
 }
 
 FOUNDATION_KEYS = (

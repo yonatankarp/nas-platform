@@ -403,6 +403,7 @@ IMMICH_RESTORE = "roles/immich/tasks/restore.yml"
 IMMICH_ONBOARDING = "roles/immich/tasks/user_onboarding.yml"
 DOZZLE_ROLE = "roles/dozzle/tasks/main.yml"
 DOZZLE_DEFAULTS = "roles/dozzle/defaults/main.yml"
+DOZZLE_ENV = "roles/dozzle/templates/env.j2"
 PREFLIGHT = "roles/preflight/tasks/main.yml"
 ARR_MAIN = "roles/arr/tasks/main.yml"
 ARR_BOOTSTRAP = "roles/arr/tasks/bootstrap.yml"
@@ -1131,15 +1132,37 @@ check_rejected(
 
 # --- Dozzle contract ----------------------------------------------------------
 #
-# The dispatcher header is the whole of "the role wires the write-only ntfy
-# token", so this row is what the deleted second substring check was pretending
+# The dispatcher header is the whole of "the role wires the relay's own shared
+# secret", so this row is what the deleted second substring check was pretending
 # to prove.
 check_rejected(
   :dozzle, "a dispatcher header that borrows another publisher's token",
   [[DOZZLE_DEFAULTS,
-    "Bearer {{ vault_ntfy_dozzle_token }}",
+    "Bearer {{ vault_dozzle_alert_relay_token }}",
     "Bearer {{ vault_ntfy_deploy_token }}"]],
   "managed dispatcher authorization differs"
+)
+
+# The regression #172 closed, planted rather than described: the header goes
+# back to naming the ntfy publish credential, which is what put that token at
+# rest in Dozzle's /data volume and in its API responses.
+check_rejected(
+  :dozzle, "a dispatcher header that goes back to the ntfy publish token",
+  [[DOZZLE_DEFAULTS,
+    "Bearer {{ vault_dozzle_alert_relay_token }}",
+    "Bearer {{ vault_ntfy_dozzle_token }}"]],
+  "managed dispatcher authorization differs"
+)
+
+# And the same regression on the other half of the pair. The rendered
+# environment file is where both credentials are named side by side, so it is
+# where one name standing in for both is visible at all.
+check_rejected(
+  :dozzle, "a relay secret that is the ntfy publish token again",
+  [[DOZZLE_ENV,
+    "ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}",
+    "ALERT_RELAY_TOKEN={{ vault_ntfy_dozzle_token }}"]],
+  "the relay secret is not a credential of its own"
 )
 
 # --- Repository policy --------------------------------------------------------

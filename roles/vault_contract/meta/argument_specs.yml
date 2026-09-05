@@ -15,6 +15,7 @@ argument_specs:
       vault_dozzle_admin_username: {type: str, required: true}
       vault_dozzle_admin_password: {type: str, required: true}
       vault_dozzle_admin_password_hash: {type: str, required: true}
+      vault_dozzle_alert_relay_token: {type: str, required: true}
       vault_immich_admin_email: {type: str, required: true}
       vault_immich_admin_password: {type: str, required: true}
       vault_immich_db_name: {type: str, required: true}

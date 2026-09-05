@@ -10,6 +10,12 @@ vault_audiobookshelf_admin_password: example-password
 vault_dozzle_admin_username: example-admin
 vault_dozzle_admin_password: example-password
 vault_dozzle_admin_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+# The shared secret Dozzle presents to its alert relay, and the one key in this
+# file whose absence is survivable: inventory/group_vars/all/main.yml derives a
+# working value from vault_ntfy_dozzle_token, and a value authored here wins
+# over it. Author one to rotate the relay independently of ntfy. 64 lowercase
+# hex digits, as `openssl rand -hex 32` prints.
+vault_dozzle_alert_relay_token: "0000000000000000000000000000000000000000000000000000000000000000"
 
 vault_immich_admin_email: admin@example.invalid
 vault_immich_admin_password: example-password

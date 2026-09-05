@@ -688,7 +688,7 @@ Use `inventory/group_vars/all/vault.yml.example` as the schema, never as a
 source of values. Every key below is required.
 
 - Audiobookshelf: `vault_audiobookshelf_admin_username`, `vault_audiobookshelf_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager; preserve the pair unchanged.
-- Dozzle: `vault_dozzle_admin_username`, `vault_dozzle_admin_password`, `vault_dozzle_admin_password_hash`. Recover the administrator identity and clear password from the password manager/current Dozzle login, and recover its stored bcrypt hash from the deployed protected users file or the deployed Compose configuration. The clear password and hash must be the matching pair for that login; do not replace one independently. The hash is a 60-character bcrypt value: a `$2a$`, `$2b$`, or `$2y$` marker, a two-digit cost, and the bcrypt payload.
+- Dozzle: `vault_dozzle_admin_username`, `vault_dozzle_admin_password`, `vault_dozzle_admin_password_hash`, `vault_dozzle_alert_relay_token`. Recover the administrator identity and clear password from the password manager/current Dozzle login, and recover its stored bcrypt hash from the deployed protected users file or the deployed Compose configuration. The clear password and hash must be the matching pair for that login; do not replace one independently. The hash is a 60-character bcrypt value: a `$2a$`, `$2b$`, or `$2y$` marker, a two-digit cost, and the bcrypt payload. The alert relay token is the shared secret Dozzle presents to the alert relay, 64 lowercase hexadecimal characters, and it is the one key here that a vault may omit entirely rather than declare empty. It is not read back from anywhere: `inventory/group_vars/all/main.yml` derives a working value from the ntfy Dozzle publish token listed further down, so a vault that never declared it converges unchanged, and a value declared in the vault wins over that derivation. Recover it from the deployed Dozzle dispatcher's `Authorization: Bearer` header or the relay's `ALERT_RELAY_TOKEN` if the vault declared one; otherwise leave it out and let the derivation supply it. Declare one only to rotate the relay independently of ntfy, and mint it with `openssl rand -hex 32` rather than reusing any ntfy token: Dozzle persists this value in its `/data` volume and serves it back in cleartext over its own API, which is why it stopped being the ntfy publish token in the first place (#172).
 - Immich: `vault_immich_admin_email`, `vault_immich_admin_password`, `vault_immich_db_name`, `vault_immich_db_username`, `vault_immich_db_password`. Recover the administrator identity from the current application and password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack, checking them against the database that owns the existing data. The email must contain a nonempty local and domain part. Database identifiers must start with a letter or underscore and then contain only letters, digits, underscores, or hyphens.
 - Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`, `vault_jellyfin_opensubtitles_username`, `vault_jellyfin_opensubtitles_password`. The managed administrator username is exactly `Yonatan`; recover its matching password from the password manager. Recover the existing OpenSubtitles account credentials from the password manager or deployed Jellyfin plugin configuration. Preserve both credential pairs unchanged; the example and generated plaintext placeholders are not valid deployment values.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
@@ -1075,10 +1075,13 @@ repository vault remains encrypted:
   into `/api/notifications/dispatchers`, and Dozzle keeps that dispatcher —
   its `Authorization: Bearer` header included — in the `/data` volume, the
   only writable persistent path the read-only container has, and returns the
-  header in cleartext over the same API. That header currently carries the
-  same value as Dozzle's ntfy publish token, so a copy of Dozzle's data
-  directory is a copy of that token; the alert relay holds the same value in
-  its container environment.
+  header in cleartext over the same API. What that header carries is the alert
+  relay's own shared secret, so a copy of Dozzle's data directory is a copy of
+  that secret and the whole directory stays classified here; the relay holds
+  the same value in its container environment, alongside the ntfy publish token
+  it needs to publish. Since #172 the two are different credentials: what
+  Dozzle stores and serves back authorizes nothing but a POST to the relay, and
+  the ntfy publish token is no longer reachable from anything Dozzle persists.
 - Configuration this platform seeds once and then leaves to the application,
   under the Docker root and mode 0600: SABnzbd's `sabnzbd/config/sabnzbd.ini`
   carries the administrator username, the administrator password, the API key

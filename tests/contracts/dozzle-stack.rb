@@ -154,3 +154,11 @@ abort "Dozzle contract failed: environment does not render the selected state an
 # and the live modes below dispatch through the URL built from the same default.
 abort "Dozzle contract failed: environment does not render the single relay listener port" unless
   env_template.include?("ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}")
+# The separation #172 was filed for, asserted in the one file that renders both
+# credentials side by side. The relay's shared secret ends up at rest in Dozzle's
+# /data volume and in a second container's `docker inspect` environment; the ntfy
+# publish token must reach neither, so these two lines have to name two different
+# vault credentials rather than the same one twice.
+abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
+  env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
+  env_template.include?("NTFY_TOKEN={{ vault_ntfy_dozzle_token }}")

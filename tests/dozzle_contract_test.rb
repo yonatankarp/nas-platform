@@ -706,7 +706,7 @@ ALERTS_ROWS = [
     argument: "roles/dozzle/defaults/main.yml",
     edit: lambda { |root|
       edit_yaml_text(root, "roles/dozzle/defaults/main.yml",
-                     "  headers:\n    Authorization: \"Bearer {{ vault_ntfy_dozzle_token }}\"\n",
+                     "  headers:\n    Authorization: \"Bearer {{ vault_dozzle_alert_relay_token }}\"\n",
                      "  headers: {}\n")
     },
     expects: "managed dispatcher authorization differs"
@@ -946,6 +946,7 @@ VAULT_FIXTURE = {
   "vault_dozzle_admin_username" => "dozzle-contract-admin",
   "vault_dozzle_admin_password" => "dozzle-contract-secret",
   "vault_ntfy_dozzle_token" => "tk_dozzlecontractpublish",
+  "vault_dozzle_alert_relay_token" => "7f3c" * 16,
   "vault_ntfy_admin_user" => "ntfy-contract-admin",
   "vault_ntfy_admin_password" => "ntfy-contract-secret"
 }.freeze
@@ -973,7 +974,7 @@ def desired_dispatcher(port = 8081)
   {
     "id" => "disp01", "name" => "ntfy nas-critical", "type" => "webhook",
     "url" => "http://alert-relay:#{port}/alerts", "template" => EXPECTED_TEMPLATE,
-    "headers" => { "Authorization" => "Bearer #{VAULT_FIXTURE.fetch('vault_ntfy_dozzle_token')}" }
+    "headers" => { "Authorization" => "Bearer #{VAULT_FIXTURE.fetch('vault_dozzle_alert_relay_token')}" }
   }
 end
 
@@ -1906,7 +1907,7 @@ PROGRAM_MUTATIONS = [
     label: "the dispatcher authorization check",
     program: :alerts,
     from: "  dispatcher.fetch(\"headers\") == {\"Authorization\" => " \
-          "\"Bearer {{ vault_ntfy_dozzle_token }}\"}\n",
+          "\"Bearer {{ vault_dozzle_alert_relay_token }}\"}\n",
     to: "  true\n",
     rows: ["a dispatcher that stopped carrying its token"]
   },
@@ -2088,7 +2089,7 @@ PROGRAM_MUTATIONS = [
     label: "the dispatcher header check",
     program: :runtime,
     from: "  dispatcher[\"headers\"] == { \"Authorization\" => " \
-          "\"Bearer #{'#'}{vault.fetch('vault_ntfy_dozzle_token')}\" }\n",
+          "\"Bearer #{'#'}{vault.fetch('vault_dozzle_alert_relay_token')}\" }\n",
     to: "  true\n",
     rows: ["a dispatcher carrying somebody else's token"]
   },

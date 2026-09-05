@@ -53,6 +53,18 @@ DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
 HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 
+# The Dozzle alert relay's shared secret. 64 lowercase hex is what
+# `openssl rand -hex 32` prints and what a SHA-256 hexdigest is, which is the
+# whole reason the shape is pinned here rather than left NONEMPTY: the shared
+# inventory's derived default for this key is a SHA-256 hexdigest, so a rule
+# this narrow is also the rule that stops the ntfy publish token -- `tk_` and 29
+# characters, matched by NTFY_TOKEN below -- from being pasted back into the
+# credential the relay presents (#172). That is why no DISTINCT_KEY_GROUPS entry
+# names the pair: the two shapes cannot collide, and a distinctness group over
+# values that can never be equal is a guard that passes without checking
+# anything.
+HEX_64 = re.compile(r"^[0-9a-f]{64}\Z")
+
 # Two of the hex API keys are submitted to Bazarr's settings form, and Bazarr
 # 1.6.0's `save_settings` casts every submitted string with `int()` unless the
 # last dash-segment of its key is one of `app/config.py`'s `str_keys` -- `apikey`
@@ -112,6 +124,7 @@ CREDENTIAL_RULES = {
     "vault_dozzle_admin_username": ((NONEMPTY, None),),
     "vault_dozzle_admin_password": ((NONEMPTY, None),),
     "vault_dozzle_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
+    "vault_dozzle_alert_relay_token": ((PATTERN, HEX_64),),
     "vault_immich_admin_email": ((PATTERN, EMAIL),),
     "vault_immich_admin_password": ((NONEMPTY, None),),
     "vault_immich_db_name": ((PATTERN, DATABASE_IDENTIFIER),),

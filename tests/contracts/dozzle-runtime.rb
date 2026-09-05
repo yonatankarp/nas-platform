@@ -536,7 +536,13 @@ fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "w
 fail_contract("managed dispatcher URL differs") unless dispatcher["url"] == expected_url
 fail_contract("managed dispatcher template differs") unless dispatcher["template"] == expected_template
 fail_contract("managed dispatcher headers differ") unless
-  dispatcher["headers"] == { "Authorization" => "Bearer #{vault.fetch('vault_ntfy_dozzle_token')}" }
+  dispatcher["headers"] == { "Authorization" => "Bearer #{vault.fetch('vault_dozzle_alert_relay_token')}" }
+# The equality above is the whole of it, and deliberately so. A second check for
+# 'and it is not the ntfy publish token' could never fail once this one passed:
+# the vault contract gives the two credentials shapes that cannot collide, so
+# such a check would pass without checking anything. What the header must not be
+# is enforced where it can actually differ -- in the rendered environment file,
+# by tests/contracts/dozzle-stack.rb.
 fail_contract("expected exactly four alert rules") unless rules.length == 4
 
 ALERTS.each do |name, (expression, cooldown)|
