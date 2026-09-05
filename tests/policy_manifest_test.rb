@@ -881,9 +881,14 @@ expect_failure(failures, "restored default inventory",
               "[defaults]\ninventory = inventory/remote.yml\n")
 end
 
+# Three detectors rather than one: a config whose keys sit outside any section
+# stops registering library/ and filter_plugins/, so the two scripts that boot
+# Ansible against the sandbox reject it as well. Declared rather than narrowed
+# away, because a row that runs fewer scripts than reject it is coverage that
+# has quietly stopped running.
 expect_failure(failures, "unreadable ansible.cfg section",
                "ansible.cfg must carry a [defaults] section for its keys to be read",
-               detected_by: %i[ci]) do |root|
+               detected_by: %i[ci deployment integration]) do |root|
   mutate_text(root, "ansible.cfg", /^\[defaults\]\n/, "")
 end
 
