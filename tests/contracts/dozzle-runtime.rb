@@ -53,6 +53,7 @@ end
 # so nothing would say so. Read the one pin the deployment declares instead.
 def deployed_ntfy_image
   path = ENV.fetch("PLATFORM_CONTRACT_NTFY_COMPOSE")
+  fail_contract("services/ntfy/compose.yml is unavailable") unless File.file?(path)
   pin = File.read(path)[%r{^\s*image:\s*(\S+/ntfy:\S+@sha256:[0-9a-f]{64})\s*$}, 1]
   fail_contract("services/ntfy/compose.yml declares no pinned ntfy image") unless pin
   pin

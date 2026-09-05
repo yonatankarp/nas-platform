@@ -68,6 +68,7 @@ relay_probe_port=53081
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
 [ -f "$relay_script" ] || fail_contract 'services/dozzle/alert_relay.py is absent'
+[ -f "$ntfy_compose" ] || fail_contract 'services/ntfy/compose.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
 
 render_group_contract() {
