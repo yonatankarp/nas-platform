@@ -64,7 +64,10 @@ if defined?(ClassifyChanges)
     ["docs/superpowers/plans/2026-08-09-docs-only-ci-fast-path.md"] => %w[docs],
     ["docs/no-check-reads-this.md"] => %w[docs],
     ["docs/img/topology.png"] => %w[docs],
-    [".gitignore"] => [],
+    # Not inert: tests/policy_beszel_test.rb and tests/policy_ci_test.rb both
+    # read it, so it reaches the job that runs them rather than no job at all.
+    [".gitignore"] => %w[static],
+    ["LICENSE"] => [],
     ["README.md"] => %w[static docs],
     # The regression #346 names. tests/policy_test.rb reads CLAUDE.md in `static`
     # and tests/docs_links_test.rb reads it in both jobs, so it routes exactly as

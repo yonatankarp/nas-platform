@@ -15,6 +15,11 @@ Ansible runs against one inventory host with the connection switched:
 included, executes on that host, so roles address services over `127.0.0.1`
 and are correct in both modes.
 
+`ansible.cfg` deliberately names no default inventory: it used to name
+`inventory/remote.yml`, so a bare `ansible-playbook site.yml` converged the live
+NAS. Without it, `platform_hosts` matches nothing and the run ends on an empty
+`PLAY RECAP` having touched no host. Always pass `-i`.
+
 ## Commands
 
 Ansible tooling is pinned in `controller-requirements.txt`

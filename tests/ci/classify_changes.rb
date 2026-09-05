@@ -96,6 +96,7 @@ module ClassifyChanges
   # Editing either of those two claims merged green and turned main red on the
   # next unrelated change.
   STATIC_ONLY_PATHS = %w[
+    .gitignore
     CLAUDE.md
     README.md
     docs/adding-a-service.md
@@ -329,8 +330,14 @@ module ClassifyChanges
   # through it into `.md` and reached no job (issue #346). Root Markdown is where
   # a check-read document lands, so it falls open to every lane instead of being
   # guessed at by name; naming it above is what buys it a cheaper answer.
+  # `.gitignore` used to be listed here as obviously inert. It is not: two policy
+  # scripts read it -- tests/policy_beszel_test.rb requires the Mac proof reports
+  # excluded, tests/policy_ci_test.rb the local ANSIBLE_HOME -- so a change that
+  # deleted an entry those checks require selected no job and merged green. It is
+  # the #346 shape one directory up, and it is answered the same way: the file is
+  # a gate input, so it routes to the job that reads it.
   def inert_path?(path)
-    return true if path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
+    return true if path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
     return true if path.match?(%r{\A(?:\.idea|\.vscode)/}) || path == ".editorconfig"
     return false unless path.include?("/")
     return false if path.match?(%r{\A(?:tests|fixtures|scripts)/})

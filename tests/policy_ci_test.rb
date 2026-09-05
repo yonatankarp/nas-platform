@@ -117,6 +117,27 @@ config = File.read(File.join(ROOT, "ansible.cfg"))
 check(failures, config.match?(/^inject_facts_as_vars\s*=\s*False/i),
       "ansible.cfg must disable fact injection, removed in ansible-core 2.24")
 
+# Every documented invocation passes -i, so a default inventory only ever
+# decided what a forgotten one does, and the value this key used to hold was the
+# live NAS. The absence is asserted together with a marker that the file was
+# really read: an absent key is also what an empty, renamed or unreadable
+# ansible.cfg looks like, and a guard that cannot tell those apart passes for
+# the wrong reason.
+check(failures, config.match?(/^\[defaults\]$/),
+      "ansible.cfg must carry a [defaults] section for its keys to be read")
+check(failures, !config.match?(/^\s*inventory\s*=/),
+      "ansible.cfg must name no default inventory, so a forgotten -i cannot " \
+      "silently target a host")
+
+# `ansible-galaxy collection install -r requirements.yml` run from the
+# repository root fills .ansible/ with untracked files, one `git add -A` away
+# from being committed. It reads as clean only because git skips empty
+# directories.
+gitignore = File.read(File.join(ROOT, ".gitignore"))
+check(failures, gitignore.match?(/^\.ansible\/$/),
+      "gitignore must exclude the local ANSIBLE_HOME that ansible-galaxy " \
+      "fills in the repository root")
+
 ci = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"))
 ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["run"] if step.is_a?(Hash) }
