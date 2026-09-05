@@ -296,6 +296,44 @@ Markdown no lane map claims falls open to every lane rather than to none, which
 is the half a derived guard cannot catch because a run of everything satisfies
 it (#346).
 
+### CodeRabbit is green whether or not it reviewed anything
+
+CodeRabbit posts a commit status of `state: success` for reviews it declined to
+perform, and the bucket cannot express the difference: the status `description`
+is the only place it exists. Three causes were observed on 2026-09-05, two of
+them on the same commit, and they are examples rather than the whole set:
+`Review skipped: manual review required for this OSS repository`,
+`Review skipped: draft pull request`, and `Review rate limited`. The first is
+repo-wide and stays that way for as long as the repository sits below
+CodeRabbit's eligibility threshold for automatic review of open-source
+repositories, so **automatic review is off here** and no pull request is read
+unless somebody asks for it. Seventeen pull requests merged that day with a
+green CodeRabbit leg that had reviewed nothing, and every one of them read
+`pass` in the state column of `gh pr checks`.
+
+A green CodeRabbit check is therefore not evidence that a review happened. The
+description is, and while `gh pr checks` does trail it after the state, the
+statuses API is the read that cannot be skimmed past:
+
+```sh
+gh api repos/yonatankarp/nas-platform/commits/<sha>/statuses \
+  --jq '.[] | select(.context | test("coderabbit"; "i")) | "\(.state) :: \(.description)"'
+```
+
+Asking for a review means posting `@coderabbitai review` as a comment on the
+pull request, by hand. It queues behind a rate limit, so a second request made
+soon after the first waits rather than running, and a request on a draft is
+skipped until the draft is marked ready.
+
+None of this is a gate, and that is a decision rather than an oversight (#403).
+Branch protection requires nothing from CodeRabbit, a skipped review has never
+blocked a merge, and the checks that actually catch defects here are the policy
+gate, the mutation harness, the integration lanes and `validate`, all of which
+genuinely ran on those seventeen. A check that failed on a skipped review was
+considered and rejected for this repository, because it would promote a second
+opinion into a required gate; what was worth fixing was only that its absence
+read as a pass. Do not reopen it as one.
+
 ### The `static` budget, and the one way it keeps being blown
 
 `static` is expected to finish in 10–15 minutes and has blown that budget four
