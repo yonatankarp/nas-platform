@@ -50,13 +50,15 @@ vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 
 # The Usenet provider account. It belongs to a third-party subscription the
-# platform cannot mint, so these six are the one credential group an operator
-# has to bring rather than generate. SABnzbd lowercases and strips the host and
-# clamps the numbers into range, so the vault contract requires values it will
-# store unchanged -- otherwise the stored value never equals the declared one and
-# every run pushes it again. The port and connection count are strings, and the
-# TLS flag is "1" or "0", because that is SABnzbd's own wire and INI form: a
-# server flag is parsed with int(), so `true` is stored as 0.
+# platform cannot mint, so these two are the one credential group an operator
+# has to bring rather than generate. They are also the only half of the provider
+# that must not be disclosed: the host, port, connection count and TLS flag are
+# not credentials and are operator policy in `media_usenet_provider` in
+# `inventory/group_vars/all/main.yml` since #298, typed and readable without the
+# vault password, with the shape SABnzbd's parsing demands of them documented
+# beside that declaration rather than here. The two halves have to agree, so an
+# operator with no subscription leaves this pair empty and the host empty with
+# it; a host with no account and an account with no host are both refused.
 vault_downloaders_sabnzbd_server_username: example-usenet-username
 vault_downloaders_sabnzbd_server_password: example-usenet-password
 
