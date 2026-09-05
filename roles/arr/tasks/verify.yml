@@ -319,8 +319,8 @@
       {{ arr_verify_prowlarr_clients_raw |
          selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
     arr_verify_prowlarr_client_desired: >-
-      {{ acquisition_prowlarr_client_body(
-           arr_sabnzbd_client_name,
+      {{ arr_sabnzbd_client_name |
+         acquisition_prowlarr_client_body(
            arr_sabnzbd_host,
            arr_sabnzbd_port,
            vault_downloaders_sabnzbd_api_key,
