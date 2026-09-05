@@ -1209,6 +1209,15 @@ contract before editing the encrypted value:
   `tests/generate-ephemeral-vault.sh`. Keep those generator, template, and
   ephemeral-vault changes together so a newly generated platform satisfies the
   same contract.
+- When the value carries a working default in
+  `inventory/group_vars/all/main.yml` rather than being authored in the vault
+  alone, name it in the ephemeral generator's `omittable_credential_keys` as
+  well. Every existing vault omits a key on the converge after it is added, and
+  a fixture that writes it cannot catch a bug about its absence; the generator's
+  `--self-test` validates the omitting vault through the same group_vars layering
+  the poller uses, with the default stripped as a negative control.
+  `tests/policy_vault_test.rb` requires the name, so a default with no way to
+  omit it fails the gate rather than the NAS.
 - Update `docs/secrets.md` with the value's source, format, relationships,
   recovery rule, and any applicable generation recipe.
 

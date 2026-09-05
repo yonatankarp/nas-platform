@@ -253,6 +253,26 @@ check(failures,
         generator_optional_groups == %w[usenet],
       "the ephemeral generator must name one optional credential group per filter group")
 
+# And the fourth, which is #295's shape reached by the other road (#394). A key
+# the shared inventory defaults to a *working* value is one a vault may leave out
+# entirely, and a fixture that writes it can no more catch a bug about its
+# absence than the Usenet fixture could -- that absence is exactly the state a
+# real operator's vault is in on the first converge after such a key is added.
+#
+# It cannot be folded into the optional groups above, and the collision is worth
+# naming because it is what stopped a lane being added in #172's own pull
+# request. An optional group's keys are declared empty and the filter *suppresses*
+# their shape rules; a key here is missing and its derived stand-in still has to
+# *satisfy* the rule it carries. One list cannot mean both without weakening the
+# pin directly above, which stays exactly as it was. So the generator carries a
+# second list, pinned against PLATFORM_DERIVED_KEYS -- itself pinned against
+# every vault_-prefixed name in the shared inventory -- so a key defaulted there
+# cannot arrive without a generated state that omits it.
+generator_omittable_keys =
+  ephemeral_generator_source[/^omittable_credential_keys='([^']*)'$/, 1].to_s.split
+check(failures, generator_omittable_keys == PLATFORM_DERIVED_KEYS,
+      "the ephemeral generator must be able to omit every platform-derived credential")
+
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
@@ -599,7 +619,25 @@ helper_safety_evidence = {
   "undeclared vault contract" =>
     "self-test undeclared vault fell outside the shared contract",
   "undeclared group refusal" =>
-    "self-test accepted an invalid undeclared credential group list"
+    "self-test accepted an invalid undeclared credential group list",
+  # The omitted shape's own properties (#394). The first three mirror the
+  # undeclared ones -- the key really is gone, the resulting vault still
+  # converges, an unhonourable key list is refused -- and the fourth is the one
+  # the undeclared arm has no need of. An omitted key has no value in the vault,
+  # so what supplies it is the derivation in the shared inventory, and a run that
+  # passes with that derivation removed would be passing for some other reason
+  # entirely. The control has to fail *by name*: mis-wiring the fixture any of a
+  # dozen ways also exits non-zero.
+  "omitted credential absence" =>
+    "self-test omitting vault still declares an omitted credential",
+  "omitted credential contract" =>
+    "self-test omitting vault fell outside the shared contract",
+  "omitted credential negative control" =>
+    "self-test negative control accepted a vault with no value for the omitted credential",
+  "omitted credential named refusal" =>
+    "self-test negative control did not refuse the omitted credential by name",
+  "omitted key refusal" =>
+    "self-test accepted an invalid omitted credential key list"
 }
 helper_safety_evidence.each do |property, evidence|
   check(failures, ephemeral_helper.include?(evidence),
@@ -625,7 +663,25 @@ helper_guard_sources = {
   # would pass every run but the one in 3e-7 that matters.
   "Bazarr all-digit API key redraw" => "*[abcdef]*)",
   "Bazarr API key computed before the heredoc" =>
-    "radarr_api_key=$(random_api_key) || die"
+    "radarr_api_key=$(random_api_key) || die",
+  # The omission itself, and the two counts around it. Deleting the line is the
+  # easy half; proving one line was there to delete and none is left is what
+  # stops a key name that matches nothing from handing back a vault that still
+  # declares everything -- a fixture supplying the credential again, silently.
+  "omitted key declared exactly once" =>
+    '[ "$(grep -c "^$omitted_key:" "$plain" || true)" = 1 ]',
+  "omitted key line removed" => 'grep -v "^$omitted_key:" "$plain"',
+  "omitted key absence verified" =>
+    '[ "$(grep -c "^$omitted_key:" "$plain" || true)" = 0 ]',
+  # And the layering the omitted arm exists to exercise. An omitted key has no
+  # value in the vault, so validating with `-e @vault.yml` the way the undeclared
+  # arm does would prove nothing: only group_vars can supply the derivation, and
+  # only an inventory puts group_vars in play. This is the same layering
+  # scripts/production_auto_deploy.py takes on every five-minute tick.
+  "omitted vault validated through an inventory" =>
+    '-i "$omitted_inventory/local.yml"',
+  "negative control validated through an inventory" =>
+    '-i "$control_inventory/local.yml"'
 }
 helper_guard_sources.each do |property, source|
   check(failures, ephemeral_helper.include?(source),
