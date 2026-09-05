@@ -1546,8 +1546,8 @@ RUNTIME_MUTATIONS = [
 WRAPPER_MUTATIONS = [
   {
     label: "a dropped stdin redirect on the static invocation",
-    from: %(  "$argument_specs" "$environment" </dev/null\n),
-    to: %(  "$argument_specs" "$environment"\n),
+    from: %(  "$argument_specs" "$environment" "$inventory" </dev/null\n),
+    to: %(  "$argument_specs" "$environment" "$inventory"\n),
     layer: :stdin
   },
   {
