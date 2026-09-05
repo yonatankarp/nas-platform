@@ -35,8 +35,14 @@ require "tmpdir"
 require "yaml"
 
 require_relative "http_fixture_support"
+require_relative "policy_support"
+
+include TestScaffold
 
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Pinchflat contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "pinchflat.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "pinchflat-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "pinchflat-runtime.rb")
@@ -356,47 +362,47 @@ RUNTIME_ROWS = [
   {
     name: "a health endpoint answering something other than JSON",
     given: { health_body: "<html>starting</html>" },
-    expects: "Pinchflat contract failed: Pinchflat health endpoint did not answer JSON"
+    expects: "Pinchflat health endpoint did not answer JSON"
   },
   {
     name: "a health endpoint reporting an unhealthy status",
     given: { health_body: '{"status":"degraded"}' },
-    expects: "Pinchflat contract failed: Pinchflat did not report a healthy status"
+    expects: "Pinchflat did not report a healthy status"
   },
   {
     name: "a container Docker cannot inspect",
     given: { docker_exit: 1 },
-    expects: "Pinchflat contract failed: the Pinchflat container could not be inspected"
+    expects: "the Pinchflat container could not be inspected"
   },
   {
     name: "a container Docker calls unhealthy",
     given: { docker_status: "starting" },
-    expects: "Pinchflat contract failed: the Pinchflat container is not healthy"
+    expects: "the Pinchflat container is not healthy"
   },
   {
     name: "a vault that will not open",
     given: { vault_exit: 2 },
-    expects: "Pinchflat contract failed: encrypted vault could not be read"
+    expects: "encrypted vault could not be read"
   },
   {
     name: "an interface served to an anonymous request",
     given: { anonymous_status: 200 },
-    expects: "Pinchflat contract failed: Pinchflat served its interface to an anonymous request"
+    expects: "Pinchflat served its interface to an anonymous request"
   },
   {
     name: "an interface served to a wrong password",
     given: { wrong_password_status: 200 },
-    expects: "Pinchflat contract failed: Pinchflat served its interface to a wrong password"
+    expects: "Pinchflat served its interface to a wrong password"
   },
   {
     name: "an interface refusing the vault administrator",
     given: { authenticated_status: 401 },
-    expects: "Pinchflat contract failed: Pinchflat refused the vault-authored administrator"
+    expects: "Pinchflat refused the vault-authored administrator"
   },
   {
     name: "state that did not land in the declared config root",
     given: { database: false },
-    expects: "Pinchflat contract failed: Pinchflat did not persist its database in the declared config root"
+    expects: "Pinchflat did not persist its database in the declared config root"
   }
 ].freeze
 
@@ -451,21 +457,6 @@ def runtime_responder(options)
   end
 end
 
-def judge(failures, label, expects, stdout, stderr, status)
-  output = stdout + stderr
-  if expects.nil?
-    failures << "#{label}: expected success, got exit #{status.exitstatus}: #{output.strip}" unless
-      status.success?
-    return
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?(expects)
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, got #{output.strip.inspect}"
-  end
-end
-
 def static_failures(program, rows = STATIC_ROWS)
   rows.each_with_object([]) do |row, failures|
     Dir.mktmpdir("nas-platform-pinchflat-static.") do |raw|
@@ -475,7 +466,8 @@ def static_failures(program, rows = STATIC_ROWS)
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => root }, RbConfig.ruby, program, root
       )
-      judge(failures, "static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      failures.concat(judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                            prefix: DIAGNOSTIC_PREFIX))
     end
   end
 end
@@ -499,7 +491,8 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
             },
             RbConfig.ruby, program
           )
-          judge(failures, "runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+          failures.concat(judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                                prefix: DIAGNOSTIC_PREFIX))
         end,
         &runtime_responder(options)
       )

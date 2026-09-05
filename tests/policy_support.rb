@@ -457,4 +457,62 @@ module TestScaffold
     failures.each { |failure| warn "FAIL #{failure}" }
     abort "#{failures.length} #{summary}"
   end
+
+  # Judges one contract mutation case: the contract had to refuse, and it had to
+  # refuse for the reason the row named.
+  #
+  # +prefix+ is the diagnostic prefix the program under test puts in front of
+  # every refusal it authors -- "Komga contract failed: " -- and +expects+ has to
+  # appear on a line carrying it. Thirteen contract tests carried their own copy
+  # of this under seven distinct bodies, and nine of those matched +expects+
+  # anywhere in the combined output, which a Ruby backtrace, a shell diagnostic
+  # or the fragment merely echoed back in an argument all satisfy as well as a
+  # refusal does (#352). What the row now proves is provenance: the contract's
+  # own error path printed this, and nothing else can stand in for it.
+  #
+  # The fragment is looked for anywhere on that line rather than immediately
+  # after the prefix, because many of these messages name their subject first --
+  # "Seerr contract failed: viewer does not hold exactly REQUEST" -- and a row
+  # that pinned the subject too would go quiet the day the subject was
+  # parameterised differently.
+  #
+  # stdout and stderr are split before they are joined, so a stdout line with no
+  # trailing newline cannot glue itself to the front of the refusal and hide the
+  # prefix.
+  #
+  # +expects_crash+ is the one deliberate exception: a row whose refusal is an
+  # uncaught exception the program is not expected to dress up, so it claims no
+  # prefix and has to be asked for by name. It still requires the refusal to
+  # happen and to name every fragment, which is more than a prefix-less
+  # +expects+ ever asked.
+  #
+  # Returns a fresh list rather than appending to a caller's accumulator. The two
+  # signatures that shared this name -- judge(failures, label, ...) and
+  # judge(label, ...) -- differed in exactly that, and nothing but reading the
+  # body told them apart.
+  def judge(label, expects, stdout, stderr, status, prefix:, expects_crash: nil)
+    output = stdout + stderr
+    failures = []
+    if expects_crash
+      failures << "#{label}: accepted what it must refuse" if status.success?
+      Array(expects_crash).each do |fragment|
+        failures << "#{label}: did not name #{fragment}, got #{output.strip.inspect}" unless
+          output.include?(fragment)
+      end
+      return failures
+    end
+    if expects.nil?
+      failures << "#{label}: expected success, got exit #{status.exitstatus}: #{output.strip}" unless
+        status.success?
+      return failures
+    end
+
+    if status.success?
+      failures << "#{label}: accepted what it must refuse"
+    elsif (stdout.lines + stderr.lines).none? { |line| line.start_with?(prefix) && line.include?(expects) }
+      failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect} " \
+                  "under #{prefix.inspect}, got #{output.strip.inspect}"
+    end
+    failures
+  end
 end

@@ -297,6 +297,10 @@ end
 if failures.empty?
   puts "downloaders contract: Phase 1 Usenet ownership holds"
 else
-  warn failures.join("\n")
+  # Every violation, one per line, each line naming the contract that authored it.
+  # The prefix is not decoration: tests/<service>_contract_test.rb requires a row
+  # that says "this must be refused" to see it, so a Ruby backtrace or a shell
+  # diagnostic can no longer stand in for a refusal (#352).
+  warn failures.map { |failure| "Downloaders contract failed: #{failure}" }.join("\n")
   exit 1
 end

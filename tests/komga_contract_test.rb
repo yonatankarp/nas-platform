@@ -44,10 +44,15 @@ require "tmpdir"
 require "yaml"
 
 require_relative "http_fixture_support"
+require_relative "policy_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Komga contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "komga.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-runtime.rb")
@@ -150,23 +155,6 @@ def mutate_text(root, relative, pattern, replacement, occurrences: 1)
         "found #{found}" unless found == occurrences
 
   File.write(path, occurrences == 1 ? body.sub(pattern, replacement) : body.gsub(pattern, replacement))
-end
-
-def judge(failures, label, expects, stdout, stderr, status)
-  output = stdout + stderr
-  if expects.nil?
-    return if status.success?
-
-    failures << "#{label}: refused an intact fixture: #{output.strip}"
-    return
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?(expects)
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.inspect}"
-  end
 end
 
 # ---------------------------------------------------------------------------
@@ -497,7 +485,8 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
         { "PLATFORM_CONTRACT_REPO_DIR" => root },
         RbConfig.ruby, "-ryaml", program, *static_argv(root)
       )
-      judge(collected, "static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      collected.concat(judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                             prefix: DIAGNOSTIC_PREFIX))
     end
   end
   failures
@@ -877,7 +866,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
           row[:mutate_after_seed]&.call(state)
         end
         stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths, port)
-        judge(collected, label, row.fetch(:expects), stdout, stderr, status)
+        collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
+                               prefix: DIAGNOSTIC_PREFIX))
         if row[:wants] && !(stdout + stderr).include?(row.fetch(:wants))
           collected << "#{label}: did not report #{row.fetch(:wants).inspect}, " \
                        "got #{(stdout + stderr).strip.inspect}"
@@ -1074,8 +1064,8 @@ def self_read_failures(wrapper_source: File.read(CONTRACT))
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root }, contract, "static"
       )
-      judge(collected, "self-read: #{row.fetch(:name)}", row.fetch(:expects),
-            stdout, stderr, status)
+      collected.concat(judge("self-read: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                             prefix: DIAGNOSTIC_PREFIX))
     end
   end
   failures

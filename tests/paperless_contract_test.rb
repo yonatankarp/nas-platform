@@ -51,7 +51,14 @@ require "rbconfig"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
+include TestScaffold
+
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Paperless contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "paperless.sh")
 RENDER_PROGRAM = File.join(ROOT, "tests", "contracts", "paperless-render.rb")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "paperless-static.rb")
@@ -181,32 +188,6 @@ def substitute(text, from, to, count: 1)
   raise "#{from.inspect} matched #{found} times, expected #{count}" unless found == count
 
   count == 1 ? text.sub(from, to) : text.gsub(from, to)
-end
-
-def judge(label, expects, stdout, stderr, status, expects_crash: nil)
-  output = stdout + stderr
-  failures = []
-  if expects_crash
-    failures << "#{label}: accepted what it must refuse" if status.success?
-    Array(expects_crash).each do |fragment|
-      failures << "#{label}: did not name #{fragment}, got #{output.strip.inspect}" unless
-        output.include?(fragment)
-    end
-    return failures
-  end
-  if expects.nil?
-    failures << "#{label}: expected success, got exit #{status.exitstatus}: #{output.strip}" unless
-      status.success?
-    return failures
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?("Paperless contract failed: #{expects}")
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.lines.first.to_s.strip.inspect}"
-  end
-  failures
 end
 
 # --- render layer ----------------------------------------------------------
@@ -354,7 +335,7 @@ def render_failures(program = RENDER_PROGRAM, rows = RENDER_ROWS)
       *RENDER_COMMAND, program, variant
     )
     judge("render: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
-          expects_crash: row[:expects_crash])
+          prefix: DIAGNOSTIC_PREFIX, expects_crash: row[:expects_crash])
   end
 end
 
@@ -610,7 +591,7 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
         { "PLATFORM_CONTRACT_REPO_DIR" => root }, *STATIC_COMMAND, program, *arguments
       )
       judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
-            expects_crash: row[:expects_crash])
+            prefix: DIAGNOSTIC_PREFIX, expects_crash: row[:expects_crash])
     end
   end
 end
@@ -691,7 +672,7 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
       stdout, stderr, status = Open3.capture3(environment, *command)
       label = "runtime: #{row.fetch(:name)}"
       failures = judge(label, row.fetch(:expects, nil), stdout, stderr, status,
-                       expects_crash: row[:expects_crash])
+                       prefix: DIAGNOSTIC_PREFIX, expects_crash: row[:expects_crash])
       next failures unless failures.empty?
 
       if row[:reports] && !stdout.include?(row.fetch(:reports))

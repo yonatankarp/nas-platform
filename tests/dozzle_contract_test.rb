@@ -61,7 +61,14 @@ require "socket"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
+include TestScaffold
+
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Dozzle contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "dozzle.sh")
 GROUP_RENDER_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-group-render.rb")
 LABELS_PROGRAM = File.join(ROOT, "tests", "contracts", "dozzle-labels.rb")
@@ -192,24 +199,6 @@ def substitute(text, from, to, count: 1)
   raise "#{from.inspect} matched #{found} times, expected #{count}" unless found == count
 
   count == 1 ? text.sub(from, to) : text.gsub(from, to)
-end
-
-def judge(label, expects, stdout, stderr, status)
-  output = stdout + stderr
-  failures = []
-  if expects.nil?
-    failures << "#{label}: expected success, got exit #{status.exitstatus}: #{output.strip}" unless
-      status.success?
-    return failures
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?("Dozzle contract failed: #{expects}")
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.lines.first.to_s.strip.inspect}"
-  end
-  failures
 end
 
 # --- group render layer ----------------------------------------------------
@@ -396,7 +385,8 @@ def group_render_failures(program = GROUP_RENDER_PROGRAM, rows = GROUP_RENDER_RO
       *GROUP_RENDER_COMMAND, program,
       row.fetch(:stack), row.fetch(:variant), row.fetch(:group), PROBE_PORT
     )
-    judge("group render rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+    judge("group render rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+          prefix: DIAGNOSTIC_PREFIX)
   end
 end
 
@@ -444,7 +434,8 @@ def labels_failures(program = LABELS_PROGRAM, rows = LABEL_ROWS)
         RbConfig.ruby, "-r#{File.join(root, 'tests/policy_support.rb')}", program,
         *BASE_COMPOSE_FILES.map { |relative| File.join(root, relative) }
       )
-      judge("labels rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      judge("labels rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+            prefix: DIAGNOSTIC_PREFIX)
     end
   end
 end
@@ -668,7 +659,8 @@ def stack_failures(program = STACK_PROGRAM, rows = STACK_ROWS)
         *STACK_COMMAND, program,
         *STACK_ARGUMENT_VARIABLES.keys.map { |relative| File.join(root, relative) }
       )
-      judge("stack rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      judge("stack rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+            prefix: DIAGNOSTIC_PREFIX)
     end
   end
 end
@@ -852,8 +844,8 @@ def alerts_failures(program = ALERTS_PROGRAM, rows = ALERTS_ROWS)
         *ALERTS_ARGUMENT_VARIABLES.keys.map { |relative| File.join(root, relative) },
         row.fetch(:mode)
       )
-      judge("alerts under #{row.fetch(:mode)} rejects #{row.fetch(:name)}",
-            row.fetch(:expects), stdout, stderr, status)
+      judge("alerts under #{row.fetch(:mode)} rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+            prefix: DIAGNOSTIC_PREFIX)
     end
   end
 end
@@ -936,8 +928,8 @@ def planned_failures(program = PLANNED_OUTPUT_PROGRAM, rows = PLANNED_ROWS)
         argv << path
       end
       stdout, stderr, status = Open3.capture3(*argv)
-      judge("planned output rejects #{row.fetch(:name)}", row.fetch(:expects),
-            stdout, stderr, status)
+      judge("planned output rejects #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+            prefix: DIAGNOSTIC_PREFIX)
     end
   end
 end
@@ -1293,7 +1285,7 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
       env = env.merge(row.fetch(:environment, {}))
       stdout, stderr, status = Open3.capture3(env, *RUNTIME_COMMAND, program, row.fetch(:mode))
       label = "runtime under #{row.fetch(:mode)} rejects #{row.fetch(:name)}"
-      failures = judge(label, row.fetch(:expects), stdout, stderr, status)
+      failures = judge(label, row.fetch(:expects), stdout, stderr, status, prefix: DIAGNOSTIC_PREFIX)
       if (prints = row[:prints]) && failures.empty? && !stdout.include?(prints)
         failures << "#{label}: reached success without printing #{prints.inspect}"
       end
