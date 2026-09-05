@@ -1229,16 +1229,16 @@ def verification_tasks(kind)
   case kind
   when :application
     task_slice(
-      "verify.yml", "Read Prowlarr applications, indexers and download clients for verification",
-      "Read Prowlarr applications, indexers and download clients for verification"
+      "verify.yml", "Read Prowlarr applications and indexers for verification",
+      "Read Prowlarr applications and indexers for verification"
     ) + task_slice(
       "verify.yml", "Verify both Prowlarr applications use fullSync",
       "Verify both Prowlarr applications use fullSync"
     )
   when :indexer
     task_slice(
-      "verify.yml", "Read Prowlarr applications, indexers and download clients for verification",
-      "Read Prowlarr applications, indexers and download clients for verification"
+      "verify.yml", "Read Prowlarr applications and indexers for verification",
+      "Read Prowlarr applications and indexers for verification"
     ) + task_slice(
       "verify.yml", "Verify operator-owned Prowlarr indexers exist exactly once",
       "Verify operator-owned Prowlarr indexers exist exactly once"

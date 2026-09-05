@@ -6,6 +6,11 @@
 # "Usenet Download client isn't configured yet" and sends nothing anywhere,
 # which is a working search and a dead button.
 #
+# The downloaders role includes this file, not the arr role, because a download
+# client can only be written once SABnzbd answers -- the ordering
+# reconcile_download_clients.yml exists for. It is not in that file only because
+# that one loops over the Servarr instances, which Prowlarr is not one of.
+#
 # This resource needs no desired-input fingerprint of its own. The three values
 # SABnzbd masks on read-back -- the API key, the account name and its password
 # -- are the same three the `servarr_sabnzbd` digest already carries, so a
@@ -121,14 +126,17 @@
 
 - name: Reconcile the operator-owned Prowlarr download client
   ansible.builtin.uri:
-    # forceSave, because Prowlarr tests a download client while saving it and
-    # answers 400 when the test fails -- the same validation that refused the
-    # indexers until their API keys were real. SABnzbd is not running when this
-    # task executes: site.yml converges arr before downloaders, and the `arr`
-    # integration lane converges no downloaders at all, so the test would fail on
-    # ordering rather than on anything being wrong. A declared connection is
-    # state, not a claim that the far end answered; verify.yml checks the client
-    # is present and matches, and SABnzbd's own verification checks SABnzbd.
+    # forceSave narrows what Prowlarr's save-time test can refuse, and it is not
+    # what makes this write succeed: the include site is. Prowlarr tests a
+    # download client while saving it and answers 400 when that test errors, so
+    # the downloaders role includes this file after it has started SABnzbd and
+    # declared its categories -- the same reason the Servarr clients are written
+    # from there. What the flag adds is tolerance of
+    # the test's *warnings* on create (a category SABnzbd has not finished
+    # writing is one) and of the test itself on repair, so a rotation is applied
+    # even while the far end is briefly unreachable. Neither weakens the claim:
+    # downloaders/verify.yml checks the client is present and matches, and
+    # SABnzbd's own verification checks SABnzbd.
     url: >-
       {{ arr_prowlarr_api }}/downloadclient{{
          '/' ~ arr_prowlarr_client_matches[0].id

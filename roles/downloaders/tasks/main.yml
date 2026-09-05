@@ -171,6 +171,20 @@
     tasks_from: reconcile_download_clients
   when: media_usenet_enabled | bool
 
+# Prowlarr grabs a manual search result through a SABnzbd client of its own, and
+# it is written from here rather than from the arr role for the same reason the
+# Servarr ones are: creating a download client makes the Servarr API test the
+# connection, and it answers 400 when nothing is listening. SABnzbd is started
+# by this role, which converges after arr, so the arr phase is too early to
+# write any of these -- Prowlarr's included. It is a separate include because
+# reconcile_download_clients.yml loops over the Servarr instances, which Prowlarr
+# is not one of.
+- name: Reconcile the Prowlarr download client after SABnzbd startup
+  ansible.builtin.include_role:
+    name: arr
+    tasks_from: reconcile_prowlarr_download_client
+  when: media_usenet_enabled | bool
+
 - name: Report the downloader deployment
   ansible.builtin.include_role:
     name: ntfy

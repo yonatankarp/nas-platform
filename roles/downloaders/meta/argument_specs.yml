@@ -89,3 +89,6 @@ argument_specs:
       vault_arr_sonarr_api_key:
         type: str
         required: true
+      vault_arr_prowlarr_api_key:
+        type: str
+        required: true

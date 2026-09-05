@@ -454,10 +454,3 @@
     loop_var: arr_prowlarr_indexer
     label: prowlarr-operator-indexer
   no_log: true
-
-# After the indexers, because the client only matters once there is something to
-# grab, and before nothing: Prowlarr's own grabs are the last hop in the chain
-# this file reconciles.
-- name: Reconcile the operator-owned Prowlarr download client
-  ansible.builtin.include_tasks: reconcile_prowlarr_download_client.yml
-  no_log: true

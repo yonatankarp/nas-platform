@@ -222,6 +222,66 @@
   no_log: true
   tags: [platform_verify_downloaders]
 
+# Prowlarr's own client is verified here rather than with the rest of Prowlarr,
+# because it is written here: reconcile_download_clients.yml holds it for the
+# same ordering reason it holds the Servarr ones, and a check in the arr role
+# would claim a resource that role never wrote.
+- name: Read the Prowlarr download clients for downloader verification
+  ansible.builtin.uri:
+    url: "{{ arr_prowlarr_api }}/downloadclient"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_arr_prowlarr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: downloaders_prowlarr_clients_verification
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_downloaders]
+
+- name: Verify Prowlarr has one owned SABnzbd client
+  ansible.builtin.assert:
+    that:
+      - downloaders_verify_prowlarr_clients_raw is sequence
+      - downloaders_verify_prowlarr_clients_raw is not mapping
+      - downloaders_verify_prowlarr_clients_raw is not string
+      - downloaders_verify_prowlarr_client_matches | length == 1
+      - >-
+        downloaders_verify_prowlarr_client_matches[0] |
+        acquisition_prowlarr_client_projection(
+          downloaders_verify_prowlarr_client_masked_fields
+        ) ==
+        downloaders_verify_prowlarr_client_desired |
+        acquisition_prowlarr_client_projection(
+          downloaders_verify_prowlarr_client_masked_fields
+        )
+    fail_msg: >-
+      Prowlarr has no owned SABnzbd download client, or one that differs from
+      the declared connection. Without it Prowlarr answers a manual grab with
+      "Usenet Download client isn't configured yet".
+  vars:
+    downloaders_verify_prowlarr_clients_raw: >-
+      {{ downloaders_prowlarr_clients_verification.json | default([]) }}
+    downloaders_verify_prowlarr_client_matches: >-
+      {{ downloaders_verify_prowlarr_clients_raw |
+         selectattr('name', 'equalto', arr_sabnzbd_client_name) | list }}
+    downloaders_verify_prowlarr_client_desired: >-
+      {{ arr_sabnzbd_client_name |
+         acquisition_prowlarr_client_body(
+           arr_sabnzbd_host,
+           arr_sabnzbd_port,
+           vault_downloaders_sabnzbd_api_key,
+           vault_downloaders_sabnzbd_admin_username,
+           vault_downloaders_sabnzbd_admin_password,
+           arr_prowlarr_client_category
+         ) }}
+    downloaders_verify_prowlarr_client_masked_fields: >-
+      {{ downloaders_verify_prowlarr_client_matches | first | default({}) |
+         acquisition_prowlarr_client_masked_fields }}
+  no_log: true
+  tags: [platform_verify_downloaders]
+
 - name: Mark downloader relationship verification successful
   ansible.builtin.set_fact:
     downloaders_relationship_verification_succeeded: true
