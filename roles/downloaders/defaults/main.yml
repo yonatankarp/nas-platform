@@ -39,6 +39,21 @@ downloaders_sabnzbd_categories:
   audiobooks: /data/media/.acquisition/usenet/audiobooks
   comics: /data/books/.acquisition/usenet/comics
 
+# SABnzbd's per-category post-processing level, and the reason the platform sets
+# it at all. 3 is Repair/Unpack/Delete; the platform shipped 0 -- Download only
+# -- on the theory that Unpackerr owns extraction. Unpackerr cannot own it for
+# Usenet: it does no par2, so the repair blocks every release pays to download
+# were never read by anything, and it holds no archive password, so an encrypted
+# release fails with a decoder error naming neither cause. SABnzbd is the only
+# component that has both. Unpackerr stays for the torrent side, where the
+# download client genuinely does not unpack.
+#
+# The value is an integer because SABnzbd stores `pp` as one and
+# `reconcile_sabnzbd.yml` compares what it reads back; the comparison is
+# stringified on both sides so a JSON "3" and a YAML 3 do not read as a drift
+# that reconciles forever.
+downloaders_sabnzbd_category_post_processing: 3
+
 downloaders_sabnzbd_owned_misc:
   cache_limit: 256M
   direct_unpack: 0

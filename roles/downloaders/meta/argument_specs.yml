@@ -36,6 +36,9 @@ argument_specs:
       downloaders_sabnzbd_owned_misc:
         type: dict
         required: false
+      downloaders_sabnzbd_category_post_processing:
+        type: int
+        required: false
       downloaders_sabnzbd_server_name:
         type: str
         required: false
