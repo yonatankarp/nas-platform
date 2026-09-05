@@ -1102,8 +1102,11 @@ if defined?(ClassifyChanges)
         "the workflow declares #{workflow_jobs.length} jobs, expected at least six: " \
         "the derivation has stopped reading it")
   distinct_gates = gating_outputs.values.flatten.uniq
-  check(failures, distinct_gates.length >= 4,
-        "the workflow jobs are gated on #{distinct_gates.inspect}, expected at least four " \
+  # Two rather than today's four, for the reason the cross-lane floor above
+  # gives: retiring a job is allowed to lower the count, and a floor set at
+  # today's value would report that as the derivation breaking.
+  check(failures, distinct_gates.length >= 2,
+        "the workflow jobs are gated on #{distinct_gates.inspect}, expected at least two " \
         "distinct classifier outputs: the derivation has stopped reading the job gates")
 
   gating_outputs.each do |job_name, outputs|
