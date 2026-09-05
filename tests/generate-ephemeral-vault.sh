@@ -146,6 +146,75 @@ select_undeclared_credential_groups() {
   set +f
 }
 
+# Credential keys a target may legitimately leave out of its vault entirely, and
+# which this generator can therefore be asked not to write at all.
+#
+# This is a different kind of optionality from the groups above, and the
+# difference is why it needs a list of its own rather than another name in that
+# one. An optional group's keys are *declared empty*: the shared inventory
+# carries them as empty strings and `OPTIONAL_KEY_GROUPS` in
+# filter_plugins/vault_credential_schema.py suppresses their shape rules while
+# all of them are. A key here is *absent*, and what supplies it is a working
+# derived value in `inventory/group_vars/all/main.yml` that still has to satisfy
+# the very shape rule the key carries -- suppressing that rule would be a
+# weakening rather than the tolerance it describes. Folding the two into one
+# list would have to pick one of those two behaviours for both.
+#
+# tests/policy_vault_test.rb pins this list against its PLATFORM_DERIVED_KEYS,
+# which is itself pinned against every `vault_`-prefixed name in the shared
+# inventory, so a key defaulted there cannot arrive without a state that omits
+# it.
+#
+# The reason this exists at all is #295's reached by a different road (#394): a
+# fixture that writes a credential can never catch a bug about that credential's
+# absence, and absence is the state a real operator's vault is in on the first
+# converge after such a key is added. A derivation that disagreed with the rule
+# its own key carries fails roles/vault_contract before any target mutation, on
+# production_auto_deploy's five-minute tick, with the fix locked inside an
+# encrypted file only the operator can open -- #327's deadlock, and one no merge
+# can heal.
+omittable_credential_keys='vault_dozzle_alert_relay_token'
+
+# Which of them this run leaves out. Set by --omit.
+omitted_credential_keys=
+
+omittable_credential_key_known() {
+  for known_key in $omittable_credential_keys; do
+    [ "$1" != "$known_key" ] || return 0
+  done
+  return 1
+}
+
+credential_key_is_omitted() {
+  for omitted_key in $omitted_credential_keys; do
+    [ "$1" != "$omitted_key" ] || return 0
+  done
+  return 1
+}
+
+select_omitted_credential_keys() {
+  requested=$1
+  [ -n "$requested" ] || die '--omit requires at least one credential key'
+  case $requested in
+    ,*|*,|*,,*) die 'malformed omitted credential key list' ;;
+  esac
+  # Split the way select_undeclared_credential_groups splits, and for the same
+  # reason: `set -f` is what stops a key spelled `*` from reaching the
+  # known-key check as a directory listing.
+  set -f
+  for requested_key in $(printf '%s' "$requested" | tr ',' ' '); do
+    set +f
+    omittable_credential_key_known "$requested_key" ||
+      die "unknown omittable credential key: $requested_key"
+    if credential_key_is_omitted "$requested_key"; then
+      die "repeated omittable credential key: $requested_key"
+    fi
+    omitted_credential_keys="${omitted_credential_keys:+$omitted_credential_keys }$requested_key"
+    set -f
+  done
+  set +f
+}
+
 random_password() {
   openssl rand -base64 24 2>/dev/null | tr -d '\n'
 }
@@ -396,6 +465,38 @@ vault_managed_users:
       groups: []
 EOF
   chmod 0600 "$plain"
+
+  # An omitted key's line is deleted after the heredoc rather than branched
+  # inside it, and the rewrite goes through a shell variable rather than a second
+  # file. Both are forced.
+  #
+  # Every key name has to appear exactly once at the start of a line here:
+  # tests/policy_vault_test.rb reads this file as one of the vault contract's key
+  # sources and fails on a duplicate name and on a missing one alike, so the
+  # declared and omitted arms cannot each spell the key. A `grep` argument is not
+  # the start of a line, so the name stays singular while the line itself goes.
+  #
+  # And a temporary file would have to join the EXIT trap that removes the
+  # plaintext, which is pinned by that same test as one exact string. A variable
+  # is also the smaller exposure: the plaintext already exists in a 0600 file
+  # inside a 0700 directory, and this adds no second copy on disk.
+  #
+  # The count is asserted on both sides of the rewrite. A key name that matched
+  # nothing -- a typo, or a key the heredoc stopped writing -- would otherwise
+  # delete no line and hand back a vault that still declares everything, which is
+  # precisely the fixture-supplies-the-credential failure this flag exists to
+  # avoid.
+  for omitted_key in $omitted_credential_keys; do
+    [ "$(grep -c "^$omitted_key:" "$plain" || true)" = 1 ] ||
+      die "vault does not declare the omitted credential key exactly once: $omitted_key"
+    remaining_plain=$(grep -v "^$omitted_key:" "$plain") ||
+      die "failed to omit the credential key: $omitted_key"
+    printf '%s\n' "$remaining_plain" > "$plain"
+    remaining_plain=
+    [ "$(grep -c "^$omitted_key:" "$plain" || true)" = 0 ] ||
+      die "failed to omit the credential key: $omitted_key"
+  done
+
   ansible-vault encrypt --vault-password-file "$password_file" \
     --output "$output" "$plain" >/dev/null 2>&1 || die 'failed to encrypt ephemeral vault'
   chmod 0600 "$output"
@@ -415,11 +516,61 @@ cleanup_vault() {
   rmdir -- "$directory" >/dev/null 2>&1 || die 'failed to remove the empty vault directory'
 }
 
+# Assemble the inventory a vault with an omitted credential has to be validated
+# through: the committed shared inventory, a copy of the inventory file
+# scripts/production_auto_deploy.py runs validate-vault.yml against, and the
+# still-encrypted vault installed where group_vars finds it. That layering is the
+# whole point -- an omitted key has no value in the vault, so only
+# inventory/group_vars/all/main.yml can supply one, and a `-e @vault.yml` run
+# never consults it.
+#
+# Nothing plaintext lands here: the vault stays encrypted, its password file
+# stays in the validated vault directory, and the shared inventory is committed
+# in the clear. That is why this is an ordinary temporary directory rather than
+# one validate_owned_directory guards.
+#
+# A non-empty third argument names a derived default to strip, which is how the
+# negative control is built. The source is required to carry it exactly once, so
+# a renamed or removed derivation is reported here rather than producing a
+# control that strips nothing and refuses for some other reason.
+install_validation_inventory() {
+  validation_inventory_directory=$1
+  validation_vault_file=$2
+  validation_stripped_key=$3
+  mkdir -p "$validation_inventory_directory/group_vars/all"
+  cp -- "$repo_dir/inventory/local.yml" "$validation_inventory_directory/local.yml"
+  if [ -n "$validation_stripped_key" ]; then
+    [ "$(grep -c "^$validation_stripped_key:" \
+      "$repo_dir/inventory/group_vars/all/main.yml" || true)" = 1 ] ||
+      die 'the shared inventory does not derive the omitted credential exactly once'
+    grep -v "^$validation_stripped_key:" \
+      "$repo_dir/inventory/group_vars/all/main.yml" \
+      > "$validation_inventory_directory/group_vars/all/main.yml" ||
+      die 'failed to strip the derived default from the shared inventory'
+  else
+    cp -- "$repo_dir/inventory/group_vars/all/main.yml" \
+      "$validation_inventory_directory/group_vars/all/main.yml"
+  fi
+  cp -- "$validation_vault_file" \
+    "$validation_inventory_directory/group_vars/all/vault.yml"
+  chmod 0600 "$validation_inventory_directory/group_vars/all/vault.yml"
+}
+
 self_test_fixture_directory=
+self_test_inventory_directory=
 self_test_trap_marker=
 self_test_cleanup_on_exit() {
   self_test_exit_status=$?
   trap - EXIT HUP INT TERM
+  # The validation inventory holds no plaintext -- an encrypted vault and two
+  # committed files -- so it is removed outright rather than through
+  # cleanup_vault, whose refusals are about credential material. It is still
+  # removed on the failure path, because a self-test that leaves a tree behind
+  # when it dies is one nobody can run twice.
+  if [ -n "$self_test_inventory_directory" ] &&
+     [ -d "$self_test_inventory_directory" ]; then
+    rm -rf -- "$self_test_inventory_directory"
+  fi
   if [ -n "$self_test_fixture_directory" ] &&
      [ -d "$self_test_fixture_directory" ] &&
      ! cleanup_vault "$self_test_fixture_directory" >/dev/null 2>&1; then
@@ -499,6 +650,88 @@ self_test() {
   self_test_fixture_directory=
   trap - EXIT HUP INT TERM
 
+  # The omitted shape (#394). It is not the undeclared one above: that key is
+  # present and empty, this one is absent, and the value that stands in for it is
+  # a *working* derivation in inventory/group_vars/all/main.yml rather than a
+  # suppressed rule. So the arm above cannot prove it -- it validates with no
+  # group_vars in play, which is exactly the layer an omitted key depends on.
+  #
+  # Every omittable key is walked rather than one named here, because a second
+  # derived default deserves the same proof and a list spelled twice is a list
+  # that drifts.
+  #
+  # Both temporary trees are made here rather than in the subshell below, for a
+  # reason worth stating because it is invisible until a run fails: a `( )`
+  # subshell gets its own copy of the shell's variables, so a directory named to
+  # the exit handler from inside one is a directory the *caller's* handler never
+  # sees. The first draft of this arm did exactly that and leaked its inventory
+  # tree on every failing run. The vault directory is still created last and
+  # armed on the very next line, because it is the one that comes to hold
+  # credential material; the inventory root holds none.
+  for omittable_key in $omittable_credential_keys; do
+    omitted_inventory_root=$(mktemp -d \
+      "$temporary_parent_input/nas-platform-vault-inventory.XXXXXX")
+    self_test_inventory_directory=$omitted_inventory_root
+    omitted_directory=$(mktemp -d "$temporary_parent_input/nas-platform-vault.XXXXXX")
+    self_test_fixture_directory=$omitted_directory
+    trap self_test_cleanup_on_exit EXIT
+    trap 'exit 130' HUP INT TERM
+    (
+      omitted_inventory="$omitted_inventory_root/omitted"
+      control_inventory="$omitted_inventory_root/control"
+      "$0" --omit "$omittable_key" \
+        --output "$omitted_directory/vault.yml" \
+        --password-file "$omitted_directory/password" ||
+        die 'self-test could not generate a vault omitting a derived credential'
+      omitted_view=$(ansible-vault view \
+        --vault-password-file "$omitted_directory/password" \
+        "$omitted_directory/vault.yml" 2>/dev/null) ||
+        die 'self-test could not decrypt the omitting vault'
+      if printf '%s\n' "$omitted_view" | grep -q "^$omittable_key:"; then
+        die 'self-test omitting vault still declares an omitted credential'
+      fi
+      omitted_view=
+
+      install_validation_inventory "$omitted_inventory" \
+        "$omitted_directory/vault.yml" ''
+      ansible-playbook -i "$omitted_inventory/local.yml" \
+        "$repo_dir/validate-vault.yml" \
+        --vault-password-file "$omitted_directory/password" \
+        -e platform_vault_file="$omitted_directory/vault.yml" \
+        >/dev/null 2>&1 ||
+        die 'self-test omitting vault fell outside the shared contract'
+
+      # The negative control, and the half that makes the row above evidence
+      # rather than luck. With the derivation stripped the same vault must fail,
+      # and it must fail by *naming* the key nothing can supply: every way of
+      # mis-wiring this sandbox -- a password file that does not open the vault,
+      # an inventory that resolves to nothing, filter plugins that never loaded
+      # -- also exits non-zero, so a status check alone cannot tell a real
+      # refusal from a broken fixture, and the row above would then be the only
+      # thing actually asserted.
+      install_validation_inventory "$control_inventory" \
+        "$omitted_directory/vault.yml" "$omittable_key"
+      control_status=0
+      control_output=$(ansible-playbook -i "$control_inventory/local.yml" \
+        "$repo_dir/validate-vault.yml" \
+        --vault-password-file "$omitted_directory/password" \
+        -e platform_vault_file="$omitted_directory/vault.yml" 2>&1) ||
+        control_status=$?
+      [ "$control_status" -ne 0 ] ||
+        die 'self-test negative control accepted a vault with no value for the omitted credential'
+      case $control_output in
+        *"missing required arguments: $omittable_key"*) ;;
+        *) die 'self-test negative control did not refuse the omitted credential by name' ;;
+      esac
+      control_output=
+      cleanup_vault "$omitted_directory"
+    )
+    self_test_fixture_directory=
+    rm -rf -- "$omitted_inventory_root"
+    self_test_inventory_directory=
+    trap - EXIT HUP INT TERM
+  done
+
   refusal_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
   # Each malformed list is quoted so the trailing and leading commas read as
   # part of the value rather than as separators a reader has to squint at.
@@ -512,6 +745,25 @@ self_test() {
       die 'self-test undeclared-group refusal left credential material'
   done
   cleanup_vault "$refusal_directory"
+
+  # The same five malformed shapes for --omit, spelled through the list rather
+  # than with the key written out, so a renamed key cannot leave this loop
+  # refusing a name nothing offers any more. A key list the generator cannot
+  # honour has to be refused rather than silently standing everything in, which
+  # is the failure the flag exists to prevent.
+  omit_refusal_key=${omittable_credential_keys%% *}
+  omit_refusal_directory=$(mktemp -d "$temporary_parent/nas-platform-vault.XXXXXX")
+  for refused_keys in '' unknown-key "$omit_refusal_key,$omit_refusal_key" \
+      "$omit_refusal_key," ",$omit_refusal_key"; do
+    if "$0" --omit "$refused_keys" \
+        --output "$omit_refusal_directory/vault.yml" \
+        --password-file "$omit_refusal_directory/password" >/dev/null 2>&1; then
+      die 'self-test accepted an invalid omitted credential key list'
+    fi
+    [ -z "$(find "$omit_refusal_directory" -mindepth 1 -maxdepth 1 -print -quit)" ] ||
+      die 'self-test omitted-key refusal left credential material'
+  done
+  cleanup_vault "$omit_refusal_directory"
 
   validation_parent=$(mktemp -d "$temporary_parent/nas-platform-vault-validation.XXXXXX")
   validation_tools=$(mktemp -d "$temporary_parent/nas-platform-vault-validation-tools.XXXXXX")
@@ -709,6 +961,12 @@ case ${1:-} in
     select_undeclared_credential_groups "$2"
     generate_vault "$4" "$6"
     ;;
+  --omit)
+    [ "$#" -eq 6 ] && [ "$3" = --output ] && [ "$5" = --password-file ] ||
+      die 'usage: generate-ephemeral-vault.sh --omit KEY[,KEY] --output PATH --password-file PATH'
+    select_omitted_credential_keys "$2"
+    generate_vault "$4" "$6"
+    ;;
   --cleanup)
     [ "$#" -eq 2 ] || die 'usage: generate-ephemeral-vault.sh --cleanup DIRECTORY'
     cleanup_vault "$2"
@@ -718,6 +976,6 @@ case ${1:-} in
     self_test
     ;;
   *)
-    die 'usage: generate-ephemeral-vault.sh [--undeclared GROUP[,GROUP]] --output PATH --password-file PATH | --cleanup DIRECTORY | --self-test'
+    die 'usage: generate-ephemeral-vault.sh [--undeclared GROUP[,GROUP] | --omit KEY[,KEY]] --output PATH --password-file PATH | --cleanup DIRECTORY | --self-test'
     ;;
 esac
