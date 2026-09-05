@@ -264,9 +264,19 @@ bumping a number here.
 
 ## CI
 
-`.github/workflows/ci.yml` classifies the diff with
-`tests/ci/classify_changes.rb` into a `static` job and a matrix of integration
-`suites`, then `tests/ci/validate_results.rb` decides pass/fail across all legs.
+`.github/workflows/ci.yml` classifies the diff in its `changes` job with
+`tests/ci/classify_changes.rb`, and every job but the last is gated on one of
+that job's outputs; `validate` runs under `if: always()` and lets
+`tests/ci/validate_results.rb` decide pass/fail across all legs.
+
+Jobs: `changes static docs mutation reconciliation toolchain suites validate`
+
+Read that roster before adding a check anywhere. `static` is the policy gate,
+but `docs` and `mutation` are checks that were carved out of it for the budget
+reasons below, so the gate is three jobs rather than the one this section used to
+describe; `reconciliation` and `suites` are matrices, so each contributes a leg
+per matrix entry rather than a single check.
+
 A pull request classifies its own base/head diff; a push to `main` classifies
 the merge it just landed — `github.event.before`, falling back to the first
 parent — rather than sweeping the whole repository a second time against a tree
