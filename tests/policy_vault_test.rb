@@ -889,8 +889,30 @@ if redaction_whole_tree
         "#{(pinned_assertions - observed_assertions).map { |entry| entry.join(': ') }.join('; ')}")
 end
 
-repository_vault_nas_references = Dir[File.join(ROOT, "{inventory,roles,templates,tests}", "**", "*")]
-                                  .select { |path| File.file?(path) }
+VAULT_NAS_TREES = %w[inventory roles templates tests].freeze
+nas_coordinate_scan = VAULT_NAS_TREES.to_h do |tree|
+  [tree, Dir[File.join(ROOT, tree, "**", "*")].select { |path| File.file?(path) }]
+end
+# The assertion below is that the sweep found nothing, so an empty sweep is
+# indistinguishable from a clean tree and this is the only thing standing
+# between the two. Per tree first, because a renamed tree is the failure the
+# glob's brace expansion cannot report -- `templates/` holds a single file, so
+# there is no useful per-tree number above one -- and then a total, which is
+# what a tree collapsing rather than disappearing looks like.
+#
+# 100 is sized against the mutation fixture, not the tree. The harness copies a
+# curated subset of the repository into its sandbox, where these four trees hold
+# 275 files against the tree's 497, and every mutation runs this script there;
+# a floor sized to the tree would fail every one of them for a reason that has
+# nothing to do with the mutation under test.
+VAULT_NAS_TREES.each do |tree|
+  check_floor(failures, nas_coordinate_scan.fetch(tree).length, 1,
+              "the vault_nas_ leak sweep of #{tree}/ matched no file")
+end
+check_floor(failures, nas_coordinate_scan.values.sum(&:length), 100,
+            "the vault_nas_ leak sweep read too few files across #{VAULT_NAS_TREES.join(', ')}")
+
+repository_vault_nas_references = nas_coordinate_scan.values.flatten
                                   .filter_map do |path|
   relative = path.delete_prefix("#{ROOT}/")
   next if %w[tests/policy_test.rb tests/policy_manifest_test.rb].include?(relative)

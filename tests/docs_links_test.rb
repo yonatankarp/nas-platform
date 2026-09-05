@@ -7,8 +7,11 @@ require "tmpdir"
 require "uri"
 require "yaml"
 
+require_relative "policy_support"
+
 ROOT = Pathname.new(File.expand_path("..", __dir__))
-SOURCES = [ROOT.join("README.md"), *ROOT.join("docs").glob("**/*.md")].freeze
+DOCS_SOURCES = ROOT.join("docs").glob("**/*.md").freeze
+SOURCES = [ROOT.join("README.md"), *DOCS_SOURCES].freeze
 NUMBER_WORDS = %w[
   zero one two three four five six seven eight nine ten eleven twelve thirteen
   fourteen fifteen sixteen seventeen eighteen nineteen twenty
@@ -847,6 +850,18 @@ if ARGV == ["--self-test"]
   self_test
 else
   failures = check_sources(ROOT, SOURCES)
+  # The floor belongs here rather than in check_sources: the self-test drives
+  # that helper one synthetic document at a time and compares an exact failure
+  # count, so a floor inside it would fail every case.
+  #
+  # documentation_contracts below pins about ten documents by path, which is why
+  # this is the mildest of the four sweeps -- but every document it does not name
+  # is checked for broken links only by this glob, so a relocated docs/ tree
+  # still passes for all of them. 40 against today's 79 under docs/: the tree has
+  # only grown, and halving it is a restructuring rather than the churn of
+  # retiring a page.
+  TestScaffold.check_floor(failures, DOCS_SOURCES.length, 40,
+                           "the documentation link sweep found too few documents under docs/")
   documentation_contracts = {
     "README.md" => {
       /manifest.*fifteen implemented service projects.*no planned (?:media-)?acquisition projects/im =>
