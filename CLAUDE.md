@@ -312,8 +312,12 @@ green CodeRabbit leg that had reviewed nothing, and every one of them read
 `pass` in the state column of `gh pr checks`.
 
 A green CodeRabbit check is therefore not evidence that a review happened. The
-description is, and while `gh pr checks` does trail it after the state, the
-statuses API is the read that cannot be skimmed past:
+description is the only field that says which it was, and nothing acts on it:
+`gh pr checks` does print it, in the trailing column of its table and under
+`--json description`, but beside a state that reads `pass`, and every consumer
+that decides anything reads the state instead. `--watch` exits zero, the pull
+request shows a tick, and a merge is not held up. So read the description on
+purpose rather than expecting it to stop you:
 
 ```sh
 gh api repos/yonatankarp/nas-platform/commits/<sha>/statuses \
@@ -327,9 +331,9 @@ skipped until the draft is marked ready.
 
 None of this is a gate, and that is a decision rather than an oversight (#403).
 Branch protection requires nothing from CodeRabbit, a skipped review has never
-blocked a merge, and the checks that actually catch defects here are the policy
-gate, the mutation harness, the integration lanes and `validate`, all of which
-genuinely ran on those seventeen. A check that failed on a skipped review was
+blocked a merge, and the checks that actually catch defects here are the
+`static` gate, the `mutation` harness, the integration suites and `validate`,
+all of which genuinely ran on those seventeen. A check that failed on a skipped review was
 considered and rejected for this repository, because it would promote a second
 opinion into a required gate; what was worth fixing was only that its absence
 read as a pass. Do not reopen it as one.
