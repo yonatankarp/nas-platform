@@ -108,6 +108,27 @@ vault_downloaders_sabnzbd_server_password: ""
 # rotating this one alone means authoring it in the vault, where it wins.
 vault_dozzle_alert_relay_token: "{{ ('nas-platform:dozzle-alert-relay:v1:' ~ vault_ntfy_dozzle_token) | hash('sha256') }}"
 
+# The two ntfy topics read by a play that does not run the ntfy role, and the
+# reason they are here rather than in roles/ntfy/defaults/main.yml: role defaults
+# are play-scoped, and install-production-auto-deploy.yml lists
+# production_auto_deploy and image_prune only. In that play the ntfy role's
+# defaults do not exist, so a `| default('nas-critical')` in the poller's
+# configuration template was not a fallback but the operative value (#345).
+#
+# That matters because the same two names decide an ACL: the deploy publisher in
+# roles/ntfy/defaults/main.yml is granted exactly these topics, so renaming one
+# there moved the grant to the new name while the poller and the prune kept
+# POSTing to the old one, which the deploy account no longer had. The publishers
+# stop on a 403 they swallow, and the only out-of-band alarm channel of a host
+# that deploys itself goes quiet without failing a deployment.
+#
+# This is the only home for the two values. Every role that reads them declares
+# them required rather than defaulting them a second time where group_vars would
+# always win, so a rename here moves the grant and every publisher together and
+# a topic nothing declares fails the run by name.
+ntfy_topic: nas-critical
+ntfy_deployment_topic: nas-deployment
+
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home
 # for the three values; the role declares them required rather than defaulting them

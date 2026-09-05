@@ -24,12 +24,19 @@ argument_specs:
         required: false
       ntfy_topic:
         type: str
-        required: false
-        description: Topic for anything that should get a human out of their chair.
+        required: true
+        description: >-
+          Topic for anything that should get a human out of their chair. Required
+          rather than defaulted in this role: it is declared in
+          inventory/group_vars/all/main.yml because plays that never run this
+          role publish to it, and the publisher grants below are derived from the
+          same name (#345).
       ntfy_deployment_topic:
         type: str
-        required: false
-        description: Topic for the routine deployment record.
+        required: true
+        description: >-
+          Topic for the routine deployment record, declared in the same place and
+          required for the same reason.
       ntfy_containers_topic:
         type: str
         required: false
@@ -122,8 +129,10 @@ argument_specs:
         required: false
       ntfy_deployment_topic:
         type: str
-        required: false
-        description: Topic for the routine deployment record.
+        required: true
+        description: >-
+          Topic for the routine deployment record; declared in
+          inventory/group_vars/all/main.yml.
       vault_ntfy_deploy_token:
         type: str
         required: true
@@ -177,8 +186,10 @@ argument_specs:
         required: false
       ntfy_deployment_topic:
         type: str
-        required: false
-        description: Topic for the routine deployment record.
+        required: true
+        description: >-
+          Topic for the routine deployment record; declared in
+          inventory/group_vars/all/main.yml.
       vault_ntfy_deploy_token:
         type: str
         required: true

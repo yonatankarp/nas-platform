@@ -35,4 +35,4 @@ beszel_alerts:
 # Shoutrrr URL. Built from the ntfy token in vault so the alerting chain has one
 # source rather than a value copied between two web interfaces.
 beszel_notification_url: >-
-  ntfy://:{{ vault_ntfy_beszel_token }}@{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}/{{ ntfy_topic | default('nas-critical') }}?scheme=http
+  ntfy://:{{ vault_ntfy_beszel_token }}@{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}/{{ ntfy_topic }}?scheme=http

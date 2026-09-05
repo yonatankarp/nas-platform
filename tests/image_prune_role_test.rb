@@ -19,6 +19,11 @@ include TestScaffold
 ROLE_TASKS = File.join(ROOT, "roles/image_prune/tasks/main.yml")
 PRUNE_SOURCE = File.join(ROOT, "scripts/image_prune.py")
 TOKEN = "tk_#{'r' * 29}"
+# Deliberately not the deployed topics: rendering with names the repository
+# never contains proves the configuration reads the declared variables rather
+# than a fallback that happens to agree with them today (#345).
+SENTINEL_CRITICAL = "sentinel-critical"
+SENTINEL_DEPLOYMENT = "sentinel-deployment"
 
 # Deliberately restated rather than derived from the script: this list is the
 # drift screen. A field added to image_prune.py's Config without a matching key
@@ -209,6 +214,11 @@ Dir.mktmpdir("image-prune-role") do |root|
     "-e", "image_prune_home=#{home}",
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
     "-e", "image_prune_external_scheduler=true",
+    # Supplied the way the platform supplies them -- as inventory variables the
+    # role declares required. This synthetic inventory is not inventory/local.yml
+    # and nothing else here would define them, which is the point.
+    "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
+    "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
   ]
   output, status = Open3.capture2e(environment, *arguments)
   check(failures, status.success?, "the role must converge: #{output.lines.last(12).join}")
@@ -235,6 +245,14 @@ Dir.mktmpdir("image-prune-role") do |root|
           "missing=#{(CONFIG_KEYS - config.keys).inspect}")
     check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
           "the non-secret configuration must never contain the ntfy token")
+    # The prune publishes as the deploy account too, so its topics have to come
+    # from the same declaration the grant is derived from rather than from a
+    # fallback in a play the ntfy role is absent from (#345).
+    check(failures, config["ntfy_topic_critical"] == SENTINEL_CRITICAL &&
+                    config["ntfy_topic_deployment"] == SENTINEL_DEPLOYMENT,
+          "the configuration must render the declared topics, got " \
+          "#{config['ntfy_topic_critical'].inspect} and " \
+          "#{config['ntfy_topic_deployment'].inspect}")
 
     # The prune runs with a narrow PATH from cron, so the installer must record
     # where the tools really are rather than assuming /usr/bin.
@@ -309,6 +327,29 @@ Dir.mktmpdir("image-prune-role") do |root|
           "reviewing an installed host must predict no change: " \
           "#{review_output.lines.last(3).join}")
   end
+
+  # And the refusal a fallback used to swallow: with no topic declared the role
+  # must stop and name the variable rather than schedule a prune that publishes
+  # where the deploy account may not write. Check mode is enough, because the
+  # argument spec is validated before the role's first task.
+  undeclared = []
+  index = 0
+  while index < arguments.length
+    if arguments[index] == "-e" &&
+       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=")
+      index += 2
+      next
+    end
+    undeclared << arguments[index]
+    index += 1
+  end
+  refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
+  check(failures, !refusal_status.success? &&
+        refusal_output.include?("missing required arguments") &&
+        refusal_output.include?("ntfy_topic") &&
+        refusal_output.include?("ntfy_deployment_topic"),
+        "the role must refuse to schedule a prune when no topic is declared, " \
+        "naming the variable: #{refusal_output.lines.last(8).join}")
 end
 
 if failures.empty?
