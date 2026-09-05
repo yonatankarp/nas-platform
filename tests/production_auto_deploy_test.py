@@ -1738,6 +1738,191 @@ class PollBlindnessTest(PollerTestCase):
         )
 
 
+    def test_the_count_and_the_marker_cannot_disagree_across_a_crashed_write(self):
+        """#401: two facts that must agree, stored so that they could disagree.
+
+        read_blind_polls reports 0 for a count file it cannot parse, and the
+        blind-alarm marker persists independently of it. An empty count file
+        beside an announced marker is therefore the one combination that
+        silences the rest of an outage: the count climbs back to the threshold
+        and finds the marker already set. The truncating write this poller used
+        to do produced exactly that file, which is what the control below
+        shows; the atomic one cannot.
+        """
+
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            self.blind_poll(config)
+        self.assertTrue(production_auto_deploy.read_blind_alarm(config))
+        count_path = config.state_root / "blind-polls"
+        seen = []
+        real_fdopen = os.fdopen
+
+        def watching_fdopen(descriptor, *arguments, **keywords):
+            # Whatever is on disk here is whatever a crash here would leave.
+            seen.append(count_path.read_bytes())
+            return real_fdopen(descriptor, *arguments, **keywords)
+
+        with mock.patch("os.fdopen", watching_fdopen):
+            production_auto_deploy._write_blind_polls(config, 4)
+
+        count_path.write_bytes(seen[0])
+        self.assertEqual(production_auto_deploy.read_blind_polls(config), 3)
+        self.assertTrue(production_auto_deploy.read_blind_alarm(config))
+
+    def test_the_pre_354_write_could_strand_the_marker(self):
+        """The negative control, carried through to the silence it caused.
+
+        The same instrument against the body #354 replaced yields an empty
+        count file, and the rest of this test is the consequence: three further
+        blind polls, which is the whole threshold again, announce nothing.
+        """
+
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            self.blind_poll(config)
+        count_path = config.state_root / "blind-polls"
+        seen = []
+        real_fdopen = os.fdopen
+
+        def legacy_write(path, payload):
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            seen.append(count_path.read_bytes())
+            with real_fdopen(descriptor, "wb") as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+
+        with mock.patch.object(production_auto_deploy, "_write_private", legacy_write):
+            production_auto_deploy._write_blind_polls(config, 4)
+
+        self.assertEqual(seen[0], b"")
+        count_path.write_bytes(seen[0])
+        self.assertEqual(production_auto_deploy.read_blind_polls(config), 0)
+        self.assertTrue(production_auto_deploy.read_blind_alarm(config))
+
+        announced = []
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            announced.extend(self.blind_poll(config))
+        self.assertEqual(announced, [])
+
+    def test_the_marker_is_cleared_before_the_count_is_zeroed(self):
+        """Recovery writes two files, and only one order of them is safe.
+
+        Zeroing the count first would leave a window whose contents are the
+        #401 pair -- a count of 0 beside an announced marker -- reachable
+        without any torn write at all, just a crash between two writes that
+        each landed whole. Clearing the marker first leaves the opposite pair,
+        which costs a duplicate alarm and never a missing one. The order is
+        load-bearing, so it is pinned rather than left to line order.
+        """
+
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            self.blind_poll(config)
+        written = []
+        real_write = production_auto_deploy._write_private
+
+        def recording_write(path, payload):
+            written.append(Path(path).name)
+            real_write(path, payload)
+
+        with mock.patch.object(
+            production_auto_deploy, "_write_private", recording_write
+        ):
+            self.seeing_poll(config)
+
+        self.assertEqual(written, ["blind-alarm", "blind-polls"])
+
+
+class PrivateWriteTest(PollerTestCase):
+    """State the poller must not lose, written so a crash cannot lose it.
+
+    Every fact the poller keeps between polls goes through _write_private: the
+    attempted record, the last successful revision, the CI refusal marker, and
+    the blind-poll pair whose disagreement #401 is about. Before #354 the write
+    truncated the target in place, so the whole window between the truncation
+    and the write was a window in which the record simply was not there.
+
+    The instrument below is the honest one for that claim: what a reader finds
+    on disk at the instant the payload is being written is exactly what a crash
+    at that instant would leave behind. Every assertion here is paired with the
+    same assertion against the pre-#354 body, which is kept in this file for
+    that purpose -- a passing test is only evidence if the same test fails on
+    the code it replaced.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.target = self.root / ".local/share/nas-platform/state/record"
+        self.target.write_bytes(b"5\n")
+        self.target.chmod(0o600)
+
+    @staticmethod
+    def legacy_write(path, payload):
+        """scripts/production_auto_deploy.py's _write_private before #354."""
+
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def content_while_writing(self, writer, payload=b"6\n"):
+        """What is on disk at the moment the payload is handed to the kernel."""
+
+        seen = []
+        real_fdopen = os.fdopen
+
+        def watching_fdopen(descriptor, *arguments, **keywords):
+            seen.append(self.target.read_bytes())
+            return real_fdopen(descriptor, *arguments, **keywords)
+
+        with mock.patch("os.fdopen", watching_fdopen):
+            writer(self.target, payload)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_the_previous_payload_is_whole_until_the_new_one_lands(self):
+        self.assertEqual(
+            self.content_while_writing(production_auto_deploy._write_private), b"5\n"
+        )
+        self.assertEqual(self.target.read_bytes(), b"6\n")
+
+    def test_the_pre_354_write_had_already_discarded_it(self):
+        """The negative control: the same instrument, the body #354 replaced."""
+
+        self.assertEqual(self.content_while_writing(self.legacy_write), b"")
+
+    def test_a_pre_existing_loose_mode_target_is_repaired(self):
+        """os.open's mode applies only at creation, so an existing file kept its own."""
+
+        self.target.chmod(0o644)
+
+        production_auto_deploy._write_private(self.target, b"6\n")
+
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o600)
+
+    def test_the_pre_354_poller_left_a_loose_mode_alone(self):
+        """The negative control for the half the prune's copy had and this one lacked."""
+
+        self.target.chmod(0o644)
+
+        self.legacy_write(self.target, b"6\n")
+
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o644)
+
+    def test_a_failed_replacement_leaves_neither_a_loss_nor_a_temporary_file(self):
+        with mock.patch("os.replace", side_effect=OSError("no space")):
+            with self.assertRaises(OSError):
+                production_auto_deploy._write_private(self.target, b"6\n")
+
+        self.assertEqual(self.target.read_bytes(), b"5\n")
+        self.assertEqual(
+            sorted(entry.name for entry in self.target.parent.iterdir()), ["record"]
+        )
+
+
 class PollCiRefusalTest(PollerTestCase):
     """A revision CI refuses stops every deployment, so it must be announced."""
 

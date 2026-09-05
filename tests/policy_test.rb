@@ -1837,4 +1837,59 @@ check(failures, !launcher_source.include?(%(sh -eu -c ")),
       "tests/integration.sh: the controller is a program again pasted into an " \
       "sh -c argument, where no syntax check or linter can read it")
 
+
+# scripts/production_auto_deploy.py and scripts/image_prune.py are two
+# self-sufficient single-file programs, and that is structural rather than an
+# oversight: each is installed on the NAS by an ansible.builtin.copy of exactly
+# one file, so a shared module would be a second file that must land too, and a
+# script that arrived without it would die at import -- before any handler could
+# report it, on every five-minute tick, with no merge able to heal the host.
+# services/dozzle/alert_relay.py mirrors the same helpers from inside a
+# container, where a module in the deploy account's home is not reachable at
+# all. So the duplication stays.
+#
+# Divergence is the part that does not have to. The two copies of _write_private
+# drifted in opposite directions until one fsynced and never repaired the mode
+# while the other repaired the mode and never fsynced, each carrying the bug the
+# other had fixed (#354). Compared as text here, so re-divergence fails in the
+# fast loop rather than on the NAS.
+private_write_sources = Dir.glob(File.join(ROOT, "scripts/*.py")).sort.select do |path|
+  File.read(path).include?("\ndef _write_private(")
+end
+check_floor(failures, private_write_sources.length, 2,
+            "scripts defining _write_private")
+private_write_bodies = private_write_sources.to_h do |path|
+  lines = File.readlines(path, chomp: true)
+  opening = lines.index { |line| line.start_with?("def _write_private(") }
+  body = [lines[opening]]
+  # A top-level definition ends at the next line that is neither blank nor
+  # indented, which is the next top-level statement.
+  lines[(opening + 1)..].each do |line|
+    break if !line.empty? && !line.start_with?(" ", "\t")
+
+    body << line
+  end
+  [File.basename(path), body.join("\n").rstrip]
+end
+private_write_bodies.each do |name, body|
+  # Both halves of the extraction, because an extractor that stopped at the
+  # first blank line and one that ran on into the next definition would each
+  # compare equal to itself across the two files and prove nothing.
+  check(failures, body.lines.length >= 20,
+        "scripts/#{name}: _write_private extracted as #{body.lines.length} lines, " \
+        "too few to be the definition -- the extractor stopped early")
+  check(failures, body.scan(/^def /).length == 1,
+        "scripts/#{name}: the _write_private extraction ran past the definition " \
+        "into #{body.scan(/^def .*/).drop(1).inspect}")
+  check(failures, body.include?("os.replace("),
+        "scripts/#{name}: _write_private must replace the target rather than " \
+        "truncate it in place; a crash in that window loses the record (#401)")
+end
+check(failures, private_write_bodies.values.uniq.length == 1,
+      "every script must define _write_private identically, and " \
+      "#{private_write_bodies.keys.inspect} do not. They diverged once into a " \
+      "copy that fsynced and a copy that repaired the mode, and each then " \
+      "carried the bug the other had fixed")
+
+
 report(failures, "policy: all properties hold", "policy violation(s)")

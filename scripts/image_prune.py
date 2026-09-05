@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 import time
 from typing import Iterator
 
@@ -265,10 +266,49 @@ def _timestamp(now: datetime | None = None) -> str:
 
 
 def _write_private(path: Path, payload: bytes) -> None:
-    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "wb") as sink:
-        sink.write(payload)
-    os.chmod(path, 0o600)
+    """Replace path's contents atomically, at mode 0600.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions so it stays that way.
+    They diverged once, in opposite directions -- one fsynced and never
+    repaired the mode, the other repaired the mode and never fsynced -- so each
+    carried the bug the other had fixed (#354).
+
+    Both copies also truncated in place, and that is what made this state
+    losable: a crash between the O_TRUNC and the fsync leaves an empty file,
+    and an empty blind-polls count reads as zero while the blind-alarm marker
+    beside it persists, which suppresses the next alarm for the rest of the
+    outage (#401). Writing a temporary file and renaming it means a reader sees
+    either the whole previous payload or the whole new one, never nothing.
+
+    os.replace installs a new inode, so a target that already existed with a
+    looser mode is repaired by the rename itself -- os.open's mode argument
+    applies only when it creates the file, which is why the mode needed
+    repairing at all, and a separate chmod would be one more step a crash could
+    land between. fchmod sets 0600 on the temporary file explicitly because
+    mkstemp's own mode is subject to the umask, which can clear bits from it.
+    The directory is fsynced after the rename so the replacement survives a
+    power loss rather than only a crash.
+    """
+
+    directory = path.parent
+    descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(temporary)
+        raise
+    directory_descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
 
 
 def _record_lock_holder(descriptor: int, holder: str) -> None:
