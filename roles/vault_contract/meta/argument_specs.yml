@@ -77,8 +77,6 @@ argument_specs:
       vault_paperless_django_secret_key: {type: str, required: true}
       vault_paperless_gmail_account: {type: str, required: true}
       vault_paperless_gmail_app_password: {type: str, required: true}
-      vault_paperless_mail_account_name: {type: str, required: true}
-      vault_paperless_mail_rule_name: {type: str, required: true}
       vault_managed_users:
         type: dict
         required: true

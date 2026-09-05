@@ -287,6 +287,16 @@ export_passphrase = Digest::SHA256.hexdigest(
 vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 
+# The two mail object names are not credentials and are not in the vault: they
+# are operator policy in the shared inventory, read here from the tree under
+# inspection rather than from the checkout this program lives in (#353).
+shared_inventory = YAML.safe_load_file(REPO_ROOT.join("inventory", "group_vars", "all", "main.yml"))
+mail_account_name = shared_inventory["paperless_mail_account_name"]
+mail_rule_name = shared_inventory["paperless_mail_rule_name"]
+fail_contract("shared inventory does not declare both Paperless mail object names") unless
+  mail_account_name.is_a?(String) && !mail_account_name.empty? &&
+  mail_rule_name.is_a?(String) && !mail_rule_name.empty?
+
 _token_response, token_payload = request(
   "post", "/api/token/",
   body: {
@@ -306,12 +316,12 @@ fail_contract("vault administrator identity differs") unless
 
 _accounts_response, accounts_payload = request("get", "/api/mail_accounts/?page_size=1000", token: token)
 accounts = results(accounts_payload).select do |account|
-  account["name"] == vault.fetch("vault_paperless_mail_account_name")
+  account["name"] == mail_account_name
 end
 fail_contract("managed Gmail account is absent or duplicated") unless accounts.length == 1
 account = accounts.first
 expected_account = {
-  "name" => vault.fetch("vault_paperless_mail_account_name"),
+  "name" => mail_account_name,
   "imap_server" => "imap.gmail.com", "imap_port" => 993, "imap_security" => 2,
   "username" => vault.fetch("vault_paperless_gmail_account"), "character_set" => "UTF-8",
   "is_token" => false, "account_type" => 1, "owner" => admins.first.fetch("id")
@@ -321,7 +331,7 @@ expected_account.each do |key, value|
 end
 
 _rules_response, rules_payload = request("get", "/api/mail_rules/?page_size=1000", token: token)
-rules = results(rules_payload).select { |rule| rule["name"] == vault.fetch("vault_paperless_mail_rule_name") }
+rules = results(rules_payload).select { |rule| rule["name"] == mail_rule_name }
 fail_contract("managed Gmail rule is absent or duplicated") unless rules.length == 1
 rule = rules.first
 expected_rule = {
@@ -364,10 +374,10 @@ unless ENV["PLATFORM_KIND"] == "integration"
   )
   managed_mail_after = {
     "accounts" => results(accounts_after_payload).select do |entry|
-      entry["name"] == vault.fetch("vault_paperless_mail_account_name")
+      entry["name"] == mail_account_name
     end.sort_by { |entry| entry.fetch("id") },
     "rules" => results(rules_after_payload).select do |entry|
-      entry["name"] == vault.fetch("vault_paperless_mail_rule_name")
+      entry["name"] == mail_rule_name
     end.sort_by { |entry| entry.fetch("id") }
   }
   fail_contract("Gmail connection test altered managed mail state") unless

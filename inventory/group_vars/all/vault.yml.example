@@ -153,8 +153,6 @@ vault_paperless_db_password: example-password
 vault_paperless_django_secret_key: example-django-secret-000000000000
 vault_paperless_gmail_account: gmail@example.invalid
 vault_paperless_gmail_app_password: example-app-password
-vault_paperless_mail_account_name: example-mail-account
-vault_paperless_mail_rule_name: example-mail-rule
 
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.

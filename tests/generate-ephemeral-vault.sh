@@ -338,8 +338,6 @@ vault_paperless_db_password: '$(random_password)'
 vault_paperless_django_secret_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_paperless_gmail_account: ephemeral@example.invalid
 vault_paperless_gmail_app_password: '$(random_password)'
-vault_paperless_mail_account_name: ephemeral-gmail
-vault_paperless_mail_rule_name: ephemeral-inbox
 vault_managed_users:
   audiobookshelf:
     - username: reader-ephemeral-example-invalid

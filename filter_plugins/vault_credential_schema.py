@@ -184,8 +184,6 @@ CREDENTIAL_RULES = {
     "vault_paperless_django_secret_key": ((NONEMPTY, None),),
     "vault_paperless_gmail_account": ((PATTERN, EMAIL),),
     "vault_paperless_gmail_app_password": ((NONEMPTY, None),),
-    "vault_paperless_mail_account_name": ((NONEMPTY, None),),
-    "vault_paperless_mail_rule_name": ((NONEMPTY, None),),
     "vault_arr_radarr_api_key": ((PATTERN, HEX_32), (SEARCH, HEX_LETTER)),
     "vault_arr_radarr_admin_username": ((NONEMPTY, None),),
     "vault_arr_radarr_admin_password": ((NONEMPTY, None),),

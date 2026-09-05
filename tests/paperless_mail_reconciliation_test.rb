@@ -149,8 +149,8 @@ end
 def run_fixture(port)
   variables = {
     "paperless_api" => "http://127.0.0.1:#{port}", "paperless_api_token" => "fixture-token",
-    "platform_compose_kind" => "mac", "vault_paperless_mail_account_name" => "managed-gmail",
-    "vault_paperless_mail_rule_name" => "managed-inbox",
+    "platform_compose_kind" => "mac", "paperless_mail_account_name" => "managed-gmail",
+    "paperless_mail_rule_name" => "managed-inbox",
     "paperless_managed_administrators" => [{ "id" => 1 }],
     "paperless_mail_account" => ACCOUNT.slice(
       "imap_server", "imap_port", "imap_security", "is_token", "account_type", "character_set"
@@ -262,8 +262,8 @@ def run_full_verify_tag_fixture(port, fingerprint: true)
       "vault_paperless_django_secret_key" => django_secret,
       "vault_paperless_gmail_account" => "gmail@example.invalid",
       "vault_paperless_gmail_app_password" => gmail_secret,
-      "vault_paperless_mail_account_name" => "managed-gmail",
-      "vault_paperless_mail_rule_name" => "managed-inbox",
+      "paperless_mail_account_name" => "managed-gmail",
+      "paperless_mail_rule_name" => "managed-inbox",
       "vault_managed_paperless_ngx_users" => [{
         "username" => "reader", "password" => "fixture-reader-secret",
         "email" => "reader@example.invalid", "is_active" => true, "is_staff" => false,

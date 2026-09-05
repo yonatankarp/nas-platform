@@ -180,6 +180,20 @@ expected_storage_defaults.each do |name, path|
     argument_options.dig(name, "type") == "str" &&
       argument_options.dig(name, "choices") == [path]
 end
+# The two mail object names label objects the platform creates and authorise
+# nothing, so they are operator policy in the shared inventory rather than vault
+# keys (#353). Asserted at the layer that decides the run -- group_vars outranks
+# role defaults -- and required by the role, which carries no default for them.
+%w[paperless_mail_account_name paperless_mail_rule_name].each do |name|
+  declared = storage_inventory[name]
+  refuse("#{name} must be a nonempty operator declaration in the shared inventory") unless
+    declared.is_a?(String) && !declared.empty?
+  refuse("#{name} must be a required role argument") unless
+    argument_options.dig(name, "type") == "str" && argument_options.dig(name, "required") == true
+  refuse("#{name} must not be reintroduced as a vault credential") if
+    generator_vars.key?(name) || argument_options.key?("vault_#{name}")
+end
+
 expected_storage_inventory = {
   "{{ nas_media_root }}/Documents/archive" => "critical",
   "{{ nas_media_root }}/Documents/inbox" => "critical",
@@ -311,8 +325,14 @@ required_tasks.each { |name| refuse("missing #{name}") unless role_task_names.in
 refuse("role must never invoke the consuming mail endpoint") if
   role_scalars.any? { |value| scalar_forms(value).any? { |form| form.match?(%r{/mail_accounts/.+/process/}) } }
 
+# The names below are what a task has to mention to be secret-bearing. The
+# `vault_paperless_` prefix carries most of them, but not the facts derived from
+# a mail-account listing: a Paperless mail account object carries `username`,
+# which is the vault Gmail address, and since #353 the name those facts are
+# selected by is inventory policy rather than a vault key. Naming them here is
+# what keeps their redaction enforced rather than merely present.
 secret_tasks = role_tasks.reject { |task| task.key?("ansible.builtin.assert") }.select do |task|
-  task.to_s.match?(/vault_paperless_|paperless_api_token|paperless_mail_account_payload/)
+  task.to_s.match?(/vault_paperless_|paperless_api_token|paperless_mail_account_payload|paperless_mail_accounts_|paperless_managed_mail_accounts|paperless_existing_mail_account|paperless_reconciled_mail_account|paperless_managed_mail_probe_state/)
 end
 secret_tasks.each do |task|
   refuse("secret-bearing task #{task['name']} is not redacted") unless task["no_log"] == true
