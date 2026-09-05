@@ -48,9 +48,6 @@ argument_specs:
       arr_platform_project_name:
         type: str
         required: false
-      media_arr_automatic_monitoring_enabled:
-        type: bool
-        required: false
       media_arr_automatic_rename_enabled:
         type: bool
         required: false

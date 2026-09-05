@@ -24,12 +24,6 @@ argument_specs:
       trailarr_series_host_path:
         type: path
         required: false
-      trailarr_movies_root:
-        type: path
-        required: false
-      trailarr_series_root:
-        type: path
-        required: false
       trailarr_connections:
         type: list
         elements: dict

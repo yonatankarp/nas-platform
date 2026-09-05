@@ -60,6 +60,3 @@ argument_specs:
       production_auto_deploy_verify_tags:
         description: Exact verification tag list passed to verify.yml.
         type: str
-      production_auto_deploy_vault_password_file:
-        description: Protected vault password file; defaults to the fixed private path.
-        type: path

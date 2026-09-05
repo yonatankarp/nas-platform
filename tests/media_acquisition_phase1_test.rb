@@ -90,7 +90,6 @@ end
 
 expected_safe_defaults = {
   "media_acquisition_adopt_existing_libraries" => false,
-  "media_arr_automatic_monitoring_enabled" => false,
   "media_arr_automatic_rename_enabled" => false,
   "media_bazarr_handoff_accepted" => false,
   "media_arr_indexers" => [],

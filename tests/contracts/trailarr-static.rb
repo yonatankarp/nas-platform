@@ -143,13 +143,16 @@ if failures.empty?
   # The one comparison nothing else in the repository makes: a container path
   # that stopped matching the arr's own root folder would need a path mapping,
   # and a path mapping reads back with a trailing slash and reports drift
-  # forever.
+  # forever. It reads the Compose mount rather than a role default, because the
+  # mount is what actually decides the container path -- a default restating it
+  # would agree with the arr while the mount had already drifted away (#358).
+  library_mounts = Array(service["volumes"]).map(&:to_s)
   {
-    "trailarr_movies_root" => "arr_radarr_root_folder",
-    "trailarr_series_root" => "arr_sonarr_root_folder"
-  }.each do |trailarr_key, arr_key|
-    failures << "#{trailarr_key} must equal #{arr_key}, or every import needs a path mapping" unless
-      defaults[trailarr_key] == arr_defaults[arr_key]
+    "${TRAILARR_MOVIES_PATH:?}" => "arr_radarr_root_folder",
+    "${TRAILARR_SERIES_PATH:?}" => "arr_sonarr_root_folder"
+  }.each do |mount_source, arr_key|
+    failures << "#{mount_source} must be mounted at #{arr_key}, or every import needs a path mapping" unless
+      library_mounts.include?("#{mount_source}:#{arr_defaults[arr_key]}")
   end
   failures << "Trailarr must address both arrs by their Compose service alias" unless
     Array(defaults["trailarr_connections"]).map { |entry| entry["url"] } ==

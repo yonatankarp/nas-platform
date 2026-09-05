@@ -147,13 +147,16 @@ rewrite.
 
 In Radarr and Sonarr, match and review the existing Movies and Series libraries
 before enabling rename or monitoring. Confirm paths and title matches manually,
-leave automatic search off, and correct mismatches one title at a time. Keep
-these defaults until that review is accepted:
+leave automatic search off, and correct mismatches one title at a time. Bulk
+rename is the half this repository gates; keep its default until that review is
+accepted:
 
 ```yaml
-media_arr_automatic_monitoring_enabled: false
 media_arr_automatic_rename_enabled: false
 ```
+
+Monitoring carries no such flag. It is a setting inside Radarr and Sonarr, and
+no task here turns it on, so review it in their own interfaces.
 
 Run later convergence without the adoption override:
 
