@@ -20,6 +20,14 @@ include TestScaffold
 DIGEST_A = "@sha256:#{'a' * 64}"
 DIGEST_B = "@sha256:#{'b' * 64}"
 TOKEN = "tk_fixturedeploytokenvalue"
+# The topics are declared by the fixture, not defaulted by the role: they live
+# in inventory/group_vars/all/main.yml so that a play without the ntfy role
+# still sees the names the publisher ACL is derived from (#345). Sentinels
+# rather than the deployed names, so "the record went to the deployment topic"
+# is a statement about the variable the tasks read and not about a literal two
+# files happen to share.
+CRITICAL_TOPIC = "sentinel-critical"
+DEPLOYMENT_TOPIC = "sentinel-deployment"
 
 failures = []
 
@@ -116,6 +124,8 @@ with_controller_repository do |directory, repository, previous, current|
       "platform_release_id" => current,
       "ntfy_deployment_summary_checkout" => repository,
       "ntfy_port" => port,
+      "ntfy_topic" => CRITICAL_TOPIC,
+      "ntfy_deployment_topic" => DEPLOYMENT_TOPIC,
       "vault_ntfy_deploy_token" => TOKEN
     }.merge(overrides)
   end
@@ -137,8 +147,9 @@ with_controller_repository do |directory, repository, previous, current|
           "the summary must POST its document to the ntfy root, not to a topic path")
     check(failures, published.dig("headers", "authorization") == "Bearer #{TOKEN}",
           "the summary must publish with the deploy publisher's write-only token")
-    check(failures, document["topic"] == "nas-deployment",
-          "the summary belongs on the deployment topic, not the critical one")
+    check(failures, document["topic"] == DEPLOYMENT_TOPIC,
+          "the summary belongs on the declared deployment topic, not the critical " \
+          "one: #{document['topic'].inspect}")
     check(failures, document["title"] == "NAS deployed: jellyfin",
           "the summary title must name what moved: #{document['title'].inspect}")
     check(failures, message.include?("jellyfin 10.10.3 → 10.11.0"),
@@ -214,6 +225,8 @@ def report_variables(port, overrides)
   {
     "platform_release_id" => RELEASE,
     "ntfy_port" => port,
+    "ntfy_topic" => CRITICAL_TOPIC,
+    "ntfy_deployment_topic" => DEPLOYMENT_TOPIC,
     "vault_ntfy_deploy_token" => TOKEN,
     "ntfy_deployment_report_service" => "Komga",
     "ntfy_deployment_report_changed" => false
@@ -241,8 +254,9 @@ check_report(failures, "recreated", {
                "deployment_bundle_previous_release_id" => PREDECESSOR,
                "ntfy_deployment_report_changed" => true
              }, 1) do |document|
-  check(failures, document["topic"] == "nas-deployment",
-        "a service report belongs on the deployment topic")
+  check(failures, document["topic"] == DEPLOYMENT_TOPIC,
+        "a service report belongs on the declared deployment topic: " \
+        "#{document['topic'].inspect}")
   check(failures, document["title"] == "Komga deployed (recreated)",
         "a recreated service must say so: #{document['title'].inspect}")
   check(failures, document["message"].to_s.include?("Compose recreated Komga") &&

@@ -247,7 +247,7 @@ end
 # The same fallback anywhere else is the same defect waiting for a second
 # publisher outside the ntfy role's play. Screened over the declarations that
 # render, with a floor, so an expression list that goes empty cannot pass.
-topic_readers = Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks}/*")).select do |path|
+topic_readers = Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks,handlers,meta}/*")).select do |path|
   File.file?(path) && File.read(path).match?(/ntfy_[a-z_]*topic/)
 end
 fallback_readers = topic_readers.select do |path|
