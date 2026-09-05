@@ -350,11 +350,20 @@ check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("mac_registry_services()") &&
                 mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
+#
+# The fifth group, drift, never collapsed and does not need to: no two services
+# drift alike. It needs the accounting for the opposite reason. A per-service
+# group loses a service by losing a file, and that is not a hypothetical — the
+# five acquisition services were promoted with a drift hook each while nothing in
+# the repository named them, so the group could have dropped any of them and
+# still reported a full pass. Its hook runs no service and pins the exact roster
+# instead, which fails in both directions: a hook deleted and a hook added.
 {
   "fixtures-seed" => "00-services.sh",
   "fixtures-persistence" => "00-services.sh",
   "fixtures-recreate" => "00-services.sh",
-  "verify" => "30-services.sh"
+  "verify" => "30-services.sh",
+  "drift" => "00-coverage.sh"
 }.each do |group, hook|
   hook_path = File.join(ROOT, "tests", "mac", "hooks", group, hook)
   hook_source = File.file?(hook_path) ? File.read(hook_path) : ""

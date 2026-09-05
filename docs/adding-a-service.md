@@ -226,7 +226,13 @@ Add the service to each table, or, if its behaviour does not fit the table, give
 it its own `tests/mac/hooks/<group>/<NN>-<service>.sh` and the collapsed hook
 will credit it automatically from the filename. `tests/mac/hooks/drift/` is still
 one file per service throughout, because no two services drift alike — expect to
-write a new `tests/mac/hooks/drift/<NN>-<service>.sh` for yours.
+write a new `tests/mac/hooks/drift/<NN>-<service>.sh` for yours, and add its
+basename to the roster in `tests/mac/hooks/drift/00-coverage.sh`. That hook runs
+no drift of its own; it is the fifth group's accounting, and it pins the drift
+directory's exact file list, so a hook added without a roster entry and a roster
+entry without a hook both fail. Five acquisition services were promoted with a
+drift hook each while nothing in the repository named them, which is why the
+roster is exact rather than a minimum.
 
 The runner discovers hooks by globbing and only fails when a group is empty, so
 the collapsed hooks assert their own coverage against

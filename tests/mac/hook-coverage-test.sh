@@ -19,6 +19,13 @@
 #     hook file deleted, or the Mac-only service list emptied all make the group
 #     fail.
 #
+# The drift group is here for the mirror-image reason. It never collapsed — no
+# two services drift alike, so it is still one file per service — and that is
+# precisely how it lost five services from every roster in the repository: a
+# per-service group loses a service by losing a file, which mac_run_hooks cannot
+# see. Its accounting hook runs no contract and is credited from its siblings, so
+# what has to fail there is a hook deleted and a hook added outside the roster.
+#
 # The runner's own refusals are proved here too: an unknown service and a
 # missing or malformed phase must both stop the lane instead of dispatching
 # nothing and reporting success.
@@ -42,13 +49,27 @@ build_tree() {
   tree=$1
   mkdir -p "$tree/tests/contracts" "$tree/tests/mac/hooks/fixtures-seed" \
     "$tree/tests/mac/hooks/fixtures-persistence" "$tree/tests/mac/hooks/fixtures-recreate" \
-    "$tree/tests/mac/hooks/verify" "$tree/bin" "$tree/log"
+    "$tree/tests/mac/hooks/verify" "$tree/tests/mac/hooks/drift" "$tree/bin" "$tree/log"
   cp "$repo_dir/tests/contracts/registry.yml" "$tree/tests/contracts/registry.yml"
   cp "$repo_dir/tests/mac/lib.sh" "$tree/tests/mac/lib.sh"
   for group in fixtures-seed fixtures-persistence fixtures-recreate; do
     cp "$repo_dir/tests/mac/hooks/$group/00-services.sh" "$tree/tests/mac/hooks/$group/"
   done
   cp "$repo_dir/tests/mac/hooks/verify/30-services.sh" "$tree/tests/mac/hooks/verify/"
+
+  # The drift group never collapsed, so its accounting hook runs no service and
+  # is credited entirely from its sibling filenames. Those siblings are stubbed
+  # from the real directory rather than from a second literal roster here: the
+  # roster under test is the one inside 00-coverage.sh, and a copy of it in this
+  # file would be one more thing to drift.
+  cp "$repo_dir/tests/mac/hooks/drift/00-coverage.sh" "$tree/tests/mac/hooks/drift/"
+  chmod 0755 "$tree/tests/mac/hooks/drift/00-coverage.sh"
+  for drift_hook in "$repo_dir"/tests/mac/hooks/drift/*.sh; do
+    drift_basename=${drift_hook##*/}
+    [ "$drift_basename" != 00-coverage.sh ] || continue
+    printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/drift/$drift_basename"
+    chmod 0755 "$tree/tests/mac/hooks/drift/$drift_basename"
+  done
 
   # The runner is stubbed: this test is about which services and phases the hooks
   # dispatch, not about what the contracts then do.
@@ -253,6 +274,36 @@ proof-trailarr |runtime/services/trailarr/.env |current/services/trailarr/compos
 proof-seerr |runtime/services/seerr/.env |current/services/seerr/compose.yml |seerr' \
   'fixtures-recreate compose'
 
+# Drift is the group that never collapsed: one file per service, because no two
+# services drift alike. That is exactly why it needs this — a per-service group
+# loses a service by losing a file, and mac_run_hooks cannot tell thirteen hooks
+# from eight. Its accounting hook runs no contract of its own and is credited
+# entirely from the sibling filenames its roster pins.
+summary=$(run_group "$tree" drift 00-coverage.sh)
+expect_summary "$summary" \
+  'mac drift hooks: covered 15 of 15 registered services (ran 0, delegated 12, exempt 3)'
+expect_log "$(cat "$tree/log/hooks")" '' 'drift'
+
+# A drift hook deleted must fail the group. This is the regression the group had
+# no defence against: the five acquisition services were promoted with a drift
+# hook each and named nowhere, so any of them could have been dropped in silence.
+tree=$fixture/dropped-drift-hook
+build_tree "$tree"
+unlink "$tree/tests/mac/hooks/drift/58-seerr.sh"
+if run_group "$tree" drift 00-coverage.sh >/dev/null 2>&1; then
+  fail 'drift accepted a deleted service hook'
+fi
+
+# And a drift hook added outside the roster must fail it too, so promoting a
+# service cannot leave the roster behind.
+tree=$fixture/extra-drift-hook
+build_tree "$tree"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/drift/90-newcomer.sh"
+chmod 0755 "$tree/tests/mac/hooks/drift/90-newcomer.sh"
+if run_group "$tree" drift 00-coverage.sh >/dev/null 2>&1; then
+  fail 'drift accepted a service hook outside its exact roster'
+fi
+
 # The lifecycle calls verify.sh, not the collapsed hook directly. Keep that
 # wrapper on the same coverage-asserting path so its explicit infrastructure
 # hooks cannot accidentally replace registry-backed service accounting.
@@ -321,7 +372,7 @@ build_tree "$tree"
 printf '%s\n' '  - service: newcomer' '    path: tests/contracts/newcomer.sh' >> \
   "$tree/tests/contracts/registry.yml"
 for group_hook in fixtures-seed:00-services.sh fixtures-persistence:00-services.sh \
-    fixtures-recreate:00-services.sh verify:30-services.sh; do
+    fixtures-recreate:00-services.sh verify:30-services.sh drift:00-coverage.sh; do
   if run_group "$tree" "${group_hook%%:*}" "${group_hook#*:}" >/dev/null 2>&1; then
     fail "${group_hook%%:*} accepted a registered service it never ran"
   fi
