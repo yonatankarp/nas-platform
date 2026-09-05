@@ -22,10 +22,14 @@ NAS. Without it, `platform_hosts` matches nothing and the run ends on an empty
 
 ## Commands
 
-Ansible tooling is pinned in `controller-requirements.txt`
-(ansible-core 2.21.3, ansible-lint 26.8.0); collections in `requirements.yml`.
+Ansible tooling is pinned in `controller-requirements.txt`, which every CI job
+that needs the toolchain installs from as well; collections in `requirements.yml`.
+The versions live there and nowhere else — a version restated in prose is a copy
+nothing bumps, which is what `tests/docs_links_test.rb` refuses here and
+`tests/policy_test.rb` refuses in the beginner guides.
 
 ```sh
+pip install -r controller-requirements.txt
 ansible-galaxy collection install -r requirements.yml
 ```
 

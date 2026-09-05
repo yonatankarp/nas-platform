@@ -5,12 +5,14 @@ require "open3"
 require "tmpdir"
 require "yaml"
 require_relative "classify_changes"
+require_relative "validate_results"
 
 require_relative "../policy_support"
 
 include TestScaffold
 
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
+CONTROLLER_REQUIREMENTS_PATH = File.expand_path("../../controller-requirements.txt", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
 CONFIGARR_APPLICATION_YAML = "roles/arr/files/configarr/config.yml"
@@ -408,8 +410,38 @@ check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb")
 # The harness syntax-checks a play in every sandbox and renders role defaults
 # through the policy set, so it needs the toolchain the gate installs. Without
 # this the job would fail on a missing ansible-playbook rather than on a policy.
-check(failures, mutation_commands.any? { |command| command.include?("ansible-core==") },
+check(failures,
+      mutation_commands.any? do |command|
+        command.include?("pip") && command.include?("-r controller-requirements.txt")
+      end,
       "the mutation job must install the pinned Ansible toolchain")
+
+# Three jobs need that toolchain and each carries its own copy of the step that
+# installs it. The pins used to be written into all three, so a bump could land
+# in one and leave the other two on the old version with nothing comparing them;
+# they now install from controller-requirements.txt, which is the one place the
+# versions are authored. The copies that remain are held byte-identical, so a
+# flag, a retry or a package added to one of them cannot quietly apply to a
+# subset of the jobs it was reasoned about for.
+INSTALL_TOOLCHAIN_STEP = "Install Ansible tooling"
+toolchain_installs = jobs.each_with_object({}) do |(name, job), collected|
+  step = Array(job["steps"]).find do |candidate|
+    candidate.is_a?(Hash) && candidate["name"] == INSTALL_TOOLCHAIN_STEP
+  end
+  collected[name] = step["run"].to_s if step
+end
+check(failures, toolchain_installs.length >= 3,
+      "at least three jobs install the Ansible toolchain; found #{toolchain_installs.keys.inspect}, " \
+      "which means this comparison is proving less than it reads as")
+check(failures, toolchain_installs.values.uniq.length == 1,
+      "every #{INSTALL_TOOLCHAIN_STEP.inspect} step must be byte-identical, " \
+      "#{toolchain_installs.keys.inspect} carry #{toolchain_installs.values.uniq.length} versions")
+toolchain_installs.each do |name, body|
+  check(failures, body.include?('"$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt'),
+        "the #{name} job must install the controller pins from controller-requirements.txt")
+  check(failures, !body.match?(/ansible-(?:core|lint)==/),
+        "the #{name} job must not restate a pin controller-requirements.txt already authors")
+end
 
 # The controller toolchain is built once per run and published to ghcr.io rather
 # than installed inside every leg. The suites job depends on it so a run that does
@@ -625,14 +657,13 @@ end
 end
 check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"'),
       "static checks must create an isolated Ansible environment")
-# Assert the pins are exact rather than restating the versions, for the same reason
-# the apt check above matches loosely: a routine dependency bump should not have to
-# edit this file. The versions themselves are proved consistent below.
-ansible_pin = static_commands.match(
-  /"\$RUNNER_TEMP\/ansible\/bin\/pip" install 'ansible-core==(\d+\.\d+\.\d+)' 'ansible-lint==(\d+\.\d+\.\d+)'/
-)
-check(failures, !ansible_pin.nil?,
-      "static checks must install exact Ansible pins in the isolated environment")
+# The gate installs from controller-requirements.txt rather than naming versions,
+# so a routine bump edits one file and neither this test nor the workflow is one
+# of them. That the file itself pins exactly, and that its pins agree with the
+# harness's, is proved at the end.
+check(failures,
+      static_commands.include?('"$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt'),
+      "static checks must install the controller pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
 check(failures, static_commands.include?(
@@ -731,6 +762,36 @@ end
 check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
       "validate must invoke the aggregate result validator")
 
+# Which jobs the gate may not fail on is derived from the workflow rather than
+# restated here. A job the suites matrix depends on without requiring its success
+# is one the workflow declares non-blocking -- that is the whole point of dropping
+# the implicit success gate `needs` carries -- and the validator must tolerate
+# exactly those. It tolerated none of them until #360: ci.yml said "nothing
+# depends on this succeeding" about the toolchain publish while the aggregate
+# check aborted on it, so a ghcr push hiccup reddened a run whose coverage was
+# complete. Deriving both directions is what stops the two from disagreeing
+# again: re-adding the success term to the suites condition now forces the
+# validator's list to shrink with it.
+suites_condition = expression(suites_job["if"]).to_s
+derived_non_blocking = Array(suites_job["needs"]).reject do |job|
+  suites_condition.include?("needs.#{job}.result == 'success'")
+end
+# The derivation only reads as "non-blocking" while the condition actually drops
+# the implicit gate. Without !cancelled() a `needs` entry gates on success whether
+# the expression mentions it or not, and every job here would look tolerated.
+check(failures, derived_non_blocking.empty? || suites_condition.include?("!cancelled()"),
+      "a job the suites matrix needs is non-blocking only while the condition drops " \
+      "the implicit success gate with !cancelled(), found #{suites_condition.inspect}")
+check(failures, derived_non_blocking == ValidateResults::NON_BLOCKING_JOBS,
+      "tests/ci/validate_results.rb must tolerate exactly the jobs the suites matrix " \
+      "depends on without requiring their success: the workflow declares " \
+      "#{derived_non_blocking.inspect} non-blocking, the validator tolerates " \
+      "#{ValidateResults::NON_BLOCKING_JOBS.inspect}")
+# A tolerated job nothing reports is a tolerance that can never be exercised.
+check(failures, (ValidateResults::NON_BLOCKING_JOBS - expected_needs).empty?,
+      "every non-blocking job must be one validate passes to the validator, " \
+      "#{(ValidateResults::NON_BLOCKING_JOBS - expected_needs).inspect} is not")
+
 workflow_source = File.read(WORKFLOW_PATH)
 check(failures, !workflow_source.match?(/dorny\/paths-filter|paths-filter@/i),
       "workflow must not use a third-party path filter action")
@@ -755,38 +816,54 @@ all_uses.group_by { |uses| uses.split("@", 2).first }.each do |name, uses|
         "#{name} must be pinned to one commit across every job: #{uses.uniq.inspect}")
 end
 
-# The ansible-core pin is restated outside ci.yml: the integration sandbox builds its
-# runner image from it, the Beszel telemetry test refuses to run against any other
-# version, and controller-requirements.txt is what an operator actually installs from.
-# Assert they agree rather than pinning a version here. A bump that updates only some
-# of them fails immediately and by name, instead of surfacing later as a confusing
-# suite failure.
+# controller-requirements.txt is the anchor, not a mirror: it is what an operator
+# installs from, what the production poller installs from, what CLAUDE.md names as
+# the source of truth, and now what all three toolchain jobs above install from.
+# The ansible-core version is still restated where it cannot be read out of a pip
+# requirement -- the integration sandbox bakes it into a runner image tag, and the
+# Beszel telemetry test refuses to run against any other version because it asserts
+# exact ansible output. Assert those agree with the anchor. A bump that updates only
+# some of them fails immediately and by name instead of surfacing later as a
+# confusing suite failure.
 #
-# controller-requirements.txt is the one that needs asserting most: unlike the other
-# mirrors it has no Renovate manager, so nothing bumps it automatically and a stale
-# pin there means the documented install produces a different ansible-core than CI
-# validates against, on the machine that runs production deployments.
-if ansible_pin
-  expected_core = ansible_pin[1]
+# Read the anchor, and fail loudly when it cannot be read. The previous shape
+# extracted the versions out of ci.yml's pip line and skipped this whole block when
+# the regex stopped matching, so the edit that removed those versions would have
+# retired every assertion below while leaving the test green.
+controller_requirements = File.read(CONTROLLER_REQUIREMENTS_PATH)
+expected_core = controller_requirements[/^ansible-core==(\d+\.\d+\.\d+)$/, 1]
+expected_lint = controller_requirements[/^ansible-lint==(\d+\.\d+\.\d+)$/, 1]
+check(failures, !expected_core.nil?,
+      "controller-requirements.txt must pin ansible-core exactly, as ansible-core==X.Y.Z")
+# Nothing mirrors the lint pin, but every job installs from this file, so an
+# unpinned ansible-lint would float the gate's lint results release by release.
+check(failures, !expected_lint.nil?,
+      "controller-requirements.txt must pin ansible-lint exactly, as ansible-lint==X.Y.Z")
+# The same reasoning covers the rest of the file rather than the two lines named
+# above: CI installs all of it, so a requirement without an exact pin is a version
+# CI never decided on. Counted as well as shaped, so a file that stopped listing
+# requirements cannot satisfy this by having none.
+requirement_lines = controller_requirements.lines.map(&:strip)
+                                           .reject { |line| line.empty? || line.start_with?("#") }
+check(failures, requirement_lines.length >= 3,
+      "controller-requirements.txt must list the controller requirements, found " \
+      "#{requirement_lines.length}")
+requirement_lines.each do |line|
+  check(failures, line.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*==\d+(\.\d+)*\z/),
+        "controller-requirements.txt must pin every requirement exactly, three CI jobs " \
+        "install from it: #{line.inspect}")
+end
+
+if expected_core
   {
     "tests/integration.sh" => /^ansible_core_version=(\d+\.\d+\.\d+)$/,
-    "tests/beszel_telemetry_ansible_test.rb" => /^REQUIRED_ANSIBLE_CORE = "(\d+\.\d+\.\d+)"/,
-    "controller-requirements.txt" => /^ansible-core==(\d+\.\d+\.\d+)$/
+    "tests/beszel_telemetry_ansible_test.rb" => /^REQUIRED_ANSIBLE_CORE = "(\d+\.\d+\.\d+)"/
   }.each do |relative, pattern|
     mirrored = File.read(File.expand_path("../../#{relative}", __dir__))[pattern, 1]
     check(failures, mirrored == expected_core,
-          "#{relative} must pin ansible-core #{expected_core} to match ci.yml, got #{mirrored.inspect}")
+          "#{relative} must pin ansible-core #{expected_core} to match " \
+          "controller-requirements.txt, got #{mirrored.inspect}")
   end
-
-  # ansible-lint is pinned in both places too, and lint results depend on the core it
-  # runs against, so the pair must move together.
-  expected_lint = ansible_pin[2]
-  controller_lint = File.read(File.expand_path("../../controller-requirements.txt", __dir__))[
-    /^ansible-lint==(\d+\.\d+\.\d+)$/, 1
-  ]
-  check(failures, controller_lint == expected_lint,
-        "controller-requirements.txt must pin ansible-lint #{expected_lint} to match ci.yml, " \
-        "got #{controller_lint.inspect}")
 end
 
 report(failures, "CI workflow contract: all checks passed",

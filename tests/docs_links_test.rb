@@ -933,6 +933,21 @@ else
     failures << "CLAUDE.md must not list integration lanes " \
                 "tests/integration.sh --list-suites does not print: #{extra.join(', ')}" if extra.any?
   end
+  # The controller pins are authored once, in controller-requirements.txt: three
+  # CI jobs install from it, the production poller installs from it, and Renovate
+  # bumps it. A version restated in prose is a copy nothing bumps, and
+  # tests/policy_test.rb already refuses one in the beginner guides for the
+  # reason a reader following it builds a controller CI never validated against.
+  # CLAUDE.md carried the pair anyway until #360, in the same sentence that calls
+  # the file the source of truth. Matched on the prose form as well as the
+  # requirement form: what was there read "ansible-core 2.21.3", which a check
+  # written for "ansible-core==" would have passed over.
+  failures << "CLAUDE.md must not restate an ansible-core or ansible-lint version: " \
+              "controller-requirements.txt authors them and nothing bumps a copy in prose" if
+    claude_md.match?(/ansible-(?:core|lint)[ \t]*=*[ \t]*v?\d+\.\d+\.\d+/)
+  failures << "CLAUDE.md must name controller-requirements.txt as where the toolchain is pinned" unless
+    claude_md.include?("controller-requirements.txt")
+
   implemented_services = YAML.safe_load_file(ROOT.join("services/manifest.yml"))
                              .fetch("services")
                              .count { |service| service.fetch("status") == "implemented" }
