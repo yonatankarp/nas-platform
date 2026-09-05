@@ -14,7 +14,7 @@
 #
 # Three layers, because the contract has three kinds of property:
 #
-#   Static -- build a fixture repository from the six files the static program
+#   Static -- build a fixture repository from the seven files the static program
 #   reads, break exactly one thing in it, and require the program to name that
 #   thing. The assertion text is the interface: a guard that fails for the wrong
 #   reason has stopped guarding what it names, so every row pins the exact
@@ -52,11 +52,13 @@ CONTRACT = File.join(ROOT, "tests", "contracts", "komga.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "komga-runtime.rb")
 
-# Exactly what the static program reads: six paths handed to it as argv, plus
+# Exactly what the static program reads: seven paths handed to it as argv, plus
 # the shared flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR. This
 # list is the whole of it -- unlike arr and trailarr, komga's static half reads
 # nothing its own argv does not name, so the fixture is not quietly narrower
-# than production.
+# than production. The inventory is the seventh because the one-convergence
+# migration flag is declared at two layers and group_vars/all outranks the role
+# defaults, so the contract has to see both (#343).
 FIXTURE_FILES = %w[
   services/komga/compose.yml
   services/komga/compose.mac.yml
@@ -64,6 +66,7 @@ FIXTURE_FILES = %w[
   roles/komga/defaults/main.yml
   roles/komga/meta/argument_specs.yml
   roles/komga/templates/env.j2
+  inventory/group_vars/all/main.yml
   tests/policy_support.rb
 ].freeze
 
@@ -302,6 +305,15 @@ STATIC_ROWS = [
     expects: "the library root migration input is not one-convergence"
   },
   {
+    name: "a root migration input left true in the inventory that outranks the defaults",
+    break: lambda { |root|
+      mutate_text(root, "inventory/group_vars/all/main.yml",
+                  "komga_library_root_migration_allowed: false",
+                  "komga_library_root_migration_allowed: true")
+    },
+    expects: "the library root migration input is enabled in the inventory"
+  },
+  {
     name: "a plural library model that is undeclared in argument_specs",
     break: lambda { |root|
       mutate_text(root, "roles/komga/meta/argument_specs.yml",
@@ -470,6 +482,7 @@ def static_argv(root)
     roles/komga/defaults/main.yml
     roles/komga/meta/argument_specs.yml
     roles/komga/templates/env.j2
+    inventory/group_vars/all/main.yml
   ].map { |relative| File.join(root, relative) }
 end
 
@@ -1256,6 +1269,12 @@ STATIC_MUTATIONS = [
     from: 'defaults.fetch("komga_library_root_migration_allowed") == false',
     to: "true",
     rows: ["a root migration input that defaults to true"]
+  },
+  {
+    label: "the one-convergence migration inventory check",
+    from: '  inventory.fetch("komga_library_root_migration_allowed", false) == false',
+    to: "  true",
+    rows: ["a root migration input left true in the inventory that outranks the defaults"]
   },
   {
     label: "the plural library model declaration check",

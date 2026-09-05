@@ -279,6 +279,17 @@ if failures.empty?
   # with --check --diff before it runs. Three properties keep that reviewable.
   failures << "the Kapowarr volume folder migration must be pinned closed" unless
     defaults.fetch("kapowarr_volume_folder_migration_allowed", nil) == false
+  # And pinned closed at the layer that decides the run: group_vars/all declares
+  # the same flag and outranks role defaults, so a true left behind there moves
+  # directories on every converge while the check above stays green -- a guard
+  # reading the losing layer, which is worse than no guard (#343). Absence is
+  # safe, because the default asserted above then decides; anything but false is
+  # not. The move itself is taken with
+  # `-e kapowarr_volume_folder_migration_allowed=true`, which outranks both
+  # layers and leaves nothing committed to forget.
+  failures << "the Kapowarr volume folder migration must be pinned closed in the inventory" unless
+    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
+        .fetch("kapowarr_volume_folder_migration_allowed", false) == false
   migration_option = YAML.safe_load_file(
     File.join(root, "roles/kapowarr/meta/argument_specs.yml")
   ).dig("argument_specs", "main", "options", "kapowarr_volume_folder_migration_allowed")

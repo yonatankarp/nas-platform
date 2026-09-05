@@ -27,6 +27,12 @@ role=$repo_dir/roles/komga/tasks/main.yml
 defaults=$repo_dir/roles/komga/defaults/main.yml
 argument_specs=$repo_dir/roles/komga/meta/argument_specs.yml
 environment=$repo_dir/roles/komga/templates/env.j2
+# The inventory layer, not a duplicate of $defaults: group_vars/all outranks a
+# role's defaults, so it is the layer that decides whether a converge may move a
+# library root. It is handed over as argv like every other path this contract
+# reads, rather than resolved from PLATFORM_CONTRACT_REPO_DIR inside the
+# program, so the static half still reads nothing its own argv does not name.
+inventory=$repo_dir/inventory/group_vars/all/main.yml
 
 fail_contract() {
   printf 'Komga contract failed: %s\n' "$1" >&2
@@ -39,11 +45,12 @@ fail_contract() {
 [ -f "$compose" ] || fail_contract 'services/komga/compose.yml is absent'
 [ -f "$mac_compose" ] || fail_contract 'services/komga/compose.mac.yml is absent'
 [ -f "$environment" ] || fail_contract 'roles/komga/templates/env.j2 is absent'
+[ -f "$inventory" ] || fail_contract 'inventory/group_vars/all/main.yml is absent'
 grep -qx 'FIXTURE_SCAN_TIMEOUT_SECONDS = 240' "$runtime_program" ||
   fail_contract 'fixture scan timeout differs'
 
 ruby -ryaml "$static_program" "$compose" "$mac_compose" "$role" "$defaults" \
-  "$argument_specs" "$environment" </dev/null
+  "$argument_specs" "$environment" "$inventory" </dev/null
 
 grep -q '^UNRELATED_LIBRARY_ROOT = "/config/\.nas-platform-unmanaged"$' "$runtime_program" ||
   fail_contract 'unrelated library fixture API root can collide with /data'

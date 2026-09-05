@@ -13,19 +13,22 @@ media_arr_automatic_monitoring_enabled: false
 media_arr_automatic_rename_enabled: false
 media_bazarr_handoff_accepted: false
 
-# One-convergence input, pinned false. Set true for the single reviewed
-# deployment that performs a Komga library root move, and restore it here
-# immediately after, so a later unreviewed root change is refused again. The
-# Phase 2 move -- Comics narrowed from the whole Books share to Books/Comics,
-# with Ebooks beside it -- is done, so nothing is pending behind this.
+# One-convergence input, and false is the only value this file may hold: this
+# layer outranks roles/komga/defaults/main.yml, so it is the one that decides
+# the run, and tests/contracts/komga-static.rb asserts it here as well as there
+# (#343). Take the single reviewed deployment that performs a Komga library root
+# move with `-e komga_library_root_migration_allowed=true`, which outranks both
+# declarations and leaves nothing committed to forget afterwards. The Phase 2
+# move -- Comics narrowed from the whole Books share to Books/Comics, with
+# Ebooks beside it -- is done, so nothing is pending behind this.
 komga_library_root_migration_allowed: false
 
-# One-convergence input, pinned false. Set true for the single reviewed
+# One-convergence input, false here for the same reason and asserted at this
+# layer by tests/contracts/kapowarr-static.rb. Take the single reviewed
 # deployment that moves every Kapowarr volume folder onto the declared
-# volume_folder_naming, and restore it here immediately after, so a later
-# unreviewed directory move inside the comics library is refused again. Read
-# `--check --diff` first: it names the current and the intended folder for every
-# volume it would move, and Komga needs a Comics rescan once it has run.
+# volume_folder_naming with `-e kapowarr_volume_folder_migration_allowed=true`.
+# Read `--check --diff` first: it names the current and the intended folder for
+# every volume it would move, and Komga needs a Comics rescan once it has run.
 kapowarr_volume_folder_migration_allowed: false
 
 # Providers, indexers, and subtitle preferences are operator-owned policy. An
