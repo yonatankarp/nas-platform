@@ -248,11 +248,12 @@ always claims a change and cannot simulate itself.
 
 Tasks touching credentials carry `no_log: true`.
 
-Adding a service touches thirteen files and is walked end to end in
+Adding a service touches 56 files and is walked end to end in
 [docs/adding-a-service.md](docs/adding-a-service.md) — including the two pinned
-Ruby name lists, the four files CI routing must agree on, and the six extra
-places a new vault credential lands (`docs/secrets.md` among them, enforced by
-`tests/secrets_docs_test.rb`).
+Ruby name lists, the files CI routing must agree on, and the ten places a new
+vault credential lands (`docs/secrets.md` among them, enforced by
+`tests/secrets_docs_test.rb`). Both figures are the guide's own measurement, and
+`tests/docs_links_test.rb` fails when this sentence and the guide disagree.
 
 ## CI
 

@@ -72,12 +72,17 @@ nothing outside the repository has changed yet.
 
 ## Anatomy of a service
 
-Earlier versions of this guide said fifteen places. That was wrong, and wrong in
-the direction that costs an afternoon. The honest figure is measured rather than
-remembered: **promoting Pinchflat changed 55 files.**
+Earlier versions of this guide said fifteen places, and then 55. The first was
+wrong in the direction that costs an afternoon; the second was the right diff
+counted one short. The honest figure is measured rather than remembered:
+**promoting Pinchflat changed 56 files** — `git show --name-status 683e0c1`
+counts 56, and so does GitHub's own tally for #137. Re-measure it against a newer
+service if you like, but update `CLAUDE.md` in the same commit:
+`tests/docs_links_test.rb` reads this figure out of this sentence and fails when
+the summary there quotes a different one.
 
 Only nine of those were new files, and all nine are the service itself and its
-own proof. The other forty-six are existing files that had to be told the
+own proof. The other forty-seven are existing files that had to be told the
 platform is one service larger. A handful are wiring and prose; most are
 *registries* — files that pin a list, a count or a literal string describing the
 platform as it currently is, and that fail when it grows without them. Sometimes
@@ -296,7 +301,7 @@ are checked by tests, not left to courtesy.
 
 ### What of this is Pinchflat's own problem
 
-The 55 files are one service's measured diff, not a universal law, and some of
+The 56 files are one service's measured diff, not a universal law, and some of
 them were Pinchflat's circumstances rather than yours. Read the groups above with
 these caveats:
 
@@ -307,8 +312,11 @@ these caveats:
   means one with a web interface.
 - Group 9 assumes the service gets a CI lane of its own. Every implemented
   service currently does, and that is the normal arrangement, but it is a choice
-  rather than a rule; a service folded into an existing lane edits fewer of those
-  four files.
+  rather than a rule; a service folded into an existing lane edits fewer of the
+  files that group lists. The count is deliberately not restated here: the group
+  named four files when this caveat was written, `tests/ci/suites.conf` and the
+  two `tests/integration_controller*.sh` files split out of `tests/integration.sh`
+  have joined it since, and the restatement stayed at four throughout.
 - Group 10 applies to every service, but the *content* of the entry depends
   entirely on what identity the service has — Pinchflat's says, in effect, "none
   that can be reconciled".

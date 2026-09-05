@@ -9,6 +9,21 @@ require "yaml"
 
 ROOT = Pathname.new(File.expand_path("..", __dir__))
 SOURCES = [ROOT.join("README.md"), *ROOT.join("docs").glob("**/*.md")].freeze
+NUMBER_WORDS = %w[
+  zero one two three four five six seven eight nine ten eleven twelve thirteen
+  fourteen fifteen sixteen seventeen eighteen nineteen twenty
+].freeze
+
+# A count a document states, as an integer. Documentation here spells small
+# numbers and writes larger ones as digits, so both have to read the same;
+# anything else is nil, which callers report as a sentence that no longer has
+# the shape they can read rather than silently letting the comparison pass.
+def stated_count(value)
+  return if value.nil?
+  return Integer(value, 10) if value.match?(/\A\d+\z/)
+
+  NUMBER_WORDS.index(value)
+end
 
 def markdown_target(body)
   value = body.strip
@@ -922,15 +937,52 @@ else
                              .fetch("services")
                              .count { |service| service.fetch("status") == "implemented" }
   service_stack_count = claude_md[/control plane for an? [^.]*?NAS running (\S+)\s+Compose service stacks/m, 1]
-  counted_in_words = %w[
-    zero one two three four five six seven eight nine ten eleven twelve thirteen
-    fourteen fifteen sixteen seventeen eighteen nineteen twenty
-  ][implemented_services]
+  counted_in_words = NUMBER_WORDS[implemented_services]
   if counted_in_words.nil?
     failures << "tests/docs_links_test.rb cannot spell #{implemented_services} implemented services"
   elsif service_stack_count != counted_in_words
     failures << "CLAUDE.md must call the platform #{counted_in_words} Compose service stacks, " \
                 "the number services/manifest.yml marks implemented, not #{service_stack_count.inspect}"
+  end
+  # The same shape again, for the two figures CLAUDE.md quotes out of
+  # docs/adding-a-service.md. Both were stale by the time anyone noticed: the
+  # summary said thirteen files and six credential places while the guide had
+  # measured 56 and ten, and understating the cost fourfold in the file every
+  # contributor reads first is what issue #350 was (issue #276 item 3 asked for
+  # this sweep and stopped at the lane roster above).
+  #
+  # What is pinned is that the two documents agree, not that either is right.
+  # The guide is where the figure is measured and CLAUDE.md quotes it, so a
+  # re-measurement that updates only the guide fails here until the summary
+  # follows. Measuring the Pinchflat diff from here was considered and rejected:
+  # the commit is immutable history a depth-1 CI checkout does not have, so the
+  # check would have to skip itself on the runner that matters.
+  guide = ROOT.join("docs/adding-a-service.md").read.gsub(/\s+/, " ")
+  claude_summary = claude_md.gsub(/\s+/, " ")
+  [
+    ["the number of files adding a service touches",
+     guide[/promoting Pinchflat changed \*{0,2}([a-z0-9]+) files/, 1],
+     "docs/adding-a-service.md must state the measured cost as " \
+     "\"promoting Pinchflat changed N files\"",
+     claude_summary[/Adding a service touches ([a-z0-9]+) files/, 1],
+     "CLAUDE.md must quote it as \"Adding a service touches N files\""],
+    ["the number of places a new vault credential lands",
+     guide[/It touches \*\*([a-z0-9]+)\*\*, and the ones it omitted/, 1],
+     "docs/adding-a-service.md must state the credential cost as " \
+     "\"It touches **N**, and the ones it omitted\"",
+     claude_summary[/the ([a-z0-9]+) places a new vault credential lands/, 1],
+     "CLAUDE.md must quote it as \"the N places a new vault credential lands\""]
+  ].each do |subject, measured, measured_shape, quoted, quoted_shape|
+    measured_count = stated_count(measured)
+    quoted_count = stated_count(quoted)
+    if measured_count.nil?
+      failures << measured_shape
+    elsif quoted_count.nil?
+      failures << quoted_shape
+    elsif measured_count != quoted_count
+      failures << "CLAUDE.md must give #{subject} as #{measured_count}, the figure " \
+                  "docs/adding-a-service.md measured, not #{quoted_count}"
+    end
   end
   # Deliberately source text. Both subjects are the wording of a comment, which
   # is what a reader of the file sees and what YAML parsing erases; there is no
