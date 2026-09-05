@@ -850,6 +850,29 @@ expect_failure(failures, "missing Mac inventory", "inventory/mac.yml is missing"
   FileUtils.rm(File.join(root, "inventory", "mac.yml"))
 end
 
+# #388. A bare lookup is not an empty value: Ansible replaces it with the
+# inventory hostname, so the remote play SSHes a machine literally named `nas`.
+expect_failure(failures, "unguarded remote transport address",
+               "inventory/remote.yml must define ansible_host and fail on an " \
+               "unset environment value with undef()",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas")["ansible_host"] =
+      "{{ lookup('env', 'PLATFORM_NAS_ADDRESS') }}"
+  end
+end
+
+# Deleting the keyword reaches the same fallback the guard refuses, so presence
+# is required and not merely tolerated.
+expect_failure(failures, "dropped remote transport account",
+               "inventory/remote.yml must define ansible_user and fail on an " \
+               "unset environment value with undef()",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas").delete("ansible_user")
+  end
+end
+
 expect_failure(failures, "machine fact leaked into shared vars",
                "machine facts must not be all-group variables",
                detected_by: %i[platform]) do |root|

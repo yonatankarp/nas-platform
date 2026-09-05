@@ -6,8 +6,27 @@ platform_hosts:
       hosts:
         nas:
           ansible_connection: ssh
-          ansible_host: "{{ lookup('env', 'PLATFORM_NAS_ADDRESS') }}"
-          ansible_user: "{{ lookup('env', 'PLATFORM_NAS_USER') }}"
+          # The two transport coordinates refuse to be inferred. lookup('env')
+          # returns the empty string for a variable that was never exported, not
+          # an undefined value, so a bare lookup hands Ansible a falsy value and
+          # Ansible substitutes its own default: ansible_host falls back to the
+          # inventory hostname -- the literal `nas`, which may be a different
+          # machine on this network -- and ansible_user falls back to the login
+          # name of whoever ran the playbook. Both substitutions are plausible
+          # and silent. undef() turns the empty string back into an undefined
+          # value, which fails while Ansible is templating the connection
+          # keyword, naming the variable and this line, before a single packet
+          # is sent. Contrast platform_public_host below: it is not a transport
+          # coordinate, its failure mode is a wrong published address rather
+          # than the wrong machine, and preflight already refuses it empty
+          # before any target mutation -- so it stays a bare lookup, which is
+          # also what tests/policy_test.rb requires of it.
+          ansible_host: >-
+            {{ lookup('env', 'PLATFORM_NAS_ADDRESS') |
+               default(undef(hint='PLATFORM_NAS_ADDRESS is unset: export the address this run reaches the NAS at'), true) }}
+          ansible_user: >-
+            {{ lookup('env', 'PLATFORM_NAS_USER') |
+               default(undef(hint='PLATFORM_NAS_USER is unset: export the account this run logs into the NAS as'), true) }}
           # Deliberately has no fallback to PLATFORM_NAS_ADDRESS. This is the
           # identity handed to clients, and ntfy hashes it into the topic it
           # registers with its upstream push server, so inheriting the SSH

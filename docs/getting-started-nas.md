@@ -89,7 +89,11 @@ committed. Never commit its password, a plaintext or decrypted vault, rendered
 
 ## 4. Validate inventory and connectivity
 
-These commands are read-only. `PLATFORM_PUBLIC_HOST` is required and separate
+These commands are read-only. `PLATFORM_NAS_ADDRESS` and `PLATFORM_NAS_USER` are
+required by `inventory/remote.yml`: leaving either unset fails while Ansible is
+templating the connection, naming the variable, instead of quietly connecting to
+a host literally named `nas` as your own login name. `PLATFORM_PUBLIC_HOST` is
+required and separate
 from the SSH address: it is the address clients use to reach published services,
 and ntfy hashes it into the topic it registers for mobile push, so it must be
 the address your devices actually use. Leaving it unset now fails preflight
