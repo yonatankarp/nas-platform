@@ -45,6 +45,7 @@ from vault_credential_schema import (  # noqa: E402
     EMAIL,
     EXACT,
     HEX_32,
+    DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS,
     HEX_64,
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
@@ -81,7 +82,7 @@ PATTERN_SAMPLES = {
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
-    HEX_64.pattern: ("0" * 64, "0" * 64 + "x"),
+    HEX_64.pattern: ("a" * 64, "a" * 64 + "x"),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -494,6 +495,19 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                     "vault_jellyfin_admin_username: must be the pinned "
                     "administrator username",
                     errors_for(vault_jellyfin_admin_username=wrong))
+
+    def test_the_documented_relay_token_placeholder_is_rejected(self):
+        # 64 zeros is a valid HEX_64 value, so the pattern rule cannot refuse
+        # it and the relay would accept it. This is the only thing that does.
+        for placeholder in DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS:
+            with self.subTest(placeholder):
+                self.assertIn(
+                    "vault_dozzle_alert_relay_token: is still the documented placeholder",
+                    errors_for(vault_dozzle_alert_relay_token=placeholder))
+
+    def test_an_operator_supplied_relay_token_is_accepted(self):
+        self.assertEqual(
+            errors_for(vault_dozzle_alert_relay_token="b" * 64), [])
 
     def test_the_documented_opensubtitles_placeholders_are_rejected(self):
         cases = (("vault_jellyfin_opensubtitles_username",
