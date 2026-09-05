@@ -582,13 +582,32 @@ failures << "media acquisition storage differs from the exact classified foundat
 failures << "every media acquisition storage entry must use mode 0755" unless
   acquisition_storage.all? { |entry| entry["mode"] == "0755" }
 acquisition_storage.each do |entry|
-  if entry.fetch("path").start_with?("{{ nas_media_root }}/")
-    failures << "media acquisition user/cache paths must not claim ownership" if
-      entry.key?("owner") || entry.key?("group")
-  else
-    failures << "media acquisition critical state must use the NAS identity" unless
-      entry["owner"] == "{{ nas_uid }}" && entry["group"] == "{{ nas_gid }}"
-  end
+  next if entry.fetch("path").start_with?("{{ nas_media_root }}/")
+
+  failures << "media acquisition critical state must use the NAS identity" unless
+    entry["owner"] == "{{ nas_uid }}" && entry["group"] == "{{ nas_gid }}"
+end
+
+# "Omit owner/group under the media root" is a property of the media root, not of
+# the acquisition foundation: the NAS owns those files whichever service writes
+# them. This used to run over the acquisition subset only, which left the six
+# media-root entries no acquisition project claims -- Immich's library and its
+# database backups, the three Paperless document trees, Beszel's agent state --
+# free to claim an ownership the platform must not impose. The mode floor and the
+# NAS-identity branch above stay on the subset deliberately: entries outside it
+# legitimately omit `mode`, and the docker-root half of them legitimately omits
+# owner and group too, so widening those would fail an unmutated tree.
+media_root_storage = all_storage.select do |entry|
+  entry.fetch("path").start_with?("{{ nas_media_root }}/")
+end
+# Twenty-five today, nineteen of them pinned exactly by EXPECTED_STORAGE above.
+# The floor is set below the six that pinning does not cover so that removing one
+# stays a normal edit, while a prefix that stops matching -- the way this filter
+# would go quiet -- drops straight through it.
+check_floor(failures, media_root_storage.length, 24, "media-root storage entries")
+media_root_storage.each do |entry|
+  failures << "media root path #{entry.fetch('path')} must not claim ownership" if
+    entry.key?("owner") || entry.key?("group")
 end
 %w[configarr unpackerr gluetun].each do |stateless_service|
   failures << "#{stateless_service} must not gain critical host state" if

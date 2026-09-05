@@ -5,6 +5,12 @@ x-logging: &default-logging
     max-size: 10m
     max-file: "3"
 
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
 services:
   # Bindery is the acquisition manager for ebooks and audiobooks. Unlike
   # Pinchflat and Kapowarr it is not self-contained: it stores a Prowlarr
@@ -72,11 +78,8 @@ services:
       # and are all empty, and the only executable is /bindery. A CMD-SHELL
       # probe cannot run at all, so the probe is the binary's own subcommand,
       # which requests the unauthenticated /api/v1/health and exits 0 on 200.
+      <<: *healthcheck-defaults
       test: [CMD, /bindery, healthcheck]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 60s
     # There is no root phase to drop from and no gosu re-exec to preserve: the
     # distroless runtime starts directly as the platform identity `user:` gives
     # it, so nothing the container does can want a setuid binary.
