@@ -148,6 +148,15 @@ if defined?(ClassifyChanges)
       ["static", "reconciliation", *ACQUISITION_LANES, "idempotence_check"],
     ["roles/ntfy/tasks/main.yml"] => NTFY_LANES,
     ["services/ntfy/compose.yml"] => NTFY_LANES,
+    # One leg of every job, not one leg of every suite (#395). The derivation at
+    # the end of this file is what keeps that claim true as the workflow grows;
+    # this row is what makes a quiet widening or narrowing of it visible.
+    [".github/workflows/ci.yml"] =>
+      %w[static docs reconciliation smoke beszel idempotence_check],
+    # Only that one file is mapped. A second workflow, or anything else under
+    # .github/, is a path nobody has reasoned about and keeps falling open.
+    [".github/workflows/release.yml"] => LANES,
+    [".github/dependabot.yml"] => LANES,
     ["unexpected/new-runtime-file"] => LANES
   }.each do |paths, expected|
     check(failures, selected_lanes(paths) == expected,
@@ -1062,6 +1071,84 @@ if defined?(ClassifyChanges)
             "#{lanes.join(', ')}")
     end
   end
+end
+
+# The workflow file is the one routed path that no check reads: it *defines* the
+# jobs everything else is routed to. Its route therefore has to buy job coverage
+# -- one leg of every job in the workflow -- rather than the reader coverage
+# every other entry buys, and #395 narrowed it to that from falling open to all
+# seventeen suites.
+#
+# The coverage is derived from the workflow rather than restated, so a job added
+# tomorrow and gated on a classifier output this route does not turn on fails
+# here on the day it lands instead of merging without ever having run. Only the
+# `needs.changes.outputs.*` terms of a job's `if` are read: `toolchain` also
+# declines to publish from a fork and `suites` also requires the classifier job
+# to have succeeded, and neither is something a selection can turn on. What is
+# asserted is that the classifier does not skip the job.
+GATING_OUTPUT_PATTERN = /needs\.changes\.outputs\.([A-Za-z0-9_]+)/
+if defined?(ClassifyChanges)
+  workflow_document = File.file?(POLICY_WORKFLOW) ? YAML.safe_load_file(POLICY_WORKFLOW, aliases: false) : {}
+  workflow_jobs = workflow_document.fetch("jobs", {})
+  routed_workflow_path = ClassifyChanges::CI_WORKFLOW_ROUTED_PATH
+  workflow_selection = ClassifyChanges.classify([routed_workflow_path])
+  gating_outputs = workflow_jobs.to_h do |job_name, job|
+    [job_name, job.fetch("if", "").to_s.scan(GATING_OUTPUT_PATTERN).flatten.uniq]
+  end
+  # Floors rather than emptiness, for the reason the cross-lane derivation states
+  # above: a derivation that stops reading the workflow examines no job, finds no
+  # gate, and reports every job covered.
+  check(failures, workflow_jobs.length >= 6,
+        "the workflow declares #{workflow_jobs.length} jobs, expected at least six: " \
+        "the derivation has stopped reading it")
+  distinct_gates = gating_outputs.values.flatten.uniq
+  # Two rather than today's four, for the reason the cross-lane floor above
+  # gives: retiring a job is allowed to lower the count, and a floor set at
+  # today's value would report that as the derivation breaking.
+  check(failures, distinct_gates.length >= 2,
+        "the workflow jobs are gated on #{distinct_gates.inspect}, expected at least two " \
+        "distinct classifier outputs: the derivation has stopped reading the job gates")
+
+  gating_outputs.each do |job_name, outputs|
+    outputs.each do |output|
+      enabled = if output == "suites"
+                  !ClassifyChanges.suites(workflow_selection).empty?
+                else
+                  workflow_selection.key?(output) && workflow_selection.fetch(output)
+                end
+      check(failures, enabled,
+            "the #{job_name} job is gated on needs.changes.outputs.#{output}, which a change to " \
+            "#{routed_workflow_path} does not turn on: that job would never run against the " \
+            "change that defines it. Route the lane in CI_WORKFLOW_JOB_LANES")
+    end
+  end
+
+  routed_workflow_suites = ClassifyChanges.suites(workflow_selection)
+  check(failures, !routed_workflow_suites.empty?,
+        "#{routed_workflow_path} must dispatch at least one suite: no static check can prove " \
+        "the suites job's steps still run on a runner")
+  check(failures, routed_workflow_suites.length < ClassifyChanges::SUITES.length,
+        "#{routed_workflow_path} still dispatches every suite, which is what #395 removed")
+  # A service lane, and one that drags no companion in with it. The matrix is
+  # uniform by construction -- tests/ci/workflow_test.rb executes the job's own
+  # `case "$SUITE"` for all seventeen suites and asserts the argv, in `static`,
+  # which any change here also selects -- so one leg proves what seventeen do.
+  check(failures, ClassifyChanges::SERVICE_LANES.include?(ClassifyChanges::CI_WORKFLOW_SUITE_LANE),
+        "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} is no longer a service lane")
+  check(failures, ClassifyChanges::COMPANION_LANES.fetch(ClassifyChanges::CI_WORKFLOW_SUITE_LANE, []).empty?,
+        "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} now carries a companion lane; pick a " \
+        "cheaper representative or accept the extra leg deliberately")
+  # Selecting `foundation` would empty selected_tags in write_github_outputs,
+  # which flips the smoke leg onto the untagged path and converges the whole
+  # site -- the opposite of what this entry is for.
+  check(failures, !workflow_selection.fetch("foundation"),
+        "#{routed_workflow_path} must not select the foundation lane: it empties selected_tags")
+  workflow_outputs = StringIO.new
+  ClassifyChanges.write_github_outputs(workflow_selection, workflow_outputs)
+  workflow_tags = workflow_outputs.string[/^selected_tags=(.*)$/, 1].to_s
+  check(failures, !workflow_tags.empty?,
+        "#{routed_workflow_path} must select tags for its suite legs, or the smoke leg converges " \
+        "the whole site rather than the representative stack")
 end
 
 report(failures, "changed-path classifier: all checks passed",

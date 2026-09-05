@@ -285,6 +285,18 @@ remaining shared group, and evicting there needs three of them.
 `tests/ci/classify_changes_test.rb` runs the classify step's own shell against
 synthetic histories.
 
+The workflow file itself is the one routed path no check reads — it *defines*
+the jobs everything else is routed to — so it is routed for **job coverage**,
+one leg of every job, rather than for the readers every other entry is routed
+for: `static`, `docs`, `reconciliation` and three suite legs instead of all
+seventeen (#395). One leg stands for the rest because the matrix is uniform and
+stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
+`case "$SUITE"` for every suite and asserts the argv, and
+`tests/ci/classify_changes_test.rb` reads each job's `needs.changes.outputs.*`
+gate out of the workflow and fails unless that route turns the job on, so a new
+job gated on a new output cannot land unrouted. Any *other* file under
+`.github/` is unmapped and still falls open to every lane.
+
 Documentation is routed, not inert. This file is itself a gate input —
 `tests/policy_test.rb` sweeps it for retired declarations and
 `tests/docs_links_test.rb` checks the lane roster and the stack count above

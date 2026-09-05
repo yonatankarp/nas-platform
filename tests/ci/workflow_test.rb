@@ -203,6 +203,15 @@ jobs.each do |job_name, job|
         "job #{job_name} must declare timeout-minutes between 1 and 90, found #{budget.inspect}")
 end
 
+# Every job on the same runner image. This is what lets one matrix leg stand for
+# the other sixteen: a change to this file now dispatches three suites rather
+# than seventeen (#395), so a per-leg environment that varied by job would be a
+# difference the legs that do run cannot observe.
+jobs.each do |job_name, job|
+  check(failures, job["runs-on"] == "ubuntu-latest",
+        "job #{job_name} must run on ubuntu-latest, found #{job['runs-on'].inspect}")
+end
+
 check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
 if triggers.is_a?(Hash)
   pull_request = triggers["pull_request"]
@@ -500,6 +509,18 @@ check(failures,
       "the suite matrix must come from the classifier's JSON array")
 check(failures, suites_job.dig("strategy", "matrix").keys == ["suite"],
       "the suite matrix must have exactly one dimension")
+# A floor rather than the general 1..90 bound above, and it is what makes the
+# #395 narrowing sound. A change to this file dispatches the three cheapest
+# suites now, so lowering this budget is the one edit here whose damage the legs
+# that run cannot see: smoke and beszel finish well inside anything plausible
+# while immich would be cancelled mid-converge, and nobody would learn that until
+# the next unrelated pull request. Raising it is always safe; lowering it needs a
+# measurement of the slowest leg, not a guess.
+suites_budget = suites_job["timeout-minutes"]
+check(failures, suites_budget.is_a?(Integer) && suites_budget >= 60,
+      "suites must keep a timeout of at least 60 minutes, found #{suites_budget.inspect}: the " \
+      "narrowed workflow route runs the cheapest legs and cannot observe a budget the slowest " \
+      "one needs")
 
 # The classifier owns the lane-to-suite mapping, including the one hyphen that
 # separates the idempotence_check lane from the idempotence-check suite.
@@ -598,6 +619,28 @@ end
 integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
 check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
 integration_step = integration_steps.first || {}
+
+# Nothing in this job that has not been reasoned about above. Every other
+# property of a suite leg is asserted per-suite -- the matrix expression, the
+# argv for all seventeen suites with tags and without, the registry logins
+# derived from the compose files, the runner image, the timeout floor -- but
+# until #395 a *step* could be added here and be asserted by nothing. That is
+# the one way a leg's behaviour could change while the route dispatches three
+# legs of seventeen: a step that only a heavy suite trips over would reach main
+# green. The `static` job has been pinned this way by name since it existed;
+# this is the same property, derived rather than named so that adding a registry
+# stays one edit.
+examined_steps = ([suites_checkout] + login_steps + integration_steps).compact
+unexamined = suites_steps - examined_steps
+check(failures, unexamined.empty?,
+      "the suites job has #{unexamined.length} step(s) no check reads: " \
+      "#{unexamined.map { |step| step['name'] || step['run'] }.inspect}. A change to a suite leg " \
+      "dispatches three legs of seventeen, so a step asserted nowhere is a leg's behaviour " \
+      "changing under a green gate")
+# The same property for the job's environment, which reaches every step in it.
+check(failures, suites_job.fetch("env", {}).keys == [DOCKER_HUB_USERNAME_SECRET],
+      "suites must expose exactly #{[DOCKER_HUB_USERNAME_SECRET].inspect} as job-level env, " \
+      "found #{suites_job.fetch('env', {}).keys.inspect}")
 check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
