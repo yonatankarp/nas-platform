@@ -1338,27 +1338,34 @@ class PollBlindnessTest(PollerTestCase):
     --status by hand. That is the failure worth alerting on.
     """
 
-    def blind_poll(self, config, reason="GitHub request failed"):
+    def blind_poll(self, config, reason="GitHub request failed", delivered=True):
         published = []
 
         def fake_notify(_config, notification):
             published.append(notification)
-            return True
+            # `delivered` is what the real publish() reports when curl cannot
+            # reach ntfy: attempted, not received. The distinction is the whole
+            # point of the alarm path, so it is a parameter of the fake rather
+            # than an always-true stub.
+            return delivered
 
         with mock.patch.object(
             production_auto_deploy, "resolve_main_sha",
             side_effect=production_auto_deploy.EligibilityError(reason),
         ), mock.patch.object(production_auto_deploy, "publish", fake_notify):
-            with self.assertRaises(production_auto_deploy.EligibilityError):
-                production_auto_deploy.poll(config)
+            buffer = io.StringIO()
+            with contextlib.redirect_stderr(buffer):
+                with self.assertRaises(production_auto_deploy.EligibilityError):
+                    production_auto_deploy.poll(config)
+        self.last_stderr = buffer.getvalue()
         return published
 
-    def seeing_poll(self, config):
+    def seeing_poll(self, config, delivered=True):
         published = []
 
         def fake_notify(_config, notification):
             published.append(notification)
-            return True
+            return delivered
 
         state = production_auto_deploy.read_state(config)
         # fetch_ci_runs is stubbed because poll() reaches api.github.com through
@@ -1376,7 +1383,10 @@ class PollBlindnessTest(PollerTestCase):
         ), mock.patch.object(
             production_auto_deploy, "attempted_shas", return_value={MAIN_SHA}
         ), mock.patch.object(production_auto_deploy, "publish", fake_notify):
-            production_auto_deploy.poll(config)
+            buffer = io.StringIO()
+            with contextlib.redirect_stderr(buffer):
+                production_auto_deploy.poll(config)
+        self.last_stderr = buffer.getvalue()
         del state
         return published
 
@@ -1427,6 +1437,74 @@ class PollBlindnessTest(PollerTestCase):
         self.blind_poll(config)
 
         self.assertEqual(self.seeing_poll(config), [])
+
+    def test_an_undeliverable_alarm_is_retried_until_it_lands(self):
+        """The alarm is the only thing that makes blindness visible at all.
+
+        Attempting it on exactly the poll where the count meets the threshold
+        makes an unreachable publisher permanent silence: the count climbs past
+        the threshold, the poller never says so again, and cron sees a success
+        every five minutes.
+        """
+
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD - 1):
+            self.assertEqual(self.blind_poll(config, delivered=False), [])
+
+        attempted = self.blind_poll(config, delivered=False)
+        self.assertEqual(len(attempted), 1)
+        self.assertIn("blindness notification failed", self.last_stderr)
+
+        retried = self.blind_poll(config, delivered=True)
+        self.assertEqual(len(retried), 1)
+        self.assertEqual(retried[0]["topic"], "nas-critical")
+        # The count kept climbing while the alarm was retried, so the notice
+        # that finally lands reports the outage as it actually stands.
+        self.assertIn(
+            f"`{production_auto_deploy.BLIND_POLL_THRESHOLD + 1}`",
+            retried[0]["message"],
+        )
+
+        # Delivered once is delivered; the retry must not become a repeat.
+        self.assertEqual(self.blind_poll(config), [])
+        self.assertEqual(self.blind_poll(config), [])
+
+    def test_a_count_already_past_the_threshold_is_not_read_as_announced(self):
+        """State written by the previously installed poller carries no delivery.
+
+        The poller that runs is the one installed by the last deployment, so a
+        count this revision never wrote is exactly what it wakes up to. A count
+        past the threshold is what both a delivered alarm and an undeliverable
+        one leave behind, and inheriting one must not buy silence.
+        """
+
+        config = self.loaded_config()
+        (config.state_root / "blind-polls").write_text(
+            f"{production_auto_deploy.BLIND_POLL_THRESHOLD + 4}\n", encoding="ascii"
+        )
+
+        published = self.blind_poll(config)
+
+        self.assertEqual(len(published), 1)
+        self.assertEqual(published[0]["topic"], "nas-critical")
+
+    def test_an_undeliverable_recovery_notice_is_retried_on_the_next_poll(self):
+        config = self.loaded_config()
+        for _poll in range(production_auto_deploy.BLIND_POLL_THRESHOLD):
+            self.blind_poll(config)
+
+        self.assertEqual(len(self.seeing_poll(config, delivered=False)), 1)
+        self.assertIn("recovery notification failed", self.last_stderr)
+
+        retried = self.seeing_poll(config)
+        self.assertEqual(len(retried), 1)
+        self.assertEqual(retried[0]["topic"], "nas-deployment")
+
+        # Delivered, so the count is finally cleared and the all-clear stops.
+        self.assertEqual(self.seeing_poll(config), [])
+        self.assertEqual(
+            (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "0"
+        )
 
     def test_a_corrupt_blind_count_does_not_stop_the_poller(self):
         config = self.loaded_config()
