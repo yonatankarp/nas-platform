@@ -308,11 +308,12 @@ repo-wide and stays that way for as long as the repository sits below
 CodeRabbit's eligibility threshold for automatic review of open-source
 repositories, so **automatic review is off here** and no pull request is read
 unless somebody asks for it. Seventeen pull requests merged that day with a
-green CodeRabbit leg that had reviewed nothing, and `gh pr checks` displayed
-every one of them as a pass.
+green CodeRabbit leg that had reviewed nothing, and every one of them read
+`pass` in the state column of `gh pr checks`.
 
 A green CodeRabbit check is therefore not evidence that a review happened. The
-description is, and only the statuses API prints it:
+description is, and while `gh pr checks` does trail it after the state, the
+statuses API is the read that cannot be skimmed past:
 
 ```sh
 gh api repos/yonatankarp/nas-platform/commits/<sha>/statuses \
