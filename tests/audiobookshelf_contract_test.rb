@@ -1093,6 +1093,13 @@ PROGRAM_MUTATIONS = [
     program: :runtime,
     from: "REPORT_ROOT.directory? && !REPORT_ROOT.symlink?",
     to: "true",
+    # The guard stands in four places -- the entry check and each of the three
+    # writers -- and this row removes all four. Under the presence-only plant
+    # this file used to carry it removed the first and left the writers to
+    # refuse for their own reasons, so the row proved a quarter of what it
+    # named (#393). A new call site raises this count rather than invalidating
+    # the row; the plant aborts naming both numbers until it does.
+    occurrences: 4,
     rows: ["a report root that is a symlink"],
     # Nothing downstream re-checks it, so the snapshot lands in the symlink's
     # target and the mode reaches its success line.
@@ -1102,10 +1109,14 @@ PROGRAM_MUTATIONS = [
 
 def plant(source, mutation)
   from = mutation.fetch(:from)
-  abort "self-test could not plant #{mutation.fetch(:label)}: #{from.inspect} is absent" unless
-    source.include?(from)
+  occurrences = mutation.fetch(:occurrences, 1)
+  found = source.scan(from).length
+  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
+       "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
 
-  source.sub(from, mutation.fetch(:to))
+  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
+  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
+  planted
 end
 
 def with_mutant(mutation)
