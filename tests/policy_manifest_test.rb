@@ -150,7 +150,7 @@ expect_acquisition_failure.call(
 end
 expect_acquisition_failure.call(
   "media acquisition ownership claimed",
-  "media acquisition user/cache paths must not claim ownership"
+  "media root path {{ nas_media_root }}/Media/Movies must not claim ownership"
 ) do |root|
   mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
     storage_path.call(inventory, "{{ nas_media_root }}/Media/Movies")["owner"] = "{{ nas_uid }}"

@@ -921,6 +921,19 @@ PLATFORM_HEALTHCHECK_DEFAULTS = {
   "start_period" => "60s"
 }.freeze
 
+# The stacks allowed to declare no platform fragment, and nothing else. immich
+# is the one entry: three of its four containers run the health check their
+# image ships and the fourth supplies only a test, so the platform's interval,
+# timeout, retries and start_period would replace an image's own timing rather
+# than share a default. Its compose.yml records the same reason at the top, and
+# that comment is the thing this list points at -- an exemption whose reason
+# lives only here is a list, not a decision. x-logging carries no entry: every
+# stack logs the same way, and a stack that stops is a stack whose logs are
+# unbounded on a NAS with one disk pool.
+FRAGMENT_EXEMPTIONS = {
+  "x-healthcheck-defaults" => %w[immich].freeze
+}.freeze
+
 # What a health-check command has to do to be one. Timing says how often the
 # probe runs and presence says there is a probe; neither says the probe can
 # report the service broken, and unpackerr's could not: `kill -0 1` asks whether
@@ -989,6 +1002,15 @@ service_dirs.each do |dir|
     "x-logging" => PLATFORM_LOGGING,
     "x-healthcheck-defaults" => PLATFORM_HEALTHCHECK_DEFAULTS
   }.each do |fragment, expected|
+    # Presence first, then equality. Skipping a stack that declares no fragment
+    # pinned only the copies that already existed: bindery wrote the platform
+    # tuple inline into its one health check and its copy was held to nothing,
+    # which is a fragment the pin cannot see rather than a stack that chose not
+    # to have one. Absence is now a decision the exemption list has to record.
+    exempt = FRAGMENT_EXEMPTIONS.fetch(fragment, []).include?(name)
+    check(failures, compose.key?(fragment) || exempt,
+          "#{name}: #{fragment} must be declared, or exempted with the reason recorded " \
+          "beside FRAGMENT_EXEMPTIONS and in the stack's own comment")
     next unless compose.key?(fragment)
 
     check(failures, compose[fragment] == expected,

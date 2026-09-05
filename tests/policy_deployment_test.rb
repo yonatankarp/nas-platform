@@ -17,6 +17,12 @@ require_relative "policy_support"
 include PolicySupport
 include TestScaffold
 
+# The two roles whose target include legitimately passes
+# deployment_target_require_current_release: false, because both run before the
+# release exists rather than out of it. Every other role that includes
+# deployment_bundle's target tasks deploys from `current` and must require one.
+RELEASE_OPTIONAL_ROLES = %w[deployment_bundle host_prep].freeze
+
 failures = []
 
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
@@ -623,8 +629,14 @@ playbook_paths.each do |path|
     end
   end
 end
+# Which role deploys which service out of the installed release, collected from
+# the same sweep. This is the subject the absence check below needs: a role that
+# starts a stack from {{ platform_current_dir }} is a role that touches the five
+# paths target.yml derives, whether or not it ever said so.
+release_deploying_services = Hash.new { |roles, role| roles[role] = Set.new }
 Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")
+  owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
   flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
     include_role = task["ansible.builtin.include_role"]
     included_tasks = task["ansible.builtin.include_tasks"]
@@ -634,6 +646,12 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
        include_role["tasks_from"] == "target") ||
       (included_file == "target.yml" && relative_path.start_with?("roles/deployment_bundle/"))
     target_include_sites << [relative_path, task] if includes_target
+
+    compose = task["community.docker.docker_compose_v2"]
+    next unless compose.is_a?(Hash)
+
+    deployed = compose["project_src"].to_s[%r{\A\{\{ platform_current_dir \}\}/services/(.+)\z}, 1]
+    release_deploying_services[owning_role] << deployed if deployed
   end
 end
 # Anchored on the two call sites no service role owns rather than on a count:
@@ -646,11 +664,54 @@ check(failures,
       "target containment call-site enumeration found #{target_include_sites.length} sites in " \
       "#{enumerated_callers.join(', ')}; the callers that must declare what they touch are no " \
       "longer being inspected")
+
+# The half the enumeration above cannot see. It validates every call site that
+# exists, so a role that simply never includes target.yml is green: containment
+# is checked for the fifteen roles that ask for it and for nobody else, and a
+# sixteenth would deploy a stack having declared nothing. The subject is derived
+# from what a role does rather than from the manifest roster deliberately -- the
+# mutation harness stubs role task files, and a roster-driven requirement would
+# report a deliberately reduced fixture as a missing include, which is the same
+# objection the enumeration's own comment records against a count. A stub
+# deploys nothing, so it owes nothing here.
+declared_services_by_role = Hash.new { |roles, role| roles[role] = Set.new }
+target_include_sites.each do |relative_path, task|
+  owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
+  next if owning_role.nil?
+
+  declared = (task["vars"] || {})["deployment_target_service"]
+  declared_services_by_role[owning_role] << declared if declared.is_a?(String) && !declared.empty?
+end
+check_floor(failures, release_deploying_services.length, 14,
+            "roles deploying a stack out of the installed release")
+release_deploying_services.each do |role, deployed_services|
+  missing = deployed_services - declared_services_by_role[role]
+  check(failures, missing.empty?,
+        "role #{role} starts #{missing.sort.join(', ')} out of the installed release but no " \
+        "task in it includes deployment_bundle tasks_from: target naming that service, so the " \
+        "five paths it is about to touch are never contained")
+end
 target_include_sites.each do |relative_path, task|
   task_vars = task["vars"] || {}
   label = "#{relative_path}: \"#{task['name']}\""
   check(failures, [true, false].include?(task_vars["deployment_target_require_current_release"]),
         "#{label} must state whether target validation requires an active current release")
+
+  # Stating a value is not the rule. CLAUDE.md requires a service role to pass
+  # `true` -- it deploys out of the release the bundle installed, so a run that
+  # reached it with no active `current` is converging a target that does not
+  # exist yet. Only two callers legitimately pass `false`, and both run before
+  # there is a release to require: deployment_bundle's own body, which is what
+  # installs it, and host_prep, which prepares the directories it lands in. The
+  # playbook-level sites are the same case a play earlier: site.yml validates
+  # containment in pre_tasks, and the two test playbooks converge nothing.
+  # Without this, a service role passing `false` was green.
+  caller_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
+  unless caller_role.nil? || RELEASE_OPTIONAL_ROLES.include?(caller_role)
+    check(failures, task_vars["deployment_target_require_current_release"] == true,
+          "#{label} is a service role's target include and must require an active current " \
+          "release; only #{RELEASE_OPTIONAL_ROLES.sort.join(' and ')} run before one exists")
+  end
   declared_extra_paths = task_vars["deployment_target_extra_paths"]
   check(failures, declared_extra_paths.is_a?(Array) ||
                   declared_extra_paths.to_s.match?(/\A\{\{.*\}\}\z/m),
@@ -766,5 +827,102 @@ check(failures, !real_run_passes,
 # that passes for the wrong reason stops guarding anything.
 check(failures, real_output.include?("does not resolve to"),
       "the real-run refusal must name the release the current pointer failed to reach")
+
+# CLAUDE.md: "site.yml must never depend on anything
+# install-production-auto-deploy.yml installs." The poller runs validate-vault,
+# site.yml and verify.yml against the *previously* installed poller and only then
+# reinstalls itself, so a play that needs something this revision's poller ships
+# deadlocks the upgrade on itself -- #327, which failed every five-minute tick
+# identically until a fix reached main. Ten tests name both playbooks and all of
+# them assert play order or CI wiring; this is the direction none of them assert.
+#
+# It is checked in two halves, because the rule has two halves.
+#
+# First, the paths. The distinctive literal fragments of what the poller and the
+# prune install are derived from their own defaults rather than restated, so a
+# renamed share root moves the subject with it. Every file a site.yml run can
+# reach is then swept for them, and the result is pinned: a new reference is a new
+# coupling and has to be justified by editing this list, not by editing a role.
+POLLER_INSTALLED_FRAGMENTS = %w[production_auto_deploy image_prune].flat_map do |role|
+  defaults_path = File.join(ROOT, "roles", role, "defaults", "main.yml")
+  next [] unless File.file?(defaults_path)
+
+  YAML.safe_load_file(defaults_path).filter_map do |key, value|
+    next unless key.end_with?("_root", "_path") && value.is_a?(String)
+
+    value.gsub(/\{\{.*?\}\}/m, " ").scan(%r{[A-Za-z0-9/._-]+})
+         .select { |fragment| fragment.include?("nas-platform") }
+         .map { |fragment| fragment.sub(%r{\A/}, "").sub(%r{/\z}, "") }
+  end.flatten
+end.uniq.sort.freeze
+check_floor(failures, POLLER_INSTALLED_FRAGMENTS.length, 3,
+            "distinctive path fragments install-production-auto-deploy.yml creates")
+
+# Every file the two poller roles do not own. The poller playbook runs only those
+# two roles plus vault_contract, which site.yml runs as well and is therefore
+# swept here; everything else under roles/ is reachable from site.yml or from
+# nothing at all, and both are fine to hold to this rule.
+POLLER_PATH_REFERENCE_REASONS = {
+  "roles/deployment_bundle/defaults/main.yml" =>
+    "derives the flock path independently and tolerates its absence -- a host with no " \
+    "poller installed finds no file and is not guarded",
+  "roles/deployment_bundle/tasks/target.yml" =>
+    "names the launcher in a refusal message so the operator is told how to take the lock",
+  "roles/deployment_bundle/meta/argument_specs.yml" =>
+    "documents which program exports PLATFORM_DEPLOYMENT_LOCK_OWNER"
+}.freeze
+site_reachable_files = (Dir[File.join(ROOT, "roles", "**", "*")] +
+                        [File.join(ROOT, "site.yml"), File.join(ROOT, "verify.yml")])
+                       .select { |path| File.file?(path) }
+                       .map { |path| path.delete_prefix("#{ROOT}/") }
+                       .reject { |path| path.start_with?("roles/production_auto_deploy/", "roles/image_prune/") }
+# Both floors are sized against the mutation sandbox rather than the working tree,
+# which carries 183 swept files and three fragments: BASE_FIXTURE_PATHS names 24
+# non-poller role files plus site.yml, verify.yml and the fifteen fixture roles'
+# statically imported stage files, and it omits roles/image_prune entirely, so
+# every fragment there is derived from the poller role alone. A tree-sized floor
+# would fail every mutation for a reason unrelated to the mutation.
+check_floor(failures, site_reachable_files.length, 30, "files a site.yml run can reach")
+# Intersected with what is present for the same reason: the recorded set is there
+# to make a *new* coupling fail, and a sandbox that carries fewer files than the
+# repository has not gained one. Fixture containment is policed elsewhere.
+expected_references = (POLLER_PATH_REFERENCE_REASONS.keys & site_reachable_files).sort
+referencing_files = site_reachable_files.select do |path|
+  contents = File.read(path)
+  POLLER_INSTALLED_FRAGMENTS.any? { |fragment| contents.include?(fragment) }
+end.sort
+check(failures, referencing_files == expected_references,
+      "site.yml must not depend on what install-production-auto-deploy.yml installs; " \
+      "#{referencing_files.join(', ')} name a poller-installed path, and the recorded set is " \
+      "#{expected_references.join(', ')}. A new entry must tolerate the path's absence for one " \
+      "deployment and say so here")
+
+# Second, the behaviour, which is what #327 actually crossed: the guard demanded a
+# record only the poller shipping in the same commit writes. What keeps it the
+# right way round is the one tolerated held lock -- a holder that recorded no
+# identity -- so the refusal must keep reading it. Both the definition and the use
+# are asserted, because hoisting the condition somewhere else would leave the
+# `that:` list looking unchanged while it stopped meaning this.
+lock_block = YAML.safe_load_file(File.join(ROOT, "roles", "deployment_bundle", "tasks", "target.yml"))
+                 .find do |task|
+  task.is_a?(Hash) && task["block"].is_a?(Array) &&
+    (task["vars"] || {}).key?("deployment_bundle_lock_identified")
+end
+check(failures, !lock_block.nil?,
+      "roles/deployment_bundle/tasks/target.yml must define deployment_bundle_lock_identified " \
+      "in the vars of the block that judges the deployment lock")
+if lock_block
+  refusal = lock_block["block"].find do |task|
+    conditions = task.dig("ansible.builtin.assert", "that")
+    conditions.is_a?(Array) &&
+      conditions.join(" ").include?("deployment_bundle_lock_held_by_this_run")
+  end
+  check(failures, !refusal.nil?, "the deployment lock block must still refuse a foreign holder")
+  check(failures, refusal && refusal.dig("ansible.builtin.assert", "that")
+                                   .join(" ").include?("deployment_bundle_lock_identified"),
+        "the deployment lock refusal must tolerate a holder that recorded no identity; " \
+        "refusing one deadlocks the upgrade that installs the poller writing the record, " \
+        "which is what #327 did to every five-minute tick")
+end
 
 report(failures, "deployment policy: all properties hold", "deployment policy violation(s)")

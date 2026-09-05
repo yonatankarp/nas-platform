@@ -777,8 +777,27 @@ def implement_paperless(root)
   mutate_manifest(root) { |manifest| service(manifest, "paperless-ngx")["status"] = "implemented" }
   compose_dir = File.join(root, "services", "paperless-ngx")
   FileUtils.mkdir_p(compose_dir)
+  # The platform fragments every stack declares. Written as plain mappings rather
+  # than anchored and merged, because mutate_yaml_file round-trips this file
+  # through YAML.safe_load_file without aliases: true and an alias it actually
+  # used would raise. They are here because policy_test.rb requires the fragments
+  # to be present rather than only to agree when present -- a synthetic stack
+  # that omitted them would fail the rows built on it for a reason none of them
+  # is testing, which is exactly what a stated fixture is meant to make visible.
   File.write(File.join(compose_dir, "compose.yml"), <<~YAML)
     ---
+    x-logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+    x-healthcheck-defaults:
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
     services:
       broker:
         image: docker.io/valkey/valkey:9-alpine@sha256:#{'0' * 64}
