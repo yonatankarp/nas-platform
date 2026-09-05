@@ -89,6 +89,7 @@ BASE_FIXTURE_PATHS = %w[
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
   scripts/production_auto_deploy.py
+  scripts/image_prune.py
   templates/vault-plain.yml.j2
   tests/contracts/registry.yml
   tests/compose_metadata_filter_test.yml

@@ -2474,5 +2474,39 @@ expect_failure(failures, "media Compose bind source undeclared",
   end
 end
 
+
+# The two scripts are installed as single files and cannot share a module, so
+# _write_private is duplicated on purpose and held identical by comparison
+# instead. These two rows are the halves of that: the copies drifting apart, and
+# a copy going back to truncating the target in place.
+expect_failure(failures, "private write copies diverged",
+               "every script must define _write_private identically",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "scripts", "image_prune.py")
+  File.write(path, File.read(path).sub(
+    "Replace path's contents atomically, at mode 0600.",
+    "Replace the contents of path atomically, at mode 0600."
+  ))
+end
+
+expect_failure(failures, "private write truncates in place again",
+               "_write_private must replace the target rather than truncate it in place",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "scripts", "image_prune.py")
+  source = File.read(path)
+  opening = source.index("def _write_private(path: Path, payload: bytes) -> None:")
+  closing = source.index("def _record_lock_holder(descriptor: int, holder: str) -> None:")
+  legacy = <<~PYTHON
+    def _write_private(path: Path, payload: bytes) -> None:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as sink:
+            sink.write(payload)
+        os.chmod(path, 0o600)
+
+
+  PYTHON
+  File.write(path, source[0...opening] + legacy + source[closing..])
+end
+
 audit_policy_detection(failures)
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")
