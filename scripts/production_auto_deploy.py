@@ -1044,14 +1044,41 @@ def _write_blind_polls(config: Config, count: int) -> None:
     _write_private(_blind_path(config), f"{count}\n".encode("ascii"))
 
 
+def _blind_alarm_path(config: Config) -> Path:
+    return config.state_root / "blind-alarm"
+
+
+def read_blind_alarm(config: Config) -> bool:
+    """Whether this stretch of blindness has actually been announced.
+
+    Delivery, not arithmetic, is what suppresses re-announcement. The count on
+    its own cannot say: a count past the threshold is what both a delivered
+    alarm and an undeliverable one leave behind, and reading the first meaning
+    into the second is how the poller went blind in silence.
+    """
+
+    try:
+        raw = _blind_alarm_path(config).read_text(encoding="ascii").strip()
+    except (OSError, UnicodeError):
+        return False
+    return raw == "announced"
+
+
 def note_blind_poll(config: Config, reason: str) -> None:
-    """Count one blind poll and announce the transition into blindness once."""
+    """Count one blind poll and announce the transition into blindness once.
+
+    The count is recorded on every poll and the announcement is retried on
+    every poll until it lands, because the alarm this raises is the only thing
+    that distinguishes a poller that cannot see main from an idle one. A
+    publisher that is briefly unreachable must therefore cost a delayed alarm,
+    never the only alarm this outage would ever get.
+    """
 
     count = read_blind_polls(config) + 1
     _write_blind_polls(config, count)
-    if count != BLIND_POLL_THRESHOLD:
+    if count < BLIND_POLL_THRESHOLD or read_blind_alarm(config):
         return
-    publish(
+    published = publish(
         config,
         {
             "topic": config.ntfy_topic_critical,
@@ -1068,6 +1095,13 @@ def note_blind_poll(config: Config, reason: str) -> None:
             "markdown": True,
         },
     )
+    if not published:
+        # Reported to cron's mail and retried on the next poll. It must not
+        # raise: a notification nobody received is bad, and a deployment
+        # stopped because a notification could not be sent is worse.
+        print("production auto-deploy: blindness notification failed", file=sys.stderr)
+        return
+    _write_private(_blind_alarm_path(config), b"announced\n")
 
 
 def note_seeing_poll(config: Config) -> None:
@@ -1079,7 +1113,11 @@ def note_seeing_poll(config: Config) -> None:
         # five minutes would fsync the state directory for no change.
         return
     if count >= BLIND_POLL_THRESHOLD:
-        publish(
+        # Gated on the count rather than on the delivered alarm, so an
+        # all-clear still follows an alarm this revision of the poller did not
+        # itself send -- the count it inherits is all a freshly installed
+        # poller knows about the outage it woke up inside.
+        published = publish(
             config,
             {
                 "topic": config.ntfy_topic_deployment,
@@ -1090,6 +1128,15 @@ def note_seeing_poll(config: Config) -> None:
                 "markdown": True,
             },
         )
+        if not published:
+            # The count stays where it is so the next seeing poll tries again,
+            # for the same reason the alarm above retries.
+            print(
+                "production auto-deploy: recovery notification failed", file=sys.stderr
+            )
+            return
+    if read_blind_alarm(config):
+        _write_private(_blind_alarm_path(config), b"\n")
     _write_blind_polls(config, 0)
 
 
