@@ -147,20 +147,23 @@ check(failures, Array(config["customManagers"]).none? do |manager|
     manager["depNameTemplate"].to_s.start_with?("alpine_3_24/")
 end, "Alpine 3.24 pins must not depend on Repology coverage")
 
-# A container image pinned inside the Ansible control plane is a second copy of
-# a pin Renovate cannot see: enabledManagers covers docker-compose plus the
-# custom managers above, and none of them look at roles/**, inventory/** or
-# config/**. The Configarr digest hashed into the Arr reconciliation fingerprint
-# drifted two releases behind the deployed image exactly that way, which
-# silently disabled the reconcile a version bump exists to force. The Compose
-# definition is the one pin; the control plane reads the image out of it.
-CONTROL_PLANE_TREES = %w[roles inventory config].freeze
-CONTROL_PLANE_TEXT = /\.(ya?ml|j2|json|py|sh|cfg|txt|md)\z/.freeze
+# A container image pinned outside a Compose file is a second copy of a pin
+# Renovate cannot see: enabledManagers covers docker-compose plus the custom
+# managers above, and none of them look at roles/**, inventory/**, config/** or
+# tests/contracts/**. The Configarr digest hashed into the Arr reconciliation
+# fingerprint drifted two releases behind the deployed image exactly that way,
+# which silently disabled the reconcile a version bump exists to force. The
+# Dozzle contract's disposable ntfy fixture drifted a release behind the same
+# way, so CI pulled a second ntfy image on every dozzle leg for the sake of an
+# image it picked because the platform had already pulled it. The Compose
+# definition is the one pin; everything else reads the image out of it.
+RESTATED_PIN_TREES = ["roles", "inventory", "config", "tests/contracts"].freeze
+RESTATED_PIN_TEXT = /\.(ya?ml|j2|json|py|rb|sh|cfg|txt|md)\z/.freeze
 IMAGE_PIN = %r{[a-z0-9][a-z0-9._/-]*:[\w][\w.-]*@sha256:[0-9a-f]{64}}.freeze
 
-CONTROL_PLANE_TREES.each do |tree|
+RESTATED_PIN_TREES.each do |tree|
   Dir[File.join(ROOT, tree, "**", "*")].sort.each do |path|
-    next unless File.file?(path) && path.match?(CONTROL_PLANE_TEXT)
+    next unless File.file?(path) && path.match?(RESTATED_PIN_TEXT)
 
     relative = path.delete_prefix("#{ROOT}/")
     File.readlines(path, chomp: true).each_with_index do |line, index|

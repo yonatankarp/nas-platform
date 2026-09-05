@@ -49,6 +49,11 @@ mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
 # Both are read out of the tree under inspection: the hook for the inspection it
 # performs, the program for the labels it names.
 mac_verify_labels=$repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb
+# The notify mode's throwaway containers are started from the ntfy image for one
+# reason only: the platform already pulled it. That is true of the deployed pin
+# and of nothing else, so the pin is read out of the deployment rather than
+# restated here.
+ntfy_compose=$repo_dir/services/ntfy/compose.yml
 
 fail_contract() {
   printf 'Dozzle contract failed: %s\n' "$1" >&2
@@ -63,6 +68,7 @@ relay_probe_port=53081
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
 [ -f "$relay_script" ] || fail_contract 'services/dozzle/alert_relay.py is absent'
+[ -f "$ntfy_compose" ] || fail_contract 'services/ntfy/compose.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
 
 render_group_contract() {
@@ -179,6 +185,8 @@ esac
 : "${PLATFORM_DOZZLE_PORT:=8080}"
 : "${PLATFORM_NTFY_PORT:=2586}"
 PLATFORM_CONTRACT_DOZZLE_DEFAULTS=$defaults
+PLATFORM_CONTRACT_NTFY_COMPOSE=$ntfy_compose
 export PLATFORM_DOZZLE_PORT PLATFORM_NTFY_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
+export PLATFORM_CONTRACT_NTFY_COMPOSE
 
 exec ruby "$runtime_program" "$mode" "$@" </dev/null
