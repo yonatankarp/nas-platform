@@ -113,8 +113,8 @@ abort "Audiobookshelf contract failed: owned server settings differ" unless
 abort "Audiobookshelf contract failed: backup policy defaults differ" unless
   defaults.values_at(
     "audiobookshelf_backup_cron", "audiobookshelf_backup_retention",
-    "audiobookshelf_backup_container_path", "audiobookshelf_backup_host_path"
-  ) == ["0 3 * * *", 7, "/metadata/backups", "/volume1/Docker/audiobookshelf/backups"]
+    "audiobookshelf_backup_container_path"
+  ) == ["0 3 * * *", 7, "/metadata/backups"]
 abort "Audiobookshelf contract failed: backup environment is absent" unless
   environment_assignments.select { |name, _value| name == "AUDIOBOOKSHELF_BACKUP_PATH" } ==
     [["AUDIOBOOKSHELF_BACKUP_PATH", "{{ audiobookshelf_effective_backup_host_path }}"]]
@@ -138,8 +138,7 @@ abort "Audiobookshelf contract failed: server settings argument validation is ab
   argument_options.dig("audiobookshelf_owned_server_settings", "type") == "dict" &&
     argument_options.dig("audiobookshelf_backup_cron", "type") == "str" &&
     argument_options.dig("audiobookshelf_backup_retention", "type") == "int" &&
-    argument_options.dig("audiobookshelf_backup_container_path", "type") == "str" &&
-    argument_options.dig("audiobookshelf_backup_host_path", "type") == "str"
+    argument_options.dig("audiobookshelf_backup_container_path", "type") == "str"
 
 if mode == "static"
   resolve_backup_index = role_tasks.index { |task| task["name"] == "Resolve the effective Audiobookshelf backup directory" }

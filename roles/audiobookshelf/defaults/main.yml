@@ -24,7 +24,6 @@ audiobookshelf_owned_server_settings:
 audiobookshelf_backup_cron: "0 3 * * *"
 audiobookshelf_backup_retention: 7
 audiobookshelf_backup_container_path: /metadata/backups
-audiobookshelf_backup_host_path: /volume1/Docker/audiobookshelf/backups
 
 audiobookshelf_library_name: Audiobooks
 audiobookshelf_library_folders:

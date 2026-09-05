@@ -7,10 +7,13 @@ nas_gid: 100
 
 # Phase 1 media acquisition stays inert until a host enables Usenet. Adoption
 # is a one-convergence escape hatch for the existing Movies and Series trees;
-# the role never persists it. Monitoring and bulk rename remain operator gates.
+# the role never persists it. Bulk rename remains an operator gate.
 media_acquisition_adopt_existing_libraries: false
-media_arr_automatic_monitoring_enabled: false
 media_arr_automatic_rename_enabled: false
+# A record, not a gate: setting it true states that the Bazarr subtitle handoff
+# was reviewed, which is the prerequisite for retiring Jellyfin's Open Subtitles
+# plugin in its own change. No role reads it, and it disables nothing by itself;
+# see docs/media-acquisition-phase1.md.
 media_bazarr_handoff_accepted: false
 
 # One-convergence input, and false is the only value this file may hold: this

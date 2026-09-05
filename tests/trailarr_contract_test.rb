@@ -202,6 +202,19 @@ STATIC_ROWS = [
     expects: "Trailarr must probe its unauthenticated status route with curl"
   },
   {
+    # The relation the contract exists to hold, planted on the arr's side so
+    # only the mount-to-root-folder comparison can see it: the Compose mount
+    # still reads as declared, and Radarr's root folder has moved out from
+    # under it.
+    name: "an arr root folder the Trailarr mount no longer matches",
+    break: lambda { |root|
+      mutate_text(root, "roles/arr/defaults/main.yml",
+                  "arr_radarr_root_folder: /data/media/Movies",
+                  "arr_radarr_root_folder: /data/media/Films")
+    },
+    expects: "must be mounted at arr_radarr_root_folder"
+  },
+  {
     name: "a CPU set rendered twice",
     break: lambda { |root|
       mutate_text(root, "roles/trailarr/templates/env.j2",
@@ -844,6 +857,13 @@ PROGRAM_MUTATIONS = [
     from: 'Array(service["ports"]) == ["7889:7889"]',
     to: "true",
     rows: ["a published web UI port that drifted"]
+  },
+  {
+    label: "the arr root folder mount comparison",
+    program: :static,
+    from: 'library_mounts.include?("#{mount_source}:#{arr_defaults[arr_key]}")',
+    to: "true",
+    rows: ["an arr root folder the Trailarr mount no longer matches"]
   },
   {
     label: "the curl health probe check",

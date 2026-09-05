@@ -103,7 +103,7 @@ Run `validate-vault.yml`, `site.yml`, and `verify.yml` with the tag list from th
 then install the poller, declaring that scheduling is external:
 
 ```sh
-ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_vault_password_file="$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_external_scheduler=true
+ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" -e production_auto_deploy_external_scheduler=true
 ```
 
 One flag covers both schedules. The weekly image prune this playbook also

@@ -8,12 +8,6 @@ trailarr_status_url: "http://127.0.0.1:{{ trailarr_port }}/status"
 trailarr_config_host_path: "{{ nas_docker_root }}/trailarr/config"
 trailarr_movies_host_path: "{{ nas_media_root }}/Media/Movies"
 trailarr_series_host_path: "{{ nas_media_root }}/Media/Series"
-# The container paths the two libraries are mounted at. They equal Radarr's and
-# Sonarr's own root folders exactly, which is what lets every connection carry
-# an empty path_mappings list: Trailarr appends a trailing slash to a mapping on
-# write, so a declared identity mapping reads back different from what was sent.
-trailarr_movies_root: /data/media/Movies
-trailarr_series_root: /data/media/Series
 
 # Trailarr addresses both arrs by their Compose service alias on the shared
 # media-control network. Compose registers the service name as a network alias

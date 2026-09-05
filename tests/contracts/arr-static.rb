@@ -68,8 +68,6 @@ if failures.empty?
     defaults["arr_radarr_root_folder"] == "/data/media/Movies"
   failures << "Sonarr root must be exact" unless
     defaults["arr_sonarr_root_folder"] == "/data/media/Series"
-  failures << "automatic monitoring must stay disabled" unless
-    defaults["media_arr_automatic_monitoring_enabled"] == false
   failures << "automatic rename must stay disabled" unless
     defaults["media_arr_automatic_rename_enabled"] == false
   failures << "Prowlarr applications must use full sync" unless

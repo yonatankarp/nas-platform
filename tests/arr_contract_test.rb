@@ -158,15 +158,6 @@ STATIC_ROWS = [
     expects: "Sonarr root must be exact"
   },
   {
-    name: "automatic monitoring switched on",
-    break: lambda { |root|
-      mutate_text(root, "roles/arr/defaults/main.yml",
-                  "media_arr_automatic_monitoring_enabled: false",
-                  "media_arr_automatic_monitoring_enabled: true")
-    },
-    expects: "automatic monitoring must stay disabled"
-  },
-  {
     name: "automatic rename switched on",
     break: lambda { |root|
       mutate_text(root, "roles/arr/defaults/main.yml",
@@ -588,12 +579,6 @@ PROGRAM_MUTATIONS = [
     from: 'defaults["arr_sonarr_root_folder"] == "/data/media/Series"',
     to: "true",
     rows: ["a drifted Sonarr root folder"]
-  },
-  {
-    label: "the automatic monitoring check",
-    from: 'defaults["media_arr_automatic_monitoring_enabled"] == false',
-    to: "true",
-    rows: ["automatic monitoring switched on"]
   },
   {
     label: "the automatic rename check",

@@ -40,7 +40,6 @@ arr_bazarr_config_host_path: "{{ nas_docker_root }}/bazarr/config"
 
 media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
-media_arr_automatic_monitoring_enabled: false
 media_arr_automatic_rename_enabled: false
 media_arr_indexers: []
 media_bazarr_languages: []
