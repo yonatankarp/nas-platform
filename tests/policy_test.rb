@@ -367,6 +367,28 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
   check(failures, borrowed.nil?,
         "inventory/#{inventory_name} platform_public_host must be stated " \
         "explicitly, not derived from another coordinate (found #{borrowed.inspect})")
+  # The other half of the same argument, for the other audience. An ssh
+  # inventory states where it connects and who it connects as, and Ansible has a
+  # plausible default for each: an empty ansible_host becomes the inventory
+  # hostname -- the literal `nas` -- and an empty ansible_user becomes the local
+  # login name. lookup('env') yields the empty string rather than an undefined
+  # value, so a bare lookup reaches both defaults silently. undef() is what makes
+  # the unset case fail while the connection keyword is templated, before the
+  # first packet. Presence is required rather than tolerated, because deleting
+  # the keyword outright reinstates the same fallback that the guard exists to
+  # refuse; a local connection has no transport to state and must carry neither.
+  %w[ansible_host ansible_user].each do |coordinate|
+    coordinate_source = host.is_a?(Hash) ? host[coordinate] : nil
+    if connection == "ssh"
+      check(failures, coordinate_source.is_a?(String) && coordinate_source.include?("undef("),
+            "inventory/#{inventory_name} must define #{coordinate} and fail on an " \
+            "unset environment value with undef(), not fall back to Ansible's default")
+    else
+      check(failures, coordinate_source.nil?,
+            "inventory/#{inventory_name} uses a #{connection} connection and must " \
+            "not declare #{coordinate}")
+    end
+  end
 end
 
 ansible_config_source = File.read(File.join(ROOT, "ansible.cfg"))

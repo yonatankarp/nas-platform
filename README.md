@@ -142,7 +142,10 @@ print only the vault password.
 
 Three coordinates are separate inputs because they answer to different
 audiences. `PLATFORM_NAS_ADDRESS` is how this run reaches the NAS, over SSH or
-locally. `PLATFORM_PUBLIC_HOST` is the address clients use to reach published
+locally; with `inventory/remote.yml` it and `PLATFORM_NAS_USER` are required, and
+an unset one fails while the connection is being templated rather than falling
+back to the inventory hostname `nas` and your own login name.
+`PLATFORM_PUBLIC_HOST` is the address clients use to reach published
 services; it is required and has no fallback, because ntfy hashes it into the
 topic it registers for mobile push, so a value inherited from the connection
 address routes notifications to a topic no device subscribes to and nothing
