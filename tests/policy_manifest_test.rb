@@ -873,6 +873,27 @@ expect_failure(failures, "missing filter registration",
   File.write(path, File.read(path).sub(/^filter_plugins\s*=.*\n/, ""))
 end
 
+expect_failure(failures, "restored default inventory",
+               "ansible.cfg must name no default inventory, so a forgotten -i " \
+               "cannot silently target a host",
+               detected_by: %i[ci]) do |root|
+  mutate_text(root, "ansible.cfg", /^\[defaults\]\n/,
+              "[defaults]\ninventory = inventory/remote.yml\n")
+end
+
+expect_failure(failures, "unreadable ansible.cfg section",
+               "ansible.cfg must carry a [defaults] section for its keys to be read",
+               detected_by: %i[ci]) do |root|
+  mutate_text(root, "ansible.cfg", /^\[defaults\]\n/, "")
+end
+
+expect_failure(failures, "untracked ANSIBLE_HOME",
+               "gitignore must exclude the local ANSIBLE_HOME that " \
+               "ansible-galaxy fills in the repository root",
+               detected_by: %i[ci]) do |root|
+  mutate_text(root, ".gitignore", /^\.ansible\/\n/, "")
+end
+
 expect_failure(failures, "nonfunctional physical-path filter",
                "Mac physical-path filter must reject ambiguous or relative paths",
                detected_by: %i[policy]) do |root|
