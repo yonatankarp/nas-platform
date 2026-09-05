@@ -209,6 +209,11 @@
       - item.fields | length > 0
       - item.enable | default(true) is boolean
       - item.priority | default(25) is integer
+      # Prowlarr refuses a create or update whose AppProfileId is not above
+      # zero, so an operator who names one has to name a usable one; the
+      # default 1 is Prowlarr's own "Standard" sync profile.
+      - item.app_profile_id | default(1) is integer
+      - item.app_profile_id | default(1) | int > 0
       - >-
         item.implementation_name is not defined or
         (item.implementation_name is string and
