@@ -977,7 +977,8 @@ else
   real_jobs = real_workflow_jobs(ROOT)
   documented_jobs = documented_workflow_jobs(claude_md)
   if real_jobs.nil?
-    failures << ".github/workflows/ci.yml must declare the jobs CLAUDE.md documents"
+    failures << "no jobs could be read out of .github/workflows/ci.yml: " \
+                "the derivation has stopped reading it"
   elsif documented_jobs.nil?
     failures << "CLAUDE.md must name the workflow's jobs as a single backticked, " \
                 "whitespace-separated list on a line beginning \"Jobs: \""

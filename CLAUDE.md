@@ -265,17 +265,21 @@ bumping a number here.
 ## CI
 
 `.github/workflows/ci.yml` classifies the diff in its `changes` job with
-`tests/ci/classify_changes.rb`, and every job but the last is gated on one of
-that job's outputs; `validate` runs under `if: always()` and lets
-`tests/ci/validate_results.rb` decide pass/fail across all legs.
+`tests/ci/classify_changes.rb`, and every job except `changes` and `validate` is
+gated on one of that job's outputs; `validate` runs under `if: ${{ always() }}`
+and lets `tests/ci/validate_results.rb` decide pass/fail across all legs.
 
 Jobs: `changes static docs mutation reconciliation toolchain suites validate`
 
-Read that roster before adding a check anywhere. `static` is the policy gate,
-but `docs` and `mutation` are checks that were carved out of it for the budget
-reasons below, so the gate is three jobs rather than the one this section used to
-describe; `reconciliation` and `suites` are matrices, so each contributes a leg
-per matrix entry rather than a single check.
+Read that roster before adding a check anywhere, because `static` is not the only
+job one can land in and which job it lands in is a routing decision. `mutation`
+and `reconciliation` are extractions in the sense the budget history below means:
+`tests/validate-policy.sh` no longer runs them, and `tests/policy_ci_test.rb`
+asserts both halves of that. `docs` is not — it is a second and cheaper route to
+checks the gate still runs, so those checks reach a Markdown-only change in
+under a minute without also reaching for the Ansible toolchain. `reconciliation`
+and `suites` are matrices, so each contributes a leg per matrix entry rather than
+a single check.
 
 A pull request classifies its own base/head diff; a push to `main` classifies
 the merge it just landed — `github.event.before`, falling back to the first
