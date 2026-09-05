@@ -38,6 +38,20 @@ CI_RUN_PAGE_SIZE = 20
 READ_SIZE = 64 * 1024
 NETWORK_TIMEOUT_SECONDS = 10
 GIT_TIMEOUT_SECONDS = 10
+# The fetch in update_checkout gets neither of the two budgets around it. Not
+# ls-remote's ten seconds above, because a fetch legitimately transfers; not
+# COMMAND_TIMEOUT_SECONDS below, because it runs while this process holds the
+# deployment lock, and #351 is what an hour of that costs -- a blackholed
+# connection parked the lock for an hour, during which deployment_bundle refuses
+# every hand-run converge and the polls in the window return None. The packed
+# repository is nine megabytes and this fetch is incremental against a checkout
+# that already exists, so three minutes is headroom over a slow link rather than
+# a budget anything legitimate can reach.
+GIT_FETCH_TIMEOUT_SECONDS = 3 * 60
+# merge-base and checkout reach no network at all. What they can still wait on
+# is a stuck filesystem, and an hour of that is an hour of the lock just the
+# same, so they are bounded too -- generously, because a checkout writes files.
+GIT_LOCAL_TIMEOUT_SECONDS = 60
 NOTIFICATION_TIMEOUT_SECONDS = 10
 # Consecutive polls that fail before eligibility is even decided. At the
 # five-minute cron cadence this is a quarter hour of being unable to see
@@ -47,6 +61,19 @@ BLIND_POLL_THRESHOLD = 3
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
+# The ladder for the two commands in a deployment that reach a third party: the
+# checkout fetch and the collection install. Few attempts, because they are
+# retried only when they fail fast, and a fast failure that repeats three times
+# in seven seconds is not a blip. The backoffs are one shorter than the attempt
+# count by construction, and are spent under the deployment lock, which is why
+# they are seconds rather than the minutes an unlocked ladder could afford.
+NETWORK_RETRY_ATTEMPTS = 3
+NETWORK_RETRY_BACKOFF_SECONDS = (2, 5)
+# Consecutive ticks a revision may fail transiently before it is quarantined
+# anyway. Forgiving without a bound is worse than not forgiving: a cause that
+# only looks transient would be retried every five minutes forever, holding the
+# lock for most of each one, which is the starvation this issue is about.
+TRANSIENT_FORGIVENESS_LIMIT = 3
 # Announces to the plays that the process holding the deployment lock is this
 # run's own ancestor. roles/deployment_bundle probes the lock at the first task
 # of every service role and refuses a converge somebody else is already running;
@@ -69,6 +96,17 @@ class EligibilityError(RuntimeError):
 
 class DeploymentError(RuntimeError):
     """The candidate revision could not be deployed."""
+
+
+class TransientDeploymentError(DeploymentError):
+    """The deployment failed for a reason that says nothing about the revision.
+
+    Raised only from the steps that run before the first play, so a revision
+    that fails this way changed nothing on the target and the next tick may try
+    it again. Every raiser is either a network-shaped command whose retry ladder
+    is exhausted or a command that timed out, and a timeout is evidence about
+    the host rather than about what is being deployed.
+    """
 
 
 @dataclass(frozen=True)
@@ -220,6 +258,49 @@ def _run(
     return subprocess.CompletedProcess(
         arguments, process.returncode, bytes(collected), b""
     )
+
+
+def _run_network_command(
+    arguments, *, failure: str, budget: float, **options
+) -> subprocess.CompletedProcess:
+    """Run one command that reaches a third party, under a total deadline.
+
+    Two properties matter more here than the retry itself.
+
+    The budget is a *total*. Every attempt draws from one deadline, so a ladder
+    can never hold the deployment lock longer than the single attempt it
+    replaced -- which is the whole point of #351, and exactly what a plain
+    retries=3 over an hour-long timeout would have made three times worse.
+
+    And a timeout is never retried in place. A stalled attempt has already spent
+    the budget, and the next five-minute tick will try again with the lock
+    released, which is the only kind of waiting that costs nobody else anything.
+    A killed `git fetch` can also leave its own ref locks behind, so retrying it
+    immediately is the least likely attempt to succeed. Only a fast non-zero
+    exit is retried, and those are cheap enough that several fit under one
+    deadline.
+
+    An exhausted ladder is transient because both callers are network-shaped: a
+    fetch here runs seconds after ls-remote proved the remote and the branch
+    reachable, and a collection install reaches galaxy.ansible.com. A cause that
+    is not really transient still fails identically every tick, which is what
+    may_retry_after_transient_failure bounds.
+    """
+
+    deadline = time.monotonic() + budget
+    for attempt in range(NETWORK_RETRY_ATTEMPTS):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            result = _run(arguments, timeout=remaining, **options)
+        except subprocess.TimeoutExpired as error:
+            raise TransientDeploymentError(f"{failure} (timed out)") from error
+        if result.returncode == 0:
+            return result
+        if attempt + 1 < NETWORK_RETRY_ATTEMPTS:
+            time.sleep(NETWORK_RETRY_BACKOFF_SECONDS[attempt])
+    raise TransientDeploymentError(failure)
 
 
 def resolve_main_sha(config: Config) -> str:
@@ -552,6 +633,63 @@ def forget_attempt(config: Config, sha: str) -> None:
     )
 
 
+def _transient_path(config: Config) -> Path:
+    return config.state_root / "transient-failures"
+
+
+def read_transient_failures(config: Config) -> tuple[str | None, int]:
+    """The revision currently being forgiven, and how many ticks it has cost.
+
+    Unreadable or unrecognisable state reads as no revision at all, exactly as
+    read_blind_polls treats its own: this file bounds a retry, so losing it must
+    cost the retry rather than the poller.
+    """
+
+    try:
+        parts = _transient_path(config).read_text(encoding="ascii").split()
+    except (OSError, UnicodeError):
+        return (None, 0)
+    if len(parts) != 2 or SHA_PATTERN.fullmatch(parts[0]) is None:
+        return (None, 0)
+    try:
+        count = int(parts[1])
+    except ValueError:
+        return (None, 0)
+    return (parts[0], count if count > 0 else 0)
+
+
+def clear_transient_failures(config: Config) -> None:
+    with contextlib.suppress(OSError):
+        _transient_path(config).unlink()
+
+
+def may_retry_after_transient_failure(config: Config, sha: str) -> bool:
+    """Whether the next tick may attempt this revision again, and count that it did.
+
+    The counter is per revision, so a different candidate starts the budget
+    over and a revision that eventually deploys leaves an inert record behind
+    rather than needing to be cleared. Reaching the limit clears the record and
+    refuses: the revision is quarantined as it would have been before, because a
+    cause that has failed identically for TRANSIENT_FORGIVENESS_LIMIT ticks is
+    not the network blip this exists to absorb.
+
+    Fails closed. A counter that cannot be written cannot bound the forgiveness
+    it grants, and an unbounded retry would hold the deployment lock for most of
+    every five minutes -- worse than the quarantine it replaces.
+    """
+
+    recorded, count = read_transient_failures(config)
+    count = count + 1 if recorded == sha else 1
+    if count > TRANSIENT_FORGIVENESS_LIMIT:
+        clear_transient_failures(config)
+        return False
+    try:
+        _write_private(_transient_path(config), f"{sha} {count}\n".encode("ascii"))
+    except OSError:
+        return False
+    return True
+
+
 def record_success(config: Config, sha: str, timestamp: str) -> None:
     _write_private(
         config.state_root / "last-successful",
@@ -708,7 +846,7 @@ def _vault_arguments(config: Config) -> list[str]:
     ]
 
 
-def update_checkout(config: Config, sha: str) -> None:
+def update_checkout(config: Config, sha: str, log=None) -> None:
     """Materialise the candidate revision in the controller checkout.
 
     A candidate behind the head is named by GitHub's record of what it ran,
@@ -717,6 +855,15 @@ def update_checkout(config: Config, sha: str) -> None:
     revision has to be an ancestor of it before anything is checked out --
     against FETCH_HEAD, which this fetch wrote, rather than a remote-tracking
     ref some other command may have left behind.
+
+    The three steps are on two budgets and two failure classes, because only the
+    first of them reaches the network. A fetch that fails is somebody else's
+    outage seconds after ls-remote reached the same remote, so it retries and is
+    transient. `merge-base --is-ancestor` returning non-zero is the answer to
+    its question -- the revision was rewritten off the branch -- and a failing
+    checkout is a local repository that needs a person; both are permanent facts
+    about this candidate and quarantine it. A timeout is neither: it says the
+    host is stuck, so it is transient wherever it happens.
     """
 
     environment = {
@@ -724,11 +871,15 @@ def update_checkout(config: Config, sha: str) -> None:
         "LC_ALL": "C",
         "GIT_TERMINAL_PROMPT": "0",
     }
+    _run_network_command(
+        [config.git_path, "fetch", "--prune", "origin", config.branch],
+        failure=f"git fetch failed for {sha}",
+        budget=GIT_FETCH_TIMEOUT_SECONDS,
+        cwd=config.checkout,
+        env=environment,
+        log=log,
+    )
     steps = (
-        (
-            [config.git_path, "fetch", "--prune", "origin", config.branch],
-            f"git fetch failed for {sha}",
-        ),
         (
             [config.git_path, "merge-base", "--is-ancestor", sha, "FETCH_HEAD"],
             f"{sha} is not on {config.branch}",
@@ -739,12 +890,16 @@ def update_checkout(config: Config, sha: str) -> None:
         ),
     )
     for arguments, failure in steps:
-        result = _run(
-            arguments,
-            timeout=COMMAND_TIMEOUT_SECONDS,
-            cwd=config.checkout,
-            env=environment,
-        )
+        try:
+            result = _run(
+                arguments,
+                timeout=GIT_LOCAL_TIMEOUT_SECONDS,
+                cwd=config.checkout,
+                env=environment,
+                log=log,
+            )
+        except subprocess.TimeoutExpired as error:
+            raise TransientDeploymentError(f"{failure} (timed out)") from error
         if result.returncode != 0:
             raise DeploymentError(failure)
 
@@ -776,8 +931,12 @@ def sync_tooling(config: Config, log=None) -> None:
         raise DeploymentError("controller tooling could not be synchronised")
 
     # Collections are a separate dependency set from the Python pins, and the
-    # modules the playbooks call live in them.
-    result = _run(
+    # modules the playbooks call live in them. This one reaches
+    # galaxy.ansible.com, so it takes the ladder and its failure is transient;
+    # the pip install above deliberately does not, because #351 scopes the
+    # change to the two fetches it names and a ladder is not free to add to a
+    # file whose defects cannot be healed by merging a fix.
+    _run_network_command(
         [
             _tooling_bin(config) / "ansible-galaxy",
             "collection",
@@ -788,7 +947,8 @@ def sync_tooling(config: Config, log=None) -> None:
             "--collections-path",
             str(_collections_path(config)),
         ],
-        timeout=TOOLING_TIMEOUT_SECONDS,
+        failure="controller collections could not be synchronised",
+        budget=TOOLING_TIMEOUT_SECONDS,
         cwd=config.checkout,
         env={
             "PATH": config.tool_path,
@@ -797,8 +957,6 @@ def sync_tooling(config: Config, log=None) -> None:
         },
         log=log,
     )
-    if result.returncode != 0:
-        raise DeploymentError("controller collections could not be synchronised")
 
 
 def _deploy_invocations(config: Config):
@@ -830,11 +988,19 @@ def _deploy_invocations(config: Config):
 
 
 def deploy(config: Config, sha: str, log) -> bool:
-    """Deploy one candidate revision, stopping at the first failing play."""
+    """Deploy one candidate revision, stopping at the first failing play.
+
+    False means this revision failed. TransientDeploymentError means the
+    deployment failed without ever reaching the target, and the caller owns what
+    that costs -- it is raised rather than folded into False because
+    TransientDeploymentError is a DeploymentError, so the broad clause below
+    would otherwise swallow the classification and leave a change that reads
+    correctly and does nothing.
+    """
 
     environment = _ansible_environment(config)
     try:
-        update_checkout(config, sha)
+        update_checkout(config, sha, log=log)
         sync_tooling(config, log=log)
         for arguments in _deploy_invocations(config):
             result = _run(
@@ -846,6 +1012,8 @@ def deploy(config: Config, sha: str, log) -> bool:
             )
             if result.returncode != 0:
                 return False
+    except TransientDeploymentError:
+        raise
     except (DeploymentError, OSError, subprocess.SubprocessError):
         return False
     return True
@@ -1316,6 +1484,10 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             return None
         if retry_sha is not None:
             forget_attempt(config, retry_sha)
+            # The operator's explicit retry starts the forgiveness budget over
+            # too. Inheriting a spent one would quarantine the revision again on
+            # the first blip after the very intervention meant to clear it.
+            clear_transient_failures(config)
 
         # Recorded before the attempt: a crash mid-deploy must not become a
         # retry loop on the next five-minute tick.
@@ -1323,7 +1495,19 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         started = _timestamp()
         with attempt_log(config, candidate) as log:
             log_path = Path(log.name)
-            succeeded = deploy(config, candidate, log)
+            try:
+                succeeded = deploy(config, candidate, log)
+            except TransientDeploymentError as error:
+                # Nothing reached the target: every step that raises this runs
+                # before the first play. So the attempted record can be undone,
+                # and the next tick retries the revision rather than an operator
+                # -- #351, on a host whose premise is that nobody touches it.
+                # Bounded, and only ever undone here, where the record was made.
+                succeeded = False
+                note = f"production auto-deploy: transient failure: {error}"
+                log.write(note.encode("ascii", "replace") + b"\n")
+                if may_retry_after_transient_failure(config, candidate):
+                    forget_attempt(config, candidate)
             finished = _timestamp()
             if succeeded:
                 record_success(config, candidate, finished)

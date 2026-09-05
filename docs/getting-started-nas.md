@@ -397,9 +397,13 @@ Because the virtualenv is synchronised before Ansible runs, a dependency bump
 merged to `main` reaches the NAS on the next successful deployment.
 GitHub access remains read-only and uses no PAT.
 
-Each revision is attempted at most once.
-The same failed SHA is not retried automatically, but a newer successful SHA
-can proceed normally. After fixing the cause and
+Each revision is attempted once for any failure that reached the NAS, and a
+newer successful SHA can proceed normally. The exception is a failure that never
+reached it: the checkout fetch and the collection install both run before the
+first play, and both reach a third party, so a revision they lose to somebody
+else's outage is retried on the next tick for up to three ticks before it is
+quarantined like any other failure. Everything else, including any failing play,
+is attempted once. After fixing the cause and
 confirming that the failed commit is still current `main` with successful CI,
 retry only that exact SHA manually:
 
