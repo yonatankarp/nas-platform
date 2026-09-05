@@ -494,7 +494,15 @@ module TestScaffold
     output = stdout + stderr
     failures = []
     if expects_crash
-      failures << "#{label}: accepted what it must refuse" if status.success?
+      # A run that succeeded has already told the whole story, and the fragments
+      # it did not name are that story's consequence rather than a second
+      # finding. The three copies this replaces reported both; no mutation had
+      # reached the case until Beszel's clock row moved here.
+      if status.success?
+        failures << "#{label}: accepted what it must refuse"
+        return failures
+      end
+
       Array(expects_crash).each do |fragment|
         failures << "#{label}: did not name #{fragment}, got #{output.strip.inspect}" unless
           output.include?(fragment)
