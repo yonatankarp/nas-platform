@@ -3,13 +3,13 @@
 # Mac override, the role's task order and its declared inputs, all decided from
 # the repository alone with nothing deployed.
 #
-# usage: komga-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS ARGUMENT_SPECS ENV_TEMPLATE
+# usage: komga-static.rb COMPOSE MAC_COMPOSE ROLE DEFAULTS ARGUMENT_SPECS ENV_TEMPLATE INVENTORY
 #
 # PLATFORM_CONTRACT_REPO_DIR names the tree being inspected, which is where
 # tests/policy_support.rb is required from -- not the checkout this file lives
 # in. Run it through tests/contracts/komga.sh rather than directly.
 compose_path, mac_path, role_path, defaults_path, argument_specs_path,
-  environment_path = ARGV
+  environment_path, inventory_path = ARGV
 compose = YAML.safe_load_file(compose_path, aliases: true)
 mac = YAML.safe_load_file(mac_path, aliases: true)
 
@@ -39,6 +39,7 @@ role_at = lambda { |name| role_tasks.index { |task| task["name"] == name } }
 role_task = lambda { |name| role_tasks.find { |task| task["name"] == name } || {} }
 defaults = YAML.safe_load_file(defaults_path)
 argument_specs = YAML.safe_load_file(argument_specs_path)
+inventory = YAML.safe_load_file(inventory_path)
 service = compose.fetch("services").fetch("komga")
 abort "Komga contract failed: platform identity differs" unless
   service.fetch("user") == "${NAS_UID:?}:${NAS_GID:?}"
@@ -112,6 +113,16 @@ abort "Komga contract failed: managed scan exclusions differ" unless
   defaults.fetch("komga_library_settings").fetch("scanDirectoryExclusions") == [".acquisition"]
 abort "Komga contract failed: the library root migration input is not one-convergence" unless
   defaults.fetch("komga_library_root_migration_allowed") == false
+# The role default is not the layer that decides the run. group_vars/all
+# declares the same flag and outranks role defaults, so a true left behind there
+# re-authorises an unreviewed root move on every converge while the check above
+# stays green -- a guard reading the losing layer, which is worse than no guard
+# (#343). Absence is safe, because the default asserted above then decides;
+# anything but false is not. The migration itself is taken with
+# `-e komga_library_root_migration_allowed=true`, which outranks both layers and
+# leaves nothing committed to forget.
+abort "Komga contract failed: the library root migration input is enabled in the inventory" unless
+  inventory.fetch("komga_library_root_migration_allowed", false) == false
 library_options = argument_specs.dig("argument_specs", "main", "options") || {}
 abort "Komga contract failed: the plural library model is undeclared" unless
   library_options.dig("komga_libraries", "type") == "list" &&

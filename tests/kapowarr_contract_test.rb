@@ -559,6 +559,18 @@ STATIC_ROWS = [
     expects: "the Kapowarr volume folder migration must be pinned closed"
   },
   {
+    # And pinned closed at the layer that decides the run: group_vars/all
+    # outranks the role defaults the row above breaks, so a true left behind
+    # here would move directories on every converge (#343).
+    name: "a volume folder migration pinned open in the inventory",
+    break: lambda { |root|
+      mutate_text(root, "inventory/group_vars/all/main.yml",
+                  "kapowarr_volume_folder_migration_allowed: false",
+                  "kapowarr_volume_folder_migration_allowed: true")
+    },
+    expects: "the Kapowarr volume folder migration must be pinned closed in the inventory"
+  },
+  {
     name: "a volume folder migration input that is not a declared bool",
     break: lambda { |root|
       edit_yaml(root, "roles/kapowarr/meta/argument_specs.yml") do |document|
@@ -1638,6 +1650,14 @@ PROGRAM_MUTATIONS = [
     from: 'defaults.fetch("kapowarr_volume_folder_migration_allowed", nil) == false',
     to: "true",
     rows: ["a volume folder migration pinned open"]
+  },
+  {
+    label: "the pinned-closed migration inventory check",
+    program: :static,
+    from: '    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
+        .fetch("kapowarr_volume_folder_migration_allowed", false) == false',
+    to: "    true",
+    rows: ["a volume folder migration pinned open in the inventory"]
   },
   {
     label: "the declared-bool migration input check",
