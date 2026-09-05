@@ -21,6 +21,11 @@ POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
 TOKEN = "tk_#{'r' * 29}"
 PUBLIC_HOST = "100.64.0.1"
 CALLBACK_HOST = "10.88.0.1"
+# Deliberately not the deployed topics: rendering with names the repository
+# never contains is what proves the configuration reads the declared variables
+# rather than a literal that happens to agree with them today.
+SENTINEL_CRITICAL = "sentinel-critical"
+SENTINEL_DEPLOYMENT = "sentinel-deployment"
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
@@ -192,6 +197,70 @@ check(failures,
         [["header", '"Authorization: Bearer {{ vault_ntfy_deploy_token }}"']],
       "the ntfy.curl config must present exactly the deploy publisher's own bearer token")
 
+# Because the poller publishes as `deploy` and nothing else, every topic its
+# configuration names has to be one the deploy publisher is granted. The two
+# sides used to be pinned to the same literal independently -- the template
+# through `ntfy_topic | default('nas-critical')`, in a play that does not list
+# the ntfy role and where the fallback was therefore the operative value -- so
+# renaming a topic moved the grant and left the poller posting where the account
+# could no longer write, silently (#345). This compares the declarations rather
+# than the values: a value comparison passes on a template that stopped reading
+# the variable at all, which is exactly the defect.
+publishers = YAML.safe_load_file(File.join(ROOT, "roles/ntfy/defaults/main.yml"))
+              .fetch("ntfy_publishers")
+deploy_grant = publishers.find { |publisher| publisher["name"] == "deploy" }.to_h.fetch("topics", "")
+granted_variables = deploy_grant.scan(/ntfy_[a-z_]*topic/).uniq
+check(failures, granted_variables.length >= 2,
+      "the deploy publisher's grant must name at least two topic variables, found " \
+      "#{granted_variables.inspect} in #{deploy_grant.inspect}")
+
+# Read off the rendered document's own keys rather than the file's bytes: the
+# template is one Jinja mapping literal, so the expression a key is bound to is
+# the thing that decides where the poller publishes.
+POLLER_CONFIG_TEMPLATE = File.join(ROOT, "roles/production_auto_deploy/templates/config.json.j2")
+PRUNE_CONFIG_TEMPLATE = File.join(ROOT, "roles/image_prune/templates/config.json.j2")
+
+def topic_expressions(template_path)
+  File.readlines(template_path).filter_map do |line|
+    key, separator, expression = line.strip.partition(":")
+    next if separator.empty?
+    key = key.delete("'")
+    [key, expression.strip.delete_suffix(",")] if key.start_with?("ntfy_topic_")
+  end.to_h
+end
+
+[["the poller", POLLER_CONFIG_TEMPLATE], ["the prune", PRUNE_CONFIG_TEMPLATE]].each do |label, template|
+  expressions = topic_expressions(template)
+  check(failures, expressions.keys.sort == %w[ntfy_topic_critical ntfy_topic_deployment],
+        "#{label} configuration must bind exactly the two topic keys, found #{expressions.keys.inspect}")
+  expressions.each do |key, expression|
+    check(failures, !expression.include?("default("),
+          "#{label} must read #{key} from the declared variable, not from a fallback " \
+          "this play cannot see: #{expression.inspect}")
+    named = expression.scan(/ntfy_[a-z_]*topic/).uniq
+    check(failures, named.length == 1 && granted_variables.include?(named.first),
+          "#{label}'s #{key} must name a topic variable the deploy publisher is " \
+          "granted, found #{expression.inspect} against #{granted_variables.inspect}")
+  end
+end
+
+# The same fallback anywhere else is the same defect waiting for a second
+# publisher outside the ntfy role's play. Screened over the declarations that
+# render, with a floor, so an expression list that goes empty cannot pass.
+topic_readers = Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks,handlers,meta}/*")).select do |path|
+  File.file?(path) && File.read(path).match?(/ntfy_[a-z_]*topic/)
+end
+fallback_readers = topic_readers.select do |path|
+  File.read(path).match?(/ntfy_[a-z_]*topic[[:space:]]*\|[[:space:]]*default\(/)
+end
+check(failures, topic_readers.length >= 2,
+      "at least two role declarations must read an ntfy topic variable, found " \
+      "#{topic_readers.length}")
+check(failures, fallback_readers.empty?,
+      "an ntfy topic must never be read through a fallback; the name is also the " \
+      "ACL grant, so a stale default publishes where the account may not write: " \
+      "#{fallback_readers.map { |path| path.delete_prefix("#{ROOT}/") }.inspect}")
+
 # --- real role run -----------------------------------------------------------
 
 Dir.mktmpdir("auto-deploy-role") do |root|
@@ -252,6 +321,12 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
+    # The topics are supplied the way the platform supplies them -- as inventory
+    # variables the role declares required -- rather than defaulted inside the
+    # role. This synthetic inventory is not inventory/local.yml, so nothing here
+    # would define them otherwise, which is the point.
+    "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
+    "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
@@ -287,6 +362,15 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "missing=#{(CONFIG_KEYS - config.keys).inspect}")
     check(failures, config["ansible_locale"].to_s.downcase.include?("utf"),
           "ansible_locale must be a UTF-8 locale, got #{config['ansible_locale'].inspect}")
+
+    # The rendered half of the coupling checked above: the declared topics reach
+    # the file the poller reads. A template that stopped consulting them renders
+    # the deployed names here and the sentinels catch it.
+    check(failures, config["ntfy_topic_critical"] == SENTINEL_CRITICAL &&
+                    config["ntfy_topic_deployment"] == SENTINEL_DEPLOYMENT,
+          "the configuration must render the declared topics, got " \
+          "#{config['ntfy_topic_critical'].inspect} and " \
+          "#{config['ntfy_topic_deployment'].inspect}")
 
     # The poller runs with a narrow PATH from cron, so the installer must record
     # where the tools really are rather than assuming /usr/bin.
@@ -357,6 +441,29 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "--status must degrade gracefully when the branch cannot be reached: " \
           "#{status_output}")
   end
+
+  # And the refusal, which is what a fallback removed: with no topic declared the
+  # role must stop and name the variable rather than install a poller pointed at
+  # a topic the deploy account may not hold. Check mode is enough because the
+  # argument spec is validated before the role's first task.
+  undeclared = []
+  index = 0
+  while index < arguments.length
+    if arguments[index] == "-e" &&
+       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=")
+      index += 2
+      next
+    end
+    undeclared << arguments[index]
+    index += 1
+  end
+  refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
+  check(failures, !refusal_status.success? &&
+        refusal_output.include?("missing required arguments") &&
+        refusal_output.include?("ntfy_topic") &&
+        refusal_output.include?("ntfy_deployment_topic"),
+        "the role must refuse to install when no topic is declared, naming the " \
+        "variable: #{refusal_output.lines.last(8).join}")
 end
 
 # The role must refuse to install when the virtualenv the poller needs is absent,

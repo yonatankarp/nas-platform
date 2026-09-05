@@ -12,8 +12,13 @@ ntfy_compose_project_name: >-
 # carries only what should get a human out of their chair, so it stays worth
 # reacting to. The remaining topics are the routine record, one per subject, so
 # deployment chatter can be muted without also muting container events.
-ntfy_topic: nas-critical
-ntfy_deployment_topic: nas-deployment
+#
+# ntfy_topic and ntfy_deployment_topic are deliberately absent from this file:
+# they are declared in inventory/group_vars/all/main.yml, because the poller and
+# the image prune read them from a play that does not list this role and a
+# default here would be invisible there while the publisher grants below moved
+# (#345). Do not restore them; the grants read the same variables and the
+# inventory layer is what makes both sides one declaration.
 ntfy_containers_topic: nas-containers
 # Seerr's request events. Their own subject, because a household member asking
 # for a film is a different thing from a container restarting and a different

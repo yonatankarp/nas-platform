@@ -14,6 +14,20 @@ argument_specs:
         description: The deployer's own least-privilege write-only ntfy token.
         type: str
         required: true
+      ntfy_topic:
+        description: >-
+          Topic the poller publishes a failure to. Required rather than
+          defaulted: this play does not run the ntfy role, so a default here
+          would silently outlive a rename of the ACL grant that authorises it
+          (#345). Declared in inventory/group_vars/all/main.yml.
+        type: str
+        required: true
+      ntfy_deployment_topic:
+        description: >-
+          Topic the poller publishes a successful deployment to, required for
+          the same reason and declared in the same place.
+        type: str
+        required: true
       production_auto_deploy_home:
         description: Real home of the dedicated non-root deployment account.
         type: path

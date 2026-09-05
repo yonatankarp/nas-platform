@@ -87,12 +87,14 @@ seerr_ntfy_priority: 3
 seerr_ntfy_locale: en
 # ntfy is published on the host rather than joined to media-control, so the
 # address is the callback host every other publisher on this platform uses:
-# the LAN address on the NAS, host.docker.internal in the Mac sandbox. The
-# topic and the port default here because they belong to the ntfy role, which
-# is out of scope while this one runs — the same shape Dozzle's and Beszel's
-# own ntfy declarations take.
+# the LAN address on the NAS, host.docker.internal in the Mac sandbox. The port
+# defaults here because it belongs to the ntfy role — the same shape Dozzle's
+# and Beszel's own ntfy declarations take. The topic does not: a topic name is
+# also the ACL grant that authorises the publisher, so it is read unqualified
+# and a run where nothing declares it fails rather than posting somewhere this
+# account may not write (#345).
 seerr_ntfy_url: "http://{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}"
-seerr_ntfy_topic: "{{ ntfy_requests_topic | default('nas-requests') }}"
+seerr_ntfy_topic: "{{ ntfy_requests_topic }}"
 seerr_ntfy_declaration:
   enabled: true
   embedPoster: true
