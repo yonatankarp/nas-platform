@@ -501,6 +501,29 @@ def real_integration_lanes(root)
   lanes unless lanes.empty?
 end
 
+# The same shape as the lane roster above, for the workflow's jobs. The CI
+# section opened by calling the workflow "a `static` job and a matrix of
+# integration `suites`" long after `docs` and `mutation` had been extracted from
+# `static` -- extractions that same section documents the cost of -- and nothing
+# noticed, because no check read the workflow's job list (issue #412). nil is
+# again the distinct failure of a roster that no longer has a readable shape.
+def documented_workflow_jobs(claude_md)
+  span = claude_md[/^Jobs: `([^`]+)`/, 1]
+  span&.split
+end
+
+# The jobs that exist, from the workflow itself. Keys rather than the names
+# `gh pr checks` prints: `reconciliation` and `suites` carry display names built
+# from their matrix, so the check-run list is not the job list and pinning the
+# doc against it would pin a rendering.
+def real_workflow_jobs(root)
+  workflow = root.join(".github/workflows/ci.yml")
+  return unless workflow.file?
+
+  jobs = YAML.safe_load_file(workflow, aliases: false).fetch("jobs", {}).keys
+  jobs unless jobs.empty?
+end
+
 def self_test
   unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
     warn "docs links hostile-unmatched self-test failed"
@@ -947,6 +970,33 @@ else
                 "tests/integration.sh --list-suites prints: #{missing.join(', ')}" if missing.any?
     failures << "CLAUDE.md must not list integration lanes " \
                 "tests/integration.sh --list-suites does not print: #{extra.join(', ')}" if extra.any?
+  end
+  # Equality in both directions again, for the reason the lane roster gives: an
+  # omission is the drift that happened, and "every documented job exists" would
+  # have passed throughout it.
+  real_jobs = real_workflow_jobs(ROOT)
+  documented_jobs = documented_workflow_jobs(claude_md)
+  if real_jobs.nil?
+    failures << "no jobs could be read out of .github/workflows/ci.yml: " \
+                "the derivation has stopped reading it"
+  elsif documented_jobs.nil?
+    failures << "CLAUDE.md must name the workflow's jobs as a single backticked, " \
+                "whitespace-separated list on a line beginning \"Jobs: \""
+  else
+    # A floor rather than today's eight, and rather than mere non-emptiness. A
+    # derivation that stopped reading the workflow would find no jobs and report
+    # every job documented; a floor at today's count would report a deliberately
+    # retired job as the derivation breaking. There is no mutation fixture to
+    # size this against, because tests/docs_links_test.rb is not one of the eight
+    # POLICY_SCRIPTS and so never runs inside a planted-defect sandbox.
+    failures << "the workflow declares #{real_jobs.length} jobs, expected at least six: " \
+                "the derivation has stopped reading it" if real_jobs.length < 6
+    missing = real_jobs - documented_jobs
+    extra_jobs = documented_jobs - real_jobs
+    failures << "CLAUDE.md must document the CI jobs it omits and " \
+                ".github/workflows/ci.yml declares: #{missing.join(', ')}" if missing.any?
+    failures << "CLAUDE.md must not list CI jobs " \
+                ".github/workflows/ci.yml does not declare: #{extra_jobs.join(', ')}" if extra_jobs.any?
   end
   # The controller pins are authored once, in controller-requirements.txt: three
   # CI jobs install from it, the production poller installs from it, and Renovate
