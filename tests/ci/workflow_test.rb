@@ -203,6 +203,15 @@ jobs.each do |job_name, job|
         "job #{job_name} must declare timeout-minutes between 1 and 90, found #{budget.inspect}")
 end
 
+# Every job on the same runner image. This is what lets one matrix leg stand for
+# the other sixteen: a change to this file now dispatches three suites rather
+# than seventeen (#395), so a per-leg environment that varied by job would be a
+# difference the legs that do run cannot observe.
+jobs.each do |job_name, job|
+  check(failures, job["runs-on"] == "ubuntu-latest",
+        "job #{job_name} must run on ubuntu-latest, found #{job['runs-on'].inspect}")
+end
+
 check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
 if triggers.is_a?(Hash)
   pull_request = triggers["pull_request"]
@@ -500,6 +509,18 @@ check(failures,
       "the suite matrix must come from the classifier's JSON array")
 check(failures, suites_job.dig("strategy", "matrix").keys == ["suite"],
       "the suite matrix must have exactly one dimension")
+# A floor rather than the general 1..90 bound above, and it is what makes the
+# #395 narrowing sound. A change to this file dispatches the three cheapest
+# suites now, so lowering this budget is the one edit here whose damage the legs
+# that run cannot see: smoke and beszel finish well inside anything plausible
+# while immich would be cancelled mid-converge, and nobody would learn that until
+# the next unrelated pull request. Raising it is always safe; lowering it needs a
+# measurement of the slowest leg, not a guess.
+suites_budget = suites_job["timeout-minutes"]
+check(failures, suites_budget.is_a?(Integer) && suites_budget >= 60,
+      "suites must keep a timeout of at least 60 minutes, found #{suites_budget.inspect}: the " \
+      "narrowed workflow route runs the cheapest legs and cannot observe a budget the slowest " \
+      "one needs")
 
 # The classifier owns the lane-to-suite mapping, including the one hyphen that
 # separates the idempotence_check lane from the idempotence-check suite.
