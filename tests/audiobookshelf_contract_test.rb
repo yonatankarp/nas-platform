@@ -45,7 +45,14 @@ require "shellwords"
 require "tmpdir"
 require "yaml"
 
+require_relative "policy_support"
+
+include TestScaffold
+
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Audiobookshelf contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "audiobookshelf.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "audiobookshelf-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "audiobookshelf-runtime.rb")
@@ -464,32 +471,6 @@ STATIC_ROWS = [
   }
 ].freeze
 
-def judge(label, expects, stdout, stderr, status, expects_crash: nil)
-  output = stdout + stderr
-  failures = []
-  if expects_crash
-    failures << "#{label}: accepted what it must refuse" if status.success?
-    Array(expects_crash).each do |fragment|
-      failures << "#{label}: did not name #{fragment}, got #{output.strip.inspect}" unless
-        output.include?(fragment)
-    end
-    return failures
-  end
-  if expects.nil?
-    failures << "#{label}: expected success, got exit #{status.exitstatus}: #{output.strip}" unless
-      status.success?
-    return failures
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?("Audiobookshelf contract failed: #{expects}")
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.lines.first.to_s.strip.inspect}"
-  end
-  failures
-end
-
 def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
   in_parallel_cases(rows) do |row|
     Dir.mktmpdir("nas-platform-audiobookshelf-static.") do |raw|
@@ -502,7 +483,7 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
         *STATIC_COMMAND, program, *arguments, row.fetch(:mode, "static")
       )
       judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
-            expects_crash: row[:expects_crash])
+            prefix: DIAGNOSTIC_PREFIX, expects_crash: row[:expects_crash])
     end
   end
 end
@@ -642,7 +623,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
         },
         RbConfig.ruby, program, row.fetch(:mode)
       )
-      failures = judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      failures = judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                       prefix: DIAGNOSTIC_PREFIX)
       # Only worth asking what a passing mode reported; a mode that refused has
       # already been judged, and a second failure line about the missing success
       # line says nothing the first did not.

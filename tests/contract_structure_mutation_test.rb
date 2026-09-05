@@ -81,12 +81,13 @@ SUITES = {
     environment: ->(_repo) { {} },
     diagnostic: ->(message) { "FAIL #{message}" }
   },
-  # The Arr contract reports every violation it found, one bare message per line,
-  # rather than aborting on the first with a prefix.
+  # The Arr contract reports every violation it found, one per line, rather than
+  # aborting on the first -- but each line carries the prefix now (#352), so the
+  # expected line is the prefixed one here too.
   arr: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "arr.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
-    diagnostic: ->(message) { message }
+    diagnostic: ->(message) { "Arr contract failed: #{message}" }
   },
   # This suite drives the real vault_contract role over the documented vault, so
   # each row costs about twenty seconds. It carries three rows rather than one per
@@ -100,7 +101,7 @@ SUITES = {
   downloaders: {
     command: ->(repo) { [File.join(repo, "tests", "contracts", "downloaders.sh"), "static"] },
     environment: ->(repo) { { "PLATFORM_CONTRACT_REPO_DIR" => repo } },
-    diagnostic: ->(message) { message }
+    diagnostic: ->(message) { "Downloaders contract failed: #{message}" }
   },
   policy_deployment: {
     command: ->(repo) { [RbConfig.ruby, File.join(repo, "tests", "policy_deployment_test.rb")] },

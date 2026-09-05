@@ -68,10 +68,15 @@ require "uri"
 require "yaml"
 
 require_relative "http_fixture_support"
+require_relative "policy_support"
 
 include HttpFixtureSupport
+include TestScaffold
 
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Beszel contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "beszel.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "beszel-static.rb")
 FIXTURES_PROGRAM = File.join(ROOT, "tests", "contracts", "beszel-telemetry-fixtures.rb")
@@ -179,23 +184,6 @@ def mutate_yaml(root, relative)
   document = YAML.safe_load_file(path, aliases: true)
   yield document
   File.write(path, YAML.dump(document))
-end
-
-def judge(failures, label, expects, stdout, stderr, status)
-  output = stdout + stderr
-  if expects.nil?
-    return if status.success?
-
-    failures << "#{label}: refused an intact fixture: #{output.strip}"
-    return
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?(expects)
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.inspect}"
-  end
 end
 
 # ---------------------------------------------------------------------------
@@ -549,7 +537,8 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
         { "PLATFORM_CONTRACT_REPO_DIR" => root },
         RbConfig.ruby, "-ryaml", program, root, in: "/dev/null"
       )
-      judge(collected, "static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      collected.concat(judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                             prefix: DIAGNOSTIC_PREFIX))
     end
   end
   failures
@@ -620,6 +609,11 @@ def telemetry_fixture
   }
 end
 
+# The fixture program is its own diagnostic family: it aborts under "Beszel
+# telemetry fixture failed: ", not under the contract's prefix, so its rows are
+# judged against that rather than against DIAGNOSTIC_PREFIX.
+FIXTURES_DIAGNOSTIC_PREFIX = "Beszel telemetry fixture failed: "
+
 FIXTURES_ROWS = [
   { name: "a complete Mac triple", platform: "mac", mutate: ->(_data) {},
     expects: nil, wants: "Beszel telemetry fixture passed (mac)" },
@@ -653,9 +647,12 @@ FIXTURES_ROWS = [
     expects: "categories=core,disk,containers",
     refuses_to_leak: "beszel-contract-sensitive-token"
   },
+  # The one refusal the fixture program does not author: a missing clock reaches
+  # Hash#fetch and raises. It is asked for as a crash rather than as a
+  # diagnostic, because a diagnostic prefix is exactly what it does not carry.
   { name: "a fixture with no recorded clock", platform: "mac",
     mutate: ->(data) { data.delete("now") },
-    expects: 'key not found: "now"' }
+    expects: nil, expects_crash: 'key not found: "now"' }
 ].freeze
 
 def fixtures_failures(program = FIXTURES_PROGRAM, rows = FIXTURES_ROWS)
@@ -677,7 +674,9 @@ def fixtures_failures(program = FIXTURES_PROGRAM, rows = FIXTURES_ROWS)
         "-r#{File.join(ROOT, 'tests/contracts/support/beszel_telemetry')}",
         program, row.fetch(:platform), path, in: "/dev/null", unsetenv_others: true
       )
-      judge(collected, label, row.fetch(:expects), stdout, stderr, status)
+      collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
+                             prefix: FIXTURES_DIAGNOSTIC_PREFIX,
+                             expects_crash: row[:expects_crash]))
       output = stdout + stderr
       if row[:wants] && !output.include?(row.fetch(:wants))
         collected << "#{label}: did not report #{row.fetch(:wants).inspect}, " \
@@ -1239,7 +1238,8 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
                          "#{err.strip}" unless seeded.success?
           end
           stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths)
-          judge(collected, label, row.fetch(:expects), stdout, stderr, status)
+          collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
+                                 prefix: DIAGNOSTIC_PREFIX))
           # Every credential this fixture holds, checked against every byte the
           # program printed. Beszel's data directory is secret-bearing and the
           # program decrypts a vault in memory; a diagnostic that echoed one
@@ -1504,8 +1504,8 @@ def self_read_failures(wrapper_source: File.read(CONTRACT),
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root }, contract, "static"
       )
-      judge(collected, "self-read: #{row.fetch(:name)}", row.fetch(:expects),
-            stdout, stderr, status)
+      collected.concat(judge("self-read: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                             prefix: DIAGNOSTIC_PREFIX))
     end
   end
   failures
@@ -1804,7 +1804,7 @@ STATIC_MUTATIONS = [
     from: "role_tasks = flatten_tasks(PolicySupport.static_role_tasks(role_path))",
     to: "role_tasks = flatten_tasks(YAML.safe_load_file(role_path))",
     rows: ["an intact repository"],
-    detects: "refused an intact fixture"
+    detects: "expected success"
   }
 ].freeze
 

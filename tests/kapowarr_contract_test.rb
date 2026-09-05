@@ -50,8 +50,14 @@ require "tmpdir"
 require "yaml"
 
 require_relative "http_fixture_support"
+require_relative "policy_support"
+
+include TestScaffold
 
 ROOT = File.expand_path("..", __dir__)
+# The prefix every refusal this file judges has to carry. Matching the
+# fragment alone accepted a backtrace or an echoed argument as a refusal.
+DIAGNOSTIC_PREFIX = "Kapowarr contract failed: "
 CONTRACT = File.join(ROOT, "tests", "contracts", "kapowarr.sh")
 STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "kapowarr-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "kapowarr-runtime.rb")
@@ -936,23 +942,6 @@ STATIC_ROWS = [
   }
 ].freeze
 
-def judge(failures, label, expects, stdout, stderr, status)
-  output = stdout + stderr
-  if expects.nil?
-    return if status.success?
-
-    failures << "#{label}: refused an intact repository: #{output.strip}"
-    return
-  end
-
-  if status.success?
-    failures << "#{label}: accepted what it must refuse"
-  elsif !output.include?(expects)
-    failures << "#{label}: refused for the wrong reason, wanted #{expects.inspect}, " \
-                "got #{output.strip.inspect}"
-  end
-end
-
 def static_failures(program, rows = STATIC_ROWS)
   failures = []
   in_parallel_cases(failures, rows) do |row, collected|
@@ -963,7 +952,8 @@ def static_failures(program, rows = STATIC_ROWS)
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => root }, RbConfig.ruby, program, root
       )
-      judge(collected, "static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+      collected.concat(judge("static: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                             prefix: DIAGNOSTIC_PREFIX))
     end
   end
   failures
@@ -1232,7 +1222,8 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
             },
             RbConfig.ruby, program
           )
-          judge(collected, "runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status)
+          collected.concat(judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
+                                 prefix: DIAGNOSTIC_PREFIX))
         end,
         &runtime_responder(options)
       )
