@@ -129,6 +129,21 @@ vault_dozzle_alert_relay_token: "{{ ('nas-platform:dozzle-alert-relay:v1:' ~ vau
 ntfy_topic: nas-critical
 ntfy_deployment_topic: nas-deployment
 
+# The port those publishers reach ntfy on, here for the structural reason above
+# and not for its consequence, which is different in kind: a wrong port is a
+# refused connection, loud and immediate, where a wrong topic mis-authorises a
+# publish that is swallowed. What made it worth moving is that the same two
+# templates read it through `| default(2586)` in the same play the ntfy role is
+# absent from, so the literal was the operative value there too and a port
+# changed here would have left the poller and the prune addressing 2586 (#402).
+#
+# One declaration is right because every reader addresses the same listener:
+# roles/ntfy publishes it as the container's host port, the poller and the prune
+# POST to 127.0.0.1 on it, and beszel, dozzle and seerr connect to the callback
+# host on it. inventory/group_vars/mac_hosts/main.yml still outranks this for the
+# disposable lane, as it does for every other published port.
+ntfy_port: 2586
+
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home
 # for the three values; the role declares them required rather than defaulting them

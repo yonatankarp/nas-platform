@@ -21,7 +21,12 @@ argument_specs:
         required: true
       ntfy_port:
         type: int
-        required: false
+        required: true
+        description: >-
+          Port the ntfy container publishes and every publisher connects on.
+          Required rather than defaulted in this role for the reason the topics
+          are: it is declared in inventory/group_vars/all/main.yml because plays
+          that never run this role address the same listener (#402).
       ntfy_topic:
         type: str
         required: true
@@ -126,7 +131,12 @@ argument_specs:
         description: Git SHA of the release the service was deployed from.
       ntfy_port:
         type: int
-        required: false
+        required: true
+        description: >-
+          Port the ntfy container publishes and every publisher connects on.
+          Required rather than defaulted in this role for the reason the topics
+          are: it is declared in inventory/group_vars/all/main.yml because plays
+          that never run this role address the same listener (#402).
       ntfy_deployment_topic:
         type: str
         required: true
@@ -183,7 +193,12 @@ argument_specs:
         description: Commit subjects this deployment carries.
       ntfy_port:
         type: int
-        required: false
+        required: true
+        description: >-
+          Port the ntfy container publishes and every publisher connects on.
+          Required rather than defaulted in this role for the reason the topics
+          are: it is declared in inventory/group_vars/all/main.yml because plays
+          that never run this role address the same listener (#402).
       ntfy_deployment_topic:
         type: str
         required: true

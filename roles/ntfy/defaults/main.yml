@@ -1,6 +1,11 @@
 ---
 # Non-secret policy. Credentials come from vault.
-ntfy_port: 2586
+#
+# ntfy_port is deliberately absent from this file for the same reason the two
+# topics below are: it is declared in inventory/group_vars/all/main.yml, because
+# the poller and the image prune address it from a play that does not list this
+# role and a default here would be invisible there (#402). Do not restore it;
+# every reader addresses the same listener this role publishes.
 ntfy_base_url: "http://{{ platform_public_host }}:{{ ntfy_port }}"
 ntfy_account_api: "http://127.0.0.1:{{ ntfy_port }}/v1/account"
 ntfy_account_subscription_api: "{{ ntfy_account_api }}/subscription"
