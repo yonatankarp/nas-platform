@@ -1660,6 +1660,17 @@ end
 phase_task_files = Dir[File.join(ROOT, "roles", "*")].sort.flat_map do |role_root|
   recursive_role_yaml_paths(File.join(role_root, "tasks"), failures)
 end
+# Both loops below skip a file that gates on no phase, so an empty list is a
+# clean run. It is floored indirectly today -- no task files means no
+# role_task_files, which trips deploys_through_module -- but that floor reads
+# tasks and handlers together, so a tree whose handlers alone carried
+# docker_compose_v2 would satisfy it while every phase gate went unchecked.
+#
+# 25 is sized against the mutation fixture's 58, not the tree's 107: the harness
+# copies each role's main.yml and what it statically imports, so this list is
+# roughly half its real size inside every sandbox this script runs in.
+check_floor(failures, phase_task_files.length, 25,
+            "the phase-gate check found too few role task files")
 declared_phases = {}
 phase_task_files.each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")

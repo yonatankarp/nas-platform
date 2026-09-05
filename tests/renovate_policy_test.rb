@@ -161,10 +161,34 @@ RESTATED_PIN_TREES = ["roles", "inventory", "config", "tests/contracts"].freeze
 RESTATED_PIN_TEXT = /\.(ya?ml|j2|json|py|rb|sh|cfg|txt|md)\z/.freeze
 IMAGE_PIN = %r{[a-z0-9][a-z0-9._/-]*:[\w][\w.-]*@sha256:[0-9a-f]{64}}.freeze
 
-RESTATED_PIN_TREES.each do |tree|
-  Dir[File.join(ROOT, tree, "**", "*")].sort.each do |path|
-    next unless File.file?(path) && path.match?(RESTATED_PIN_TEXT)
+restated_pin_files = RESTATED_PIN_TREES.to_h do |tree|
+  [tree, Dir[File.join(ROOT, tree, "**", "*")].sort.select do |path|
+    File.file?(path) && path.match?(RESTATED_PIN_TEXT)
+  end]
+end
 
+# The sweep below is a per-line negative assertion, so it is the shape that
+# reports success loudest when it reads nothing at all -- and it is the only
+# guard against a pin restated outside services/. Two floors, because the two
+# ways it can go quiet fail differently. A tree that is renamed or emptied takes
+# its whole contribution with it, which the presence check names by tree; the
+# extension filter losing a common suffix thins every tree at once, which only a
+# count over the total can see. Neither catches RESTATED_PIN_TEXT dropping just
+# `.cfg` or `.txt`, and nothing cheap would: those extensions are a handful of
+# files and a floor sized to notice them would fail on ordinary churn.
+RESTATED_PIN_TREES.each do |tree|
+  check_floor(failures, restated_pin_files.fetch(tree).length, 1,
+              "the restated-pin sweep of #{tree}/ matched no file")
+end
+# 150 against today's 257 (roles 192, tests/contracts 56, inventory 7, config 2).
+# Sized so that losing any tree but roles/ still clears it -- those are removals
+# a reviewer would see -- while roles/ collapsing, or the filter no longer
+# recognising .yml or .j2, does not.
+check_floor(failures, restated_pin_files.values.sum(&:length), 150,
+            "the restated-pin sweep read too few files across #{RESTATED_PIN_TREES.join(', ')}")
+
+restated_pin_files.each_value do |paths|
+  paths.each do |path|
     relative = path.delete_prefix("#{ROOT}/")
     File.readlines(path, chomp: true).each_with_index do |line, index|
       pin = line[IMAGE_PIN]

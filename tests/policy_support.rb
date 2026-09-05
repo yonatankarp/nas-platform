@@ -437,6 +437,24 @@ module TestScaffold
     failures << message unless condition
   end
 
+  # A cardinality floor under a subject list a check derives from the tree.
+  # Every property asserted over a derived list is vacuous once that list goes
+  # quiet -- a renamed directory, a glob whose pattern stopped matching, an
+  # extension the filter no longer recognises -- and a vacuous pass is
+  # indistinguishable from compliance. A floor, not `!empty?`: the list that
+  # should hold a hundred files and holds one is the failure that actually
+  # happens.
+  #
+  # +minimum+ is the caller's judgement and belongs beside a comment saying what
+  # it was sized against. It is a floor, so only a deletion can breach it;
+  # sizing it well under today's count is what keeps a legitimate removal from
+  # failing a guard that exists to catch a collapse.
+  def check_floor(failures, count, minimum, subject)
+    check(failures, count >= minimum,
+          "#{subject}: #{count} found, expected at least #{minimum}; the subject list has " \
+          "narrowed and every property asserted over it now passes vacuously")
+  end
+
   # The tail of a subprocess's output as one grep-able line, blank lines
   # dropped. The copies of this picked 8, 10 or 12 lines for no recorded
   # reason; a caller that needs a particular depth still says so.
