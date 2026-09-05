@@ -619,6 +619,28 @@ end
 integration_steps = Array(suites_job["steps"]).select { |step| step["run"]&.include?("tests/integration.sh") }
 check(failures, integration_steps.length == 1, "suites must have exactly one integration harness step")
 integration_step = integration_steps.first || {}
+
+# Nothing in this job that has not been reasoned about above. Every other
+# property of a suite leg is asserted per-suite -- the matrix expression, the
+# argv for all seventeen suites with tags and without, the registry logins
+# derived from the compose files, the runner image, the timeout floor -- but
+# until #395 a *step* could be added here and be asserted by nothing. That is
+# the one way a leg's behaviour could change while the route dispatches three
+# legs of seventeen: a step that only a heavy suite trips over would reach main
+# green. The `static` job has been pinned this way by name since it existed;
+# this is the same property, derived rather than named so that adding a registry
+# stays one edit.
+examined_steps = ([suites_checkout] + login_steps + integration_steps).compact
+unexamined = suites_steps - examined_steps
+check(failures, unexamined.empty?,
+      "the suites job has #{unexamined.length} step(s) no check reads: " \
+      "#{unexamined.map { |step| step['name'] || step['run'] }.inspect}. A change to a suite leg " \
+      "dispatches three legs of seventeen, so a step asserted nowhere is a leg's behaviour " \
+      "changing under a green gate")
+# The same property for the job's environment, which reaches every step in it.
+check(failures, suites_job.fetch("env", {}).keys == [DOCKER_HUB_USERNAME_SECRET],
+      "suites must expose exactly #{[DOCKER_HUB_USERNAME_SECRET].inspect} as job-level env, " \
+      "found #{suites_job.fetch('env', {}).keys.inspect}")
 check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
