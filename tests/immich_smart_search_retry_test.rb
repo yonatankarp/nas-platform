@@ -118,19 +118,27 @@ ensure
   server_thread&.join(1)
 end
 
+# Accepts one connection, reads the request and then answers nothing at all
+# until the block returns. Nothing in here closes on a timer: the socket used to
+# close half a second after the request, which raced the client's own deadline,
+# and a client whose timer thread lost that race read EOF rather than the
+# timeout the case is about (#391). A request that ignores its budget now blocks
+# until the ten-second cap in `run` fires, which is a failure the harness cannot
+# reach by being slow. `sleep` cannot hold the socket -- Kernel#sleep above is a
+# recorder that returns instantly -- so the release is a pipe the ensure closes.
 def with_stalled_http_server
   server = TCPServer.new("127.0.0.1", 0)
   Object.send(:remove_const, :BASE) if Object.const_defined?(:BASE)
   Object.const_set(:BASE, URI("http://127.0.0.1:#{server.local_address.ip_port}"))
   requests = 0
+  release_read, release_write = IO.pipe
   server_thread = Thread.new do
     socket = server.accept
     requests += 1
-    IO.select([socket], nil, nil, 0.5)
     while (line = socket.gets)
       break if line == "\r\n"
     end
-    IO.select(nil, nil, nil, 0.5)
+    IO.select([release_read])
   rescue IOError
     nil
   ensure
@@ -139,8 +147,10 @@ def with_stalled_http_server
 
   yield -> { requests }
 ensure
+  release_write&.close
   server&.close
   server_thread&.join(1)
+  release_read&.close
 end
 
 def expect_success(responses, expected_requests:, expected_ids: FIXTURE_IDS, clock: nil)
@@ -200,6 +210,28 @@ eval(
   binding,
   CONTRACT
 )
+
+# What the contract handed `request` as its deadline, recorded rather than
+# timed. The budget a case asserts is arithmetic over a stubbed clock, so it is
+# exactly knowable; reading it off a stopwatch instead measured the runner's
+# load as much as the contract, and did it on a half-second margin four checks
+# were sharing (#391).
+REQUEST_TIMEOUTS = []
+module CaptureRequestTimeout
+  def request(*arguments, **options, &block)
+    REQUEST_TIMEOUTS << options[:timeout]
+    super(*arguments, **options, &block)
+  end
+  private :request
+end
+Object.prepend(CaptureRequestTimeout)
+
+def with_captured_request_timeouts
+  REQUEST_TIMEOUTS.clear
+  yield REQUEST_TIMEOUTS
+ensure
+  REQUEST_TIMEOUTS.clear
+end
 
 failures = []
 run = lambda do |label, &test|
@@ -450,23 +482,44 @@ run.call("near-deadline sleep is capped to the remaining budget") do
   end
 end
 
+# Half a second of budget rather than the twentieth of a second this asserted
+# until #391. The value is not a margin against the runner any more -- the
+# stalled server never releases, so a contract that ignored its budget hangs
+# until `run` caps it at ten seconds -- it is headroom for the *connect*, which
+# `request` caps at `[5, timeout].min` too. The old stub gave the connect 50ms,
+# against a loopback connect whose worst of 12,000 attempts under saturation was
+# 38ms -- a margin of 1.3 -- and losing that raised Net::OpenTimeout, which the
+# contract reports under its own class name. All three classes below are the
+# same finding -- the request gave up inside its budget rather than hanging --
+# so all three are accepted, and which one wins is a scheduling detail rather
+# than a property. Nothing weakens by accepting the third: the correct path
+# connects instantly and times out on the read, so no mutation of `open_timeout`
+# alone was ever visible here, and the budget's *value* is pinned below against
+# the stubbed clock rather than inferred from an error class. Keep the stub
+# under 5, or `[5, timeout].min` stops binding and the case stops proving a cap.
 run.call("smart search request timeout is capped to the remaining budget") do
   epoch = 1_700_000_000.0
-  clock = monotonic_clock(epoch, epoch + 599.95)
+  clock = monotonic_clock(epoch, epoch + 599.5)
   with_stalled_http_server do |requests|
-    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-    error = begin
-      assert_cpu_machine_learning("test-token", FIXTURE_IDS, clock: clock)
-      nil
-    rescue ContractFailure => caught
-      caught
+    with_captured_request_timeouts do |timeouts|
+      error = begin
+        assert_cpu_machine_learning("test-token", FIXTURE_IDS, clock: clock)
+        nil
+      rescue ContractFailure => caught
+        caught
+      end
+      raise TestFailure, "stalled request unexpectedly satisfied the contract" unless error
+      raise TestFailure, "stalled request did not use the remaining deadline budget" unless
+        error.message.match?(
+          %r{POST /api/search/smart failed: (?:Net::ReadTimeout|Net::OpenTimeout|Timeout::Error)}
+        )
+      raise TestFailure, "stalled request did not carry exactly one timeout: " \
+                         "#{timeouts.inspect}" unless timeouts.length == 1
+      raise TestFailure, "stalled request was not capped to the remaining budget: " \
+                         "#{timeouts.first.inspect}" unless
+        timeouts.first.is_a?(Numeric) && (timeouts.first - 0.5).abs < 0.001
+      raise TestFailure, "stalled request was attempted more than once" unless requests.call == 1
     end
-    elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
-    raise TestFailure, "stalled request unexpectedly satisfied the contract" unless error
-    raise TestFailure, "stalled request did not use the remaining deadline budget" unless
-      error.message.match?(%r{POST /api/search/smart failed: (?:Net::ReadTimeout|Timeout::Error)})
-    raise TestFailure, "stalled request exceeded its remaining budget" unless elapsed < 0.5
-    raise TestFailure, "stalled request was attempted more than once" unless requests.call == 1
   end
 end
 
