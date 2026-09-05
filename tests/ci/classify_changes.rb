@@ -179,11 +179,15 @@ module ClassifyChanges
   # and a file added to any of them must select the contract without an edit
   # here.
   RECONCILIATION_LANES = %w[arr downloaders].freeze
-  # Lanes that cannot prove their own subject alone, and the lane that proves the
-  # rest of it.
+  # A selected lane, and the lane its subject is not fully proved without. Two
+  # different shapes share the table, and both are dependencies between lanes
+  # rather than between files, which is why the table is keyed by lane: whatever
+  # selects the first lane needs the second, and a file added to the role must
+  # not need an edit here to get it.
   #
-  # The Usenet provider is declared in the vault or it is not, and the two states
-  # are not reachable from one sandbox: SABnzbd's `section=servers` reconciliation
+  # The first shape is one role with two states no single sandbox reaches. The
+  # Usenet provider is declared in the vault or it is not, and SABnzbd's
+  # `section=servers` reconciliation
   # only ever upserts, so a server declared once stands after the declaration is
   # emptied. The `downloaders` lane therefore converges the undeclared state from
   # the start -- tests/integration_controller.sh builds its vault with
@@ -191,11 +195,30 @@ module ClassifyChanges
   # one #274 broke -- and the `bindery` lane converges the same arr and
   # downloaders stacks from a fully declared vault. Each lane asserts one branch
   # of roles/downloaders/tasks/verify.yml, so a change inside that role has to
-  # select both or one branch is routed to no runtime lane at all. Selecting at
-  # lane granularity rather than per file is deliberate: whatever selects the
-  # downloaders lane needs the declared branch too, and a file added to the role
-  # must not need an edit here to get it.
-  COMPANION_LANES = { "downloaders" => %w[bindery] }.freeze
+  # select both or one branch is routed to no runtime lane at all.
+  #
+  # The second shape is a lane that consumes another role's *converged* state, so
+  # the producing role's own lane cannot see what it broke. The `seerr` lane is
+  # the only one that converges arr and Jellyfin together, and Seerr does not
+  # merely need Jellyfin running: roles/seerr/tasks/bootstrap.yml POSTs the vault
+  # Jellyfin administrator credentials to `/auth/jellyfin` to claim the Seerr
+  # admin account inside the anonymous-takeover window, and
+  # roles/seerr/tasks/main.yml verifies `/settings/jellyfin` against
+  # `seerr_jellyfin_hostname`/`_port` and reconciles `jellyfinUsername` against
+  # the managed-user roster. A Jellyfin change to its address, its administrator
+  # identity or its user list therefore breaks the seerr lane, and the `jellyfin`
+  # lane converges no Seerr and reports nothing (#349). This is not the fail-open
+  # property CLAUDE.md relies on: roles/jellyfin/ *is* mapped, so the unmapped
+  # fallback never fires -- fail-open covers paths nobody thought about, not
+  # paths mapped too tightly.
+  #
+  # The arr rows of the same shape are declined rather than missing, and
+  # tests/ci/classify_changes_test.rb states them so: the `arr` lane and the
+  # `reconciliation` job already converge and assert arr's own state, and the
+  # downloaders, bindery, trailarr and seerr lanes read it over stable APIs
+  # rather than through a one-shot credential handshake. Four more lanes on every
+  # arr change is not what that buys.
+  COMPANION_LANES = { "downloaders" => %w[bindery], "jellyfin" => %w[seerr] }.freeze
   # The contract's own files. They are read by no play and by no integration
   # suite, so they select the contract alone rather than falling open to every
   # lane in the repository. The support file is listed because all three legs

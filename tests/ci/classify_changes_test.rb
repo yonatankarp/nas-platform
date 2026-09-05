@@ -25,9 +25,34 @@ RECONCILIATION_LANES = %w[arr downloaders].freeze
 # same reason: the downloaders lane converges the Usenet provider undeclared and
 # the bindery lane converges it declared, each asserting one branch of
 # roles/downloaders/tasks/verify.yml, so anything selecting the first has to
-# select the second or a branch is routed to no runtime lane at all. Widening
-# this in the classifier must fail here.
-COMPANION_LANES = { "downloaders" => %w[bindery] }.freeze
+# select the second or a branch is routed to no runtime lane at all. The seerr
+# row is the other shape: the seerr lane is the only one converging arr and
+# Jellyfin together, and it consumes Jellyfin's *converged* state -- its
+# bootstrap POSTs the vault Jellyfin administrator to `/auth/jellyfin` inside
+# the anonymous-takeover window, and its verify reads `/settings/jellyfin` and
+# the managed-user roster -- so the jellyfin lane cannot see what a Jellyfin
+# change broke (#349). Widening this in the classifier must fail here.
+COMPANION_LANES = { "downloaders" => %w[bindery], "jellyfin" => %w[seerr] }.freeze
+# The tags every tagged lane carries to converge the shared inert foundation and
+# the alerting sink. They are not lane dependencies: host_prep and
+# deployment_bundle already fall open to every lane, and ntfy is routed by
+# NTFY_LANES, both pinned above. The cross-lane derivation below skips them for
+# that reason rather than for convenience.
+SHARED_TAGS = %w[host_prep deployment_bundle ntfy].freeze
+# The cross-lane dependencies visible in tests/ci/suites.conf that are
+# deliberately *not* routed, with the reason. #349 asked the question and this is
+# the answer: the arr lane converges and asserts arr's own state and the
+# reconciliation job re-asserts it against a fixture, and the four lanes that
+# read arr do so over its stable HTTP API rather than through a one-shot
+# handshake, so four more acquisition lanes on every arr change buys little. A
+# row here is a decision someone has to re-take, not a gap that can be inherited
+# silently; a row naming a pair the suite table no longer shows fails below.
+DECLINED_COMPANIONS = [
+  %w[arr downloaders],
+  %w[arr bindery],
+  %w[arr trailarr],
+  %w[arr seerr]
+].freeze
 RECONCILIATION_OWNED_PATHS = %w[
   tests/media_acquisition_reconciliation_support.rb
   tests/media_acquisition_reconciliation_core_test.rb
@@ -51,6 +76,15 @@ end
 
 def selected_lanes(paths, full: false)
   ClassifyChanges.classify(paths, full: full).select { |_lane, selected| selected }.keys
+end
+
+# A selection is returned in LANES order, and a companion lane need not sit
+# beside the lane that pulled it in -- `seerr` precedes `smoke`, which every
+# service lane also selects. Building an expectation by concatenation is how that
+# produces a wrong list rather than a wrong-looking one, so expectations assembled
+# from parts are ordered here instead.
+def canonical(lanes)
+  lanes.uniq.sort_by { |lane| LANES.index(lane) }
 end
 
 if defined?(ClassifyChanges)
@@ -77,7 +111,10 @@ if defined?(ClassifyChanges)
     ["docs/secrets.md"] => %w[docs],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
-    ["tests/contracts/jellyfin.sh"] => %w[static smoke jellyfin idempotence_check],
+    # Plus seerr: the seerr lane is the only one that converges Jellyfin
+    # alongside arr and it signs in to Jellyfin as the vault administrator, so a
+    # Jellyfin change has to reach it.
+    ["tests/contracts/jellyfin.sh"] => %w[static seerr smoke jellyfin idempotence_check],
     ["roles/arr/tasks/main.yml"] => %w[static reconciliation arr idempotence_check],
     # Plus bindery: the downloaders lane converges the Usenet provider
     # undeclared now, so the lane that converges it declared has to come with it.
@@ -121,8 +158,8 @@ if defined?(ClassifyChanges)
       "tests/expected/#{project}.yml",
       "tests/contracts/#{project}-foundation.sh"
     ].each do |path|
-      expected = ["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)), project,
-                  *COMPANION_LANES.fetch(project, []), "idempotence_check"]
+      expected = canonical(["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)),
+                            project, *COMPANION_LANES.fetch(project, []), "idempotence_check"])
       check(failures, selected_lanes([path]) == expected,
             "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
     end
@@ -177,7 +214,9 @@ if defined?(ClassifyChanges)
       "services/#{service}/compose.yml",
       "tests/contracts/#{contract}.sh"
     ].each do |path|
-      expected = %w[static smoke] + expected_service_lanes + %w[idempotence_check]
+      companions = expected_service_lanes.flat_map { |lane| COMPANION_LANES.fetch(lane, []) }
+      expected = canonical(%w[static smoke] + expected_service_lanes + companions +
+                           %w[idempotence_check])
       check(failures, selected_lanes([path]) == expected,
             "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
     end
@@ -192,9 +231,53 @@ if defined?(ClassifyChanges)
       "roles/komga/tasks/main.yml",
       "services/jellyfin/compose.yml",
       "tests/contracts/immich.sh"
-    ]) == %w[static smoke komga jellyfin immich idempotence_check],
-    "multiple media service changes must remain independent and canonically ordered"
+    ]) == %w[static seerr smoke komga jellyfin immich idempotence_check],
+    "multiple media service changes must combine canonically, each carrying its own companion"
   )
+
+  # The one #349 names, stated as a path rather than as a table row.
+  check(failures, selected_lanes(["roles/jellyfin/tasks/main.yml"]).include?("seerr"),
+        "a Jellyfin change must select the seerr lane, the only one that converges arr and " \
+        "Jellyfin together and the only one that signs in to Jellyfin as the vault administrator")
+
+  # The dependency COMPANION_LANES encodes is already written down in
+  # tests/ci/suites.conf: a lane whose tags name another lane converges that
+  # lane's role, so a change to that role can break this lane while the role's own
+  # lane converges nothing that would notice. Deriving the pairs from the suite
+  # table -- rather than pinning the single pair #349 named -- is what makes the
+  # next cross-lane dependency have to be *declared*: routed in COMPANION_LANES,
+  # or declined by name with a reason. A lane added to suites.conf whose tags name
+  # a role fails here on the day it lands.
+  cross_lane_pairs = ClassifyChanges::TAGGED_LANES.flat_map do |consumer|
+    ClassifyChanges::SERVICE_TAGS.fetch(consumer)
+                                 .reject { |tag| SHARED_TAGS.include?(tag) || tag == consumer }
+                                 .select { |tag| LANES.include?(tag) }
+                                 .map { |producer| [producer, consumer] }
+  end
+  routed_pairs, undeclared_pairs = cross_lane_pairs.partition do |producer, consumer|
+    COMPANION_LANES.fetch(producer, []).include?(consumer)
+  end
+  # A floor rather than non-emptiness: a derivation that stops reading the tags
+  # column examines nothing and reports every dependency routed. The floor is two
+  # rather than today's six deliberately -- retiring a lane is allowed to lower
+  # the count, and DECLINED_COMPANIONS below reports that case by name.
+  check(failures, cross_lane_pairs.length >= 2,
+        "the suite table named #{cross_lane_pairs.length} cross-lane dependencies, expected at " \
+        "least two: the derivation has stopped reading the tags column")
+  check(failures, routed_pairs.length >= 2,
+        "#{routed_pairs.length} cross-lane dependencies are routed, expected at least two: " \
+        "#{routed_pairs.inspect}")
+  undeclared_pairs.each do |pair|
+    check(failures, DECLINED_COMPANIONS.include?(pair),
+          "the #{pair.last} lane converges roles/#{pair.first}/ and no change there selects it: " \
+          "route #{pair.first.inspect} in COMPANION_LANES or decline the pair with a reason")
+  end
+  DECLINED_COMPANIONS.each do |pair|
+    check(failures, cross_lane_pairs.include?(pair),
+          "#{pair.inspect} is declined but the suite table no longer names that dependency")
+    check(failures, !routed_pairs.include?(pair),
+          "#{pair.inspect} is both routed and declined")
+  end
   check(failures, ClassifyChanges.classify([], full: false).keys == LANES,
         "classify must return every lane in canonical order")
   check(failures, selected_lanes([], full: true) == LANES,
@@ -256,7 +339,9 @@ if defined?(ClassifyChanges)
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
     "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,audiobookshelf",
     "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,komga",
-    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,jellyfin",
+    # The seerr lane comes first in suites.conf row order and its tags are a
+    # superset of Jellyfin's own, so the Jellyfin plan is Seerr's plan.
+    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr",
     "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
     "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless"
   }.each do |path, expected_tags|
