@@ -205,6 +205,7 @@ CASES = [
 SPECS = {
     "Prowlarr application": plugin._APPLICATION,
     "Servarr download client": plugin._SERVARR_CLIENT,
+    "Prowlarr download client": plugin._PROWLARR_CLIENT,
     "Prowlarr indexer": plugin._INDEXER,
 }
 ATTRIBUTE_FLOOR = 20
