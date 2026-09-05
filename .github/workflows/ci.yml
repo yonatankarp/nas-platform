@@ -163,8 +163,15 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
+          #
+          # The versions are not named here. controller-requirements.txt is what an
+          # operator installs from and what CLAUDE.md calls the source of truth, and
+          # three jobs run this same block: naming a version in it made three copies
+          # nothing compared, so a bump could land in one and leave the other two on
+          # the old pin. Installing from the file is how the gate validates the
+          # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
@@ -268,8 +275,15 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
+          #
+          # The versions are not named here. controller-requirements.txt is what an
+          # operator installs from and what CLAUDE.md calls the source of truth, and
+          # three jobs run this same block: naming a version in it made three copies
+          # nothing compared, so a bump could land in one and leave the other two on
+          # the old pin. Installing from the file is how the gate validates the
+          # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
@@ -321,8 +335,15 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
+          #
+          # The versions are not named here. controller-requirements.txt is what an
+          # operator installs from and what CLAUDE.md calls the source of truth, and
+          # three jobs run this same block: naming a version in it made three copies
+          # nothing compared, so a bump could land in one and leave the other two on
+          # the old pin. Installing from the file is how the gate validates the
+          # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install 'ansible-core==2.21.3' 'ansible-lint==26.8.0'
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
@@ -351,7 +372,10 @@ jobs:
     # Nothing depends on this succeeding. tests/integration.sh builds the image
     # locally when it cannot pull one, and installs the toolchain inside the run
     # when it cannot build one, which is exactly what it did before this job
-    # existed.
+    # existed. That is why the suites matrix below drops the implicit success gate
+    # `needs` carries, and why tests/ci/validate_results.rb names this job
+    # non-blocking: a registry hiccup must cost time rather than a verdict. The
+    # aggregate check reports the failure instead of failing on it.
     timeout-minutes: 20
     needs: changes
     # A fork's GITHUB_TOKEN is read-only, so no packages: write scope exists for it

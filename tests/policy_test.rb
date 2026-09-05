@@ -107,9 +107,11 @@ beginner_guides.each do |relative_path|
         "README must link to #{relative_path}")
 end
 
-# The controller pin is authored once, in controller-requirements.txt, and
-# tests/ci/workflow_test.rb holds its three machine-readable mirrors to ci.yml. A
-# guide that restates the version is a fourth mirror that nothing bumps, so a
+# The controller pin is authored once, in controller-requirements.txt: every CI
+# job that needs the toolchain installs from it, and tests/ci/workflow_test.rb
+# holds the two restatements that cannot be a pip requirement -- the sandbox's
+# image tag and the Beszel telemetry test -- against it. A guide that restates
+# the version is a further mirror that nothing bumps, so a
 # reader following it builds a controller CI never validated against and then
 # fails ansible-lint for reasons the guide cannot explain.
 beginner_guides.each do |relative_path|

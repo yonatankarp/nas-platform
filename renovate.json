@@ -155,17 +155,6 @@
       "depNameTemplate": "tesseract-ocr/tessdata_fast"
     },
     {
-      "description": "Ansible tooling pinned in the CI workflow's pip install step.",
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^\\.github/workflows/ci\\.yml$/"
-      ],
-      "matchStrings": [
-        "'(?<depName>ansible-core|ansible-lint)==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
-      ],
-      "datasourceTemplate": "pypi"
-    },
-    {
       "description": "Python tooling pinned in controller-requirements.txt, which the operator guide and production poller install from.",
       "customType": "regex",
       "managerFilePatterns": [
