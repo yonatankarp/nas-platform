@@ -20,7 +20,7 @@ services:
   # downloaders.
   bindery:
     container_name: bindery
-    image: ghcr.io/vavallee/bindery:v1.33.3@sha256:0a7a6c866b5b49938193eb9411611b6196a51275b1639bde395bd91d6a1a8e42
+    image: ghcr.io/vavallee/bindery:v1.33.4@sha256:9fa090fe7df7604fd2f2f6da519cf5495502343ded4c6acce7756d7105b4c4ff
     cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
     # One library scan plus one import at a time; the metadata providers are
     # network-bound rather than CPU-bound, and SABnzbd holds the download
