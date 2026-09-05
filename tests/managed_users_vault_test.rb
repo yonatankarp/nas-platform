@@ -638,6 +638,11 @@ runtime_vault = duplicate(vault)
 runtime_vault["vault_jellyfin_opensubtitles_username"] = "runtime-opensubtitles-user"
 runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-password"
 runtime_vault["vault_kapowarr_comicvine_api_key"] = "runtime-comicvine-api-key"
+# The relay token is documented as a stand-in the contract refuses, for the same
+# reason those three are: it is a value that would otherwise deploy. So the
+# runtime vault has to replace it too, or this whole block would be measuring
+# that refusal rather than what it means to measure.
+runtime_vault["vault_dozzle_alert_relay_token"] = "b" * 64
 _stdout, _stderr, valid_status = validate_with_role(runtime_vault)
 check(failures, valid_status.success?, "vault example with runtime integrations must pass role evaluation")
 expect_role_rejection(failures, "documented OpenSubtitles placeholders", vault,
