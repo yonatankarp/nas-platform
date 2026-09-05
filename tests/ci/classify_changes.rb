@@ -87,7 +87,16 @@ module ClassifyChanges
   # checks themselves and fails when a document reaches no job that runs a check
   # reading it, so the next doc-reading check cannot reopen the hole by being
   # written.
+  #
+  # CLAUDE.md is the one that got in anyway (issue #346), because the derivation
+  # only ever looked for `docs/...` and README: tests/policy_test.rb sweeps it for
+  # retired declarations and tests/docs_links_test.rb compares its lane roster and
+  # its service-stack count against the tree, both added by #276, while it matched
+  # no lane map at all and fell through to inert_path? as ordinary Markdown.
+  # Editing either of those two claims merged green and turned main red on the
+  # next unrelated change.
   STATIC_ONLY_PATHS = %w[
+    CLAUDE.md
     README.md
     docs/adding-a-service.md
     docs/ansible-basics.md
@@ -111,8 +120,9 @@ module ClassifyChanges
   # broken link under docs/superpowers/plans/ used to merge green and turn main
   # red. It selects the docs job, which needs Ruby and the checkout and nothing
   # else, rather than the fifteen-minute static job a typo fix has no business
-  # paying for. The documents STATIC_ONLY_PATHS still names select both.
-  DOCUMENTATION_PATHS = %w[README.md].freeze
+  # paying for. The documents STATIC_ONLY_PATHS still names select both, CLAUDE.md
+  # among them: the link gate reads it here, the policy gate reads it there.
+  DOCUMENTATION_PATHS = %w[CLAUDE.md README.md].freeze
   DOCUMENTATION_PREFIXES = %w[docs/].freeze
   STATIC_ONLY_PREFIXES = %w[
     roles/image_prune/
@@ -308,14 +318,22 @@ module ClassifyChanges
     SUITES.filter_map { |lane, suite| suite if selection.fetch(lane) }
   end
 
-  # Reached only after docs_input? has claimed README.md and everything under
-  # docs/, so no documentation the link gate reads can be called inert here. What
-  # is left is Markdown the gate does not read at all -- a stray note beside a
-  # role -- and editor droppings.
+  # Reached only after docs_input? has claimed CLAUDE.md, README.md and everything
+  # under docs/, so no documentation the link gate reads can be called inert here.
+  # What is left is Markdown the gate does not read at all -- a stray note beside
+  # a role -- and editor droppings.
+  #
+  # Repository-root Markdown is the exception, and it is a rule rather than a
+  # list. This line used to exempt AGENTS.md by name, a file that has never
+  # existed in any ref, while the agent-instructions file that does exist fell
+  # through it into `.md` and reached no job (issue #346). Root Markdown is where
+  # a check-read document lands, so it falls open to every lane instead of being
+  # guessed at by name; naming it above is what buys it a cheaper answer.
   def inert_path?(path)
     return true if path == ".gitignore" || path.match?(%r{\ALICENSE(?:\.[^/]+)?\z})
     return true if path.match?(%r{\A(?:\.idea|\.vscode)/}) || path == ".editorconfig"
-    return false if path == "AGENTS.md" || path.match?(%r{\A(?:tests|fixtures|scripts)/})
+    return false unless path.include?("/")
+    return false if path.match?(%r{\A(?:tests|fixtures|scripts)/})
 
     path.end_with?(".md")
   end
