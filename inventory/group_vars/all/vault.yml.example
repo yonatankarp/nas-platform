@@ -15,6 +15,13 @@ vault_dozzle_admin_password_hash: $2b$12$000000000000000000000000000000000000000
 # working value from vault_ntfy_dozzle_token, and a value authored here wins
 # over it. Author one to rotate the relay independently of ntfy. 64 lowercase
 # hex digits, as `openssl rand -hex 32` prints.
+#
+# The stand-in below is refused by the credential contract rather than merely
+# looking wrong. Unlike the other zero-filled placeholders here it is a value
+# that would work -- both ends of this secret are configured by the platform
+# from this one source -- so copying it verbatim would deploy a relay whose
+# secret is published in this repository, and nothing downstream would fail to
+# say so. Replace it, or delete the line and take the derived default.
 vault_dozzle_alert_relay_token: "0000000000000000000000000000000000000000000000000000000000000000"
 
 vault_immich_admin_email: admin@example.invalid

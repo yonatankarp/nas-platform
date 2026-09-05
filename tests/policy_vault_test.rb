@@ -220,7 +220,7 @@ check(failures,
       "the derived relay token must be a salted hash of the ntfy publish token "\
       "and nothing else")
 relay_rule = credential_schema_source[
-  /^\s*"vault_dozzle_alert_relay_token": \(\(PATTERN, ([A-Z_0-9]+)\),\),$/, 1
+  /^\s*"vault_dozzle_alert_relay_token": \(\n\s*\(PATTERN, ([A-Z_0-9]+)\),\n/, 1
 ].to_s
 relay_pattern = credential_schema_source[
   /^#{Regexp.escape(relay_rule)} = re\.compile\(r"([^"]+)"\)$/, 1
@@ -337,12 +337,31 @@ example.each do |key, value|
   # quoted in the example because 64 zeros is otherwise a YAML integer, and an
   # operator copying an integer would fail the contract's text rule.
   next if key == "vault_dozzle_alert_relay_token" && value == "0" * 64
+  # ... and it must be the exact value the contract refuses. Pinned below,
+  # because the two halves are useless apart: a stand-in the rule does not
+  # name is a working secret published in this repository, and a rule naming
+  # a value the example does not ship refuses nothing.
   next if value.include?("example-only-not-a-real-private-key")
   next if foundation_example[key] == value
   next if OPERATOR_SUPPLIED_EXAMPLE[key] == value
 
   check(failures, false, "#{example_path}: #{key} looks like a real value, not a placeholder")
 end
+
+# The other half of that pairing. NOT_PLACEHOLDER is what makes this key's
+# stand-in refusable at all: 64 zeros satisfies HEX_64, so unlike the `tk_`
+# and bcrypt stand-ins -- which fail at ntfy and at a login -- a copied
+# example would deploy a working relay whose secret is published here, and
+# nothing downstream would ever say so.
+check(failures,
+      credential_schema_source.match?(
+        /^DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS = \("0" \* 64,\)$/
+      ) &&
+        credential_schema_source.match?(
+          /\(NOT_PLACEHOLDER, DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS\),/
+        ) &&
+        example["vault_dozzle_alert_relay_token"] == "0" * 64,
+      "the documented relay token stand-in must be the value the contract refuses")
 
 # The example documents what vault must contain; the generator's template is what
 # actually gets written. Drift means an operator follows the example and ends up

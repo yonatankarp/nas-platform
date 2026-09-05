@@ -106,6 +106,18 @@ OPENSUBTITLES_PASSWORD_PLACEHOLDERS = ("example-opensubtitles-password",
 COMICVINE_API_KEY_PLACEHOLDERS = ("example-comicvine-api-key",
                                   "replace-with-comicvine-api-key")
 
+# The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
+# vault.yml.example that has to be rejected here rather than by the service that
+# receives it. The others fail somewhere: `tk_` and 29 zeros is not a token ntfy
+# issued, so ntfy refuses to publish, and a bcrypt payload of 53 zeros matches no
+# password, so the login fails. This value is different in kind -- 64 zeros is a
+# perfectly good shared secret, and both ends of it are configured by this
+# platform from the same source, so an operator who copies the example verbatim
+# gets a working relay whose secret is published in this repository and nothing
+# anywhere ever says so. A placeholder that validates is indistinguishable from a
+# real value, which is exactly what NOT_PLACEHOLDER exists to catch.
+DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS = ("0" * 64,)
+
 NONEMPTY = "nonempty"
 PATTERN = "pattern"
 EXACT = "exact"
@@ -124,7 +136,10 @@ CREDENTIAL_RULES = {
     "vault_dozzle_admin_username": ((NONEMPTY, None),),
     "vault_dozzle_admin_password": ((NONEMPTY, None),),
     "vault_dozzle_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_dozzle_alert_relay_token": ((PATTERN, HEX_64),),
+    "vault_dozzle_alert_relay_token": (
+        (PATTERN, HEX_64),
+        (NOT_PLACEHOLDER, DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS),
+    ),
     "vault_immich_admin_email": ((PATTERN, EMAIL),),
     "vault_immich_admin_password": ((NONEMPTY, None),),
     "vault_immich_db_name": ((PATTERN, DATABASE_IDENTIFIER),),
