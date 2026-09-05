@@ -921,9 +921,25 @@ end
 #
 # 100 is sized against the mutation fixture, not the tree. The harness copies a
 # curated subset of the repository into its sandbox, where these four trees hold
-# 275 files against the tree's 497, and every mutation runs this script there;
-# a floor sized to the tree would fail every one of them for a reason that has
-# nothing to do with the mutation under test.
+# 275 files, and every mutation runs this script there; a floor sized to the tree
+# would fail every one of them for a reason that has nothing to do with the
+# mutation under test.
+#
+# No figure for the tree is written here, on purpose. The scan above counts files
+# on **disk**, not tracked files, so gitignored build artifacts join the total:
+# a checkout where anyone has run the Python tests carries `tests/__pycache__`
+# and `roles/deployment_bundle/files/__pycache__`, and the same commit then
+# measures larger than it does in a clean one. CI, a sandbox and a developer's
+# machine therefore disagree about the tree's size while agreeing about the
+# commit, so any number taken from one of them is a property of that checkout
+# rather than of the repository -- which is exactly the kind of figure a floor
+# should not be pinned to. Two of us measured this and got different answers
+# before noticing why.
+#
+# The fixture is the number that governs, and it is stable because `copy_fixture`
+# seeds from tracked content: 275 subjects against a floor of 100. If the tree's
+# count is ever wanted, derive it rather than quote it --
+# `git ls-files inventory roles templates tests | wc -l` at the revision in hand.
 VAULT_NAS_TREES.each do |tree|
   check_floor(failures, nas_coordinate_scan.fetch(tree).length, 1,
               "the vault_nas_ leak sweep of #{tree}/ matched no file")
