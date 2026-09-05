@@ -11,7 +11,7 @@
   ansible.builtin.set_fact:
     paperless_mail_account_payload: >-
       {{ paperless_mail_account | combine({
-           'name': vault_paperless_mail_account_name,
+           'name': paperless_mail_account_name,
            'username': vault_paperless_gmail_account,
            'password': vault_paperless_gmail_app_password | replace(' ', ''),
            'owner': paperless_managed_administrators[0].id
@@ -148,16 +148,19 @@
   ansible.builtin.set_fact:
     paperless_managed_mail_accounts: >-
       {{ paperless_mail_accounts_before.json.results
-         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+         | selectattr('name', 'equalto', paperless_mail_account_name) | list }}
   no_log: true
 
+# Unredacted, unlike its account counterpart: a mail rule carries names,
+# folders and filters, and the name it is selected by is operator policy in
+# inventory rather than a vault credential (#353). The account listing beside it
+# stays redacted because a mail account carries the Gmail address.
 - name: Resolve managed Paperless mail rules
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
     paperless_managed_mail_rules: >-
       {{ paperless_mail_rules_before.json.results
-         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
-  no_log: true
+         | selectattr('name', 'equalto', paperless_mail_rule_name) | list }}
 
 - name: Refuse duplicate managed Paperless mail accounts
   tags: [platform_verify_paperless]
@@ -199,7 +202,6 @@
   ansible.builtin.set_fact:
     paperless_existing_mail_rule: "{{ paperless_managed_mail_rules | first | default({}) }}"
     paperless_mail_rule_create_required: "{{ paperless_managed_mail_rules | length == 0 }}"
-  no_log: true
 
 - name: Snapshot normalized managed Paperless mail state before credential testing
   tags: [platform_verify_paperless]

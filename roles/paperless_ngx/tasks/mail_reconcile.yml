@@ -83,10 +83,10 @@
   ansible.builtin.set_fact:
     paperless_reconciled_mail_accounts: >-
       {{ paperless_mail_accounts_after.json.results
-         | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list }}
+         | selectattr('name', 'equalto', paperless_mail_account_name) | list }}
     paperless_reconciled_mail_account: >-
       {{ (paperless_mail_accounts_after.json.results
-          | selectattr('name', 'equalto', vault_paperless_mail_account_name) | list | first)
+          | selectattr('name', 'equalto', paperless_mail_account_name) | list | first)
          | default({}) }}
   no_log: true
 
@@ -95,12 +95,16 @@
   ansible.builtin.set_fact:
     paperless_mail_rule_payload: >-
       {{ paperless_mail_rule | combine({
-           'name': vault_paperless_mail_rule_name,
+           'name': paperless_mail_rule_name,
            'account': paperless_reconciled_mail_account.id | default(0),
            'owner': paperless_managed_administrators[0].id
          }) }}
   no_log: true
 
+# Unredacted for the same reason as the rule resolution in mail_state.yml: this
+# renders a rule and the desired rule payload, neither of which carries a
+# credential, and a rule that will be repaired is exactly what an operator
+# reading a converge needs to see.
 - name: Resolve Paperless mail rule repair requirement
   tags: [platform_verify_paperless]
   ansible.builtin.set_fact:
@@ -109,7 +113,6 @@
          (paperless_existing_mail_rule | dict2items
           | selectattr('key', 'in', paperless_mail_rule_payload.keys()) | items2dict) !=
          paperless_mail_rule_payload }}
-  no_log: true
 
 - name: Report planned Paperless mail rule creation
   ansible.builtin.debug:
@@ -205,7 +208,7 @@
   vars:
     paperless_verified_mail_rules: >-
       {{ paperless_mail_rules_after.json.results
-         | selectattr('name', 'equalto', vault_paperless_mail_rule_name) | list }}
+         | selectattr('name', 'equalto', paperless_mail_rule_name) | list }}
   when:
     - >-
       not ansible_check_mode or

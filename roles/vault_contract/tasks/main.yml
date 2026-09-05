@@ -158,9 +158,7 @@
           'vault_paperless_db_password': vault_paperless_db_password,
           'vault_paperless_django_secret_key': vault_paperless_django_secret_key,
           'vault_paperless_gmail_account': vault_paperless_gmail_account,
-          'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password,
-          'vault_paperless_mail_account_name': vault_paperless_mail_account_name,
-          'vault_paperless_mail_rule_name': vault_paperless_mail_rule_name}
+          'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password}
          | vault_credential_errors }}
   no_log: true
 

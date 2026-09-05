@@ -84,6 +84,23 @@ paperless_ai_enabled: false
 paperless_ai_llm_endpoint: http://192.0.2.1:11434
 paperless_ai_llm_model: gemma3:4b
 
+# The names of the two Paperless mail objects this platform creates: the Gmail
+# account and the rule that consumes from it. Neither authorises access to
+# anything -- they label objects the platform itself POSTs -- so they are
+# operator policy here rather than vault keys. The `vault_` prefix promises a
+# value is secret-bearing, and on these two it promised something untrue, which
+# is the shape #298 corrected for the four Usenet provider values (#353).
+#
+# Reading them without the vault is what lets the rule-side reconciliation tasks
+# drop `no_log` and name the rule they could not match. The role finds its
+# objects by these names, so changing one creates a fresh account or rule and
+# leaves the previously named one in Paperless untouched.
+#
+# This is the only home for the pair; roles/paperless_ngx declares them required
+# rather than defaulting them a second time where group_vars would always win.
+paperless_mail_account_name: gmail
+paperless_mail_rule_name: inbox
+
 # Managed Immich user preferences are nonsecret policy. Every encrypted managed
 # identity uses this profile unless its email selects another declared profile;
 # per-email overrides may replace only leaves in the pinned v3.1.0 schema.

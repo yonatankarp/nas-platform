@@ -37,6 +37,12 @@ argument_specs:
       paperless_hebrew_model_checksum: {type: str, required: false}
       paperless_mail_account: {type: dict, required: false}
       paperless_mail_rule: {type: dict, required: false}
+      # The two mail object names are operator policy and live only in inventory
+      # group_vars, so the role has no default to fall back on and the mail
+      # tasks read both unconditionally. Requiring them here fails naming the
+      # missing key instead of midway through reconciliation.
+      paperless_mail_account_name: {type: str, required: true}
+      paperless_mail_rule_name: {type: str, required: true}
       vault_paperless_admin_username: {type: str, required: true}
       vault_paperless_admin_password: {type: str, required: true}
       vault_paperless_admin_email: {type: str, required: true}
@@ -46,5 +52,3 @@ argument_specs:
       vault_paperless_django_secret_key: {type: str, required: true}
       vault_paperless_gmail_account: {type: str, required: true}
       vault_paperless_gmail_app_password: {type: str, required: true}
-      vault_paperless_mail_account_name: {type: str, required: true}
-      vault_paperless_mail_rule_name: {type: str, required: true}

@@ -90,11 +90,11 @@
     paperless_managed_mail_probe_state_after:
       accounts: >-
         {{ paperless_mail_accounts_after_probe.json.results
-           | selectattr('name', 'equalto', vault_paperless_mail_account_name)
+           | selectattr('name', 'equalto', paperless_mail_account_name)
            | sort(attribute='id') }}
       rules: >-
         {{ paperless_mail_rules_after_probe.json.results
-           | selectattr('name', 'equalto', vault_paperless_mail_rule_name)
+           | selectattr('name', 'equalto', paperless_mail_rule_name)
            | sort(attribute='id') }}
   no_log: true
 

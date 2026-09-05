@@ -87,8 +87,8 @@ PATTERN_SAMPLES = {
 # the same vault documents; see the module docstring for why the accepted half is
 # preserved rather than fixed.
 LEGACY_ACCEPTED = (
-    ("vault_paperless_mail_rule_name", ["sentinel"]),
-    ("vault_paperless_mail_rule_name", {"sentinel": 1}),
+    ("vault_paperless_admin_username", ["sentinel"]),
+    ("vault_paperless_admin_username", {"sentinel": 1}),
     ("vault_immich_db_name", True),
     ("vault_immich_db_name", None),
     ("vault_paperless_db_username", True),
