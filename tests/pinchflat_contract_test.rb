@@ -726,10 +726,14 @@ PROGRAM_MUTATIONS = [
 
 def plant(source, mutation)
   from = mutation.fetch(:from)
-  abort "self-test could not plant #{mutation.fetch(:label)}: #{from.inspect} is absent" unless
-    source.include?(from)
+  occurrences = mutation.fetch(:occurrences, 1)
+  found = source.scan(from).length
+  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
+       "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
 
-  source.sub(from, mutation.fetch(:to))
+  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
+  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
+  planted
 end
 
 def with_mutant(mutation)
