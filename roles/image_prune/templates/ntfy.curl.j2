@@ -6,6 +6,6 @@
 
    Its own file rather than the poller's: two roles rendering one path would
    each claim the other's change on every converge. #}
-url = "http://127.0.0.1:{{ ntfy_port | default(2586) }}/"
+url = "http://127.0.0.1:{{ ntfy_port }}/"
 header = "Authorization: Bearer {{ vault_ntfy_deploy_token }}"
 header = "Content-Type: application/json"

@@ -93,7 +93,7 @@ seerr_ntfy_locale: en
 # also the ACL grant that authorises the publisher, so it is read unqualified
 # and a run where nothing declares it fails rather than posting somewhere this
 # account may not write (#345).
-seerr_ntfy_url: "http://{{ platform_callback_host }}:{{ ntfy_port | default(2586) }}"
+seerr_ntfy_url: "http://{{ platform_callback_host }}:{{ ntfy_port }}"
 seerr_ntfy_topic: "{{ ntfy_requests_topic }}"
 seerr_ntfy_declaration:
   enabled: true

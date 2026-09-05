@@ -14,6 +14,16 @@ argument_specs:
         description: The deployer's own least-privilege write-only ntfy token.
         type: str
         required: true
+      ntfy_port:
+        description: >-
+          Port the poller reaches ntfy on. Required rather than defaulted
+          for the reason the topics are: this play does not run the ntfy
+          role, so a default here would be the operative value rather
+          than a fallback and a port changed in the inventory would leave
+          the poller addressing the old one (#402). Declared in
+          inventory/group_vars/all/main.yml.
+        type: int
+        required: true
       ntfy_topic:
         description: >-
           Topic the poller publishes a failure to. Required rather than

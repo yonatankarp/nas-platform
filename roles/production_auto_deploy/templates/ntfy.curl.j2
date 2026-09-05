@@ -3,6 +3,6 @@
    message text. The poller puts the topic in the body instead, exactly as
    services/dozzle/alert_relay.py does. The address stays loopback: this
    publisher always runs on the NAS itself. #}
-url = "http://127.0.0.1:{{ ntfy_port | default(2586) }}/"
+url = "http://127.0.0.1:{{ ntfy_port }}/"
 header = "Authorization: Bearer {{ vault_ntfy_deploy_token }}"
 header = "Content-Type: application/json"

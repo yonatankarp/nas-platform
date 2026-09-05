@@ -26,6 +26,10 @@ CALLBACK_HOST = "10.88.0.1"
 # rather than a literal that happens to agree with them today.
 SENTINEL_CRITICAL = "sentinel-critical"
 SENTINEL_DEPLOYMENT = "sentinel-deployment"
+# The port is a sentinel for the same reason, and 2586 specifically is not
+# it: the value this role used to fall back to would pass a render that
+# stopped reading the variable at all (#402).
+SENTINEL_PORT = 28_517
 TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
@@ -247,19 +251,45 @@ end
 # The same fallback anywhere else is the same defect waiting for a second
 # publisher outside the ntfy role's play. Screened over the declarations that
 # render, with a floor, so an expression list that goes empty cannot pass.
-topic_readers = Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks,handlers,meta}/*")).select do |path|
-  File.file?(path) && File.read(path).match?(/ntfy_[a-z_]*topic/)
+#
+# The port is screened by the same rule and for the same structural reason, but
+# not for the same consequence, and the two must not be conflated: a stale topic
+# mis-authorises a publish that ntfy swallows, where a stale port is a refused
+# connection nobody can miss. The port is here because the two configuration
+# templates below read it in a play the ntfy role is absent from, so a literal
+# default was the operative value there rather than a fallback (#402).
+#
+# One screen, two floors. A single floor over the merged set would pass on port
+# readers alone if every topic reader disappeared, which is exactly how a
+# dynamic subject list goes quiet.
+NTFY_SUBJECTS = {
+  "topic" => {
+    reads: /ntfy_[a-z_]*topic/,
+    fallback: /ntfy_[a-z_]*topic[[:space:]]*\|[[:space:]]*default\(/,
+    reason: "the name is also the ACL grant, so a stale default publishes where " \
+            "the account may not write"
+  },
+  "port" => {
+    reads: /ntfy_port/,
+    fallback: /ntfy_port[[:space:]]*\|[[:space:]]*default\(/,
+    reason: "the literal is the operative value in a play the ntfy role is absent " \
+            "from, so a port changed in the inventory leaves that publisher behind"
+  }
+}.freeze
+NTFY_DECLARATION_FILES =
+  Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks,handlers,meta}/*"))
+     .select { |path| File.file?(path) }
+
+NTFY_SUBJECTS.each do |subject, screen|
+  readers = NTFY_DECLARATION_FILES.select { |path| File.read(path).match?(screen[:reads]) }
+  fallback_readers = readers.select { |path| File.read(path).match?(screen[:fallback]) }
+  check(failures, readers.length >= 2,
+        "at least two role declarations must read an ntfy #{subject} variable, found " \
+        "#{readers.length}")
+  check(failures, fallback_readers.empty?,
+        "an ntfy #{subject} must never be read through a fallback; #{screen[:reason]}: " \
+        "#{fallback_readers.map { |path| path.delete_prefix("#{ROOT}/") }.inspect}")
 end
-fallback_readers = topic_readers.select do |path|
-  File.read(path).match?(/ntfy_[a-z_]*topic[[:space:]]*\|[[:space:]]*default\(/)
-end
-check(failures, topic_readers.length >= 2,
-      "at least two role declarations must read an ntfy topic variable, found " \
-      "#{topic_readers.length}")
-check(failures, fallback_readers.empty?,
-      "an ntfy topic must never be read through a fallback; the name is also the " \
-      "ACL grant, so a stale default publishes where the account may not write: " \
-      "#{fallback_readers.map { |path| path.delete_prefix("#{ROOT}/") }.inspect}")
 
 # --- real role run -----------------------------------------------------------
 
@@ -327,6 +357,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     # would define them otherwise, which is the point.
     "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
     "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
+    "-e", "ntfy_port=#{SENTINEL_PORT}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
@@ -415,6 +446,11 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "ntfy.curl must be mode 0600")
     check(failures, File.read(notifier).include?(TOKEN),
           "ntfy.curl must carry the publisher token")
+    # Rendered against a sentinel port, so a template that stopped reading the
+    # variable and restated 2586 is caught rather than agreeing by accident.
+    check(failures, File.read(notifier).include?("127.0.0.1:#{SENTINEL_PORT}/"),
+          "ntfy.curl must address the declared ntfy port, got: " \
+          "#{File.read(notifier).lines.grep(/^url/).join.strip}")
 
     poller = File.join(home, ".local/share/nas-platform/poller/production_auto_deploy.py")
     check(failures, (File.stat(poller).mode & 0o777) == 0o700, "the poller must be mode 0700")
@@ -450,20 +486,31 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   index = 0
   while index < arguments.length
     if arguments[index] == "-e" &&
-       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=")
+       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=",
+                                             "ntfy_port=")
       index += 2
       next
     end
     undeclared << arguments[index]
     index += 1
   end
+  # "missing required arguments" is ansible-core's own diagnostic (2.21.3, pinned
+  # in controller-requirements.txt). Matching its wording is what makes this sharp
+  # rather than satisfiable by any incidental check-mode failure; a core bump that
+  # rephrases it breaks this assertion, and that is the reason why.
+  #
+  # Read the names out of that clause rather than out of the whole output: the
+  # refusal also dumps argument_spec_data, which names every option the role
+  # declares, so a whole-output substring is satisfied by an option that is
+  # present and optional -- which is the defect (#402).
   refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
+  missing_arguments =
+    refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        refusal_output.include?("missing required arguments") &&
-        refusal_output.include?("ntfy_topic") &&
-        refusal_output.include?("ntfy_deployment_topic"),
-        "the role must refuse to install when no topic is declared, naming the " \
-        "variable: #{refusal_output.lines.last(8).join}")
+        (%w[ntfy_topic ntfy_deployment_topic ntfy_port] - missing_arguments).empty?,
+        "the role must refuse to install when no topic or port is declared, naming " \
+        "each missing variable, found #{missing_arguments.inspect} in: " \
+        "#{refusal_output.lines.last(8).join}")
 end
 
 # The role must refuse to install when the virtualenv the poller needs is absent,

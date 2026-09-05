@@ -24,6 +24,10 @@ TOKEN = "tk_#{'r' * 29}"
 # than a fallback that happens to agree with them today (#345).
 SENTINEL_CRITICAL = "sentinel-critical"
 SENTINEL_DEPLOYMENT = "sentinel-deployment"
+# The port is a sentinel for the same reason, and 2586 specifically is not
+# it: the value this role used to fall back to would pass a render that
+# stopped reading the variable at all (#402).
+SENTINEL_PORT = 28_517
 
 # Deliberately restated rather than derived from the script: this list is the
 # drift screen. A field added to image_prune.py's Config without a matching key
@@ -219,6 +223,7 @@ Dir.mktmpdir("image-prune-role") do |root|
     # and nothing else here would define them, which is the point.
     "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
     "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
+    "-e", "ntfy_port=#{SENTINEL_PORT}",
   ]
   output, status = Open3.capture2e(environment, *arguments)
   check(failures, status.success?, "the role must converge: #{output.lines.last(12).join}")
@@ -296,6 +301,11 @@ Dir.mktmpdir("image-prune-role") do |root|
           "ntfy-prune.curl must be mode 0600")
     check(failures, File.read(notifier_path).include?(TOKEN),
           "ntfy-prune.curl must carry the publisher token")
+    # Rendered against a sentinel port, so a template that stopped reading the
+    # variable and restated 2586 is caught rather than agreeing by accident.
+    check(failures, File.read(notifier_path).include?("127.0.0.1:#{SENTINEL_PORT}/"),
+          "ntfy-prune.curl must address the declared ntfy port, got: " \
+          "#{File.read(notifier_path).lines.grep(/^url/).join.strip}")
     check(failures, notifier_path != File.join(config_root, "ntfy.curl"),
           "the prune must not overwrite the poller's own publisher configuration")
 
@@ -336,20 +346,31 @@ Dir.mktmpdir("image-prune-role") do |root|
   index = 0
   while index < arguments.length
     if arguments[index] == "-e" &&
-       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=")
+       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=",
+                                             "ntfy_port=")
       index += 2
       next
     end
     undeclared << arguments[index]
     index += 1
   end
+  # "missing required arguments" is ansible-core's own diagnostic (2.21.3, pinned
+  # in controller-requirements.txt). Matching its wording is what makes this sharp
+  # rather than satisfiable by any incidental check-mode failure; a core bump that
+  # rephrases it breaks this assertion, and that is the reason why.
+  #
+  # Read the names out of that clause rather than out of the whole output: the
+  # refusal also dumps argument_spec_data, which names every option the role
+  # declares, so a whole-output substring is satisfied by an option that is
+  # present and optional -- which is the defect (#402).
   refusal_output, refusal_status = Open3.capture2e(environment, *undeclared, "--check")
+  missing_arguments =
+    refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        refusal_output.include?("missing required arguments") &&
-        refusal_output.include?("ntfy_topic") &&
-        refusal_output.include?("ntfy_deployment_topic"),
-        "the role must refuse to schedule a prune when no topic is declared, " \
-        "naming the variable: #{refusal_output.lines.last(8).join}")
+        (%w[ntfy_topic ntfy_deployment_topic ntfy_port] - missing_arguments).empty?,
+        "the role must refuse to schedule a prune when no topic or port is " \
+        "declared, naming each missing variable, found #{missing_arguments.inspect} " \
+        "in: #{refusal_output.lines.last(8).join}")
 end
 
 if failures.empty?
