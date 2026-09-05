@@ -107,6 +107,19 @@
         "needs-manual-coupling"
       ],
       "automerge": false
+    },
+    {
+      "description": "The Hebrew tessdata model Paperless OCRs with is pinned by tag and sha256 together, and a bot cannot compute the checksum. Worse than the yt-dlp case: tessdata_fast publishes no checksum file, so the new value is produced by downloading heb.traineddata and hashing it. A tag bump whose checksum was not updated by hand fails the converge at get_url, so these never automerge.",
+      "matchDatasources": [
+        "github-tags"
+      ],
+      "matchPackageNames": [
+        "tesseract-ocr/tessdata_fast"
+      ],
+      "addLabels": [
+        "needs-manual-coupling"
+      ],
+      "automerge": false
     }
   ],
   "customDatasources": {
@@ -128,6 +141,18 @@
       "datasourceTemplate": "github-releases",
       "depNameTemplate": "yt-dlp/yt-dlp",
       "versioningTemplate": "loose"
+    },
+    {
+      "description": "The Hebrew tessdata model Paperless downloads, pinned in the role defaults as a tag inside a raw.githubusercontent.com path. The tag is what makes that path resolve, so github-tags rather than github-releases is the datasource that matches what the URL addresses. The sha256 on the following line is the other half of the pin and is not machine-derivable; see the matching packageRule.",
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^roles/paperless_ngx/defaults/main\\.yml$/"
+      ],
+      "matchStrings": [
+        "tessdata_fast/(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)/heb\\.traineddata"
+      ],
+      "datasourceTemplate": "github-tags",
+      "depNameTemplate": "tesseract-ocr/tessdata_fast"
     },
     {
       "description": "Ansible tooling pinned in the CI workflow's pip install step.",

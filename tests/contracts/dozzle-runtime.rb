@@ -47,6 +47,17 @@ def fail_contract(message)
   exit 1
 end
 
+# The throwaway fixtures below run `/bin/sh` under the ntfy image, chosen only
+# because the platform has already pulled it. Restating the pin here would make
+# that false the moment ntfy is bumped -- and Renovate does not read this tree,
+# so nothing would say so. Read the one pin the deployment declares instead.
+def deployed_ntfy_image
+  path = ENV.fetch("PLATFORM_CONTRACT_NTFY_COMPOSE")
+  pin = File.read(path)[%r{^\s*image:\s*(\S+/ntfy:\S+@sha256:[0-9a-f]{64})\s*$}, 1]
+  fail_contract("services/ntfy/compose.yml declares no pinned ntfy image") unless pin
+  pin
+end
+
 def safe_id(value)
   id = value.to_s
   fail_contract("API returned an unsafe identifier") unless id.match?(SAFE_ID)
@@ -556,7 +567,7 @@ if MODE == "notify"
       baselines[topic]
   end
 
-  image = "docker.io/binwiederhier/ntfy:v2.27.0@sha256:f2419f405127afa868f10985c1a41449e673477cee1eb19994339a5ae8b592e7"
+  image = deployed_ntfy_image
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
   startup_fixture = "dozzle_contract_startup_#{SecureRandom.hex(6)}"
   exit_fixture = "dozzle_contract_exit_#{SecureRandom.hex(6)}"
