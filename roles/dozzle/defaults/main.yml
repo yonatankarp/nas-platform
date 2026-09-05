@@ -26,8 +26,14 @@ dozzle_dispatcher:
         'exitCode': '{{ index .Event.Attributes `exitCode` }}',
         'timestamp': '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'}
        | to_json(separators=(',', ':')) }}
+  # Deliberately not the ntfy publish token. The platform POSTs this header
+  # into Dozzle's /api/notifications/dispatchers, so Dozzle holds it at rest in
+  # its /data volume and returns it in cleartext over its own API; what it
+  # keeps there authorizes nothing but a POST to the relay (#172). The relay
+  # reads the same value as ALERT_RELAY_TOKEN, and its ntfy publish token is a
+  # separate credential it never hands to Dozzle.
   headers:
-    Authorization: "Bearer {{ vault_ntfy_dozzle_token }}"
+    Authorization: "Bearer {{ vault_dozzle_alert_relay_token }}"
 
 dozzle_alerts:
   - name: OOM

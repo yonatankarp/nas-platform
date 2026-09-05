@@ -9,6 +9,10 @@ vault_audiobookshelf_admin_password: {{ audiobookshelf_admin_password }}
 vault_dozzle_admin_username: {{ dozzle_admin_username }}
 vault_dozzle_admin_password: {{ dozzle_admin_password }}
 vault_dozzle_admin_password_hash: "{{ dozzle_admin_password_hash }}"
+{# Not an ntfy credential and deliberately not the ntfy publish token: Dozzle
+   stores this one at rest in its own /data volume and serves it back over its
+   API, so it is minted separately and reveals nothing about ntfy (#172). #}
+vault_dozzle_alert_relay_token: {{ dozzle_alert_relay_token | to_json }}
 
 vault_immich_admin_email: {{ immich_admin_email }}
 vault_immich_admin_password: {{ immich_admin_password }}

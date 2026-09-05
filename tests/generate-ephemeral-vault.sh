@@ -276,6 +276,7 @@ $(sed 's/^/  /' "$private_key")
 vault_dozzle_admin_username: ephemeral-admin
 vault_dozzle_admin_password: '$dozzle_admin_password'
 vault_dozzle_admin_password_hash: '$(bcrypt_password "$dozzle_admin_password")'
+vault_dozzle_alert_relay_token: '$(openssl rand -hex 32 2>/dev/null)'
 vault_immich_admin_email: ephemeral-admin@example.invalid
 vault_immich_admin_password: '$(random_password)'
 vault_immich_db_name: immich

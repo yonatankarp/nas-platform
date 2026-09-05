@@ -76,6 +76,35 @@ media_usenet_provider:
 vault_downloaders_sabnzbd_server_username: ""
 vault_downloaders_sabnzbd_server_password: ""
 
+# The shared secret Dozzle presents to the alert relay, and the second key
+# declared here so the vault can win over it. It is declared for the opposite
+# reason to the two above: those carry an empty default because an undeclared
+# Usenet provider is a valid state, this one carries a *working* default because
+# no state of the platform wants the relay unauthenticated.
+#
+# What it is not is a value an operator has to author before the next converge.
+# vault_contract declares every credential required and runs before any target
+# mutation, so a key that only existed in the vault would fail every converge on
+# a host whose vault predates it -- and production_auto_deploy makes the merge
+# the converge, on a five-minute tick, with no self-heal available because
+# healing means editing an encrypted file nobody but the operator can open. That
+# is #327's deadlock reached by a different road, so the default has to exist and
+# has to keep existing; it is not a one-release migration aid.
+#
+# The derivation is a pure function of vault material with a fixed public salt,
+# so it is stable across runs. That is load-bearing rather than tidy: the role
+# compares the dispatcher's stored `headers` against the rendered ones and
+# repairs a difference, so a token that varied per run would repair on every
+# converge and idempotence would never hold. The salt separates this value from
+# anything else that might hash the same credential.
+#
+# SHA-256 is preimage-resistant, which is the security property #172 asked for:
+# Dozzle persists this token in its `/data` volume and returns it in cleartext
+# over its own API, and from the value it stores the ntfy publish token cannot be
+# recovered. Rotating vault_ntfy_dozzle_token rotates this in the same pass;
+# rotating this one alone means authoring it in the vault, where it wins.
+vault_dozzle_alert_relay_token: "{{ ('nas-platform:dozzle-alert-relay:v1:' ~ vault_ntfy_dozzle_token) | hash('sha256') }}"
+
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home
 # for the three values; the role declares them required rather than defaulting them

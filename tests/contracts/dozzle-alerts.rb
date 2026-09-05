@@ -36,12 +36,17 @@ dispatcher = defaults.fetch("dozzle_dispatcher")
 # dispatcher cannot drift away from the port the relay is told to listen on.
 abort "Dozzle contract failed: managed dispatcher must target only the private alert relay" unless
   dispatcher.fetch("url") == "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
-# This is the whole of "the role wires the write-only ntfy token": the equality
-# above names the variable, in the header, on the dispatcher the relay posts to.
-# A second check for the same variable anywhere in the defaults file could only
-# ever pass when this one already had.
+# This is the whole of "the role wires the relay's own shared secret": the
+# equality below names the variable, in the header, on the dispatcher the relay
+# posts to. A second check for the same variable anywhere in the defaults file
+# could only ever pass when this one already had.
+#
+# The variable is deliberately not vault_ntfy_dozzle_token. Dozzle persists this
+# header in its own /data volume and serves it back in cleartext over its API,
+# so naming the ntfy publish credential here would store a second copy of it at
+# rest in a place the relay never needed it (#172).
 abort "Dozzle contract failed: managed dispatcher authorization differs" unless
-  dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_ntfy_dozzle_token }}"}
+  dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_dozzle_alert_relay_token }}"}
 expected_template_fields = {
   "version" => "1",
   "rule" => ".Subscription.Name",

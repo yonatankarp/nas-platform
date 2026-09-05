@@ -34,6 +34,9 @@ argument_specs:
       vault_dozzle_admin_password_hash:
         type: str
         required: true
+      vault_dozzle_alert_relay_token:
+        type: str
+        required: true
       vault_ntfy_dozzle_token:
         type: str
         required: true

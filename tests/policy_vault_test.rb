@@ -7,6 +7,7 @@
 # repository. Split out of policy_test.rb: these checks all police the same
 # artifact and change together.
 
+require "digest"
 require "open3"
 require "rbconfig"
 require "set"
@@ -90,6 +91,19 @@ OPERATOR_SUPPLIED_KEYS = %w[
   vault_downloaders_sabnzbd_server_password
 ].freeze
 
+# The other reason a credential name appears in the shared inventory, and the
+# opposite one: this key is declared there with a *working* value because no
+# state of the platform wants Dozzle's alert relay unauthenticated, and because
+# a credential that existed only in the vault would fail vault_contract on every
+# host whose vault predates it -- on a five-minute tick, with the fix locked
+# inside an encrypted file (#172). It is admitted here by name rather than by
+# loosening the check below to "any vault_ name", because the property #298 asked
+# that check to hold is that every prefixed name in the shared inventory is one
+# the credential contract actually validates.
+PLATFORM_DERIVED_KEYS = %w[
+  vault_dozzle_alert_relay_token
+].freeze
+
 # The operator-owned half, and the whole of what #298 corrected: four values
 # that are not secret had a prefix promising they were vault-authored, and the
 # prefix is the only reason the plaintext default looked wrong. Pinned as one
@@ -143,9 +157,29 @@ check(failures,
 # credential contract actually validates, or the prefix is lying again.
 inventory_vault_keys =
   shared_inventory.keys.select { |key| key.start_with?("vault_") }
-check(failures, inventory_vault_keys.sort == OPERATOR_SUPPLIED_KEYS.sort,
+check(failures,
+      inventory_vault_keys.sort ==
+        (OPERATOR_SUPPLIED_KEYS + PLATFORM_DERIVED_KEYS).sort,
       "every vault_-prefixed name in the shared inventory must be a credential "\
       "the contract validates")
+
+# And the platform-derived half has to stay derived. The shared inventory is
+# committed in the clear, so a literal here would be a plaintext credential in
+# the repository -- the one thing the security boundary forbids outright -- and
+# a value that is not a template is exactly that. The one-way derivation is
+# asserted for its own sake: #172 exists because Dozzle persists this token in
+# its /data volume and serves it back over its API, so what that volume holds
+# must not be reversible to the ntfy publish token it is derived from.
+PLATFORM_DERIVED_KEYS.each do |key|
+  value = shared_inventory.fetch(key, nil)
+  check(failures, EXPECTED_VAULT_KEYS.include?(key),
+        "platform-derived credential #{key} must be one the contract validates")
+  check(failures,
+        value.is_a?(String) && value.start_with?("{{") && value.end_with?("}}"),
+        "platform-derived credential #{key} must be a template, not a literal")
+  check(failures, value.to_s.match?(/\|\s*hash\('sha256'\)/),
+        "platform-derived credential #{key} must be a one-way derivation")
+end
 
 # And the four must be gone from the credential side entirely, not merely
 # dropped from the optional group: a rule left behind in CREDENTIAL_RULES would
@@ -161,6 +195,44 @@ credential_schema_source = File.read(
         "the credential filter must not name the non-credential provider "\
         "field #{field}")
 end
+
+# The one agreement the whole tolerance argument rests on, and the one nothing
+# else can see. Every lane's vault declares vault_dozzle_alert_relay_token --
+# tests/generate-ephemeral-vault.sh writes it -- so no lane ever converges the
+# state the NAS will actually be in on the first run after this merges, which is
+# the vault that omits it and takes the derived default. That is #295's shape
+# exactly: a fixture that supplies a credential cannot catch a bug about its
+# absence. What would break in that state is the derivation disagreeing with the
+# rule the contract applies to the key it defaults, so the disagreement is
+# checked directly.
+#
+# Computed here rather than by booting Ansible: Jinja's hash('sha256') and
+# Digest::SHA256 emit the same hexdigest, and what is at risk is the shape
+# agreement rather than the filter. The derivation's exact form is pinned in the
+# same breath, which is what makes it a pure function of vault material -- a
+# lookup or a timestamp in there would repair the dispatcher on every converge
+# and idempotence would never hold.
+relay_derivation = shared_inventory.fetch("vault_dozzle_alert_relay_token", "").to_s
+check(failures,
+      relay_derivation.match?(
+        /\A\{\{ \('[^']*' ~ vault_ntfy_dozzle_token\) \| hash\('sha256'\) \}\}\z/
+      ),
+      "the derived relay token must be a salted hash of the ntfy publish token "\
+      "and nothing else")
+relay_rule = credential_schema_source[
+  /^\s*"vault_dozzle_alert_relay_token": \(\(PATTERN, ([A-Z_0-9]+)\),\),$/, 1
+].to_s
+relay_pattern = credential_schema_source[
+  /^#{Regexp.escape(relay_rule)} = re\.compile\(r"([^"]+)"\)$/, 1
+].to_s
+check(failures, !relay_pattern.empty?,
+      "the derived relay token must carry a pinned pattern rule")
+check(failures,
+      !relay_pattern.empty? &&
+        Regexp.new(relay_pattern.sub('\\Z', '\\z')).match?(
+          Digest::SHA256.hexdigest("policy-sample")
+        ),
+      "the derived relay token must satisfy the rule its own key carries")
 
 # There is a third half, and it is the one issue #295 was filed about: a fixture
 # that supplies a credential can never catch a bug about that credential's
@@ -259,6 +331,12 @@ example.each do |key, value|
   # Seerr's takes the digit after Trailarr's, and closes the series: it is the
   # last acquisition project.
   next if key == "vault_seerr_api_key" && value == "7" * 32
+  # The Dozzle alert relay's shared secret is contracted to 64 lowercase
+  # hexadecimal characters, twice the width of that series, so it takes the
+  # all-zero stand-in the bcrypt hashes and ntfy tokens use instead. It is
+  # quoted in the example because 64 zeros is otherwise a YAML integer, and an
+  # operator copying an integer would fail the contract's text rule.
+  next if key == "vault_dozzle_alert_relay_token" && value == "0" * 64
   next if value.include?("example-only-not-a-real-private-key")
   next if foundation_example[key] == value
   next if OPERATOR_SUPPLIED_EXAMPLE[key] == value

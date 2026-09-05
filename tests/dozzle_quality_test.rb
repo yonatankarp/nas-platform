@@ -271,7 +271,7 @@ relay_mutations = [
    "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: http://ntfy:80/\n",
    "managed dispatcher must target only the private alert relay"],
   ["missing relay authorization", "roles/dozzle/defaults/main.yml",
-   "  headers:\n    Authorization: \"Bearer {{ vault_ntfy_dozzle_token }}\"\n",
+   "  headers:\n    Authorization: \"Bearer {{ vault_dozzle_alert_relay_token }}\"\n",
    "  headers: {}\n", "managed dispatcher authorization differs"],
   ["missing envelope version", "roles/dozzle/defaults/main.yml",
    "    {{ {'version': 1,\n", "    {{ {\n", "managed dispatcher is missing exact version"],
