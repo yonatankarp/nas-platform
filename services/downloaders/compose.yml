@@ -82,6 +82,18 @@ services:
       UN_DIR_MODE: "0755"
       UN_PARALLEL: "1"
       UN_MAX_RETRIES: "3"
+      # Unpackerr caps the uncompressed size of a single extraction and defaults
+      # that cap per application: 20GB for Sonarr, 75GB for Radarr
+      # (unpackerr v0.16.1, pkg/unpackerr/start.go). A television season pack is
+      # routinely larger than 20GB, and the refusal is neither a download failure
+      # nor an archive failure -- it reports "extracted size exceeds maximum
+      # bytes", holds the item at "Awaiting Import" for ever and reads, from the
+      # library, as a season that silently never arrived. This platform bounds
+      # extraction by the disk it writes to rather than by an archive-size
+      # guess, so both caps are disabled explicitly. "0" is upstream's spelling
+      # for no limit; empty would restore the default.
+      UN_SONARR_0_MAX_BYTES: "0"
+      UN_RADARR_0_MAX_BYTES: "0"
       UN_SONARR_0_URL: http://sonarr:8989
       UN_SONARR_0_API_KEY: ${SONARR_API_KEY:?}
       UN_SONARR_0_PATHS_0: /data/media/.acquisition/usenet/series

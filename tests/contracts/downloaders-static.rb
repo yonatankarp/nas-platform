@@ -102,6 +102,13 @@ if failures.empty?
       defaults["downloaders_sabnzbd_owned_misc"]["cache_limit"] == "256M"
   failures << "SABnzbd concurrent unpack work must be explicitly bounded" unless
     defaults.dig("downloaders_sabnzbd_owned_misc", "direct_unpack_threads") == 1
+  # 3 is Repair/Unpack/Delete. Anything lower leaves par2 repair to nothing --
+  # Unpackerr does not do par2 and holds no archive password -- so a damaged or
+  # encrypted release parks in the acquisition tree with no component able to
+  # finish it. This asserts the level rather than merely that the key exists,
+  # because 0 is what shipped and 0 is what the failure looked like.
+  failures << "SABnzbd must repair and unpack its own downloads" unless
+    defaults["downloaders_sabnzbd_category_post_processing"] == 3
   # 3 is ConfigServer's Strict: the only ssl_verify value that checks the
   # provider's certificate chain and hostname. The other three leave a TLS
   # connection that authenticates nothing, and nothing else would notice.
@@ -270,6 +277,20 @@ if failures.empty?
     template_lines.include?(
       "{% for category, directory in downloaders_sabnzbd_categories.items() %}"
     ) && settings.dig("categories/{{ category }}", "dir") == "{{ directory }}"
+  # The bootstrap template and the reconciliation must write the same
+  # post-processing level, and both must read it from the declaration. A literal
+  # in either place is how the level became unreconcilable in the first place:
+  # the API request carried a hardcoded pp and its `when` compared only the
+  # destination, so an existing host kept whatever it was created with.
+  failures << "bootstrap must render the declared post-processing level" unless
+    settings.dig("categories/{{ category }}", "pp") ==
+      "{{ downloaders_sabnzbd_category_post_processing }}"
+  reconcile = File.read(File.join(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml"))
+  failures << "category reconciliation must set the declared post-processing level" unless
+    reconcile.include?("pp={{") &&
+      reconcile.include?("downloaders_sabnzbd_category_post_processing | string | urlencode")
+  failures << "category reconciliation must notice a post-processing drift" unless
+    reconcile.include?("map(attribute='pp')")
 
   compose = YAML.safe_load_file(File.join(root, "services/downloaders/compose.yml"), aliases: true)
   unpackerr = compose.dig("services", "unpackerr")
@@ -279,6 +300,13 @@ if failures.empty?
   failures << "Unpackerr file and directory modes drifted" unless
     unpackerr.dig("environment", "UN_FILE_MODE") == "0644" &&
       unpackerr.dig("environment", "UN_DIR_MODE") == "0755"
+  # Unset is not the same as unlimited here: unset means 20GB for Sonarr and
+  # 75GB for Radarr, and the refusal that produces is silent from the library's
+  # side. Both are asserted as the explicit "0" so removing either restores a
+  # cap rather than removing one.
+  failures << "Unpackerr must not cap an extraction by archive size" unless
+    unpackerr.dig("environment", "UN_SONARR_0_MAX_BYTES") == "0" &&
+      unpackerr.dig("environment", "UN_RADARR_0_MAX_BYTES") == "0"
   # The platform rule says a probe must reach a service; this says it must reach
   # *this* one. Unpackerr has no liveness signal until its web server is turned
   # on, so the switch and the address the probe fetches are one decision and

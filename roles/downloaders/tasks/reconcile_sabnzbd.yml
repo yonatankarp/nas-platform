@@ -43,7 +43,9 @@
   ansible.builtin.uri:
     url: >-
       {{ downloaders_sabnzbd_api }}?mode=set_config&section=categories&name={{ item.key | urlencode
-      }}&dir={{ item.value | urlencode }}&pp=0&script=None&priority=-100&output=json&apikey={{
+      }}&dir={{ item.value | urlencode }}&pp={{
+      downloaders_sabnzbd_category_post_processing | string | urlencode
+      }}&script=None&priority=-100&output=json&apikey={{
       vault_downloaders_sabnzbd_api_key | urlencode }}
     method: GET
     status_code: [200]
@@ -51,10 +53,20 @@
   loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
   loop_control:
     label: sabnzbd-category
+  # Both owned fields are compared, not just the directory. `pp` was written as
+  # a literal here and in the bootstrap template, so the only thing that ever
+  # decided whether this request ran was the destination -- and a host whose
+  # directories already matched would keep whatever post-processing level it was
+  # first created with, for ever. SABnzbd answers `get_config` with `pp` as a
+  # JSON string, so both sides are stringified rather than trusting the type.
   when: >-
-    downloaders_sabnzbd_config_before.json.config.categories |
-    selectattr('name', 'equalto', item.key) | map(attribute='dir') |
-    first | default('') != item.value
+    (downloaders_sabnzbd_config_before.json.config.categories |
+     selectattr('name', 'equalto', item.key) | map(attribute='dir') |
+     first | default('') != item.value) or
+    (downloaders_sabnzbd_config_before.json.config.categories |
+     selectattr('name', 'equalto', item.key) | map(attribute='pp') |
+     first | default('') | string !=
+     downloaders_sabnzbd_category_post_processing | string)
   changed_when: true
   no_log: true
 
