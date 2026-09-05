@@ -331,7 +331,9 @@ mac_registry_contract_path() {
 #   self    this hook's own basename, excluded from the sibling scan
 #   ran     the services this hook executed, one per line
 #   exempt  service=reason lines for services this group deliberately skips
-#   infrastructure  optional exact sibling-hook basename roster
+#   infrastructure  optional exact sibling-hook basename roster, which a group
+#                   that never collapsed declares in full rather than only for
+#                   the hooks that sort ahead of a table
 #   coverage-neutral optional infrastructure hooks that do not represent a service
 #
 # Services still handled by their own NN-service.sh file in the same group are
