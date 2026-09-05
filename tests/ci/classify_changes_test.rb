@@ -66,6 +66,11 @@ if defined?(ClassifyChanges)
     ["docs/img/topology.png"] => %w[docs],
     [".gitignore"] => [],
     ["README.md"] => %w[static docs],
+    # The regression #346 names. tests/policy_test.rb reads CLAUDE.md in `static`
+    # and tests/docs_links_test.rb reads it in both jobs, so it routes exactly as
+    # README.md does; before the fix it matched no lane map and was classified
+    # inert, and a change to the lane roster it documents selected nothing at all.
+    ["CLAUDE.md"] => %w[static docs],
     ["docs/getting-started-nas.md"] => %w[static docs],
     # Only tests/secrets_docs_test.rb reads it, and the docs job runs that, so the
     # secrets guide no longer pays for the whole policy gate.
@@ -196,6 +201,12 @@ if defined?(ClassifyChanges)
         "full events must select every lane")
   check(failures, selected_lanes(["AGENTS.md"]) == LANES,
         "AGENTS.md must not be treated as inert Markdown")
+  # The rule that exemption used to be a single name for. A document at the
+  # repository root is where a check-read claim lands -- CLAUDE.md was one, and
+  # was called inert for it (#346) -- so root Markdown no lane map claims falls
+  # open to every lane rather than to none.
+  check(failures, selected_lanes(["NOTES.md"]) == LANES,
+        "unrouted repository-root Markdown must not be treated as inert")
   check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == LANES,
         "test fixture Markdown must not be treated as inert")
 
@@ -840,6 +851,13 @@ ROUTING_SOURCES = %w[
 # is not a failure; a derivation that stops seeing the glob is, which is what the
 # emptiness check below says.
 DOCS_GLOB_PATTERN = %r{docs/\*\*|"docs"\)\s*\.glob\(}
+# Every document a registered check names by path. The root alternative is the
+# half #346 cost: the pattern knew `docs/...` and README, so CLAUDE.md could
+# never enter coupled_documents however many checks read it by name, and the
+# guard reported the routing whole while that document reached no job. The
+# lookbehind is what keeps `docs/plans/notes.md` from also being counted as a
+# root `notes.md`; a name that matches but does not exist is dropped below.
+DOCUMENT_REFERENCE_PATTERN = %r{(?<![\w./-])(?:docs/[A-Za-z0-9_./-]+|[A-Za-z0-9_-]+)\.md}
 
 # The checks each classifier lane runs. The mutation harness is gated on the same
 # `static` output as the gate, so a check it carries is a `static` input like any
@@ -904,7 +922,7 @@ check_lanes.each do |check_path, lanes|
   next if sources.empty?
 
   body = sources.map { |relative| File.read(File.join(POLICY_DOC_ROOT, relative)) }.join("\n")
-  body.scan(%r{(?:docs/[A-Za-z0-9_./-]+|README)\.md}).uniq.each do |document|
+  body.scan(DOCUMENT_REFERENCE_PATTERN).uniq.each do |document|
     next unless File.file?(File.join(POLICY_DOC_ROOT, document))
 
     coupled_documents[document] << [check_path, lanes]
@@ -920,6 +938,16 @@ check(failures, coupled_documents.length >= 6,
 check(failures, !globbing_checks.empty?,
       "no registered check was seen to glob docs/, but tests/docs_links_test.rb does; " \
       "the derivation is blind to the half of the coupling that is not a literal")
+# The third health assertion, and the one #346 was closed by. Counting documents
+# cannot say which kind was found: a derivation that has gone back to seeing only
+# docs/ and README still counts well past its floor while every repository-root
+# document is invisible again, which is the state that let CLAUDE.md route
+# nowhere for as long as it did.
+root_documents = coupled_documents.keys.grep_v(%r{/})
+check(failures, root_documents.include?("CLAUDE.md"),
+      "the registered checks name CLAUDE.md, but the derivation found the " \
+      "repository-root documents #{root_documents.inspect}; it is blind to root " \
+      "Markdown rather than the routing being complete")
 if defined?(ClassifyChanges)
   coupled_documents.sort.each do |document, readers|
     selection = ClassifyChanges.classify([document])

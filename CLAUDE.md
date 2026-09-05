@@ -272,6 +272,17 @@ remaining shared group, and evicting there needs three of them.
 `tests/ci/classify_changes_test.rb` runs the classify step's own shell against
 synthetic histories.
 
+Documentation is routed, not inert. This file is itself a gate input —
+`tests/policy_test.rb` sweeps it for retired declarations and
+`tests/docs_links_test.rb` checks the lane roster and the stack count above
+against the tree — so editing it selects `static` and `docs`, the two jobs those
+checks run in. Which documents owe which job is derived from the registered
+checks rather than listed, so a document under `docs/` that a gate check reads
+fails `tests/ci/classify_changes_test.rb` until it is routed — and repository-root
+Markdown no lane map claims falls open to every lane rather than to none, which
+is the half a derived guard cannot catch because a run of everything satisfies
+it (#346).
+
 ### The `static` budget, and the one way it keeps being blown
 
 `static` is expected to finish in 10–15 minutes and has blown that budget four
