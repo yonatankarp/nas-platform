@@ -248,12 +248,15 @@ always claims a change and cannot simulate itself.
 
 Tasks touching credentials carry `no_log: true`.
 
-Adding a service touches 56 files and is walked end to end in
+Adding a service touches 57 files and is walked end to end in
 [docs/adding-a-service.md](docs/adding-a-service.md) — including the two pinned
 Ruby name lists, the files CI routing must agree on, and the ten places a new
 vault credential lands (`docs/secrets.md` among them, enforced by
-`tests/secrets_docs_test.rb`). Both figures are the guide's own measurement, and
-`tests/docs_links_test.rb` fails when this sentence and the guide disagree.
+`tests/secrets_docs_test.rb`). Both figures come from the guide, which measured
+56 against the Pinchflat promotion and keeps a ledger of the per-service
+obligations added since; `tests/docs_links_test.rb` fails when this sentence and
+that ledger disagree. Adding an obligation means adding a ledger row, not
+bumping a number here.
 
 ## CI
 

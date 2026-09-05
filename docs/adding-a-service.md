@@ -76,14 +76,29 @@ Earlier versions of this guide said fifteen places, and then 55. The first was
 wrong in the direction that costs an afternoon; the second was the right diff
 counted one short. The honest figure is measured rather than remembered:
 **promoting Pinchflat changed 56 files** — `git show --name-status 683e0c1`
-counts 56, and so does GitHub's own tally for #137. Re-measure it against a newer
-service if you like, but update `CLAUDE.md` in the same commit:
-`tests/docs_links_test.rb` reads this figure out of this sentence and fails when
-the summary there quotes a different one.
+counts 56, and so does GitHub's own tally for #137.
 
-Only nine of those were new files, and all nine are the service itself and its
-own proof. The other forty-seven are existing files that had to be told the
-platform is one service larger. A handful are wiring and prose; most are
+That measurement is a diff of one commit and does not move. What the reader
+needs is what it costs *today*, which is that measurement plus the per-service
+obligations added since, each named here as it lands:
+
+- `tests/mac/hooks/drift/00-coverage.sh` — the drift roster (#356). One row per
+  service, exact in both directions, so promoting a service edits it and
+  retiring one edits it too.
+
+**So adding a service today changes 57 files.** Keep that arithmetic honest
+rather than bumping the total: `tests/docs_links_test.rb` adds the ledger rows
+above to the measured 56, fails if the stated total disagrees, and fails again
+if `CLAUDE.md` quotes anything other than the total. The check cannot tell you an
+obligation is missing from the ledger; nothing can derive that, for the same
+reason the registries themselves are stated rather than derived, below. What it
+can do is make every obligation that is there accounted for, and turn a bumped
+total into a named cause.
+
+Only nine of Pinchflat's 56 were new files, and all nine are the service itself
+and its own proof. The other forty-seven are existing files that had to be told
+the platform is one service larger, and the ledger above makes forty-eight
+today. A handful are wiring and prose; most are
 *registries* — files that pin a list, a count or a literal string describing the
 platform as it currently is, and that fail when it grows without them. Sometimes
 loudly, sometimes with a Ruby stack trace, occasionally not at all.
@@ -307,7 +322,7 @@ are checked by tests, not left to courtesy.
 
 ### What of this is Pinchflat's own problem
 
-The 56 files are one service's measured diff, not a universal law, and some of
+Pinchflat's 56 are one service's measured diff, not a universal law, and some of
 them were Pinchflat's circumstances rather than yours. Read the groups above with
 these caveats:
 

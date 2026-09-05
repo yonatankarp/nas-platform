@@ -957,13 +957,14 @@ else
   # follows. Measuring the Pinchflat diff from here was considered and rejected:
   # the commit is immutable history a depth-1 CI checkout does not have, so the
   # check would have to skip itself on the runner that matters.
-  guide = ROOT.join("docs/adding-a-service.md").read.gsub(/\s+/, " ")
+  guide_source = ROOT.join("docs/adding-a-service.md").read
+  guide = guide_source.gsub(/\s+/, " ")
   claude_summary = claude_md.gsub(/\s+/, " ")
   [
     ["the number of files adding a service touches",
-     guide[/promoting Pinchflat changed \*{0,2}([a-z0-9]+) files/, 1],
-     "docs/adding-a-service.md must state the measured cost as " \
-     "\"promoting Pinchflat changed N files\"",
+     guide[/So adding a service today changes ([a-z0-9]+) files/, 1],
+     "docs/adding-a-service.md must state the current cost as " \
+     "\"So adding a service today changes N files\"",
      claude_summary[/Adding a service touches ([a-z0-9]+) files/, 1],
      "CLAUDE.md must quote it as \"Adding a service touches N files\""],
     ["the number of places a new vault credential lands",
@@ -981,7 +982,40 @@ else
       failures << quoted_shape
     elsif measured_count != quoted_count
       failures << "CLAUDE.md must give #{subject} as #{measured_count}, the figure " \
-                  "docs/adding-a-service.md measured, not #{quoted_count}"
+                  "docs/adding-a-service.md states, not #{quoted_count}"
+    end
+  end
+  # The current cost the row above pins is not a measurement of anything. The
+  # Pinchflat diff is a fixed 56 and cannot move; what moves is the set of
+  # per-service obligations added since, and #379 added one within a day of the
+  # two numbers being pinned without either document noticing, because a pin
+  # between two prose documents catches a document that drifts from the other
+  # and not two that go stale together.
+  #
+  # Nothing in the tree can derive this number -- the guide's own reason is that
+  # the registries are stated rather than derived, so that a service cannot
+  # authorize itself by the arrival of its own files. So the ledger is the
+  # mechanism instead: the guide names each obligation added since the
+  # measurement, and the total has to be the measurement plus that many. It
+  # still cannot tell that an obligation is missing, but it turns bumping a
+  # total into naming the thing that moved it, and a row format that stops
+  # matching breaks the arithmetic rather than passing an empty ledger.
+  ledger = guide_source[/each named here as it lands:\n(.*?)\*\*So adding a service today/m, 1]
+  measured_base = stated_count(guide[/promoting Pinchflat changed \*{0,2}([a-z0-9]+) files/, 1])
+  current_total = stated_count(guide[/So adding a service today changes ([a-z0-9]+) files/, 1])
+  if ledger.nil?
+    failures << "docs/adding-a-service.md must keep the per-service obligation ledger between " \
+                "\"each named here as it lands:\" and the current cost that follows it"
+  elsif measured_base.nil?
+    failures << "docs/adding-a-service.md must state the measured base as " \
+                "\"promoting Pinchflat changed N files\""
+  elsif !current_total.nil?
+    rows = ledger.lines.count { |line| line.match?(/\A- `[^`]+` — /) }
+    if measured_base + rows != current_total
+      failures << "docs/adding-a-service.md must give the current cost as " \
+                  "#{measured_base + rows}, the measured #{measured_base} plus the #{rows} " \
+                  "obligation(s) its ledger names, not #{current_total} -- add the row that " \
+                  "moved it, in the ledger's own \"- `path` — why\" form"
     end
   end
   # Deliberately source text. Both subjects are the wording of a comment, which
