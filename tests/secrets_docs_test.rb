@@ -415,7 +415,19 @@ required_auto_deploy_guidance = {
   /every five minutes/i => "state the polling cadence",
   /exact.*main.*push.*CI.*success/im => "gate on exact successful main push CI",
   /no PAT/i => "state that no PAT is used",
-  /same failed SHA.*not.*automatic/i => "forbid automatic same-SHA retries",
+  # #351 split the retry rule in two, and the guide has to carry both halves.
+  # A failure that reached the NAS is still attempted once, which is what stops
+  # a broken deployment repeating every five minutes; a failure that never got
+  # there -- the checkout fetch or the collection install losing to somebody
+  # else's outage -- is retried automatically, under a bound. Stating only the
+  # first half would describe a poller that no longer exists, and stating only
+  # the second would leave the bound and the one-attempt rule undocumented.
+  /attempted once for any failure that reached the NAS/i =>
+    "forbid automatic retries of a revision whose deployment reached the NAS",
+  /three ticks at most/i =>
+    "bound the automatic retry of a failure that never reached the NAS",
+  /A failing play is not retried/i =>
+    "state that a failing play is never retried automatically",
   /newer.*successful.*SHA.*proceed/im => "allow a newer successful SHA after a failure",
   /optionally disable SSH/i => "describe optional SSH disablement after bootstrap",
   /protected.*logs.*ntfy/im => "describe protected logs and ntfy outcomes",

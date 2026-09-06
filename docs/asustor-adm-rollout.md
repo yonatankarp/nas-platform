@@ -226,7 +226,10 @@ like the fix did nothing. Trust the attempt count, not the file's presence.
 A successful cycle ends with `last successful: <sha>`, an ntfy notification, and
 a mode-0600 log. Polling again should print nothing: a revision is attempted at
 most once, which is what stops a broken deployment from repeating every five
-minutes. Recovering one explicitly, while it is still the branch head:
+minutes. A failure that never reached the NAS is the one exception -- a lost
+checkout fetch or collection install is retried on the next tick, three times at
+most, because it says nothing about the revision. Recovering one explicitly,
+while it is still the branch head:
 
 ```sh
 $HOME/.local/bin/nas-platform-deploy --retry-failed <sha>

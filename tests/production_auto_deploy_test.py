@@ -3,6 +3,7 @@
 import contextlib
 from datetime import datetime, timedelta, timezone
 import io
+import itertools
 import json
 import os
 from pathlib import Path
@@ -758,13 +759,20 @@ class StateTest(PollerTestCase):
         )
 
 
-class DeployTest(PollerTestCase):
-    def record_runs(self, returncode=0, fail_on=None):
+class DeployHarness:
+    """Runs deploy() against recorded commands rather than real ones."""
+
+    def record_runs(self, returncode=0, fail_on=None, stall_on=None):
         calls = []
 
         def run(arguments, **kwargs):
             rendered = [str(a) for a in arguments]
             calls.append((rendered, kwargs))
+            if stall_on is not None and any(stall_on in part for part in rendered):
+                # What _run raises when its own deadline expires, which is the
+                # only way this suite can observe a stalled command without
+                # waiting for one.
+                raise subprocess.TimeoutExpired(rendered, kwargs["timeout"])
             code = returncode
             if fail_on is not None and any(fail_on in part for part in rendered):
                 code = 1
@@ -772,12 +780,32 @@ class DeployTest(PollerTestCase):
 
         return calls, run
 
-    def deploy_with(self, config, **kwargs):
+    @contextlib.contextmanager
+    def running(self, **kwargs):
+        """Record every command, its options and every backoff slept between them.
+
+        The sleeps are recorded rather than taken. A retry ladder that really
+        slept would put its backoff on the wall clock of the `static` job, which
+        CLAUDE.md is emphatic is how that budget keeps being blown, and would
+        measure Python's sleep rather than this file's behaviour.
+        """
+
         calls, run = self.record_runs(**kwargs)
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
+        slept: list[float] = []
+        with mock.patch.object(
+            production_auto_deploy, "_run", side_effect=run
+        ), mock.patch.object(
+            production_auto_deploy.time, "sleep", side_effect=slept.append
+        ):
+            yield calls, slept
+
+    def deploy_with(self, config, **kwargs):
+        with self.running(**kwargs) as (calls, _slept):
             outcome = production_auto_deploy.deploy(config, MAIN_SHA, None)
         return outcome, [call[0] for call in calls], [call[1] for call in calls]
 
+
+class DeployTest(DeployHarness, PollerTestCase):
     def test_deploy_checks_out_then_syncs_tooling_then_runs_the_plays(self):
         config = self.loaded_config()
         outcome, calls, _kwargs = self.deploy_with(config)
@@ -859,10 +887,15 @@ class DeployTest(PollerTestCase):
         self.assertLess(galaxy_index, first_play)
 
     def test_a_failed_collection_sync_stops_before_any_play(self):
+        """Still a stop, but a classified one: the install reaches
+        galaxy.ansible.com, so an exhausted ladder there says nothing about the
+        revision and the caller decides what it costs."""
+
         config = self.loaded_config()
-        outcome, calls, _kwargs = self.deploy_with(config, fail_on="ansible-galaxy")
-        self.assertFalse(outcome)
-        self.assertTrue(all(c[0] != "ansible-playbook" for c in calls))
+        with self.running(fail_on="ansible-galaxy") as (calls, _slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+        self.assertTrue(all(call[0][0] != "ansible-playbook" for call in calls))
 
     def test_tooling_is_synchronised_before_any_ansible_process_starts(self):
         """The pins being installed are the ones ansible itself will run under."""
@@ -1061,6 +1094,195 @@ class DeployTest(PollerTestCase):
         self.assertEqual(
             environment[production_auto_deploy.LOCK_OWNER_ENVIRONMENT], str(os.getpid())
         )
+
+
+class DeployBudgetTest(DeployHarness, PollerTestCase):
+    """What the steps before the first play are allowed to cost.
+
+    The timeout each command is given is recorded and asserted rather than
+    waited out: the question is which budget the code chose, and a test that
+    measured it with a stopwatch would answer that in wall time the `static` job
+    has to pay for.
+    """
+
+    FETCH = "fetch"
+    GALAXY = "ansible-galaxy"
+
+    def timeouts_for(self, calls, program):
+        return [
+            options["timeout"]
+            for rendered, options in calls
+            if any(program in part for part in rendered)
+        ]
+
+    def test_nothing_before_the_plays_carries_the_hour_long_command_budget(self):
+        """The general form of #351. COMMAND_TIMEOUT_SECONDS is an hour, which
+        is the right budget for a converge and the wrong one for anything the
+        poller runs while holding the deployment lock before it starts. Stated
+        over every such call rather than over the fetch alone, so the next
+        command added here inherits the rule instead of the defect.
+
+        Bounded by the largest budget a step before the plays legitimately has,
+        rather than by inequality with the hour: a ladder gives its first
+        attempt whatever is left of its deadline, which is a hair under the
+        constant, so `!= COMMAND_TIMEOUT_SECONDS` would hold even for a command
+        handed the whole hour."""
+
+        config = self.loaded_config()
+        _outcome, calls, kwargs = self.deploy_with(config)
+        examined = 0
+        for call, options in zip(calls, kwargs):
+            if call[0] == "ansible-playbook":
+                continue
+            examined += 1
+            with self.subTest(command=call[0]):
+                self.assertLessEqual(
+                    options["timeout"], production_auto_deploy.TOOLING_TIMEOUT_SECONDS
+                )
+        # A floor, not non-emptiness: this list is derived from what deploy()
+        # happens to run, and a guard over an empty one passes vacuously.
+        self.assertGreaterEqual(examined, 4)
+
+    def test_the_fetch_is_bounded_in_minutes_and_the_local_steps_below_that(self):
+        config = self.loaded_config()
+        _outcome, calls, kwargs = self.deploy_with(config)
+        # argv[1] is the git subcommand, and the first three commands a deploy
+        # runs are the three steps of the checkout.
+        budgets = dict(
+            zip((call[1] for call in calls[:3]), (o["timeout"] for o in kwargs[:3]))
+        )
+
+        self.assertEqual(sorted(budgets), ["checkout", "fetch", "merge-base"])
+        # The fetch draws from a deadline, so its first attempt is given a hair
+        # under the constant rather than the constant itself.
+        self.assertLessEqual(
+            budgets["fetch"], production_auto_deploy.GIT_FETCH_TIMEOUT_SECONDS
+        )
+        for step in ("merge-base", "checkout"):
+            self.assertEqual(
+                budgets[step], production_auto_deploy.GIT_LOCAL_TIMEOUT_SECONDS
+            )
+            # The relationship rather than the numbers: a transfer needs longer
+            # than a local ref comparison, and this survives either constant
+            # being retuned.
+            self.assertGreater(budgets["fetch"], budgets[step])
+
+    def test_a_stalled_fetch_is_abandoned_at_its_bound_and_not_retried_in_place(self):
+        """The defect #351 names. A blackholed connection used to park the
+        deployment lock for an hour; it now costs one bounded attempt, and the
+        retry happens on the next tick with the lock released rather than
+        immediately, when a killed fetch is least likely to succeed."""
+
+        config = self.loaded_config()
+        with self.running(stall_on=self.FETCH) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        timeouts = self.timeouts_for(calls, self.FETCH)
+        self.assertEqual(len(timeouts), 1)
+        self.assertLessEqual(
+            timeouts[0], production_auto_deploy.GIT_FETCH_TIMEOUT_SECONDS
+        )
+        self.assertEqual(slept, [])
+
+    def test_a_fast_fetch_failure_is_retried_before_the_tick_is_given_up(self):
+        config = self.loaded_config()
+        with self.running(fail_on=self.FETCH) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        self.assertEqual(
+            len(self.timeouts_for(calls, self.FETCH)),
+            production_auto_deploy.NETWORK_RETRY_ATTEMPTS,
+        )
+        self.assertEqual(
+            slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
+        )
+        # Nothing after the fetch ran, and in particular nothing was checked out
+        # from a fetch that did not land.
+        self.assertTrue(all(self.FETCH in rendered for rendered, _ in calls))
+
+    def test_the_collection_install_retries_within_the_budget_it_already_had(self):
+        """Adding a ladder must not add lock time. The install keeps
+        TOOLING_TIMEOUT_SECONDS, and the attempts share it."""
+
+        config = self.loaded_config()
+        with self.running(fail_on=self.GALAXY) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        timeouts = self.timeouts_for(calls, self.GALAXY)
+        self.assertEqual(len(timeouts), production_auto_deploy.NETWORK_RETRY_ATTEMPTS)
+        for timeout in timeouts:
+            self.assertLessEqual(timeout, production_auto_deploy.TOOLING_TIMEOUT_SECONDS)
+        self.assertEqual(
+            slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
+        )
+
+    def test_a_stalled_collection_install_is_abandoned_rather_than_repeated(self):
+        config = self.loaded_config()
+        with self.running(stall_on=self.GALAXY) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        self.assertEqual(len(self.timeouts_for(calls, self.GALAXY)), 1)
+        self.assertEqual(slept, [])
+
+    def test_a_revision_rewritten_off_the_branch_is_neither_retried_nor_transient(self):
+        """merge-base answers a question about this candidate. Retrying it would
+        ask the same question again, and calling it transient would forgive a
+        revision that is permanently ineligible."""
+
+        config = self.loaded_config()
+        with self.running(fail_on="merge-base") as (calls, slept):
+            self.assertFalse(production_auto_deploy.deploy(config, MAIN_SHA, None))
+
+        self.assertEqual(len([c for c in calls if "merge-base" in c[0]]), 1)
+        self.assertEqual(slept, [])
+        self.assertTrue(all("checkout" not in c[0] for c in calls))
+
+    def test_a_stalled_local_git_step_is_transient_because_it_names_the_host(self):
+        config = self.loaded_config()
+        with self.running(stall_on="merge-base") as (_calls, _slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+    def test_the_ladder_spends_one_budget_rather_than_one_per_attempt(self):
+        """The property the whole change turns on, and the one a ladder gets
+        wrong by default: retries=3 over an hour is three hours of held lock.
+        Read against a clock that advances a fixed step per reading, the
+        attempts must be given shrinking budgets that never exceed the first."""
+
+        budget = 180.0
+        for step, expected in ((50.0, 3), (100.0, 1)):
+            with self.subTest(step=step):
+                clock = itertools.count(step, step)
+                timeouts = []
+
+                def run(arguments, **kwargs):
+                    timeouts.append(kwargs["timeout"])
+                    return subprocess.CompletedProcess(arguments, 1, b"", b"")
+
+                with mock.patch.object(
+                    production_auto_deploy, "_run", side_effect=run
+                ), mock.patch.object(
+                    production_auto_deploy.time, "monotonic", side_effect=lambda: next(clock)
+                ), mock.patch.object(
+                    production_auto_deploy.time, "sleep"
+                ):
+                    with self.assertRaises(
+                        production_auto_deploy.TransientDeploymentError
+                    ):
+                        production_auto_deploy._run_network_command(
+                            ["/usr/local/bin/git", "fetch"],
+                            failure="git fetch failed",
+                            budget=budget,
+                        )
+
+                self.assertEqual(len(timeouts), expected)
+                self.assertEqual(timeouts, sorted(timeouts, reverse=True))
+                self.assertLessEqual(max(timeouts), budget)
+                self.assertGreater(min(timeouts), 0)
 
 
 class RunTest(PollerTestCase):
@@ -1670,7 +1892,9 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertEqual(len(self.poll_with(config, (self.RED_RUN,))[0]), 1)
 
 
-class PollTest(PollerTestCase):
+class PollHarness:
+    """One poll against an explicit view of the branch and its CI history."""
+
     GREEN_RUN = EligibilityTest.GREEN_RUN
 
     @contextlib.contextmanager
@@ -1698,6 +1922,8 @@ class PollTest(PollerTestCase):
     def green_run(self, sha):
         return {**self.GREEN_RUN, "head_sha": sha}
 
+
+class PollTest(PollHarness, PollerTestCase):
     def test_poll_deploys_the_green_revision_behind_a_running_head(self):
         """The bug this replaced: a merge landing during a run left the
         revision that had just passed undeployed for the length of the next
@@ -1959,6 +2185,132 @@ class PollTest(PollerTestCase):
             self.assertTrue(acquired)
             probe = subprocess.run([sys.executable, "-c", program])
             self.assertEqual(probe.returncode, 0)
+
+
+class PollTransientFailureTest(PollHarness, PollerTestCase):
+    """Who retries a deployment that never reached the target.
+
+    Before #351 the answer was always an operator: the revision was recorded as
+    attempted before the run and stayed recorded whatever went wrong, so one
+    blip on github.com or galaxy.ansible.com quarantined it until somebody ran
+    --retry-failed by hand, on a host whose whole premise is that nobody does.
+    """
+
+    def transient(self, message="git fetch failed"):
+        return production_auto_deploy.TransientDeploymentError(message)
+
+    def failing_poll(self, config, sha=MAIN_SHA, error=None):
+        with self.eligible(sha), mock.patch.object(
+            production_auto_deploy,
+            "deploy",
+            side_effect=[error if error is not None else self.transient()],
+        ):
+            return production_auto_deploy.poll(config)
+
+    def test_a_transient_failure_leaves_the_revision_deployable_next_tick(self):
+        config = self.loaded_config()
+        self.assertFalse(self.failing_poll(config))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ) as deploy:
+            self.assertTrue(production_auto_deploy.poll(config))
+        deploy.assert_called_once()
+
+    def test_a_transient_failure_is_still_reported_and_logged(self):
+        """Forgiving the revision must not make the failure invisible: the tick
+        was spent and the operator gets the same notification as any other
+        failure."""
+
+        config = self.loaded_config()
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", side_effect=[self.transient()]
+        ), mock.patch.object(
+            production_auto_deploy, "notify", return_value=True
+        ) as notify:
+            self.assertFalse(production_auto_deploy.poll(config))
+        self.assertEqual(notify.call_args.args[1], "failed")
+        latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
+        self.assertIn("transient failure", latest)
+        self.assertIn("git fetch failed", latest)
+
+    def test_a_failure_that_is_not_transient_still_quarantines_the_revision(self):
+        """The guard on the classification itself. TransientDeploymentError is a
+        DeploymentError, so a broad except clause ordered ahead of it would
+        forgive every failure -- including a converge that half-ran."""
+
+        config = self.loaded_config()
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=False
+        ):
+            self.assertFalse(production_auto_deploy.poll(config))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+
+    def test_forgiveness_is_bounded_and_the_revision_ends_up_quarantined(self):
+        """A cause that only looks transient must not be retried every five
+        minutes forever: each attempt holds the deployment lock, so unbounded
+        forgiveness is worse than the quarantine it replaces."""
+
+        config = self.loaded_config()
+        for tick in range(production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT):
+            with self.subTest(tick=tick):
+                self.assertFalse(self.failing_poll(config))
+                self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+        self.assertFalse(self.failing_poll(config))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy"
+        ) as deploy:
+            self.assertIsNone(production_auto_deploy.poll(config))
+        deploy.assert_not_called()
+
+    def test_a_different_revision_starts_the_budget_over(self):
+        config = self.loaded_config()
+        for _tick in range(production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT):
+            self.failing_poll(config, sha=OTHER_SHA)
+
+        self.assertFalse(self.failing_poll(config, sha=MAIN_SHA))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+    def test_an_operator_retry_starts_the_budget_over_too(self):
+        """--retry-failed is the intervention that clears the quarantine.
+        Inheriting the spent budget would re-quarantine the revision on the
+        first blip after it."""
+
+        config = self.loaded_config()
+        for _tick in range(production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT + 1):
+            self.failing_poll(config)
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", side_effect=[self.transient()]
+        ):
+            self.assertFalse(production_auto_deploy.poll(config, retry_sha=MAIN_SHA))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
+    def test_a_counter_that_cannot_be_written_forgives_nothing(self):
+        """Fails closed. A bound that cannot be recorded cannot be enforced, and
+        the unbounded retry is the failure mode that matters."""
+
+        config = self.loaded_config()
+        with mock.patch.object(
+            production_auto_deploy, "_write_private", side_effect=OSError
+        ):
+            self.assertFalse(
+                production_auto_deploy.may_retry_after_transient_failure(
+                    config, MAIN_SHA
+                )
+            )
+
+    def test_an_unreadable_counter_reads_as_a_fresh_budget(self):
+        config = self.loaded_config()
+        (config.state_root / "transient-failures").write_text("junk\n", encoding="ascii")
+        self.assertEqual(
+            production_auto_deploy.read_transient_failures(config), (None, 0)
+        )
 
 
 class ConvergeTest(PollerTestCase):
