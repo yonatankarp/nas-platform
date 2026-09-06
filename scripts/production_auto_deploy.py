@@ -760,20 +760,26 @@ def lock_path(config: Config) -> Path:
     return config.state_root / "deployment.lock"
 
 
+# The flock alone says only that somebody is deploying, and #326 is exactly the
+# story of an operator who could not tell what was happening: the race surfaced
+# as a containment refusal naming an unsafe deployment target, so the honest
+# first reading was a corrupted deployment tree rather than a second converge. A
+# holder that says "pid 4711, operator converge, started at ..." turns that into
+# a fact. That is this script's own history, so it sits above the definition,
+# where the identity comparison below does not read it.
 def _record_lock_holder(descriptor: int, holder: str) -> None:
     """Write who holds the lock, for a refused caller to name.
 
-    The flock alone says only that somebody is deploying, and #326 is exactly
-    the story of an operator who could not tell what was happening: the race
-    surfaced as a containment refusal naming an unsafe deployment target, so the
-    honest first reading was a corrupted deployment tree rather than a second
-    converge. A holder that says "pid 4711, operator converge, started at ..."
-    turns that into a fact.
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
 
     Best effort and advisory. The flock is the liveness truth -- a crashed
     holder leaves this record behind, and a reader that finds the lock free must
     ignore whatever it says. Written with pwrite after truncating so no reader
-    can observe a half-replaced record at offset zero.
+    can observe a half-replaced record at offset zero, and the payload is ASCII
+    because roles/deployment_bundle decodes it as ASCII.
     """
 
     payload = json.dumps(
@@ -1059,6 +1065,14 @@ def deploy(config: Config, sha: str, log) -> bool:
 
 
 def _timestamp(now: datetime | None = None) -> str:
+    """Render a moment as the second-resolution UTC stamp both scripts write.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
+
     moment = datetime.now(timezone.utc) if now is None else now
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -1117,11 +1131,17 @@ OUTCOMES = {
 }
 
 
+# Only the log path needs this here: the SHA is validated hex and the timestamps
+# come from strftime, so escaping those would only make them unreadable. That is
+# true of this script and not of the other, so it sits above the definition,
+# where the identity comparison below does not read it.
 def markdown_escape(value: str, maximum: int = 256) -> str:
     """Escape one value for ntfy's markdown rendering, bounded like the relay.
 
-    Only the log path needs this. The SHA is validated hex and the timestamps
-    come from strftime, so escaping those would only make them unreadable.
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
     """
 
     return MARKDOWN_PATTERN.sub(lambda match: f"\\{match.group(1)}", value[:maximum])

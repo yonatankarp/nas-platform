@@ -2574,5 +2574,37 @@ expect_failure(failures, "private write truncates in place again",
   File.write(path, source[0...opening] + legacy + source[closing..])
 end
 
+
+# The same comparison, extended past the one helper that had already broken.
+# markdown_escape, _timestamp and _record_lock_holder were duplicated with
+# identical executable bodies for as long as the guard existed and were watched
+# by nothing (#423), so this row drifts one of them by a single docstring word:
+# the divergence a docstring-stripping comparison would have waved through, and
+# the reason the definitions are held identical as raw text instead.
+expect_failure(failures, "duplicated helper docstring diverged",
+               "every script must define markdown_escape identically",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "scripts", "image_prune.py")
+  File.write(path, File.read(path).sub(
+    "Escape one value for ntfy's markdown rendering, bounded like the relay.",
+    "Escape one value for ntfy's markdown rendering, bounded like the relay's."
+  ))
+end
+
+# Which helpers must match is stated, and a stated list fails open -- that is
+# exactly how three of them went unwatched. The derived half closes it: a name
+# both scripts define whose bodies already agree byte for byte is a copy made
+# just now, and it must be named in the list before anyone edits one side. This
+# row makes that copy.
+expect_failure(failures, "fresh duplicate helper left unlisted",
+               "are defined identically in every scripts/*.py program but are not listed",
+               detected_by: %i[policy]) do |root|
+  source = File.read(File.join(root, "scripts", "image_prune.py"))
+  opening = source.index("def format_bytes(count: int) -> str:")
+  closing = source.index("def format_duration(seconds: int) -> str:")
+  path = File.join(root, "scripts", "production_auto_deploy.py")
+  File.write(path, "#{File.read(path)}\n\n#{source[opening...closing].rstrip}\n")
+end
+
 audit_policy_detection(failures)
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")

@@ -255,12 +255,26 @@ def format_duration(seconds: int) -> str:
 
 
 def markdown_escape(value: str, maximum: int = 256) -> str:
-    """Escape one value for ntfy's markdown rendering, bounded like the relay."""
+    """Escape one value for ntfy's markdown rendering, bounded like the relay.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     return MARKDOWN_PATTERN.sub(lambda match: f"\\{match.group(1)}", value[:maximum])
 
 
 def _timestamp(now: datetime | None = None) -> str:
+    """Render a moment as the second-resolution UTC stamp both scripts write.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
+
     moment = datetime.now(timezone.utc) if now is None else now
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -311,21 +325,27 @@ def _write_private(path: Path, payload: bytes) -> None:
         os.close(directory_descriptor)
 
 
+# Why the prune is a second writer of the poller's record rather than leaving
+# the field to it: roles/deployment_bundle probes this file at the first task of
+# every role, and a holder it cannot identify is one it will not refuse. Left
+# unwritten, "no record" would mean either a prune or a poller too old to write
+# one, and a converge would race a prune every Sunday to keep the upgrade window
+# open. Written by the prune too, "no record" means exactly the pre-upgrade
+# poller and nothing else. That is this script's own reasoning, so it sits above
+# the definition, where the identity comparison below does not read it.
 def _record_lock_holder(descriptor: int, holder: str) -> None:
-    """Write who holds the lock, for a refused deployment to name.
+    """Write who holds the lock, for a refused caller to name.
 
-    Mirrors scripts/production_auto_deploy.py, whose record this is a second
-    writer of: roles/deployment_bundle probes this file at the first task of
-    every role, and a holder it cannot identify is one it will not refuse. Left
-    unwritten, "no record" would mean either a prune or a poller too old to
-    write one, and a converge would race a prune every Sunday to keep the
-    upgrade window open. Written by the prune too, "no record" means exactly
-    the pre-upgrade poller and nothing else.
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
 
-    Best effort and advisory, like the poller's. The flock is the liveness
-    truth. Written with pwrite after truncating so no reader can observe a
-    half-replaced record at offset zero, and the payload is ASCII because the
-    probe decodes it as ASCII.
+    Best effort and advisory. The flock is the liveness truth -- a crashed
+    holder leaves this record behind, and a reader that finds the lock free must
+    ignore whatever it says. Written with pwrite after truncating so no reader
+    can observe a half-replaced record at offset zero, and the payload is ASCII
+    because roles/deployment_bundle decodes it as ASCII.
     """
 
     payload = json.dumps(
