@@ -174,6 +174,7 @@ tests/mac/run-phase-status-test.sh
 tests/mac/manual-validation-runner-test.sh
 tests/mac/dozzle-drift-hook-test.sh
 tests/mac/audiobookshelf-drift-hook-test.sh
+tests/mac/immich-drift-hook-test.sh
 tests/mac/hook-coverage-test.sh
 tests/contracts/audiobookshelf-audio-test.sh
 ruby tests/mac/report.rb --self-test

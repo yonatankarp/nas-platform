@@ -2277,6 +2277,7 @@ end
   "Mac configuration isolation regression" => "tests/mac/config-isolation.sh",
   "Mac phase status regression" => "tests/mac/run-phase-status-test.sh",
   "Mac Dozzle drift hook regression" => "tests/mac/dozzle-drift-hook-test.sh",
+  "Mac Immich drift hook regression" => "tests/mac/immich-drift-hook-test.sh",
   "Mac integration context regression" => "tests/mac/integration-context-test.sh",
   "Paperless snapshot context regression" => "tests/mac/snapshot-paperless-context-test.sh",
   "Paperless snapshot self-test" => "tests/mac/snapshot-paperless.sh --self-test"
