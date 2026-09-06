@@ -541,3 +541,73 @@ class CommandLineTest(PruneTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrivateWriteTest(PruneTestCase):
+    """The prune's copy of the write, held to the same properties as the poller's.
+
+    Both scripts ship one implementation of _write_private and
+    tests/policy_test.rb compares the two definitions, but that check reads
+    source text. These assertions read behaviour, so a copy that agreed
+    textually while the script shadowed it with something else still fails
+    here. The prune's own record is what --status reports and what a converge
+    refused by the deployment lock names, so losing it is not free (#354).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.target = self.root / ".local/share/nas-platform/prune-state/record"
+        self.target.write_bytes(b"5\n")
+        self.target.chmod(0o600)
+
+    @staticmethod
+    def legacy_write(path, payload):
+        """scripts/image_prune.py's _write_private before #354."""
+
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as sink:
+            sink.write(payload)
+        os.chmod(path, 0o600)
+
+    def content_while_writing(self, writer, payload=b"6\n"):
+        """What is on disk at the moment the payload is handed to the kernel."""
+
+        seen = []
+        real_fdopen = os.fdopen
+
+        def watching_fdopen(descriptor, *arguments, **keywords):
+            seen.append(self.target.read_bytes())
+            return real_fdopen(descriptor, *arguments, **keywords)
+
+        with mock.patch("os.fdopen", watching_fdopen):
+            writer(self.target, payload)
+        self.assertEqual(len(seen), 1)
+        return seen[0]
+
+    def test_the_previous_payload_is_whole_until_the_new_one_lands(self):
+        self.assertEqual(self.content_while_writing(image_prune._write_private), b"5\n")
+        self.assertEqual(self.target.read_bytes(), b"6\n")
+
+    def test_the_pre_354_write_had_already_discarded_it(self):
+        """The negative control: the same instrument, the body #354 replaced."""
+
+        self.assertEqual(self.content_while_writing(self.legacy_write), b"")
+
+    def test_a_pre_existing_loose_mode_target_is_repaired(self):
+        """The half the prune already had, kept by the rename rather than a chmod."""
+
+        self.target.chmod(0o644)
+
+        image_prune._write_private(self.target, b"6\n")
+
+        self.assertEqual(self.target.stat().st_mode & 0o777, 0o600)
+
+    def test_a_failed_replacement_leaves_neither_a_loss_nor_a_temporary_file(self):
+        with mock.patch("os.replace", side_effect=OSError("no space")):
+            with self.assertRaises(OSError):
+                image_prune._write_private(self.target, b"6\n")
+
+        self.assertEqual(self.target.read_bytes(), b"5\n")
+        self.assertEqual(
+            sorted(entry.name for entry in self.target.parent.iterdir()), ["record"]
+        )

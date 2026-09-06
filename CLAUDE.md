@@ -141,6 +141,23 @@ merged to `main` is picked up on the next tick and heals the host with nobody
 touching it. A broken `site.yml` is never a reason to change anything by hand on
 the NAS — the repository is still the only way in.
 
+**The two poller-adjacent scripts stay single files, and that is a design rule
+rather than an accident.** `scripts/production_auto_deploy.py` and
+`scripts/image_prune.py` are installed by an `ansible.builtin.copy` of exactly
+one file each, from the target's own checkout. A shared module would be a second
+file that has to land too, and a script that arrived without it would die at
+`import` — before any handler could report it, on every five-minute tick, with no
+merge able to heal the host. Ordering the two copy tasks does not close it: an
+operator running the install play from a checkout older than the module's would
+install the importing script from a role that has no task for the module.
+`services/dozzle/alert_relay.py` mirrors the same helpers from inside a
+container, where a module in the deploy account's home is not reachable at all.
+So the helpers are duplicated on purpose; what `tests/policy_test.rb` enforces
+instead is that the copies of `_write_private` stay textually identical, because
+divergence is the harm — the two drifted until one fsynced without repairing the
+mode and the other repaired the mode without fsyncing, each carrying the bug the
+other had fixed (#354).
+
 Never apply to the NAS without reading `--check --diff` first. `--check` is a
 review, not a guarantee: external systems that cannot be simulated are reported
 by roles as explicit `debug` tasks under check mode.
