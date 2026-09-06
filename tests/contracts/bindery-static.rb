@@ -14,6 +14,7 @@ required = %w[
   roles/bindery/meta/argument_specs.yml
   roles/bindery/tasks/main.yml
   roles/bindery/tasks/pre_upgrade_backup.yml
+  roles/bindery/tasks/reconcile_authors.yml
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
@@ -140,11 +141,18 @@ if failures.empty?
   failures << "Bindery must declare exactly the two destination roots" unless
     defaults["bindery_library_roots"] ==
       ["{{ bindery_ebooks_root }}", "{{ bindery_audiobooks_root }}"]
-  # The auto-grab kill switch fails open: a missing row, a read error and an
-  # unattached repository all read as enabled, so silence means grabbing.
-  failures << "Bindery must pin the auto-grab kill switch and telemetry off" unless
+  # Auto-grab is on by policy, and the row is still written. `autoGrabEnabled`
+  # fails open -- a missing row, a read error and an unattached repository all
+  # read as enabled -- so absence already means on and this row is a repair of a
+  # manual disable rather than a guarantee of enablement. Telemetry is the
+  # opposite: on by default, so its row is the guarantee.
+  failures << "Bindery must pin auto-grab on and telemetry off" unless
     defaults["bindery_pinned_settings"] ==
-      { "autoGrab.enabled" => "false", "telemetry.enabled" => "false" }
+      { "autoGrab.enabled" => "true", "telemetry.enabled" => "false" }
+  # `Any` rather than `E-Book` or `Audiobook`: an author here routinely has both
+  # editions and each narrower profile refuses one of them.
+  failures << "Bindery must default an author to the Any quality profile" unless
+    defaults["bindery_default_quality_profile_name"] == "Any"
   failures << "Bindery must address Prowlarr and SABnzbd by their control-network alias" unless
     defaults["bindery_prowlarr_internal_url"] == "http://prowlarr:9696" &&
     defaults["bindery_sabnzbd_host"] == "sabnzbd"
@@ -172,6 +180,7 @@ if failures.empty?
   role_tasks = %w[
     roles/bindery/tasks/main.yml
     roles/bindery/tasks/pre_upgrade_backup.yml
+    roles/bindery/tasks/reconcile_authors.yml
     roles/bindery/tasks/reconcile_usenet.yml
     roles/bindery/tasks/resolve_api_key.yml
   ].flat_map do |relative|
@@ -236,6 +245,40 @@ if failures.empty?
   failures << "the Bindery destination roots must be created only where missing" unless
     root_write && root_write["loop"] == "{{ bindery_missing_roots }}" &&
     Array(root_write["when"]).join(" ").include?("ansible_check_mode")
+
+  # Nothing supplies an author with a destination -- `library.defaultRootFolderId`
+  # does not exist on a live install -- so an author arrives with a null root
+  # folder and profile and its books are wanted and unactionable. The
+  # verification block asserts the outcome; this asserts the repair that
+  # produces it, so deleting the include fails here rather than on the NAS.
+  author_include = tasks.find do |task|
+    task["ansible.builtin.include_tasks"] == "reconcile_authors.yml"
+  end
+  failures << "Bindery must reconcile its author destinations" if author_include.nil?
+  failures << "the Bindery author reconciliation must not be gated on the transport flag" if
+    author_include && Array(author_include["when"]).join(" ").include?("media_usenet_enabled")
+
+  author_tasks = flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/bindery/tasks/reconcile_authors.yml"),
+                        aliases: true)
+  )
+  author_write = author_tasks.find do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.start_with?("{{ bindery_api }}/author/") &&
+      task.dig("ansible.builtin.uri", "method") == "PUT"
+  end
+  failures << "Bindery must repair an author destination in place" if author_write.nil?
+  failures << "the Bindery author repair must write only the authors missing a value" unless
+    author_write && author_write["loop"] == "{{ bindery_authors_to_repair }}"
+  # A repair that overwrote a set value would fight a deliberate per-author
+  # choice on every converge; a repair that wrote `monitored` would make
+  # unfollowing an author impossible.
+  body = author_write&.dig("ansible.builtin.uri", "body").to_s
+  %w[rootFolderId audiobookRootFolderId qualityProfileId].each do |field|
+    failures << "the Bindery author repair must leave a set #{field} alone" unless
+      body.include?("if item.#{field} is none else item.#{field}")
+  end
+  failures << "the Bindery author repair must not own the monitored state" if
+    body.include?("'monitored'")
 
   usenet_include = tasks.find do |task|
     task["ansible.builtin.include_tasks"] == "reconcile_usenet.yml"
@@ -348,8 +391,14 @@ if failures.empty?
     failures << "#{task.fetch('name')} must accept any status and defer to the assertion" unless
       task.dig("ansible.builtin.uri", "status_code") == "{{ range(100, 600) | list }}"
   end
-  outcome_assertion = verification.find { |task| task.key?("ansible.builtin.assert") }
-  conditions = Array(outcome_assertion&.dig("ansible.builtin.assert", "that"))
+  # Every assertion in the block, not the first one: the acquisition properties
+  # below are asserted separately from the deployment ones because the indexer
+  # half is gated on `media_usenet_enabled` and the rest is not, and a `find`
+  # here silently stopped reading at whichever happened to come first.
+  outcome_assertions = verification.select { |task| task.key?("ansible.builtin.assert") }
+  conditions = outcome_assertions.flat_map do |task|
+    Array(task.dig("ansible.builtin.assert", "that"))
+  end
   {
     "the enforced authentication mode" => ["bindery_verify_auth_status", "enabled"],
     "the closed first-run setup" => ["bindery_verify_auth_status", "setupRequired"],
@@ -360,14 +409,29 @@ if failures.empty?
     # The service's own EXDEV probe, and the only reading that tells one bind
     # mount per host share from one per directory: everything else about the
     # four paths is identical either way and an import still reports success.
-    "the hardlinkable staging layout" => ["bindery_verify_storage", "hardlinkable"]
+    "the hardlinkable staging layout" => ["bindery_verify_storage", "hardlinkable"],
+    # The acquisition half. Both went wrong at once in #425 and every reading
+    # above stayed correct: indexers are synced from Prowlarr rather than
+    # written here, and an author with a null destination root holds books that
+    # read `wanted` and can never be grabbed.
+    # The needle is the enabled-count projection rather than a bare `length`,
+    # because the status probe and the total count both carry that word and a
+    # plant that drops one of them would still satisfy the other.
+    "the synced indexers" => ["bindery_verify_indexers", "selectattr('enabled')"],
+    "the author destinations" => ["bindery_verify_authors", "rootFolderId"],
+    "the author quality profiles" => ["bindery_verify_authors", "qualityProfileId"]
   }.each do |label, (needle, value)|
     failures << "Bindery verification must assert #{label}" unless
-      conditions.any? { |condition| condition.include?(needle) && condition.include?(value) }
+      # `to_s` because a condition can be parsed as a boolean rather than a
+      # string -- `- true` is valid YAML and a valid assertion -- and the
+      # contract must name that as a missing property, not crash on it.
+      conditions.any? do |condition|
+        condition.to_s.include?(needle) && condition.to_s.include?(value)
+      end
   end
   # The diagnosis is the point of deferring, so it must not be redacted away.
   failures << "the Bindery outcome assertion must stay readable" if
-    outcome_assertion && outcome_assertion["no_log"]
+    outcome_assertions.any? { |task| task["no_log"] }
 
   failures << "Bindery verification reads must not claim a change" unless
     verification.all? do |task|

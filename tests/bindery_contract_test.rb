@@ -71,6 +71,7 @@ FIXTURE_FILES = %w[
   roles/bindery/meta/argument_specs.yml
   roles/bindery/tasks/main.yml
   roles/bindery/tasks/pre_upgrade_backup.yml
+  roles/bindery/tasks/reconcile_authors.yml
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
@@ -286,15 +287,16 @@ STATIC_ROWS = [
     expects: "Bindery must declare exactly the two destination roots"
   },
   {
-    # The auto-grab kill switch fails open: a missing row, a read error and an
-    # unattached repository all read as enabled, so silence means grabbing.
-    name: "an auto-grab kill switch left unpinned",
+    # Auto-grab is on by policy and the row is written anyway, to revert a
+    # manual disable. Dropping the key leaves the fail-open default in charge and
+    # a web-interface toggle permanent.
+    name: "an auto-grab row left unpinned",
     break: lambda { |root|
       edit_yaml(root, "roles/bindery/defaults/main.yml") do |document|
         document["bindery_pinned_settings"].delete("autoGrab.enabled")
       end
     },
-    expects: "Bindery must pin the auto-grab kill switch and telemetry off"
+    expects: "Bindery must pin auto-grab on and telemetry off"
   },
   {
     name: "Prowlarr addressed by address rather than by control-network alias",
@@ -456,6 +458,73 @@ STATIC_ROWS = [
       end
     },
     expects: "the Bindery Usenet integrations must be gated on the transport flag"
+  },
+  {
+    # An author arrives with a null destination root and a null profile, and its
+    # books then read `wanted` and `monitored` while being ungrabbable. Deleting
+    # the include restores exactly the #425 state.
+    name: "author reconciliation dropped from the role",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! do |task|
+          task["ansible.builtin.include_tasks"] == "reconcile_authors.yml"
+        end
+      end
+    },
+    expects: "Bindery must reconcile its author destinations"
+  },
+  {
+    # A destination root is needed to hold a book whatever the transport is, so
+    # gating this the way the Usenet integrations are gated would leave every
+    # author on a Mac or a sandbox permanently unrepaired.
+    name: "author reconciliation gated on the transport flag",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate["ansible.builtin.include_tasks"] == "reconcile_authors.yml"
+        end
+        task["when"] = ["media_usenet_enabled | bool"]
+      end
+    },
+    expects: "the Bindery author reconciliation must not be gated on the transport flag"
+  },
+  {
+    # Writing every author rather than the incomplete ones reports `changed` on
+    # every converge, which is the idempotence requirement rather than a style
+    # preference.
+    name: "an author repair that writes every author",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_authors.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "PUT"
+        end
+        task["loop"] = "{{ bindery_authors.json['items'] }}"
+      end
+    },
+    expects: "the Bindery author repair must write only the authors missing a value"
+  },
+  {
+    # Overwriting a set value fights a deliberate per-author choice -- one
+    # author's books into a different root, or onto the strict E-Book profile --
+    # on every single converge.
+    name: "an author repair that overwrites a chosen destination root",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
+                  "if item.rootFolderId is none else item.rootFolderId", "",
+                  occurrences: 1)
+    },
+    expects: "the Bindery author repair must leave a set rootFolderId alone"
+  },
+  {
+    # Whether you follow an author is yours. A role that wrote it every converge
+    # would re-follow an author you unfollowed, on the next tick, for ever.
+    name: "an author repair that also owns the monitored state",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_authors.yml",
+                  "'qualityProfileId':", "'monitored': true, 'qualityProfileId':",
+                  occurrences: 1)
+    },
+    expects: "the Bindery author repair must not own the monitored state"
   },
   {
     # A repeated create answers 201 and adds a second row rather than failing.
@@ -651,6 +720,50 @@ STATIC_ROWS = [
     expects: "Bindery verification must assert the hardlinkable staging layout"
   },
   {
+    # The acquisition half of the verification, and the one #425 proved was
+    # missing: indexers arrive from Prowlarr's own sync rather than from this
+    # platform, so a sync that returned nothing leaves every search empty while
+    # every other reading stays correct.
+    name: "an outcome assertion that stops asserting the synced indexers",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/main.yml",
+                  "selectattr('enabled')", "selectattr('excluded')", occurrences: 1)
+    },
+    expects: "Bindery verification must assert the synced indexers"
+  },
+  {
+    # An author with a null destination root holds books that read `wanted` and
+    # `monitored` and can never be grabbed, because there is nowhere to put a
+    # release. Nothing else in the block can see it.
+    name: "an outcome assertion that stops asserting the author destinations",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/main.yml",
+                  "selectattr('rootFolderId', 'none')",
+                  "selectattr('excluded', 'none')", occurrences: 1)
+    },
+    expects: "Bindery verification must assert the author destinations"
+  },
+  {
+    name: "an outcome assertion that stops asserting the author quality profiles",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/main.yml",
+                  "selectattr('qualityProfileId', 'none')",
+                  "selectattr('excluded', 'none')", occurrences: 1)
+    },
+    expects: "Bindery verification must assert the author quality profiles"
+  },
+  {
+    # `Any` rather than a narrower profile: an author here routinely has both an
+    # ebook and an audiobook edition and each narrower profile refuses one.
+    name: "an author default pinned to a profile that refuses one media type",
+    break: lambda { |root|
+      edit_yaml(root, "roles/bindery/defaults/main.yml") do |document|
+        document["bindery_default_quality_profile_name"] = "E-Book"
+      end
+    },
+    expects: "Bindery must default an author to the Any quality profile"
+  },
+  {
     name: "an outcome assertion redacted away",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -734,7 +847,7 @@ RUNTIME_DEFAULTS = {
   unwritable_dir: nil,
   hardlinkable: true,
   hardlink_reason: "cross-device link at /data/books/Ebooks",
-  settings: { "autoGrab.enabled" => "false", "telemetry.enabled" => "false" },
+  settings: { "autoGrab.enabled" => "true", "telemetry.enabled" => "false" },
   usenet: false,
   prowlarr_rows: nil,
   client_rows: nil,
@@ -983,15 +1096,15 @@ RUNTIME_ROWS = [
     expects: "no reason reported"
   },
   {
-    # The auto-grab kill switch fails open, so an absent row means unattended
-    # grabbing is on.
-    name: "an auto-grab kill switch row that is absent altogether",
+    # An absent row already reads as enabled, so the deployed state is not wrong
+    # -- but it is unowned, and a manual disable would then stick for ever.
+    name: "an auto-grab row that is absent altogether",
     given: { settings: { "telemetry.enabled" => "false" } },
-    expects: "Bindery does not pin autoGrab.enabled to false"
+    expects: "Bindery does not pin autoGrab.enabled to true"
   },
   {
     name: "telemetry left on in the deployed settings",
-    given: { settings: { "autoGrab.enabled" => "false", "telemetry.enabled" => "true" } },
+    given: { settings: { "autoGrab.enabled" => "true", "telemetry.enabled" => "true" } },
     expects: "Bindery does not pin telemetry.enabled to false"
   },
   {
@@ -1598,11 +1711,25 @@ PROGRAM_MUTATIONS = [
            "a staging layout that cannot hardlink and says nothing about why"]
   },
   {
+    label: "the author reconciliation include check",
+    program: :static,
+    from: "author_include.nil?",
+    to: "false",
+    rows: ["author reconciliation dropped from the role"]
+  },
+  {
+    label: "the null-only author repair check",
+    program: :static,
+    from: 'author_write["loop"] == "{{ bindery_authors_to_repair }}"',
+    to: "true",
+    rows: ["an author repair that writes every author"]
+  },
+  {
     label: "the pinned settings check",
     program: :runtime,
     from: "settings[key] == value",
     to: "true",
-    rows: ["an auto-grab kill switch row that is absent altogether",
+    rows: ["an auto-grab row that is absent altogether",
            "telemetry left on in the deployed settings"]
   },
   {

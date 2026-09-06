@@ -37,6 +37,9 @@ argument_specs:
       bindery_pinned_settings:
         type: dict
         required: false
+      bindery_default_quality_profile_name:
+        type: str
+        required: false
       bindery_prowlarr_name:
         type: str
         required: false

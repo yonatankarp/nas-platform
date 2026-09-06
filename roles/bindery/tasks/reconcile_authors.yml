@@ -1,0 +1,166 @@
+---
+# Every author needs a destination root for each media type and a quality
+# profile before any of its books can be grabbed. Bindery assigns none of the
+# three on its own: `library.defaultRootFolderId` is the setting that would, it
+# has never existed on this platform, and an author created through the web
+# interface or an Audiobookshelf import therefore lands with all three null.
+# The role has created both destination roots since Phase 2 and then never said
+# which one an author should use, so a book could sit `status: wanted` and
+# `monitored: true` for ever while nothing could act on it -- and every check
+# the platform runs still passed (#425).
+#
+# This repairs a null and only a null. A root folder or profile someone set
+# deliberately -- one author's books into a different root, or onto the strict
+# `E-Book` profile -- is left exactly as found, because that is a decision the
+# operator makes per author and not one the platform can improve on. Writing a
+# default would only help authors created afterwards and would repair none of
+# the ones already null, which is why this is a repair pass rather than a
+# setting.
+#
+# `monitored` is deliberately not owned. Whether you follow an author is the
+# same kind of decision, and a role that set it every converge would make
+# unfollowing an author impossible -- the next tick would follow them again.
+
+# Both reads run after `Declare the Bindery destination roots`, so a root
+# created by this same converge is present and carries the database-assigned id
+# that the author record actually stores. Re-reading rather than reusing the
+# earlier register is the point: that one was taken before the create.
+#
+# Redacted: the request carries the application API key.
+- name: Read the Bindery destination roots for author reconciliation
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/rootfolder"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_author_roots
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the request carries the application API key.
+- name: Read the Bindery quality profiles
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/qualityprofile"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_quality_profiles
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery authors
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/author"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_authors
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# All three are resolved by name or path rather than pinned, because every one
+# of them is a database-assigned integer that differs between a fresh install,
+# the NAS and a sandbox.
+- name: Resolve the Bindery author destination defaults
+  ansible.builtin.set_fact:
+    bindery_author_defaults:
+      rootFolderId: >-
+        {{ bindery_author_roots.json | default([])
+           | selectattr('path', 'equalto', bindery_ebooks_root)
+           | map(attribute='id') | first | default(0) | int }}
+      audiobookRootFolderId: >-
+        {{ bindery_author_roots.json | default([])
+           | selectattr('path', 'equalto', bindery_audiobooks_root)
+           | map(attribute='id') | first | default(0) | int }}
+      qualityProfileId: >-
+        {{ bindery_quality_profiles.json | default([])
+           | selectattr('name', 'equalto', bindery_default_quality_profile_name)
+           | map(attribute='id') | first | default(0) | int }}
+
+# A zero here means the read above found no root at the declared path or no
+# profile under the declared name, and repairing an author with it would write a
+# reference to a row that does not exist. Refusing is the only safe outcome: the
+# verification block asserts the roots separately, so this failing means the
+# profile name drifted or a root was renamed underneath the platform.
+- name: Refuse unresolvable Bindery author destinations
+  ansible.builtin.assert:
+    that:
+      - bindery_author_defaults.rootFolderId | int > 0
+      - bindery_author_defaults.audiobookRootFolderId | int > 0
+      - bindery_author_defaults.qualityProfileId | int > 0
+    fail_msg: >-
+      Bindery does not own a destination root at {{ bindery_ebooks_root }} and
+      {{ bindery_audiobooks_root }}, or a quality profile named
+      {{ bindery_default_quality_profile_name }}. An author cannot be repaired
+      against a row that does not exist.
+
+# The three selections are mutually exclusive by construction -- each rejects
+# what the previous one already claimed -- so the concatenation needs no dedupe
+# and an author appears exactly once however many of its fields are null.
+- name: Resolve the Bindery authors missing a destination or profile
+  ansible.builtin.set_fact:
+    bindery_authors_to_repair: >-
+      {{ (bindery_authors.json['items'] | default([])
+          | selectattr('rootFolderId', 'none') | list)
+         + (bindery_authors.json['items'] | default([])
+            | rejectattr('rootFolderId', 'none')
+            | selectattr('audiobookRootFolderId', 'none') | list)
+         + (bindery_authors.json['items'] | default([])
+            | rejectattr('rootFolderId', 'none')
+            | rejectattr('audiobookRootFolderId', 'none')
+            | selectattr('qualityProfileId', 'none') | list) }}
+
+- name: Report the planned Bindery author reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      {{ bindery_authors_to_repair | length }} Bindery authors hold no
+      destination root or no quality profile and a live run would repair them:
+      {{ bindery_authors_to_repair | map(attribute='authorName') | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - bindery_authors_to_repair | length > 0
+
+# `statistics` is dropped because it is a computed projection the list endpoint
+# adds and the record does not carry; sending it back submits a field the
+# resource does not own. Each of the three values is taken from the author when
+# it already has one, so this body is the author unchanged except where it was
+# null -- which is what makes a second run write nothing.
+#
+# Redacted: the request carries the application API key.
+- name: Repair the Bindery authors missing a destination or profile
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/author/{{ item.id }}"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body: >-
+      {{ (item | dict2items | rejectattr('key', 'equalto', 'statistics') | items2dict)
+         | combine({
+             'rootFolderId':
+               bindery_author_defaults.rootFolderId | int
+               if item.rootFolderId is none else item.rootFolderId,
+             'audiobookRootFolderId':
+               bindery_author_defaults.audiobookRootFolderId | int
+               if item.audiobookRootFolderId is none else item.audiobookRootFolderId,
+             'qualityProfileId':
+               bindery_author_defaults.qualityProfileId | int
+               if item.qualityProfileId is none else item.qualityProfileId,
+           }) }}
+    status_code: [200]
+  loop: "{{ bindery_authors_to_repair }}"
+  loop_control:
+    label: bindery-author
+  when: not ansible_check_mode
+  changed_when: true
+  no_log: true

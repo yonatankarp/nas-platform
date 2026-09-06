@@ -244,6 +244,32 @@ declaring them directly fights the sync. And `library.defaultRootFolderId`
 stores a database-assigned integer, not a path — resolve it from
 `GET /rootfolder` each run, never pin a literal.
 
+**Correction, from the live NAS (#425): that setting does not exist.** A
+`GET /setting` on a fifteen-author install lists `abs.*`, `calibre.*`, `cwa.*`,
+`authors.bulkRefresh`, `backfill.*`, `funnel.*`, `library.lastScan`,
+`autoGrab.enabled` and `telemetry.enabled` — and no `library.defaultRootFolderId`
+at all. Nothing supplies an author with a destination, so **every author lands
+with `rootFolderId`, `audiobookRootFolderId` and `qualityProfileId` all null**,
+whether it arrives through the web interface or an Audiobookshelf import. Its
+books then read `status: "wanted"`, `monitored: true`, `excluded: false` with no
+file — wanted and permanently unactionable, because there is nowhere to put a
+release and no rule for which one qualifies.
+
+Nothing surfaces that. The indexers had synced, the Prowlarr instance and the
+SABnzbd client were both correct, both libraries and all four staging directories
+were present, writable and hardlinkable, and `platform_verify_bindery` passed
+green throughout. Two further readings are worth knowing before trusting either:
+`GET /author/{id}` omits the `statistics` block that `GET /author` carries, and
+those statistics are computed at metadata-refresh time — an author repaired at
+10:42 still reported `wantedBookCount: 0` from a 10:14 refresh, so that counter
+proves nothing about whether a book is actionable. Read the book's own `status`.
+
+A default would have repaired none of this even if it existed: it applies to
+authors created afterwards. `reconcile_authors.yml` therefore repairs a null and
+only a null, per author, leaving a deliberately chosen root or profile alone —
+and leaving `monitored` alone entirely, since a role that wrote it every converge
+would make unfollowing an author impossible.
+
 ## The write-time DNS check couples the role's ordering
 
 The single most surprising runtime behaviour found. Both

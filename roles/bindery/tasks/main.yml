@@ -223,6 +223,9 @@
   changed_when: true
   no_log: true
 
+- name: Reconcile the Bindery author destinations
+  ansible.builtin.include_tasks: reconcile_authors.yml
+
 # Two settings are mandatory rather than optional. The auto-grab kill switch
 # fails open — a missing row, a read error and an unattached repository all read
 # as enabled — so unattended grabbing is only actually off once the row exists
@@ -400,6 +403,85 @@
   changed_when: false
   check_mode: false
   no_log: true
+
+# The three properties above prove Bindery is deployed and owns its storage.
+# None of them proves it can acquire anything, and #425 is what that gap cost:
+# both indexers had synced, every author held a null destination root, every
+# book sat wanted and unactionable, and this block passed green throughout. The
+# two reads below are the acquisition half.
+#
+# Redacted: the request carries the application API key.
+- name: Verify the Bindery synced indexers
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/indexer"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_verify_config.json.apiKey | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_indexers
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the request carries the application API key.
+- name: Verify the Bindery author destinations
+  tags: [platform_verify_bindery]
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/author"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_verify_config.json.apiKey | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_verify_authors
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Indexers are asserted only where Usenet is enabled, because `reconcile_usenet`
+# declares the Prowlarr instance they are synced from and does not run at all
+# otherwise -- an empty list on a host with no transport is the correct state,
+# not a regression.
+- name: Require the Bindery acquisition transport
+  tags: [platform_verify_bindery]
+  ansible.builtin.assert:
+    that:
+      - bindery_verify_indexers.status | default(0) | int == 200
+      - bindery_verify_indexers.json | default([]) | length > 0
+      - >-
+        bindery_verify_indexers.json | default([])
+        | selectattr('enabled') | list | length > 0
+    fail_msg: >-
+      Bindery holds no enabled indexer. They are synced from the declared
+      Prowlarr instance rather than written by this platform, so a sync that
+      returned nothing leaves every search empty and every book ungrabbable
+      while every other reading stays correct.
+  when: media_usenet_enabled | bool
+
+# A null here is unactionable rather than absent: the book still reads
+# `status: wanted` and `monitored: true`, and nothing surfaces the difference.
+- name: Require the Bindery author destinations
+  tags: [platform_verify_bindery]
+  ansible.builtin.assert:
+    that:
+      - bindery_verify_authors.status | default(0) | int == 200
+      - >-
+        (bindery_verify_authors.json['items'] | default([])
+         | selectattr('rootFolderId', 'none') | list | length) == 0
+      - >-
+        (bindery_verify_authors.json['items'] | default([])
+         | selectattr('audiobookRootFolderId', 'none') | list | length) == 0
+      - >-
+        (bindery_verify_authors.json['items'] | default([])
+         | selectattr('qualityProfileId', 'none') | list | length) == 0
+    fail_msg: >-
+      Bindery holds authors with no destination root or no quality profile.
+      Their books stay wanted and monitored and can never be grabbed, because
+      there is nowhere to put a release and no rule for which one qualifies.
 
 # Every probe above accepts any status and defers to this assertion, so a
 # drifted credential is diagnosed here by name instead of failing inside a
