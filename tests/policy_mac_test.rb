@@ -432,6 +432,12 @@ check(failures,
   "tests/mac/config-isolation.sh",
   "tests/mac/run-phase-status-test.sh",
   "tests/mac/dozzle-drift-hook-test.sh",
+  # The third drift-hook regression, and the only one whose hook reads a
+  # diagnostic out of a task carrying no_log: true. Its guard-passed case is the
+  # plant that #428 needed and the sweep could not run: without this line the
+  # manifest is the only thing naming it, which is the very state the comment
+  # above exists to prevent.
+  "tests/mac/immich-drift-hook-test.sh",
   "tests/mac/integration-context-test.sh",
   "tests/mac/snapshot-paperless-context-test.sh",
   "tests/mac/snapshot-paperless.sh --self-test"
