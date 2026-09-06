@@ -31,8 +31,17 @@ RECONCILIATION_LANES = %w[arr downloaders].freeze
 # bootstrap POSTs the vault Jellyfin administrator to `/auth/jellyfin` inside
 # the anonymous-takeover window, and its verify reads `/settings/jellyfin` and
 # the managed-user roster -- so the jellyfin lane cannot see what a Jellyfin
-# change broke (#349). Widening this in the classifier must fail here.
-COMPANION_LANES = { "downloaders" => %w[bindery], "jellyfin" => %w[seerr] }.freeze
+# change broke (#349). The audiobookshelf row is the same shape again: the
+# bindery lane is the only one converging Audiobookshelf and Bindery together,
+# and roles/bindery signs in to Audiobookshelf as the vault administrator, mints
+# itself an API key there and resolves the managed library by name, so the
+# audiobookshelf lane cannot see what an Audiobookshelf change broke. Widening
+# this in the classifier must fail here.
+COMPANION_LANES = {
+  "downloaders" => %w[bindery],
+  "audiobookshelf" => %w[bindery],
+  "jellyfin" => %w[seerr]
+}.freeze
 # The tags every tagged lane carries to converge the shared inert foundation and
 # the alerting sink. They are not lane dependencies: host_prep and
 # deployment_bundle already fall open to every lane, and ntfy is routed by
@@ -349,7 +358,11 @@ if defined?(ClassifyChanges)
   {
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
-    "roles/audiobookshelf/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,audiobookshelf",
+    # Same shape as the Jellyfin row below: the bindery lane comes first in
+    # suites.conf row order and its tags are a superset of Audiobookshelf's own,
+    # so the Audiobookshelf plan is Bindery's plan.
+    "roles/audiobookshelf/tasks/main.yml" =>
+      "host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery",
     "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,komga",
     # The seerr lane comes first in suites.conf row order and its tags are a
     # superset of Jellyfin's own, so the Jellyfin plan is Seerr's plan.
@@ -499,7 +512,7 @@ if defined?(ClassifyChanges)
     paperless=false
     idempotence_check=true
     suites=["bindery","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery
+    selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
   OUTPUT
         "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
 

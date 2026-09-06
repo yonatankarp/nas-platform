@@ -1097,9 +1097,14 @@ repository vault remains encrypted:
 - Bindery's configuration root, which belongs in this class rather than merely
   in the `critical` recovery class it already carries: it stores every
   credential it holds — its own API key, the Prowlarr and indexer keys,
-  download-client passwords and the session signing secret — in plaintext
+  download-client passwords, the session signing secret and the Audiobookshelf
+  API key the platform mints for its post-import library scan — in plaintext
   inside its SQLite database, and its pre-upgrade backup is a whole-database
-  copy written beside it under `backups/` at mode 0600.
+  copy written beside it under `backups/` at mode 0600. That Audiobookshelf key
+  never expires and cannot be read back from either side, so a leaked copy of
+  this directory is revoked in Audiobookshelf's own API-key list rather than
+  rotated: delete the key named `bindery` there and the next converge mints and
+  pushes a replacement.
 - Trailarr's `/config/.env`, which belongs in this class rather than merely in
   the `critical` recovery class its configuration root already carries: the
   application writes its own API key into that file on every boot, in clear, and

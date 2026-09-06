@@ -213,13 +213,26 @@ module ClassifyChanges
   # fallback never fires -- fail-open covers paths nobody thought about, not
   # paths mapped too tightly.
   #
+  # The audiobookshelf row is that same second shape. roles/bindery reconciles
+  # Bindery's Audiobookshelf integration against Audiobookshelf's *converged*
+  # state: it signs in as the vault administrator, mints an Audiobookshelf API
+  # key for itself, and resolves the managed library by name. The
+  # `audiobookshelf` lane converges no Bindery and would report nothing, and the
+  # handoff Bindery configures fails at WARN and is swallowed, so a change to
+  # Audiobookshelf's administrator identity, its API-key routes or its library
+  # name breaks the integration with nothing red anywhere else.
+  #
   # The arr rows of the same shape are declined rather than missing, and
   # tests/ci/classify_changes_test.rb states them so: the `arr` lane and the
   # `reconciliation` job already converge and assert arr's own state, and the
   # downloaders, bindery, trailarr and seerr lanes read it over stable APIs
   # rather than through a one-shot credential handshake. Four more lanes on every
   # arr change is not what that buys.
-  COMPANION_LANES = { "downloaders" => %w[bindery], "jellyfin" => %w[seerr] }.freeze
+  COMPANION_LANES = {
+    "downloaders" => %w[bindery],
+    "audiobookshelf" => %w[bindery],
+    "jellyfin" => %w[seerr]
+  }.freeze
   # The contract's own files. They are read by no play and by no integration
   # suite, so they select the contract alone rather than falling open to every
   # lane in the repository. The support file is listed because all three legs

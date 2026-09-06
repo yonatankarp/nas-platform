@@ -349,7 +349,7 @@ assert_output \
   'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
 assert_output \
-  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery playbook=site.yml scenarios=true' \
+  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery playbook=site.yml scenarios=true' \
   --describe-suite bindery
 assert_output \
   'suite=kapowarr tags=host_prep,deployment_bundle,ntfy,kapowarr playbook=site.yml scenarios=true' \
@@ -1164,10 +1164,14 @@ assert_pull_count "$runner_image" 6
 
 unset PREPULL_TOOLCHAIN
 
+# Audiobookshelf is in this set because the lane converges it: Bindery's role
+# reconciles the post-import scan handoff against a running Audiobookshelf, so
+# the lane that proves the handoff has to start one.
 run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; compose_images bindery; } | sort -u)"
+  "$({ compose_images ntfy; compose_images arr; compose_images downloaders;
+       compose_images audiobookshelf; compose_images bindery; } | sort -u)"
 
 run_prepull 0 4 --suite trailarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "trailarr pre-pull failed ($prepull_status)"

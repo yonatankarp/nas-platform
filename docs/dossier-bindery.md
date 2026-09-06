@@ -377,9 +377,20 @@ in the `recovery: critical` class it already carries.
 
 ## What remains unsettled
 
-1. **The Audiobookshelf credential.** The first credential on this platform that
-   is neither vault-authored nor re-readable. Decide the deviation explicitly and
-   comment it in the role, or reject the design that needs it.
+1. ~~**The Audiobookshelf credential.** The first credential on this platform
+   that is neither vault-authored nor re-readable.~~ Settled: the deviation is
+   accepted and `roles/bindery/tasks/reconcile_audiobookshelf.yml` states it in
+   full. The role signs in to Audiobookshelf with the vault-authored
+   administrator, creates a `POST /api/api-keys` key named `bindery` with no
+   `expiresIn` and an explicit `isActive: true`, and pushes it through
+   `PUT /api/v1/abs/config`. It is the create-if-absent pair this section
+   predicted, keyed on Audiobookshelf's key list and Bindery's
+   `apiKeyConfigured`, with one addition the two reads cannot supply on their
+   own: `POST /api/v1/abs/test` sent with no key falls back to the *stored* one,
+   so a restored database on either side is caught rather than reported as a
+   matched pair. `isActive` is not optional — `create` stores
+   `!!req.body.isActive` and an omitted flag mints a key that authenticates
+   nothing.
 2. **Ownership of `Books/Ebooks` and `Media/Audiobooks` on the real NAS.** The
    image cannot repair it. `stat` before promoting.
 3. ~~**Whether the pre-upgrade backup gate can read the deployed image digest**

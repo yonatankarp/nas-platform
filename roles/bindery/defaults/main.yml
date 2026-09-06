@@ -44,6 +44,34 @@ bindery_sabnzbd_port: 8080
 bindery_sabnzbd_ebook_category: ebooks
 bindery_sabnzbd_audiobook_category: audiobooks
 
+# Audiobookshelf, which Bindery hands an audiobook to after every import by
+# triggering a library scan. Two addresses, deliberately: Ansible runs on the
+# host and reaches the application through its published port, while Bindery
+# reaches it from inside media-control, where the container listens on 80 and
+# the published port does not exist at all. Addressing 13378 from inside a
+# container is the misconfiguration this declaration replaces.
+bindery_audiobookshelf_port: 13378
+bindery_audiobookshelf_api: "http://127.0.0.1:{{ bindery_audiobookshelf_port }}"
+bindery_audiobookshelf_url: http://audiobookshelf
+# Bindery substitutes "Audiobookshelf" for an empty label, so the declared value
+# is that literal rather than the empty string a comparison would never settle
+# on. The remap is empty because the two agree on paths already: Bindery reads
+# the audiobook at its own container path and Audiobookshelf reads the same host
+# directory at its own. It is declared rather than omitted because the write
+# keeps any field the request leaves out.
+bindery_audiobookshelf_label: Audiobookshelf
+bindery_audiobookshelf_path_remap: ""
+# Must name the same library roles/audiobookshelf declares as
+# audiobookshelf_library_name. Nothing static holds the two equal; the
+# reconciliation resolves this name against Audiobookshelf's own library list
+# and refuses unless it selects exactly one book library, so a drift fails the
+# run rather than configuring a handoff against nothing.
+bindery_audiobookshelf_library_name: Audiobooks
+# The name Audiobookshelf files the platform-minted API key under. It is how a
+# superseded key is recognised and retired, so it must not name a key an
+# operator created by hand.
+bindery_audiobookshelf_api_key_name: bindery
+
 # Auto-grab is on: Bindery searches for every wanted book on its own schedule
 # and hands the matches to SABnzbd, which is the whole point of deploying an
 # acquisition manager rather than a library browser.

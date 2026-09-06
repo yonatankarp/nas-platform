@@ -621,7 +621,7 @@ case_downloaders() {
 # failure #274 shipped, and neither lane can report it alone.
 case_bindery() {
   run_controller bindery \
-    host_prep,deployment_bundle,ntfy,arr,downloaders,bindery true true site.yml
+    host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery true true site.yml
   expect_status 0
   expect_log 'ephemeral-vault argv=[--undeclared][][--output]'
   expect_log 'contract arr argv=[static]'
@@ -634,10 +634,10 @@ case_bindery() {
   # the declared host its converge saw, or it asserts that no owned server
   # exists against the server it just created.
   expect_log '[-e][media_usenet_enabled=true][-e][{"media_usenet_provider":{"host":"news.usenet.invalid","port":563,"connections":8,"ssl":true}}][{repo}/verify.yml][--tags][platform_verify_downloaders]'
-  expect_log '[site.yml][--tags][arr,downloaders,bindery]'
-  expect_log '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
-  expect_log_order '[site.yml][--tags][arr,downloaders,bindery]' \
-    '[site.yml][--tags][arr,downloaders,bindery][--check][--diff]'
+  expect_log '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery]'
+  expect_log '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery][--check][--diff]'
+  expect_log_order '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery]' \
+    '[site.yml][--tags][arr,downloaders,audiobookshelf,bindery][--check][--diff]'
   expect_output 'BINDERY_PHASE2_RUNTIME_VERIFIED'
 }
 

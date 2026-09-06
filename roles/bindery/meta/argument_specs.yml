@@ -65,6 +65,27 @@ argument_specs:
       bindery_sabnzbd_audiobook_category:
         type: str
         required: false
+      bindery_audiobookshelf_port:
+        type: int
+        required: false
+      bindery_audiobookshelf_api:
+        type: str
+        required: false
+      bindery_audiobookshelf_url:
+        type: str
+        required: false
+      bindery_audiobookshelf_label:
+        type: str
+        required: false
+      bindery_audiobookshelf_path_remap:
+        type: str
+        required: false
+      bindery_audiobookshelf_library_name:
+        type: str
+        required: false
+      bindery_audiobookshelf_api_key_name:
+        type: str
+        required: false
       vault_bindery_api_key:
         type: str
         required: true
@@ -78,5 +99,14 @@ argument_specs:
         type: str
         required: true
       vault_downloaders_sabnzbd_api_key:
+        type: str
+        required: true
+      # Authored by roles/audiobookshelf and read here: Bindery signs in to
+      # Audiobookshelf as the same administrator to mint the API key its
+      # post-import scan authenticates with.
+      vault_audiobookshelf_admin_username:
+        type: str
+        required: true
+      vault_audiobookshelf_admin_password:
         type: str
         required: true
