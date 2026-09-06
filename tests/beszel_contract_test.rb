@@ -95,6 +95,11 @@ STATIC_SUCCESS = "Beszel static contract passed"
 # The role's stage files are all listed because roles/beszel/tasks/main.yml is
 # an index of static imports and PolicySupport.static_role_tasks splices them in
 # where they stand.
+#
+# tests/http_fixture_support.rb is on the list for the same reason
+# tests/policy_support.rb is: since #450 the static half requires it from the
+# inspected tree for TASK_REFUSAL_PREFIX, the prefix half of the drift hook's
+# refusal anchor.
 FIXTURE_FILES = %w[
   roles/beszel/defaults/main.yml
   roles/beszel/vars/main.yml
@@ -114,6 +119,7 @@ FIXTURE_FILES = %w[
   library/beszel_telemetry_probe.py
   module_utils/beszel_telemetry.py
   tests/policy_support.rb
+  tests/http_fixture_support.rb
   tests/contracts/support/beszel_telemetry.rb
   tests/contracts/beszel.sh
 ].freeze
@@ -189,6 +195,18 @@ end
 # ---------------------------------------------------------------------------
 # Static layer
 # ---------------------------------------------------------------------------
+
+# The drift hook's refusal anchor, as the rows below have to spell it to plant
+# against it. The diagnostic is written out because it is the sentence whose
+# agreement is under test and there is nowhere else to read it from that the
+# static half does not read too; the prefix comes from the constant that states
+# it, so an ansible-core release that rephrases it moves one literal rather than
+# three. mutate_text raises when a pattern stops matching, so a reworded guard
+# fails these rows loudly instead of planting nothing.
+GUARD_DIAGNOSTIC = "Managed application user is absent or differs from the verified admin contract."
+DRIFT_ANCHOR = "#{HttpFixtureSupport::TASK_REFUSAL_PREFIX}#{GUARD_DIAGNOSTIC}".freeze
+DRIFT_ANCHOR_DIAGNOSTIC =
+  "Mac drift hook does not anchor on the managed application user guard's own refusal"
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
@@ -507,6 +525,73 @@ STATIC_ROWS = [
                   'ruby "$mac_script_dir/../beszel_telemetry_probe_test.rb"', "true")
     },
     expects: "Mac drift hook does not execute category rejection semantics"
+  },
+  # The drift hook's refusal anchor, from both ends. The static half derives it
+  # rather than transcribing it -- the guard's fail_msg out of the role, the
+  # prefix out of HttpFixtureSupport -- so the rows have to break each end
+  # separately: a row that only deletes the grep would be satisfied by a check
+  # that hardcoded the sentence, and a row that only rewords the fail_msg would
+  # be satisfied by a check that read the role and ignored the hook.
+  {
+    name: "a Mac drift hook with no refusal anchor",
+    break: lambda { |root|
+      mutate_text(root, "tests/mac/hooks/drift/10-beszel.sh",
+                  %("#{DRIFT_ANCHOR}"), '"PLAY [nas]"')
+    },
+    expects: DRIFT_ANCHOR_DIAGNOSTIC
+  },
+  {
+    name: "a Mac drift hook whose refusal anchor survives only in a comment",
+    break: lambda { |root|
+      mutate_text(root, "tests/mac/hooks/drift/10-beszel.sh",
+                  %("#{DRIFT_ANCHOR}"), '"PLAY [nas]"')
+      File.write(File.join(root, "tests/mac/hooks/drift/10-beszel.sh"),
+                 "# #{DRIFT_ANCHOR}\n", mode: "a")
+    },
+    expects: DRIFT_ANCHOR_DIAGNOSTIC
+  },
+  {
+    name: "a role guard reworded without its hook",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  GUARD_DIAGNOSTIC, "Managed application user does not meet its contract.")
+    },
+    expects: DRIFT_ANCHOR_DIAGNOSTIC
+  },
+  {
+    name: "a role guard that refuses without saying why",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "fail_msg: #{GUARD_DIAGNOSTIC}", 'fail_msg: ""')
+    },
+    expects: "the managed application user guard states no diagnostic to anchor on"
+  },
+  {
+    name: "a role guard that censors the diagnostic its hook reads",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "    fail_msg: #{GUARD_DIAGNOSTIC}\n  when: not ansible_check_mode\n",
+                  "    fail_msg: #{GUARD_DIAGNOSTIC}\n  no_log: true\n  when: not ansible_check_mode\n")
+    },
+    expects: "the managed application user guard censors the diagnostic the hook reads"
+  },
+  {
+    name: "a role guard dropped from the verification tag",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "- name: Verify the managed application user contract\n  tags: [platform_verify_beszel]\n",
+                  "- name: Verify the managed application user contract\n")
+    },
+    expects: "the managed application user guard is not selected by the verification tag"
+  },
+  {
+    name: "a renamed managed application user guard",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "Verify the managed application user contract",
+                  "Verify the managed application account contract")
+    },
+    expects: "the managed application user guard is absent or ambiguous"
   }
 ]).freeze
 
@@ -544,20 +629,25 @@ def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
   failures
 end
 
-# The existence sweep is not a sweep: the static program reads its twenty files
-# with no [ -f ] preflight and no File.file? guard on eighteen of them, so a
-# missing file arrives as an Errno::ENOENT or a LoadError rather than as a named
-# diagnostic. That is pre-existing and stays unpinned -- there is no sentence to
-# assert -- but which files are load-bearing at all is worth asserting, so this
-# layer states only that removing each of them is noticed.
+# The existence sweep is not a sweep: the static program reads its twenty-one
+# files with no [ -f ] preflight and no File.file? guard on nineteen of them, so
+# a missing file arrives as an Errno::ENOENT or a LoadError rather than as a
+# named diagnostic. That is pre-existing and stays unpinned -- there is no
+# sentence to assert -- but which files are load-bearing at all is worth
+# asserting, so this layer states only that removing each of them is noticed.
 #
-# The five that are NOT noticed are named rather than hidden: four role stage
-# files whose absence static_role_tasks tolerates (superuser, application_user,
-# managed_users, alert) and tests/contracts/support/beszel_telemetry.rb, which
-# the static half never reads. Measured, not reasoned about.
+# The four that are NOT noticed are named rather than hidden: three role stage
+# files whose absence static_role_tasks tolerates (superuser, managed_users,
+# alert) and tests/contracts/support/beszel_telemetry.rb, which the static half
+# never reads. Measured, not reasoned about.
+#
+# application_user.yml left this list in #450: the static half now reads the
+# fail_msg of "Verify the managed application user contract" out of that stage
+# to check the drift hook anchors on it, so removing the stage takes the
+# diagnostic with it and the contract refuses by name rather than tolerating the
+# absence.
 UNREAD_BY_STATIC = %w[
   roles/beszel/tasks/superuser.yml
-  roles/beszel/tasks/application_user.yml
   roles/beszel/tasks/managed_users.yml
   roles/beszel/tasks/alert.yml
   tests/contracts/support/beszel_telemetry.rb
@@ -1796,6 +1886,37 @@ STATIC_MUTATIONS = [
     from: 'refuse("Mac drift hook does not execute category rejection semantics") unless',
     to: "nil unless",
     rows: ["a Mac drift hook that skips category rejection semantics"] },
+  { label: "the managed application user guard existence check",
+    from: 'refuse("the managed application user guard is absent or ambiguous") unless app_user_guards.length == 1',
+    to: "nil unless app_user_guards.length == 1",
+    rows: ["a renamed managed application user guard"],
+    # Cascade, recorded rather than tolerated: with the existence sentence gone
+    # a renamed guard resolves to no task, the safe navigation in the next line
+    # leaves the diagnostic empty, and the empty-diagnostic sentence refuses
+    # instead. Both name a real property; this is what records which one fires.
+    detects: "refused for the wrong reason" },
+  { label: "the guard diagnostic requirement",
+    from: 'refuse("the managed application user guard states no diagnostic to anchor on") if guard_diagnostic.empty?',
+    to: "nil if guard_diagnostic.empty?",
+    # Removing it is not a cascade into the anchor check below: an empty
+    # diagnostic leaves that check searching the hook for the bare refusal
+    # prefix, which the hook still carries, so the run passes and the row
+    # catches the acceptance.
+    rows: ["a role guard that refuses without saying why"] },
+  { label: "the guard censorship check",
+    from: 'refuse("the managed application user guard censors the diagnostic the hook reads") if',
+    to: "nil if",
+    rows: ["a role guard that censors the diagnostic its hook reads"] },
+  { label: "the guard verification tag check",
+    from: 'refuse("the managed application user guard is not selected by the verification tag") unless',
+    to: "nil unless",
+    rows: ["a role guard dropped from the verification tag"] },
+  { label: "the drift hook refusal anchor check",
+    from: %(refuse("Mac drift hook does not anchor on the managed application user guard's own refusal") unless),
+    to: "nil unless",
+    rows: ["a Mac drift hook with no refusal anchor",
+           "a Mac drift hook whose refusal anchor survives only in a comment",
+           "a role guard reworded without its hook"] },
   {
     # Not a refusal but the read that makes every parsed assertion meaningful.
     # A bare read of the role index selects none of the imported stages, so the

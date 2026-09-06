@@ -1,14 +1,17 @@
 #!/usr/bin/env ruby
 # The static half of the Beszel service contract: the telemetry policy the
 # role declares, its argument validation, the Compose definition's agent and
-# socket-proxy shape, the two inventories' capability declarations and the two
-# Mac hooks, all decided from the repository alone with nothing deployed.
+# socket-proxy shape, the two inventories' capability declarations, the two
+# Mac hooks and the agreement between the drift hook's refusal anchor and the
+# fail_msg of the role guard it anchors on, all decided from the repository
+# alone with nothing deployed.
 #
 # usage: beszel-static.rb REPOSITORY
 #
 # PLATFORM_CONTRACT_REPO_DIR names the tree being inspected, which is where
-# tests/policy_support.rb is required from -- not the checkout this file lives
-# in. Run it through tests/contracts/beszel.sh rather than directly.
+# tests/policy_support.rb and tests/http_fixture_support.rb are required from --
+# not the checkout this file lives in. Run it through tests/contracts/beszel.sh
+# rather than directly.
 root = ARGV.fetch(0)
 defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
 vars = YAML.safe_load_file(File.join(root, "roles/beszel/vars/main.yml"))
@@ -19,6 +22,12 @@ probe = File.file?(probe_path) ? File.read(probe_path) : ""
 probe_support_path = File.join(root, "module_utils/beszel_telemetry.py")
 probe_support = File.file?(probe_support_path) ? File.read(probe_support_path) : ""
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+# The prefix ansible-core prints in front of a failing task's fail_msg, taken
+# from the one place that states it rather than transcribed a third time. The
+# drift hook's anchor is that prefix followed by the guard's own diagnostic, and
+# both halves are read here from the tree being inspected: a core release that
+# rephrases the prefix is fixed in HttpFixtureSupport and this contract follows.
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "http_fixture_support")
 include PolicySupport
 # main.yml is read through static_role_tasks, which splices a statically imported
 # stage file in where it stands and leaves a dynamic include alone -- the role
@@ -143,5 +152,49 @@ refuse("Mac verification does not execute persisted telemetry proof") unless
   verify_hook.include?('"$mac_hook_dir/../../run-beszel-contract.sh" verify')
 refuse("Mac drift hook does not execute category rejection semantics") unless
   drift_hook.include?('ruby "$mac_script_dir/../beszel_telemetry_probe_test.rb"')
+
+# The drift hook's refusal anchor, asserted as an agreement rather than as a
+# third copy of the sentence. tests/mac/verify.sh verifies every service in one
+# playbook, so a hook that asserts nothing beyond that command exiting non-zero
+# is satisfied by an unrelated service failing -- it was, until #440. The grep
+# for "<TASK_REFUSAL_PREFIX><fail_msg>" is what makes the hook test Beszel, and
+# nothing static said so until #450: deleting or broadening it left this contract
+# green, which is the same shape as the defect #440 closed one level up.
+#
+# Both halves are read from what the role and the fixture support actually
+# declare, so rewording the guard's fail_msg without rewording the hook is a
+# refusal here rather than a hook that has quietly stopped anchoring on
+# anything. "Verify the managed application user contract" is the guard the hook
+# names because it is the first tagged refusal reachable under
+# --tags platform_verify_beszel; the hook's own comment records why.
+app_user_guards = role_tasks.select { |task| task["name"] == "Verify the managed application user contract" }
+refuse("the managed application user guard is absent or ambiguous") unless app_user_guards.length == 1
+# assert is read through its FQCN alone: ansible-lint's production profile
+# rejects the short form, so a bare assert: cannot reach this tree. The safe
+# navigation is what the refusal above already excludes: it keeps a run in which
+# that refusal was removed reporting the empty diagnostic below by name, rather
+# than a NoMethodError backtrace.
+guard_diagnostic = app_user_guards.first&.dig("ansible.builtin.assert", "fail_msg").to_s.strip
+refuse("the managed application user guard states no diagnostic to anchor on") if guard_diagnostic.empty?
+# Two ways to leave the anchor below pinning a sentence the run can never print,
+# both of which leave the YAML it is read from untouched. no_log censors the
+# fail_msg at runtime, so the capture the hook greps says the output has been
+# hidden instead; an untagged guard is not selected by --tags
+# platform_verify_beszel at all, so tests/mac/verify.sh never reaches it. Either
+# one fails the hook on every drift run -- but the drift hook runs only under
+# tests/mac/run.sh, a hand-run lifecycle proof rather than a CI lane, so "loud"
+# means loud the next time somebody runs the Mac proof. That is the wait this
+# contract exists to remove. #444 recorded the absent no_log as load-bearing and
+# left nothing pinning it.
+refuse("the managed application user guard censors the diagnostic the hook reads") if
+  app_user_guards.first["no_log"]
+refuse("the managed application user guard is not selected by the verification tag") unless
+  Array(app_user_guards.first["tags"]).include?("platform_verify_beszel")
+# Comment lines dropped first: an anchor that survives only inside the hook's own
+# explanation of the anchor is not something the hook runs, and a whole-file
+# substring cannot tell those apart.
+drift_hook_code = drift_hook.lines.reject { |line| line.strip.start_with?("#") }.join
+refuse("Mac drift hook does not anchor on the managed application user guard's own refusal") unless
+  drift_hook_code.include?("#{HttpFixtureSupport::TASK_REFUSAL_PREFIX}#{guard_diagnostic}")
 
 puts "Beszel static contract passed"
