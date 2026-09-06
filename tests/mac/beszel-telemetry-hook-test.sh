@@ -54,8 +54,51 @@ done
 hook_log=$fixture/hook.log
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>"$PLATFORM_HOOK_LOG"' > \
   "$fixture/tests/mac/run-beszel-contract.sh"
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" verify-failed >&2' 'exit 1' > \
-  "$fixture/tests/mac/verify.sh"
+# The all-service verification, stubbed, one scenario per case below. Only the
+# drift hook reaches it -- the verify hook runs the contract twice and nothing
+# else -- so scenario-driving it cannot disturb the verify assertions.
+#
+# The captures are ansible-core 2.21.3's own output rather than invented text:
+# the role-qualified TASK banner, printed whenever a task merely runs, and the
+# "[ERROR]: Task failed: Action failed: <fail_msg>" line, which is the anchor
+# HttpFixtureSupport::TASK_REFUSAL_PREFIX pins. Every fail_msg below is the one
+# its role actually carries. "Verify the exact managed universal token" carries
+# no_log: true and still prints its message on that line (#428), which is why the
+# guard-passed case is reachable at all.
+cat > "$fixture/tests/mac/verify.sh" <<'STUB'
+#!/bin/sh
+set -eu
+printf '%s\n' 'PLAY [nas] *********************************************************************'
+case ${PLATFORM_HOOK_SCENARIO:?} in
+  beszel)
+    printf '%s\n' 'TASK [beszel : Verify the managed application user contract] ********************'
+    printf '%s\n' '[ERROR]: Task failed: Action failed: Managed application user is absent or differs from the verified admin contract.'
+    exit 2
+    ;;
+  unrelated)
+    # The plant #440 names. Beszel's guard ran and accepted the installed drift;
+    # Dozzle, six roles later in verify.yml, is what failed the run.
+    printf '%s\n' 'TASK [beszel : Verify the managed application user contract] ********************'
+    printf '%s\n' 'TASK [dozzle : Require exactly the managed Dozzle ntfy dispatcher] **************'
+    printf '%s\n' '[ERROR]: Task failed: Action failed: Dozzle ntfy dispatcher is absent or drifted.'
+    exit 2
+    ;;
+  guard-passed)
+    # The #428 plant, in Beszel's shape: the anchored guard ran and passed, and a
+    # later Beszel guard refused a different facet of the same installed drift.
+    printf '%s\n' 'TASK [beszel : Verify the managed application user contract] ********************'
+    printf '%s\n' 'TASK [beszel : Verify the exact managed universal token] ************************'
+    printf '%s\n' '[ERROR]: Task failed: Action failed: Managed universal token is absent, duplicated, or differs from vault.'
+    exit 2
+    ;;
+  accepted)
+    printf '%s\n' 'TASK [beszel : Verify the managed application user contract] ********************'
+    exit 0
+    ;;
+esac
+printf '%s\n' 'unknown Beszel hook scenario' >&2
+exit 4
+STUB
 chmod +x "$fixture/tests/mac/run-beszel-contract.sh" "$fixture/tests/mac/verify.sh"
 
 PLATFORM_HOOK_LOG=$hook_log "$fixture/tests/mac/hooks/verify/10-beszel.sh"
@@ -68,11 +111,58 @@ PLATFORM_HOOK_LOG=$hook_log "$fixture/tests/mac/hooks/verify/10-beszel.sh"
   exit 1
 }
 
-: >"$hook_log"
-PLATFORM_HOOK_LOG=$hook_log PLATFORM_REPORT_ROOT=$fixture/reports \
-  "$fixture/tests/mac/hooks/drift/10-beszel.sh"
+# The drift hook's anchor (#440). tests/mac/verify.sh runs every service's
+# verification in one playbook, and the hook used to assert only that the command
+# exited non-zero, so a failure belonging to any other service satisfied it. The
+# hook now reads back the diagnostic of the guard the installed drift is aimed at,
+# and the four cases below are what tell the two apart: the first is the property
+# the hook has to keep, the other three are the ones it used to accept.
+drift_report_root=$fixture/reports
+run_drift_hook() {
+  : >"$hook_log"
+  find "$drift_report_root" -mindepth 1 -maxdepth 1 -delete
+  PLATFORM_HOOK_LOG=$hook_log PLATFORM_REPORT_ROOT=$drift_report_root \
+    PLATFORM_HOOK_SCENARIO=$1 \
+    "$fixture/tests/mac/hooks/drift/10-beszel.sh"
+}
+
+run_drift_hook beszel || {
+  printf '%s\n' 'Beszel drift hook rejected its own guard diagnostic' >&2
+  exit 1
+}
 [ "$(sed -n '1p' "$hook_log")" = drift ] || {
   printf '%s\n' 'Beszel drift hook omitted supported live configuration drift' >&2
+  exit 1
+}
+find "$drift_report_root" -mindepth 1 -maxdepth 1 -print -quit | grep -q . && {
+  printf '%s\n' 'Beszel drift hook retained its raw verification output' >&2
+  exit 1
+}
+
+# The discriminator #440 exists for. An unrelated service failed the all-service
+# run while Beszel's own guard accepted the drift this hook had just installed.
+drift_status=0
+run_drift_hook unrelated >/dev/null 2>&1 || drift_status=$?
+[ "$drift_status" -ne 0 ] || {
+  printf '%s\n' 'Beszel drift hook accepted an unrelated service as its refusal' >&2
+  exit 1
+}
+
+# The #428 discriminator, which a task-name anchor would also have accepted: the
+# anchored guard ran and passed, and a later Beszel guard failed the run.
+drift_status=0
+run_drift_hook guard-passed >/dev/null 2>&1 || drift_status=$?
+[ "$drift_status" -ne 0 ] || {
+  printf '%s\n' 'Beszel drift hook accepted a run in which its guard ran and passed' >&2
+  exit 1
+}
+
+# The property the hook already had: a verification run that accepts the drift
+# outright is a failure, not a pass.
+drift_status=0
+run_drift_hook accepted >/dev/null 2>&1 || drift_status=$?
+[ "$drift_status" -ne 0 ] || {
+  printf '%s\n' 'Beszel drift hook accepted a verification run that passed on drift' >&2
   exit 1
 }
 
