@@ -668,6 +668,57 @@ STATIC_ROWS = [
     expects: "the Audiobookshelf key Bindery mints must be active and never expire"
   },
   {
+    # The order this role shipped with until #446. A mint or a declare that
+    # fails after the revoke lands leaves Bindery holding a credential
+    # Audiobookshelf no longer honours, and both presence reads still say
+    # present, so only the probe catches it -- one poller tick later.
+    name: "an Audiobookshelf key revoked before its replacement exists",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        retire = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "DELETE" &&
+            candidate.dig("ansible.builtin.uri", "url").to_s
+                     .start_with?("{{ bindery_audiobookshelf_api }}/api/api-keys/")
+        end
+        mint = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") ==
+            "{{ bindery_audiobookshelf_api }}/api/api-keys" &&
+            candidate.dig("ansible.builtin.uri", "method") == "POST"
+        end
+        document.delete(retire)
+        document.insert(document.index(mint), retire)
+      end
+    },
+    expects: "the superseded Audiobookshelf API key must be retired only after its " \
+             "replacement is declared"
+  },
+  {
+    # Retiring last is only safe because the loop names the keys read before the
+    # mint. A list re-read afterwards holds the row this run just created, so
+    # the retirement revokes the credential it declared one task earlier.
+    name: "an Audiobookshelf retirement that re-reads the key list after minting",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
+                  'loop: "{{ bindery_audiobookshelf_key_matches }}"',
+                  'loop: "{{ bindery_audiobookshelf_keys_after_mint }}"')
+    },
+    expects: "the Audiobookshelf retirement must loop over the keys read before the mint"
+  },
+  {
+    # Without it the dead row survives, the mint makes a second of that name and
+    # the ambiguity refusal fails every converge after this one.
+    name: "an Audiobookshelf retirement that is gone",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "DELETE"
+        end
+        document.delete(task)
+      end
+    },
+    expects: "Bindery must retire the superseded Audiobookshelf API key"
+  },
+  {
     # The two presence reads cannot tell a working pair from a restored database
     # on either side: neither end reveals what it holds.
     name: "a mint decision that trusts the two presence reads alone",
@@ -1816,6 +1867,28 @@ PROGRAM_MUTATIONS = [
     from: 'mint_body.is_a?(Hash) && mint_body["isActive"] == true && !mint_body.key?("expiresIn")',
     to: "true",
     rows: ["an Audiobookshelf key minted inactive", "an Audiobookshelf key minted with an expiry"]
+  },
+  {
+    label: "the mint-before-retire ordering check",
+    program: :static,
+    from: "abs_mint_index && abs_declare_index &&
+      abs_retire_index > abs_mint_index && abs_retire_index > abs_declare_index",
+    to: "true",
+    rows: ["an Audiobookshelf key revoked before its replacement exists"]
+  },
+  {
+    label: "the pre-mint retirement loop check",
+    program: :static,
+    from: 'abs_retire["loop"] == "{{ bindery_audiobookshelf_key_matches }}"',
+    to: "true",
+    rows: ["an Audiobookshelf retirement that re-reads the key list after minting"]
+  },
+  {
+    label: "the Audiobookshelf retirement existence check",
+    program: :static,
+    from: 'failures << "Bindery must retire the superseded Audiobookshelf API key"',
+    to: 'failures << "" if false',
+    rows: ["an Audiobookshelf retirement that is gone"]
   },
   {
     label: "the stored-credential probe check",

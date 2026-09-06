@@ -398,6 +398,36 @@ if failures.empty?
   failures << "the Audiobookshelf key Bindery mints must be active and never expire" unless
     mint_body.is_a?(Hash) && mint_body["isActive"] == true && !mint_body.key?("expiresIn")
 
+  # Revoking first was the older order, and it is the one shape that can leave
+  # Bindery holding a credential Audiobookshelf no longer honours: a mint or a
+  # declare that fails after the delete lands reads healthy on both presence
+  # checks until the next poller tick. Audiobookshelf permits the overlap the
+  # replacement order needs -- ApiKey.js declares name without `unique: true`
+  # and the create route runs no collision lookup -- so the retire goes last,
+  # after the replacement exists and Bindery has been told about it.
+  abs_retire_index = abs_tasks.find_index do |task|
+    task.dig("ansible.builtin.uri", "method") == "DELETE" &&
+      task.dig("ansible.builtin.uri", "url").to_s
+          .start_with?("{{ bindery_audiobookshelf_api }}/api/api-keys/")
+  end
+  abs_retire = abs_retire_index && abs_tasks[abs_retire_index]
+  if abs_retire.nil?
+    failures << "Bindery must retire the superseded Audiobookshelf API key"
+  else
+    abs_mint_index = abs_mint && abs_tasks.find_index { |task| task.equal?(abs_mint) }
+    abs_declare_index = abs_declare && abs_tasks.find_index { |task| task.equal?(abs_declare) }
+    failures << "the superseded Audiobookshelf API key must be retired only after its " \
+                "replacement is declared" unless
+      abs_mint_index && abs_declare_index &&
+      abs_retire_index > abs_mint_index && abs_retire_index > abs_declare_index
+    # Exactly the fact resolved from the key list read before any mutation, so
+    # the row the mint just created is not in it. A loop re-read after the mint,
+    # or hoisted into a fact that is, revokes the credential this run declared
+    # -- and the ordering above would stay green while it did.
+    failures << "the Audiobookshelf retirement must loop over the keys read before the mint" unless
+      abs_retire["loop"] == "{{ bindery_audiobookshelf_key_matches }}"
+  end
+
   # The identifier is a UUID Audiobookshelf mints at library-creation time, so
   # the name has to select exactly one library or the handoff is configured
   # against nothing, and a surplus key of the platform's own name cannot be told
