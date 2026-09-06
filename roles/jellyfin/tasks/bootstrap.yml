@@ -106,7 +106,7 @@
     that:
       - jellyfin_admin_username == 'Yonatan'
       - vault_jellyfin_admin_username == jellyfin_admin_username
-      - jellyfin_server_name == 'Yonflix 2.0'
+      - jellyfin_server_name == 'Yonflix 2.1'
       - jellyfin_admin_avatar_sha256 is match('^[a-f0-9]{64}$')
       - jellyfin_libraries | type_debug == 'list'
       - jellyfin_libraries | length == 2

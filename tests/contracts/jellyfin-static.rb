@@ -95,7 +95,7 @@ end
 
 defaults = YAML.safe_load_file(File.join(root, "roles", "jellyfin", "defaults", "main.yml"))
 refuse("primary administrator differs") unless defaults.fetch("jellyfin_admin_username") == "Yonatan"
-refuse("server name differs") unless defaults.fetch("jellyfin_server_name") == "Yonflix 2.0"
+refuse("server name differs") unless defaults.fetch("jellyfin_server_name") == "Yonflix 2.1"
 refuse("administrator avatar hash differs") unless
   defaults.fetch("jellyfin_admin_avatar_sha256") ==
     "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"

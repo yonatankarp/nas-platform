@@ -33,6 +33,7 @@ PROBES = [
   [%w[all jellyfin_settings], method(:exercise_jellyfin_opensubtitles_ordering)],
   [%w[all jellyfin_identity], method(:exercise_jellyfin_primary_identity_recovery)],
   [%w[all jellyfin_identity], method(:exercise_jellyfin_primary_preflight)],
+  [%w[all jellyfin_identity], method(:exercise_jellyfin_server_name_repair)],
   [%w[all jellyfin_libraries], method(:exercise_jellyfin_extra_path_recovery)],
   [%w[all jellyfin_libraries], method(:exercise_jellyfin_library_inventory_global_gate)],
   [%w[all jellyfin_libraries], method(:exercise_jellyfin_library_rename_identity_refresh)],

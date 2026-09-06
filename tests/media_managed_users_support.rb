@@ -331,7 +331,7 @@ def jellyfin_identity_contract_failures
   failures << "Jellyfin primary administrator is not exact" unless
     defaults["jellyfin_admin_username"] == "Yonatan"
   failures << "Jellyfin server name is not exact" unless
-    defaults["jellyfin_server_name"] == "Yonflix 2.0"
+    defaults["jellyfin_server_name"] == "Yonflix 2.1"
   failures << "Jellyfin managed libraries are not exact" unless
     defaults["jellyfin_libraries"] == [
       { "name" => "Movies", "collection_type" => "movies", "path" => "/media/Movies" },

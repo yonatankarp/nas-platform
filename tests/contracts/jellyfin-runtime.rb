@@ -42,7 +42,7 @@ STATE_PATH = REPORT_ROOT.join("jellyfin-persistence.json")
 DRIFT_STATE_PATH = REPORT_ROOT.join("jellyfin-drift-sentinels.json")
 
 ADMIN_NAME = "Yonatan"
-SERVER_NAME = "Yonflix 2.0"
+SERVER_NAME = "Yonflix 2.1"
 AVATAR_PATH = Pathname.new(ENV.fetch("PLATFORM_JELLYFIN_AVATAR_PATH")).expand_path
 AVATAR_SHA256 = "bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792"
 LIBRARIES = [
