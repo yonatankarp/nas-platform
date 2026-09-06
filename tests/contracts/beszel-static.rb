@@ -176,6 +176,20 @@ refuse("the managed application user guard is absent or ambiguous") unless app_u
 # than a NoMethodError backtrace.
 guard_diagnostic = app_user_guards.first&.dig("ansible.builtin.assert", "fail_msg").to_s.strip
 refuse("the managed application user guard states no diagnostic to anchor on") if guard_diagnostic.empty?
+# Two ways to leave the anchor below pinning a sentence the run can never print,
+# both of which leave the YAML it is read from untouched. no_log censors the
+# fail_msg at runtime, so the capture the hook greps says the output has been
+# hidden instead; an untagged guard is not selected by --tags
+# platform_verify_beszel at all, so tests/mac/verify.sh never reaches it. Either
+# one fails the hook on every drift run -- but the drift hook runs only under
+# tests/mac/run.sh, a hand-run lifecycle proof rather than a CI lane, so "loud"
+# means loud the next time somebody runs the Mac proof. That is the wait this
+# contract exists to remove. #444 recorded the absent no_log as load-bearing and
+# left nothing pinning it.
+refuse("the managed application user guard censors the diagnostic the hook reads") if
+  app_user_guards.first["no_log"]
+refuse("the managed application user guard is not selected by the verification tag") unless
+  Array(app_user_guards.first["tags"]).include?("platform_verify_beszel")
 # Comment lines dropped first: an anchor that survives only inside the hook's own
 # explanation of the anchor is not something the hook runs, and a whole-file
 # substring cannot tell those apart.

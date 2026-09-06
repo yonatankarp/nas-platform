@@ -567,6 +567,24 @@ STATIC_ROWS = [
     expects: "the managed application user guard states no diagnostic to anchor on"
   },
   {
+    name: "a role guard that censors the diagnostic its hook reads",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "    fail_msg: #{GUARD_DIAGNOSTIC}\n  when: not ansible_check_mode\n",
+                  "    fail_msg: #{GUARD_DIAGNOSTIC}\n  no_log: true\n  when: not ansible_check_mode\n")
+    },
+    expects: "the managed application user guard censors the diagnostic the hook reads"
+  },
+  {
+    name: "a role guard dropped from the verification tag",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/application_user.yml",
+                  "- name: Verify the managed application user contract\n  tags: [platform_verify_beszel]\n",
+                  "- name: Verify the managed application user contract\n")
+    },
+    expects: "the managed application user guard is not selected by the verification tag"
+  },
+  {
     name: "a renamed managed application user guard",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/tasks/application_user.yml",
@@ -1885,6 +1903,14 @@ STATIC_MUTATIONS = [
     # prefix, which the hook still carries, so the run passes and the row
     # catches the acceptance.
     rows: ["a role guard that refuses without saying why"] },
+  { label: "the guard censorship check",
+    from: 'refuse("the managed application user guard censors the diagnostic the hook reads") if',
+    to: "nil if",
+    rows: ["a role guard that censors the diagnostic its hook reads"] },
+  { label: "the guard verification tag check",
+    from: 'refuse("the managed application user guard is not selected by the verification tag") unless',
+    to: "nil unless",
+    rows: ["a role guard dropped from the verification tag"] },
   { label: "the drift hook refusal anchor check",
     from: %(refuse("Mac drift hook does not anchor on the managed application user guard's own refusal") unless),
     to: "nil unless",
