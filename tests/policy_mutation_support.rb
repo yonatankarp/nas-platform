@@ -616,6 +616,18 @@ POLICY_AUDIT = ARGV.include?("--audit")
 # its own call site rather than teaching this to merge declarations.
 POLICY_AUDIT_SITES = {}
 
+# The three figures tests/policy_manifest_test.rb used to state in prose: how
+# many mutations there are, how many declare a single script, and how many
+# declare the integration script. Every one of them is something this harness
+# already holds while it runs, so it counts them instead of letting a comment
+# claim them -- stated, they went stale twice, and the second time an
+# orchestrator quoted the wrong baseline widely enough that a correct
+# measurement read as a discrepancy (#435).
+#
+# Counted from `detected_by`, never from the resolved script list: `--audit`
+# widens that to all eight, and the census must read the same in both modes.
+POLICY_MUTATION_CENSUS = { mutations: 0, single_script: 0, integration: 0, sites: {} }
+
 def resolve_policy_scripts(names, label)
   raise "#{label}: detected_by must be a nonempty list of script names" if names.nil? || names.empty?
 
@@ -683,9 +695,11 @@ end
 # exists to find.
 def expect_failure(failures, label, message, detected_by:)
   scripts = resolve_policy_scripts(detected_by, label)
+  site = caller_locations(1, 1).first
+  record_mutation_census(detected_by, site)
   scripts = POLICY_SCRIPTS if POLICY_AUDIT
   results = run_policy_scripts(scripts) { |root| yield root }
-  record_audit_detection(label, message, detected_by, results, caller_locations(1, 1).first) if POLICY_AUDIT
+  record_audit_detection(label, message, detected_by, results, site) if POLICY_AUDIT
 
   output = results.map { |_script, script_output, _ok| script_output }.join
   failures << "#{label}: policy unexpectedly passed" if results.all? { |_s, _o, ok| ok }
@@ -700,6 +714,29 @@ def detecting_script_names(message, results)
     detected = !ok || output.include?(message) || output.match?(/\.rb:\d+:in [`']/)
     POLICY_SCRIPTS_BY_NAME.key(script) if detected
   end
+end
+
+def record_mutation_census(declared, site)
+  POLICY_MUTATION_CENSUS[:mutations] += 1
+  POLICY_MUTATION_CENSUS[:single_script] += 1 if declared.length == 1
+  POLICY_MUTATION_CENSUS[:integration] += 1 if declared.include?(:integration)
+  POLICY_MUTATION_CENSUS[:sites][site.lineno] = true
+end
+
+# Printed, not asserted: there is no correct value here to pin, only a current
+# one, and the run is the only thing that knows it. Mutations and call sites are
+# both reported because they differ -- a loop is one declaration covering
+# several mutations -- and conflating them is one of the two ways the stated
+# figures were got wrong by hand.
+#
+# Printed before report/1 so it survives a failing run: a run that fails is
+# exactly when someone is reading these numbers.
+def report_mutation_census
+  puts "policy mutation census: #{POLICY_MUTATION_CENSUS[:mutations]} expect_failure mutations " \
+       "at #{POLICY_MUTATION_CENSUS[:sites].length} call sites; " \
+       "#{POLICY_MUTATION_CENSUS[:single_script]} declare a single script, " \
+       "#{POLICY_MUTATION_CENSUS[:integration]} declare " \
+       "#{POLICY_SCRIPTS_BY_NAME.fetch(:integration)}"
 end
 
 def record_audit_detection(label, message, declared, results, site)

@@ -5,15 +5,21 @@
 #
 # Every row names the policy scripts that actually detect its planted defect, so
 # its sandbox runs one or two of them rather than all eight. Those sets were
-# derived by measurement, not by reading the scripts: 213 of the 262 mutations
-# here are detected by exactly one script, and only 16 by
-# tests/policy_integration_test.rb, the one that dominates a sandbox's cost
-# because it boots Ansible twice to render role defaults. Both figures count
-# mutations, not call sites, and they are smaller than the declared sets suggest:
-# a loop declaring three scripts can still be one script per iteration, which is
-# exactly what the validate-policy.sh row removal below is. `--audit` runs all
-# eight again and fails on any call site whose declared set has drifted from what
-# the scripts now do -- run it after adding a check to a policy script.
+# derived by measurement, not by reading the scripts, and how far the narrowing
+# actually gets is derived too: every run ends with a "policy mutation census"
+# line counting how many mutations there are, how many declare a single script,
+# and how many declare tests/policy_integration_test.rb, the one that dominates
+# a sandbox's cost because it boots Ansible twice to render role defaults. Read
+# that line. Those three figures stood here as prose and went stale twice; the
+# second time a wrong baseline was quoted widely enough that a correct
+# measurement read as a discrepancy and someone went looking for a cause (#435).
+#
+# The census reports mutations and call sites separately because they differ: a
+# loop is one declaration covering several mutations, and it can still be one
+# script per iteration, which is exactly what the validate-policy.sh row removal
+# below is. `--audit` runs all eight again and fails on any call site whose
+# declared set has drifted from what the scripts now do -- run it after adding a
+# check to a policy script.
 
 require_relative "policy_mutation_support"
 
@@ -2615,4 +2621,5 @@ expect_failure(failures, "fresh duplicate helper left unlisted",
 end
 
 audit_policy_detection(failures)
+report_mutation_census
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")
