@@ -52,8 +52,40 @@ for program in $programs; do
 done
 
 hook_log=$fixture/hook.log
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>"$PLATFORM_HOOK_LOG"' > \
-  "$fixture/tests/mac/run-beszel-contract.sh"
+: > "$fixture/vault.yml"
+: > "$fixture/vault-password"
+# The contract runner, stubbed. Every phase the hooks ask for is logged, so a
+# hook that stopped installing its fixture -- or stopped confirming the fixture
+# landed -- is caught by the log rather than by the hook's own exit status.
+#
+# PLATFORM_HOOK_DRIFT_LANDED=0 is the fixture that silently failed to apply:
+# drift-verify is the only mode that reads the installed drift back, so a runner
+# that refuses there is exactly what an unapplied fixture looks like to the hook.
+cat > "$fixture/tests/mac/run-beszel-contract.sh" <<'STUB'
+#!/bin/sh
+set -eu
+printf '%s\n' "$1" >>"$PLATFORM_HOOK_LOG"
+[ "$1" != drift-verify ] || [ "${PLATFORM_HOOK_DRIFT_LANDED:-1}" = 1 ] || {
+  printf '%s\n' 'managed universal token drift changed' >&2
+  exit 1
+}
+STUB
+# The vault-secret sweep, stubbed for the same reason: this test is about which
+# steps the hook takes over its capture, not about the scanner's own semantics,
+# which tests/assert_no_vault_secrets_test.rb owns.
+#
+# It reports the mask it inherited, which is the only non-vacuous way to observe
+# the hook's umask: mktemp creates the capture 0600 whatever the mask is, so the
+# capture's own mode proves nothing. What the mask does change is every file the
+# programs the hook invokes create -- tests/mac/verify.sh above all, which sets
+# none of its own -- and that is what this reads back.
+cat > "$fixture/tests/assert-no-vault-secrets.rb" <<'STUB'
+#!/bin/sh
+set -eu
+printf 'SECRET_SCAN %s\n' "$(umask)" >>"${PLATFORM_HOOK_LOG:?}"
+exit 0
+STUB
+chmod 0755 "$fixture/tests/assert-no-vault-secrets.rb"
 # The all-service verification, stubbed, one scenario per case below. Only the
 # drift hook reaches it -- the verify hook runs the contract twice and nothing
 # else -- so scenario-driving it cannot disturb the verify assertions.
@@ -65,9 +97,16 @@ printf '%s\n' '#!/bin/sh' 'printf "%s\n" "$1" >>"$PLATFORM_HOOK_LOG"' > \
 # its role actually carries. "Verify the exact managed universal token" carries
 # no_log: true and still prints its message on that line (#428), which is why the
 # guard-passed case is reachable at all.
+#
+# It logs its own event too, on the same stream the contract runner uses. Without
+# that the log cannot separate a read-back that ran before the verification from
+# one that ran after it, and "after" is wrong: the drift-verify mode asserts the
+# sentinel values are still installed, which only holds while nothing has
+# reconverged them.
 cat > "$fixture/tests/mac/verify.sh" <<'STUB'
 #!/bin/sh
 set -eu
+printf '%s\n' VERIFY_BESZEL >>"${PLATFORM_HOOK_LOG:?}"
 printf '%s\n' 'PLAY [nas] *********************************************************************'
 case ${PLATFORM_HOOK_SCENARIO:?} in
   beszel)
@@ -121,9 +160,17 @@ drift_report_root=$fixture/reports
 run_drift_hook() {
   : >"$hook_log"
   find "$drift_report_root" -mindepth 1 -maxdepth 1 -delete
-  PLATFORM_HOOK_LOG=$hook_log PLATFORM_REPORT_ROOT=$drift_report_root \
-    PLATFORM_HOOK_SCENARIO=$1 \
-    "$fixture/tests/mac/hooks/drift/10-beszel.sh"
+  # A permissive mask on the way in, so what the hook reports back is the mask it
+  # set rather than the one this file happens to run under.
+  (
+    umask 022
+    PLATFORM_HOOK_LOG=$hook_log PLATFORM_REPORT_ROOT=$drift_report_root \
+      PLATFORM_HOOK_SCENARIO=$1 \
+      PLATFORM_HOOK_DRIFT_LANDED=${2:-1} \
+      PLATFORM_MAC_VAULT_FILE=$fixture/vault.yml \
+      PLATFORM_MAC_VAULT_PASSWORD_FILE=$fixture/vault-password \
+      "$fixture/tests/mac/hooks/drift/10-beszel.sh"
+  )
 }
 
 run_drift_hook beszel || {
@@ -134,8 +181,49 @@ run_drift_hook beszel || {
   printf '%s\n' 'Beszel drift hook omitted supported live configuration drift' >&2
   exit 1
 }
+# Positions, not mere presence. The read-back has to sit between the fixture and
+# the verification -- it asserts the installed sentinels are still there, which a
+# reconverge undoes -- and the sweep has to sit after the verification, because
+# the capture it sweeps does not exist until then. Each of the three steps is
+# therefore checked at its own line rather than anywhere in the log.
+grep -qx drift-verify "$hook_log" || {
+  printf '%s\n' 'Beszel drift hook did not confirm its drift fixture landed' >&2
+  exit 1
+}
+[ "$(sed -n '2p' "$hook_log")" = drift-verify ] || {
+  printf '%s\n' 'Beszel drift hook confirmed its drift fixture outside the window that proves anything' >&2
+  exit 1
+}
+[ "$(sed -n '3p' "$hook_log")" = VERIFY_BESZEL ] || {
+  printf '%s\n' 'Beszel drift hook did not run the verification after reading its fixture back' >&2
+  exit 1
+}
+[ "$(sed -n '4p' "$hook_log" | cut -d' ' -f1)" = SECRET_SCAN ] || {
+  printf '%s\n' 'Beszel drift hook did not scan its capture for vault secrets' >&2
+  exit 1
+}
+# The mask the hook hands the programs it runs. run_drift_hook enters with 022
+# on purpose, so this is 0077 only because the hook set it: an inherited mask
+# would make the check pass without the hook doing anything, which is the vacuous
+# form of it.
+[ "$(sed -n 's/^SECRET_SCAN //p' "$hook_log")" = 0077 ] || {
+  printf 'Beszel drift hook ran its capture handling under mask %s, wanted 0077\n' \
+    "$(sed -n 's/^SECRET_SCAN //p' "$hook_log")" >&2
+  exit 1
+}
 find "$drift_report_root" -mindepth 1 -maxdepth 1 -print -quit | grep -q . && {
   printf '%s\n' 'Beszel drift hook retained its raw verification output' >&2
+  exit 1
+}
+
+# The fixture that never landed. Everything downstream is unchanged -- the
+# verification still refuses with Beszel's own diagnostic -- so without the
+# read-back this run is indistinguishable from the passing one above, which is
+# the whole reason the read-back is there.
+drift_status=0
+run_drift_hook beszel 0 >/dev/null 2>&1 || drift_status=$?
+[ "$drift_status" -ne 0 ] || {
+  printf '%s\n' 'Beszel drift hook accepted a drift fixture that never landed' >&2
   exit 1
 }
 
@@ -163,6 +251,28 @@ drift_status=0
 run_drift_hook accepted >/dev/null 2>&1 || drift_status=$?
 [ "$drift_status" -ne 0 ] || {
   printf '%s\n' 'Beszel drift hook accepted a verification run that passed on drift' >&2
+  exit 1
+}
+
+# The trace. A caller running the drift hook under -x echoes every command that
+# handles the capture -- the capture's own path, the vault paths handed to the
+# scanner, the sentence the grep pins -- to stderr, where tests/mac/run.sh
+# collects it. `set +x` near the top of the hook is what stops that, and only
+# running the hook that way can tell whether the line is still there.
+trace_log=$fixture/trace.log
+: >"$hook_log"
+find "$drift_report_root" -mindepth 1 -maxdepth 1 -delete
+(
+  umask 022
+  PLATFORM_HOOK_LOG=$hook_log PLATFORM_REPORT_ROOT=$drift_report_root \
+    PLATFORM_HOOK_SCENARIO=beszel \
+    PLATFORM_MAC_VAULT_FILE=$fixture/vault.yml \
+    PLATFORM_MAC_VAULT_PASSWORD_FILE=$fixture/vault-password \
+    sh -x "$fixture/tests/mac/hooks/drift/10-beszel.sh"
+) >/dev/null 2>"$trace_log"
+grep -qE 'run-beszel-contract\.sh|beszel-verify-drift|assert-no-vault-secrets' \
+  "$trace_log" && {
+  printf '%s\n' 'Beszel drift hook traced its capture handling to a caller running under -x' >&2
   exit 1
 }
 

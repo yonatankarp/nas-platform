@@ -1,8 +1,17 @@
 #!/bin/sh
 set -eu
+# The capture below is a verification run's whole output, and the guard this hook
+# anchors on deliberately carries no no_log -- that is why the diagnostic is
+# greppable at all, and equally why the capture holds that task's output. Trace
+# off so a caller running under -x does not echo the commands handling it, and
+# the mask tight so mktemp creates it private. Every sibling drift hook carries
+# both; this one carried neither.
+set +x
+umask 077
 
 mac_hook_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
+mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 expected_failure=$(mktemp "$PLATFORM_REPORT_ROOT/beszel-verify-drift.XXXXXX")
 trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 
@@ -14,10 +23,30 @@ trap 'unlink "$expected_failure" >/dev/null 2>&1 || true' EXIT HUP INT TERM
 ruby "$mac_script_dir/../beszel_telemetry_probe_test.rb"
 
 "$mac_script_dir/run-beszel-contract.sh" drift
+# The fixture, read back before anything is concluded from it. Installing drift
+# and asserting that verification refuses says nothing on its own: a fixture that
+# silently failed to apply looks exactly like one that applied and was correctly
+# refused, and the run reports a successful drift detection either way. That is
+# the same "did it actually look?" shape as #440, one layer down.
+# tests/contracts/beszel-runtime.rb's drift-verify mode reads all five installed
+# facets back and refuses if any of them is absent or repaired. It runs here,
+# between the fixture and the verification, because it asserts the sentinel
+# values themselves -- after a converge those are gone by design, so this is the
+# only point at which their presence means the fixture landed.
+"$mac_script_dir/run-beszel-contract.sh" drift-verify
 if "$mac_script_dir/verify.sh" >"$expected_failure" 2>&1; then
   printf '%s\n' 'verification-only run accepted Beszel drift' >&2
   exit 1
 fi
+# The capture, swept before it is read. This one is broader than the captures
+# 70-immich.sh and 80-paperless.sh hand the same scanner: those run a
+# single-service --tags playbook, while tests/mac/verify.sh verifies every
+# service in one, which is what #440's discriminator needs and is not narrowed
+# here. The scanner is fail-closed on every vault String of at least eight bytes
+# bar four allowlisted database identifiers, so a leak it reports from any role
+# is a true positive to fix in that role.
+"$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
+  "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
 # The failing guard's own fail_msg, and only Beszel's. tests/mac/verify.sh runs
 # every service's verification in one playbook, so until #440 -- when this hook
 # asserted nothing beyond that command exiting non-zero -- an unrelated service
