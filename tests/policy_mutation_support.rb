@@ -203,9 +203,12 @@ EXPECTED_FIXTURE_ROLES = {
 # whose caller the stub removed, and four expect_success rows fail on a mutation
 # they never made -- measured, not predicted:
 #
-#   FAIL assert from registered URI result: FAIL roles/ntfy/tasks/managed_users.yml:
-#     declares ntfy_managed_users_phase phases provision, subscription_sync, verify
-#     but its callers pass none
+#   FAIL assert from registered URI result: tests/policy_test.rb: FAIL
+#     roles/ntfy/tasks/managed_users.yml: declares ntfy_managed_users_phase phases
+#     provision, subscription_sync, verify but its callers pass none
+#
+# One line, wrapped here: since #443 an entry is `<label>: <script>: <diagnostic>`,
+# one per failing script, and this is the first of the four rows' entries.
 #
 # Enumerated from the role rather than stated, which is the opposite of the rule
 # BASE_FIXTURE_PATHS states below, and deliberately so. That rule exists so a policy
