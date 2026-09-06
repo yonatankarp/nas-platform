@@ -75,8 +75,9 @@ built from whatever happens to be on disk would stop proving that a check reads
 the file it claims to read; nothing will derive the entry for you. Recognise the
 omission by its symptom, which is not one check failing: every `expect_success`
 row goes red at once, and because `expect_success` reports only the first line of
-the eight scripts' combined output, the line it prints is usually another
-script's success message rather than the crash that names the missing path.
+the combined output of every policy script it ran, the line it prints is usually
+another script's success message rather than the crash that names the missing
+path.
 
 ### Integration suites
 
