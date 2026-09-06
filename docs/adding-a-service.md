@@ -389,6 +389,11 @@ file too, not in `tests/policy_manifest_test.rb` as this guide used to say.
 `tests/policy_ci_test.rb` asserts the runner runs every one of them, which is what
 stops a check from being written and then never run.
 
+`BASE_FIXTURE_PATHS` carries a commoner obligation than that one: every file a
+policy check *reads* belongs in it, not only the scripts themselves. CLAUDE.md
+states that rule beside the mutation audit, along with the symptom of omitting
+it, which is nothing like a single check failing.
+
 The service name and the role name may differ. Paperless is `paperless-ngx` as a
 service and `paperless_ngx` as a role, because directory names use hyphens and
 Ansible role names cannot. Keep them identical unless you have that problem.

@@ -66,6 +66,19 @@ its planted defect and runs only those; `--audit` runs all eight again and fails
 on any row whose declared set has drifted. It costs what the narrowing removed,
 so it is deliberately not in CI.
 
+Adding a file that a policy check *reads* carries an obligation of its own: list
+it in `BASE_FIXTURE_PATHS` in `tests/policy_mutation_support.rb`. The mutation
+harness copies a curated subset of the repository into each sandbox, so a file it
+does not copy is absent there, and the check that reads it crashes instead of
+running. That list is stated rather than derived on purpose, because a sandbox
+built from whatever happens to be on disk would stop proving that a check reads
+the file it claims to read; nothing will derive the entry for you. Recognise the
+omission by its symptom, which is not one check failing: every `expect_success`
+row goes red at once, and because `expect_success` reports only the first line of
+the combined output of every policy script it ran, the line it prints is usually
+another script's success message rather than the crash that names the missing
+path.
+
 ### Integration suites
 
 ```sh
