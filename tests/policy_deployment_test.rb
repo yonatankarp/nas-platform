@@ -23,6 +23,31 @@ include TestScaffold
 # deployment_bundle's target tasks deploys from `current` and must require one.
 RELEASE_OPTIONAL_ROLES = %w[deployment_bundle host_prep].freeze
 
+# The playbook-level target includes that legitimately pass the same `false`,
+# each recorded beside the reason it does. RELEASE_OPTIONAL_ROLES cannot name
+# these -- a playbook is not a role -- and a blanket "a playbook may pass false"
+# is the silence #398 is about: tests/deployment_lock_refusal_test.yml sat
+# outside playbook_paths entirely, so its `false` was neither checked nor
+# reasoned about.
+#
+# The last reason is measured rather than assumed. The lock harness builds a
+# deployment tree with no `current` symlink in it at all, and validate_target.py
+# reaches its require_current branch only through that symlink, so `true` passes
+# there by accident. That is precisely why the value is reasoned about here
+# instead of tuned until the harness goes green: what the parameter states is
+# whether the caller needs an active release, not what happens to run.
+RELEASE_OPTIONAL_PLAYBOOKS = {
+  "site.yml" =>
+    "validates containment in pre_tasks, before deployment_bundle installs the release this " \
+    "run activates; on a host that has deployed before, `current` still names the previous one",
+  "tests/mac_inventory_path_test.yml" =>
+    "asserts the Mac inventory's storage roots against a disposable tree it converges nothing " \
+    "into and installs no release in",
+  "tests/deployment_lock_refusal_test.yml" =>
+    "proves the concurrency refusal fires before containment validation, against a disposable " \
+    "deployment tree the harness never installs a release in"
+}.freeze
+
 failures = []
 
 harness = File.read(File.join(ROOT, "tests", "integration.sh"))
@@ -608,11 +633,17 @@ check(failures,
 # Enumerated rather than listed: a service role added without both parameters is
 # the mistake this is here to catch, and site.yml and the deployment bundle's own
 # body reach the same task file through include_tasks, which never validates.
+# Every playbook that reaches target.yml, not only the ones a converge runs: a
+# test playbook drives the real entry point with real parameters, so one left out
+# of this list is a call site nothing below judges. The fixture list in
+# policy_mutation_support.rb names each of these, so the sandbox enumerates the
+# same sites the working tree does rather than crashing on an absent file.
 target_include_sites = []
 playbook_paths = [
   File.join(ROOT, "site.yml"),
   File.join(ROOT, "verify.yml"),
-  File.join(ROOT, "tests", "mac_inventory_path_test.yml")
+  File.join(ROOT, "tests", "mac_inventory_path_test.yml"),
+  File.join(ROOT, "tests", "deployment_lock_refusal_test.yml")
 ]
 playbook_paths.each do |path|
   Array(YAML.safe_load_file(path, aliases: true)).each do |play|
@@ -682,7 +713,15 @@ target_include_sites.each do |relative_path, task|
   declared = (task["vars"] || {})["deployment_target_service"]
   declared_services_by_role[owning_role] << declared if declared.is_a?(String) && !declared.empty?
 end
-check_floor(failures, release_deploying_services.length, 14,
+# Sized against the mutation sandbox rather than the working tree, the way #386
+# requires: copy_fixture carries every implemented role's statically imported
+# stage files, so the sandbox derives the same fifteen roles the repository does
+# -- measured through copy_fixture, not inferred. Ten rather than fourteen for
+# the reason check_floor's own comment gives: a floor sitting one under today's
+# count fails the first legitimate service removal, which is not the collapse it
+# is here to catch. No mutation drives this below fifteen today; every role that
+# starts a stack out of the release does so from more than one task file.
+check_floor(failures, release_deploying_services.length, 10,
             "roles deploying a stack out of the installed release")
 release_deploying_services.each do |role, deployed_services|
   missing = deployed_services - declared_services_by_role[role]
@@ -691,24 +730,39 @@ release_deploying_services.each do |role, deployed_services|
         "task in it includes deployment_bundle tasks_from: target naming that service, so the " \
         "five paths it is about to touch are never contained")
 end
+exercised_playbook_exemptions = []
 target_include_sites.each do |relative_path, task|
   task_vars = task["vars"] || {}
   label = "#{relative_path}: \"#{task['name']}\""
-  check(failures, [true, false].include?(task_vars["deployment_target_require_current_release"]),
+  requires_current_release = task_vars["deployment_target_require_current_release"]
+  check(failures, [true, false].include?(requires_current_release),
         "#{label} must state whether target validation requires an active current release")
 
   # Stating a value is not the rule. CLAUDE.md requires a service role to pass
   # `true` -- it deploys out of the release the bundle installed, so a run that
   # reached it with no active `current` is converging a target that does not
-  # exist yet. Only two callers legitimately pass `false`, and both run before
+  # exist yet. Only two roles legitimately pass `false`, and both run before
   # there is a release to require: deployment_bundle's own body, which is what
-  # installs it, and host_prep, which prepares the directories it lands in. The
-  # playbook-level sites are the same case a play earlier: site.yml validates
-  # containment in pre_tasks, and the two test playbooks converge nothing.
+  # installs it, and host_prep, which prepares the directories it lands in.
   # Without this, a service role passing `false` was green.
+  #
+  # A playbook is judged against the recorded set instead. It is the same rule
+  # rather than an escape from it: a playbook may pass `false`, but only one
+  # RELEASE_OPTIONAL_PLAYBOOKS names and says why, so the next one added has to
+  # be argued for in the tree rather than inherit an exemption by being a
+  # playbook.
   caller_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
-  unless caller_role.nil? || RELEASE_OPTIONAL_ROLES.include?(caller_role)
-    check(failures, task_vars["deployment_target_require_current_release"] == true,
+  if caller_role.nil?
+    recorded_reason = RELEASE_OPTIONAL_PLAYBOOKS[relative_path]
+    reason_recorded = recorded_reason.is_a?(String) && !recorded_reason.strip.empty?
+    check(failures, requires_current_release == true || reason_recorded,
+          "#{label} is a playbook's target include and passes false with no recorded reason; " \
+          "either pass true or record #{relative_path} in RELEASE_OPTIONAL_PLAYBOOKS with the " \
+          "reason it runs before a release exists")
+    exercised_playbook_exemptions << relative_path if reason_recorded &&
+                                                      requires_current_release == false
+  elsif !RELEASE_OPTIONAL_ROLES.include?(caller_role)
+    check(failures, requires_current_release == true,
           "#{label} is a service role's target include and must require an active current " \
           "release; only #{RELEASE_OPTIONAL_ROLES.sort.join(' and ')} run before one exists")
   end
@@ -761,6 +815,14 @@ target_include_sites.each do |relative_path, task|
         "#{label} derives the #{declared_service} release directory and both its Compose files " \
         "but role #{owning_role} never deploys that project from them")
 end
+# The recorded exemptions are only worth reading while the sites they name still
+# take them, and a record nothing exercises is the same silence one step removed.
+# A floor rather than a per-key liveness requirement, deliberately: the mutation
+# harness removes site.yml's pre_tasks target include in a row of its own, and a
+# per-key rule would fail that row for a defect it did not plant. Two of the
+# three, so one stubbed playbook still passes and a collapse to none does not.
+check_floor(failures, exercised_playbook_exemptions.length, 2,
+            "recorded playbook release-containment exemptions still taken")
 
 
 # Activating a release is a command task, which check mode skips, so `current`
