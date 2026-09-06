@@ -85,7 +85,10 @@ def exercise_media_fail_closed(failures)
         requests.any? { |request| %w[PATCH DELETE].include?(request["method"]) ||
           (request["method"] == "POST" && !request["target"].match?(/login|AuthenticateByName/)) }
       failures << "#{label} authentication failure did not stop at preserved credential assertion" unless
-        (stdout + stderr).include?("Require preserved #{label} managed-user credentials")
+        HttpFixtureSupport.refused_with?(
+          stdout + stderr,
+          "Existing #{label} managed user does not accept its preserved vault password."
+        )
     end
   end
 end
@@ -207,7 +210,10 @@ def exercise_post_create_credential_failures(failures)
       stdout, stderr, status = run_playbook(includes_for(service, token), variables)
       failures << "#{label} mangled-created-password fixture unexpectedly succeeded" if status.success?
       failures << "#{label} mangled-created-password fixture omitted migration guidance assertion" unless
-        (stdout + stderr).include?("Require newly created #{label} managed-user credentials")
+        HttpFixtureSupport.refused_with?(
+          stdout + stderr,
+          "Newly created #{label} managed user does not accept its vault password."
+        )
       failures << "#{label} mangled-created-password fixture reached a privilege repair" if
         requests.any? { |request| request["method"] == "PATCH" || request["target"].end_with?("/Policy") }
     end
