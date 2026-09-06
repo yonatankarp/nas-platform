@@ -349,7 +349,7 @@ assert_output \
   'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
 assert_output \
-  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,bindery playbook=site.yml scenarios=true' \
+  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery playbook=site.yml scenarios=true' \
   --describe-suite bindery
 assert_output \
   'suite=kapowarr tags=host_prep,deployment_bundle,ntfy,kapowarr playbook=site.yml scenarios=true' \

@@ -667,8 +667,8 @@ EOF
       # selects this lane too.
       run_downloaders_verify_only
       run_bindery_verify_only
-      run_enabled_idempotence arr,downloaders,bindery
-      run_play --tags arr,downloaders,bindery --check --diff
+      run_enabled_idempotence arr,downloaders,audiobookshelf,bindery
+      run_play --tags arr,downloaders,audiobookshelf,bindery --check --diff
       printf 'BINDERY_PHASE2_RUNTIME_VERIFIED\n'
       cleanup_vault
       exit 0

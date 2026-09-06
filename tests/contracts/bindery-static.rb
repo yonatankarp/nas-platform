@@ -15,6 +15,7 @@ required = %w[
   roles/bindery/tasks/main.yml
   roles/bindery/tasks/pre_upgrade_backup.yml
   roles/bindery/tasks/reconcile_authors.yml
+  roles/bindery/tasks/reconcile_audiobookshelf.yml
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
@@ -181,6 +182,7 @@ if failures.empty?
     roles/bindery/tasks/main.yml
     roles/bindery/tasks/pre_upgrade_backup.yml
     roles/bindery/tasks/reconcile_authors.yml
+    roles/bindery/tasks/reconcile_audiobookshelf.yml
     roles/bindery/tasks/reconcile_usenet.yml
     roles/bindery/tasks/resolve_api_key.yml
   ].flat_map do |relative|
@@ -313,13 +315,118 @@ if failures.empty?
     failures << "Bindery must refuse an ambiguous #{resource} match" if duplicate_guard.nil?
   end
 
+  # The Audiobookshelf handoff. Unlike the Usenet pair it is gated on nothing:
+  # site.yml converges Audiobookshelf before Bindery on every host and the
+  # integration needs no transport, so a `when:` here would be a lane in which
+  # it silently does not exist.
+  abs_include = tasks.find do |task|
+    task["ansible.builtin.include_tasks"] == "reconcile_audiobookshelf.yml"
+  end
+  failures << "Bindery must reconcile its Audiobookshelf integration unconditionally" unless
+    abs_include && !abs_include.key?("when")
+
+  abs_tasks = flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml"),
+                        aliases: true)
+  )
+  abs_writes = abs_tasks.select do |task|
+    task.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/config" &&
+      task.dig("ansible.builtin.uri", "method") == "PUT"
+  end
+  failures << "Bindery must both declare and repair its Audiobookshelf integration" unless
+    abs_writes.length == 2
+
+  # Upstream keeps every field the request omits and substitutes its own default
+  # for an empty label, so the fields the reconciliation *sends* are exactly the
+  # fields it can hold to a declared value. A field compared but never sent
+  # never settles; a field sent but never compared is written on every converge.
+  # Both writes therefore carry the same five, and only the declare carries the
+  # credential.
+  declared_fields = %w[baseUrl label enabled libraryIds pathRemap].freeze
+  abs_declare = abs_writes.find do |task|
+    task.dig("ansible.builtin.uri", "body").is_a?(Hash) &&
+      task.dig("ansible.builtin.uri", "body").key?("apiKey")
+  end
+  abs_repair = (abs_writes - [abs_declare]).first
+  failures << "the Bindery Audiobookshelf declaration must send every declared field" unless
+    abs_declare &&
+    abs_declare.dig("ansible.builtin.uri", "body").keys.sort == (declared_fields + %w[apiKey]).sort
+  # The repair leaves the credential alone, which is what makes a drift in the
+  # address or the library id repairable without re-minting a key neither side
+  # can read back -- and it still has to send every other field, or the one it
+  # omits is a hand edit that outlives every converge.
+  failures << "the Bindery Audiobookshelf repair must not touch the credential" unless
+    abs_repair && !abs_repair.dig("ansible.builtin.uri", "body").key?("apiKey")
+  failures << "the Bindery Audiobookshelf repair must send every declared field" unless
+    abs_repair &&
+    (abs_repair.dig("ansible.builtin.uri", "body").keys - %w[apiKey]).sort == declared_fields.sort
+
+  # Read-then-decide, as everything else in this role is. The declaration is the
+  # replace path and runs only when a credential has to be minted; the repair
+  # runs only when it does not and something else drifted.
+  failures << "the Bindery Audiobookshelf declaration must be gated on a mint" unless
+    abs_declare && Array(abs_declare["when"]).join(" ").include?("bindery_abs_mint")
+  repair_conditions = Array(abs_repair&.fetch("when", nil)).join(" ")
+  failures << "the Bindery Audiobookshelf repair must be gated on drift alone" unless
+    abs_repair && repair_conditions.include?("bindery_abs_drifted") &&
+    repair_conditions.include?("not bindery_abs_mint")
+
+  # Neither end reveals what it holds, so "both report a credential" is not "the
+  # two are the same one". POST /abs/test sent with no key of its own falls back
+  # to the stored one, which is the only reading that separates a working pair
+  # from a restored database on either side.
+  abs_probe = abs_tasks.find do |task|
+    task.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/test"
+  end
+  failures << "Bindery must probe the credential it holds for Audiobookshelf" unless
+    abs_probe && abs_probe.dig("ansible.builtin.uri", "body") == {} &&
+    abs_probe["changed_when"] == false && abs_probe["check_mode"] == false
+  failures << "the Bindery Audiobookshelf mint must answer the credential probe" unless
+    abs_tasks.any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_abs_mint").to_s.include?("bindery_abs_probe")
+    end
+
+  # Audiobookshelf mints an API key that never expires only when the create
+  # carries no expiresIn, and one that authenticates anything only when it
+  # carries isActive explicitly: the route stores `!!req.body.isActive`, so an
+  # omitted flag is a key that is refused everywhere and says nothing about why.
+  abs_mint = abs_tasks.find do |task|
+    task.dig("ansible.builtin.uri", "url") == "{{ bindery_audiobookshelf_api }}/api/api-keys" &&
+      task.dig("ansible.builtin.uri", "method") == "POST"
+  end
+  mint_body = abs_mint&.dig("ansible.builtin.uri", "body")
+  failures << "the Audiobookshelf key Bindery mints must be active and never expire" unless
+    mint_body.is_a?(Hash) && mint_body["isActive"] == true && !mint_body.key?("expiresIn")
+
+  # The identifier is a UUID Audiobookshelf mints at library-creation time, so
+  # the name has to select exactly one library or the handoff is configured
+  # against nothing, and a surplus key of the platform's own name cannot be told
+  # from the live one.
+  failures << "Bindery must refuse an ambiguous Audiobookshelf library" unless
+    abs_tasks.any? do |task|
+      task.key?("ansible.builtin.assert") &&
+        task.to_s.include?("bindery_audiobookshelf_library_matches | length == 1")
+    end
+  failures << "Bindery must refuse an ambiguous Audiobookshelf API key" unless
+    abs_tasks.any? do |task|
+      task.key?("ansible.builtin.assert") &&
+        task.to_s.include?("bindery_audiobookshelf_key_matches | length <= 1")
+    end
+
   # The login limiter records five failures per fifteen minutes per IP and then
   # answers 429 to the correct password too, so no probe anywhere in this role
-  # may submit a password it expects to be refused.
+  # may submit a password it expects to be refused. Two passwords are authored
+  # rather than one since the role signs in to Audiobookshelf as well, and the
+  # property is the same for both: every login this role spends must be one it
+  # expects to succeed.
+  authored_passwords = [
+    "{{ vault_bindery_admin_password }}",
+    "{{ vault_audiobookshelf_admin_password }}"
+  ].freeze
   wrong_password_probe = role_tasks.find do |task|
     body = task.dig("ansible.builtin.uri", "body")
     body.is_a?(Hash) && body.key?("password") &&
-      body["password"].to_s != "{{ vault_bindery_admin_password }}"
+      !authored_passwords.include?(body["password"].to_s)
   end
   failures << "no Bindery request may submit a password the platform expects to be wrong" if
     wrong_password_probe
@@ -331,10 +438,13 @@ if failures.empty?
   credential_tasks = role_tasks
                      .reject { |task| task.key?("ansible.builtin.assert") }
                      .select do |task|
-    task.to_s.match?(/vault_bindery_(?:api_key|admin_username|admin_password)|bindery_api_key/)
+    task.to_s.match?(
+      /vault_bindery_(?:api_key|admin_username|admin_password)|bindery_api_key|
+       vault_audiobookshelf_admin_(?:username|password)|bindery_audiobookshelf_token/x
+    )
   end
   failures << "every Bindery request naming a credential must use no_log" unless
-    credential_tasks.length >= 10 && credential_tasks.all? { |task| task["no_log"] == true }
+    credential_tasks.length >= 16 && credential_tasks.all? { |task| task["no_log"] == true }
 
   # The shape guard compares the authored values themselves, so it is redacted.
   # The recoverability guard only measures the resolved key's length, and its
@@ -359,7 +469,8 @@ if failures.empty?
 
   verification = tasks.select { |task| Array(task["tags"]).include?("platform_verify_bindery") }
   verification_urls = verification.filter_map { |task| task.dig("ansible.builtin.uri", "url") }
-  %w[/health /auth/status /rootfolder /auth/login /system/storage].each do |suffix|
+  %w[/health /auth/status /rootfolder /auth/login /system/storage
+     /abs/config /abs/test].each do |suffix|
     failures << "Bindery verification must read #{suffix}" unless
       verification_urls.any? { |url| url.to_s.include?(suffix) }
   end
@@ -419,7 +530,18 @@ if failures.empty?
     # plant that drops one of them would still satisfy the other.
     "the synced indexers" => ["bindery_verify_indexers", "selectattr('enabled')"],
     "the author destinations" => ["bindery_verify_authors", "rootFolderId"],
-    "the author quality profiles" => ["bindery_verify_authors", "qualityProfileId"]
+    "the author quality profiles" => ["bindery_verify_authors", "qualityProfileId"],
+    # The post-import scan logs its own failures at WARN and swallows them, so
+    # the import still succeeds and nothing else in the platform reads
+    # differently. These three rows are the only place a broken handoff is
+    # visible: the switch, the credential's presence, and -- because a stored
+    # credential that no longer authenticates reads exactly like a working one
+    # -- whether it still authenticates at all.
+    "the enabled Audiobookshelf handoff" => ["bindery_verify_abs_config", "enabled"],
+    "the configured Audiobookshelf credential" =>
+      ["bindery_verify_abs_config", "apiKeyConfigured"],
+    "the Audiobookshelf credential that still authenticates" =>
+      ["bindery_verify_abs_probe.status", "200"]
   }.each do |label, (needle, value)|
     failures << "Bindery verification must assert #{label}" unless
       # `to_s` because a condition can be parsed as a boolean rather than a

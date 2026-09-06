@@ -72,6 +72,7 @@ FIXTURE_FILES = %w[
   roles/bindery/tasks/main.yml
   roles/bindery/tasks/pre_upgrade_backup.yml
   roles/bindery/tasks/reconcile_authors.yml
+  roles/bindery/tasks/reconcile_audiobookshelf.yml
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
@@ -552,6 +553,181 @@ STATIC_ROWS = [
       end
     },
     expects: "the Bindery downloadclient row must be repaired rather than duplicated"
+  },
+  # The Audiobookshelf handoff. Every row here breaks something that leaves the
+  # converge green, the container healthy and the import successful: the scan
+  # that never fires is logged at WARN inside Bindery and read by nothing.
+  {
+    name: "a declared Audiobookshelf reconciliation that is gone",
+    break: ->(root) { FileUtils.rm(File.join(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml")) },
+    expects: "missing roles/bindery/tasks/reconcile_audiobookshelf.yml"
+  },
+  {
+    name: "an Audiobookshelf integration gated behind a flag",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate["ansible.builtin.include_tasks"] == "reconcile_audiobookshelf.yml"
+        end
+        task["when"] = ["media_usenet_enabled | bool"]
+      end
+    },
+    expects: "Bindery must reconcile its Audiobookshelf integration unconditionally"
+  },
+  {
+    # A repair that resends the credential would have to re-mint one on every
+    # converge, because neither side can read back what it is holding.
+    name: "an Audiobookshelf repair that rewrites the credential",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/config" &&
+            candidate.dig("ansible.builtin.uri", "method") == "PUT" &&
+            !candidate.dig("ansible.builtin.uri", "body").key?("apiKey")
+        end
+        task["ansible.builtin.uri"]["body"]["apiKey"] = ""
+      end
+    },
+    expects: "the Bindery Audiobookshelf repair must not touch the credential"
+  },
+  {
+    # Upstream keeps every field the request omits, so a remap set by hand in
+    # the web interface survives every converge the repository is supposed to
+    # make authoritative.
+    name: "an Audiobookshelf repair that leaves the path remap alone",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/config" &&
+            candidate.dig("ansible.builtin.uri", "method") == "PUT" &&
+            !candidate.dig("ansible.builtin.uri", "body").key?("apiKey")
+        end
+        task["ansible.builtin.uri"]["body"].delete("pathRemap")
+      end
+    },
+    expects: "the Bindery Audiobookshelf repair must send every declared field"
+  },
+  {
+    name: "an Audiobookshelf declaration written on every converge",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/config" &&
+            candidate.dig("ansible.builtin.uri", "method") == "PUT" &&
+            candidate.dig("ansible.builtin.uri", "body").key?("apiKey")
+        end
+        task["when"] = ["not ansible_check_mode"]
+      end
+    },
+    expects: "the Bindery Audiobookshelf declaration must be gated on a mint"
+  },
+  {
+    name: "an Audiobookshelf repair that runs beside the declaration",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/config" &&
+            candidate.dig("ansible.builtin.uri", "method") == "PUT" &&
+            !candidate.dig("ansible.builtin.uri", "body").key?("apiKey")
+        end
+        task["when"] = ["not ansible_check_mode", "bindery_abs_drifted | bool"]
+      end
+    },
+    expects: "the Bindery Audiobookshelf repair must be gated on drift alone"
+  },
+  {
+    # `create` stores `!!req.body.isActive`, so an omitted flag mints a key that
+    # authenticates nothing and reports no error at creation time.
+    name: "an Audiobookshelf key minted inactive",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") ==
+            "{{ bindery_audiobookshelf_api }}/api/api-keys" &&
+            candidate.dig("ansible.builtin.uri", "method") == "POST"
+        end
+        task["ansible.builtin.uri"]["body"].delete("isActive")
+      end
+    },
+    expects: "the Audiobookshelf key Bindery mints must be active and never expire"
+  },
+  {
+    # An expiry deactivates the key on first use past it, and the handoff then
+    # fails at WARN forever with nothing else changed.
+    name: "an Audiobookshelf key minted with an expiry",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") ==
+            "{{ bindery_audiobookshelf_api }}/api/api-keys" &&
+            candidate.dig("ansible.builtin.uri", "method") == "POST"
+        end
+        task["ansible.builtin.uri"]["body"]["expiresIn"] = 3600
+      end
+    },
+    expects: "the Audiobookshelf key Bindery mints must be active and never expire"
+  },
+  {
+    # The two presence reads cannot tell a working pair from a restored database
+    # on either side: neither end reveals what it holds.
+    name: "a mint decision that trusts the two presence reads alone",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
+                  "or bindery_abs_probe.status | default(0) | int != 200",
+                  "or false")
+    },
+    expects: "the Bindery Audiobookshelf mint must answer the credential probe"
+  },
+  {
+    name: "a credential probe that sends a key of its own",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml") do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/test"
+        end
+        task["ansible.builtin.uri"]["body"] = { "apiKey" => "{{ bindery_api_key }}" }
+      end
+    },
+    expects: "Bindery must probe the credential it holds for Audiobookshelf"
+  },
+  {
+    name: "an Audiobookshelf library resolved from whatever the name matched",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
+                  "bindery_audiobookshelf_library_matches | length == 1",
+                  "bindery_audiobookshelf_library_matches is defined")
+    },
+    expects: "Bindery must refuse an ambiguous Audiobookshelf library"
+  },
+  {
+    name: "an ambiguous Audiobookshelf API key accepted rather than refused",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/reconcile_audiobookshelf.yml",
+                  "bindery_audiobookshelf_key_matches | length <= 1",
+                  "bindery_audiobookshelf_key_matches is defined")
+    },
+    expects: "Bindery must refuse an ambiguous Audiobookshelf API key"
+  },
+  {
+    name: "a verification that never asks whether the handoff credential works",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "url") == "{{ bindery_api }}/abs/test"
+        end
+        document.delete(task)
+      end
+    },
+    expects: "Bindery verification must read /abs/test"
+  },
+  {
+    name: "a verification that reads the handoff credential and asserts nothing",
+    break: lambda { |root|
+      mutate_text(root, "roles/bindery/tasks/main.yml",
+                  "      - bindery_verify_abs_probe.status | default(0) | int == 200\n",
+                  "")
+    },
+    expects: "Bindery verification must assert the Audiobookshelf credential that still authenticates"
   },
   {
     name: "an ambiguous Prowlarr match accepted rather than refused",
@@ -1594,14 +1770,86 @@ PROGRAM_MUTATIONS = [
     label: "the wrong-password refusal",
     program: :static,
     from: 'body.is_a?(Hash) && body.key?("password") &&
-      body["password"].to_s != "{{ vault_bindery_admin_password }}"',
+      !authored_passwords.include?(body["password"].to_s)',
     to: "false",
     rows: ["a probe submitting a password the platform expects to be refused"]
   },
   {
+    label: "the unconditional Audiobookshelf reconciliation check",
+    program: :static,
+    from: 'abs_include && !abs_include.key?("when")',
+    to: "true",
+    rows: ["an Audiobookshelf integration gated behind a flag"]
+  },
+  {
+    label: "the untouched Audiobookshelf credential check",
+    program: :static,
+    from: 'abs_repair && !abs_repair.dig("ansible.builtin.uri", "body").key?("apiKey")',
+    to: "true",
+    rows: ["an Audiobookshelf repair that rewrites the credential"]
+  },
+  {
+    label: "the complete Audiobookshelf repair check",
+    program: :static,
+    from: '(abs_repair.dig("ansible.builtin.uri", "body").keys - %w[apiKey]).sort == declared_fields.sort',
+    to: "true",
+    rows: ["an Audiobookshelf repair that leaves the path remap alone"]
+  },
+  {
+    label: "the Audiobookshelf write gating checks",
+    program: :static,
+    from: 'abs_declare && Array(abs_declare["when"]).join(" ").include?("bindery_abs_mint")',
+    to: "true",
+    rows: ["an Audiobookshelf declaration written on every converge"]
+  },
+  {
+    label: "the Audiobookshelf repair gating check",
+    program: :static,
+    from: 'abs_repair && repair_conditions.include?("bindery_abs_drifted") &&
+    repair_conditions.include?("not bindery_abs_mint")',
+    to: "true",
+    rows: ["an Audiobookshelf repair that runs beside the declaration"]
+  },
+  {
+    label: "the non-expiring active key check",
+    program: :static,
+    from: 'mint_body.is_a?(Hash) && mint_body["isActive"] == true && !mint_body.key?("expiresIn")',
+    to: "true",
+    rows: ["an Audiobookshelf key minted inactive", "an Audiobookshelf key minted with an expiry"]
+  },
+  {
+    label: "the stored-credential probe check",
+    program: :static,
+    from: 'abs_probe && abs_probe.dig("ansible.builtin.uri", "body") == {} &&
+    abs_probe["changed_when"] == false && abs_probe["check_mode"] == false',
+    to: "true",
+    rows: ["a credential probe that sends a key of its own"]
+  },
+  {
+    label: "the probe-answered mint decision check",
+    program: :static,
+    from: 'task.dig("ansible.builtin.set_fact", "bindery_abs_mint").to_s.include?("bindery_abs_probe")',
+    to: "true",
+    rows: ["a mint decision that trusts the two presence reads alone"]
+  },
+  {
+    label: "the single Audiobookshelf library check",
+    program: :static,
+    from: 'task.to_s.include?("bindery_audiobookshelf_library_matches | length == 1")',
+    to: "true",
+    rows: ["an Audiobookshelf library resolved from whatever the name matched"]
+  },
+  {
+    label: "the unambiguous Audiobookshelf key check",
+    program: :static,
+    from: 'task.to_s.include?("bindery_audiobookshelf_key_matches | length <= 1")',
+    to: "true",
+    rows: ["an ambiguous Audiobookshelf API key accepted rather than refused"]
+  },
+  {
     label: "the credential redaction check",
     program: :static,
-    from: "credential_tasks.length >= 10 && credential_tasks.all? { |task| task[\"no_log\"] == true }",
+    from: "credential_tasks.length >= 16 && credential_tasks.all? { |task| task[\"no_log\"] == true }",
     to: "true",
     rows: ["a credential-bearing request rendered in full"]
   },

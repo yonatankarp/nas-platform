@@ -1,0 +1,366 @@
+---
+# Bindery's Audiobookshelf integration: after an audiobook import its scanner
+# POSTs /api/libraries/{id}/scan to Audiobookshelf so the library picks the new
+# file up immediately. Upstream reads the configuration out of settings on every
+# call, so it takes effect with no restart, and it fires only when abs.enabled
+# is true *and* abs.library_ids is non-empty. Both halves are declared here.
+#
+# The handoff swallows its own failures: a scan that 401s is logged at WARN and
+# the import still succeeds. So a wrong credential here produces a green run, a
+# healthy container and a scan that never happens, which is why the credential
+# is probed rather than assumed below and asserted again in verification.
+#
+# Two deviations from the platform's credential rule are deliberate and are the
+# reason this file exists rather than another row in bindery_pinned_settings.
+#
+# First, the credential cannot be vault-authored. Audiobookshelf signs an API
+# key with a per-install secret that does not exist until its own first boot,
+# and returns the plaintext only from the create call -- GET /api/api-keys
+# afterwards is metadata with no key in it. Bindery is the same on its side: it
+# reports apiKeyConfigured and never the value. So the platform mints the key
+# and pushes it, which is a read-back of a running service, and it converges in
+# one pass only because both ends can be *asked whether they hold one*.
+#
+# Second, the obvious credential is the wrong one. Audiobookshelf's /login
+# hands back user.accessToken, which is what roles/audiobookshelf uses within
+# its own run; that token is a JWT with a one-hour expiry. Persisting it into
+# Bindery's database would work for an hour and then break silently, forever.
+# An API key created with no expiresIn carries expiresAt null and no exp claim,
+# so it is the only one of the three candidates that survives. isActive is
+# passed explicitly because the create route stores `!!req.body.isActive` and an
+# omitted flag mints a key that authenticates nothing.
+#
+# The generic settings API is not an option either: PUT /setting/abs.api_key
+# answers 403 and the GET answers 404, because upstream keeps the ABS rows
+# behind their own route, which writes all six of them in one transaction.
+
+# Audiobookshelf is addressed twice, at two different addresses, and they are
+# not interchangeable. Ansible runs on the host, so it reaches the application
+# through the published port; Bindery reaches it from inside the shared
+# media-control network, where the container listens on 80 and the published
+# port does not exist. A container-side URL naming 13378 is the configuration
+# this declaration replaces.
+- name: Read the Audiobookshelf initialization state for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/status"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: bindery_audiobookshelf_status
+  changed_when: false
+  check_mode: false
+
+- name: Resolve the Audiobookshelf initialization state for Bindery
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_initialized: "{{ bindery_audiobookshelf_status.json.isInit | bool }}"
+    bindery_audiobookshelf_readable: >-
+      {{ not ansible_check_mode or bindery_audiobookshelf_status.json.isInit | bool }}
+
+- name: Report the unreachable Audiobookshelf integration state
+  ansible.builtin.debug:
+    msg: >-
+      Audiobookshelf holds no administrator yet, so Bindery's integration cannot
+      be read under check mode. A live run initializes Audiobookshelf first and
+      then declares the integration against it.
+  when:
+    - ansible_check_mode
+    - not bindery_audiobookshelf_initialized | bool
+
+# The same vault-authored administrator roles/audiobookshelf declares. Bindery
+# signs in for itself rather than inheriting that role's bearer: a fact left
+# behind by an earlier role is neither an argument nor a type signature, and the
+# integration would then be undeclarable from this role alone.
+# Redacted: the request is the vault-authored Audiobookshelf identity and the
+# response carries a bearer token.
+- name: Authenticate the Audiobookshelf administrator for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/login"
+    method: POST
+    body_format: json
+    body:
+      username: "{{ vault_audiobookshelf_admin_username }}"
+      password: "{{ vault_audiobookshelf_admin_password }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_audiobookshelf_login
+  when: bindery_audiobookshelf_readable | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: both facts are read out of the authentication response.
+- name: Resolve the Audiobookshelf reconciliation identity for Bindery
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_token: "{{ bindery_audiobookshelf_login.json.user.accessToken }}"
+    bindery_audiobookshelf_user_id: "{{ bindery_audiobookshelf_login.json.user.id }}"
+  when: bindery_audiobookshelf_readable | bool
+  no_log: true
+
+# The library identifier is a UUID Audiobookshelf mints at library-creation
+# time, so it is resolved by name on every converge and never pinned. Exactly
+# one match is required in both directions: no match means the scan target does
+# not exist and the handoff would be configured against nothing, and more than
+# one cannot be told apart by the only attribute this platform declares.
+# Redacted: the request carries the Audiobookshelf bearer.
+- name: Read the Audiobookshelf libraries for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/api/libraries"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_audiobookshelf_libraries
+  when: bindery_audiobookshelf_readable | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Audiobookshelf library Bindery hands off to
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_library_matches: >-
+      {{ bindery_audiobookshelf_libraries.json.libraries | default([])
+         | selectattr('name', 'equalto', bindery_audiobookshelf_library_name)
+         | selectattr('mediaType', 'equalto', 'book') | list }}
+  when: bindery_audiobookshelf_readable | bool
+
+- name: Require exactly one Audiobookshelf library for Bindery
+  ansible.builtin.assert:
+    that:
+      - bindery_audiobookshelf_library_matches | length == 1
+      - bindery_audiobookshelf_library_matches
+        | map(attribute='id') | map('string')
+        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | list | length == 0
+    fail_msg: >-
+      Audiobookshelf does not hold exactly one book library named
+      {{ bindery_audiobookshelf_library_name }} with a safe API identifier;
+      it holds {{ bindery_audiobookshelf_library_matches | length }}. Bindery
+      triggers its post-import scan by that identifier, so the name must select
+      one library and no more.
+  when: bindery_audiobookshelf_readable | bool
+
+- name: Resolve the Audiobookshelf library identifiers for Bindery
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_library_ids: >-
+      {{ [bindery_audiobookshelf_library_matches | map(attribute='id') | first]
+         if bindery_audiobookshelf_readable | bool else [] }}
+
+# Metadata only -- Audiobookshelf returns no key material here, which is exactly
+# why a stale row cannot be reused and has to be replaced.
+# Redacted: the request carries the Audiobookshelf bearer.
+- name: Read the Audiobookshelf API keys for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/api/api-keys"
+    method: GET
+    headers:
+      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_audiobookshelf_keys
+  when: bindery_audiobookshelf_readable | bool
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Audiobookshelf API key Bindery holds
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_key_matches: >-
+      {{ bindery_audiobookshelf_keys.json.apiKeys | default([])
+         | selectattr('name', 'equalto', bindery_audiobookshelf_api_key_name) | list
+         if bindery_audiobookshelf_readable | bool else [] }}
+
+- name: Refuse an ambiguous Audiobookshelf API key for Bindery
+  ansible.builtin.assert:
+    that:
+      - bindery_audiobookshelf_key_matches | length <= 1
+    fail_msg: >-
+      Audiobookshelf holds more than one API key named
+      {{ bindery_audiobookshelf_api_key_name }}. A duplicate cannot be
+      reconciled by name and neither copy can be read back; remove the surplus
+      keys in the application before running again.
+
+- name: Resolve the Audiobookshelf API key desired state for Bindery
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_key_current: >-
+      {{ bindery_audiobookshelf_key_matches | first | default({}, true) }}
+
+# A row that exists but is inactive or carries an expiry is not the credential
+# this platform declares, and neither state is repairable in place: the name and
+# the expiry are inside the signed token, and the value cannot be re-read to
+# check what Bindery is holding. Both read as absent, which sends the run down
+# the replace path below.
+- name: Resolve whether Audiobookshelf holds Bindery's declared API key
+  ansible.builtin.set_fact:
+    bindery_audiobookshelf_key_usable: >-
+      {{ bindery_audiobookshelf_key_current | length > 0
+         and bindery_audiobookshelf_key_current.isActive | default(false) | bool
+         and bindery_audiobookshelf_key_current.expiresAt | default(none) is none }}
+
+# Redacted: the request carries the application API key.
+- name: Read the declared Bindery Audiobookshelf configuration
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/abs/config"
+    method: GET
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: bindery_abs_config
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The one reading that separates "both ends report a credential" from "the two
+# credentials are the same one". Neither side reveals its value, so a restored
+# database on either end leaves both reads saying present while the handoff
+# 401s in silence. This probe sends no key: upstream falls back to the *stored*
+# one, so a 200 proves what Bindery actually holds still authenticates. It needs
+# a saved base URL to run at all, which is why it is gated on one.
+# Redacted: the request carries the application API key.
+- name: Probe the credential Bindery holds for Audiobookshelf
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/abs/test"
+    method: POST
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body: {}
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: bindery_abs_probe
+  when:
+    - bindery_abs_config.json.baseUrl | default('') | length > 0
+    - bindery_abs_config.json.apiKeyConfigured | default(false) | bool
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Resolve the Bindery Audiobookshelf reconciliation actions
+  ansible.builtin.set_fact:
+    # Minting is the replace path: either end missing its half, or a pair that
+    # no longer authenticates. It is deliberately not conditional on the probe
+    # having run -- an unprobed configuration is one with no base URL or no
+    # stored key, which is the missing case already.
+    bindery_abs_mint: >-
+      {{ not bindery_audiobookshelf_key_usable | bool
+         or not bindery_abs_config.json.apiKeyConfigured | default(false) | bool
+         or bindery_abs_probe.status | default(0) | int != 200 }}
+    # Every field the write below sends, and only those. A field compared but
+    # not sent never settles; a field sent but not compared is written on every
+    # converge. label and pathRemap are both here for that reason: upstream
+    # substitutes "Audiobookshelf" for an empty label, and it keeps any field
+    # the request omits, so a path remap set by hand would otherwise outlive
+    # every run this repository exists to make authoritative.
+    bindery_abs_drifted: >-
+      {{ bindery_abs_config.json.baseUrl | default('') != bindery_audiobookshelf_url
+         or bindery_abs_config.json.label | default('') != bindery_audiobookshelf_label
+         or not bindery_abs_config.json.enabled | default(false) | bool
+         or bindery_abs_config.json.libraryIds | default([]) | list
+            != bindery_audiobookshelf_library_ids | list
+         or bindery_abs_config.json.pathRemap | default('') != bindery_audiobookshelf_path_remap }}
+
+- name: Report the planned Bindery Audiobookshelf reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      Bindery does not hold the declared Audiobookshelf integration at
+      {{ bindery_audiobookshelf_url }}; a live run would
+      {{ 'mint an Audiobookshelf API key for it and write the whole integration'
+         if bindery_abs_mint | bool else 'repair it without touching its credential' }}.
+  when:
+    - ansible_check_mode
+    - bindery_abs_mint | bool or bindery_abs_drifted | bool
+
+# A key named for this platform that neither end can still use is dead weight,
+# and leaving it would make the create below the second row of that name, which
+# the ambiguity refusal above then fails on the next converge. Keys under any
+# other name are left alone: they belong to whoever made them.
+# Redacted: the request carries the Audiobookshelf bearer.
+- name: Retire the superseded Audiobookshelf API key for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/api/api-keys/{{ item.id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
+    status_code: [200]
+  loop: "{{ bindery_audiobookshelf_key_matches }}"
+  loop_control:
+    label: bindery-audiobookshelf-api-key
+  when:
+    - not ansible_check_mode
+    - bindery_abs_mint | bool
+  changed_when: true
+  no_log: true
+
+# No expiresIn, so expiresAt is null and the token carries no exp claim. The
+# plaintext exists only in this response and is written straight into Bindery
+# below; nothing reads it back afterwards, on either side.
+# Redacted: the response is the Audiobookshelf API key in clear.
+- name: Mint the Audiobookshelf API key for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/api/api-keys"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
+    body_format: json
+    body:
+      name: "{{ bindery_audiobookshelf_api_key_name }}"
+      userId: "{{ bindery_audiobookshelf_user_id }}"
+      isActive: true
+    status_code: [200]
+    return_content: true
+  register: bindery_audiobookshelf_minted_key
+  when:
+    - not ansible_check_mode
+    - bindery_abs_mint | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries both the application API key and the minted
+# Audiobookshelf key.
+- name: Declare the Bindery Audiobookshelf integration
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/abs/config"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      baseUrl: "{{ bindery_audiobookshelf_url }}"
+      label: "{{ bindery_audiobookshelf_label }}"
+      enabled: true
+      libraryIds: "{{ bindery_audiobookshelf_library_ids }}"
+      pathRemap: "{{ bindery_audiobookshelf_path_remap }}"
+      apiKey: "{{ bindery_audiobookshelf_minted_key.json.apiKey.apiKey }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - bindery_abs_mint | bool
+  changed_when: true
+  no_log: true
+
+# The repair omits apiKey entirely rather than sending a blank one. Upstream
+# keeps the stored value for an absent or empty field, so either would preserve
+# the credential -- omitting it says so in the request instead of relying on it.
+# Redacted: the request carries the application API key.
+- name: Repair the Bindery Audiobookshelf integration
+  ansible.builtin.uri:
+    url: "{{ bindery_api }}/abs/config"
+    method: PUT
+    headers:
+      X-Api-Key: "{{ bindery_api_key }}"
+    body_format: json
+    body:
+      baseUrl: "{{ bindery_audiobookshelf_url }}"
+      label: "{{ bindery_audiobookshelf_label }}"
+      enabled: true
+      libraryIds: "{{ bindery_audiobookshelf_library_ids }}"
+      pathRemap: "{{ bindery_audiobookshelf_path_remap }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - not bindery_abs_mint | bool
+    - bindery_abs_drifted | bool
+  changed_when: true
+  no_log: true
