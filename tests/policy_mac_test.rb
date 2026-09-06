@@ -358,12 +358,22 @@ check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
 # the repository named them, so the group could have dropped any of them and
 # still reported a full pass. Its hook runs no service and pins the exact roster
 # instead, which fails in both directions: a hook deleted and a hook added.
+#
+# Pre-converge is the sixth group and the smallest. It is not a coverage group in
+# drift's sense: a service belongs there only when its converge reads fixture
+# state off disk, which is Audiobookshelf and nothing else. A one-hook group is
+# already safe against deletion, because mac_hook_count refuses an empty group,
+# so what its roster adds is the other direction -- a hook added outside the
+# roster runs before every Mac converge -- and the fourteen named exemptions,
+# which are what asks a newly promoted service whether its converge needs a
+# fixture placed first.
 {
   "fixtures-seed" => "00-services.sh",
   "fixtures-persistence" => "00-services.sh",
   "fixtures-recreate" => "00-services.sh",
   "verify" => "30-services.sh",
-  "drift" => "00-coverage.sh"
+  "drift" => "00-coverage.sh",
+  "pre-converge" => "00-coverage.sh"
 }.each do |group, hook|
   hook_path = File.join(ROOT, "tests", "mac", "hooks", group, hook)
   hook_source = File.file?(hook_path) ? File.read(hook_path) : ""

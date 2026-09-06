@@ -136,6 +136,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/hooks/fixtures-recreate/00-services.sh
   tests/mac/hooks/verify/30-services.sh
   tests/mac/hooks/drift/00-coverage.sh
+  tests/mac/hooks/pre-converge/00-coverage.sh
   tests/mac/hooks/drift/15-media-acquisition-foundation.sh
   tests/mac/hooks/verify/15-media-acquisition-foundation.sh
   tests/mac/manual-review.md

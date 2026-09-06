@@ -26,6 +26,14 @@
 # see. Its accounting hook runs no contract and is credited from its siblings, so
 # what has to fail there is a hook deleted and a hook added outside the roster.
 #
+# The pre-converge group is the same accounting on a group of one. Its
+# membership rule is narrow — a service belongs there only when its converge
+# reads fixture state off disk — so its roster names Audiobookshelf and its
+# exemptions name the other fourteen. A group of one is already safe against a
+# deletion, since mac_run_hooks refuses an empty group; the cases here are the
+# two it was blind to, a hook added outside the roster and a service registered
+# without anyone deciding whether its converge needs a fixture placed first.
+#
 # The runner's own refusals are proved here too: an unknown service and a
 # missing or malformed phase must both stop the lane instead of dispatching
 # nothing and reporting success.
@@ -49,7 +57,8 @@ build_tree() {
   tree=$1
   mkdir -p "$tree/tests/contracts" "$tree/tests/mac/hooks/fixtures-seed" \
     "$tree/tests/mac/hooks/fixtures-persistence" "$tree/tests/mac/hooks/fixtures-recreate" \
-    "$tree/tests/mac/hooks/verify" "$tree/tests/mac/hooks/drift" "$tree/bin" "$tree/log"
+    "$tree/tests/mac/hooks/verify" "$tree/tests/mac/hooks/drift" \
+    "$tree/tests/mac/hooks/pre-converge" "$tree/bin" "$tree/log"
   cp "$repo_dir/tests/contracts/registry.yml" "$tree/tests/contracts/registry.yml"
   cp "$repo_dir/tests/mac/lib.sh" "$tree/tests/mac/lib.sh"
   for group in fixtures-seed fixtures-persistence fixtures-recreate; do
@@ -69,6 +78,19 @@ build_tree() {
     [ "$drift_basename" != 00-coverage.sh ] || continue
     printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/drift/$drift_basename"
     chmod 0755 "$tree/tests/mac/hooks/drift/$drift_basename"
+  done
+
+  # Pre-converge is the same shape one size smaller, and stubbed the same way,
+  # from the real directory rather than from a literal roster here.
+  cp "$repo_dir/tests/mac/hooks/pre-converge/00-coverage.sh" \
+    "$tree/tests/mac/hooks/pre-converge/"
+  chmod 0755 "$tree/tests/mac/hooks/pre-converge/00-coverage.sh"
+  for preconverge_hook in "$repo_dir"/tests/mac/hooks/pre-converge/*.sh; do
+    preconverge_basename=${preconverge_hook##*/}
+    [ "$preconverge_basename" != 00-coverage.sh ] || continue
+    printf '%s\n' '#!/bin/sh' 'exit 0' > \
+      "$tree/tests/mac/hooks/pre-converge/$preconverge_basename"
+    chmod 0755 "$tree/tests/mac/hooks/pre-converge/$preconverge_basename"
   done
 
   # The runner is stubbed: this test is about which services and phases the hooks
@@ -284,6 +306,17 @@ expect_summary "$summary" \
   'mac drift hooks: covered 15 of 15 registered services (ran 0, delegated 12, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
+# Pre-converge is the sixth group and the smallest: one hook, because a service
+# belongs there only when its converge reads fixture state off disk, which is
+# Audiobookshelf and nothing else. Fourteen exemptions against one delegation is
+# the honest shape of that rather than a coverage gap, and the exemptions are
+# what a newly registered service has to answer to -- the question mac_hook_count
+# could not ask.
+summary=$(run_group "$tree" pre-converge 00-coverage.sh)
+expect_summary "$summary" \
+  'mac pre-converge hooks: covered 15 of 15 registered services (ran 0, delegated 1, exempt 14)'
+expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
+
 # A drift hook deleted must fail the group. This is the regression the group had
 # no defence against: the five acquisition services were promoted with a drift
 # hook each and named nowhere, so any of them could have been dropped in silence.
@@ -302,6 +335,26 @@ printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/drift/90-newcomer.sh
 chmod 0755 "$tree/tests/mac/hooks/drift/90-newcomer.sh"
 if run_group "$tree" drift 00-coverage.sh >/dev/null 2>&1; then
   fail 'drift accepted a service hook outside its exact roster'
+fi
+
+# A group of one is already safe against deletion -- mac_run_hooks refuses an
+# empty group -- but only the roster says so in the words of this group rather
+# than as an accident of it having exactly one file left.
+tree=$fixture/dropped-preconverge-hook
+build_tree "$tree"
+unlink "$tree/tests/mac/hooks/pre-converge/30-audiobookshelf.sh"
+if run_group "$tree" pre-converge 00-coverage.sh >/dev/null 2>&1; then
+  fail 'pre-converge accepted a deleted service hook'
+fi
+
+# The direction mac_hook_count could never see: a hook added outside the roster
+# runs before every Mac converge with nothing anywhere naming it.
+tree=$fixture/extra-preconverge-hook
+build_tree "$tree"
+printf '%s\n' '#!/bin/sh' 'exit 0' > "$tree/tests/mac/hooks/pre-converge/90-newcomer.sh"
+chmod 0755 "$tree/tests/mac/hooks/pre-converge/90-newcomer.sh"
+if run_group "$tree" pre-converge 00-coverage.sh >/dev/null 2>&1; then
+  fail 'pre-converge accepted a service hook outside its exact roster'
 fi
 
 # The lifecycle calls verify.sh, not the collapsed hook directly. Keep that
@@ -372,7 +425,8 @@ build_tree "$tree"
 printf '%s\n' '  - service: newcomer' '    path: tests/contracts/newcomer.sh' >> \
   "$tree/tests/contracts/registry.yml"
 for group_hook in fixtures-seed:00-services.sh fixtures-persistence:00-services.sh \
-    fixtures-recreate:00-services.sh verify:30-services.sh drift:00-coverage.sh; do
+    fixtures-recreate:00-services.sh verify:30-services.sh drift:00-coverage.sh \
+    pre-converge:00-coverage.sh; do
   if run_group "$tree" "${group_hook%%:*}" "${group_hook#*:}" >/dev/null 2>&1; then
     fail "${group_hook%%:*} accepted a registered service it never ran"
   fi
