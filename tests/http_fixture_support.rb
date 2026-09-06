@@ -54,7 +54,32 @@ module HttpFixtureSupport
   # behavior under test.
   class FixtureError < StandardError; end
 
+  # What ansible-core prints in front of the diagnostic of the task that failed,
+  # and in front of no other text in a run. Pinned to the 2.21.3 wording, the
+  # version controller-requirements.txt installs: a core release that rephrases
+  # this fails the assertions reading it loudly, which is the intended direction.
+  # An assertion that silently stops matching is the failure this constant exists
+  # to prevent, so update it here rather than dropping the anchor.
+  TASK_REFUSAL_PREFIX = "Task failed: Action failed: "
+
   module_function
+
+  # True when +output+ shows the run refused with +diagnostic+ -- the fail_msg of
+  # the task that was meant to stop it.
+  #
+  # Read the diagnostic, never the task name. Ansible prints "TASK [<name>]"
+  # whenever a task merely *runs*, so a whole-output substring of a task name is
+  # satisfied by that task executing and passing while the run failed somewhere
+  # else entirely -- which is the defect such a check is written to catch. That is
+  # #419's class: its confirmed instance was an argument-spec refusal whose
+  # argument_spec_data dump echoed the option name the assertion searched for, so
+  # the check passed with the option declared optional. The TASK banner is the
+  # same echo from a different source. Anchor on text only the error path emits,
+  # adjacent to its subject, the way #417 anchored on
+  # "missing required arguments: <key>".
+  def refused_with?(output, diagnostic)
+    output.include?("#{TASK_REFUSAL_PREFIX}#{diagnostic}")
+  end
 
   # Serves one loopback HTTP fixture for the duration of +client+.
   #

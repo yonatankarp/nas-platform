@@ -625,7 +625,10 @@ def exercise_immich_normalized_duplicate_refusal(failures)
     )
     failures << "Immich normalized duplicate fixture unexpectedly succeeded" if status.success?
     failures << "Immich normalized duplicate fixture missed ambiguity refusal" unless
-      (stdout + stderr).include?("Refuse ambiguous normalized Immich managed identities")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Immich contains a duplicate normalized managed email:"
+      )
     failures << "Immich normalized duplicate fixture reached mutation" if
       requests.any? { |request| %w[POST PATCH PUT DELETE].include?(request["method"]) }
   end
@@ -717,7 +720,10 @@ def exercise_immich_invalid_avatar_policy(failures)
     )
     failures << "Immich invalid avatar enum fixture unexpectedly succeeded" if status.success?
     failures << "Immich invalid avatar enum missed policy preflight" unless
-      (stdout + stderr).include?("Validate effective Immich managed user preference policies")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Immich managed-user preference policy is unsupported; values are redacted."
+      )
     failures << "Immich invalid avatar enum reached mutation" if
       requests.any? { |request| %w[POST PATCH].include?(request["method"]) }
   end
@@ -929,19 +935,28 @@ def exercise_paperless(failures, scenario: :normal, task_path: nil)
         failures << "Paperless mangled-created-password fixture reached repair" if
           final["events"].include?("repair:new")
         failures << "Paperless mangled-created-password fixture missed credential assertion" unless
-          (stdout + stderr).include?("Require newly created Paperless managed-user credentials")
+          HttpFixtureSupport.refused_with?(
+            stdout + stderr,
+            "Newly created Paperless managed user does not accept its vault password."
+          )
       elsif scenario == :swap
         failures << "Paperless identity-swap fixture unexpectedly succeeded" if status.success?
         failures << "Paperless identity-swap fixture reached replacement repair" if
           final["events"].include?("repair:reader")
         failures << "Paperless identity-swap fixture missed stable-PK assertion" unless
-          (stdout + stderr).include?("Require stable authenticated Paperless managed identities")
+          HttpFixtureSupport.refused_with?(
+            stdout + stderr,
+            "A Paperless managed username resolved to a different primary key after credential proof."
+          )
       elsif scenario == :auth_failure
         failures << "Paperless authentication-failure fixture unexpectedly succeeded" if status.success?
         failures << "Paperless authentication failure reached a mutation" if
           final["events"].any? { |event| event.start_with?("create:", "repair:") }
         failures << "Paperless authentication failure missed credential assertion" unless
-          (stdout + stderr).include?("Require preserved Paperless managed-user credentials")
+          HttpFixtureSupport.refused_with?(
+            stdout + stderr,
+            "Existing Paperless managed user does not accept its preserved vault password."
+          )
       else
         failures << "Paperless check-mode fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
         failures << "Paperless check mode authenticated" unless requests.empty?
@@ -970,7 +985,10 @@ def exercise_fail_closed_and_check_mode(failures)
     stdout, stderr, status = run_playbook([task], vars)
     failures << "Immich authentication-failure fixture unexpectedly succeeded" if status.success?
     failures << "Immich authentication failure missed credential-migration assertion" unless
-      (stdout + stderr).include?("Require preserved Immich managed-user credentials")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Existing Immich managed user does not accept its preserved vault password."
+      )
     failures << "Immich authentication failure reached a mutation" if
       requests.any? { |request| %w[PUT PATCH DELETE].include?(request["method"]) ||
         (request["method"] == "POST" && request["target"] != "/api/auth/login") }
@@ -1014,7 +1032,10 @@ def exercise_fail_closed_and_check_mode(failures)
     stdout, stderr, status = run_playbook([managed_includes("beszel").first], vars)
     failures << "Beszel existing-unverified fixture unexpectedly succeeded" if status.success?
     failures << "Beszel existing-unverified failure missed credential-migration assertion" unless
-      (stdout + stderr).include?("Require preserved Beszel managed-user credentials")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Existing Beszel managed user does not accept its preserved vault password."
+      )
     failures << "Beszel existing-unverified failure reached a mutation" if
       requests.any? { |request| request["method"] != "POST" ||
         request["target"] != "/api/collections/users/auth-with-password" }
@@ -1052,7 +1073,10 @@ def exercise_primary_beszel_drift(failures)
     stdout, stderr, status = run_playbook(tasks, vars)
     failures << "Beszel primary unverified fixture unexpectedly succeeded" if status.success?
     failures << "Beszel primary unverified failure missed credential-migration guidance" unless
-      (stdout + stderr).include?("Require preserved Beszel application-user credentials")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Existing Beszel application user does not accept its preserved vault password."
+      )
     failures << "Beszel primary unverified failure reached PATCH" if
       requests.any? { |request| request["method"] == "PATCH" }
   end
@@ -1143,7 +1167,10 @@ def exercise_mangled_created_credentials(failures)
     )
     failures << "Immich mangled-created-password fixture unexpectedly succeeded" if status.success?
     failures << "Immich mangled-created-password fixture missed new credential assertion" unless
-      (stdout + stderr).include?("Require newly created Immich managed-user credentials")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Newly created Immich managed user does not accept its vault password."
+      )
     failures << "Immich mangled-created-password fixture reached repair" if
       requests.any? { |request| request["method"] == "PATCH" }
   end
@@ -1174,7 +1201,10 @@ def exercise_mangled_created_credentials(failures)
     stdout, stderr, status = run_playbook([managed_includes("beszel").first], vars)
     failures << "Beszel mangled-created-password fixture unexpectedly succeeded" if status.success?
     failures << "Beszel mangled-created-password fixture missed new credential assertion" unless
-      (stdout + stderr).include?("Require newly created Beszel managed-user credentials")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "Newly created Beszel managed user does not accept its vault password."
+      )
     failures << "Beszel mangled-created-password fixture reached repair" if
       requests.any? { |request| request["method"] == "PATCH" }
   end
@@ -1230,7 +1260,10 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     failures << "Immich identity-swap fixture reached replacement mutation" if
       requests.any? { |request| request["method"] == "PATCH" }
     failures << "Immich identity-swap fixture missed stable-ID assertion" unless
-      (stdout + stderr).include?("Require stable authenticated Immich managed identities")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "An Immich managed email resolved to a different record after credential proof."
+      )
   end
 
   old_beszel = { "id" => "reader123456789", "email" => "reader@example.invalid",
@@ -1261,7 +1294,10 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     failures << "Beszel identity-swap fixture reached replacement mutation" if
       requests.any? { |request| request["method"] == "PATCH" }
     failures << "Beszel identity-swap fixture missed stable-ID assertion" unless
-      (stdout + stderr).include?("Require stable authenticated Beszel managed identities")
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr,
+        "A Beszel managed email resolved to a different record after credential proof."
+      )
   end
   exercise_paperless(failures, scenario: :swap, task_path: task_paths["paperless_ngx"])
 end
