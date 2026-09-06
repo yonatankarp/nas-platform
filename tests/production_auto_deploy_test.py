@@ -2490,6 +2490,61 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
                 )
             )
 
+    def test_a_real_write_failure_forgives_nothing(self):
+        """The same property as above, with both real halves present.
+
+        The test above stubs _write_private out entirely, so it asserts what
+        this function does with an exception rather than that the write it
+        actually calls produces one. That is the seam #413 and #416 each left
+        untested: #413's caller was only ever exercised against the pre-#354
+        write, and #354's rewrite only against a tree without this caller. Here
+        the real write is made to fail by a real filesystem condition and the
+        real caller has to fail closed on it.
+        """
+
+        config = self.loaded_config()
+        absent = config.state_root / "absent" / "transient-failures"
+        with mock.patch.object(
+            production_auto_deploy, "_transient_path", return_value=absent
+        ):
+            self.assertFalse(
+                production_auto_deploy.may_retry_after_transient_failure(
+                    config, MAIN_SHA
+                )
+            )
+        self.assertFalse(absent.exists())
+
+    @unittest.skipIf(os.geteuid() == 0, "root ignores the directory mode this needs")
+    def test_an_unwritable_state_root_forgives_nothing(self):
+        """The case the atomic write changed, asserted rather than assumed.
+
+        Replacing the target means creating a temporary file beside it, which
+        needs write permission on the directory; the truncating write this
+        replaced needed only write permission on the file, so it would have
+        succeeded here and granted a retry it could not bound. The forgiveness
+        budget is enforced on a lock-holding path, so failing closed is the only
+        safe direction for that difference to run in.
+        """
+
+        config = self.loaded_config()
+        # The counter must already exist, and this is the whole discriminating
+        # condition: creating a file in an unwritable directory fails for both
+        # bodies, but *replacing* an existing one fails only for this one. A
+        # first draft of this test omitted the line below and passed against the
+        # pre-#354 write as well, which is a guard that proves nothing.
+        counter = config.state_root / "transient-failures"
+        counter.write_text(f"{OTHER_SHA} 1\n", encoding="ascii")
+        counter.chmod(0o600)
+        self.addCleanup(config.state_root.chmod, 0o700)
+        config.state_root.chmod(0o500)
+
+        self.assertFalse(
+            production_auto_deploy.may_retry_after_transient_failure(config, MAIN_SHA)
+        )
+        self.assertEqual(
+            counter.read_text(encoding="ascii").strip(), f"{OTHER_SHA} 1"
+        )
+
     def test_an_unreadable_counter_reads_as_a_fresh_budget(self):
         config = self.loaded_config()
         (config.state_root / "transient-failures").write_text("junk\n", encoding="ascii")
