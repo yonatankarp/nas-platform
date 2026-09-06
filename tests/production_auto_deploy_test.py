@@ -1017,10 +1017,15 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertTrue(all(call[0] != "ansible-playbook" for call in calls))
 
     def test_a_failed_tooling_sync_stops_before_any_play(self):
+        """Still a stop, but a classified one since #415: the pip install
+        reaches pypi.org, so an exhausted ladder there says nothing about the
+        revision and the caller decides what it costs."""
+
         config = self.loaded_config()
-        outcome, calls, _kwargs = self.deploy_with(config, fail_on="pip")
-        self.assertFalse(outcome)
-        self.assertTrue(all(call[0] != "ansible-playbook" for call in calls))
+        with self.running(fail_on="bin/pip") as (calls, _slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+        self.assertTrue(all(call[0][0] != "ansible-playbook" for call in calls))
 
     def test_deploy_stops_at_the_first_failing_play(self):
         config = self.loaded_config()
@@ -1107,6 +1112,9 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
 
     FETCH = "fetch"
     GALAXY = "ansible-galaxy"
+    # The virtualenv path, not the bare word: timeouts_for matches every argv
+    # part as a substring, and this one has to be as tight as GALAXY already is.
+    PIP = "bin/pip"
 
     def timeouts_for(self, calls, program):
         return [
@@ -1218,6 +1226,39 @@ class DeployBudgetTest(DeployHarness, PollerTestCase):
         self.assertEqual(
             slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
         )
+
+    def test_the_pip_install_retries_within_the_budget_it_already_had(self):
+        """#415, and the reason the guard above could not find it: the pip
+        install was already inside TOOLING_TIMEOUT_SECONDS, so a budget check
+        passes over it whether or not it takes the ladder. What was missing was
+        the retry and the classification, which are what this asserts. The
+        budget stays a total, so the ladder adds no lock time."""
+
+        config = self.loaded_config()
+        with self.running(fail_on=self.PIP) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        timeouts = self.timeouts_for(calls, self.PIP)
+        self.assertEqual(len(timeouts), production_auto_deploy.NETWORK_RETRY_ATTEMPTS)
+        for timeout in timeouts:
+            self.assertLessEqual(timeout, production_auto_deploy.TOOLING_TIMEOUT_SECONDS)
+        self.assertEqual(
+            slept, list(production_auto_deploy.NETWORK_RETRY_BACKOFF_SECONDS)
+        )
+        # Nothing after it ran: an unsynchronised virtualenv must not reach a
+        # collection install, let alone a play.
+        self.assertTrue(all(call[0] != "ansible-playbook" for call, _ in calls))
+        self.assertEqual(self.timeouts_for(calls, self.GALAXY), [])
+
+    def test_a_stalled_pip_install_is_abandoned_rather_than_repeated(self):
+        config = self.loaded_config()
+        with self.running(stall_on=self.PIP) as (calls, slept):
+            with self.assertRaises(production_auto_deploy.TransientDeploymentError):
+                production_auto_deploy.deploy(config, MAIN_SHA, None)
+
+        self.assertEqual(len(self.timeouts_for(calls, self.PIP)), 1)
+        self.assertEqual(slept, [])
 
     def test_a_stalled_collection_install_is_abandoned_rather_than_repeated(self):
         config = self.loaded_config()

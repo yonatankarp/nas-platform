@@ -399,10 +399,10 @@ GitHub access remains read-only and uses no PAT.
 
 Each revision is attempted once for any failure that reached the NAS, and a
 newer successful SHA can proceed normally. The one exception is a failure that
-never reached it. The checkout fetch and the collection install both run before
-the first play and both reach a third party, so a revision lost to somebody
-else's outage is retried on the next tick, three ticks at most, before it is
-quarantined like any other failure. A failing play is not retried.
+never reached it. The checkout fetch, the tooling install and the collection
+install all run before the first play and all reach a third party, so a revision
+lost to somebody else's outage is retried on the next tick, three ticks at most,
+before it is quarantined like any other failure. A failing play is not retried.
 After fixing the cause and
 confirming that the failed commit is still current `main` with successful CI,
 retry only that exact SHA manually:
