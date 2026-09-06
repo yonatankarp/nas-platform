@@ -84,6 +84,12 @@ def exercise_media_fail_closed(failures)
       failures << "#{label} authentication failure reached a mutation" if
         requests.any? { |request| %w[PATCH DELETE].include?(request["method"]) ||
           (request["method"] == "POST" && !request["target"].match?(/login|AuthenticateByName/)) }
+      # The role's own fail_msg, not the task name: ansible prints "TASK [<name>]"
+      # whenever a task merely runs, so a task-name substring passes while the
+      # guard executes and does nothing -- see HttpFixtureSupport.refused_with?
+      # (#419). The anchor is tied to ansible-core 2.21.3's wording, pinned in
+      # controller-requirements.txt, and stated in
+      # HttpFixtureSupport::TASK_REFUSAL_PREFIX.
       failures << "#{label} authentication failure did not stop at preserved credential assertion" unless
         HttpFixtureSupport.refused_with?(
           stdout + stderr,

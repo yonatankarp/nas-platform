@@ -624,6 +624,13 @@ def exercise_immich_normalized_duplicate_refusal(failures)
       [managed_includes("immich", { "immich_managed_users_token" => "admin" }).first], vars
     )
     failures << "Immich normalized duplicate fixture unexpectedly succeeded" if status.success?
+    # Every refusal assertion in this file names the failing task's own fail_msg
+    # rather than its task name, because ansible prints "TASK [<name>]" whenever a
+    # task merely runs -- see HttpFixtureSupport.refused_with? (#419). Those
+    # anchors are tied to ansible-core 2.21.3's wording, pinned in
+    # controller-requirements.txt; a core bump that rephrases it is the one thing
+    # that breaks them, and HttpFixtureSupport::TASK_REFUSAL_PREFIX is where it is
+    # fixed.
     failures << "Immich normalized duplicate fixture missed ambiguity refusal" unless
       HttpFixtureSupport.refused_with?(
         stdout + stderr,
