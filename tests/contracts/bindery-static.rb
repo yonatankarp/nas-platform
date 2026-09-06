@@ -429,6 +429,19 @@ if failures.empty?
         condition.to_s.include?(needle) && condition.to_s.include?(value)
       end
   end
+  # The indexer assertion is gated on the indexer *declaration*, not on the
+  # transport flag. Every sandbox converges the acquisition stack with
+  # `media_arr_indexers: []`, so a transport-only gate fails the `bindery`
+  # integration lane against a host behaving exactly as declared -- which is
+  # what it did before this check existed.
+  indexer_assertion = outcome_assertions.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that"))
+      .any? { |condition| condition.to_s.include?("bindery_verify_indexers") }
+  end
+  failures << "the Bindery indexer assertion must be gated on the declared indexers" unless
+    indexer_assertion &&
+    Array(indexer_assertion["when"]).join(" ").include?("media_arr_indexers")
+
   # The diagnosis is the point of deferring, so it must not be redacted away.
   failures << "the Bindery outcome assertion must stay readable" if
     outcome_assertions.any? { |task| task["no_log"] }

@@ -442,25 +442,36 @@
   check_mode: false
   no_log: true
 
-# Indexers are asserted only where Usenet is enabled, because `reconcile_usenet`
-# declares the Prowlarr instance they are synced from and does not run at all
-# otherwise -- an empty list on a host with no transport is the correct state,
-# not a regression.
+# The gate is the indexer declaration, not the transport flag, and the
+# difference is the whole property. `media_usenet_enabled` says a Prowlarr
+# instance and a download client can be declared; it says nothing about whether
+# an indexer exists to sync. Every sandbox and every CI lane runs with
+# `media_arr_indexers: []` on purpose -- the integration suites converge the
+# whole acquisition stack against no real indexer -- so Bindery holding none
+# there is the correct state and gating on the transport alone failed the
+# `bindery` lane on a host that was behaving exactly as declared.
+#
+# Where indexers *are* declared, an empty list is a genuine regression: they
+# arrive from Prowlarr's own sync rather than from this platform, so nothing
+# else in the role can see the sync return nothing.
 - name: Require the Bindery acquisition transport
   tags: [platform_verify_bindery]
   ansible.builtin.assert:
     that:
       - bindery_verify_indexers.status | default(0) | int == 200
-      - bindery_verify_indexers.json | default([]) | length > 0
+      - bindery_verify_indexers.json | default([], true) | length > 0
       - >-
-        bindery_verify_indexers.json | default([])
+        bindery_verify_indexers.json | default([], true)
         | selectattr('enabled') | list | length > 0
     fail_msg: >-
-      Bindery holds no enabled indexer. They are synced from the declared
-      Prowlarr instance rather than written by this platform, so a sync that
-      returned nothing leaves every search empty and every book ungrabbable
-      while every other reading stays correct.
-  when: media_usenet_enabled | bool
+      Bindery holds no enabled indexer while {{ media_arr_indexers | length }}
+      are declared for Prowlarr. They are synced from the declared Prowlarr
+      instance rather than written by this platform, so a sync that returned
+      nothing leaves every search empty and every book ungrabbable while every
+      other reading stays correct.
+  when:
+    - media_usenet_enabled | bool
+    - media_arr_indexers | length > 0
 
 # A null here is unactionable rather than absent: the book still reads
 # `status: wanted` and `monitored: true`, and nothing surfaces the difference.
@@ -470,13 +481,13 @@
     that:
       - bindery_verify_authors.status | default(0) | int == 200
       - >-
-        (bindery_verify_authors.json['items'] | default([])
+        (bindery_verify_authors.json['items'] | default([], true)
          | selectattr('rootFolderId', 'none') | list | length) == 0
       - >-
-        (bindery_verify_authors.json['items'] | default([])
+        (bindery_verify_authors.json['items'] | default([], true)
          | selectattr('audiobookRootFolderId', 'none') | list | length) == 0
       - >-
-        (bindery_verify_authors.json['items'] | default([])
+        (bindery_verify_authors.json['items'] | default([], true)
          | selectattr('qualityProfileId', 'none') | list | length) == 0
     fail_msg: >-
       Bindery holds authors with no destination root or no quality profile.

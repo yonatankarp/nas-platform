@@ -110,12 +110,12 @@
 - name: Resolve the Bindery authors missing a destination or profile
   ansible.builtin.set_fact:
     bindery_authors_to_repair: >-
-      {{ (bindery_authors.json['items'] | default([])
+      {{ (bindery_authors.json['items'] | default([], true)
           | selectattr('rootFolderId', 'none') | list)
-         + (bindery_authors.json['items'] | default([])
+         + (bindery_authors.json['items'] | default([], true)
             | rejectattr('rootFolderId', 'none')
             | selectattr('audiobookRootFolderId', 'none') | list)
-         + (bindery_authors.json['items'] | default([])
+         + (bindery_authors.json['items'] | default([], true)
             | rejectattr('rootFolderId', 'none')
             | rejectattr('audiobookRootFolderId', 'none')
             | selectattr('qualityProfileId', 'none') | list) }}

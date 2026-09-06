@@ -40,6 +40,10 @@ argument_specs:
       bindery_default_quality_profile_name:
         type: str
         required: false
+      media_arr_indexers:
+        type: list
+        elements: dict
+        required: false
       bindery_prowlarr_name:
         type: str
         required: false

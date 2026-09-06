@@ -732,6 +732,22 @@ STATIC_ROWS = [
     expects: "Bindery verification must assert the synced indexers"
   },
   {
+    # Gating on the transport flag alone asserts a synced indexer on every host
+    # that *could* have one, including every sandbox, which converges the whole
+    # acquisition stack against an empty `media_arr_indexers` on purpose.
+    name: "an indexer assertion gated on the transport rather than the declaration",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.assert", "fail_msg").to_s
+                   .include?("no enabled indexer")
+        end
+        task["when"] = ["media_usenet_enabled | bool"]
+      end
+    },
+    expects: "the Bindery indexer assertion must be gated on the declared indexers"
+  },
+  {
     # An author with a null destination root holds books that read `wanted` and
     # `monitored` and can never be grabbed, because there is nowhere to put a
     # release. Nothing else in the block can see it.
