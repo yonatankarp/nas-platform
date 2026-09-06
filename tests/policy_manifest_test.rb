@@ -104,8 +104,12 @@ end
 output, succeeded = run_policy(["tests/media_acquisition_foundation_test.rb"]) do |root|
   mutate_manifest(root) { |document| document.fetch("services").reverse! }
 end
+# Reported through the helper rather than `output.lines.first`: that construct is
+# only honest here because the script list is a single explicit element, and
+# widening it -- or changing run_policy's default back -- would reintroduce the
+# defect of #438 silently, since this branch runs only when the check fails.
 unless succeeded
-  failures << "manifest reorder changed acquisition publication policy: #{output.lines.first&.strip}"
+  failures << "manifest reorder changed acquisition publication policy: #{policy_failure_diagnostic(output)}"
 end
 
 expect_acquisition_failure = lambda do |label, diagnostic, &mutation|
