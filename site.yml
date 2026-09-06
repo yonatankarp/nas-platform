@@ -146,6 +146,18 @@
     - role: paperless_ngx
       tags: [paperless, documents]
 
+    # Seafile is last, and the position carries no dependency: nothing reads its
+    # API and it reads nobody's, so it converges after Paperless-ngx only
+    # because a project wired to nothing belongs at the end of the order.
+    #
+    # No `when:` here, deliberately. The stack is gated by
+    # `seafile_deployment_enabled`, and that gate lives inside the role so the
+    # deployment_bundle target re-include and the ntfy deployment report still
+    # run when it is false. A `when:` on this entry would skip those two as
+    # well, and a disabled Seafile would stop reporting anything at all.
+    - role: seafile
+      tags: [seafile, documents]
+
   post_tasks:
     # After every service, so reaching it means the whole run converged: the
     # summary reports a deployment that actually finished. The per-service

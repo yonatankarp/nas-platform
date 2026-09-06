@@ -1,0 +1,220 @@
+---
+# Deployment. Revalidates the release paths this role touches, refuses a
+# credential the env file cannot carry, renders the environment, and then takes
+# one of two branches: tear the project down, or bring the data services up,
+# refuse a rotated database credential and let the application follow.
+#
+# Everything up to and including the render runs on both branches. The
+# deployment_bundle re-include is the containment guard every service role owes
+# the platform, and it is not conditional on whether this particular service is
+# switched on; the render is what lets the teardown below interpolate the
+# project's own volume paths at all.
+
+- name: Revalidate deployment paths before Seafile runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: seafile
+    deployment_target_require_current_release: true
+    deployment_target_extra_paths:
+      - "{{ seafile_data_host_path }}"
+      - "{{ seafile_db_host_path }}"
+      - "{{ seafile_seafevents_config_path }}"
+
+# Two properties, and neither is the credential contract's business.
+#
+# The first is the file format: Compose reads the rendered .env one line per
+# key, so a value carrying a newline truncates the credential silently rather
+# than failing. The shapes themselves are pinned once, in
+# filter_plugins/vault_credential_schema.py, and are deliberately not restated
+# here -- a second, stricter copy of the database identifier rule would refuse a
+# vault the contract accepts, and the failure would name Seafile rather than the
+# rule it disagreed with.
+#
+# The second is the JWT key length, which is this role's own precondition. The
+# credential contract declines to pin it, on the ground that nothing was
+# verified about what the server does with a shorter one; what is documented is
+# a 32-character minimum, and the value this platform generates is 32
+# hexadecimal digits. Refusing a shorter one here costs nothing and turns a
+# failure that would otherwise appear at the first token exchange into one that
+# appears before anything is deployed.
+- name: Require env-safe Seafile credentials
+  ansible.builtin.assert:
+    that:
+      - vault_seafile_admin_email is match('^[^\r\n]+\Z')
+      - vault_seafile_admin_password is match('^[^\r\n]+\Z')
+      - vault_seafile_db_username is match('^[^\r\n]+\Z')
+      - vault_seafile_db_password is match('^[^\r\n]+\Z')
+      - vault_seafile_db_root_password is match('^[^\r\n]+\Z')
+      - vault_seafile_cache_password is match('^[^\r\n]+\Z')
+      - vault_seafile_jwt_private_key is match('^[^\r\n]{32,}\Z')
+    fail_msg: >-
+      Every Seafile credential must be a single-line value, and the JWT signing
+      key must be at least 32 characters. Seafile documents that minimum; a
+      shorter key is not refused at start, it is refused the first time a client
+      asks seahub for a token.
+  no_log: true
+
+# Redacted: this is where seven vault credentials enter the target filesystem.
+- name: Render the private Seafile environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/seafile/.env"
+    mode: "0600"
+  no_log: true
+
+# The switched-off branch. Mirrors roles/downloaders: the project is removed
+# rather than merely left alone, so flipping the flag back off is a converge
+# that actually undoes the deployment instead of leaving three containers
+# running that nothing in the repository claims. remove_orphans reaches the ones a
+# previous revision of the Compose file declared and this one no longer does.
+- name: Stop the disabled Seafile project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    state: absent
+    remove_orphans: true
+  register: seafile_teardown
+  when: not seafile_deployment_enabled | bool
+
+- name: Report the disabled Seafile deployment
+  ansible.builtin.debug:
+    msg: >-
+      seafile_deployment_enabled is false, so the Seafile Compose project
+      {{ seafile_compose_project_name }} is torn down rather than converged and
+      nothing on {{ seafile_data_host_path }} or {{ seafile_db_host_path }} is
+      read or written. Set seafile_deployment_enabled to true in
+      inventory/group_vars/all/main.yml and merge; the auto-deploy poller brings
+      the stack up on its next five-minute tick.
+  when: not seafile_deployment_enabled | bool
+
+# Two phases, because the server's setup runs against a database that has to be
+# accepting connections before the server container starts, and because the
+# credential probe below has to run between the two. MariaDB's healthcheck
+# combines --connect with --mariadbupgrade, so this wait covers an in-place
+# upgrade as well as a cold start.
+- name: Deploy the Seafile data services
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    services: [db, cache]
+    state: present
+    wait: true
+    wait_timeout: "{{ seafile_data_compose_wait_timeout }}"
+  register: seafile_data_deploy
+  when: seafile_deployment_enabled | bool
+
+# The root account, not the Seafile one, and that is the whole point. MariaDB
+# creates root from MYSQL_ROOT_PASSWORD on an empty datadir and never again;
+# the Seafile database user is created later, by the server's own setup, so on a
+# first converge it does not exist yet and probing it would classify every fresh
+# deployment as connection-rejected. Root is the credential MariaDB itself owns,
+# it exists from the first second the container is healthy, and it is the one a
+# vault rotation silently breaks: Compose recreates the container with the new
+# value, the datadir keeps the old one, and every later start authenticates
+# against a password nothing wrote.
+#
+# Over TCP, and that is load-bearing rather than incidental. MariaDB installs
+# root@localhost able to authenticate through the unix_socket plugin, which
+# authorises by the connecting process's own uid and ignores the password
+# entirely; a probe over the container's socket would therefore succeed whatever
+# the credential said and report `verified` while proving nothing. Addressing the
+# service by name forces the connection through the network stack, where only
+# root@% -- the account the image creates with CREATE USER ... IDENTIFIED BY --
+# can answer, and only a matching password gets in.
+#
+# Only the user half of current_user() is compared. The host half depends on how
+# the server resolves the connecting address and is not something this platform
+# fixes, so requiring a particular spelling of it would fail healthy deployments.
+#
+# Redacted: the exec renders the container environment on failure.
+- name: Refuse a rotated Seafile database root credential
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    service: db
+    argv:
+      - sh
+      - -ec
+      - >-
+        exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb --protocol=tcp
+        --host=db --port=3306 --user=root --connect-timeout=15
+        --batch --skip-column-names
+        --execute="select substring_index(current_user(), '@', 1)"
+    tty: false
+  register: seafile_database_identity
+  when:
+    - seafile_deployment_enabled | bool
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Classify the Seafile database credential probe
+  ansible.builtin.set_fact:
+    seafile_database_probe_status: >-
+      {{ 'execution-failed' if seafile_database_identity.rc is not defined
+         else 'connection-rejected' if seafile_database_identity.rc | int != 0
+         else 'identity-mismatch' if seafile_database_identity.stdout | default('') | trim != 'root'
+         else 'verified' }}
+  when:
+    - seafile_deployment_enabled | bool
+    - not ansible_check_mode
+  no_log: true
+
+- name: Require the managed Seafile database credential
+  ansible.builtin.assert:
+    that:
+      - seafile_database_probe_status == 'verified'
+    fail_msg: >-
+      Seafile database credential verification failed
+      ({{ seafile_database_probe_status }}) in Compose service db.
+      MariaDB stores the root password it was created with and ignores the
+      environment on every later start, so a rotated vault value cannot take
+      effect on its own. Restore the previous vault value or migrate the
+      database credential explicitly, then rerun.
+  when:
+    - seafile_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Deploy Seafile
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    state: present
+    wait: true
+    wait_timeout: "{{ seafile_compose_wait_timeout }}"
+  register: seafile_deploy
+  when: seafile_deployment_enabled | bool
+
+# Ungated on purpose, and it says nothing when nothing moved: the report is
+# gated on the Compose results themselves, so a converge with the flag off and a
+# project already absent is silent, and the run that first tears the project
+# down reports that it did.
+- name: Report the Seafile deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Seafile
+    ntfy_deployment_report_changed: >-
+      {{ (seafile_data_deploy is changed) or (seafile_deploy is changed) or
+         (seafile_teardown is changed) }}
+
+- name: Verify Seafile effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: seafile
+    container_cpu_project_name: "{{ seafile_compose_project_name }}"
+  when: seafile_deployment_enabled | bool

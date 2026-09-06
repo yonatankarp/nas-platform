@@ -1,0 +1,18 @@
+---
+services:
+  seafile:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-seafile
+    ports: !override
+      - "${SEAFILE_HOST_PORT:?}:80"
+    volumes: !override
+      - ${SEAFILE_DATA_PATH:?}:/shared
+
+  db:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-seafile-db
+    volumes: !override
+      - ${SEAFILE_DB_PATH:?}:/var/lib/mysql
+
+  # No volume to reset, and the container name is the whole override: the cache
+  # is the one container in this stack that persists nothing.
+  cache:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-seafile-cache

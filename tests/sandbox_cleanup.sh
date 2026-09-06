@@ -8,7 +8,7 @@ cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f
 # therefore never a cleanup target, and is left untouched.
 cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
 cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders bindery kapowarr pinchflat trailarr"
-cleanup_sandbox_projects="$cleanup_sandbox_projects seerr"
+cleanup_sandbox_projects="$cleanup_sandbox_projects seerr seafile"
 cleanup_sandbox_ntfy_services='ntfy'
 cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
 cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
@@ -25,6 +25,7 @@ cleanup_sandbox_kapowarr_services='kapowarr'
 cleanup_sandbox_pinchflat_services='pinchflat'
 cleanup_sandbox_trailarr_services='trailarr'
 cleanup_sandbox_seerr_services='seerr'
+cleanup_sandbox_seafile_services='seafile seafile-db seafile-cache'
 
 # The sandbox-clearing program is tests/sandbox_cleanup_contents.py, and the
 # container reads it on standard input exactly as it read the heredoc that used
@@ -82,6 +83,7 @@ cleanup_sandbox_project_services() {
     pinchflat) cleanup_project_services=$cleanup_sandbox_pinchflat_services ;;
     trailarr) cleanup_project_services=$cleanup_sandbox_trailarr_services ;;
     seerr) cleanup_project_services=$cleanup_sandbox_seerr_services ;;
+    seafile) cleanup_project_services=$cleanup_sandbox_seafile_services ;;
     *)
       printf 'unknown sandbox cleanup project kind: %s\n' "$1" >&2
       return 1

@@ -1,0 +1,64 @@
+---
+# The single operator switch, mirrored from inventory/group_vars/all/main.yml so
+# the role reads correctly on its own. False here and there: PR 1 lands the whole
+# stack without converging it anywhere. The gate lives inside the role rather
+# than on the site.yml entry, because a `when:` there would also skip the
+# deployment_bundle re-include that revalidates the paths this role touches and
+# the deployment report that says whether anything moved. Flip
+# seafile_deployment_enabled to true in inventory and merge, and the auto-deploy
+# poller brings the stack up on its next tick.
+seafile_deployment_enabled: false
+
+# 8083. The next free host port on this platform: 8080 is Dozzle, 8081 the
+# Dozzle alert relay, 8082 is already claimed by the qbittorrent web interface
+# declared in config/media-acquisition.yml, 8085 is SABnzbd and 8090 is Beszel.
+seafile_port: 8083
+
+# Every role addresses services over 127.0.0.1, which is correct whether the
+# play runs on the NAS itself or over SSH from a workstation. /api2 is the
+# stable REST prefix seahub mounts; the bundled nginx multiplexes seahub,
+# seafhttp and seafdav behind the single published port.
+seafile_api: "http://127.0.0.1:{{ seafile_port }}/api2"
+
+seafile_data_host_path: "{{ nas_docker_root }}/seafile/data"
+seafile_db_host_path: "{{ nas_docker_root }}/seafile/db"
+
+# Seafile comes up in two stages, so the two waits are sized separately. MariaDB
+# alone reaches its healthcheck quickly, but --mariadbupgrade keeps that check
+# red for as long as an in-place upgrade runs. The server then creates three
+# databases, runs every pending migration and starts seaf-server, seahub and
+# nginx before it answers on port 80 at all.
+seafile_data_compose_wait_timeout: 300
+seafile_compose_wait_timeout: 600
+
+seafile_compose_project_name: >-
+  {{ (platform_project_name ~ '-seafile')
+     if platform_project_name | default('') | length > 0 else 'seafile' }}
+
+# What [INDEX FILES] enabled must say in seafevents.conf. Seafile Pro writes
+# `true` there on first run and bootstrap.py writes `es_host = elasticsearch`
+# beside it, but this platform does not deploy Elasticsearch yet -- it needs the
+# vm.max_map_count host sysctl nothing here manages and the repository's first
+# mem_limit. Left alone the index updater resolves that hostname every ten
+# minutes forever and logs a failure each time, so the setting is switched off
+# explicitly and reconciled by tasks/reconcile_seafevents.yml.
+seafile_index_files_enabled: false
+
+# conf/ inside the bind-mounted volume, which is where the server keeps the
+# files its setup generated. The volume is mounted at /shared and the server
+# lays out /shared/seafile/conf/, so seafevents.conf lands here.
+#
+# That layout is read out of seafileltd/seafile-pro-mc:13.0.27 itself, not
+# inferred from the manual. The server generates its configuration at
+# /opt/seafile/conf; bootstrap.py's files_to_copy moves `conf` to
+# /shared/seafile/conf on the first setup and symlinks it back, and
+# /scripts/create_data_links.sh re-establishes that symlink on every later start.
+# /shared is this bind mount, so the file lands here.
+#
+# The reconciliation is still written to survive being wrong about it, because
+# PR 1 ships the stack switched off and no container has created the file yet: a
+# path that does not exist is the "nothing to reconcile" branch, and a file that
+# exists without an [INDEX FILES] enabled key is reported by name rather than
+# silently treated as converged. Both of those reports are what to read on the
+# first converge after the flag is flipped.
+seafile_seafevents_config_path: "{{ seafile_data_host_path }}/seafile/conf/seafevents.conf"

@@ -1,0 +1,14 @@
+---
+role: seafile
+container_cpus:
+  seafile: 2.0
+  db: 1.0
+  cache: 0.5
+vault_keys:
+  - vault_seafile_admin_email
+  - vault_seafile_admin_password
+  - vault_seafile_cache_password
+  - vault_seafile_db_password
+  - vault_seafile_db_root_password
+  - vault_seafile_db_username
+  - vault_seafile_jwt_private_key

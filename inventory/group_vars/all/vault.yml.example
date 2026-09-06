@@ -154,6 +154,22 @@ vault_paperless_django_secret_key: example-django-secret-000000000000
 vault_paperless_gmail_account: gmail@example.invalid
 vault_paperless_gmail_app_password: example-app-password
 
+# Seafile's administrator pair is consumed by the image's own start.py only when
+# the user table is empty, so it is authored here and never pushed again: a
+# rotated value in this file changes nothing on a server that already has an
+# account. The three database values are MariaDB's, not Postgres's -- Seafile has
+# no Postgres backend -- and Seafile's own setup creates the databases and the
+# user from them on first run. The JWT key signs the internal seahub/seafhttp
+# tokens and the server refuses to start on fewer than 32 characters; the cache
+# password authenticates the Valkey the server keeps sessions in.
+vault_seafile_admin_email: admin@example.invalid
+vault_seafile_admin_password: example-password
+vault_seafile_db_root_password: example-password
+vault_seafile_db_username: example_seafile
+vault_seafile_db_password: example-password
+vault_seafile_jwt_private_key: example-seafile-jwt-key-00000000
+vault_seafile_cache_password: example-password
+
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.
 vault_managed_users:

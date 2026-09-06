@@ -7,9 +7,19 @@
                                     vault_ntfy_deploy_token, vault_ntfy_seerr_token],
                                    vault_contract_reserved_identities) }}
   vars:
-    # The administrator of each service, plus the usernames the platform
-    # publishes under. A managed user claiming one of these would take over an
-    # account the platform reconciles from a different source.
+    # The administrator of each service that has a managed-user list, plus the
+    # usernames the platform publishes under. A managed user claiming one of
+    # these would take over an account the platform reconciles from a different
+    # source.
+    #
+    # Keyed by vault_managed_users, not by the service roster, and the two are
+    # not the same set: arr, downloaders, bindery, kapowarr, pinchflat, trailarr,
+    # seerr and seafile all have vault administrators and no rows here, because
+    # they have no managed users for a reserved identity to protect an account
+    # from. tests/managed_users_vault_test.rb pins that exactly --
+    # `reserved_identities.keys.sort == ENTRY_FIELDS.keys.sort` -- so adding a
+    # row for a service with no managed-user list fails there, naming this file
+    # inside an assertion about managed users. Add the list first, or not at all.
     vault_contract_reserved_identities:
       audiobookshelf: ["{{ vault_audiobookshelf_admin_username }}"]
       beszel: ["{{ vault_beszel_superuser_email }}", "{{ vault_beszel_app_user_email }}"]
@@ -159,7 +169,14 @@
           'vault_paperless_db_password': vault_paperless_db_password,
           'vault_paperless_django_secret_key': vault_paperless_django_secret_key,
           'vault_paperless_gmail_account': vault_paperless_gmail_account,
-          'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password}
+          'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password,
+          'vault_seafile_admin_email': vault_seafile_admin_email,
+          'vault_seafile_admin_password': vault_seafile_admin_password,
+          'vault_seafile_db_root_password': vault_seafile_db_root_password,
+          'vault_seafile_db_username': vault_seafile_db_username,
+          'vault_seafile_db_password': vault_seafile_db_password,
+          'vault_seafile_jwt_private_key': vault_seafile_jwt_private_key,
+          'vault_seafile_cache_password': vault_seafile_cache_password}
          | vault_credential_errors }}
   no_log: true
 

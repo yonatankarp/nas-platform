@@ -245,6 +245,20 @@ platform_media_control_network: >-
 trailarr_monitoring_enabled: >-
   {{ platform_project_name | default('') | length == 0 }}
 
+# The one operator switch that deploys Seafile. Flipping this to true and merging
+# is what puts the stack on the NAS -- the auto-deploy poller converges the newest
+# released main revision within five minutes, so a brand-new three-container stack
+# carrying a database arriving on a CI signal alone is not a handoff anyone made.
+# With it false, roles/seafile converges the stack to `state: absent` instead, so
+# the flag is a deployment decision in both directions rather than a skip.
+#
+# It lives here rather than in a host group because both real inventories bind to
+# nas_hosts and the integration sandbox is a nas_hosts run like any other, so
+# "false on the NAS, true in CI" is not expressible there; and because
+# tests/policy_platform_test.rb holds a host group to machine facts only, which
+# this is not. This is nonsecret policy, so it is group_vars and not the vault.
+seafile_deployment_enabled: false
+
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"
 
@@ -596,6 +610,26 @@ nas_storage:
     mode: "0755"
     recovery: critical
   - path: "{{ nas_media_root }}/Documents/export"
+    mode: "0755"
+    recovery: critical
+
+  # Seafile, and the thing that makes it unlike every other stack here: the files
+  # on disk are not the files. Seafile stores content as content-addressed blocks
+  # under seafile-data/storage, and the mapping from those blocks back to
+  # filenames, libraries and owners lives in the database. A filesystem copy of
+  # the data directory taken without a database dump consistent with it restores
+  # an unreadable pile of blocks, so both entries are critical together -- the
+  # primary artifact is the user's own documents, not metadata that could be
+  # re-fetched. The cache container persists nothing and declares no entry.
+  #
+  # Ownership is left unclaimed for the reason the Immich block records: the
+  # container's entrypoint sets up its own accounts inside these trees, and
+  # declaring an owner here that the container then falsifies makes host_prep
+  # reset it on every converge.
+  - path: "{{ nas_docker_root }}/seafile/data"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/seafile/db"
     mode: "0755"
     recovery: critical
 

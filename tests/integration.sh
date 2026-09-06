@@ -305,6 +305,7 @@ komga komga
 jellyfin jellyfin
 immich immich
 paperless paperless-ngx
+seafile seafile
 arr arr
 downloaders downloaders
 bindery bindery

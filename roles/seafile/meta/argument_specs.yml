@@ -1,0 +1,68 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Seafile and prove its administrator against the database
+    options:
+      platform_project_name:
+        type: str
+        required: false
+      # SEAFILE_SERVER_HOSTNAME is what the server writes into every share link
+      # and every seafhttp URL it hands a client, so it must be the address a
+      # human types rather than a loopback the role happens to poll.
+      platform_public_host:
+        type: str
+        required: false
+      # Declared bool rather than left to a truthy string. The teardown branch
+      # and the deploy branch are selected by this one value, and a string
+      # "false" is true in Jinja.
+      seafile_deployment_enabled:
+        type: bool
+        required: true
+      seafile_port:
+        type: int
+        required: false
+      seafile_api:
+        type: str
+        required: false
+      seafile_data_host_path:
+        type: path
+        required: false
+      seafile_db_host_path:
+        type: path
+        required: false
+      seafile_seafevents_config_path:
+        type: path
+        required: false
+      seafile_compose_wait_timeout:
+        type: int
+        required: false
+      seafile_data_compose_wait_timeout:
+        type: int
+        required: false
+      seafile_compose_project_name:
+        type: str
+        required: false
+      seafile_index_files_enabled:
+        type: bool
+        required: false
+      vault_seafile_admin_email:
+        type: str
+        required: true
+      vault_seafile_admin_password:
+        type: str
+        required: true
+      vault_seafile_db_root_password:
+        type: str
+        required: true
+      vault_seafile_db_username:
+        type: str
+        required: true
+      vault_seafile_db_password:
+        type: str
+        required: true
+      vault_seafile_jwt_private_key:
+        type: str
+        required: true
+      vault_seafile_cache_password:
+        type: str
+        required: true

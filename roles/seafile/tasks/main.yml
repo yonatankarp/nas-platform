@@ -1,0 +1,37 @@
+---
+# Seafile, one stage per file, in the order they run. This file is the index:
+# what the role does, and nothing about how.
+#
+# The stages are imported statically, which is what makes verification
+# selectable. verify.yml lists this role with tags: [never], and a role-level tag
+# reaches a statically imported task exactly as it reaches an inline one, so each
+# task in verify.yml still carries [never, platform_verify_seafile] and
+# --tags platform_verify_seafile selects it. A dynamic include is skipped under
+# never before its file is ever read, which is why roles/arr pairs include_tasks
+# with apply: tags: -- and why this role does not need to. Static imports are
+# also expanded by --list-tasks, so the transcript an operator reads before
+# touching the NAS names every task the run will consider. Every import below
+# carries a name and nothing else: a when: on a static import applies to every
+# task in the file, and this role's gate is not a property of the file boundary.
+#
+# The gate is seafile_deployment_enabled, and it lives inside these files rather
+# than on the site.yml role entry. A when: there would also skip the
+# deployment_bundle re-include that revalidates the paths this role touches and
+# the deployment report that says whether anything moved, and no site.yml entry
+# carries one today.
+- name: Resolve and validate the Seafile storage layout
+  ansible.builtin.import_tasks: storage.yml
+
+- name: Deploy the Seafile stack
+  ansible.builtin.import_tasks: deploy.yml
+
+# After the deployment, not before it. Seafile writes seafevents.conf on its
+# first start, so on a fresh converge the file does not exist until the stack
+# above has run once. Reconciling first would let run 1 report nothing to do and
+# run 2 perform the first repair, and those two runs disagreeing is exactly what
+# the idempotence check compares.
+- name: Reconcile the platform-owned Seafile event configuration
+  ansible.builtin.import_tasks: reconcile_seafevents.yml
+
+- name: Verify the exact Seafile administrator against its database
+  ansible.builtin.import_tasks: verify.yml
