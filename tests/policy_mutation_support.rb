@@ -723,9 +723,36 @@ def audit_policy_detection(failures)
   puts "policy mutation audit: #{POLICY_AUDIT_SITES.length} call sites re-derived against all eight scripts"
 end
 
+# What a failing script said about its own failure, rather than whatever it
+# printed first. A script that raises -- which is how a policy check reads a file
+# the fixture never copied -- reports a backtrace, and that outranks everything
+# else because it is the failure the row cannot otherwise see. Below it are the
+# `FAIL <text>` lines PolicySupport.report writes, and only then the first line of
+# output, for a script that fails without either.
+POLICY_DIAGNOSTIC_LIMIT = 500
+
+def policy_failure_diagnostic(output)
+  lines = output.lines.map(&:strip).reject(&:empty?)
+  diagnostic = lines.find { |line| line.match?(/\.rb:\d+:in [`']/) } ||
+               lines.find { |line| line.start_with?("FAIL ") } ||
+               lines.first || "policy failed"
+  diagnostic[0, POLICY_DIAGNOSTIC_LIMIT]
+end
+
+# Reports each failing script by name with its own diagnostic, rather than the
+# first line of all eight scripts' joined output. That joined line is whichever
+# script ran first -- tests/policy_test.rb, always -- so a failure anywhere in the
+# other seven was reported under that script's *success* banner: a missing
+# BASE_FIXTURE_PATHS entry surfaced as "policy: all properties hold". A check
+# whose failure is indistinguishable from success is the defect class this
+# harness exists to find, so it must not be the harness's own reporting.
 def expect_success(failures, label)
-  output, succeeded = run_policy { |root| yield root }
-  failures << "#{label}: #{output.lines.first&.strip || 'policy failed'}" unless succeeded
+  results = run_policy_scripts(POLICY_SCRIPTS) { |root| yield root }
+  results.each do |script, output, ok|
+    next if ok
+
+    failures << "#{label}: #{script}: #{policy_failure_diagnostic(output)}"
+  end
 end
 
 def replace_last(body, source, replacement)
