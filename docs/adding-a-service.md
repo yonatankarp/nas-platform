@@ -85,8 +85,13 @@ obligations added since, each named here as it lands:
 - `tests/mac/hooks/drift/00-coverage.sh` — the drift roster (#356). One row per
   service, exact in both directions, so promoting a service edits it and
   retiring one edits it too.
+- `tests/mac/hooks/pre-converge/00-coverage.sh` — the pre-converge roster
+  (#390). Almost every service is exempt there, so what a promotion adds is one
+  exemption line answering a question nothing else asks: does this service's
+  converge read fixture state off disk, or can its fixtures seed after deploy
+  like everything else's?
 
-**So adding a service today changes 57 files.** Keep that arithmetic honest
+**So adding a service today changes 58 files.** Keep that arithmetic honest
 rather than bumping the total: `tests/docs_links_test.rb` adds the ledger rows
 above to the measured 56, fails if the stated total disagrees, and fails again
 if `CLAUDE.md` quotes anything other than the total. The check cannot tell you an
@@ -227,7 +232,7 @@ tests/mac/media-acquisition-foundation-report-test.rb the report fixture
 
 ### 8. The Mac hook tables and their pinned counts
 
-Four of the five hook groups are one table-driven file each, driven from the
+Four of the six hook groups are one table-driven file each, driven from the
 same registry:
 
 ```
@@ -248,6 +253,16 @@ directory's exact file list, so a hook added without a roster entry and a roster
 entry without a hook both fail. Five acquisition services were promoted with a
 drift hook each while nothing in the repository named them, which is why the
 roster is exact rather than a minimum.
+
+`tests/mac/hooks/pre-converge/` is the sixth group, and the one you will almost
+certainly exempt rather than join. A service belongs there only when its
+*converge* reads fixture state off disk, so the fixture has to be placed before
+`run_site` rather than after it — Audiobookshelf, because its role requests a
+library scan during the converge and then waits on the items that scan finds.
+Everything else seeds after deploy, in `fixtures-seed`. Decide which yours is,
+and record the answer in `tests/mac/hooks/pre-converge/00-coverage.sh`: a new
+`<NN>-<service>.sh` plus its basename in the roster if the converge needs the
+fixture, an exemption line saying why not if it does not.
 
 The runner discovers hooks by globbing and only fails when a group is empty, so
 the collapsed hooks assert their own coverage against

@@ -329,7 +329,7 @@ check(failures, media_report_fields.length == 4 && media_report_fields.uniq.leng
         "Mac #{group} must register an executable media acquisition foundation hook")
 end
 
-# The Mac contract wrapper and four of the five hook groups were one file per
+# The Mac contract wrapper and four of the six hook groups were one file per
 # service until they were driven from tests/contracts/registry.yml. What that
 # collapse can lose is a whole suite, quietly: mac_run_hooks refuses a group with
 # no hook files at all, not a group whose single hook forgot a service. These
@@ -351,19 +351,29 @@ check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
 #
-# The fifth group, drift, never collapsed and does not need to: no two services
+# Drift, the fifth group, never collapsed and does not need to: no two services
 # drift alike. It needs the accounting for the opposite reason. A per-service
 # group loses a service by losing a file, and that is not a hypothetical — the
 # five acquisition services were promoted with a drift hook each while nothing in
 # the repository named them, so the group could have dropped any of them and
 # still reported a full pass. Its hook runs no service and pins the exact roster
 # instead, which fails in both directions: a hook deleted and a hook added.
+#
+# Pre-converge is the sixth group and the smallest. It is not a coverage group in
+# drift's sense: a service belongs there only when its converge reads fixture
+# state off disk, which is Audiobookshelf and nothing else. A one-hook group is
+# already safe against deletion, because mac_hook_count refuses an empty group,
+# so what its roster adds is the other direction -- a hook added outside the
+# roster runs before every Mac converge -- and the fourteen named exemptions,
+# which are what asks a newly promoted service whether its converge needs a
+# fixture placed first.
 {
   "fixtures-seed" => "00-services.sh",
   "fixtures-persistence" => "00-services.sh",
   "fixtures-recreate" => "00-services.sh",
   "verify" => "30-services.sh",
-  "drift" => "00-coverage.sh"
+  "drift" => "00-coverage.sh",
+  "pre-converge" => "00-coverage.sh"
 }.each do |group, hook|
   hook_path = File.join(ROOT, "tests", "mac", "hooks", group, hook)
   hook_source = File.file?(hook_path) ? File.read(hook_path) : ""
