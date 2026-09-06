@@ -109,6 +109,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/generate-ephemeral-vault.sh
   tests/generate-secrets-redaction-test.sh
   tests/mac_inventory_path_test.yml
+  tests/deployment_lock_refusal_test.yml
   tests/media_acquisition_foundation_test.rb
   tests/host_prep_integration_writer_test.rb
   tests/media_acquisition_foundation_verifier_test.rb
