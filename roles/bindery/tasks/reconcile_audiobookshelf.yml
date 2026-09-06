@@ -272,30 +272,16 @@
     - ansible_check_mode
     - bindery_abs_mint | bool or bindery_abs_drifted | bool
 
-# A key named for this platform that neither end can still use is dead weight,
-# and leaving it would make the create below the second row of that name, which
-# the ambiguity refusal above then fails on the next converge. Keys under any
-# other name are left alone: they belong to whoever made them.
-# Redacted: the request carries the Audiobookshelf bearer.
-- name: Retire the superseded Audiobookshelf API key for Bindery
-  ansible.builtin.uri:
-    url: "{{ bindery_audiobookshelf_api }}/api/api-keys/{{ item.id }}"
-    method: DELETE
-    headers:
-      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
-    status_code: [200]
-  loop: "{{ bindery_audiobookshelf_key_matches }}"
-  loop_control:
-    label: bindery-audiobookshelf-api-key
-  when:
-    - not ansible_check_mode
-    - bindery_abs_mint | bool
-  changed_when: true
-  no_log: true
-
 # No expiresIn, so expiresAt is null and the token carries no exp claim. The
 # plaintext exists only in this response and is written straight into Bindery
 # below; nothing reads it back afterwards, on either side.
+#
+# This runs before the superseded row is retired, so for the rest of the run
+# Audiobookshelf holds two keys of this name. It permits that: ApiKey.js
+# declares name as a plain string with no `unique: true`, and the create route
+# performs no collision lookup. The old order revoked first, so a mint or a
+# declare that failed left Bindery holding a credential that no longer
+# authenticates until the next poller tick.
 # Redacted: the response is the Audiobookshelf API key in clear.
 - name: Mint the Audiobookshelf API key for Bindery
   ansible.builtin.uri:
@@ -334,6 +320,38 @@
       pathRemap: "{{ bindery_audiobookshelf_path_remap }}"
       apiKey: "{{ bindery_audiobookshelf_minted_key.json.apiKey.apiKey }}"
     status_code: [200]
+  when:
+    - not ansible_check_mode
+    - bindery_abs_mint | bool
+  changed_when: true
+  no_log: true
+
+# Last, once the replacement is minted and declared: a key named for this
+# platform that neither end can still use is dead weight, and leaving it would
+# make the mint above the second row of that name, which the ambiguity refusal
+# fails on the next converge. Keys under any other name are left alone: they
+# belong to whoever made them.
+#
+# The loop is bindery_audiobookshelf_key_matches, resolved from the key list
+# read before any mutation, so the row minted above is not in it and cannot be
+# deleted here. Re-reading the key list after the mint would revoke the
+# credential this run just declared.
+#
+# A delete that fails leaves two rows and the next converge refuses by name,
+# which needs a hand to remove the surplus key. That is the deliberate trade:
+# a loud, diagnosable refusal in place of a stale credential that reads healthy
+# on both presence checks.
+# Redacted: the request carries the Audiobookshelf bearer.
+- name: Retire the superseded Audiobookshelf API key for Bindery
+  ansible.builtin.uri:
+    url: "{{ bindery_audiobookshelf_api }}/api/api-keys/{{ item.id }}"
+    method: DELETE
+    headers:
+      Authorization: "Bearer {{ bindery_audiobookshelf_token }}"
+    status_code: [200]
+  loop: "{{ bindery_audiobookshelf_key_matches }}"
+  loop_control:
+    label: bindery-audiobookshelf-api-key
   when:
     - not ansible_check_mode
     - bindery_abs_mint | bool
