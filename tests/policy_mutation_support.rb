@@ -39,6 +39,7 @@ BASE_FIXTURE_PATHS = %w[
   filter_plugins/managed_user_state.py
   filter_plugins/vault_managed_user_schema.py
   filter_plugins/vault_credential_schema.py
+  filter_plugins/media_usenet_provider.py
   filter_plugins/immich_preference_schema.py
   module_utils/schema_guards.py
   library/atomic_safe_slurp.py

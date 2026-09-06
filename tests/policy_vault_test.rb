@@ -151,6 +151,48 @@ check(failures,
       "shared inventory must declare the undeclared Usenet provider policy with "\
       "an empty host, integer port and connections, and a boolean ssl")
 
+# And the two other places that enforce that shape are checked against the same
+# literal rather than restating it (#389). #347 deleted a fourth copy from
+# vault.yml.example that had drifted to the dangerous inverse -- TLS as "1"/"0",
+# which SABnzbd's bool_conv(int_conv()) stores as 0, so the declaration reads
+# TLS-on and deploys TLS-off. What made that copy able to drift is that nothing
+# compared it to anything; these two can drift the same way. The prose in the
+# shared inventory and in docs/media-acquisition-phase1.md is deliberately left
+# alone: it explains *why* ssl is a boolean, which is the half a generated line
+# cannot carry and the half an operator reading either file actually needs.
+provider_filter_source = File.read(
+  File.join(ROOT, "filter_plugins", "media_usenet_provider.py")
+)
+filter_provider_keys =
+  provider_filter_source[/^PROVIDER_KEYS = \(([^)]*)\)$/m, 1].to_s.scan(/"([a-z]+)"/).flatten
+check(failures, filter_provider_keys == POLICY_PROVIDER_SHAPE.keys,
+      "the provider shape filter must validate exactly the declared fields, in the order the "\
+      "shared inventory declares them; it names #{filter_provider_keys.join(', ')}")
+
+# Ansible coerces suboptions before any task runs, so the argument spec is the
+# first of the two enforcement points a bad declaration meets and the one that
+# turns `ssl: "1"` into a boolean instead of letting it through as a string. Its
+# declared types are derived from the same literal: a Ruby true/false is Ansible
+# `bool`, an Integer is `int`, and the empty host is `str`.
+PROVIDER_ANSIBLE_TYPES = {
+  TrueClass => "bool", FalseClass => "bool", Integer => "int", String => "str"
+}.freeze
+expected_provider_option_types = POLICY_PROVIDER_SHAPE.transform_values do |value|
+  PROVIDER_ANSIBLE_TYPES.fetch(
+    PROVIDER_ANSIBLE_TYPES.keys.find { |type| value.is_a?(type) }, "unmapped"
+  )
+end
+provider_option_specs = YAML.safe_load_file(
+  File.join(ROOT, "roles", "downloaders", "meta", "argument_specs.yml")
+).dig("argument_specs", "main", "options", "media_usenet_provider", "options")
+check(failures,
+      provider_option_specs.is_a?(Hash) &&
+        provider_option_specs.transform_values { |spec| spec["type"] } ==
+          expected_provider_option_types &&
+        provider_option_specs.each_value.all? { |spec| spec["required"] == true },
+      "roles/downloaders must require every provider field with the type the shared inventory "\
+      "declares: #{expected_provider_option_types.map { |key, type| "#{key} #{type}" }.join(', ')}")
+
 # The correction itself, asserted rather than described. #298 was filed because
 # `grep -c '^vault_'` on the shared inventory returned six, four of which were
 # not credentials. Every name that keeps the prefix here has to be one the
@@ -277,13 +319,49 @@ site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 
 # Compose interpolates $ in env files and silently truncates an unescaped bcrypt
 # hash rather than rejecting it, so escaping is mandatory wherever hashes flow.
-Dir[File.join(ROOT, "roles", "*", "templates", "env.j2")].each do |template|
+#
+# There are two subject lists here and only the second one carries the property,
+# so both are floored. The glob enumerates every role that renders an .env; the
+# filter below reduces that to the roles whose .env carries bcrypt material,
+# which is two. Either can go quiet without the other noticing -- a renamed
+# templates/ directory empties the glob, and a template that spells its hash
+# differently drops out of the filter while the glob still returns fifteen and
+# the escaping assertion runs over nothing.
+#
+# Fifteen in the working tree and fifteen in the mutation sandbox, because
+# fixture_paths adds every implemented service's env.j2, so one number sizes
+# both. Ten is chosen against the bands rather than by feel: a collapse leaves
+# zero (a glob that stopped matching) or a handful (a roles/ layout change),
+# while attrition is a retired service or two and lands at thirteen. Ten sits
+# five services below today's count and clear of anything a collapse leaves.
+env_templates = Dir[File.join(ROOT, "roles", "*", "templates", "env.j2")].sort
+check_floor(failures, env_templates.length, 10, "role env.j2 templates")
+
+bcrypt_env_roles = env_templates.filter_map do |template|
   body = File.read(template)
   next unless body.include?("password_hash") || body.include?("AUTH_USERS")
 
   check(failures, body.include?("replace('$', '$$')"),
         "#{template}: bcrypt values must escape $ as $$ for Compose")
+  template.split(File::SEPARATOR)[-3]
 end
+
+# The second floor, named rather than counted. A floor of two over a two-element
+# list cannot tell a template that stopped matching from a service that was
+# legitimately retired, and a rename that keeps the count is the same bug with
+# the same silence. ntfy renders AUTH_USERS and trailarr renders a password
+# hash, both structurally rather than incidentally, and both env.j2 files reach
+# the mutation sandbox, so this holds inside it too.
+#
+# Stated as a subset rather than an identity on purpose: a new service that
+# renders a hash is already caught by the escaping property above, and making it
+# fail here as well would add a fourteenth file to adding-a-service for no
+# property this check does not already hold.
+BCRYPT_ENV_ROLES = %w[ntfy trailarr].freeze
+unswept_bcrypt_roles = BCRYPT_ENV_ROLES - bcrypt_env_roles
+check(failures, unswept_bcrypt_roles.empty?,
+      "#{unswept_bcrypt_roles.join(', ')}: bcrypt material reaches .env here, but the sweep no "\
+      "longer matches this role and the Compose escaping property passes vacuously for it")
 
 # The vault example is the documented contract; drift means an operator follows it
 # and ends up with a vault missing keys the roles require.
