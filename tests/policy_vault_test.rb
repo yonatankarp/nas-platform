@@ -238,15 +238,32 @@ credential_schema_source = File.read(
         "field #{field}")
 end
 
-# The one agreement the whole tolerance argument rests on, and the one nothing
-# else can see. Every lane's vault declares vault_dozzle_alert_relay_token --
-# tests/generate-ephemeral-vault.sh writes it -- so no lane ever converges the
-# state the NAS will actually be in on the first run after this merges, which is
+# The one agreement the whole tolerance argument rests on, and the one no *lane*
+# can see. Every lane's vault declares vault_dozzle_alert_relay_token --
+# tests/generate-ephemeral-vault.sh writes it -- so no lane converges the state
+# the NAS is actually in on the first run after such a key is added, which is
 # the vault that omits it and takes the derived default. That is #295's shape
 # exactly: a fixture that supplies a credential cannot catch a bug about its
-# absence. What would break in that state is the derivation disagreeing with the
-# rule the contract applies to the key it defaults, so the disagreement is
-# checked directly.
+# absence.
+#
+# That state is covered, though, and saying so is the point of this paragraph
+# (#420). Read as "no lane, therefore nothing", the sentence above sends the
+# next reader to rebuild the dozzle lane around an omitting vault -- which would
+# trade away the credential-rotation path that lane uniquely converges. Since
+# #418 the generator's own --self-test proves the omitting state at the contract
+# layer instead: it generates a vault with --omit, then runs validate-vault.yml
+# against an inventory carrying the real inventory/group_vars/all/main.yml, so
+# the derived default is reached through the same layering a real target uses.
+# Its negative control strips exactly that one derived line -- having asserted it
+# appears exactly once -- and requires the run to refuse by *naming* the key,
+# because every way of mis-wiring that sandbox also exits non-zero and a status
+# check alone could not tell a real refusal from a broken fixture. That
+# self-test runs from .github/workflows/ci.yml rather than from
+# tests/validate-policy.sh, so it is not in this gate's manifest.
+#
+# What neither a lane nor that self-test can see is the shape agreement itself:
+# the derivation disagreeing with the rule the contract applies to the key it
+# defaults. That is what is checked directly here.
 #
 # Computed here rather than by booting Ansible: Jinja's hash('sha256') and
 # Digest::SHA256 emit the same hexdigest, and what is at risk is the shape
