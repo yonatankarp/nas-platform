@@ -1871,48 +1871,124 @@ check(failures, !launcher_source.include?(%(sh -eu -c ")),
 # container, where a module in the deploy account's home is not reachable at
 # all. So the duplication stays.
 #
+# Every top-level def in a Python file as raw source text, keyed by name and
+# collected as a list so a redefinition further down is visible rather than
+# hidden behind the first. Comments above a def belong to no definition, which
+# is what lets a script keep prose the other one cannot honestly repeat.
+def python_top_level_definitions(path)
+  lines = File.readlines(path, chomp: true)
+  definitions = Hash.new { |hash, key| hash[key] = [] }
+  lines.each_index do |index|
+    name = lines[index][/\Adef ([A-Za-z_][A-Za-z_0-9]*)\(/, 1]
+    next if name.nil?
+
+    body = [lines[index]]
+    # A top-level definition ends at the next line that is neither blank nor
+    # indented, which is the next top-level statement.
+    lines[(index + 1)..].each do |line|
+      break if !line.empty? && !line.start_with?(" ", "\t")
+
+      body << line
+    end
+    definitions[name] << body.join("\n").rstrip
+  end
+  definitions
+end
+
 # Divergence is the part that does not have to. The two copies of _write_private
 # drifted in opposite directions until one fsynced and never repaired the mode
 # while the other repaired the mode and never fsynced, each carrying the bug the
 # other had fixed (#354). Compared as text here, so re-divergence fails in the
 # fast loop rather than on the NAS.
-private_write_sources = Dir.glob(File.join(ROOT, "scripts/*.py")).sort.select do |path|
-  File.read(path).include?("\ndef _write_private(")
+#
+# Compared as text and not as code, because every filter that would let the two
+# copies differ cosmetically is a filter that can get one edge case wrong,
+# compare empty to empty and pass. Prose true of only one script therefore lives
+# in a comment above its def, which is outside the extracted body. That is why
+# these definitions are byte-identical down to the docstring (#423).
+#
+# services/dozzle/alert_relay.py mirrors markdown_escape from inside a container
+# and is deliberately outside this glob: its copy takes a different bound and no
+# annotations, so it is a relative rather than a duplicate. Do not converge it.
+duplicated_scripts = Dir.glob(File.join(ROOT, "scripts/*.py")).sort
+check_floor(failures, duplicated_scripts.length, 2, "scripts/*.py programs")
+script_definitions = duplicated_scripts.to_h do |path|
+  [File.basename(path), python_top_level_definitions(path)]
 end
-check_floor(failures, private_write_sources.length, 2,
-            "scripts defining _write_private")
-private_write_bodies = private_write_sources.to_h do |path|
-  lines = File.readlines(path, chomp: true)
-  opening = lines.index { |line| line.start_with?("def _write_private(") }
-  body = [lines[opening]]
-  # A top-level definition ends at the next line that is neither blank nor
-  # indented, which is the next top-level statement.
-  lines[(opening + 1)..].each do |line|
-    break if !line.empty? && !line.start_with?(" ", "\t")
 
-    body << line
+# The fewest lines each definition can honestly be, per name rather than one
+# number: _timestamp is two statements and _write_private is forty lines, so a
+# floor low enough for both would be barely more than non-emptiness while a
+# floor sized for the largest would fail the smallest. An extractor that stopped
+# at the first blank line yields two lines for every one of these, so each floor
+# is set well above that and below the current length, leaving room for prose.
+duplicated_helper_floors = {
+  "_write_private" => 20,
+  "_record_lock_holder" => 12,
+  "markdown_escape" => 6,
+  "_timestamp" => 6,
+}
+check_floor(failures, duplicated_helper_floors.length, 4,
+            "helpers held identical across scripts/*.py")
+
+duplicated_helper_floors.each do |helper, floor|
+  sources = script_definitions.select { |_, definitions| definitions.key?(helper) }
+  check_floor(failures, sources.length, 2, "scripts defining #{helper}")
+  sources.each do |script, definitions|
+    # Only the first definition is compared, so a second one further down the
+    # file would be a copy nothing reads.
+    check(failures, definitions[helper].length == 1,
+          "scripts/#{script}: defines #{helper} #{definitions[helper].length} times, " \
+          "and only the first is compared")
+    body = definitions[helper].first
+    # Both halves of the extraction, because an extractor that stopped at the
+    # first blank line and one that ran on into the next definition would each
+    # compare equal to itself across the two files and prove nothing.
+    check(failures, body.lines.length >= floor,
+          "scripts/#{script}: #{helper} extracted as #{body.lines.length} lines, " \
+          "fewer than the #{floor} it must be -- the extractor stopped early")
+    check(failures, body.scan(/^def /).length == 1,
+          "scripts/#{script}: the #{helper} extraction ran past the definition " \
+          "into #{body.scan(/^def .*/).drop(1).inspect}")
   end
-  [File.basename(path), body.join("\n").rstrip]
+  bodies = sources.values.map { |definitions| definitions[helper].first }
+  check(failures, bodies.uniq.length == 1,
+        "every script must define #{helper} identically, and " \
+        "#{sources.keys.inspect} do not. These are verbatim copies that cannot " \
+        "share a module; when _write_private was allowed to drift, one copy " \
+        "fsynced and never repaired the mode while the other repaired the mode " \
+        "and never fsynced, so each carried the bug the other had fixed (#354)")
 end
-private_write_bodies.each do |name, body|
-  # Both halves of the extraction, because an extractor that stopped at the
-  # first blank line and one that ran on into the next definition would each
-  # compare equal to itself across the two files and prove nothing.
-  check(failures, body.lines.length >= 20,
-        "scripts/#{name}: _write_private extracted as #{body.lines.length} lines, " \
-        "too few to be the definition -- the extractor stopped early")
-  check(failures, body.scan(/^def /).length == 1,
-        "scripts/#{name}: the _write_private extraction ran past the definition " \
-        "into #{body.scan(/^def .*/).drop(1).inspect}")
-  check(failures, body.include?("os.replace("),
-        "scripts/#{name}: _write_private must replace the target rather than " \
+
+script_definitions.each do |script, definitions|
+  next unless definitions.key?("_write_private")
+
+  check(failures, definitions["_write_private"].first.include?("os.replace("),
+        "scripts/#{script}: _write_private must replace the target rather than " \
         "truncate it in place; a crash in that window loses the record (#401)")
 end
-check(failures, private_write_bodies.values.uniq.length == 1,
-      "every script must define _write_private identically, and " \
-      "#{private_write_bodies.keys.inspect} do not. They diverged once into a " \
-      "copy that fsynced and a copy that repaired the mode, and each then " \
-      "carried the bug the other had fixed")
+
+# The list above is stated, and a stated list of what must match fails open: the
+# guard covered only _write_private for as long as it existed, while
+# markdown_escape, _timestamp and _record_lock_holder sat duplicated and
+# unwatched beside it (#423). This closes that, derived rather than stated: a
+# copy is byte-identical at the moment it is made, so a name both scripts define
+# whose bodies already agree is a fresh duplicate and must be named above. The
+# names that differ on purpose -- format_duration, rotate_logs, and the entry
+# points main, load_config, _run and their kin -- never reach it.
+shared_definition_names = script_definitions.values.map { |definitions| definitions.keys.to_set }.reduce(:&)
+check_floor(failures, shared_definition_names.length, 4,
+            "top-level names both scripts/*.py programs define")
+unlisted_identical = shared_definition_names.sort.reject do |helper|
+  duplicated_helper_floors.key?(helper)
+end.select do |helper|
+  script_definitions.values.map { |definitions| definitions[helper].first }.uniq.length == 1
+end
+check(failures, unlisted_identical.empty?,
+      "#{unlisted_identical.inspect} are defined identically in every " \
+      "scripts/*.py program but are not listed in duplicated_helper_floors, so " \
+      "nothing would notice them drifting apart. A verbatim copy is identical " \
+      "only until someone edits one side; name it there, with a floor")
 
 
 report(failures, "policy: all properties hold", "policy violation(s)")
