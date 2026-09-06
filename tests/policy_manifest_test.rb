@@ -1566,8 +1566,16 @@ expect_failure(failures, "symlink compose", "ntfy: compose.yml must be a regular
   File.symlink("../beszel/compose.yml", path)
 end
 
+# vault detects this one too, and for a reason worth stating rather than
+# leaving to the audit to rediscover: replacing roles/ntfy with a symlink to
+# beszel keeps the env.j2 glob at fifteen -- ntfy's slot resolves through the
+# link -- while the file it now yields carries no bcrypt material. So ntfy drops
+# out of policy_vault_test.rb's Compose-escaping sweep and that property starts
+# passing vacuously for it, which is exactly what the sweep's named-roles floor
+# exists to catch. It is a rename-shaped defect reached by a different road, not
+# an incidental overlap.
 expect_failure(failures, "symlink role directory", "ntfy: role must be a real directory within roles",
-               detected_by: %i[policy integration deployment]) do |root|
+               detected_by: %i[policy integration deployment vault]) do |root|
   path = File.join(root, "roles", "ntfy")
   FileUtils.rm_r(path)
   File.symlink("beszel", path)
