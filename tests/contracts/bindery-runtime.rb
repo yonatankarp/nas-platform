@@ -155,9 +155,10 @@ end
 
 settings = parsed(get("/api/v1/setting", key_headers), "settings")
    .to_h { |entry| [entry.fetch("key"), entry.fetch("value")] }
-# The auto-grab kill switch fails open, so an absent row means unattended
-# grabbing is on.
-{ "autoGrab.enabled" => "false", "telemetry.enabled" => "false" }.each do |key, value|
+# Auto-grab is on by policy. The row is asserted anyway because the platform
+# writes it to revert a manual disable, which is the only thing a `true` row can
+# do -- an absent row already reads as enabled.
+{ "autoGrab.enabled" => "true", "telemetry.enabled" => "false" }.each do |key, value|
   fail_contract("Bindery does not pin #{key} to #{value}") unless settings[key] == value
 end
 

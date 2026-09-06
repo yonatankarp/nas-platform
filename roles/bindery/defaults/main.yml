@@ -44,14 +44,39 @@ bindery_sabnzbd_port: 8080
 bindery_sabnzbd_ebook_category: ebooks
 bindery_sabnzbd_audiobook_category: audiobooks
 
-# The auto-grab kill switch fails open: a missing row reads as enabled, so
-# unattended grabbing is only actually disabled once the row exists and says
-# false. Telemetry is on by default with a daily ping and is pinned off here as
-# well as in the environment, so a future environment edit cannot re-enable it
-# silently.
+# Auto-grab is on: Bindery searches for every wanted book on its own schedule
+# and hands the matches to SABnzbd, which is the whole point of deploying an
+# acquisition manager rather than a library browser.
+#
+# The row is still written rather than left absent, and the reason is worth
+# keeping straight. `autoGrabEnabled` fails *open* -- a missing row, a read
+# error and an unattached repository all read as enabled -- so absence already
+# means on and this row does not guarantee enablement. What it does is revert a
+# manual disable in the web interface, which is the same control-plane
+# behaviour every other pinned setting has. Pinned `false` it was a guarantee;
+# pinned `true` it is a repair. Both are worth having, but they are not the
+# same claim, and a future reader should not mistake one for the other.
+#
+# Telemetry is on by default with a daily ping and is pinned off here as well as
+# in the environment, so a future environment edit cannot re-enable it silently.
 bindery_pinned_settings:
-  autoGrab.enabled: "false"
+  autoGrab.enabled: "true"
   telemetry.enabled: "false"
+
+# The quality profile every author is given when it has none. Bindery ships
+# three -- `Any`, `E-Book` and `Audiobook` -- and creates them itself on first
+# start, so this is matched by name rather than by the database-assigned integer
+# the API actually stores. `Any` is the platform default because an author here
+# routinely has both an ebook and an audiobook edition, and the two narrower
+# profiles each refuse one of them.
+bindery_default_quality_profile_name: Any
+
+# Read, never written: the verification block asserts a synced indexer only
+# where Prowlarr has one declared to sync. Every sandbox runs with an empty list
+# on purpose, and Bindery holding no indexer there is correct rather than a
+# regression. Declared here as well as in the arr role because a role's defaults
+# are its argument list, exactly as `media_usenet_enabled` is.
+media_arr_indexers: []
 
 # Bindery deploys unconditionally — its web interface is the writer for both
 # libraries and is useful with no transport at all — but the Prowlarr and
