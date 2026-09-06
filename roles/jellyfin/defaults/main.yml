@@ -24,7 +24,7 @@ jellyfin_library_identity_retries: 20
 jellyfin_library_identity_delay: 1
 
 jellyfin_admin_username: Yonatan
-jellyfin_server_name: Yonflix 2.0
+jellyfin_server_name: Yonflix 2.1
 jellyfin_admin_avatar_sha256: bf12ac53a05f1db64f3d00440315a6626e7c2dd12dd41867c93c9ac7aeccc792
 
 # These are explicit platform policies. In particular, the Mac fallback does

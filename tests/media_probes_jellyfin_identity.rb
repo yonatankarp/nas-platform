@@ -670,3 +670,83 @@ def exercise_jellyfin_library_shape_preflight(failures)
     end
   end
 end
+
+# The whole server-name loop, preflight read through the POST that repairs it,
+# driven end to end rather than from a fixture that hands the role its own
+# conclusion. Every other server-name probe supplies
+# jellyfin_server_name_update_required ready-made, so the one step that decides
+# whether a hand-edit in Jellyfin's dashboard is ever reverted -- preflight
+# comparing the served ServerName against the declared one -- had no coverage at
+# all. A gate added to that comparison, or a hoist of it into another fact, goes
+# red here instead of on the NAS.
+#
+# The converged rows are half the property: a repair that fires unconditionally
+# passes a drift-only probe and then reports a change on every five-minute tick
+# forever.
+def exercise_jellyfin_server_name_repair(failures)
+  main = jellyfin_role_tasks
+  selected_names = [
+    "Read Jellyfin server configuration for preflight",
+    "Require complete Jellyfin server configuration",
+    "Resolve Jellyfin server name repair requirement",
+    "Report planned Jellyfin server name update",
+    "Refresh Jellyfin server configuration before name update",
+    "Require complete refreshed Jellyfin server configuration",
+    "Update the Jellyfin server name"
+  ]
+  tasks = main.select { |task| selected_names.include?(task_name(task)) }
+  # Selecting by name goes quiet when a task is renamed: the playbook still runs,
+  # still passes, and pins nothing. Name every absentee rather than asserting a
+  # count, so the failure says which stage moved.
+  (selected_names - tasks.map { |task| task_name(task) }).each do |name|
+    failures << "Jellyfin server-name repair probe selects no task named #{name}"
+  end
+  return unless (selected_names - tasks.map { |task| task_name(task) }).empty?
+
+  desired = "Yonflix 2.1"
+  cases = [
+    ["drifted server name", "Yonflix 2.0", false, 1],
+    ["drifted server name in check mode", "Yonflix 2.0", true, 0],
+    ["converged server name", desired, false, 0],
+    ["converged server name in check mode", desired, true, 0]
+  ]
+  cases.each do |label, served, check_mode, expected_posts|
+    state = { "ServerName" => served, "UnmanagedSentinel" => true }
+    responder = lambda do |request|
+      case [request["method"], request["target"]]
+      when ["GET", "/System/Configuration"] then [200, state]
+      when ["POST", "/System/Configuration"]
+        state.replace(request.fetch("json"))
+        [204, nil]
+      else [500, {}]
+      end
+    end
+    with_http_service(responder) do |port, requests|
+      variables = {
+        "jellyfin_api" => "http://127.0.0.1:#{port}",
+        "jellyfin_client_header" => "MediaBrowser Fixture",
+        "jellyfin_reconcile_token" => "admin-token",
+        "jellyfin_wizard_completed" => true,
+        "jellyfin_server_name" => desired
+      }
+      arguments = check_mode ? ["--check"] : []
+      stdout, stderr, status = run_playbook(tasks, variables, *arguments)
+      failures << "Jellyfin #{label} repair failed: #{failure_tail(stdout + stderr)}" unless
+        status.success?
+      posts = requests.count { |request| request["method"] == "POST" }
+      failures << "Jellyfin #{label} sent #{posts} server-name POST(s), expected #{expected_posts}" unless
+        posts == expected_posts
+      # A converged server must not be rewritten, and a drifted one must end at
+      # the declared name with the unmanaged field the operator owns untouched.
+      failures << "Jellyfin #{label} left the server name at #{state['ServerName'].inspect}" unless
+        state["ServerName"] == (check_mode ? served : desired)
+      failures << "Jellyfin #{label} discarded unmanaged server configuration" unless
+        state["UnmanagedSentinel"] == true
+      # Check mode must still say what it would do, or a review of a drifted NAS
+      # reads as converged.
+      planned = stdout.include?("JELLYFIN_PLAN_SERVER_NAME")
+      failures << "Jellyfin #{label} check-mode plan disclosure differs" unless
+        planned == (check_mode && served != desired)
+    end
+  end
+end
