@@ -463,12 +463,18 @@
       - >-
         bindery_verify_indexers.json | default([], true)
         | selectattr('enabled') | list | length > 0
+    # The declared count is deliberately not interpolated here.
+    # `media_arr_indexers` is a credential -- each declaration carries the
+    # indexer's own API key -- so naming it in a rendered message obliges the
+    # task to set `no_log`, and a redacted assertion is one that can no longer
+    # say what went wrong. The `when` below may read it because control keys are
+    # not rendered.
     fail_msg: >-
-      Bindery holds no enabled indexer while {{ media_arr_indexers | length }}
-      are declared for Prowlarr. They are synced from the declared Prowlarr
-      instance rather than written by this platform, so a sync that returned
-      nothing leaves every search empty and every book ungrabbable while every
-      other reading stays correct.
+      Bindery holds no enabled indexer while indexers are declared for
+      Prowlarr. They are synced from the declared Prowlarr instance rather than
+      written by this platform, so a sync that returned nothing leaves every
+      search empty and every book ungrabbable while every other reading stays
+      correct.
   when:
     - media_usenet_enabled | bool
     - media_arr_indexers | length > 0
