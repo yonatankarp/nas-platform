@@ -1861,16 +1861,6 @@ check(failures, !launcher_source.include?(%(sh -eu -c ")),
       "sh -c argument, where no syntax check or linter can read it")
 
 
-# scripts/production_auto_deploy.py and scripts/image_prune.py are two
-# self-sufficient single-file programs, and that is structural rather than an
-# oversight: each is installed on the NAS by an ansible.builtin.copy of exactly
-# one file, so a shared module would be a second file that must land too, and a
-# script that arrived without it would die at import -- before any handler could
-# report it, on every five-minute tick, with no merge able to heal the host.
-# services/dozzle/alert_relay.py mirrors the same helpers from inside a
-# container, where a module in the deploy account's home is not reachable at
-# all. So the duplication stays.
-#
 # Every top-level def in a Python file as raw source text, keyed by name and
 # collected as a list so a redefinition further down is visible rather than
 # hidden behind the first. Comments above a def belong to no definition, which
@@ -1900,6 +1890,17 @@ def python_top_level_definitions(path)
   definitions
 end
 
+
+# scripts/production_auto_deploy.py and scripts/image_prune.py are two
+# self-sufficient single-file programs, and that is structural rather than an
+# oversight: each is installed on the NAS by an ansible.builtin.copy of exactly
+# one file, so a shared module would be a second file that must land too, and a
+# script that arrived without it would die at import -- before any handler could
+# report it, on every five-minute tick, with no merge able to heal the host.
+# services/dozzle/alert_relay.py mirrors the same helpers from inside a
+# container, where a module in the deploy account's home is not reachable at
+# all. So the duplication stays.
+#
 # Divergence is the part that does not have to. The two copies of _write_private
 # drifted in opposite directions until one fsynced and never repaired the mode
 # while the other repaired the mode and never fsynced, each carrying the bug the
