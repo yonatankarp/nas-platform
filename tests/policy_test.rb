@@ -1892,6 +1892,11 @@ def python_top_level_definitions(path)
     end
     definitions[name] << body.join("\n").rstrip
   end
+  # Without this the default block would answer an absent name with [], whose
+  # .first is nil -- and [nil, nil].uniq.length == 1, so a name no script
+  # defines would read as two scripts agreeing. Dropped, an absent name answers
+  # nil and the next call on it raises, which is a failure rather than a pass.
+  definitions.default_proc = nil
   definitions
 end
 
