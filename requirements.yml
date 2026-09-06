@@ -5,4 +5,4 @@
 # modules additionally require requests in the managed target interpreter.
 collections:
   - name: community.docker
-    version: 5.2.2
+    version: 5.3.0
