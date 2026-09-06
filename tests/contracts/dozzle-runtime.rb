@@ -535,6 +535,29 @@ fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "n
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
 fail_contract("managed dispatcher URL differs") unless dispatcher["url"] == expected_url
 fail_contract("managed dispatcher template differs") unless dispatcher["template"] == expected_template
+# Read straight out of the vault rather than through the inventory layer, and
+# that is a trade rather than an oversight (#420). This lane is the only one
+# whose tags guarantee a dozzle converge, and the vault it converges declares
+# this key, so the equality below covers the operator's rotation path: a token
+# authored in the vault beating the derivation in
+# inventory/group_vars/all/main.yml and reaching Dozzle's own dispatcher (#172).
+# One run converges one vault, so teaching this to read the derived value would
+# let the lane cover the omitting state only *instead of* that one -- a trade,
+# not an addition -- and would put a third consumer on a derivation deliberately
+# spelled once.
+#
+# Omission is covered elsewhere, not uncovered. tests/generate-ephemeral-vault.sh
+# --self-test generates a vault that never declares this key and validates it
+# through the real group_vars layering, with a negative control that must refuse
+# by name once the derivation is stripped (#394); tests/policy_vault_test.rb
+# pins the derivation's form and checks its hexdigest against the rule the key
+# carries. #295's warning -- that a fixture supplying a credential cannot catch
+# a bug about its absence -- is answered by that fixture, because it omits. What
+# a converge would add on top is nil: both ends read one bare variable
+# (roles/dozzle/defaults/main.yml and roles/dozzle/templates/env.j2), nothing
+# downstream reads where its value came from, and the `| default(...)` or
+# hoisted fact that would change that fails the expression-text checks in
+# tests/contracts/dozzle-alerts.rb and tests/contracts/dozzle-stack.rb.
 fail_contract("managed dispatcher headers differ") unless
   dispatcher["headers"] == { "Authorization" => "Bearer #{vault.fetch('vault_dozzle_alert_relay_token')}" }
 # The equality above is the whole of it, and deliberately so. A second check for
