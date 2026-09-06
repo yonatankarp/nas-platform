@@ -5,8 +5,8 @@
 #
 # Every row names the policy scripts that actually detect its planted defect, so
 # its sandbox runs one or two of them rather than all eight. Those sets were
-# derived by measurement, not by reading the scripts: 222 of the 243 mutations
-# here are detected by exactly one script, and only 14 by
+# derived by measurement, not by reading the scripts: 213 of the 262 mutations
+# here are detected by exactly one script, and only 16 by
 # tests/policy_integration_test.rb, the one that dominates a sandbox's cost
 # because it boots Ansible twice to render role defaults. Both figures count
 # mutations, not call sites, and they are smaller than the declared sets suggest:
@@ -870,6 +870,71 @@ expect_failure(failures, "dropped remote transport account",
                detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
     inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas").delete("ansible_user")
+  end
+end
+
+# #410. The two rows above only exercise the ssh branch. The branch for a local
+# connection was demonstrated by the live tree passing, which shows nothing about
+# what it does when the tree is wrong: a coordinate copied into local.yml or
+# mac.yml states a transport that connection does not use, and the copy looks
+# correct in isolation -- it is the same guarded expression remote.yml carries.
+# Both inventories are planted rather than one, because the branch is reached
+# through a loop over the inventory roster and a row for local.yml alone cannot
+# tell a working guard from a roster that stopped visiting mac.yml.
+guarded_coordinate = lambda do |variable, hint|
+  "{{ lookup('env', '#{variable}') | default(undef(hint='#{variable} is unset: #{hint}'), true) }}"
+end
+
+expect_failure(failures, "transport address on the local inventory",
+               "inventory/local.yml uses a local connection and must not declare ansible_host",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/local.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas")["ansible_host"] =
+      guarded_coordinate.call("PLATFORM_NAS_ADDRESS", "export the address this run reaches the NAS at")
+  end
+end
+
+expect_failure(failures, "transport account on the Mac inventory",
+               "inventory/mac.yml uses a local connection and must not declare ansible_user",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/mac.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "mac_hosts", "hosts", "mac")["ansible_user"] =
+      guarded_coordinate.call("PLATFORM_NAS_USER", "export the account this run logs into the NAS as")
+  end
+end
+
+# The three shapes an undef() can take while meaning nothing. Each keeps the
+# refusal -- the run still stops before the first packet -- and each sends the
+# operator to a variable that will not lift it, which is a slower version of the
+# silent fallback the guard was written to refuse.
+expect_failure(failures, "remote transport address hinting the wrong variable",
+               "inventory/remote.yml ansible_host must read PLATFORM_NAS_ADDRESS and name " \
+               "that same variable in its undef() hint",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas")["ansible_host"] =
+      "{{ lookup('env', 'PLATFORM_NAS_ADDRESS') | " \
+      "default(undef(hint='PLATFORM_NAS_USER is unset: export the account this run logs into the NAS as'), true) }}"
+  end
+end
+
+expect_failure(failures, "remote transport account reading the wrong variable",
+               "inventory/remote.yml ansible_user must read PLATFORM_NAS_USER and name " \
+               "that same variable in its undef() hint",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas")["ansible_user"] =
+      guarded_coordinate.call("PLATFORM_NAS_ADDRESS", "export the address this run reaches the NAS at")
+  end
+end
+
+expect_failure(failures, "remote transport address refusing without a hint",
+               "inventory/remote.yml ansible_host must read PLATFORM_NAS_ADDRESS and name " \
+               "that same variable in its undef() hint",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "inventory/remote.yml") do |inventory|
+    inventory.dig("platform_hosts", "children", "nas_hosts", "hosts", "nas")["ansible_host"] =
+      "{{ lookup('env', 'PLATFORM_NAS_ADDRESS') | default(undef(), true) }}"
   end
 end
 

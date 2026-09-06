@@ -312,6 +312,15 @@ PLATFORM_INVENTORIES = {
   "remote.yml" => ["nas_hosts", "nas", "ssh", "nas"],
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
+# Each transport coordinate reads one environment variable, and only that one.
+# The pairing is the point: an undef() hint is a message to an operator who has
+# a shell with the wrong variable exported, so a hint naming the other
+# coordinate's variable refuses at exactly the right moment and then sends that
+# operator to export something that will not fix it.
+TRANSPORT_COORDINATE_SOURCES = {
+  "ansible_host" => "PLATFORM_NAS_ADDRESS",
+  "ansible_user" => "PLATFORM_NAS_USER"
+}.freeze
 PLATFORM_CAPABILITIES = %w[
   platform_container_cpu_budget
   platform_render_device_available platform_render_device_path
@@ -377,12 +386,26 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
   # first packet. Presence is required rather than tolerated, because deleting
   # the keyword outright reinstates the same fallback that the guard exists to
   # refuse; a local connection has no transport to state and must carry neither.
-  %w[ansible_host ansible_user].each do |coordinate|
+  TRANSPORT_COORDINATE_SOURCES.each do |coordinate, variable|
     coordinate_source = host.is_a?(Hash) ? host[coordinate] : nil
     if connection == "ssh"
       check(failures, coordinate_source.is_a?(String) && coordinate_source.include?("undef("),
             "inventory/#{inventory_name} must define #{coordinate} and fail on an " \
             "unset environment value with undef(), not fall back to Ansible's default")
+      # Shape is not meaning: the check above is satisfied by any undef() at all,
+      # including one whose hint names the other coordinate's variable, or one
+      # with no hint to name anything. The refusal is only useful if it tells the
+      # operator which variable to export, so the expression must read this
+      # coordinate's variable, name that same variable in its hint, and mention
+      # no other -- a hint naming both is a hint that names neither.
+      hint = coordinate_source.to_s[/undef\(\s*hint\s*=\s*'([^']*)'/, 1]
+      named_variables = coordinate_source.to_s.scan(/PLATFORM_[A-Z0-9_]+/).uniq
+      check(failures,
+            coordinate_source.to_s.match?(/lookup\(\s*'env',\s*'#{Regexp.escape(variable)}'\s*\)/) &&
+              hint.to_s.include?(variable) && named_variables == [variable],
+            "inventory/#{inventory_name} #{coordinate} must read #{variable} and name " \
+            "that same variable in its undef() hint, so the refusal says which " \
+            "variable to export (reads #{named_variables.inspect}, hint #{hint.inspect})")
     else
       check(failures, coordinate_source.nil?,
             "inventory/#{inventory_name} uses a #{connection} connection and must " \
