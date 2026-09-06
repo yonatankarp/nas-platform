@@ -329,7 +329,7 @@ check(failures, media_report_fields.length == 4 && media_report_fields.uniq.leng
         "Mac #{group} must register an executable media acquisition foundation hook")
 end
 
-# The Mac contract wrapper and four of the five hook groups were one file per
+# The Mac contract wrapper and four of the six hook groups were one file per
 # service until they were driven from tests/contracts/registry.yml. What that
 # collapse can lose is a whole suite, quietly: mac_run_hooks refuses a group with
 # no hook files at all, not a group whose single hook forgot a service. These
@@ -351,7 +351,7 @@ check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
 #
-# The fifth group, drift, never collapsed and does not need to: no two services
+# Drift, the fifth group, never collapsed and does not need to: no two services
 # drift alike. It needs the accounting for the opposite reason. A per-service
 # group loses a service by losing a file, and that is not a hypothetical — the
 # five acquisition services were promoted with a drift hook each while nothing in
