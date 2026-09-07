@@ -23,6 +23,55 @@ MARKER_NAME = ".nas-platform-initial-scan.json"
 LIBRARY_ID = "managed-library"
 LIBRARY_NAME = DEFAULTS.fetch("audiobookshelf_library_name")
 MEDIA_SENTINEL = "MEDIA_SECRET_SENTINEL"
+# How long one ansible-playbook boot is given before it is called hung. This is
+# not a performance assertion: every behavioural property below has its own
+# check. tests/validate-policy.sh runs its checks in a pool of `nproc` workers
+# and this check forks its own case pool of the same width, so on a four-core
+# runner sixteen boots can be resident at once and a play that takes two seconds
+# unloaded takes far longer. A literal 30 here reported the gate's own
+# contention as a scan-behaviour failure on three unrelated pull requests
+# (#462); 120 is what tests/media_acquisition_reconciliation_support.rb budgets
+# for the same operation, and its comment argues the same runner. Overridable
+# for anyone who wants it strict.
+PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("AUDIOBOOKSHELF_PLAYBOOK_TIMEOUT", "120"))
+
+class FixtureTimeout < StandardError; end
+
+def terminate_process_group(pid, signal)
+  Process.kill(signal, -pid)
+rescue Errno::ESRCH
+  nil
+end
+
+# Timeout.timeout around Open3.capture3 interrupts open3's own reader thread
+# mid-read, so a contended boot is reported as "stream closed in another thread
+# (IOError)" rather than as a deadline, and the ansible child outlives the check
+# because nothing signals it. Only wait_thread.value is wrapped here, the
+# readers are ours, and the process group is killed on the way out -- the shape
+# the sibling fixtures in tests/ntfy_verify_execution_test.rb,
+# tests/immich_configured_password_test.rb and
+# tests/beszel_password_preservation_test.rb already carry.
+def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
+  Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
+    stdin.close
+    stdout_reader = Thread.new { stdout.read }
+    stderr_reader = Thread.new { stderr.read }
+    begin
+      status = Timeout.timeout(timeout_seconds) { wait_thread.value }
+    rescue Timeout::Error
+      terminate_process_group(wait_thread.pid, "TERM")
+      unless wait_thread.join(1)
+        terminate_process_group(wait_thread.pid, "KILL")
+        wait_thread.join
+      end
+      stdout_reader.join
+      stderr_reader.join
+      unit = timeout_seconds == 1 ? "second" : "seconds"
+      raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
+    end
+    [stdout_reader.value, stderr_reader.value, status]
+  end
+end
 
 # The crash-resumable unit this file drives: the role's initial-scan stage, whole.
 # The stage has its own file, so it is read as one; a role that still carries the
@@ -95,9 +144,10 @@ class ScanFixture
 
   def initialize(
     advance_last_scan:, library: exact_library, tasks_shape: nil, items_shape: [],
-    libraries_shape: nil, scan_race: false
+    libraries_shape: nil, scan_race: false, blocked: false
   )
     @advance_last_scan = advance_last_scan
+    @blocked = blocked
     @library = library
     @tasks_shape = tasks_shape
     @items_shape = items_shape
@@ -165,6 +215,16 @@ class ScanFixture
   end
 
   def respond(client, method, target, body)
+    # A responder that accepts the request and answers nothing, so the play
+    # cannot finish however fast the machine is. It is what makes the refusal
+    # case at the foot of this file deterministic rather than a bet on an
+    # ansible boot outlasting its budget. It waits for close rather than
+    # sleeping, so the serve loop still leaves through its own break.
+    if @blocked
+      IO.select([@shutdown_reader], nil, nil, nil)
+      return
+    end
+
     case [method, target]
     when ["POST", "/api/libraries"]
       @create_requests += 1
@@ -273,7 +333,8 @@ end
 
 def run_scan(
   fixture, config_root, stop_after: nil, stop_before: nil, platform_kind: "nas",
-  manage_linux_ownership: false, nas_uid: Process.uid, nas_gid: Process.gid
+  manage_linux_ownership: false, nas_uid: Process.uid, nas_gid: Process.gid,
+  timeout_seconds: PLAYBOOK_TIMEOUT_SECONDS
 )
   fixture.marker_path = File.join(config_root, MARKER_NAME)
   existing_library = fixture.library || {}
@@ -301,12 +362,10 @@ def run_scan(
   Dir.mktmpdir("audiobookshelf-scan-playbook-") do |directory|
     path = File.join(directory, "playbook.yml")
     File.write(path, YAML.dump(playbook), mode: "w", perm: 0o600)
-    Timeout.timeout(30) do
-      Open3.capture3(
-        { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
-        path, chdir: ROOT
-      )
-    end
+    capture3_with_timeout(
+      { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,", "-c", "local",
+      path, chdir: ROOT, timeout_seconds: timeout_seconds
+    )
   end
 end
 
@@ -707,6 +766,27 @@ end
     ensure
       fixture.close
     end
+  end
+end
+
+# The refusal path of the wrapper above, proved the way the three sibling
+# fixtures prove theirs: a budget nothing can meet, driven against a fixture
+# that answers nothing. What this covers is the wrapper -- the process group is
+# signalled and the deadline is named in the diagnostic -- and not the detection
+# of a hung HTTP call: one second is shorter than an ansible boot on the runners
+# this gate uses, so the play is usually refused before it reaches the fixture
+# at all. The blocked responder is what makes the case deterministic on a
+# machine fast enough to boot inside the budget, rather than a bet on boot time.
+scenario("audiobookshelf-blocked-fixture-") do |config_root, failures|
+  fixture = ScanFixture.new(advance_last_scan: true, library: nil, blocked: true)
+  begin
+    run_scan(fixture, config_root, timeout_seconds: 1)
+    failures << "blocked Audiobookshelf scan fixture did not time out diagnostically"
+  rescue FixtureTimeout => error
+    failures << "blocked Audiobookshelf scan fixture timeout diagnostic differs" unless
+      error.message == "Ansible fixture timed out after 1 second"
+  ensure
+    fixture.close
   end
 end
 
