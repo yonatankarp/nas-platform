@@ -186,12 +186,13 @@ if failures.empty?
     !deployments.empty? &&
     deployments.all? { |task| Array(task["when"]).include?("seafile_deployment_enabled | bool") }
 
-  # MariaDB installs root@localhost able to authenticate through the unix_socket
-  # plugin, which authorises by the connecting process's uid and ignores the
-  # password entirely. A probe over the container's own socket would therefore
-  # report `verified` whatever the credential said. Addressing the service by
-  # name forces the connection through the network stack, where only root@% can
-  # answer and only a matching password gets in.
+  # Addressing the service by name forces the connection through the network
+  # stack, where only root@% can answer and only a matching password gets in. A
+  # probe over the container's own socket answers as root@localhost instead,
+  # which on a Debian/Ubuntu MariaDB the unix_socket plugin authorises by uid
+  # whatever the credential says; tests/contracts/seafile-runtime.rb has since
+  # measured that plugin absent from this image, and the root@% half is what
+  # keeps this TCP regardless.
   probe = deploy.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
   probe_argv = Array(probe&.dig("community.docker.docker_compose_v2_exec", "argv")).join(" ")
   failures << "the Seafile database probe must authenticate over TCP as root" unless

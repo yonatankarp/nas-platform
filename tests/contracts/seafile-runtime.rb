@@ -111,6 +111,13 @@ def census
   end
 end
 
+# This waits on a fresh verdict rather than a stale one, which is not obvious
+# from the loop: `docker restart` returns only after the start, and the start
+# resets health to `starting` -- measured on Docker 29.7.2, where six inspects
+# straight after a restart all reported `starting` and healthy came back only
+# once a new probe had run. Demanding more of it -- a health-log entry stamped
+# after State.StartedAt, say -- would buy nothing this does not already have,
+# and wait_for_server and the token exchange after it carry the phase anyway.
 def wait_for_health(container, budget, label)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + budget
   loop do
@@ -241,16 +248,17 @@ end
 
 # --- the database credential classification ---------------------------------
 #
-# (c) roles/seafile probes root over TCP because MariaDB installs root@localhost
-# able to authenticate through the unix_socket plugin, which authorises by the
-# connecting process's uid and ignores the password. Asserted here: the platform's
-# own credential authenticates over TCP and answers as root, and a password
-# nothing authored does not. Observed and never asserted: what the same wrong
-# password does over the container's own socket. That plugin default is a
-# Debian/Ubuntu packaging decision rather than a documented property of
-# docker.io/library/mariadb, so asserting it would fail this lane for something
-# the repository does not control -- while the TCP assertions pin the choice
-# either way.
+# (c) roles/seafile probes root over TCP so that only root@% -- the account the
+# image creates with CREATE USER ... IDENTIFIED BY -- can answer, and only a
+# matching password gets in. Asserted here: the platform's own credential
+# authenticates over TCP and answers as root, and a password nothing authored
+# does not. Observed and never asserted: what the same wrong password does over
+# the container's own socket, where MariaDB's unix_socket plugin would authorise
+# root@localhost by uid and ignore the password entirely. That plugin default is
+# a Debian/Ubuntu packaging decision rather than a documented property of
+# docker.io/library/mariadb -- this lane has since measured it absent from the
+# image -- so asserting either outcome would fail this lane for something the
+# repository does not control, while the TCP assertions pin the choice.
 TCP_IDENTITY_SCRIPT = <<~'SH'
   exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb --protocol=tcp --host=db --port=3306 \
     --user=root --connect-timeout=15 --batch --skip-column-names \

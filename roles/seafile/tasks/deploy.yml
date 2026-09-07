@@ -119,14 +119,20 @@
 # value, the datadir keeps the old one, and every later start authenticates
 # against a password nothing wrote.
 #
-# Over TCP, and that is load-bearing rather than incidental. MariaDB installs
-# root@localhost able to authenticate through the unix_socket plugin, which
-# authorises by the connecting process's own uid and ignores the password
-# entirely; a probe over the container's socket would therefore succeed whatever
-# the credential said and report `verified` while proving nothing. Addressing the
+# Over TCP, and that is load-bearing rather than incidental. Addressing the
 # service by name forces the connection through the network stack, where only
 # root@% -- the account the image creates with CREATE USER ... IDENTIFIED BY --
 # can answer, and only a matching password gets in.
+#
+# The form was also chosen against a second hazard, which this image turns out
+# not to carry. MariaDB's unix_socket plugin authorises root@localhost by the
+# connecting process's own uid and ignores the password entirely, so a probe
+# over the container's socket would report `verified` whatever the credential
+# said -- but that plugin default is Debian/Ubuntu packaging, and against
+# docker.io/library/mariadb:10.11.19 tests/contracts/seafile-runtime.rb measured
+# the socket refusing a password nothing wrote. The contract keeps reporting
+# that outcome rather than asserting it: it is upstream's behaviour, not this
+# repository's, and the root@% half above makes TCP right either way.
 #
 # Only the user half of current_user() is compared. The host half depends on how
 # the server resolves the connecting address and is not something this platform
