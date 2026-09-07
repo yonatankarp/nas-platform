@@ -29,26 +29,31 @@
 # block the pool drives, is every name it assigns local to that block?
 #
 # HOW THE QUESTION IS ANSWERED. A name first assigned inside a block is in that
-# block's own local table; a name that resolves outward is not. So the names a
-# case owns are its own table plus the tables of every block nested inside it,
-# and any assigned name outside that set is an outward write.
+# block's own local table; a name that resolves outward is not. So an assignment
+# is the case's own when some scope on the path from the case down to that
+# assignment declares the name, and an outward write when none does.
+#
+# The path, not the set. A flat union of every table anywhere inside the case is
+# the obvious version and it is wrong, because a nested block's declarations --
+# its parameters included -- shadow only inside that block. That is #489, and it
+# is recorded at `escaping_in` below with the shape that masked it.
 #
 # TWO AST DETAILS, both of which a first attempt at this got wrong together, and
 # which made it report the known-buggy revision as clean. Inside a block Ruby
 # emits `DASGN`, not `LASGN`. And a multiple assignment's targets hang off the
 # MASGN's *second* child, not its first -- `children[0]` is the value list.
 #
-# `assigned_names` below answers both by walking the whole subtree for both
-# assignment node types and special-casing neither, since a MASGN's targets are
-# ordinary DASGN nodes the walk reaches on its own. Be precise about what
-# `--self-test` therefore pins, because it is one of those and not both: a
-# checker that looks only for `LASGN` fails all four planted rows, which is
-# measured, not assumed. The MASGN detail is *unobservable* from the outside
-# here -- reinstating the wrong-child special case changes no verdict, because
-# the walk already found those targets -- so the row that reduces the shipped
-# defect (a multiple assignment inside a nested block) proves the walk reaches
-# it, and nothing in this file could fail if someone added a redundant MASGN
-# branch back. Do not read the rows as covering more than that.
+# `escaping_in` below answers both by testing for both assignment node types and
+# special-casing neither, since a MASGN's targets are ordinary DASGN nodes the
+# walk reaches on its own. Be precise about what `--self-test` therefore pins,
+# because it is one of those and not both: narrowing that test to `LASGN` alone
+# fails five of the planted rows, which is measured, not assumed. The MASGN
+# detail is *unobservable* from the outside here -- reinstating the wrong-child
+# special case changes no verdict, because the walk already found those targets
+# -- so the row that reduces the shipped defect (a multiple assignment inside a
+# nested block) proves the walk reaches it, and nothing in this file could fail
+# if someone added a redundant MASGN branch back. Do not read the rows as
+# covering more than that.
 #
 # WHAT IS IN SCOPE. Two kinds of block, and their union:
 #
@@ -95,23 +100,32 @@ def block_scope(node)
   end
 end
 
-# Every local table at or below +node+: the case's own, plus each block nested
-# inside it. A nested block's assignment to a name the case owns is the case's
-# own business.
-def owned_names(node)
-  names = []
-  each_node(node) { |inner| names.concat(inner.children[0]) if inner.type == :SCOPE }
-  names.uniq
-end
+# The names an assignment may legitimately be declared in are the ones on the
+# path from the case down to that assignment -- NOT every table anywhere inside
+# the case.
+#
+# Position is the whole of it, and the first version of this check got it wrong
+# by unioning every nested table. A nested block's *parameters* are declarations
+# in that block's own table, so `run_playbook(...) do |_tmp, output, status|`
+# nested in a case put `status` into the union, and an assignment to `status` in
+# the case body -- outside that block, resolving outward past the case -- was
+# then read as owned. That is the defect this file exists to catch, masked by
+# the shape the file it was written for is built from (#489). Both the synthetic
+# row and a planted write in a real pooled case came back clean.
+#
+# Dropping nested tables altogether is the other wrong answer: a name first
+# assigned inside a nested block genuinely is case-local -- `_mutant_rendered`
+# inside `with_ntfy_task_removed do |...|` is one -- and both rows are in the
+# self-test so neither fix can be traded for the other.
+def escaping_in(node, tables, found)
+  return unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
-def assigned_names(node)
-  names = []
-  each_node(node) do |inner|
-    next unless %i[DASGN LASGN].include?(inner.type)
-
-    names << inner.children[0] if inner.children[0].is_a?(Symbol)
+  if %i[DASGN LASGN].include?(node.type) && node.children[0].is_a?(Symbol)
+    name = node.children[0]
+    found << name unless tables.any? { |table| table.include?(name) }
   end
-  names.uniq
+  inner = node.type == :SCOPE ? tables + [node.children[0]] : tables
+  node.children.each { |child| escaping_in(child, inner, found) }
 end
 
 # The method a block is attached to, for the `in_parallel_cases` half of the
@@ -142,7 +156,14 @@ end
 # parameter list that needs the declaration rather than at the file.
 def escaping_writes(root)
   pool_cases(root).filter_map do |node|
-    escaping = assigned_names(node) - owned_names(node)
+    scope = block_scope(node)
+    next if scope.nil?
+
+    escaping = []
+    # Entered at the case's own SCOPE, which pushes the case's table -- its
+    # parameters, its block-local declarations, and the names it first assigns.
+    escaping_in(scope, [], escaping)
+    escaping = escaping.uniq
     next if escaping.empty?
 
     [node.first_lineno, escaping]
@@ -211,6 +232,44 @@ if ARGV == ["--self-test"]
           Dir.mktmpdir("x") do |directory|
             _stdout, _stderr, status = capture(directory)
             check(collected, !status.success?, "did not refuse")
+          end
+        end
+      RUBY
+    ],
+    # #489. A nested block's PARAMETERS are declarations in that block's local
+    # table, and an ownership rule that unions every nested table reads the
+    # outward write below as owned -- the write is in the case body, outside the
+    # block whose parameter shares the name, so it resolves past the case. This
+    # is not a hypothetical shape: `run_playbook(...) do |_tmp, output, status|`
+    # nested inside a case is what config_managed_users_test.rb is built from,
+    # and the masking names are `status` and `output`, the names of the defect
+    # this file was written for. The first version of this check shipped with
+    # exactly that hole and reported both this row and a planted write in the
+    # real subject as clean.
+    "a nested block parameter that shares the written name" => [
+      <<~RUBY, [:status]
+        status = nil
+        status = run_something
+        cases = []
+        cases << lambda do |collected|
+          helper do |_tmp, output, status|
+            check(collected, status, "inner")
+          end
+          status = second_fixture
+          check(collected, status, "outer")
+        end
+      RUBY
+    ],
+    # The other side of that rule, and the reason it cannot simply drop nested
+    # tables: a name first assigned inside a nested block IS case-local, and
+    # `_mutant_rendered` in config_managed_users_test.rb is exactly that.
+    "a name first assigned inside a nested block" => [
+      <<~RUBY, nil
+        cases = []
+        cases << lambda do |collected|
+          with_ntfy_task_removed(name) do |mutant_path, found|
+            _mutant_rendered, _mutant_output, mutant_status = run_fixture(mutant_path)
+            check(collected, mutant_status.success?, "did not escape")
           end
         end
       RUBY
