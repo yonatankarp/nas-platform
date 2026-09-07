@@ -255,6 +255,23 @@ validates the effective CPU set before deployment and checks Docker's applied
 set and quota after each stack starts. Change the budget only in
 `inventory/group_vars/nas_hosts/main.yml`.
 
+**Container memory has no policy, and headroom is the only reason that has been
+safe.** The NAS has 16 GB of RAM and Beszel puts the deployed stacks at roughly
+7 GB of it over an eight-hour window, so the resident set is under half the
+machine and the two heavy workloads, Immich's ML container and Jellyfin
+transcoding, are bursty rather than resident. Nothing in the tree declares
+`mem_limit`, `memswap_limit` or `deploy.resources`, so any one container may
+still take the whole host. Two alerts sit under that, neither of them a limit:
+Beszel warns above 90% of host memory sustained ten minutes, about 14.4 GB, and
+Dozzle carries an `OOM` rule that names the container. Whether that rule fires
+for a host-level kill on a container with no limit set is untested, and the
+`die` rule beside it excludes exit 137, so the only kind of OOM this platform
+can currently suffer may be silent in both. These two figures are an
+observation, not a budget, and nothing validates either: if a memory policy
+lands (#447) the RAM figure belongs beside `platform_container_cpu_budget` with
+a preflight assert against what the Docker daemon reports, the way the logical
+CPU capacity already is.
+
 **`nas_storage` in `inventory/group_vars/all/main.yml` is one source of truth for
 three things**: `host_prep` creates the directories with those permissions, the
 policy test requires every implemented service to declare a path naming it, and
