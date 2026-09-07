@@ -62,6 +62,18 @@ policy_shard=${1:-}
 # count is all a partition without a cost table can balance. Rebalancing as
 # checks change is a manual act, and the slowest-checks report below is what
 # informs it.
+#
+# One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
+# that note the manifest can carry -- a comment between the heredoc markers would
+# be dispatched as a check. `ruby tests/ci/workflow_test.rb` runs here and again
+# as a step of the `validate` job in .github/workflows/ci.yml, whose own comment
+# carries the reasoning. In short: what it pins is the shape of the workflow that
+# runs it, so from here alone `static` gated `if: false`, deleted, or given an
+# empty matrix takes its own objection out of the run and reports success (#480).
+# `validate` runs under `always()` and cannot be skipped, so the second route is
+# the one that survives. Neither copy is redundant, and the check asserts both:
+# that `validate` still invokes it, and that this manifest still registers it
+# exactly once.
 
 policy_shard_1() {
   cat <<'POLICY_CHECKS_1'
