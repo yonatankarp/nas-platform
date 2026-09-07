@@ -267,6 +267,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/mac/report.rb --self-test
   tests/mac/snapshot-paperless.sh --self-test
   ruby tests/mac/pin-protected-input-test.rb --self-test
+  ruby tests/case_pool_locals_test.rb --self-test
 CHECKS
 
 SHARDS = { "1" => SHARD_1, "2" => SHARD_2, "3" => SHARD_3 }.freeze
