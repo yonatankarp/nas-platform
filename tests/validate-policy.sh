@@ -14,10 +14,11 @@
 # in a helper, or prefixing them, silently disables those guards while leaving
 # this script working, so keep the shape.
 #
-# Adding a check means adding it in two places, this list and that declaration.
-# That is the price of the first guard and it is deliberate: for about forty of
-# these lines nothing required them at all until #469, so deleting any one left
-# every check green and the gate faster than before.
+# Adding a check means adding it in two places: one shard of this list, and the
+# matching shard of that declaration. That is the price of the first guard and it
+# is deliberate: for about forty of these lines nothing required them at all
+# until #469, so deleting any one left every check green and the gate faster than
+# before.
 #
 # POLICY_JOBS sets concurrency and defaults to the CPU count. POLICY_JOBS=1
 # restores the original one-at-a-time order, which is what to use when bisecting
@@ -37,167 +38,258 @@
 # the state of the other fifty-six.
 set -eu
 
-policy_checks() {
-  cat <<'POLICY_CHECKS'
+if [ "$#" -gt 1 ]; then
+  printf 'usage: %s [SHARD]\n' "$0" >&2
+  exit 2
+fi
+policy_shard=${1:-}
+
+# The list is partitioned into three shards, one heredoc each, and CI runs each
+# shard on a runner of its own. No argument runs all three, which is the
+# unsharded gate a developer runs locally and what every caller but CI still
+# does; `tests/validate-policy.sh 2` runs shard 2 alone.
+#
+# tests/gate_manifest_coverage_test.rb holds the three lists a second time and
+# asserts their union is exactly this manifest, in both directions, with a floor
+# under each shard. That guard is the precondition for sharding at all: dropping
+# a line from a partition removes a check from the gate and makes the gate
+# *faster*, with nothing else in the repository to notice.
+#
+# The partition was balanced against the post-merge `main` run of bab1dc0
+# (2026-09-07): 2342s of check time across 155 checks, whose ten slowest ran from
+# 247s down to 75s. Those ten are placed by hand so that no two of the top three
+# share a shard; every other line is round robin, which balances count, because
+# count is all a partition without a cost table can balance.
+#
+# SPREAD THE WAITS, and this rule outranks the one above it. A check that spends
+# its time waiting -- on a timeout, a poll, a port -- still occupies one of the
+# four worker slots, but it consumes none of the CPU the other three are
+# competing for. Two long waits in one shard therefore cut that shard's effective
+# pool from four workers to two, and every CPU-bound check in it stretches. This
+# is measured, not reasoned: `beszel_contract_test.rb` and its `--self-test` are
+# 86s and 85s of pure wait, #484 moved them into the same shard, and that shard's
+# *other* checks inflated by 298s on 412s of work added -- `komga_library_
+# reconciliation_test.rb` 134s to 236s, `dozzle_contract_test.rb --self-test`
+# 111s to 185s -- while the two shards that shed work got 15% and 24% cheaper in
+# the same run. The move was reverted. Keep those two apart.
+#
+# Rebalancing as checks change is a manual act, and the slowest-checks report
+# below is what informs it -- but read #484 before trusting an arithmetic
+# projection from it. A check's recorded seconds are its wall time at that
+# shard's load, so they are not work you can carry to another shard: the
+# rebalance above predicted a largest shard of 1170s and measured 1453s. #484
+# carries the isolated per-check table (elapsed and CPU measured separately, one
+# check at a time) that says which checks are work and which are wait, and the
+# arithmetic showing the gate cannot beat its own longest check -- 241-305s for
+# `config_managed_users_test.rb --self-test` against a worst observed shard wall
+# of 394s, so a perfect partition is worth about 90s and the two levers that
+# actually lower the floor are elsewhere.
+#
+# One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
+# that note the manifest can carry -- a comment between the heredoc markers would
+# be dispatched as a check. `ruby tests/ci/workflow_test.rb` runs here and again
+# as a step of the `validate` job in .github/workflows/ci.yml, whose own comment
+# carries the reasoning. In short: what it pins is the shape of the workflow that
+# runs it, so from here alone `static` gated `if: false`, deleted, or given an
+# empty matrix takes its own objection out of the run and reports success (#480).
+# `validate` runs under `always()` and cannot be skipped, so the second route is
+# the one that survives. Neither copy is redundant, and the check asserts both:
+# that `validate` still invokes it, and that this manifest still registers it
+# exactly once.
+
+policy_shard_1() {
+  cat <<'POLICY_CHECKS_1'
 ruby tests/policy_test.rb
-ruby tests/policy_platform_test.rb
-ruby tests/policy_ci_test.rb
 ruby tests/policy_beszel_test.rb
-ruby tests/policy_integration_test.rb
-shellcheck --shell=sh tests/integration_controller_lib.sh
 shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 tests/integration_controller.sh
-ruby tests/policy_deployment_test.rb
-ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
-ruby tests/gate_manifest_coverage_test.rb
-ruby tests/policy_audit_coverage_test.rb
 "$ansible_python" tests/generate_secrets_jinja_regex_test.py
-tests/target_docker_dependency_preflight_test.sh
-tests/media_control_network_collision_test.sh static
 ruby tests/host_prep_integration_writer_test.rb
-ruby tests/media_acquisition_foundation_test.rb
-ruby tests/media_acquisition_foundation_verifier_test.rb
 ruby tests/media_acquisition_phase1_test.rb
-ruby tests/configarr_job_test.rb
-ruby tests/reader_platform_identity_test.rb
 ruby tests/media_acquisition_adoption_test.rb
-tests/mac/media-acquisition-foundation-hook-test.sh
-ruby tests/mac/media-acquisition-foundation-report-test.rb
 tests/mac/media-acquisition-foundation-cleanup-test.sh
-ruby tests/renovate_policy_test.rb
-tests/policy_runner_test.sh
 ruby tests/paperless_mail_reconciliation_test.rb
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test
-ruby tests/production_auto_deploy_role_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
-ruby tests/image_prune_role_test.rb
-ruby tests/beszel_telemetry_probe_test.rb
 ruby tests/beszel_telemetry_timeout_test.rb
-ruby tests/beszel_telemetry_ansible_test.rb
-python3 tests/beszel_telemetry_module_test.py
 python3 -m unittest -v tests/dozzle_alert_relay_test.py
-python3 -m unittest -v tests/immich_restore_classifier_test.py
-ruby tests/immich_restore_quality_test.rb
 ruby tests/immich_restore_lifecycle_test.rb
-ruby tests/immich_release_helper_test.rb
-ruby tests/immich_selective_helper_integrity_test.rb
-tests/dozzle_alert_state_symlink_test.sh
 tests/mac/beszel-telemetry-hook-test.sh
-ruby tests/ci/classify_changes_test.rb
-ruby tests/ci/validate_results_test.rb
 ruby tests/ci/workflow_test.rb
-ruby tests/secrets_docs_test.rb
-ruby tests/docs_links_test.rb
 ruby tests/docs_links_test.rb --self-test
-ruby tests/assert_no_vault_secrets_test.rb
-tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-context-test.sh
-tests/mac/snapshot-paperless-recovery-test.sh
-tests/mac/snapshot-paperless-drill-throttle-test.sh
 python3 tests/deployment_target_validator_test.py
-python3 tests/deployment_lock_probe_test.py
-tests/deployment_lock_refusal_test.sh
 python3 tests/deployment_release_compare_test.py
-python3 tests/deployment_controller_input_test.py
-ruby tests/managed_user_capabilities_test.rb --self-test
 ruby tests/managed_users_vault_test.rb
-ruby tests/beszel_password_preservation_test.rb --self-test
 ruby tests/config_managed_users_test.rb --self-test
-ruby tests/media_managed_users_test.rb
-ruby tests/media_managed_users_test.rb --self-test
-ruby tests/komga_library_reconciliation_test.rb
 ruby tests/komga_library_reconciliation_test.rb --self-test
-ruby tests/komga_contract_test.rb
-ruby tests/komga_contract_test.rb --self-test
 ruby tests/audiobookshelf_initial_scan_test.rb
-ruby tests/audiobookshelf_initial_scan_behavior_test.rb
-ruby tests/audiobookshelf_contract_test.rb
-ruby tests/audiobookshelf_contract_test.rb --self-test
 ruby tests/immich_user_onboarding_test.rb
-ruby tests/immich_configured_password_test.rb
-ruby tests/immich_smart_search_retry_test.rb
 ruby tests/database_managed_users_test.rb
-ruby tests/database_managed_users_test.rb --self-test
-ruby tests/ntfy_verify_execution_test.rb
 ruby tests/deployment_summary_test.rb
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
-ruby tests/acquisition_configarr_field_coverage_test.rb
 ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
-ruby tests/bazarr_provider_schema_test.rb
-ruby tests/bazarr_provider_schema_test.rb --self-test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_servarr_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_bazarr_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_configarr_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/media_usenet_provider_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_response_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_identity_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
-ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
-ruby tests/run_contracts_test.rb
 ruby tests/run_contracts.rb --validate-only
-ruby tests/dozzle_quality_test.rb
-ruby tests/dozzle_contract_test.rb
-ruby tests/dozzle_contract_test.rb --self-test
 ruby tests/jellyfin_transcode_contract_test.rb
-ruby tests/jellyfin_contract_test.rb
-ruby tests/jellyfin_contract_test.rb --self-test
 ruby tests/pinchflat_contract_test.rb
-ruby tests/pinchflat_contract_test.rb --self-test
-ruby tests/immich_contract_test.rb
 ruby tests/immich_contract_test.rb --self-test
-ruby tests/paperless_contract_test.rb
-ruby tests/paperless_contract_test.rb --self-test
 ruby tests/seafile_contract_test.rb
-ruby tests/seafile_contract_test.rb --self-test
 ruby tests/arr_contract_test.rb
-ruby tests/arr_contract_test.rb --self-test
-ruby tests/downloaders_contract_test.rb
 ruby tests/downloaders_contract_test.rb --self-test
-ruby tests/seerr_contract_test.rb
-ruby tests/seerr_contract_test.rb --self-test
 ruby tests/trailarr_contract_test.rb
-ruby tests/trailarr_contract_test.rb --self-test
-ruby tests/bindery_contract_test.rb
 ruby tests/bindery_contract_test.rb --self-test
-ruby tests/kapowarr_contract_test.rb
-ruby tests/kapowarr_contract_test.rb --self-test
-ruby tests/beszel_contract_test.rb
 ruby tests/beszel_contract_test.rb --self-test
 ruby tests/contract_structure_mutation_test.rb
 tests/integration_lock_test.sh
-tests/integration_suite_test.sh
-tests/integration_controller_execution_test.sh
-tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/mac/config-isolation.sh
-tests/mac/run-phase-status-test.sh
-tests/mac/manual-validation-runner-test.sh
 tests/mac/dozzle-drift-hook-test.sh
-tests/mac/audiobookshelf-drift-hook-test.sh
-tests/mac/immich-drift-hook-test.sh
 tests/mac/hook-coverage-test.sh
-tests/contracts/audiobookshelf-audio-test.sh
-ruby tests/mac/report.rb --self-test
 tests/mac/cleanup.sh --self-test
-tests/mac/snapshot-immich.sh --self-test
-tests/mac/snapshot-paperless.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
-ruby tests/mac/pin-protected-input-test.rb
-ruby tests/mac/pin-protected-input-test.rb --self-test
 ruby tests/mac/read-integration-ports-test.rb
+POLICY_CHECKS_1
+}
+
+policy_shard_2() {
+  cat <<'POLICY_CHECKS_2'
+ruby tests/policy_platform_test.rb
+ruby tests/policy_integration_test.rb
+ruby tests/policy_deployment_test.rb
+ruby tests/gate_manifest_coverage_test.rb
+tests/target_docker_dependency_preflight_test.sh
+ruby tests/media_acquisition_foundation_test.rb
+ruby tests/configarr_job_test.rb
+tests/mac/media-acquisition-foundation-hook-test.sh
+ruby tests/renovate_policy_test.rb
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test
+ruby tests/image_prune_role_test.rb
+ruby tests/beszel_telemetry_ansible_test.rb
+python3 -m unittest -v tests/immich_restore_classifier_test.py
+ruby tests/immich_release_helper_test.rb
+ruby tests/immich_selective_helper_integrity_test.rb
+ruby tests/ci/classify_changes_test.rb
+ruby tests/secrets_docs_test.rb
+ruby tests/assert_no_vault_secrets_test.rb
+tests/mac/snapshot-paperless-recovery-test.sh
+python3 tests/deployment_lock_probe_test.py
+python3 tests/deployment_controller_input_test.py
+ruby tests/beszel_password_preservation_test.rb --self-test
+ruby tests/media_managed_users_test.rb
+ruby tests/komga_contract_test.rb
+ruby tests/audiobookshelf_initial_scan_behavior_test.rb
+ruby tests/audiobookshelf_contract_test.rb
+ruby tests/immich_configured_password_test.rb
+ruby tests/database_managed_users_test.rb --self-test
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
+ruby tests/bazarr_provider_schema_test.rb
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_servarr_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_managed_user_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
+ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
+ruby tests/dozzle_quality_test.rb
+ruby tests/jellyfin_contract_test.rb
+ruby tests/pinchflat_contract_test.rb --self-test
+ruby tests/paperless_contract_test.rb
+ruby tests/arr_contract_test.rb --self-test
+ruby tests/seerr_contract_test.rb
+ruby tests/trailarr_contract_test.rb --self-test
+ruby tests/kapowarr_contract_test.rb
+tests/integration_suite_test.sh
+tests/sandbox_cleanup_acquisition_ownership_test.sh
+tests/mac/run-phase-status-test.sh
+tests/mac/audiobookshelf-drift-hook-test.sh
+tests/contracts/audiobookshelf-audio-test.sh
+tests/mac/snapshot-immich.sh --self-test
+ruby tests/mac/pin-protected-input-test.rb
 ruby tests/mac/read-integration-ports-test.rb --self-test
-POLICY_CHECKS
+POLICY_CHECKS_2
+}
+
+policy_shard_3() {
+  cat <<'POLICY_CHECKS_3'
+ruby tests/policy_ci_test.rb
+shellcheck --shell=sh tests/integration_controller_lib.sh
+ruby tests/policy_mac_test.rb
+ruby tests/policy_audit_coverage_test.rb
+tests/media_control_network_collision_test.sh static
+ruby tests/media_acquisition_foundation_verifier_test.rb
+ruby tests/reader_platform_identity_test.rb
+ruby tests/capture_helper_identity_test.rb
+ruby tests/mac/media-acquisition-foundation-report-test.rb
+tests/policy_runner_test.sh
+ruby tests/production_auto_deploy_role_test.rb
+ruby tests/beszel_telemetry_probe_test.rb
+python3 tests/beszel_telemetry_module_test.py
+ruby tests/immich_restore_quality_test.rb
+tests/dozzle_alert_state_symlink_test.sh
+ruby tests/ci/validate_results_test.rb
+ruby tests/docs_links_test.rb
+tests/mac/integration-context-test.sh
+tests/mac/snapshot-paperless-drill-throttle-test.sh
+tests/deployment_lock_refusal_test.sh
+ruby tests/managed_user_capabilities_test.rb --self-test
+ruby tests/media_managed_users_test.rb --self-test
+ruby tests/komga_library_reconciliation_test.rb
+ruby tests/komga_contract_test.rb --self-test
+ruby tests/audiobookshelf_contract_test.rb --self-test
+ruby tests/immich_smart_search_retry_test.rb
+ruby tests/ntfy_verify_execution_test.rb
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
+ruby tests/acquisition_configarr_field_coverage_test.rb
+ruby tests/bazarr_provider_schema_test.rb --self-test
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_bazarr_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_response_schema_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
+ruby tests/run_contracts_test.rb
+ruby tests/dozzle_contract_test.rb
+ruby tests/dozzle_contract_test.rb --self-test
+ruby tests/jellyfin_contract_test.rb --self-test
+ruby tests/immich_contract_test.rb
+ruby tests/paperless_contract_test.rb --self-test
+ruby tests/seafile_contract_test.rb --self-test
+ruby tests/downloaders_contract_test.rb
+ruby tests/seerr_contract_test.rb --self-test
+ruby tests/bindery_contract_test.rb
+ruby tests/kapowarr_contract_test.rb --self-test
+ruby tests/beszel_contract_test.rb
+tests/integration_controller_execution_test.sh
+tests/mac/manual-validation-runner-test.sh
+tests/mac/immich-drift-hook-test.sh
+ruby tests/mac/report.rb --self-test
+tests/mac/snapshot-paperless.sh --self-test
+ruby tests/mac/pin-protected-input-test.rb --self-test
+POLICY_CHECKS_3
+}
+
+POLICY_SHARD_IDS='1 2 3'
+
+# An identifier no shard answers to is refused with a non-zero status rather
+# than run as nothing, so a typo in the CI matrix is a red leg instead of a job
+# reporting success having executed no check at all.
+policy_checks() {
+  wanted=${1:-}
+  emitted=0
+  for shard in $POLICY_SHARD_IDS; do
+    if [ -z "$wanted" ] || [ "$wanted" = "$shard" ]; then
+      "policy_shard_$shard"
+      emitted=$((emitted + 1))
+    fi
+  done
+  if [ "$emitted" -eq 0 ]; then
+    printf 'unknown policy shard: %s\n' "$wanted" >&2
+    printf 'the manifest declares shards: %s\n' "$POLICY_SHARD_IDS" >&2
+    exit 2
+  fi
 }
 
 # Resolved before the checks run because two of them invoke this interpreter
@@ -230,8 +322,20 @@ trap 'rm -rf "$work"' EXIT HUP INT TERM
 
 # One file per check rather than a delimited record, so a command containing any
 # character at all still round-trips to its runner intact.
-policy_checks >"$work/manifest"
+policy_checks "$policy_shard" >"$work/manifest"
 total=$(awk 'END { print NR }' "$work/manifest")
+# A shard whose list is empty would otherwise run no check, report "all 0
+# checks passed" and exit 0 -- the silent green this whole partition has to be
+# incapable of. The declaration's per-shard floor guards the lists; this
+# guards the run.
+if [ "$total" -eq 0 ]; then
+  printf 'policy validation found no checks to run\n' >&2
+  exit 1
+fi
+if [ -n "$policy_shard" ]; then
+  printf 'policy gate shard %s (of %s): %s checks\n' \
+    "$policy_shard" "$POLICY_SHARD_IDS" "$total"
+fi
 index=0
 while [ "$index" -lt "$total" ]; do
   index=$((index + 1))

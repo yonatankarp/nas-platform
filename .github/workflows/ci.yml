@@ -127,10 +127,38 @@ jobs:
     # both now run beside the gate rather than inside it. This stays well above
     # the observed runtime so a slow runner cannot cancel a passing gate the way
     # the previous budget did.
+    #
+    # The fifth time the budget went over (#469) it was not that shape at all:
+    # the slowdown was uniform across unrelated checks, 2342s of check time was
+    # packing into a 611s wall on four workers -- 96% efficient -- and no single
+    # check was the floor. A pool that well packed is work-bound, so there was
+    # nothing to extract and nothing for POLICY_JOBS to fix; the only levers left
+    # were fewer checks or more cores. This matrix is more cores. Each leg is a
+    # runner with its own four workers running one shard of the manifest, and
+    # three is where it stops paying: the single slowest check is 247s, so no
+    # shard finishes faster than that however finely the rest is divided.
+    #
+    # Every step below runs on all three legs, the toolchain install included.
+    # That is the ~97s of non-gate work the arithmetic in #469 already priced per
+    # shard, and it is deliberate rather than merely simpler: a step conditioned
+    # on the shard number is a step that runs on one leg, and the guard in
+    # tests/ci/workflow_test.rb that no static step carries an `if` is what keeps
+    # a check from quietly becoming a check that runs a third as often.
     timeout-minutes: 45
+    name: static (${{ matrix.shard }})
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
+    strategy:
+      # Every shard reports. Failing fast would cancel the other two, so a run
+      # that broke checks in more than one shard would name only the first --
+      # which is the property the gate gave up its own stop-at-first-failure to
+      # get. The gate's path is deliberately not named in this comment: the
+      # mutation harness plants a defect by rewriting the first mention of it in
+      # this file, and a mention above the step it must reach would absorb that.
+      fail-fast: false
+      matrix:
+        shard: ['1', '2', '3']
 
     steps:
       - name: Check out repository
@@ -175,8 +203,15 @@ jobs:
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
+      # The shard reaches the gate through the environment rather than by
+      # interpolating a matrix value into shell source, which is how every other
+      # matrix in this workflow passes its leg's identity. The gate refuses an
+      # identifier its manifest does not declare, so a matrix that names a shard
+      # the partition dropped is a red leg rather than a leg that runs nothing.
       - name: Check policy properties
-        run: tests/validate-policy.sh
+        env:
+          POLICY_SHARD: ${{ matrix.shard }}
+        run: tests/validate-policy.sh "$POLICY_SHARD"
 
       - name: Check integration sandbox cleanup
         run: tests/integration_cleanup_test.sh
@@ -542,3 +577,28 @@ jobs:
             reconciliation="${{ needs.reconciliation.result }}" \
             toolchain="${{ needs.toolchain.result }}" \
             suites="${{ needs.suites.result }}"
+
+      # DELIBERATE DUPLICATION -- do not remove this step because the same check
+      # already runs in the gate. That removal is the defect #480 filed. The
+      # other route is one line of shard 1 of the policy gate's manifest, whose
+      # preamble carries the other half of this comment.
+      #
+      # tests/ci/workflow_test.rb pins this workflow's shape: that `static`
+      # exists, that its `if:` matches its classifier output, that its matrix
+      # names every shard the gate declares. Run only from the gate, it is a
+      # check inside the job it guards -- gate `static` on `if: false`, delete
+      # the job, or empty its matrix, and the objection stops running along with
+      # the thing it objects to. This job then sees `static` as `skipped`, which
+      # is legitimately allowed because the classifier skips it on diffs that
+      # cannot reach it, so the run goes green with the guard never having run.
+      #
+      # It runs here because this job cannot be skipped -- `if: ${{ always() }}`
+      # above -- so no edit to another job's condition, matrix or existence can
+      # suppress it. It needs nothing but the checkout above and the Ruby the
+      # runner image ships, and takes about a second.
+      #
+      # Each copy is what catches the loss of the other, and the check asserts
+      # both directions itself: that this step is here, and that the gate still
+      # registers it exactly once.
+      - name: Pin the workflow's own shape
+        run: ruby tests/ci/workflow_test.rb
