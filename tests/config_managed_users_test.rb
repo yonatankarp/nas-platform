@@ -1365,141 +1365,176 @@ end
 
 in_parallel_cases(failures, verification_cases) { |fixture, collected| fixture.call(collected) }
 
+provisioning_cases = []
+
 if !ntfy_tasks.empty?
-  provisioned, output, status = run_ntfy_fixture
-  check(failures, status.success?, "ntfy provisioning fixture failed: #{output.lines.last&.strip}")
-  if provisioned
-    check(failures, provisioned["users"].split(",") == [
-            "admin:#{BCRYPT_A}:admin", "dozzle:#{BCRYPT_A}:user", "reader:#{BCRYPT_B}:user"
-          ], "ntfy user provisioning entries differ")
-    check(failures, provisioned["access"].split(",") == [
-            "dozzle:nas-critical:write-only", "dozzle:nas-containers:write-only",
-            "dozzle:nas-verification:write-only",
-            "reader:nas-critical:read-only", "reader:private:deny"
-          ], "ntfy access provisioning entries differ")
-    check(failures, provisioned["tokens"].split(",") == ["dozzle:#{TOKEN_A}", "reader:#{TOKEN_B}"],
-          "ntfy token ownership entries differ")
-  end
-
-  _provisioned, _output, status = run_ntfy_fixture("vault_ntfy_admin_user" => "reader")
-  check(failures, !status.success?, "ntfy accepted an administrator/managed-user collision")
-  _provisioned, _output, status = run_ntfy_fixture(
-    "ntfy_publishers" => [
-      { "name" => "dozzle", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
-        "topics" => ["nas-critical"] },
-      { "name" => "beszel", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
-        "topics" => ["nas-critical"] }
-    ]
-  )
-  check(failures, !status.success?, "ntfy accepted duplicate token ownership")
-
-  mismatched_owned = {
+  # Read by the cases below and written by none: the ones that need a variant
+  # take a Marshal deep copy, or `.reject`/`.merge`, both of which build a new
+  # hash. `run_ntfy_fixture` serialises whatever it is handed into the
+  # playbook's extra-vars JSON and never writes back.
+  mismatched_owned = deep_freeze({
     "admin" => { "username" => "admin", "password_hash" => BCRYPT_A, "role" => "admin" },
     "dozzle" => { "username" => "dozzle", "password_hash" => BCRYPT_A, "role" => "user" },
     "reader" => { "username" => "reader", "password_hash" => BCRYPT_A, "role" => "user" }
-  }
-  _provisioned, mismatch_output, status = run_ntfy_fixture(
-    "ntfy_prior_provisioned_users" => mismatched_owned
-  )
-  check(failures, !status.success? && mismatch_output.include?("credential-migration"),
-        "ntfy accepted a hash change for an owned declarative identity")
-
-  unmanaged_records = {
+  })
+  unmanaged_records = deep_freeze({
     "*" => { "username" => "*", "role" => "anonymous", "provisioned" => false },
     "admin" => { "username" => "admin", "role" => "admin", "provisioned" => true },
     "dozzle" => { "username" => "dozzle", "role" => "user", "provisioned" => true },
     "reader" => { "username" => "reader", "role" => "user", "provisioned" => false }
-  }
-  prior_without_reader = mismatched_owned.reject { |identity, _entry| identity == "reader" }
-  _provisioned, adoption_output, status = run_ntfy_fixture(
-    "ntfy_prior_provisioned_users" => prior_without_reader,
-    "ntfy_existing_user_records" => unmanaged_records
-  )
-  check(failures, !status.success? && adoption_output.include?("will not adopt"),
-        "ntfy accepted automatic adoption of an unmanaged same-name identity")
-
-  absent_records = unmanaged_records.reject { |identity, _entry| identity == "reader" }
-  _provisioned, _absence_output, status = run_ntfy_fixture(
-    "ntfy_prior_provisioned_users" => prior_without_reader,
-    "ntfy_existing_user_records" => absent_records,
-    "ntfy_authoritative_absence_established" => false
-  )
-  check(failures, !status.success?, "ntfy provisioned an identity without authoritative absence")
-
-  orphaned_records = unmanaged_records.merge(
-    "orphan" => { "username" => "orphan", "role" => "user", "provisioned" => true }
-  )
-  _provisioned, orphan_output, status = run_ntfy_fixture(
-    "ntfy_existing_user_records" => orphaned_records
-  )
-  check(failures,
-        !status.success? && orphan_output.include?("outside the prior declarative ownership record") &&
-          !orphan_output.include?("orphan"),
-        "ntfy accepted or disclosed an out-of-ownership provisioned identity")
-
-  admin_user = {
+  })
+  prior_without_reader = deep_freeze(mismatched_owned.reject { |identity, _entry| identity == "reader" })
+  absent_records = deep_freeze(unmanaged_records.reject { |identity, _entry| identity == "reader" })
+  admin_user = deep_freeze({
     "username" => "auditor", "password" => "admin-plaintext",
     "password_hash" => BCRYPT_B, "role" => "admin",
     "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }],
     "tokens" => [TOKEN_B]
-  }
-  admin_prior = mismatched_owned.reject { |identity, _entry| identity == "reader" }.merge(
+  })
+  admin_prior = deep_freeze(prior_without_reader.merge(
     "auditor" => { "username" => "auditor", "password_hash" => BCRYPT_B, "role" => "admin" }
-  )
-  admin_records = absent_records.merge(
+  ))
+  admin_records = deep_freeze(absent_records.merge(
     "auditor" => { "username" => "auditor", "role" => "admin", "provisioned" => true }
-  )
-  _provisioned, _admin_output, status = run_ntfy_fixture(
-    "vault_managed_ntfy_users" => [admin_user],
-    "ntfy_prior_provisioned_users" => admin_prior,
-    "ntfy_existing_user_records" => admin_records
-  )
-  check(failures, !status.success?, "ntfy accepted a managed administrator account")
+  ))
 
-  %w[read-only write-only deny].each do |permission|
-    restricted_admin = Marshal.load(Marshal.dump(admin_user))
-    restricted_admin["access"][0]["permission"] = permission
-    _provisioned, _restricted_output, restricted_status = run_ntfy_fixture(
-      "vault_managed_ntfy_users" => [restricted_admin],
+  provisioning_cases << lambda do |collected; provisioned, output, status|
+    provisioned, output, status = run_ntfy_fixture
+    check(collected, status.success?, "ntfy provisioning fixture failed: #{output.lines.last&.strip}")
+    if provisioned
+      check(collected, provisioned["users"].split(",") == [
+              "admin:#{BCRYPT_A}:admin", "dozzle:#{BCRYPT_A}:user", "reader:#{BCRYPT_B}:user"
+            ], "ntfy user provisioning entries differ")
+      check(collected, provisioned["access"].split(",") == [
+              "dozzle:nas-critical:write-only", "dozzle:nas-containers:write-only",
+              "dozzle:nas-verification:write-only",
+              "reader:nas-critical:read-only", "reader:private:deny"
+            ], "ntfy access provisioning entries differ")
+      check(collected, provisioned["tokens"].split(",") == ["dozzle:#{TOKEN_A}", "reader:#{TOKEN_B}"],
+            "ntfy token ownership entries differ")
+    end
+  end
+
+  provisioning_cases << lambda do |collected; _provisioned, _output, status|
+    _provisioned, _output, status = run_ntfy_fixture("vault_ntfy_admin_user" => "reader")
+    check(collected, !status.success?, "ntfy accepted an administrator/managed-user collision")
+  end
+  provisioning_cases << lambda do |collected; _provisioned, _output, status|
+    _provisioned, _output, status = run_ntfy_fixture(
+      "ntfy_publishers" => [
+        { "name" => "dozzle", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
+          "topics" => ["nas-critical"] },
+        { "name" => "beszel", "password_hash" => BCRYPT_A, "token" => TOKEN_A,
+          "topics" => ["nas-critical"] }
+      ]
+    )
+    check(collected, !status.success?, "ntfy accepted duplicate token ownership")
+  end
+
+  provisioning_cases << lambda do |collected; _provisioned, mismatch_output, status|
+    _provisioned, mismatch_output, status = run_ntfy_fixture(
+      "ntfy_prior_provisioned_users" => mismatched_owned
+    )
+    check(collected, !status.success? && mismatch_output.include?("credential-migration"),
+          "ntfy accepted a hash change for an owned declarative identity")
+  end
+
+  provisioning_cases << lambda do |collected; _provisioned, adoption_output, status|
+    _provisioned, adoption_output, status = run_ntfy_fixture(
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => unmanaged_records
+    )
+    check(collected, !status.success? && adoption_output.include?("will not adopt"),
+          "ntfy accepted automatic adoption of an unmanaged same-name identity")
+  end
+
+  provisioning_cases << lambda do |collected; _provisioned, _absence_output, status|
+    _provisioned, _absence_output, status = run_ntfy_fixture(
+      "ntfy_prior_provisioned_users" => prior_without_reader,
+      "ntfy_existing_user_records" => absent_records,
+      "ntfy_authoritative_absence_established" => false
+    )
+    check(collected, !status.success?, "ntfy provisioned an identity without authoritative absence")
+  end
+
+  provisioning_cases << lambda do |collected; orphaned_records, _provisioned, orphan_output, status|
+    orphaned_records = unmanaged_records.merge(
+      "orphan" => { "username" => "orphan", "role" => "user", "provisioned" => true }
+    )
+    _provisioned, orphan_output, status = run_ntfy_fixture(
+      "ntfy_existing_user_records" => orphaned_records
+    )
+    check(collected,
+          !status.success? && orphan_output.include?("outside the prior declarative ownership record") &&
+            !orphan_output.include?("orphan"),
+          "ntfy accepted or disclosed an out-of-ownership provisioned identity")
+  end
+
+  provisioning_cases << lambda do |collected; _provisioned, _admin_output, status|
+    _provisioned, _admin_output, status = run_ntfy_fixture(
+      "vault_managed_ntfy_users" => [admin_user],
       "ntfy_prior_provisioned_users" => admin_prior,
       "ntfy_existing_user_records" => admin_records
     )
-    check(failures, !restricted_status.success?,
-          "ntfy accepted administrator #{permission} semantics it cannot enforce")
+    check(collected, !status.success?, "ntfy accepted a managed administrator account")
+  end
+
+  provisioning_cases += %w[read-only write-only deny].map do |permission|
+    lambda do |collected; restricted_admin, _provisioned, _restricted_output, restricted_status|
+      restricted_admin = Marshal.load(Marshal.dump(admin_user))
+      restricted_admin["access"][0]["permission"] = permission
+      _provisioned, _restricted_output, restricted_status = run_ntfy_fixture(
+        "vault_managed_ntfy_users" => [restricted_admin],
+        "ntfy_prior_provisioned_users" => admin_prior,
+        "ntfy_existing_user_records" => admin_records
+      )
+      check(collected, !restricted_status.success?,
+            "ntfy accepted administrator #{permission} semantics it cannot enforce")
+    end
   end
 
   hostile_usernames = ["bad,user", "bad:user", "bad user", "bad/user", "bad\nuser"]
-  hostile_usernames.each do |username|
-    hostile_user = Marshal.load(Marshal.dump(admin_user))
-    hostile_user["username"] = username
-    _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
-      "vault_managed_ntfy_users" => [hostile_user],
-      "ntfy_prior_provisioned_users" => prior_without_reader,
-      "ntfy_existing_user_records" => absent_records
-    )
-    check(failures, !hostile_status.success? && !hostile_output.include?(username),
-          "ntfy accepted or disclosed a delimiter-unsafe managed username")
+  provisioning_cases += hostile_usernames.map do |username|
+    lambda do |collected; hostile_user, _provisioned, hostile_output, hostile_status|
+      hostile_user = Marshal.load(Marshal.dump(admin_user))
+      hostile_user["username"] = username
+      _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
+        "vault_managed_ntfy_users" => [hostile_user],
+        "ntfy_prior_provisioned_users" => prior_without_reader,
+        "ntfy_existing_user_records" => absent_records
+      )
+      check(collected, !hostile_status.success? && !hostile_output.include?(username),
+            "ntfy accepted or disclosed a delimiter-unsafe managed username")
+    end
   end
 
-  ["bad,topic", "bad:topic", "bad topic", "bad/topic", "bad*topic", "bad\ntopic"].each do |topic|
-    hostile_topic_user = Marshal.load(Marshal.dump(admin_user))
-    hostile_topic_user["access"][0]["topic"] = topic
-    _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
-      "vault_managed_ntfy_users" => [hostile_topic_user],
-      "ntfy_prior_provisioned_users" => admin_prior,
-      "ntfy_existing_user_records" => admin_records
-    )
-    check(failures, !hostile_status.success? && !hostile_output.include?(topic),
-          "ntfy accepted or disclosed a non-literal managed topic")
+  provisioning_cases += ["bad,topic", "bad:topic", "bad topic", "bad/topic", "bad*topic",
+                         "bad\ntopic"].map do |topic|
+    lambda do |collected; hostile_topic_user, _provisioned, hostile_output, hostile_status|
+      hostile_topic_user = Marshal.load(Marshal.dump(admin_user))
+      hostile_topic_user["access"][0]["topic"] = topic
+      _provisioned, hostile_output, hostile_status = run_ntfy_fixture(
+        "vault_managed_ntfy_users" => [hostile_topic_user],
+        "ntfy_prior_provisioned_users" => admin_prior,
+        "ntfy_existing_user_records" => admin_records
+      )
+      check(collected, !hostile_status.success? && !hostile_output.include?(topic),
+            "ntfy accepted or disclosed a non-literal managed topic")
+    end
   end
 
-  _provisioned, publisher_topic_output, publisher_topic_status = run_ntfy_fixture(
-    "ntfy_topic" => "bad/topic"
-  )
-  check(failures,
-        !publisher_topic_status.success? && !publisher_topic_output.include?("bad/topic"),
-        "ntfy accepted or disclosed a non-literal publisher topic")
+  provisioning_cases << lambda do |collected;
+                                   _provisioned, publisher_topic_output, publisher_topic_status|
+    _provisioned, publisher_topic_output, publisher_topic_status = run_ntfy_fixture(
+      "ntfy_topic" => "bad/topic"
+    )
+    check(collected,
+          !publisher_topic_status.success? && !publisher_topic_output.include?("bad/topic"),
+          "ntfy accepted or disclosed a non-literal publisher topic")
+  end
 end
+
+in_parallel_cases(failures, provisioning_cases) { |fixture, collected| fixture.call(collected) }
 
 unless [[], ["--self-test"]].include?(ARGV)
   abort "usage: config_managed_users_test.rb [--self-test]"
