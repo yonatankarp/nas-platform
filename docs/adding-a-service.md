@@ -389,6 +389,15 @@ file too, not in `tests/policy_manifest_test.rb` as this guide used to say.
 `tests/policy_ci_test.rb` asserts the runner runs every one of them, which is what
 stops a check from being written and then never run.
 
+Adding it to `tests/validate-policy.sh` means adding it to one of that file's
+three shard heredocs, and to the matching `SHARD_n` list in
+`tests/gate_manifest_coverage_test.rb`. Either edit without the other fails that
+file, which names the line and the shard it is missing from: the gate runs on
+three runners, and a line in no shard runs on none of them while the run still
+reports success. Which shard hardly matters for a cheap check — put it in the
+shortest — but one that turns out to cost a minute belongs wherever the gate's own
+slowest-checks report says there is room.
+
 `BASE_FIXTURE_PATHS` carries a commoner obligation than that one: every file a
 policy check *reads* belongs in it, not only the scripts themselves. CLAUDE.md
 states that rule beside the mutation audit, along with the symptom of omitting

@@ -320,8 +320,11 @@ requires CI to run the mutation harness, while `tests/ci/workflow_test.rb` owns
 it for the reconciliation matrix. `docs` is not — it is a second and cheaper
 route to checks the gate still runs, so those checks reach a Markdown-only
 change in under a minute without also reaching for the Ansible toolchain.
-`reconciliation` and `suites` are matrices, so each contributes a leg per matrix
-entry rather than a single check.
+`static`, `reconciliation` and `suites` are matrices, so each contributes a leg
+per matrix entry rather than a single check — `static` one per shard of the
+policy gate's manifest, which is why its legs report as `static (1)` and not as
+`static`. `validate` still names each of them once, because `needs.<job>.result`
+for a matrix job is the aggregate of its legs.
 
 A pull request classifies its own base/head diff; a push to `main` classifies
 the merge it just landed — `github.event.before`, falling back to the first
@@ -493,13 +496,55 @@ Two consequences worth keeping:
   out which kind of cost it was naming. `POLICY_JOBS=1` serialises the pool when
   a failure only appears under load, and reaches into `case_pool_support.rb` so
   the converted checks serialise with it.
-- **Extraction is the fix, tuning is not.** Once a check is the floor, it moves
-  to its own job so it gets a runner's four cores to itself. That costs four
-  files kept in agreement: the manifest in `tests/validate-policy.sh`,
-  `tests/policy_ci_test.rb` (which must assert both that the gate no longer runs
-  it *and* that CI still does — a check in neither place is a guard that
-  silently stopped running), `tests/ci/workflow_test.rb`, and the `needs` and
-  `validate_results.rb` arguments of the `validate` job.
+- **Extraction is the fix when one check is the floor; sharding is the fix when
+  nothing is.** Once a check is the floor, it moves to its own job so it gets a
+  runner's four cores to itself. That costs four files kept in agreement: the
+  manifest in `tests/validate-policy.sh`, `tests/policy_ci_test.rb` (which must
+  assert both that the gate no longer runs it *and* that CI still does — a check
+  in neither place is a guard that silently stopped running),
+  `tests/ci/workflow_test.rb`, and the `needs` and `validate_results.rb`
+  arguments of the `validate` job. Which of the two fixes applies is a
+  measurement, not a preference, and the fifth occurrence below is the one where
+  the reflex was wrong.
+
+### The fifth occurrence, where extraction was the wrong reflex
+
+**2026-09-07** — `static` was at or over the ceiling on four of five runs
+(16m52s, 15m39s, 19m30s, 18m01s against one 11m48s), and none of the day's merges
+had added work. The distinguishing measurement is that **the slowdown was uniform
+across unrelated checks**: fast run against slow run, the slowest ten went
+247→333, 160→195, 152→208, 125→168, 114→191. No check had gained work, so there
+was no floor to extract — extracting one would have moved a single check to its
+own runner and left the other 154 exactly as slow. And the pool had no slack to
+tune: 2342s of check time on four workers is a 585s floor, and it finished in
+611s, 4.4% overhead. **A pool at 96% efficiency is work-bound**, so the only
+levers were fewer checks or more cores.
+
+Fixed with more cores: `static` is a matrix of three shards, each a runner with
+its own four workers running one third of the manifest. Three is where it stops
+paying — the single slowest check is 247s, so no shard finishes faster than that
+however finely the rest is divided, and four shards buy nothing.
+
+**The guard is the point, and it was written before the partition.** Sharding is
+an unusually efficient way to manufacture the defect this repository keeps
+closing: drop a line from the partition and it runs nowhere, the gate goes green,
+and it goes green *faster* than before. So the manifest is partitioned as three
+literal heredocs in `tests/validate-policy.sh`, restated as three literal lists
+in `tests/gate_manifest_coverage_test.rb`, and that file asserts their union is
+the whole manifest in both directions, that no check is claimed twice, and a
+floor under each shard — a stated number, because a shard that should hold fifty
+checks and holds one passes every non-emptiness test there is. The runner refuses
+an undeclared shard identifier and refuses an empty one, both proved in
+`tests/policy_runner_test.sh`; `tests/ci/workflow_test.rb` derives the expected
+matrix from the manifest, so a matrix short of the partition fails rather than
+silently dropping a third of the gate. `tests/validate-policy.sh` with no
+argument still runs everything, which is what to run locally, and adding a check
+now means one shard of the manifest and the matching shard of the declaration.
+
+Rebalancing the partition as checks change is a manual act, informed by the
+gate's own slowest-checks report. The current split was balanced against the
+post-merge `main` run of `bab1dc0`, and those figures are recorded in
+`tests/gate_manifest_coverage_test.rb` beside the lists they justify.
 
 ## Security boundary
 

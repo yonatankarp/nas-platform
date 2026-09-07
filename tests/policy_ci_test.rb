@@ -142,8 +142,17 @@ ci = YAML.safe_load_file(File.join(ROOT, ".github", "workflows", "ci.yml"))
 ci_commands = ci.fetch("jobs", {}).values.flat_map do |job|
   Array(job["steps"]).filter_map { |step| step["run"] if step.is_a?(Hash) }
 end.flat_map { |run| run.to_s.lines.map(&:strip) }
-check(failures, ci_commands.include?("tests/validate-policy.sh"),
+# Matched at the start of the line rather than as the whole of it, because the
+# gate takes its shard as an argument since #469. The diagnostic is unchanged and
+# must stay so: tests/policy_manifest_test.rb plants this defect by rewriting the
+# first mention of the gate in ci.yml and requires this exact sentence back.
+gate_invocations = ci_commands.select { |command| command.start_with?("tests/validate-policy.sh") }
+check(failures, !gate_invocations.empty?,
       "CI must run tests/validate-policy.sh")
+check(failures, gate_invocations.length == 1,
+      "CI must invoke the policy gate from exactly one step, found " \
+      "#{gate_invocations.inspect}: the gate is sharded across the legs of one matrix, and a " \
+      "second invocation is a leg running a third of the manifest that is not its own")
 check(
   failures,
   ci_commands.include?(
@@ -356,7 +365,21 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
                       else
                         []
                       end
-%w[
+# The same file read as the partition it now is: one heredoc per CI shard (#469).
+# The list above is every line of the file, stripped, which is what the
+# requirements below have always asserted against and what the negative ones
+# still need -- a command must be absent from the file entirely, comments
+# included. The partition is a second, narrower reading, and REQUIRED_CHECKS
+# below is required to land in exactly one shard of it. That is not the same
+# property: a line can be present in the file and in no shard at all, inside a
+# comment or stranded between two heredocs, and then the gate does not run it
+# while every `include?` here still passes.
+validation_shards = if owned_file?(validation_script_path, File.join(ROOT, "tests"))
+                      PolicySupport.gate_shards(validation_script_path)
+                    else
+                      {}
+                    end
+REQUIRED_CHECKS = %w[
   ruby\ tests/policy_test.rb
   ruby\ tests/policy_platform_test.rb
   ruby\ tests/policy_ci_test.rb
@@ -436,10 +459,48 @@ validation_commands = if owned_file?(validation_script_path, File.join(ROOT, "te
   ruby\ tests/mac/pin-protected-input-test.rb\ --self-test
   ruby\ tests/mac/read-integration-ports-test.rb
   ruby\ tests/mac/read-integration-ports-test.rb\ --self-test
-].each do |command|
+].freeze
+REQUIRED_CHECKS.each do |command|
   check(failures, validation_commands.include?(command),
         "validate-policy.sh must run #{command}")
 end
+# Which shard claims each of them, because "the gate runs it" stopped being one
+# statement when the gate became three runners. A check in no shard runs on none
+# of them, and the run is green and quicker for it.
+#
+# Scoped to exactly the list above rather than to the whole manifest, and that is
+# a constraint rather than a convenience: tests/policy_manifest_test.rb declares
+# per call site which policy scripts detect each planted defect, and one site
+# declares `%i[mac]` for seven manifest-line deletions this script deliberately
+# says nothing about. Iterating the manifest here would make those seven
+# detectable by `ci`, their declared sets wrong, and
+# `ruby tests/policy_manifest_test.rb --audit` red on the drift.
+#
+# tests/gate_manifest_coverage_test.rb is what covers the rest of the manifest,
+# in both directions and with a floor per shard. This is the narrower guard that
+# lives inside the policy set, where the mutation harness can reach it.
+REQUIRED_CHECKS.each do |command|
+  claiming = validation_shards.select { |_, commands| commands.include?(command) }.keys
+  check(failures, claiming.length == 1,
+        "validate-policy.sh must run #{command} in exactly one shard, not " \
+        "#{claiming.empty? ? 'none' : claiming.inspect}")
+end
+# The matrix against the partition, asserted here as well as in
+# tests/ci/workflow_test.rb and tests/gate_manifest_coverage_test.rb. Three
+# copies, because that guard cannot be trusted to a single shard: the file
+# asserting the matrix is complete is itself one line of one shard, so dropping
+# *that* shard from the matrix removes the check that would have said so, and the
+# run reports success a third quicker. These three files sit in three different
+# shards, so whichever single shard is dropped, two of them still run.
+#
+# KEEP THEM IN DIFFERENT SHARDS. A rebalance that collects all three into one
+# shard silently restores the hole.
+workflow_static_shards = ci.dig("jobs", "static", "strategy", "matrix", "shard")
+check(failures, workflow_static_shards == validation_shards.keys,
+      "CI dispatches static shards #{workflow_static_shards.inspect} while " \
+      "tests/validate-policy.sh partitions its manifest into " \
+      "#{validation_shards.keys.inspect}: a shard the matrix does not name runs nowhere, and " \
+      "every check it holds is still declared and still claimed by exactly one shard")
 {
   'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto_deploy_test' =>
     "the production auto-deploy poller suite",
