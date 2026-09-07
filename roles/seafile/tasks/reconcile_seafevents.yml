@@ -187,15 +187,82 @@
 # leave the process the verification talks to holding the configuration the
 # repair just replaced, and the operator reading the transcript could not tell
 # which of the two was proved.
+# The application container and nothing else, and both of the lines that say so
+# are load-bearing rather than tidy.
+#
+# `docker compose restart` does not honour depends_on: condition: service_healthy
+# -- that condition is an `up` property, and restart bounces whatever it is given
+# without waiting for anything. A restart that took db and cache with it would
+# therefore be free to bring the server back against a MariaDB not yet accepting
+# connections, which is precisely what the two-phase bring-up in deploy.yml
+# exists to prevent. Nothing in this file touched the database or the cache in
+# any case: the repair rewrites one key in a file only seafevents reads.
+#
+# dependencies: false is what makes `services:` mean what it says. The module
+# appends --no-deps only when that option is false, and `docker compose restart`
+# documents --no-deps as "Don't restart dependent services", so naming the one
+# service without it still bounces everything that service depends on.
+#
+# There is deliberately no wait:/wait_timeout: here. community.docker 5.2.2
+# silently ignores both for state: restarted --
+# plugins/modules/docker_compose_v2.py builds the restart argv in
+# get_restart_cmd (lines 639-651), which appends only --no-deps, --timeout and
+# --dry-run; --wait and --wait-timeout are appended by get_up_cmd alone (lines
+# 538-542). Written here they read as a readiness guarantee the module never
+# asked Compose for, while `docker compose restart` returns as soon as the
+# containers have been signalled. The wait below is that guarantee, made
+# explicitly.
 - name: Restart Seafile onto the repaired event configuration # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/seafile"
     project_name: "{{ seafile_compose_project_name }}"
     files: "{{ platform_service_compose_files['seafile'] }}"
     env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    services: [seafile]
+    dependencies: false
     state: restarted
-    wait: true
-    wait_timeout: "{{ seafile_compose_wait_timeout }}"
   when:
     - seafile_deployment_enabled | bool
     - seafile_seafevents_repair is changed
+
+# Without this the verification one file later POSTs to a server that was
+# signalled a moment ago and is still starting gunicorn, and it fails with a
+# message blaming the database link or a rotated administrator password --
+# neither of which is the cause. That is the failure of the *first* converge
+# after an operator sets seafile_deployment_enabled, because that is the one run
+# where this repair is changed.
+#
+# GET /api2/ping/ on purpose, and it is the same endpoint verify.yml rejects for
+# its own job. There it is refused because it answers 'pong' with both databases
+# down and so proves nothing about the link; here that is exactly the right
+# property. Only the application container was restarted, so the database link is
+# not what this wait is in doubt about -- what it waits for is nginx and seahub
+# serving again, and a probe that also read the databases would confuse "not
+# started yet" with "cannot reach its database". The database proof stays where
+# it was.
+#
+# Not attempted under --check: the restart above was a dry run there, so nothing
+# was signalled and waiting could only invent a failure on a host whose server
+# happens to be down. deploy.yml treats its own live probe the same way.
+#
+# The refused connection is the case this loop is actually for, and that it is
+# retried rather than fatal on the first attempt was measured rather than
+# assumed: against ansible-core 2.21.3, a uri task pointed at a closed port
+# reports status -1 in its own result and the until loop reads that and retries,
+# which is why status_code can stay strict here. A shape that made the refusal
+# untestable would fail on attempt 1 of 101 during precisely the minutes this
+# exists to wait through.
+- name: Wait for Seafile to serve after the event configuration restart # noqa: no-handler
+  ansible.builtin.uri:
+    url: "{{ seafile_api }}/ping/"
+    status_code: [200]
+  register: seafile_restart_readiness
+  until: seafile_restart_readiness.status | default(0) | int == 200
+  retries: "{{ seafile_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_repair is changed
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false

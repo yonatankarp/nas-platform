@@ -31,6 +31,17 @@ seafile_db_host_path: "{{ nas_docker_root }}/seafile/db"
 seafile_data_compose_wait_timeout: 300
 seafile_compose_wait_timeout: 600
 
+# The role's own readiness budget, declared here rather than read from
+# platform_readiness_retries, because the shared value is explicitly sized for
+# "a container that has already reported healthy" and the one poll that reads it
+# is the one after a restart, where it has not. The target is the 300-second
+# start_period on this server's own health check in services/seafile/compose.yml
+# -- the estimate already made there of how long seahub takes to answer, reused
+# rather than guessed a second time -- and 100 attempts spaced at the shared
+# platform_readiness_delay covers it. Only the patience deviates: the delay stays
+# shared, so this number is the one thing to change if that target moves.
+seafile_readiness_retries: 100
+
 seafile_compose_project_name: >-
   {{ (platform_project_name ~ '-seafile')
      if platform_project_name | default('') | length > 0 else 'seafile' }}

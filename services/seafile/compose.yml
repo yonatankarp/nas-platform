@@ -106,6 +106,25 @@ services:
       ENABLE_SEADOC: "false"
       ENABLE_NOTIFICATION_SERVER: "false"
       ENABLE_SEAFILE_AI: "false"
+      # Upstream sets this and the image does not default to it, which is why it
+      # is here rather than omitted like SITE_ROOT below. Measured against
+      # seafileltd/seafile-pro-mc:13.0.27: seaserv/service.py opens with
+      # USE_GO_FILESERVER = False and raises it only from a
+      # `[fileserver] use_go_fileserver` key or this variable; nothing in the
+      # image writes that key -- setup never generates it -- and
+      # seafile-monitor.sh starts the go fileserver only when the variable holds
+      # the literal string "true". Omitted, the server would silently fall back
+      # to seaf-server's built-in C fileserver, which is not the configuration
+      # upstream's own seafile-server.yml describes.
+      ENABLE_GO_FILESERVER: "true"
+      # SITE_ROOT is deliberately not set. Upstream passes it explicitly as "/",
+      # and that is already the image's default in both places that read it:
+      # seahub/seahub/settings.py:157 assigns SITE_ROOT = '/' and overrides it
+      # only from a non-empty environment value (lines 1293-1294), and the start
+      # scripts export ${SITE_ROOT:-/} (seahub.sh:213, seafile.sh:91,
+      # seafile-background-tasks.sh:139). Setting it would restate a default
+      # rather than choose anything, and this platform serves Seafile at the root
+      # of its own port.
       SEAF_SERVER_STORAGE_TYPE: disk
       # true makes the container run as the seafile account throughout, which
       # requires the bind-mounted volume to be 0777 or already owned by that
@@ -192,14 +211,25 @@ services:
     # on the entrypoint's own command line. Upstream runs its cache with no
     # password at all; this platform authors every credential in the vault and
     # pushes it, so the cache gets one too.
+    #
+    # --save "" --appendonly no are upstream's, copied rather than dropped, and
+    # they are what actually switches persistence off. Without them the
+    # compiled-in defaults apply -- `save 3600 1 300 100 60 10000` -- so the
+    # server would snapshot RDB files into /data in the container's writable
+    # layer, and `stop-writes-on-bgsave-error yes`, also a default, would turn one
+    # failed background save into refused writes on the cache seahub keeps its
+    # sessions in. The empty argument survives this form: the value is a plain
+    # YAML scalar, so the quotes reach the shell literally and `--save ""` arrives
+    # as an empty string.
     command:
       - sh
       - -c
-      - exec valkey-server --requirepass "$$VALKEY_PASSWORD"
-    # Deliberately no volume. Upstream runs the cache with no persistence, which
-    # means sessions drop when it restarts -- upstream's own choice, kept here so
-    # this stack behaves like the one its documentation describes. There is
-    # nothing on disk to declare in nas_storage as a result.
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --save "" --appendonly no
+    # Deliberately no volume, and nothing to put in one: the flags above leave the
+    # cache with no persistence at all, which is upstream's own choice -- sessions
+    # drop when it restarts -- kept here so this stack behaves like the one its
+    # documentation describes. There is nothing on disk to declare in nas_storage
+    # as a result.
     healthcheck:
       <<: *healthcheck-defaults
       # The reply is matched, not just the exit status, and that is the whole

@@ -33,5 +33,12 @@
 - name: Reconcile the platform-owned Seafile event configuration
   ansible.builtin.import_tasks: reconcile_seafevents.yml
 
+# After the reconciliation, and that placement is the whole reason it is a stage
+# rather than the last task of deploy.yml. A converge whose only change is a
+# seafevents drift repair is a change this platform has to announce, and a report
+# rendered before that repair ran cannot see it.
+- name: Report whether the Seafile deployment moved
+  ansible.builtin.import_tasks: report.yml
+
 - name: Verify the exact Seafile administrator against its database
   ansible.builtin.import_tasks: verify.yml

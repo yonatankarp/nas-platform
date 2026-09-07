@@ -197,20 +197,10 @@
   register: seafile_deploy
   when: seafile_deployment_enabled | bool
 
-# Ungated on purpose, and it says nothing when nothing moved: the report is
-# gated on the Compose results themselves, so a converge with the flag off and a
-# project already absent is silent, and the run that first tears the project
-# down reports that it did.
-- name: Report the Seafile deployment
-  ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
-  vars:
-    ntfy_deployment_report_service: Seafile
-    ntfy_deployment_report_changed: >-
-      {{ (seafile_data_deploy is changed) or (seafile_deploy is changed) or
-         (seafile_teardown is changed) }}
-
+# The deployment report is not here. It has to be able to see the seafevents
+# reconciliation, which runs after this file, so it is its own stage in
+# report.yml and the three results registered above reach it unchanged: static
+# imports share one variable scope.
 - name: Verify Seafile effective container CPU policy
   ansible.builtin.include_role:
     name: container_cpu

@@ -96,12 +96,16 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "A Seafile major is not a digest bump. Upgrading requires out-of-band steps no bot can perform: re-downloading upstream's seafile-server.yml for the new series, changing COMPOSE_FILE to match it, and hand-editing seafile.conf and seahub_settings.py inside the volume to drop blocks the new release no longer accepts. The migrations upgrade.py chains are one-way and upstream documents no downgrade, so the pull request is a prompt to do that work, not a finished change. Note what is NOT the reason: upgrade.py does chain every intervening migration script, so intermediate majors need not be stepped through.",
+      "description": "A Seafile series change is not a digest bump. Upgrading requires out-of-band steps no bot can perform: re-downloading upstream's seafile-server.yml for the new series, changing COMPOSE_FILE to match it, and hand-editing seafile.conf and seahub_settings.py inside the volume to drop blocks the new release no longer accepts. The migrations upgrade.py chains are one-way and upstream documents no downgrade, so the pull request is a prompt to do that work, not a finished change. Note what is NOT the reason: upgrade.py does chain every intervening migration script, so intermediate releases need not be stepped through. This covers minor as well as major because Seafile's own terminology inverts Renovate's, and where the line falls was read out of the image rather than assumed: /scripts/upgrade.py decides with is_minor_upgrade, which compares only the first two components of the version. 13.0.27 to 13.0.28 is therefore Seafile-minor and the container runs upgrade/minor-upgrade.sh itself on the next start -- symlink and avatar housekeeping, no schema change and nothing for an operator to do -- which is a Renovate patch, so patches and digest-only refreshes fall through to the routine automerge rule above where they belong. 13.0 to 13.1 is not: it takes upgrade.py's major branch and needs upgrade_13.0_13.1.sh, the same shape as the upgrade_12.0_13.0.sh and upgrade_6.1_6.2.sh the image already ships, and the same manual steps. That is a Renovate minor, which is why the scope stops here rather than at major alone.",
       "matchDatasources": [
         "docker"
       ],
       "matchPackageNames": [
         "docker.io/seafileltd/seafile-pro-mc"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
       ],
       "addLabels": [
         "needs-manual-coupling"
