@@ -106,6 +106,82 @@ run_enabled_idempotence() {
   fi
 }
 
+# What a failed Seafile converge leaves behind, emitted only when it fails.
+#
+# The seafile lane's first CI run ended with `container <ns>-seafile is
+# unhealthy` and then nothing at all: the controller runs under `sh -eu`, so the
+# play's non-zero status ended it where it stood, and the containers went away
+# with the sandbox. Nobody could say afterwards whether that boot was slow or
+# wedged -- which is the one question the health budget in
+# services/seafile/compose.yml turns on, and the reason its comment refuses to
+# guess. This is the evidence that answers it next time.
+#
+# Same shape as run_enabled_idempotence above: capture, then emit on the failure
+# path only, so a green run prints nothing extra.
+#
+# EVERY DOCKER CALL IS GUARDED. This runs after a failure, against containers
+# that may never have been created, and one non-zero exit under `sh -eu` would
+# kill the controller mid-dump -- reproducing exactly the silence it exists to
+# end. The dump therefore cannot fail the lane; its caller does that.
+#
+# WHAT IS EMITTED, AND WHY NOT MORE. `--format '{{json .State.Health}}'` and
+# nothing wider. A bare `docker inspect` prints .Config.Env, which for this stack
+# is the rendered .env -- the MariaDB root password, the Seafile admin password
+# and the Valkey password, in full. .State.Health carries the last five probes'
+# combined output, stderr included, and not the probe's own argv, so it is safe
+# even for the cache container whose health command embeds $VALKEY_PASSWORD.
+# .Config.Healthcheck, which would print that command, is deliberately absent.
+#
+# The Compose logs are the half nothing can vouch for in advance, so they are not
+# trusted: they are written to a file, scanned against the ephemeral vault by
+# tests/assert-no-vault-secrets.rb, and printed only if that comes back clean.
+# A WITHHELD log is an expected outcome, not a bug -- the scanner is fail-closed
+# on every vault string of eight bytes or more, so a boot log that merely echoes
+# the admin email suppresses this half. That is why the health log is emitted
+# first and unconditionally: it is the load-bearing half, and it is the half that
+# explains a wedged boot.
+dump_seafile_diagnostics() {
+  seafile_diagnostics_project=$integration_project_namespace-seafile
+  seafile_diagnostics_logs=/tmp/seafile-converge-failure-logs.txt
+  printf '=== SEAFILE CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
+  for seafile_diagnostics_container in \
+      "$integration_project_namespace-seafile" \
+      "$integration_project_namespace-seafile-db" \
+      "$integration_project_namespace-seafile-cache"; do
+    printf -- '--- health log: %s ---\n' "$seafile_diagnostics_container" >&2
+    docker inspect --format '{{json .State.Health}}' \
+      "$seafile_diagnostics_container" >&2 ||
+      printf 'no health state recorded for %s\n' \
+        "$seafile_diagnostics_container" >&2
+  done
+  printf -- '--- container states: %s ---\n' "$seafile_diagnostics_project" >&2
+  docker ps --all \
+    --filter "label=com.docker.compose.project=$seafile_diagnostics_project" \
+    --format '{{.Names}} {{.Status}} {{.Image}}' >&2 ||
+    printf 'container states unavailable for %s\n' \
+      "$seafile_diagnostics_project" >&2
+  if docker compose --project-name "$seafile_diagnostics_project" \
+      logs --no-color --timestamps --tail 200 \
+      >"$seafile_diagnostics_logs" 2>&1; then
+    if /repo/tests/assert-no-vault-secrets.rb \
+        "$vault_file" "$vault_password_file" "$seafile_diagnostics_logs" \
+        >/dev/null 2>&1; then
+      printf -- '--- compose logs, last 200 lines per container ---\n' >&2
+      cat "$seafile_diagnostics_logs" >&2
+    else
+      printf '%s\n' \
+        "compose logs WITHHELD: they matched ephemeral vault material and were" \
+        "left at $seafile_diagnostics_logs inside the disposable container." \
+        "Read the health log above: it carries the probes' own output, and" \
+        "never the probe command, so no credential in a probe argv reaches it." >&2
+    fi
+  else
+    printf 'compose logs unavailable for %s\n' \
+      "$seafile_diagnostics_project" >&2
+  fi
+  printf '=== END SEAFILE CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
+}
+
 # One launcher for every contract. The environment ABI every contract reads
 # is written once here and a service's extras arrive as a case arm, so the
 # twelve wrappers below carry only the name they run under. Each layer is

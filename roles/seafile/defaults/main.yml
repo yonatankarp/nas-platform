@@ -28,6 +28,39 @@ seafile_db_host_path: "{{ nas_docker_root }}/seafile/db"
 # red for as long as an in-place upgrade runs. The server then creates three
 # databases, runs every pending migration and starts seaf-server, seahub and
 # nginx before it answers on port 80 at all.
+#
+# NEITHER NUMBER IS THE BOOT BUDGET. The health checks in
+# services/seafile/compose.yml are, and this is worth stating flatly because the
+# first CI run of the seafile lane was read the other way round. Compose's
+# `--wait` stops the moment Docker reports a container *unhealthy*, and Docker
+# reports that after `start_period` plus `retries` consecutive failing probes
+# `interval` apart:
+#
+#   server (start_period 300s, retries 5, interval 30s) -> at most 450s
+#   db, cache (start_period  60s, retries 5, interval 30s) -> at most 210s
+#
+# Measured on the failing CI run of 2026-09-07: the server was declared
+# unhealthy at ~424s and the play failed there, so the 600 below never bound.
+# 424 rather than 450 because the probe that lands on the start_period boundary
+# is already outside it and counts as the first of the five, putting the fifth
+# at 300 + 4x30 = 420s plus one probe's own runtime. The bound sized against
+# above is the looser 300 + 5x30, because it does not depend on how Docker
+# happens to schedule that boundary probe.
+# The knob was not dead by accident -- these two values are the backstop for the
+# other failure, the one where Compose returns no health verdict at all -- but a
+# reader who takes 600 for "how long Seafile may take to boot" is reading the
+# wrong file. The invariant is the ordering: each wait must stay strictly ABOVE
+# its stage's worst-case verdict time, so that a wedged boot surfaces as Docker's
+# own `container <name> is unhealthy`, which names the container, rather than as
+# a bare module timeout, which names nothing. 600 > 450 and 300 > 210 hold, and
+# that is the whole of what these numbers are for.
+#
+# Deliberately NOT raised. Whether 424s was a boot still making progress or a
+# boot already wedged is not known -- nothing was captured from that run. The
+# seafile lane now dumps the health log and the Compose logs on a converge
+# failure (dump_seafile_diagnostics in tests/integration_controller_lib.sh);
+# that evidence, not an assumption that more time would have helped, is what
+# would justify enlarging the health check's own budget here.
 seafile_data_compose_wait_timeout: 300
 seafile_compose_wait_timeout: 600
 

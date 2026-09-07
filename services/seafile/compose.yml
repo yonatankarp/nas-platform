@@ -168,6 +168,17 @@ services:
       test: [CMD, curl, --fail, --silent, --show-error, "http://localhost/"]
       # First boot creates three databases, runs every migration and builds the
       # initial configuration before nginx binds; that is minutes, not seconds.
+      #
+      # This line, with the inherited retries: 5 and interval: 30s, is the real
+      # ceiling on a Seafile converge: at most 300 + 5x30 = 450s, and ~424s as
+      # measured on the seafile lane's failing CI run of 2026-09-07 -- the probe
+      # on the start_period boundary is already outside it and counts as the
+      # first of the five, so the fifth lands at 300 + 4x30. Compose aborts
+      # the moment Docker says unhealthy, so seafile_compose_wait_timeout in
+      # roles/seafile/defaults/main.yml -- 600 -- can only ever be the backstop
+      # for a stage that returns no verdict at all. Raise this only against the
+      # health log the lane now captures on failure, never on the assumption
+      # that a slow boot would have finished.
       start_period: 300s
     # An upload in flight has written blocks under seafile-data/storage and owes
     # the database the rows that name them. A minute lets the request finish both

@@ -187,6 +187,8 @@ GATE_CHECKS = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/immich_contract_test.rb --self-test
   ruby tests/paperless_contract_test.rb
   ruby tests/paperless_contract_test.rb --self-test
+  ruby tests/seafile_contract_test.rb
+  ruby tests/seafile_contract_test.rb --self-test
   ruby tests/arr_contract_test.rb
   ruby tests/arr_contract_test.rb --self-test
   ruby tests/downloaders_contract_test.rb

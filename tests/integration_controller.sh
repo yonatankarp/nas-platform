@@ -596,7 +596,31 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     while IFS= read -r lifecycle_event; do
       case $lifecycle_event in
         converge)
-          perform_initial_converge $@
+          # A converge that fails takes the controller with it -- `sh -eu`, no
+          # message -- and the seafile lane's first CI run is what that costs:
+          # `container <ns>-seafile is unhealthy`, then silence after the PLAY
+          # RECAP, and no way to tell a slow boot from a wedged one.
+          #
+          # Gated on the deployment switch rather than on `suite_is seafile`,
+          # because the switch is the thing that actually says the stack exists
+          # to be read. `suite_is` also matches lanes the switch leaves off, and
+          # a dump of three containers that were never created explains nothing.
+          #
+          # The call is spelled once. tests/integration_controller_execution_test.sh
+          # plants "initial converge dropped" on this exact text as a single
+          # occurrence, so a second copy would stop that mutation from being
+          # placeable at all -- the same constraint the ephemeral vault
+          # invocation above records.
+          converge_status=0
+          perform_initial_converge $@ || converge_status=$?
+          if [ $converge_status -ne 0 ]; then
+            if [ $integration_seafile_deployment_enabled = true ]; then
+              dump_seafile_diagnostics
+            fi
+            printf 'integration converge did not complete (status %s)\n' \
+              $converge_status >&2
+            exit $converge_status
+          fi
           integration_media_adopt_existing=false
           ;;
         success)
