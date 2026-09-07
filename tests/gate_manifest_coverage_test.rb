@@ -208,6 +208,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   tests/media_control_network_collision_test.sh static
   ruby tests/media_acquisition_foundation_verifier_test.rb
   ruby tests/reader_platform_identity_test.rb
+  ruby tests/capture_helper_identity_test.rb
   ruby tests/mac/media-acquisition-foundation-report-test.rb
   tests/policy_runner_test.sh
   ruby tests/production_auto_deploy_role_test.rb
