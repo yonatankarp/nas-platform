@@ -522,8 +522,11 @@ levers were fewer checks or more cores.
 
 Fixed with more cores: `static` is a matrix of three shards, each a runner with
 its own four workers running one third of the manifest. Three is where it stops
-paying — the single slowest check is 247s, so no shard finishes faster than that
-however finely the rest is divided, and four shards buy nothing.
+paying — the single slowest check was 247s when the partition was drawn and is
+305s now, so no shard finishes faster than that however finely the rest is
+divided, and four shards buy nothing. That floor is also the ceiling on
+rebalancing: against a worst observed shard wall of 394s, a perfect three-way
+split is worth about 90s, which #484 measured and did not collect.
 
 **The guard is the point, and it was written before the partition.** Sharding is
 an unusually efficient way to manufacture the defect this repository keeps
@@ -544,7 +547,18 @@ now means one shard of the manifest and the matching shard of the declaration.
 Rebalancing the partition as checks change is a manual act, informed by the
 gate's own slowest-checks report. The current split was balanced against the
 post-merge `main` run of `bab1dc0`, and those figures are recorded in
-`tests/gate_manifest_coverage_test.rb` beside the lists they justify.
+`tests/gate_manifest_coverage_test.rb` beside the lists they justify. Two things
+constrain a future rebalance, both from #484 and both stated beside the lists: a
+check's recorded seconds are its wall time at that shard's load rather than work
+that can be carried elsewhere, so an arithmetic projection from that report
+overshoots; and **waits must be spread**, because a waiting check holds a worker
+slot without consuming the CPU the other three compete for, so two long waits in
+one shard halve its effective pool. #484 carries the isolated per-check table
+that separates the two, measured 2026-09-07.
+
+The job wall exceeds the gate wall the report prints by 122 to 154 seconds
+(mean 139) — checkout, tooling and collection install — so budget against the
+gate's own figure rather than the job's.
 
 ## Security boundary
 
