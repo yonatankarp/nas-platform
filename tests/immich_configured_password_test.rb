@@ -150,6 +150,9 @@ BLOCKED_JOIN_SECONDS = 5
 # and a write to a socket whose peer has just been SIGKILLed raises
 # Errno::EPIPE from the fixture thread on the second or third write, which is a
 # flake rather than a result. Answering nothing means never writing.
+#
+# It serves no users, so the user list with_immich_users was handed reaches the
+# caller's block untouched and unread. Nothing on this path inspects it.
 def with_blocked_immich_fixture
   server = TCPServer.new("127.0.0.1", 0)
   shutdown_reader, shutdown_writer = IO.pipe
@@ -164,7 +167,7 @@ def with_blocked_immich_fixture
       socket = server.accept
       begin
         socket.gets
-        read_headers(socket)
+        HttpFixtureSupport.read_headers(socket)
         IO.select([shutdown_reader], nil, nil, nil)
       ensure
         socket.close unless socket.closed?
@@ -459,6 +462,10 @@ end
 # READY_TIMEOUT_SECONDS for 180 seconds twice and took one check from 26s to
 # 368s. There is no retry and no fallback here: if the refusal does not arrive,
 # the case records that and returns.
+#
+# The user list is inert here -- a blocked fixture answers nothing, so it serves
+# nobody -- and complete_users is passed only to keep one entry point for every
+# fixture in this file.
 with_immich_users(complete_users, blocked: true) do |port, _requests, _users|
   run_configured_password(port, ["reconcile"], timeout_seconds: 1)
   failures << "blocked configured-password fixture did not time out diagnostically"
