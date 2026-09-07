@@ -513,7 +513,12 @@ fourth occurrence prescribed:
   makes the class impossible rather than avoided. An AST dump of the script's
   local table catches a case that *adds* a name; it cannot catch one that reuses
   a name already there, which needs the other question asked — for each case, is
-  every name it assigns local to that case.
+  every name it assigns declared somewhere on the path from the case down to that
+  assignment. Position, not set membership: a nested block's declarations shadow
+  only inside that block, so a rule that unions every nested scope's table lets a
+  case write outward to any name a nested block happens to take as a parameter.
+  That is not hypothetical — it was this checker's second defect, and it masked
+  exactly `status`, `output` and `_tmp`, the names of the bug above.
 - **Show an AST checker a real defect before trusting it.** The analyzer written
   to answer that second question — `tests/case_pool_locals_test.rb` — passed the
   known-buggy revision on its first attempt, carrying two mistakes at once:
