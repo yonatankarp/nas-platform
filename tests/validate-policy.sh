@@ -66,12 +66,25 @@ policy_shard=${1:-}
 # four worker slots, but it consumes none of the CPU the other three are
 # competing for. Two long waits in one shard therefore cut that shard's effective
 # pool from four workers to two, and every CPU-bound check in it stretches. This
-# is measured, not reasoned: `beszel_contract_test.rb` and its `--self-test` are
-# 86s and 85s of pure wait, #484 moved them into the same shard, and that shard's
-# *other* checks inflated by 298s on 412s of work added -- `komga_library_
+# is measured, not reasoned: #484 moved the two beszel contract checks, then 86s
+# and 85s of pure wait, into the same shard, and that shard's *other* checks
+# inflated by 298s on 412s of work added -- `komga_library_
 # reconciliation_test.rb` 134s to 236s, `dozzle_contract_test.rb --self-test`
 # 111s to 185s -- while the two shards that shed work got 15% and 24% cheaper in
-# the same run. The move was reverted. Keep those two apart.
+# the same run. The move was reverted.
+#
+# The rule stands; its only measured subjects are gone. #485 made both beszel
+# polling budgets environment inputs, so those two checks are work-bound now and
+# no line in this manifest is currently KNOWN to be a wait -- which is not the
+# same as there being none, because only those two were ever measured that way.
+# When the next one arrives, recognise it rather than rediscovering it: run the
+# check alone and read `time`'s user+sys against its elapsed. Sleep consumes no
+# CPU and contention does not change that, so a low ratio is a wait however
+# loaded the machine was, and it costs one run instead of a width sweep. The two
+# beszel checks were 14.5s of CPU in 99.6s elapsed and 19.1s in 101.5s before the
+# fix, and 13.9s in 19.6s and 18.5s in 31.8s after it -- the same work, and the
+# 150s of sleep those four numbers bracket is the local half of the 171s of CI
+# wait the retired sentence above recorded.
 #
 # Rebalancing as checks change is a manual act, and the slowest-checks report
 # below is what informs it -- but read #484 before trusting an arithmetic
@@ -84,6 +97,13 @@ policy_shard=${1:-}
 # `config_managed_users_test.rb --self-test` against a worst observed shard wall
 # of 394s, so a perfect partition is worth about 90s and the two levers that
 # actually lower the floor are elsewhere.
+#
+# That baseline predates #485 and #488, which took both of those levers. The two
+# beszel lines were 100s and 109s in it and are work-bound now, and the
+# `config_managed_users_test.rb --self-test` figure the floor argument rests on
+# was measured before its conversion, so their places among the ten slowest are
+# stale. Re-deriving the partition needs a fresh gate run rather than an
+# adjustment of these numbers.
 #
 # One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
 # that note the manifest can carry -- a comment between the heredoc markers would
