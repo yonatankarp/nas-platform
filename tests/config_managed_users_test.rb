@@ -929,7 +929,9 @@ check(failures,
         ntfy_subscription_tasks.include?("['code', 'error', 'http']"),
       "ntfy provisional conflict validation differs from pinned v2.27 error 40903")
 
-subscription_users = [
+# Read by most of the cases below and written by none of them: each takes the
+# whole list, or `.first`/`.last`, or a Marshal deep copy it then edits.
+subscription_users = deep_freeze([
   {
     "username" => "reader", "password" => "reader-password", "role" => "user",
     "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
@@ -946,182 +948,229 @@ subscription_users = [
     "username" => "read-writer", "password" => "rw-password", "role" => "user",
     "access" => [{ "topic" => "nas-critical", "permission" => "read-write" }]
   }
-]
-unrelated = {
-  "base_url" => "https://unrelated.invalid", "topic" => "other-topic", "display_name" => "Other"
-}
-initial_subscriptions = {
-  "reader" => [unrelated.dup],
-  "read-writer" => [{
-    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
-  }],
-  "publisher" => [{
-    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
-  }]
-}
-state, requests, requests_by_user, outputs, statuses, base_url = run_ntfy_subscription_fixture(
-  users: subscription_users,
-  subscriptions: initial_subscriptions,
-  expected_requests: 6,
-  runs: 2
-)
-check(failures, statuses.all?(&:success?),
-      "ntfy eligible subscription synchronization or idempotence failed: #{outputs.last&.lines&.last&.strip}")
-check(failures, requests_by_user == [
-        ["reader", "GET", "/v1/account"],
-        ["read-writer", "GET", "/v1/account"],
-        ["reader", "POST", "/v1/account/subscription"],
-        ["reader", "GET", "/v1/account"],
-        ["reader", "GET", "/v1/account"],
-        ["read-writer", "GET", "/v1/account"]
-      ], "ntfy synchronized ineligible users or was not idempotent")
-desired = { "base_url" => base_url, "topic" => "nas-critical", "display_name" => nil }
-check(failures, state.fetch("reader") == [unrelated, desired],
-      "ntfy did not preserve the unrelated subscription while adding the desired one")
-post = requests.find { |request| request["method"] == "POST" }
-check(failures, post && JSON.parse(post["body"]) == desired.reject { |key, _value| key == "display_name" },
-      "ntfy subscription create body differs from the exact supported pair")
+])
 
-duplicate_subscriptions = {
-  "reader" => [],
-  "read-writer" => [
-    { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" },
-    { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" }
-  ]
-}
-_state, _requests, duplicate_calls, _outputs, duplicate_statuses, =
-  run_ntfy_subscription_fixture(
-    users: subscription_users,
-    subscriptions: duplicate_subscriptions,
-    expected_requests: 2
-  )
-check(failures,
-      !duplicate_statuses.first.success? && duplicate_calls == [
-        ["reader", "GET", "/v1/account"],
-        ["read-writer", "GET", "/v1/account"]
-      ], "ntfy mutated an earlier user before rejecting a later duplicate subscription")
+# The `subscriptions:` argument is the one thing these fixtures write to -- the
+# stub service records each create into it and hands it back as the observed
+# state -- so it is never a shared local. Each case builds its own, which is why
+# `unrelated` and the initial subscription map live inside the first case rather
+# than above the pool.
+subscription_cases = []
 
-# Two provisioned topics, and an account that may read both. Each topic is a
-# separate subscription, and a topic the account cannot read is never created.
-both_topics_user = [
-  {
-    "username" => "reader", "password" => "reader-password", "role" => "user",
-    "access" => [
-      { "topic" => "nas-critical", "permission" => "read-only" },
-      { "topic" => "nas-containers", "permission" => "read-only" }
-    ]
-  },
-  {
-    "username" => "critical-only", "password" => "critical-password", "role" => "user",
-    "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+subscription_cases << lambda do |collected;
+                                 unrelated, initial_subscriptions, state, requests,
+                                 requests_by_user, outputs, statuses, base_url, desired, post|
+  unrelated = {
+    "base_url" => "https://unrelated.invalid", "topic" => "other-topic", "display_name" => "Other"
   }
-]
-both_state, _requests, both_calls, both_outputs, both_statuses, both_base =
-  run_ntfy_subscription_fixture(
-    users: both_topics_user,
-    subscriptions: { "reader" => [], "critical-only" => [] },
-    expected_requests: 8
-  )
-check(failures, both_statuses.all?(&:success?),
-      "ntfy multi-topic subscription synchronization failed: " \
-      "#{both_outputs.last&.lines&.last&.strip}")
-check(failures,
-      both_state.fetch("reader") == [
-        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil },
-        { "base_url" => both_base, "topic" => "nas-containers", "display_name" => nil }
-      ],
-      "ntfy did not subscribe a both-topic reader to both topics")
-check(failures,
-      both_state.fetch("critical-only") == [
-        { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil }
-      ],
-      "ntfy subscribed an account to a topic it may not read")
-check(failures,
-      both_calls.count { |call| call[0] == "critical-only" && call[1] == "POST" } == 1,
-      "ntfy did not create exactly one subscription for the critical-only reader")
-
-malformed_account = {
-  "username" => "read-writer", "role" => "user", "subscriptions" => "invalid"
-}
-_state, _requests, malformed_calls, _outputs, malformed_statuses, =
-  run_ntfy_subscription_fixture(
+  initial_subscriptions = {
+    "reader" => [unrelated.dup],
+    "read-writer" => [{
+      "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
+    }],
+    "publisher" => [{
+      "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "Critical"
+    }]
+  }
+  state, requests, requests_by_user, outputs, statuses, base_url = run_ntfy_subscription_fixture(
     users: subscription_users,
-    subscriptions: { "reader" => [], "read-writer" => [] },
-    malformed_accounts: { "read-writer" => malformed_account },
-    expected_requests: 2
+    subscriptions: initial_subscriptions,
+    expected_requests: 6,
+    runs: 2
   )
-check(failures,
-      !malformed_statuses.first.success? && malformed_calls.none? { |call| call[1] == "POST" },
-      "ntfy mutated an earlier user before rejecting a later account schema")
-
-accepted_state, _requests, accepted_calls, accepted_outputs, accepted_statuses, accepted_base =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first],
-    subscriptions: { "reader" => [] },
-    conflict_modes: { "reader" => :create },
-    expected_requests: 3
-  )
-check(failures,
-      accepted_statuses.first.success? && accepted_calls.map { |call| call[1] } == %w[GET POST GET] &&
-        accepted_state.fetch("reader") == [{
-          "base_url" => accepted_base, "topic" => "nas-critical", "display_name" => nil
-        }],
-      "ntfy did not accept a provisional 409 only after an authoritative exact match")
-
-_state, _requests, rejected_calls, rejected_outputs, rejected_statuses, =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first],
-    subscriptions: { "reader" => [] },
-    conflict_modes: { "reader" => :reject },
-    expected_requests: 3
-  )
-check(failures,
-      !rejected_statuses.first.success? && rejected_calls.map { |call| call[1] } == %w[GET POST GET],
-      "ntfy accepted a 409 without an authoritative desired subscription")
-
-%i[reject duplicate].each do |mode|
-  _state, _requests, blocked_calls, _outputs, blocked_statuses, =
-    run_ntfy_subscription_fixture(
-      users: [subscription_users.first, subscription_users.last],
-      subscriptions: { "reader" => [], "read-writer" => [] },
-      conflict_modes: { "reader" => mode },
-      expected_requests: 4
-    )
-  check(failures,
-        !blocked_statuses.first.success? && blocked_calls == [
+  check(collected, statuses.all?(&:success?),
+        "ntfy eligible subscription synchronization or idempotence failed: #{outputs.last&.lines&.last&.strip}")
+  check(collected, requests_by_user == [
           ["reader", "GET", "/v1/account"],
           ["read-writer", "GET", "/v1/account"],
           ["reader", "POST", "/v1/account/subscription"],
-          ["reader", "GET", "/v1/account"]
-        ], "ntfy mutated a later user after an unresolved #{mode} 409")
+          ["reader", "GET", "/v1/account"],
+          ["reader", "GET", "/v1/account"],
+          ["read-writer", "GET", "/v1/account"]
+        ], "ntfy synchronized ineligible users or was not idempotent")
+  desired = { "base_url" => base_url, "topic" => "nas-critical", "display_name" => nil }
+  check(collected, state.fetch("reader") == [unrelated, desired],
+        "ntfy did not preserve the unrelated subscription while adding the desired one")
+  post = requests.find { |request| request["method"] == "POST" }
+  check(collected, post && JSON.parse(post["body"]) == desired.reject { |key, _value| key == "display_name" },
+        "ntfy subscription create body differs from the exact supported pair")
 end
 
-_state, _requests, wrong_code_calls, _outputs, wrong_code_statuses, =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first, subscription_users.last],
-    subscriptions: { "reader" => [], "read-writer" => [] },
-    conflict_modes: { "reader" => :wrong_code },
-    expected_requests: 3
-  )
-check(failures,
-      !wrong_code_statuses.first.success? && wrong_code_calls.last == [
-        "reader", "POST", "/v1/account/subscription"
-      ], "ntfy accepted or re-read a non-40903 conflict")
+subscription_cases << lambda do |collected;
+                                 duplicate_subscriptions, _state, _requests, duplicate_calls,
+                                 _outputs, duplicate_statuses|
+  duplicate_subscriptions = {
+    "reader" => [],
+    "read-writer" => [
+      { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" },
+      { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "" }
+    ]
+  }
+  _state, _requests, duplicate_calls, _outputs, duplicate_statuses, =
+    run_ntfy_subscription_fixture(
+      users: subscription_users,
+      subscriptions: duplicate_subscriptions,
+      expected_requests: 2
+    )
+  check(collected,
+        !duplicate_statuses.first.success? && duplicate_calls == [
+          ["reader", "GET", "/v1/account"],
+          ["read-writer", "GET", "/v1/account"]
+        ], "ntfy mutated an earlier user before rejecting a later duplicate subscription")
+end
 
-_state, _requests, continued_calls, continued_outputs, continued_statuses, =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first, subscription_users.last],
-    subscriptions: { "reader" => [], "read-writer" => [] },
-    conflict_modes: { "reader" => :create },
-    expected_requests: 6
-  )
-check(failures,
-      continued_statuses.first.success? && continued_calls.map { |call| [call[0], call[1]] } == [
-        ["reader", "GET"], ["read-writer", "GET"], ["reader", "POST"],
-        ["reader", "GET"], ["read-writer", "POST"], ["read-writer", "GET"]
-      ], "ntfy did not resolve each missing user before mutating the next")
+# Two provisioned topics, and an account that may read both. Each topic is a
+# separate subscription, and a topic the account cannot read is never created.
+subscription_cases << lambda do |collected;
+                                 both_topics_user, both_state, _requests, both_calls,
+                                 both_outputs, both_statuses, both_base|
+  both_topics_user = [
+    {
+      "username" => "reader", "password" => "reader-password", "role" => "user",
+      "access" => [
+        { "topic" => "nas-critical", "permission" => "read-only" },
+        { "topic" => "nas-containers", "permission" => "read-only" }
+      ]
+    },
+    {
+      "username" => "critical-only", "password" => "critical-password", "role" => "user",
+      "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+    }
+  ]
+  both_state, _requests, both_calls, both_outputs, both_statuses, both_base =
+    run_ntfy_subscription_fixture(
+      users: both_topics_user,
+      subscriptions: { "reader" => [], "critical-only" => [] },
+      expected_requests: 8
+    )
+  check(collected, both_statuses.all?(&:success?),
+        "ntfy multi-topic subscription synchronization failed: " \
+        "#{both_outputs.last&.lines&.last&.strip}")
+  check(collected,
+        both_state.fetch("reader") == [
+          { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil },
+          { "base_url" => both_base, "topic" => "nas-containers", "display_name" => nil }
+        ],
+        "ntfy did not subscribe a both-topic reader to both topics")
+  check(collected,
+        both_state.fetch("critical-only") == [
+          { "base_url" => both_base, "topic" => "nas-critical", "display_name" => nil }
+        ],
+        "ntfy subscribed an account to a topic it may not read")
+  check(collected,
+        both_calls.count { |call| call[0] == "critical-only" && call[1] == "POST" } == 1,
+        "ntfy did not create exactly one subscription for the critical-only reader")
+end
 
-subscription_schema_mutations = {
+subscription_cases << lambda do |collected;
+                                 malformed_account, _state, _requests, malformed_calls,
+                                 _outputs, malformed_statuses|
+  malformed_account = {
+    "username" => "read-writer", "role" => "user", "subscriptions" => "invalid"
+  }
+  _state, _requests, malformed_calls, _outputs, malformed_statuses, =
+    run_ntfy_subscription_fixture(
+      users: subscription_users,
+      subscriptions: { "reader" => [], "read-writer" => [] },
+      malformed_accounts: { "read-writer" => malformed_account },
+      expected_requests: 2
+    )
+  check(collected,
+        !malformed_statuses.first.success? && malformed_calls.none? { |call| call[1] == "POST" },
+        "ntfy mutated an earlier user before rejecting a later account schema")
+end
+
+subscription_cases << lambda do |collected;
+                                 accepted_state, _requests, accepted_calls, accepted_outputs,
+                                 accepted_statuses, accepted_base|
+  accepted_state, _requests, accepted_calls, accepted_outputs, accepted_statuses, accepted_base =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first],
+      subscriptions: { "reader" => [] },
+      conflict_modes: { "reader" => :create },
+      expected_requests: 3
+    )
+  check(collected,
+        accepted_statuses.first.success? && accepted_calls.map { |call| call[1] } == %w[GET POST GET] &&
+          accepted_state.fetch("reader") == [{
+            "base_url" => accepted_base, "topic" => "nas-critical", "display_name" => nil
+          }],
+        "ntfy did not accept a provisional 409 only after an authoritative exact match")
+end
+
+subscription_cases << lambda do |collected;
+                                 _state, _requests, rejected_calls, rejected_outputs,
+                                 rejected_statuses|
+  _state, _requests, rejected_calls, rejected_outputs, rejected_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first],
+      subscriptions: { "reader" => [] },
+      conflict_modes: { "reader" => :reject },
+      expected_requests: 3
+    )
+  check(collected,
+        !rejected_statuses.first.success? && rejected_calls.map { |call| call[1] } == %w[GET POST GET],
+        "ntfy accepted a 409 without an authoritative desired subscription")
+end
+
+subscription_cases += %i[reject duplicate].map do |mode|
+  lambda do |collected; _state, _requests, blocked_calls, _outputs, blocked_statuses|
+    _state, _requests, blocked_calls, _outputs, blocked_statuses, =
+      run_ntfy_subscription_fixture(
+        users: [subscription_users.first, subscription_users.last],
+        subscriptions: { "reader" => [], "read-writer" => [] },
+        conflict_modes: { "reader" => mode },
+        expected_requests: 4
+      )
+    check(collected,
+          !blocked_statuses.first.success? && blocked_calls == [
+            ["reader", "GET", "/v1/account"],
+            ["read-writer", "GET", "/v1/account"],
+            ["reader", "POST", "/v1/account/subscription"],
+            ["reader", "GET", "/v1/account"]
+          ], "ntfy mutated a later user after an unresolved #{mode} 409")
+  end
+end
+
+subscription_cases << lambda do |collected;
+                                 _state, _requests, wrong_code_calls, _outputs,
+                                 wrong_code_statuses|
+  _state, _requests, wrong_code_calls, _outputs, wrong_code_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first, subscription_users.last],
+      subscriptions: { "reader" => [], "read-writer" => [] },
+      conflict_modes: { "reader" => :wrong_code },
+      expected_requests: 3
+    )
+  check(collected,
+        !wrong_code_statuses.first.success? && wrong_code_calls.last == [
+          "reader", "POST", "/v1/account/subscription"
+        ], "ntfy accepted or re-read a non-40903 conflict")
+end
+
+subscription_cases << lambda do |collected;
+                                 _state, _requests, continued_calls, continued_outputs,
+                                 continued_statuses|
+  _state, _requests, continued_calls, continued_outputs, continued_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first, subscription_users.last],
+      subscriptions: { "reader" => [], "read-writer" => [] },
+      conflict_modes: { "reader" => :create },
+      expected_requests: 6
+    )
+  check(collected,
+        continued_statuses.first.success? && continued_calls.map { |call| [call[0], call[1]] } == [
+          ["reader", "GET"], ["read-writer", "GET"], ["reader", "POST"],
+          ["reader", "GET"], ["read-writer", "POST"], ["read-writer", "GET"]
+        ], "ntfy did not resolve each missing user before mutating the next")
+end
+
+# Frozen, and each case passes `.dup` rather than the entry itself: the fixture
+# rewrites a `DESIRED_BASE_URL` placeholder in every subscription entry it is
+# handed, so four cases sharing one entry would each write their own port into
+# it. The freeze is what makes forgetting the `.dup` a FrozenError here instead
+# of four fixtures reading each other's ports.
+subscription_schema_mutations = deep_freeze({
   "missing display_name" => { "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical" },
   "extra field" => {
     "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "", "extra" => true
@@ -1132,62 +1181,82 @@ subscription_schema_mutations = {
   "wrong base_url type" => {
     "base_url" => 7, "topic" => "nas-critical", "display_name" => ""
   }
-}
-subscription_schema_mutations.each do |label, invalid_subscription|
-  _state, _requests, schema_calls, _outputs, schema_statuses, =
-    run_ntfy_subscription_fixture(
-      users: [subscription_users.first, subscription_users.last],
-      subscriptions: { "reader" => [], "read-writer" => [invalid_subscription] },
-      expected_requests: 2
-    )
-  check(failures,
-        !schema_statuses.first.success? && schema_calls.none? { |call| call[1] == "POST" },
-        "ntfy accepted #{label} in a preflight subscription entry")
+})
+subscription_cases += subscription_schema_mutations.map do |label, invalid_subscription|
+  lambda do |collected; _state, _requests, schema_calls, _outputs, schema_statuses|
+    _state, _requests, schema_calls, _outputs, schema_statuses, =
+      run_ntfy_subscription_fixture(
+        users: [subscription_users.first, subscription_users.last],
+        subscriptions: { "reader" => [], "read-writer" => [invalid_subscription.dup] },
+        expected_requests: 2
+      )
+    check(collected,
+          !schema_statuses.first.success? && schema_calls.none? { |call| call[1] == "POST" },
+          "ntfy accepted #{label} in a preflight subscription entry")
+  end
 end
 
-invalid_create_response = {
-  "base_url" => "wrong", "topic" => "nas-critical", "display_name" => nil, "extra" => true
-}
-_state, _requests, create_schema_calls, _outputs, create_schema_statuses, =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first],
-    subscriptions: { "reader" => [] },
-    create_responses: { "reader" => invalid_create_response },
-    expected_requests: 2
+subscription_cases << lambda do |collected;
+                                 invalid_create_response, _state, _requests,
+                                 create_schema_calls, _outputs, create_schema_statuses|
+  invalid_create_response = {
+    "base_url" => "wrong", "topic" => "nas-critical", "display_name" => nil, "extra" => true
+  }
+  _state, _requests, create_schema_calls, _outputs, create_schema_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first],
+      subscriptions: { "reader" => [] },
+      create_responses: { "reader" => invalid_create_response },
+      expected_requests: 2
+    )
+  check(collected,
+        !create_schema_statuses.first.success? && create_schema_calls.map { |call| call[1] } == %w[GET POST],
+        "ntfy accepted an invalid HTTP 200 subscription response")
+end
+
+subscription_cases << lambda do |collected;
+                                 invalid_post_read, _state, _requests, post_schema_calls,
+                                 _outputs, post_schema_statuses|
+  invalid_post_read = [{
+    "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "", "extra" => true
+  }]
+  _state, _requests, post_schema_calls, _outputs, post_schema_statuses, =
+    run_ntfy_subscription_fixture(
+      users: [subscription_users.first],
+      subscriptions: { "reader" => [] },
+      post_read_subscriptions: { "reader" => invalid_post_read },
+      expected_requests: 3
+    )
+  check(collected,
+        !post_schema_statuses.first.success? && post_schema_calls.map { |call| call[1] } == %w[GET POST GET],
+        "ntfy accepted an invalid authoritative post-create subscription schema")
+end
+
+subscription_cases << lambda do |collected;
+                                 subscription_admin, _state, _requests, admin_calls,
+                                 _outputs, admin_statuses|
+  subscription_admin = Marshal.load(Marshal.dump(subscription_users.first))
+  subscription_admin["role"] = "admin"
+  _state, _requests, admin_calls, _outputs, admin_statuses, = run_ntfy_subscription_fixture(
+    users: [subscription_admin], subscriptions: {}, expected_requests: 0
   )
-check(failures,
-      !create_schema_statuses.first.success? && create_schema_calls.map { |call| call[1] } == %w[GET POST],
-      "ntfy accepted an invalid HTTP 200 subscription response")
+  check(collected, !admin_statuses.first.success? && admin_calls.empty?,
+        "ntfy accepted or authenticated a managed administrator")
+end
 
-invalid_post_read = [{
-  "base_url" => "DESIRED_BASE_URL", "topic" => "nas-critical", "display_name" => "", "extra" => true
-}]
-_state, _requests, post_schema_calls, _outputs, post_schema_statuses, =
-  run_ntfy_subscription_fixture(
-    users: [subscription_users.first],
-    subscriptions: { "reader" => [] },
-    post_read_subscriptions: { "reader" => invalid_post_read },
-    expected_requests: 3
+subscription_cases << lambda do |collected;
+                                 duplicate_users, _state, _requests, identity_calls,
+                                 _outputs, identity_statuses|
+  duplicate_users = [subscription_users.first, Marshal.load(Marshal.dump(subscription_users.first))]
+  duplicate_users.last["username"] = " Reader "
+  _state, _requests, identity_calls, _outputs, identity_statuses, = run_ntfy_subscription_fixture(
+    users: duplicate_users, subscriptions: {}, expected_requests: 0
   )
-check(failures,
-      !post_schema_statuses.first.success? && post_schema_calls.map { |call| call[1] } == %w[GET POST GET],
-      "ntfy accepted an invalid authoritative post-create subscription schema")
+  check(collected, !identity_statuses.first.success? && identity_calls.empty?,
+        "ntfy authenticated duplicate normalized managed usernames")
+end
 
-admin_user = Marshal.load(Marshal.dump(subscription_users.first))
-admin_user["role"] = "admin"
-_state, _requests, admin_calls, _outputs, admin_statuses, = run_ntfy_subscription_fixture(
-  users: [admin_user], subscriptions: {}, expected_requests: 0
-)
-check(failures, !admin_statuses.first.success? && admin_calls.empty?,
-      "ntfy accepted or authenticated a managed administrator")
-
-duplicate_users = [subscription_users.first, Marshal.load(Marshal.dump(subscription_users.first))]
-duplicate_users.last["username"] = " Reader "
-_state, _requests, identity_calls, _outputs, identity_statuses, = run_ntfy_subscription_fixture(
-  users: duplicate_users, subscriptions: {}, expected_requests: 0
-)
-check(failures, !identity_statuses.first.success? && identity_calls.empty?,
-      "ntfy authenticated duplicate normalized managed usernames")
+in_parallel_cases(failures, subscription_cases) { |fixture, collected| fixture.call(collected) }
 
 ntfy_main_tasks = YAML.safe_load(ntfy_main, aliases: false) || []
 check(failures, ntfy_main_order_valid?(ntfy_main_tasks),
