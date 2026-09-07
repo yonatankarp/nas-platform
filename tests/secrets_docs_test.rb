@@ -418,10 +418,11 @@ required_auto_deploy_guidance = {
   # #351 split the retry rule in two, and the guide has to carry both halves.
   # A failure that reached the NAS is still attempted once, which is what stops
   # a broken deployment repeating every five minutes; a failure that never got
-  # there -- the checkout fetch or the collection install losing to somebody
-  # else's outage -- is retried automatically, under a bound. Stating only the
-  # first half would describe a poller that no longer exists, and stating only
-  # the second would leave the bound and the one-attempt rule undocumented.
+  # there -- the checkout fetch, the tooling install or the collection install
+  # losing to somebody else's outage -- is retried automatically, under a
+  # bound. Stating only the first half would describe a poller that no longer
+  # exists, and stating only the second would leave the bound and the
+  # one-attempt rule undocumented.
   /attempted once for any failure that reached the NAS/i =>
     "forbid automatic retries of a revision whose deployment reached the NAS",
   /three ticks at most/i =>

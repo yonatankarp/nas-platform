@@ -62,12 +62,13 @@ BLIND_POLL_THRESHOLD = 3
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
-# The ladder for the two commands in a deployment that reach a third party: the
-# checkout fetch and the collection install. Few attempts, because they are
-# retried only when they fail fast, and a fast failure that repeats three times
-# in seven seconds is not a blip. The backoffs are one shorter than the attempt
-# count by construction, and are spent under the deployment lock, which is why
-# they are seconds rather than the minutes an unlocked ladder could afford.
+# The ladder for the three commands in a deployment that reach a third party:
+# the checkout fetch, the pip install and the collection install. Few attempts,
+# because they are retried only when they fail fast, and a fast failure that
+# repeats three times in seven seconds is not a blip. The backoffs are one
+# shorter than the attempt count by construction, and are spent under the
+# deployment lock, which is why they are seconds rather than the minutes an
+# unlocked ladder could afford.
 NETWORK_RETRY_ATTEMPTS = 3
 NETWORK_RETRY_BACKOFF_SECONDS = (2, 5)
 # Consecutive ticks a revision may fail transiently before it is quarantined
@@ -281,11 +282,12 @@ def _run_network_command(
     exit is retried, and those are cheap enough that several fit under one
     deadline.
 
-    An exhausted ladder is transient because both callers are network-shaped: a
+    An exhausted ladder is transient because every caller is network-shaped: a
     fetch here runs seconds after ls-remote proved the remote and the branch
-    reachable, and a collection install reaches galaxy.ansible.com. A cause that
-    is not really transient still fails identically every tick, which is what
-    may_retry_after_transient_failure bounds.
+    reachable, a pip install reaches pypi.org and a collection install reaches
+    galaxy.ansible.com. A cause that is not really transient still fails
+    identically every tick, which is what may_retry_after_transient_failure
+    bounds.
     """
 
     deadline = time.monotonic() + budget
@@ -957,8 +959,12 @@ def sync_tooling(config: Config, log=None) -> None:
     run ansible-pull is the very tooling being corrected.
     """
 
+    # This reaches pypi.org, so it takes the ladder and its failure is
+    # transient (#415). It keeps TOOLING_TIMEOUT_SECONDS unchanged: the budget
+    # is a total the attempts and their backoffs share, so the ladder can never
+    # hold the deployment lock longer than the single attempt it replaces.
     requirements = config.checkout / "controller-requirements.txt"
-    result = _run(
+    _run_network_command(
         [
             _tooling_bin(config) / "pip",
             "install",
@@ -967,20 +973,16 @@ def sync_tooling(config: Config, log=None) -> None:
             "--requirement",
             str(requirements),
         ],
-        timeout=TOOLING_TIMEOUT_SECONDS,
+        failure="controller tooling could not be synchronised",
+        budget=TOOLING_TIMEOUT_SECONDS,
         cwd=config.checkout,
         env={"PATH": config.tool_path, "LC_ALL": "C"},
         log=log,
     )
-    if result.returncode != 0:
-        raise DeploymentError("controller tooling could not be synchronised")
 
     # Collections are a separate dependency set from the Python pins, and the
     # modules the playbooks call live in them. This one reaches
-    # galaxy.ansible.com, so it takes the ladder and its failure is transient;
-    # the pip install above deliberately does not, because #351 scopes the
-    # change to the two fetches it names and a ladder is not free to add to a
-    # file whose defects cannot be healed by merging a fix.
+    # galaxy.ansible.com, so it takes the same ladder for the same reason.
     _run_network_command(
         [
             _tooling_bin(config) / "ansible-galaxy",
