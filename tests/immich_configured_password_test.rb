@@ -92,7 +92,8 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
   end
 end
 
-def run_configured_password(port, phases, *arguments)
+def run_configured_password(port, phases, *arguments,
+                            timeout_seconds: PLAYBOOK_TIMEOUT_SECONDS)
   variables = {
     "immich_api" => "http://127.0.0.1:#{port}/api",
     "vault_immich_admin_email" => "admin@example.invalid",
@@ -118,7 +119,7 @@ def run_configured_password(port, phases, *arguments)
     capture3_with_timeout(
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,",
       "-c", "local", path, *arguments, chdir: ROOT,
-      timeout_seconds: PLAYBOOK_TIMEOUT_SECONDS
+      timeout_seconds: timeout_seconds
     )
   end
 end
@@ -129,9 +130,84 @@ def send_response(status, response)
   [status, JSON.generate(response)]
 end
 
-def with_immich_users(initial_users, persist_patches: true, replace_after_patches: nil, &block)
+# How long the blocked fixture below may take to unwind after it is told to
+# stop. It is told to stop by a pipe it is already selecting on, so the honest
+# figure is milliseconds; five seconds is slack for a contended runner. A
+# fixture that outlasts it is reported as a fault rather than killed quietly,
+# because the whole claim of the refusal case is that the serve loop leaves
+# through its own break.
+BLOCKED_JOIN_SECONDS = 5
+
+# A fixture that reads the request and then answers nothing, so a play cannot
+# finish however fast this machine boots ansible. It is what makes the refusal
+# case at the foot of this file deterministic rather than a bet on a boot
+# outlasting its budget, which is what #463 built the Audiobookshelf equivalent
+# for. The wait is on the shutdown pipe rather than a sleep, so the loop still
+# leaves through its own break.
+#
+# It cannot go through with_http_fixture, and that is why the accept loop is
+# duplicated here: that helper always writes a response to the request it read,
+# and a write to a socket whose peer has just been SIGKILLed raises
+# Errno::EPIPE from the fixture thread on the second or third write, which is a
+# flake rather than a result. Answering nothing means never writing.
+#
+# It serves no users, so the user list with_immich_users was handed reaches the
+# caller's block untouched and unread. Nothing on this path inspects it.
+def with_blocked_immich_fixture
+  server = TCPServer.new("127.0.0.1", 0)
+  shutdown_reader, shutdown_writer = IO.pipe
+  error = nil
+  thread = Thread.new do
+    Thread.current.report_on_exception = false
+    loop do
+      ready = IO.select([server, shutdown_reader], nil, nil, 0.05)
+      next unless ready
+      break if ready.first.include?(shutdown_reader)
+
+      socket = server.accept
+      begin
+        socket.gets
+        HttpFixtureSupport.read_headers(socket)
+        IO.select([shutdown_reader], nil, nil, nil)
+      ensure
+        socket.close unless socket.closed?
+      end
+    end
+  # A peer signalled mid-request resets or closes the connection under the read
+  # above. That is the case under test doing its job, not a fixture fault, and
+  # neither reset nor broken pipe is an IOError.
+  rescue IOError, Errno::EBADF, Errno::ECONNRESET, Errno::EPIPE
+    nil
+  rescue StandardError => caught
+    error = caught
+  end
+
+  yield server.addr.fetch(1)
+ensure
+  begin
+    shutdown_writer&.write("x")
+  rescue IOError, Errno::EPIPE
+    nil
+  end
+  shutdown_writer&.close unless shutdown_writer&.closed?
+  server&.close unless server&.closed?
+  if thread && !thread.join(BLOCKED_JOIN_SECONDS)
+    thread.kill
+    thread.join
+    error ||= HttpFixtureSupport::FixtureError.new(
+      "blocked Immich fixture thread did not stop within #{BLOCKED_JOIN_SECONDS}s"
+    )
+  end
+  shutdown_reader&.close unless shutdown_reader&.closed?
+  raise error if error
+end
+
+def with_immich_users(initial_users, persist_patches: true, replace_after_patches: nil,
+                      blocked: false, &block)
   users = Marshal.load(Marshal.dump(initial_users))
   requests = []
+  return with_blocked_immich_fixture { |port| block.call(port, requests, users) } if blocked
+
   patch_count = 0
   replacement_pending = false
   with_http_fixture(->(port) { block.call(port, requests, users) },
@@ -369,6 +445,34 @@ with_immich_users(complete_users) do |port, requests, _users|
   _stdout, _stderr, status = run_configured_password(port, ["verify"])
   failures << "verification accepted shouldChangePassword=true" if status.success?
   check_no_mutation(failures, requests, "verification mutated shouldChangePassword=true")
+end
+
+# The refusal path of capture3_with_timeout above, proved the way the three
+# sibling copies prove theirs. What this covers is the wrapper -- the process
+# group is signalled, the run is abandoned, and the budget is named in the
+# diagnostic with the unit it deserves -- and not the detection of a hung HTTP
+# call: one second is shorter than an ansible boot on the runners this gate
+# uses, so the play is usually refused before it reaches the fixture at all.
+# The blocked fixture is what keeps the case deterministic on a machine fast
+# enough to boot inside the budget.
+#
+# The budget is one second and never the 120-second default. A
+# deliberate-failure case left on a default budget is precisely CLAUDE.md's
+# fourth static-budget occurrence, where a wrapper that stopped refusing sat on
+# READY_TIMEOUT_SECONDS for 180 seconds twice and took one check from 26s to
+# 368s. There is no retry and no fallback here: if the refusal does not arrive,
+# the case records that and returns.
+#
+# The user list is inert here -- a blocked fixture answers nothing, so it serves
+# nobody -- and complete_users is passed only to keep one entry point for every
+# fixture in this file.
+with_immich_users(complete_users, blocked: true) do |port, _requests, _users|
+  run_configured_password(port, ["reconcile"], timeout_seconds: 1)
+  failures << "blocked configured-password fixture did not time out diagnostically"
+rescue FixtureTimeout => error
+  failures << "blocked configured-password fixture timeout diagnostic differs: " \
+              "#{error.message.inspect}" unless
+    error.message == "Ansible fixture timed out after 1 second"
 end
 
 captured_requests = captured_request_sets.flatten
