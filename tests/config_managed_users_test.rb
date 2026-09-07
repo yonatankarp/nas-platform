@@ -356,6 +356,25 @@ def structural_property_failures(context)
   STRUCTURAL_PROPERTIES.reject { |_label, property| property.call(context) }.keys
 end
 
+# Freezes a fixture input the pooled cases below only read.
+#
+# Every one of them deep-copies before it changes anything, and this is what
+# says so: a case that forgets raises FrozenError in its own case instead of
+# handing the next case a corrupted input, which is a failure that would
+# reproduce only under load. Nested rather than a bare `freeze` because these
+# structures are two and three levels deep and every write in this file reaches
+# past the first.
+#
+# An input only one case uses is not frozen -- it is built inside that case, so
+# there is nothing to share.
+def deep_freeze(value)
+  case value
+  when Hash then value.each { |pair| pair.each { |item| deep_freeze(item) } }
+  when Array then value.each { |nested| deep_freeze(nested) }
+  end
+  value.freeze
+end
+
 # Deep-copy one parsed structure out of the context and let the caller change it
 # the way a regression would, leaving the baseline the other properties are
 # still measured against untouched.
@@ -735,30 +754,52 @@ check(failures,
         dozzle_auth_task["no_log"] == true,
       "Dozzle managed authentication request or health ordering differs")
 
+# The fixtures from here to the end of the file are what this check spends its
+# wall time on, and each one is a case that owns everything it touches:
+# `run_dozzle_fixture` takes its own `Dir.mktmpdir` for the users document and
+# the rendered output, `run_playbook` takes another for the playbook it writes,
+# and `with_http_probe` binds a loopback `TCPServer` on an OS-assigned port with
+# its own accept thread. No two cases share a directory, a port, an output path
+# or an environment variable, and none of them touches the repository.
+#
+# Result locals are declared block-local -- the names after the `;` in each
+# parameter list -- rather than renamed. `status`, `output`, `rendered` and
+# `provisioned` are script-level names in this file, and a case that assigned
+# one without declaring it would share a single binding with its siblings
+# instead of getting its own. That loss is silent: most of these fixtures are
+# expected to fail, so a sibling's failing status reads as this case's own
+# result and the guard passes vacuously.
+#
+# A fixture input that more than one case reads is frozen; one that a single
+# case uses is built inside that case, so there is nothing to share.
+dozzle_cases = []
+
 if dozzle_auth_task
-  responder = proc { |_request| 200 }
-  with_http_probe(1, responder) do |port, requests|
-    variables = {
-      "dozzle_api" => "http://127.0.0.1:#{port}/api",
-      "vault_managed_dozzle_users" => [
-        { "username" => "reader", "password" => "managed-plaintext" }
-      ]
-    }
-    run_playbook(task_playbook([dozzle_auth_task], variables)) do |_tmp, output, status|
-      check(failures, status.success?, "Dozzle authentication fixture failed: #{output.lines.last&.strip}")
+  dozzle_cases << lambda do |collected; responder, variables, request|
+    responder = proc { |_request| 200 }
+    with_http_probe(1, responder) do |port, requests|
+      variables = {
+        "dozzle_api" => "http://127.0.0.1:#{port}/api",
+        "vault_managed_dozzle_users" => [
+          { "username" => "reader", "password" => "managed-plaintext" }
+        ]
+      }
+      run_playbook(task_playbook([dozzle_auth_task], variables)) do |_tmp, output, status|
+        check(collected, status.success?, "Dozzle authentication fixture failed: #{output.lines.last&.strip}")
+      end
+      request = requests.first || {}
+      check(collected,
+            request["method"] == "POST" && request["target"] == "/api/token" &&
+              request["body"] == URI.encode_www_form(
+                "username" => "reader", "password" => "managed-plaintext"
+              ),
+            "Dozzle authentication fixture sent a different method, endpoint, or body")
     end
-    request = requests.first || {}
-    check(failures,
-          request["method"] == "POST" && request["target"] == "/api/token" &&
-            request["body"] == URI.encode_www_form(
-              "username" => "reader", "password" => "managed-plaintext"
-            ),
-          "Dozzle authentication fixture sent a different method, endpoint, or body")
   end
 end
 
 if !dozzle_tasks.empty?
-  existing = {
+  existing = deep_freeze({
     "users" => {
       "admin" => { "email" => "old", "name" => "Wrong", "password" => BCRYPT_A,
                      "filter" => "old", "roles" => "admin" },
@@ -767,42 +808,52 @@ if !dozzle_tasks.empty?
       "unmanaged" => { "password" => "opaque", "custom" => { "nested" => [1, "two"] } }
     },
     "outside" => { "preserved" => true }
-  }
-  rendered, output, status = run_dozzle_fixture(YAML.dump(existing))
-  check(failures, status.success?, "Dozzle merge fixture failed: #{output.lines.last&.strip}")
-  if rendered
-    check(failures, rendered["outside"] == existing["outside"], "Dozzle did not preserve root keys outside users")
-    check(failures, rendered.dig("users", "unmanaged") == existing.dig("users", "unmanaged"),
-          "Dozzle did not preserve an unmanaged user verbatim")
-    check(failures, rendered.dig("users", "reader") == {
-            "email" => "reader@example.invalid", "name" => "Managed Reader",
-            "password" => BCRYPT_B, "filter" => "status=running", "roles" => "user"
-          }, "Dozzle did not render the exact managed non-secret fields")
+  })
+  dozzle_cases << lambda do |collected; rendered, output, status|
+    rendered, output, status = run_dozzle_fixture(YAML.dump(existing))
+    check(collected, status.success?, "Dozzle merge fixture failed: #{output.lines.last&.strip}")
+    if rendered
+      check(collected, rendered["outside"] == existing["outside"], "Dozzle did not preserve root keys outside users")
+      check(collected, rendered.dig("users", "unmanaged") == existing.dig("users", "unmanaged"),
+            "Dozzle did not preserve an unmanaged user verbatim")
+      check(collected, rendered.dig("users", "reader") == {
+              "email" => "reader@example.invalid", "name" => "Managed Reader",
+              "password" => BCRYPT_B, "filter" => "status=running", "roles" => "user"
+            }, "Dozzle did not render the exact managed non-secret fields")
+    end
   end
 
-  _rendered, _output, status = run_dozzle_fixture("users: [malformed mapping]\n")
-  check(failures, !status.success?, "Dozzle accepted a malformed users document")
-  hash_change = Marshal.load(Marshal.dump(existing))
-  hash_change["users"]["reader"]["password"] = BCRYPT_A
-  _rendered, output, status = run_dozzle_fixture(YAML.dump(hash_change))
-  check(failures, !status.success? && output.include?("will not replace"),
-        "Dozzle accepted a hash change for an existing allowlisted identity")
-  duplicate_names = Marshal.load(Marshal.dump(existing))
-  duplicate_names["users"][" Reader "] = duplicate_names["users"]["reader"]
-  _rendered, _output, status = run_dozzle_fixture(YAML.dump(duplicate_names))
-  check(failures, !status.success?, "Dozzle accepted duplicate normalized existing identities")
+  dozzle_cases << lambda do |collected; _rendered, _output, status|
+    _rendered, _output, status = run_dozzle_fixture("users: [malformed mapping]\n")
+    check(collected, !status.success?, "Dozzle accepted a malformed users document")
+  end
+  dozzle_cases << lambda do |collected; hash_change, _rendered, output, status|
+    hash_change = Marshal.load(Marshal.dump(existing))
+    hash_change["users"]["reader"]["password"] = BCRYPT_A
+    _rendered, output, status = run_dozzle_fixture(YAML.dump(hash_change))
+    check(collected, !status.success? && output.include?("will not replace"),
+          "Dozzle accepted a hash change for an existing allowlisted identity")
+  end
+  dozzle_cases << lambda do |collected; duplicate_names, _rendered, _output, status|
+    duplicate_names = Marshal.load(Marshal.dump(existing))
+    duplicate_names["users"][" Reader "] = duplicate_names["users"]["reader"]
+    _rendered, _output, status = run_dozzle_fixture(YAML.dump(duplicate_names))
+    check(collected, !status.success?, "Dozzle accepted duplicate normalized existing identities")
+  end
 
-  {
+  dozzle_cases += {
     "empty scalar" => "",
     "empty list" => [],
     "null" => nil,
     "missing password" => {}
-  }.each do |label, unsafe_entry|
-    unsafe_existing = Marshal.load(Marshal.dump(existing))
-    unsafe_existing["users"]["reader"] = unsafe_entry
-    _rendered, unsafe_output, unsafe_status = run_dozzle_fixture(YAML.dump(unsafe_existing))
-    check(failures, !unsafe_status.success? && unsafe_output.include?("will not replace"),
-          "Dozzle treated an existing #{label} allowlisted entry as absent")
+  }.map do |label, unsafe_entry|
+    lambda do |collected; unsafe_existing, _rendered, unsafe_output, unsafe_status|
+      unsafe_existing = Marshal.load(Marshal.dump(existing))
+      unsafe_existing["users"]["reader"] = unsafe_entry
+      _rendered, unsafe_output, unsafe_status = run_dozzle_fixture(YAML.dump(unsafe_existing))
+      check(collected, !unsafe_status.success? && unsafe_output.include?("will not replace"),
+            "Dozzle treated an existing #{label} allowlisted entry as absent")
+    end
   end
 
   unsafe_yaml_documents = {
@@ -814,11 +865,15 @@ if !dozzle_tasks.empty?
     ),
     "multiple documents" => "users: {}\n---\nusers: {}\n"
   }
-  unsafe_yaml_documents.each do |label, unsafe_source|
-    _rendered, _unsafe_output, unsafe_status = run_dozzle_fixture(unsafe_source)
-    check(failures, !unsafe_status.success?, "Dozzle accepted #{label} YAML")
+  dozzle_cases += unsafe_yaml_documents.map do |label, unsafe_source|
+    lambda do |collected; _rendered, _unsafe_output, unsafe_status|
+      _rendered, _unsafe_output, unsafe_status = run_dozzle_fixture(unsafe_source)
+      check(collected, !unsafe_status.success?, "Dozzle accepted #{label} YAML")
+    end
   end
 end
+
+in_parallel_cases(failures, dozzle_cases) { |fixture, collected| fixture.call(collected) }
 
 check(failures, ntfy_main.include?("managed_users.yml"), "ntfy main tasks do not include managed-user provisioning")
 check(failures,
