@@ -885,9 +885,13 @@ check(failures, registers_command_once?(policy_source, workflow_guard_command),
       "validate-policy.sh must still register #{workflow_guard_command.inspect} exactly once: " \
       "the validate job runs it for the workflow's shape, the gate runs it for every other " \
       "change, and moving it out of the gate is not the same fix as running it in both places")
-check(failures, Array(validate["steps"]).none? { |step| step.is_a?(Hash) && step.key?("if") },
-      "validate steps must be unconditional: this job is the route that cannot be skipped, and " \
-      "a step conditioned on another job's result restores exactly that hole")
+check(failures,
+      Array(validate["steps"]).none? do |step|
+        step.is_a?(Hash) && %w[if continue-on-error].any? { |key| step.key?(key) }
+      end,
+      "validate steps must be unconditional and must fail the job: this is the route that " \
+      "cannot be skipped, and a step gated on another job's result -- or one whose failure is " \
+      "tolerated -- restores exactly the hole this job's copy of the guard closes")
 # One `needs` entry covers all three shards because `needs.<job>.result` for a
 # matrix job is the job's aggregate: `failure` if any leg failed, `cancelled` if
 # any was cancelled, and `success` only if every leg succeeded. The suites matrix
