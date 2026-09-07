@@ -17,7 +17,19 @@ TASK_FILE = File.join(ROOT, "roles", "immich", "tasks", "configured_password.yml
 TOKEN = "configured-password-fixture-token"
 MUTATION_METHODS = %w[POST PUT PATCH DELETE].freeze
 FORBIDDEN_BODY_KEYS = %w[password isAdmin].freeze
-PLAYBOOK_TIMEOUT_SECONDS = 30
+# How long one ansible-playbook boot is given before it is called hung. This is
+# not a performance assertion: every behavioural property below has its own
+# check. This check boots ansible sixteen times, serially, and forks no case
+# pool of its own, but tests/validate-policy.sh runs its own checks in a pool of
+# `nproc` workers, so on a four-core runner three other checks are resident
+# alongside those boots, several of which fork case pools of the same width, and
+# a play that takes two seconds unloaded takes far longer. A literal 30 was the
+# tipping point that reported the gate's own contention as a behavioural failure
+# in tests/audiobookshelf_initial_scan_behavior_test.rb (#462); 120 is what
+# tests/media_acquisition_reconciliation_support.rb and that sibling both budget
+# for the same operation, and their comments argue the same runner. This was the
+# last copy carrying a literal. Overridable for anyone who wants it strict.
+PLAYBOOK_TIMEOUT_SECONDS = Float(ENV.fetch("IMMICH_PLAYBOOK_TIMEOUT", "120"))
 
 class FixtureTimeout < StandardError; end
 
@@ -73,7 +85,8 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
       end
       stdout_reader.join(1)
       stderr_reader.join(1)
-      raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} seconds"
+      unit = timeout_seconds == 1 ? "second" : "seconds"
+      raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
     end
     [stdout_reader.value, stderr_reader.value, status]
   end
