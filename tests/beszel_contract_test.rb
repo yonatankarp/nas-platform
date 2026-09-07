@@ -1391,14 +1391,23 @@ end
 # The retired literal is a negated conjunct for the reason tests/policy_test.rb
 # gives for its own: folding the constant back into the deadline site leaves the
 # constant defined above it, so the positive half alone stays satisfied.
+#
+# `ceiling` is what makes the row half a pin on the WAIT rather than on the
+# spelling. Requiring only that some row names the budget leaves the cheapest
+# revert of all still silent -- someone chasing a row that looked flaky under
+# load edits the 6 back to 90, the name is still overridden, both sweeps below
+# stay empty and ninety seconds returns. A ceiling makes needing a longer budget
+# a deliberate edit to this hash instead.
 BUDGETS = {
   "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS" => {
     default: "90",
+    ceiling: 10,
     applied: "timeout_seconds: TELEMETRY_POLL_TIMEOUT_SECONDS",
     retired: "timeout_seconds: 90"
   },
   "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => {
     default: "15",
+    ceiling: 6,
     applied: "MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS",
     retired: "MONOTONIC) + 15"
   }
@@ -1424,6 +1433,26 @@ def budget_failures(runtime_source: File.read(RUNTIME_PROGRAM), rows: RUNTIME_RO
   end
   (overrides - BUDGETS.keys).each do |name|
     failures << "budgets: a row overrides #{name}, which the program never reads"
+  end
+  rows.each do |row|
+    row.fetch(:env, {}).each do |name, value|
+      budget = BUDGETS[name]
+      next if budget.nil?
+
+      seconds = begin
+                  Integer(value, 10)
+                rescue ArgumentError, TypeError
+                  nil
+                end
+      if seconds.nil?
+        failures << "budgets: a row spends #{value.inspect} of #{name}, which is not a " \
+                    "number of seconds"
+        next
+      end
+      failures << "budgets: a row spends #{seconds}s of #{name}, over the " \
+                  "#{budget.fetch(:ceiling)}s a row may spend" unless
+        seconds <= budget.fetch(:ceiling)
+    end
   end
   failures
 end
@@ -2256,6 +2285,24 @@ BUDGET_MUTATIONS = [
     detects: ["no row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS",
               "a row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS_MISSPELT, " \
               "which the program never reads"]
+  },
+  {
+    # The cheapest revert and the one with no trace anywhere: the overrides stay
+    # spelt correctly and every other assertion in this file passes, but each
+    # row is handed the deployment's own budget back and the gate sleeps out its
+    # ~170s again. Only the ceiling catches it.
+    label: "a budget override's short value",
+    rows: lambda { |rows|
+      rows.map do |row|
+        next row unless row.key?(:env)
+
+        row.merge(env: row.fetch(:env).to_h { |name, value|
+          [name, BUDGETS.key?(name) ? BUDGETS.fetch(name).fetch(:default) : value]
+        })
+      end
+    },
+    detects: ["a row spends 90s of PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS, over the 10s",
+              "a row spends 15s of PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS, over the 6s"]
   }
 ].freeze
 
