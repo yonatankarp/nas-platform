@@ -432,6 +432,7 @@ REQUIRED_CHECKS = %w[
   ruby\ tests/komga_contract_test.rb
   ruby\ tests/komga_contract_test.rb\ --self-test
   ruby\ tests/reader_platform_identity_test.rb
+  ruby\ tests/capture_helper_identity_test.rb
   ruby\ tests/audiobookshelf_initial_scan_test.rb
   ruby\ tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby\ tests/audiobookshelf_contract_test.rb
