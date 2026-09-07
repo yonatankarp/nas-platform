@@ -51,21 +51,42 @@ end
 # the sibling fixtures in tests/ntfy_verify_execution_test.rb,
 # tests/immich_configured_password_test.rb and
 # tests/beszel_password_preservation_test.rb already carry.
+#
+# Every join on the timeout path is bounded, and must stay bounded. A reader
+# thread returns at EOF, EOF needs every write end of the pipe closed, and
+# terminate_process_group only reaches the process *group* -- anything that left
+# it (a detached ansible-connection, any grandchild that called setsid) survives
+# holding the pipe, so an unbounded join turns this check into the hang it exists
+# to detect. The _run docstring in scripts/production_auto_deploy.py records the
+# same lesson for the poller. The bound costs nothing: the statement after the
+# joins raises FixtureTimeout, which carries only the budget, so the output those
+# joins would wait for is discarded either way.
+#
+# The two report_on_exception lines belong to that same path. When a bounded join
+# returns nil the reader is still parked in IO#read, and popen3's block form
+# closes the pipe in its own ensure on the way out, so the thread dies with
+# "stream closed in another thread (IOError)" and prints a header and a stack
+# trace per reader into a gate whose failures are read by substring. Silencing
+# the report hides nothing: those values are never consumed on the timeout path,
+# and Thread#value still re-raises a thread's exception on the success path where
+# they are.
 def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
   Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
     stdin.close
     stdout_reader = Thread.new { stdout.read }
     stderr_reader = Thread.new { stderr.read }
+    stdout_reader.report_on_exception = false
+    stderr_reader.report_on_exception = false
     begin
       status = Timeout.timeout(timeout_seconds) { wait_thread.value }
     rescue Timeout::Error
       terminate_process_group(wait_thread.pid, "TERM")
       unless wait_thread.join(1)
         terminate_process_group(wait_thread.pid, "KILL")
-        wait_thread.join
+        wait_thread.join(1)
       end
-      stdout_reader.join
-      stderr_reader.join
+      stdout_reader.join(1)
+      stderr_reader.join(1)
       unit = timeout_seconds == 1 ? "second" : "seconds"
       raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
     end
