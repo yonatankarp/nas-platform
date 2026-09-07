@@ -12,6 +12,7 @@ require_relative "policy_support"
 
 require_relative "policy_support"
 require_relative "http_fixture_support"
+require_relative "case_pool_support"
 
 include HttpFixtureSupport
 include TestScaffold
@@ -1547,13 +1548,23 @@ if ARGV == ["--self-test"]
     missing_mutations = STRUCTURAL_PROPERTIES.keys - structural_mutations.keys
     check(failures, missing_mutations.empty?,
           "structural properties without a self-test mutation: #{missing_mutations.join(', ')}")
-    structural_mutations.each do |label, mutate|
-      mutant = mutate.call(structural_context)
-      check(failures, mutant != structural_context,
-            "the #{label} self-test mutation did not change anything")
-      check(failures, structural_property_failures(mutant).include?(label),
-            "self-test did not reject the #{label} mutation")
+    # Each case deep-copies its own mutant out of the frozen baseline and asks
+    # every property about it, and two of the properties spawn a Python
+    # interpreter to answer. They share nothing but the failure list, so they go
+    # through the pool and are still reported in the order written above. The
+    # `missing_mutations` check stays outside it: the pool is not the place for
+    # anything a case would have to `abort` over, and that one is about the
+    # table, not about any single mutation.
+    structural_cases = structural_mutations.map do |label, mutate|
+      lambda do |collected|
+        mutant = mutate.call(structural_context)
+        check(collected, mutant != structural_context,
+              "the #{label} self-test mutation did not change anything")
+        check(collected, structural_property_failures(mutant).include?(label),
+              "self-test did not reject the #{label} mutation")
+      end
     end
+    in_parallel_cases(failures, structural_cases) { |mutation, collected| mutation.call(collected) }
   end
 
   reordered_main = YAML.safe_load(ntfy_main, aliases: false)
@@ -1651,57 +1662,71 @@ if ARGV == ["--self-test"]
       "ntfy_existing_user_records" => unmanaged_records.reject { |identity, _entry| identity == "reader" }
     }]
   }
-  behavior_mutations.each do |label, (task_name, variables)|
-    with_ntfy_task_removed(task_name) do |mutant_path, found|
-      unless found
-        failures << "behavioral self-test baseline is missing #{task_name}"
-        next
+  # The three groups below are what the section spends its wall time on: every
+  # case stands up its own mutant file in its own temporary directory and then
+  # waits on a subprocess -- an ansible-playbook run for the ntfy guards, a
+  # Python interpreter for the two plugin pairs. They share nothing but the
+  # failure list, so they go through one pool as callables and are still
+  # reported in the order written here.
+  behavior_cases = behavior_mutations.map do |label, (task_name, variables)|
+    lambda do |collected|
+      with_ntfy_task_removed(task_name) do |mutant_path, found|
+        unless found
+          collected << "behavioral self-test baseline is missing #{task_name}"
+          next
+        end
+        _rendered, _output, mutant_status = run_ntfy_fixture(variables, mutant_path)
+        check(collected, mutant_status.success?,
+              "behavioral self-test #{label} mutation did not escape its negative fixture")
       end
-      _rendered, _output, mutant_status = run_ntfy_fixture(variables, mutant_path)
-      check(failures, mutant_status.success?,
-            "behavioral self-test #{label} mutation did not escape its negative fixture")
     end
   end
 
-  {
+  behavior_cases += {
     "duplicate YAML parser" => ["if duplicate:", "if False:"],
     "YAML alias parser" => [
       "(yaml.tokens.AnchorToken, yaml.tokens.AliasToken)", "()"
     ]
-  }.each do |label, (before, after)|
-    Dir.mktmpdir("nas-platform-filter-mutant-") do |directory|
-      mutant = File.join(directory, "managed_user_state.py")
-      mutated_source = state_filter.sub(before, after)
-      File.write(mutant, mutated_source, mode: "w", perm: 0o600)
-      _stdout, _stderr, status = Open3.capture3(
-        { "MANAGED_USER_STATE_PLUGIN" => mutant, "PYTHONDONTWRITEBYTECODE" => "1" },
-        ansible_python,
-        File.join(ROOT, "tests", "managed_user_state_filter_test.py"), chdir: ROOT
-      )
-      check(failures, mutated_source != state_filter && !status.success?,
-            "behavioral self-test did not reject #{label} mutation")
+  }.map do |label, (before, after)|
+    lambda do |collected|
+      Dir.mktmpdir("nas-platform-filter-mutant-") do |directory|
+        mutant = File.join(directory, "managed_user_state.py")
+        mutated_source = state_filter.sub(before, after)
+        File.write(mutant, mutated_source, mode: "w", perm: 0o600)
+        _stdout, _stderr, status = Open3.capture3(
+          { "MANAGED_USER_STATE_PLUGIN" => mutant, "PYTHONDONTWRITEBYTECODE" => "1" },
+          ansible_python,
+          File.join(ROOT, "tests", "managed_user_state_filter_test.py"), chdir: ROOT
+        )
+        check(collected, mutated_source != state_filter && !status.success?,
+              "behavioral self-test did not reject #{label} mutation")
+      end
     end
   end
 
-  {
+  behavior_cases += {
     "no-follow reader" => ["os.O_NOFOLLOW", "0"],
     "nonblocking reader" => ["os.O_NONBLOCK", "0"]
-  }.each do |label, (before, after)|
-    Dir.mktmpdir("nas-platform-safe-slurp-mutant-") do |directory|
-      mutant = File.join(directory, "atomic_safe_slurp.py")
-      mutated_source = safe_slurp.sub(before, after)
-      File.write(mutant, mutated_source, mode: "w", perm: 0o600)
-      _stdout, _stderr, status = Open3.capture3(
-        {
-          "ATOMIC_SAFE_SLURP_MODULE" => mutant,
-          "PYTHONDONTWRITEBYTECODE" => "1"
-        },
-        ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
-      )
-      check(failures, mutated_source != safe_slurp && !status.success?,
-            "behavioral self-test did not reject the #{label} mutation")
+  }.map do |label, (before, after)|
+    lambda do |collected|
+      Dir.mktmpdir("nas-platform-safe-slurp-mutant-") do |directory|
+        mutant = File.join(directory, "atomic_safe_slurp.py")
+        mutated_source = safe_slurp.sub(before, after)
+        File.write(mutant, mutated_source, mode: "w", perm: 0o600)
+        _stdout, _stderr, status = Open3.capture3(
+          {
+            "ATOMIC_SAFE_SLURP_MODULE" => mutant,
+            "PYTHONDONTWRITEBYTECODE" => "1"
+          },
+          ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
+        )
+        check(collected, mutated_source != safe_slurp && !status.success?,
+              "behavioral self-test did not reject the #{label} mutation")
+      end
     end
   end
+
+  in_parallel_cases(failures, behavior_cases) { |mutation, collected| mutation.call(collected) }
 end
 
 report(failures, "Config managed users: Dozzle preservation and ntfy provisioning contracts hold",
