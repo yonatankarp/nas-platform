@@ -341,7 +341,15 @@ check(failures, jobs.dig("static", "strategy", "matrix", "shard") == GATE_SHARD_
 check(failures, GATE_SHARD_IDS == PolicySupport.gate_shards(POLICY_PATH).keys,
       "tests/validate-policy.sh dispatches shards #{GATE_SHARD_IDS.inspect} and holds heredocs " \
       "for #{PolicySupport.gate_shards(POLICY_PATH).keys.inspect}")
-check(failures, jobs.dig("static", "strategy", "matrix").keys == ["shard"],
+# `to_h` rather than a bare `keys`, here and at the reconciliation and suites
+# matrices below, which are the only three places in this file that dereference a
+# job that may be absent. A deleted job reaches such a line as nil, and the
+# NoMethodError it raises discards every diagnostic accumulated above it -- the
+# one naming the deletion included. The verdict is red either way; what a crash
+# costs is being told what happened, which is most of the value of running this
+# file from a job that cannot be skipped (#480). Every other `keys` in this file
+# reads a `fetch(key, {})` or a receiver that cannot be nil.
+check(failures, jobs.dig("static", "strategy", "matrix").to_h.keys == ["shard"],
       "the static matrix must have exactly one dimension")
 check(failures, jobs.dig("static", "strategy", "fail-fast") == false,
       "a failing shard must not cancel the other shards: the gate gave up stopping at its " \
@@ -360,7 +368,9 @@ check(failures, jobs.dig("reconciliation", "needs") == "changes",
 check(failures, jobs.dig("reconciliation", "strategy", "matrix", "part") == RECONCILIATION_PARTS,
       "the reconciliation matrix must name every media acquisition reconciliation file " \
       "in canonical order, found #{jobs.dig('reconciliation', 'strategy', 'matrix', 'part').inspect}")
-check(failures, jobs.dig("reconciliation", "strategy", "matrix").keys == ["part"],
+# `to_h` for the reason given at the static matrix above: a deleted job arrives
+# here as nil, and a crash reports itself instead of the deletion.
+check(failures, jobs.dig("reconciliation", "strategy", "matrix").to_h.keys == ["part"],
       "the reconciliation matrix must have exactly one dimension")
 check(failures, jobs.dig("reconciliation", "strategy", "fail-fast") == false,
       "one failing reconciliation file must not cancel the others")
@@ -537,7 +547,9 @@ check(failures,
       expression(suites_job.dig("strategy", "matrix", "suite")) ==
         "${{ fromJSON(needs.changes.outputs.suites) }}",
       "the suite matrix must come from the classifier's JSON array")
-check(failures, suites_job.dig("strategy", "matrix").keys == ["suite"],
+# `to_h` for the reason given at the static matrix above: a deleted job arrives
+# here as nil, and a crash reports itself instead of the deletion.
+check(failures, suites_job.dig("strategy", "matrix").to_h.keys == ["suite"],
       "the suite matrix must have exactly one dimension")
 # A floor rather than the general 1..90 bound above, and it is what makes the
 # #395 narrowing sound. A change to this file dispatches the three cheapest
