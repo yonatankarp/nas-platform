@@ -545,6 +545,15 @@ check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
 check(failures,
       validation_commands.count("ruby tests/policy_audit_coverage_test.rb") == 1,
       "validate-policy.sh must run ruby tests/policy_audit_coverage_test.rb exactly once")
+# The one check that cannot require itself. tests/gate_manifest_coverage_test.rb
+# declares the whole manifest and refuses any line the declaration does not
+# name, which is what stops a check from being pruned out of the gate unnoticed
+# -- but a prune that takes that file's own line first disables the refusal along
+# with it, silently, because the guard is no longer run to complain. So its line
+# is required from here, where removing it fails a check the gate still runs.
+check(failures,
+      validation_commands.count("ruby tests/gate_manifest_coverage_test.rb") == 1,
+      "validate-policy.sh must run ruby tests/gate_manifest_coverage_test.rb exactly once")
 # The controller's dispatch is proved by running it against stubs, not by
 # reading its source text. The gate must run that file: a property asserted
 # against argv is only a guard while something executes the program, and unlike

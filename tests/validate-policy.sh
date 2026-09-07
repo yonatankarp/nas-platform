@@ -6,11 +6,18 @@
 # 15m28s, which made `static` the second-longest job in CI and made a full local
 # run impractical enough to skip.
 #
-# Each check stays one bare command per line. tests/policy_ci_test.rb asserts that
-# every check appears exactly once as a stripped line of this file, and
-# tests/policy_manifest_test.rb proves that deleting a line is caught. Wrapping
-# these lines in a helper, or prefixing them, silently disables those guards
-# while leaving this script working, so keep the shape.
+# Each check stays one bare command per line. tests/gate_manifest_coverage_test.rb
+# declares this whole list and refuses any line it does not name, in either
+# direction; tests/policy_ci_test.rb requires about ninety of them individually,
+# with the reason each has to keep running; and tests/policy_manifest_test.rb
+# proves that deleting one of those named lines is caught. Wrapping these lines
+# in a helper, or prefixing them, silently disables those guards while leaving
+# this script working, so keep the shape.
+#
+# Adding a check means adding it in two places, this list and that declaration.
+# That is the price of the first guard and it is deliberate: for about forty of
+# these lines nothing required them at all until #469, so deleting any one left
+# every check green and the gate faster than before.
 #
 # POLICY_JOBS sets concurrency and defaults to the CPU count. POLICY_JOBS=1
 # restores the original one-at-a-time order, which is what to use when bisecting
@@ -42,6 +49,7 @@ shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 tests/integration_contro
 ruby tests/policy_deployment_test.rb
 ruby tests/policy_mac_test.rb
 ruby tests/policy_vault_test.rb
+ruby tests/gate_manifest_coverage_test.rb
 ruby tests/policy_audit_coverage_test.rb
 "$ansible_python" tests/generate_secrets_jinja_regex_test.py
 tests/target_docker_dependency_preflight_test.sh

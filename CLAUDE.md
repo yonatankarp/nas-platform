@@ -46,10 +46,20 @@ tests/integration.sh --suite smoke site.yml  # needs Docker
 
 `tests/validate-policy.sh` runs every Ruby/Python/shell unit check in the
 repository, concurrently. Its check list is a literal manifest inside the
-script — one bare command per line, asserted by `tests/policy_test.rb` and
-`tests/policy_manifest_test.rb`. **Do not wrap or prefix those lines**; doing so
-silently disables the guards while leaving the script working. `POLICY_JOBS=1`
-restores serial order when bisecting a load-dependent failure.
+script — one bare command per line. Three things hold it, and they hold
+different amounts. `tests/gate_manifest_coverage_test.rb` declares that whole
+list and refuses any line it does not name, in either direction, so adding or
+removing a check costs an edit in two places; what that buys is that a prune
+lands as a visible diff instead of as a quieter gate, not that anything
+exercises the check itself. `tests/policy_ci_test.rb` and `tests/policy_test.rb`
+require about ninety lines individually, each with the reason it has to keep
+running. `tests/policy_manifest_test.rb` proves that deleting one of those
+individually named lines is caught. The two-place cost is deliberate: until
+#469 about forty of these lines were required by nothing at all, so deleting
+any one of them left every check green and the gate faster than before. **Do
+not wrap or prefix those lines**; doing so silently disables the guards while
+leaving the script working. `POLICY_JOBS=1` restores serial order when bisecting
+a load-dependent failure.
 
 ### Running one test
 
