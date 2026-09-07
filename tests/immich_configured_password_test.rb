@@ -64,10 +64,36 @@ def complete_users
   ]
 end
 
+# The most bytes one stream of one capture may accumulate before the capture is
+# abandoned. A bare `read` runs to EOF, so a child that never stops writing is
+# read into this process in its entirety, and the timeout below does not bound
+# that -- it bounds how long the child lives, and a runaway emits gigabytes in
+# the seconds it is given. A per-check prefix would be wrong here the way it is
+# right for the playbook timeouts: the right timeout depends on how long one
+# fixture takes and the right memory bound does not, so all four copies of this
+# helper read one environment input. The largest healthy capture measured across
+# the fifty-nine these four checks make was 6151 bytes; 8 MiB is over a thousand
+# times that, and small enough that eight concurrent captures cannot matter.
+CAPTURE_LIMIT_BYTES = Integer(ENV.fetch("FIXTURE_CAPTURE_LIMIT_BYTES", "8388608"))
+
+class FixtureCaptureOverflow < StandardError; end
+
 def terminate_process_group(pid, signal)
   Process.kill(signal, -pid)
 rescue Errno::ESRCH
   nil
+end
+
+# Closing the stream at the limit is the half that bounds memory in real time:
+# the reader stops at limit + 1 bytes and the producer takes EPIPE on its next
+# write rather than going on filling a pipe nobody drains. The + 1 is what
+# distinguishes a capture that filled the limit exactly from one that overran
+# it. Returning the bytes rather than raising here is deliberate; the caller
+# below says why.
+def bounded_capture(stream, limit_bytes)
+  bytes = stream.read(limit_bytes + 1) || ""
+  stream.close if bytes.bytesize > limit_bytes
+  bytes
 end
 
 # Every join on the timeout path is bounded, and must stay bounded. A reader
@@ -98,12 +124,16 @@ end
 # different function, and differently hardened rather than better: it bounds its
 # reader and writer joins in its own ensure and forces EOF itself instead of
 # leaving that to popen3's, while it carried the unbounded wait_thread.join this
-# file never had, until #470 bounded it there too.
-def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
+# file never had, until #470 bounded it there too. Its bounded_read is where the
+# capture limit above came from (#474); the two answer an overrun differently,
+# and the comment on the success path below says why this one raises where that
+# one returns a flag.
+def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:,
+                          capture_limit_bytes: CAPTURE_LIMIT_BYTES)
   Open3.popen3(environment, *command, chdir: chdir, pgroup: true) do |stdin, stdout, stderr, wait_thread|
     stdin.close
-    stdout_reader = Thread.new { stdout.read }
-    stderr_reader = Thread.new { stderr.read }
+    stdout_reader = Thread.new { bounded_capture(stdout, capture_limit_bytes) }
+    stderr_reader = Thread.new { bounded_capture(stderr, capture_limit_bytes) }
     stdout_reader.report_on_exception = false
     stderr_reader.report_on_exception = false
     begin
@@ -119,7 +149,19 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
       unit = timeout_seconds == 1 ? "second" : "seconds"
       raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
     end
-    [stdout_reader.value, stderr_reader.value, status]
+    # Overflow is reported from here rather than raised inside a reader thread on
+    # purpose: the timeout path above joins those threads and Thread#join
+    # re-raises as Thread#value does, so an exception raised inside a reader
+    # would surface there in place of FixtureTimeout. This is the only path that
+    # consumes the output; the timeout path discards it.
+    captured = { "stdout" => stdout_reader.value, "stderr" => stderr_reader.value }
+    overrun = captured.select { |_stream, bytes| bytes.bytesize > capture_limit_bytes }.keys
+    unless overrun.empty?
+      raise FixtureCaptureOverflow,
+            "Ansible fixture #{overrun.join(' and ')} exceeded the " \
+            "#{capture_limit_bytes}-byte capture limit"
+    end
+    [captured.fetch("stdout"), captured.fetch("stderr"), status]
   end
 end
 
@@ -303,6 +345,25 @@ def check_no_mutation(failures, requests, message)
 end
 
 failures = []
+
+# The capture limit is the only bound on how much of a runaway child this process
+# reads, and nothing else here exercises it: every fixture below emits
+# single-digit kilobytes. `yes` never stops writing, so a capture that read to
+# EOF would sit here until its timeout instead of refusing -- which is what
+# removing the cap turns this check into, a FixtureTimeout rather than a pass.
+# The limit is injected rather than set through the environment so the child
+# stays cheap, and ten seconds is a hang bound rather than a budget: overflow is
+# detected the moment the child has emitted limit + 1 bytes, under any load.
+overflow = begin
+  capture3_with_timeout({}, "sh", "-c", "yes capture-overflow", chdir: ROOT,
+                        timeout_seconds: 10, capture_limit_bytes: 2048)
+  nil
+rescue FixtureCaptureOverflow, FixtureTimeout => error
+  error
+end
+check(failures, overflow.is_a?(FixtureCaptureOverflow) &&
+                overflow.message.include?("stdout exceeded the 2048-byte capture limit"),
+      "a capture past its limit was not refused as an overflow: #{overflow.inspect}")
 captured_request_sets = []
 
 with_immich_users(complete_users) do |port, requests, users|
