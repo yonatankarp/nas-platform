@@ -160,14 +160,91 @@ services:
       NON_ROOT: "false"
     healthcheck:
       <<: *healthcheck-defaults
-      # This renders a page through nginx *and* gunicorn, so it is more than a
-      # port check -- but it is not a proof that the database link works: seahub
-      # serves its login page from cached constance config. The database proof is
-      # the POST /api2/auth-token/ assertion in roles/seafile, which authenticates
+      # What this probe proves was measured against the image rather than
+      # reasoned about, because the obvious reading of it is wrong in both
+      # directions.
+      #
+      # nginx is up before any of Seafile is, so there is a listener on 80 for
+      # the whole boot that is not the application: /scripts/enterpoint.sh
+      # blocks in a `Waiting Nginx` loop until nginx appears in the process
+      # table and only then launches /scripts/start.py, which is what runs setup
+      # and starts seahub. That listener does not make this a port check,
+      # though. The bundled site proxies `/` to gunicorn on 127.0.0.1:8000, so
+      # before seahub binds nginx answers 502 and --fail turns that into a
+      # failure. Measured on seafileltd/seafile-pro-mc:13.0.27 with the database
+      # host pointed at a name that does not resolve, so start.py stayed in
+      # wait_for_mysql() and seahub never started: `/` returned 502 and
+      # `curl --fail` exited 22 on every probe for as long as the container ran.
+      # So this is already a seahub probe, and a narrower endpoint such as
+      # /api2/ping/ would prove nothing this does not.
+      #
+      # It is still not a proof that the database link works: seahub serves its
+      # login page from cached constance config. The database proof is the POST
+      # /api2/auth-token/ assertion in roles/seafile, which authenticates
       # against ccnet_db and seahub_db.
       test: [CMD, curl, --fail, --silent, --show-error, "http://localhost/"]
-      # First boot creates three databases, runs every migration and builds the
-      # initial configuration before nginx binds; that is minutes, not seconds.
+      # While start_period is open Docker probes every start_interval, not every
+      # interval, and omitting the key does not mean "use interval" -- it means
+      # "use whatever this daemon defaults to". Pinned so the cadence the
+      # arithmetic below depends on is written in the file rather than inherited
+      # from a daemon. Two measurements against Docker 29.7.2, kept apart because
+      # they prove different things: with no start_interval declared, a container
+      # at interval 30s and start_period 300s had recorded its first probe within
+      # 8 seconds -- far under interval, which is the whole point, though it fixes
+      # no exact cadence; with start_interval declared at 5s, probes landed at 5,
+      # 10, 15, 20 and 25s, and the container stayed `starting` through all five,
+      # so none of them counted against retries. The key needs an engine new
+      # enough to carry health start-interval (Docker 25.0). The CI runner's
+      # daemon already probes sub-interval and does not have to be taken on
+      # trust: run A was reported healthy 13.6s in, which a 30s cadence cannot
+      # produce.
+      start_interval: 5s
+      # NOT a boot budget, and the line this replaces had it backwards. A
+      # Seafile first run is seconds, not minutes: on the seafile lane's passing
+      # CI run of 2026-09-07 (13a00da) the container was created and reported
+      # healthy 13.6s later, from a genuinely empty /shared and an empty MariaDB
+      # datadir -- the integration sandbox is a fresh mktemp directory and seeds
+      # neither of them. That it really was a first run is not inferred from the
+      # empty directory alone: the same converge went on to find a seafevents.conf
+      # to repair, and only setup-seafile-mysql.py writes that file, so setup had
+      # just run. The server it produced works -- a POST /api2/auth-token/
+      # authenticated against ccnet_db and seahub_db 27s after the container was
+      # created, across the seafevents restart that falls between the two.
+      #
+      # So what this line buys is headroom, and it is deliberately not trimmed
+      # to the measurement. The only first boot anyone has timed is a GitHub
+      # runner's; the NAS is a Celeron N5105 held to `cpus: 2.0` and has never
+      # run this stack, because seafile_deployment_enabled is false there. The
+      # headroom is also paid for only by a deployment that was going to fail:
+      # a boot that finishes is reported within one start_interval of finishing.
+      #
+      # With the inherited retries: 5 and interval: 30s this sets the ceiling on
+      # a *failing* converge. Probes inside start_period do not count, so the
+      # streak starts at the boundary and the fifth failure lands at
+      # 300 + 4x30 = 420s -- ~424s as observed on the failing run (e727d80):
+      # container created 13:04:09, Compose gave up at 13:11:13. Compose aborts
+      # the moment Docker says unhealthy, so seafile_compose_wait_timeout in
+      # roles/seafile/defaults/main.yml -- 600 -- can only ever be the backstop
+      # for a stage that returns no verdict at all.
+      #
+      # That failing run was a wedge, not a slow boot, and raising this would
+      # only have made it red later. The image cannot report its own boot
+      # failure: enterpoint.sh launches start.py in the background and then
+      # idles in `while [ 1 ]; do sleep 60 & wait $!; done` for ever, so
+      # whatever becomes of start.py, the container stays up. Two ways in, and
+      # this platform cannot tell them apart from what that run left behind:
+      # utils.call defaults to subprocess.check_call, so anything raising inside
+      # init_seafile_server() ends start.py outright; and start.py's own waits
+      # are unbounded -- wait_for_mysql() loops for ever, two seconds at a time,
+      # with no attempt limit -- so it can equally still be alive and stuck.
+      # Both leave the identical state, and that state is what the run recorded:
+      # State: running, ExitCode: 0, unhealthy, against a database and a cache
+      # both healthy, a container alive for seven minutes that never answered.
+      # Neither is a boot that more seconds would have finished, which is why
+      # this number is not the lever. The health log and Compose logs the lane
+      # now captures on a converge failure (dump_seafile_diagnostics in
+      # tests/integration_controller_lib.sh) are what would name the cause, and
+      # they are what any change to this number has to be argued from.
       start_period: 300s
     # An upload in flight has written blocks under seafile-data/storage and owes
     # the database the rows that name them. A minute lets the request finish both

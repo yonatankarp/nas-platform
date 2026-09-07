@@ -1,0 +1,403 @@
+#!/usr/bin/env ruby
+# The static half of the Seafile service contract: what a gated three-container
+# file store owes this platform, decided from the repository alone with nothing
+# deployed.
+#
+# usage: seafile-static.rb REPOSITORY
+#
+# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
+# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
+#
+# Structure is read from parsed YAML rather than from source text throughout,
+# and roles/seafile is the file that makes the difference visible: its comments
+# spell out `localhost`, `unix_socket` and `/api2/ping/` while explaining why the
+# tasks beside them use none of those. A source-text assertion for "the database
+# probe must not name localhost" fails against the correct role.
+#
+require "yaml"
+
+root = ARGV.fetch(0)
+failures = []
+required = %w[
+  roles/seafile/defaults/main.yml
+  roles/seafile/meta/argument_specs.yml
+  roles/seafile/tasks/main.yml
+  roles/seafile/tasks/storage.yml
+  roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/recover_wedged_boot.yml
+  roles/seafile/tasks/reconcile_seafevents.yml
+  roles/seafile/tasks/report.yml
+  roles/seafile/tasks/verify.yml
+  roles/seafile/templates/env.j2
+  services/seafile/compose.yml
+  services/seafile/compose.mac.yml
+  services/seafile/compose.integration.yml
+  tests/expected/seafile.yml
+  tests/contracts/seafile.sh
+  inventory/group_vars/all/main.yml
+]
+required.each do |relative|
+  failures << "missing #{relative}" unless File.file?(File.join(root, relative))
+end
+
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
+
+ROLE_TASK_FILES = %w[main storage deploy recover_wedged_boot reconcile_seafevents report verify].freeze
+VAULT_CREDENTIALS = %w[
+  vault_seafile_admin_email
+  vault_seafile_admin_password
+  vault_seafile_cache_password
+  vault_seafile_db_password
+  vault_seafile_db_root_password
+  vault_seafile_db_username
+  vault_seafile_jwt_private_key
+].freeze
+# repo:tag@sha256:<64 hex>. Both halves, because the tag is what a human and
+# Renovate read and the digest is what makes the deployment reproducible.
+IMAGE_PIN = %r{\A[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z}
+
+def role_tasks(root, file)
+  flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/seafile/tasks/#{file}.yml"), aliases: true)
+  )
+end
+
+if failures.empty?
+  compose = YAML.safe_load_file(File.join(root, "services/seafile/compose.yml"), aliases: true)
+  services = compose.fetch("services")
+  server = services.fetch("seafile")
+  database = services.fetch("db")
+
+  # --- the three containers -------------------------------------------------
+
+  {
+    "seafile" => "docker.io/seafileltd/seafile-pro-mc",
+    "db" => "docker.io/library/mariadb",
+    "cache" => "docker.io/valkey/valkey"
+  }.each do |name, repository|
+    image = services.fetch(name, {})["image"].to_s
+    failures << "the Seafile #{name} image must pin #{repository} by tag and manifest digest" unless
+      image.match?(IMAGE_PIN) && image.split(":").first == repository
+  end
+
+  expected = YAML.safe_load_file(File.join(root, "tests/expected/seafile.yml"))
+  declared_cpus = expected.fetch("container_cpus")
+  # Deliberately no assertion about what the three ceilings add up to. The
+  # ceilings are a per-container limit on one shared cpuset rather than
+  # reservations carved out of it, so they oversubscribe that set on purpose;
+  # tests/policy_test.rb records that model at length and enforces the rule that
+  # does mean something -- no single ceiling wider than the set -- against
+  # platform_container_cpu_budget. A sum compared against the budget here would
+  # be the mistake that check exists to forestall, and it would refuse this stack
+  # (2.0 + 1.0 + 0.5) for a rule the repository does not hold.
+  failures << "each Seafile container must take the CPU ceiling tests/expected/seafile.yml declares" unless
+    services.transform_values { |service| service["cpus"] } == declared_cpus
+
+  base_names = { "seafile" => "seafile", "db" => "seafile-db", "cache" => "seafile-cache" }
+  failures << "each Seafile container must carry its production name" unless
+    services.transform_values { |service| service["container_name"] } == base_names
+  # Sandbox cleanup finds these containers by the namespaced prefix, so the two
+  # disposable overrides have to spell all three names identically. A name in one
+  # override and not the other leaves a container nothing tears down.
+  namespaced = base_names.transform_values { |name| "${PLATFORM_PROJECT_NAME:?}-#{name}" }
+  overrides = %w[mac integration].to_h do |kind|
+    document = YAML.safe_load_file(File.join(root, "services/seafile/compose.#{kind}.yml"))
+    [kind, document.fetch("services").transform_values { |service| service["container_name"] }]
+  end
+  failures << "both disposable Seafile overrides must name the same three sandbox containers" unless
+    overrides.values.all? { |names| names == namespaced }
+
+  # The bundled nginx multiplexes seahub, seafhttp and seafdav behind one port,
+  # and the database and the cache join the stack's own network. A published port
+  # on either of those two is an unauthenticated database or cache on the LAN.
+  failures << "only the Seafile server may publish a port" unless
+    services.select { |_name, service| service.key?("ports") }.keys == ["seafile"]
+
+  volumes = services.values.flat_map { |service| Array(service["volumes"]) }
+  volume_sources = volumes.map { |volume| volume.to_s.split(":/", 2).first }
+  failures << "every Seafile volume source must be a required environment reference" unless
+    !volume_sources.empty? &&
+    volume_sources.all? { |source| source.match?(/\A\$\{[A-Z][A-Z0-9_]*:\?\}\z/) }
+
+  failures << "every Seafile container must carry its Dozzle group and name" unless
+    services.transform_values { |service| service["labels"] } == {
+      "seafile" => { "dev.dozzle.group" => "seafile", "dev.dozzle.name" => "seafile" },
+      "db" => { "dev.dozzle.group" => "seafile", "dev.dozzle.name" => "db" },
+      "cache" => { "dev.dozzle.group" => "seafile", "dev.dozzle.name" => "cache" }
+    }
+
+  # --mariadbupgrade is what pairs with MARIADB_AUTO_UPGRADE: it holds the health
+  # check red until an in-place upgrade finishes, so the server is never started
+  # against a data directory mid-migration.
+  failures << "the Seafile database probe must stay red through an in-place upgrade" unless
+    Array(database.dig("healthcheck", "test")).join(" ").include?("--mariadbupgrade") &&
+    database.dig("environment", "MARIADB_AUTO_UPGRADE").to_s == "1"
+
+  failures << "the Seafile server must wait for a healthy database and cache" unless
+    server.dig("depends_on", "db", "condition") == "service_healthy" &&
+    server.dig("depends_on", "cache", "condition") == "service_healthy"
+
+  server_environment = server.fetch("environment")
+  failures << "Seafile must take its cache from the Redis protocol provider" unless
+    server_environment["CACHE_PROVIDER"] == "redis" && server_environment["REDIS_HOST"] == "cache"
+  failures << "Seafile must log to stdout where Dozzle can read it" unless
+    server_environment["SEAFILE_LOG_TO_STDOUT"].to_s == "true"
+  # true makes the container run as the seafile account throughout, which needs
+  # the bind mount already owned by that uid; nas_storage claims no owner here,
+  # so the entrypoint has to keep its root-then-drop form and chown for itself.
+  failures << "Seafile must keep the root-then-drop entrypoint its bind mount needs" unless
+    server_environment["NON_ROOT"].to_s == "false"
+
+  # Seafile's own setup connects as root and creates the three databases and the
+  # account that owns them. Declaring either here would create a second,
+  # divergent owner of the same schemas.
+  database_environment = database.fetch("environment")
+  failures << "the Seafile database must not declare a second owner of its schemas" if
+    database_environment.key?("MYSQL_DATABASE") || database_environment.key?("MYSQL_USER")
+
+  # --- the role -------------------------------------------------------------
+
+  imports = role_tasks(root, "main").filter_map { |task| task["ansible.builtin.import_tasks"] }
+  expected_stages = %w[storage.yml deploy.yml reconcile_seafevents.yml report.yml verify.yml]
+  failures << "the Seafile role must import every stage it owns" unless
+    expected_stages.all? { |stage| imports.include?(stage) }
+  # The load-bearing ordering claim, and it is compared by index rather than
+  # grepped: Seafile writes seafevents.conf during its own first start, so a
+  # reconciliation placed before the deployment finds nothing on run 1 and
+  # repairs on run 2 -- two runs disagreeing, which is what idempotence forbids.
+  failures << "the Seafile event reconciliation must run after the deployment that creates the file" unless
+    imports.index("reconcile_seafevents.yml").to_i > imports.index("deploy.yml").to_i
+
+  deploy = role_tasks(root, "deploy")
+  compose_tasks = deploy.select { |task| task.key?("community.docker.docker_compose_v2") }
+  teardown = compose_tasks.select do |task|
+    task.dig("community.docker.docker_compose_v2", "state") == "absent"
+  end
+  # Switched off means removed, not merely left alone: flipping the flag back has
+  # to undo the deployment rather than leave three containers nothing claims.
+  failures << "the disabled Seafile project must be torn down rather than left running" unless
+    teardown.length == 1 &&
+    teardown.first.dig("community.docker.docker_compose_v2", "remove_orphans") == true &&
+    Array(teardown.first["when"]).include?("not seafile_deployment_enabled | bool")
+  deployments = compose_tasks.select do |task|
+    task.dig("community.docker.docker_compose_v2", "state") == "present"
+  end
+  failures << "every Seafile deployment task must be gated on the operator switch" unless
+    !deployments.empty? &&
+    deployments.all? { |task| Array(task["when"]).include?("seafile_deployment_enabled | bool") }
+
+  # --- the wedged first boot ------------------------------------------------
+  #
+  # seafileltd/seafile-pro-mc's enterpoint.sh launches start.py once and then
+  # idles for ever, so a start.py that raised inside init_seafile_server() or
+  # that is still in one of utils.py's unbounded wait loops leaves a container
+  # Docker reports running with an unhealthy health check. Nothing recovers it:
+  # `restart: unless-stopped` acts on exit and a wedged container does not exit,
+  # and `up -d` with unchanged configuration keeps the same container id. The
+  # three checks below are what keeps the role's remediation bounded, honest and
+  # narrow -- the recreate task's own gating is structural rather than asserted,
+  # because it is reachable only from a rescue the operator switch already
+  # guards.
+  recovery = role_tasks(root, "recover_wedged_boot")
+  recreate = recovery.select do |task|
+    task.dig("community.docker.docker_compose_v2", "recreate") == "always"
+  end
+  # The guard that spends the budget once, and it is asserted on the block inside
+  # the included file rather than on the include that loops it. A looped
+  # include_tasks expands every iteration before any included task runs and
+  # evaluates its own conditional there, so a fact the file sets cannot stop the
+  # next iteration; a budget above one would recreate a server that had already
+  # recovered.
+  recreate_block = recovery.find do |task|
+    Array(task["block"]).any? do |inner|
+      inner.dig("community.docker.docker_compose_v2", "recreate") == "always"
+    end
+  end
+  # --force-recreate is what replaces a container whose spec has not changed, and
+  # `dependencies: false` is what keeps it from taking db and cache with it: the
+  # flag applies to everything the `up` operates on, and bouncing the data
+  # services is what the two-phase bring-up above exists to prevent.
+  failures << "the wedged Seafile boot must be recovered by force-recreating the server alone" unless
+    recreate.length == 1 &&
+    recreate.first.dig("community.docker.docker_compose_v2", "state") == "present" &&
+    recreate.first.dig("community.docker.docker_compose_v2", "services") == ["seafile"] &&
+    recreate.first.dig("community.docker.docker_compose_v2", "dependencies") == false &&
+    Array(recreate_block&.fetch("when", nil)).include?("not seafile_boot_recovered | bool")
+
+  # The evidence dies with the container, so the ordering is the property. The
+  # capture lives in deploy.yml and the recreate in the file deploy.yml includes,
+  # so the claim is made where both are visible: the health read must sit at a
+  # lower index than the include that spends the budget.
+  health_capture = deploy.index do |task|
+    task_strings(task["ansible.builtin.command"]).any? { |value| value.include?("{{json .State.Health}}") }
+  end
+  recovery_include = deploy.index do |task|
+    task["ansible.builtin.include_tasks"] == "recover_wedged_boot.yml"
+  end
+  failures << "the wedged Seafile server's health verdict must be captured before it is recreated" unless
+    health_capture && recovery_include && health_capture < recovery_include
+  # A bare `docker inspect` prints .Config.Env, which for this stack is the
+  # rendered environment file: the MariaDB root password, the Seafile
+  # administrator password and the Valkey password in full. Every inspection this
+  # role performs must therefore narrow its output with --format.
+  unformatted_inspects = (deploy + recovery).select do |task|
+    argv = Array(task.dig("ansible.builtin.command", "argv")).map(&:to_s)
+    argv.include?("inspect") && !argv.include?("--format")
+  end
+  failures << "Seafile diagnostics must narrow every inspection rather than print the container environment" unless
+    unformatted_inspects.empty?
+
+  # Addressing the service by name forces the connection through the network
+  # stack, where only root@% can answer and only a matching password gets in. A
+  # probe over the container's own socket answers as root@localhost instead,
+  # which on a Debian/Ubuntu MariaDB the unix_socket plugin authorises by uid
+  # whatever the credential says; tests/contracts/seafile-runtime.rb has since
+  # measured that plugin absent from this image, and the root@% half is what
+  # keeps this TCP regardless.
+  probe = deploy.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
+  probe_argv = Array(probe&.dig("community.docker.docker_compose_v2_exec", "argv")).join(" ")
+  failures << "the Seafile database probe must authenticate over TCP as root" unless
+    probe_argv.include?("--protocol=tcp") && probe_argv.include?("--host=db") &&
+    probe_argv.include?("--user=root") &&
+    !probe_argv.include?("--socket") && !probe_argv.include?("localhost")
+
+  reconcile = role_tasks(root, "reconcile_seafevents")
+  # `enabled` is not a unique key in this INI document -- upstream's own
+  # seafevents.conf carries one under [AUDIT] and one under [SEAHUB EMAIL] --
+  # so a per-line rewrite would switch off unrelated features and report itself
+  # converged. [^\[]*? is what bounds the match to one section: a section header
+  # is the only thing in this grammar that opens with a bracket.
+  assignment = reconcile.filter_map { |task| task.dig("vars", "seafile_seafevents_index_assignment") }
+  failures << "the Seafile index repair must be bounded to the [INDEX FILES] section" unless
+    assignment.length == 1 &&
+    assignment.first.include?('\[INDEX FILES\]') && assignment.first.include?('[^\[]*?')
+
+  restart = reconcile.select do |task|
+    task.dig("community.docker.docker_compose_v2", "state") == "restarted"
+  end
+  # seafevents reads its configuration once, at start, and the file lives in a
+  # bind mount rather than in the Compose spec, so nothing recreates the
+  # container when it changes. Not a handler: the verification one stage later
+  # authenticates against the running server, and a deferred restart would leave
+  # that server holding the configuration the repair just replaced.
+  failures << "the repaired Seafile event configuration must be restarted into the running server" unless
+    restart.length == 1 &&
+    restart.first.dig("community.docker.docker_compose_v2", "services") == ["seafile"] &&
+    restart.first.dig("community.docker.docker_compose_v2", "dependencies") == false &&
+    Array(restart.first["when"]).any? { |value| value.to_s.include?("seafile_seafevents_repair is changed") }
+  failures << "the Seafile restart must be a task rather than a deferred handler" if
+    Dir.exist?(File.join(root, "roles/seafile/handlers"))
+
+  verify = role_tasks(root, "verify")
+  verification = verify.select { |task| Array(task["tags"]).include?("platform_verify_seafile") }
+  login = verification.find { |task| task.dig("ansible.builtin.uri", "method") == "POST" }
+  # POST /api2/auth-token/ is the one endpoint on the unauthenticated surface
+  # that cannot answer without the databases: it authenticates against ccnet_db
+  # and seahub_db and then get-or-creates the token row in seahub_db.
+  failures << "Seafile verification must exchange the vault administrator for a token" unless
+    login &&
+    login.dig("ansible.builtin.uri", "url").to_s.end_with?("/auth-token/") &&
+    login.dig("ansible.builtin.uri", "body", "username") == "{{ vault_seafile_admin_email }}" &&
+    login.dig("ansible.builtin.uri", "body", "password") == "{{ vault_seafile_admin_password }}"
+  # GET /api2/ping/ returns a constant from a view that touches nothing and
+  # answers exactly as happily with both databases down. It is the right probe
+  # for the post-restart wait in reconcile_seafevents.yml and the wrong one here.
+  failures << "Seafile verification must not settle for an endpoint its databases cannot fail" if
+    task_strings(verification).any? { |value| value.include?("/ping/") }
+
+  # --- redaction, defaults and the two roots --------------------------------
+
+  everything = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
+  credential_tasks = everything.select do |task|
+    task_strings(task).any? { |value| value.include?("vault_seafile_") }
+  end
+  failures << "every Seafile task naming a vault credential must be redacted" unless
+    credential_tasks.length >= 2 && credential_tasks.all? { |task| task["no_log"] == true }
+  # seafevents.conf opens with a [DATABASE] section carrying the Seafile database
+  # account and its password, and that credential arrives as file content rather
+  # than as a vault_ name, so the rule above cannot see it.
+  seafevents_io = reconcile.select do |task|
+    task.key?("ansible.builtin.slurp") || task.key?("ansible.builtin.copy")
+  end
+  failures << "the Seafile event configuration carries a database password and must be redacted" unless
+    seafevents_io.length == 2 && seafevents_io.all? { |task| task["no_log"] == true }
+
+  defaults = YAML.safe_load_file(File.join(root, "roles/seafile/defaults/main.yml"))
+  failures << "Seafile must keep its data and database roots under the Docker root" unless
+    defaults["seafile_data_host_path"] == "{{ nas_docker_root }}/seafile/data" &&
+    defaults["seafile_db_host_path"] == "{{ nas_docker_root }}/seafile/db"
+  # /shared is the bind mount and the server lays out /shared/seafile/conf/, so
+  # the file the reconciliation owns lands exactly here. The runtime half proves
+  # the same path against a running container.
+  failures << "the Seafile event configuration must be the file the server writes inside the volume" unless
+    defaults["seafile_seafevents_config_path"] == "{{ seafile_data_host_path }}/seafile/conf/seafevents.conf"
+  failures << "this platform must own file indexing as switched off" unless
+    defaults["seafile_index_files_enabled"] == false
+
+  # The wrapper beside this program is read out of the INSPECTED tree, like
+  # tests/policy_support.rb above and for the same reason: it is that tree's own
+  # contract default that has to agree with that tree's own role default. It is
+  # also why tests/seafile_contract_test.rb's two-roots rows delete the sibling
+  # programs from the inspected tree rather than the whole tests/contracts
+  # directory -- the property being proven there is that the PROGRAMS come from
+  # the checkout, and removing the wrapper as well would only be removing this
+  # assertion's own input.
+  wrapper = File.read(File.join(root, "tests/contracts/seafile.sh"))
+  wrapper_port = wrapper[/PLATFORM_SEAFILE_PORT:=(\d+)/, 1]
+  failures << "the Seafile contract's default port must be the port the role publishes" unless
+    wrapper_port && Integer(wrapper_port, 10) == defaults["seafile_port"] &&
+    Array(server["ports"]) == ["#{defaults['seafile_port']}:80"]
+
+  options = YAML.safe_load_file(File.join(root, "roles/seafile/meta/argument_specs.yml"))
+                .dig("argument_specs", "main", "options")
+  failures << "every Seafile vault credential must be a required role argument" unless
+    VAULT_CREDENTIALS.all? do |name|
+      options.dig(name, "required") == true && options.dig(name, "type") == "str"
+    end
+  # Declared bool rather than left to a truthy string: the teardown branch and
+  # the deploy branch are selected by this one value, and the string "false" is
+  # true in Jinja.
+  failures << "the Seafile operator switch must be a required declared boolean" unless
+    options.dig("seafile_deployment_enabled", "type") == "bool" &&
+    options.dig("seafile_deployment_enabled", "required") == true
+  # Bounded at one recreate, and the bound is a declared integer because the
+  # rescue turns it into range(1, limit + 1): a string there is a Jinja error at
+  # the one moment the role is already recovering from a failure. A wedge that
+  # survives one recreate from an untouched image against an untouched volume is
+  # a broken deployment rather than an unlucky one, so raising this default is a
+  # policy change rather than a tuning knob, and 0 stays meaningful -- detect,
+  # report the health log and touch nothing.
+  failures << "the Seafile wedged-boot recreate budget must be one declared integer recreate" unless
+    options.dig("seafile_wedged_boot_recreate_limit", "type") == "int" &&
+    defaults["seafile_wedged_boot_recreate_limit"] == 1
+
+  # Compose interpolates $ in an env file and silently truncates what follows. A
+  # cut database password produces a server that cannot reach its database and a
+  # cut admin password an account nobody can log into, and neither says so.
+  template = File.read(File.join(root, "roles/seafile/templates/env.j2"))
+  interpolations = template.scan(/\{\{[^}]*vault_seafile_[^}]*\}\}/)
+  failures << "every Seafile credential must survive Compose's own interpolation" unless
+    interpolations.length == VAULT_CREDENTIALS.length &&
+    interpolations.all? { |value| value.include?("replace('$', '$$')") }
+
+  # Files on disk are not the files: content is stored as content-addressed
+  # blocks and the mapping back to filenames lives in the database, so a
+  # filesystem copy taken without a consistent dump restores an unreadable pile
+  # of blocks. Neither root is recoverable without the other.
+  inventory = YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
+  declarations = Array(inventory["nas_storage"]).select do |entry|
+    entry.is_a?(Hash) && entry["path"].to_s.include?("/seafile/")
+  end
+  failures << "both Seafile storage roots must be declared unrecoverable without each other" unless
+    declarations.length == 2 && declarations.all? { |entry| entry["recovery"] == "critical" }
+end
+
+unless failures.empty?
+  # Every violation, one per line, each line naming the contract that authored
+  # it. The prefix is not decoration: tests/seafile_contract_test.rb requires a
+  # row that says "this must be refused" to see it, so a Ruby backtrace or a
+  # shell diagnostic can no longer stand in for a refusal (#352).
+  warn failures.map { |failure| "Seafile contract failed: #{failure}" }.join("\n")
+  exit 1
+end

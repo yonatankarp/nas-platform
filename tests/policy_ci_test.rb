@@ -406,6 +406,8 @@ REQUIRED_CHECKS = %w[
   ruby\ tests/immich_contract_test.rb\ --self-test
   ruby\ tests/paperless_contract_test.rb
   ruby\ tests/paperless_contract_test.rb\ --self-test
+  ruby\ tests/seafile_contract_test.rb
+  ruby\ tests/seafile_contract_test.rb\ --self-test
   ruby\ tests/dozzle_contract_test.rb
   ruby\ tests/dozzle_contract_test.rb\ --self-test
   ruby\ tests/arr_contract_test.rb

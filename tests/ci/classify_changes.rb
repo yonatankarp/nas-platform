@@ -57,7 +57,8 @@ module ClassifyChanges
     "komga" => %w[komga],
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
-    "paperless" => %w[paperless paperless-ngx paperless_ngx]
+    "paperless" => %w[paperless paperless-ngx paperless_ngx],
+    "seafile" => %w[seafile]
   }.freeze
   # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
   # playbook and its two roles are reachable only from
@@ -442,10 +443,19 @@ module ClassifyChanges
       !INTEGRATION_HARNESS_PATHS.include?(path)
   end
 
+  # tests/expected/<service>.yml is routed to the lane for the same reason
+  # acquisition_lane has routed its own since it was written: the file declares
+  # the per-container CPU ceilings the converge checks against Docker's applied
+  # quota once the stack is up, so a change to it changes what the lane asserts
+  # rather than only what the policy gate reads. tests/contracts/seafile-static.rb
+  # is the first contract to read one directly, which is how the omission
+  # surfaced -- the harness closure in tests/ci/classify_changes_test.rb reached
+  # tests/expected/seafile.yml and found it selecting no suite at all.
   def service_lane(path)
     SERVICE_NAMES.each do |lane, names|
       names.each do |name|
         return lane if path.start_with?("roles/#{name}/", "services/#{name}/")
+        return lane if path == "tests/expected/#{name}.yml"
         return lane if path.match?(%r{\Atests/contracts/#{Regexp.escape(name)}(?:[-.]|\z)})
       end
     end

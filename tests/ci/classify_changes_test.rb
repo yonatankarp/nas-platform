@@ -14,7 +14,7 @@ include TestScaffold
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
   static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
+  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence_check
 ].freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
 # The lanes the media acquisition reconciliation contract reads, and the four
@@ -73,7 +73,7 @@ RECONCILIATION_OWNED_PATHS = %w[
 # classifier's own list must fail here.
 NTFY_LANES = %w[
   static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke
-  beszel dozzle audiobookshelf komga jellyfin immich paperless idempotence_check
+  beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence_check
 ].freeze
 failures = []
 
@@ -122,6 +122,7 @@ if defined?(ClassifyChanges)
     # secrets guide no longer pays for the whole policy gate.
     ["docs/secrets.md"] => %w[docs],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
+    ["roles/seafile/tasks/main.yml"] => %w[static smoke seafile idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     # Plus seerr: the seerr lane is the only one that converges Jellyfin
     # alongside arr and it signs in to Jellyfin as the vault administrator, so a
@@ -141,7 +142,11 @@ if defined?(ClassifyChanges)
     ["tests/policy_test.rb"] => %w[static],
     ["tests/validate-policy.sh"] => %w[static],
     ["tests/ci/workflow_test.rb"] => %w[static],
-    ["tests/expected/beszel.yml"] => %w[static],
+    # The expectation file declares the CPU ceilings the converge checks against
+    # Docker's applied quota, so it selects the lane that converges the stack and
+    # not the policy gate alone. The per-service loop below holds the same claim
+    # for every implemented service rather than for this one sample.
+    ["tests/expected/beszel.yml"] => %w[static smoke beszel idempotence_check],
     ["renovate.json"] => %w[static],
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
@@ -226,13 +231,15 @@ if defined?(ClassifyChanges)
     "komga" => %w[komga],
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
-    "paperless-ngx" => %w[paperless]
+    "paperless-ngx" => %w[paperless],
+    "seafile" => %w[seafile]
   }.each do |service, expected_service_lanes|
     role = service == "paperless-ngx" ? "paperless_ngx" : service
     contract = service == "paperless-ngx" ? "paperless" : service
     [
       "roles/#{role}/tasks/main.yml",
       "services/#{service}/compose.yml",
+      "tests/expected/#{service}.yml",
       "tests/contracts/#{contract}.sh"
     ].each do |path|
       companions = expected_service_lanes.flat_map { |lane| COMPANION_LANES.fetch(lane, []) }
@@ -368,7 +375,8 @@ if defined?(ClassifyChanges)
     # superset of Jellyfin's own, so the Jellyfin plan is Seerr's plan.
     "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr",
     "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
-    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless"
+    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless",
+    "roles/seafile/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,seafile"
   }.each do |path, expected_tags|
     service_output = StringIO.new
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
@@ -400,6 +408,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["smoke","beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
@@ -429,8 +438,9 @@ if defined?(ClassifyChanges)
     jellyfin=true
     immich=true
     paperless=true
+    seafile=true
     idempotence_check=true
-    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","idempotence-check"]
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","seafile","idempotence-check"]
     selected_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
@@ -474,6 +484,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=true
+    seafile=false
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
@@ -510,6 +521,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["bindery","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
@@ -540,6 +552,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["kapowarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
@@ -570,6 +583,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["pinchflat","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
@@ -604,6 +618,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["trailarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
@@ -638,6 +653,7 @@ if defined?(ClassifyChanges)
     jellyfin=false
     immich=false
     paperless=false
+    seafile=false
     idempotence_check=true
     suites=["seerr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr

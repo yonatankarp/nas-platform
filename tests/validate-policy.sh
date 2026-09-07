@@ -158,6 +158,7 @@ ruby tests/run_contracts.rb --validate-only
 ruby tests/jellyfin_transcode_contract_test.rb
 ruby tests/pinchflat_contract_test.rb
 ruby tests/immich_contract_test.rb --self-test
+ruby tests/seafile_contract_test.rb
 ruby tests/arr_contract_test.rb
 ruby tests/downloaders_contract_test.rb --self-test
 ruby tests/trailarr_contract_test.rb
@@ -275,6 +276,7 @@ ruby tests/dozzle_contract_test.rb --self-test
 ruby tests/jellyfin_contract_test.rb --self-test
 ruby tests/immich_contract_test.rb
 ruby tests/paperless_contract_test.rb --self-test
+ruby tests/seafile_contract_test.rb --self-test
 ruby tests/downloaders_contract_test.rb
 ruby tests/seerr_contract_test.rb --self-test
 ruby tests/bindery_contract_test.rb

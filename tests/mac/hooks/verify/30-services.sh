@@ -38,5 +38,6 @@ done
 
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container to verify' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

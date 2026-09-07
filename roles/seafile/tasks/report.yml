@@ -17,6 +17,14 @@
 # already absent is silent, and the run that first tears the project down reports
 # that it did.
 #
+# The recreate term is the one that carries a default, and it is not tidiness.
+# seafile_wedged_recreate is registered inside deploy.yml's rescue, which a
+# healthy converge never enters, so on every ordinary run the name does not
+# exist at all -- unlike the four beside it, whose tasks are skipped rather than
+# unreached and which are therefore always defined. A recovered wedged boot is a
+# converge that moved, and it is exactly the converge this platform should hear
+# about, so it is a term rather than left to the failed deploy result beside it.
+#
 # The restart in reconcile_seafevents.yml is deliberately not one of the terms.
 # It fires only when the repair beside it is changed, so it would report the same
 # converge twice and never a different one.
@@ -29,4 +37,5 @@
     ntfy_deployment_report_changed: >-
       {{ (seafile_data_deploy is changed) or (seafile_deploy is changed) or
          (seafile_teardown is changed) or
+         ((seafile_wedged_recreate | default({})) is changed) or
          (seafile_seafevents_repair is changed) }}

@@ -56,5 +56,6 @@ pinchflat=its only fixture would be a real YouTube download, which this lane mus
 kapowarr=its only fixture would be a real comic download, which needs a ComicVine account this lane cannot hold, so its converge has nothing to read
 bindery=its only fixture would be a real Usenet download, which this lane has no transport for, so its converge has nothing to read
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make, so its converge has nothing to read
-seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first' \
+seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first
+seafile=the server writes its own event configuration on first start and the converge repairs that file in place, so nothing has to exist on disk before run_site, and the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container at all' \
   "$mac_pre_converge_hooks" ''
