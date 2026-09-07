@@ -37,6 +37,20 @@ MANAGED_ALERTS = {
 DECOY_NAME = "00-contract-decoy"
 WRONG_OWNER_EMAIL = "wrong-owner-fixture@example.invalid"
 DUPLICATE_EVIDENCE = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "beszel-duplicate-ids.txt")
+# The two budgets this program can spend waiting, and the only two numbers in it
+# a caller may need to lower. Both defaults are the deployment's: ninety seconds
+# for a real agent to write a 1m telemetry sample, fifteen for a real ntfy to
+# receive a published notification. They are environment inputs for the reason
+# tests/contracts/seerr-runtime.rb's READY_TIMEOUT_SECONDS is (#319): a caller
+# that must reach the refusal these deadlines guard has to sit out the whole
+# budget to get there, and tests/beszel_contract_test.rb has one such row per
+# deadline. Ninety seconds of that was the floor of both beszel checks in
+# tests/validate-policy.sh. Nothing in a deployment sets either name, so the
+# beszel integration lane and the Mac proof read the defaults.
+TELEMETRY_POLL_TIMEOUT_SECONDS =
+  Integer(ENV.fetch("PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS", "90"), 10)
+NOTIFICATION_POLL_TIMEOUT_SECONDS =
+  Integer(ENV.fetch("PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS", "15"), 10)
 
 def fail_contract(message)
   warn "Beszel contract failed: #{message}"
@@ -120,7 +134,7 @@ end
 
 def persisted_telemetry(platform, system, token)
   evidence = BeszelTelemetry.poll(
-    platform: platform, system: system, timeout_seconds: 90,
+    platform: platform, system: system, timeout_seconds: TELEMETRY_POLL_TIMEOUT_SECONDS,
     request_timeout_seconds: 3, delay_seconds: 3,
     fetcher: lambda do |collection, timeout|
       latest_telemetry_record(collection, token, system.fetch("id"), timeout)
@@ -273,7 +287,7 @@ when "notify"
                          token: app_auth.fetch("token"), body: { url: expected_url })
   fail_contract("Beszel test notification reported delivery failure") unless notification["err"] == false
 
-  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 15
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS
   loop do
     query = URI.encode_www_form(poll: 1, since: baseline_id)
     response = request_text("get", endpoint(NTFY, "/nas-critical/json?#{query}"),

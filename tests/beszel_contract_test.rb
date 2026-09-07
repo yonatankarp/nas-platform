@@ -1116,15 +1116,19 @@ RUNTIME_ROWS = [
     state: { telemetry_status: 404 },
     expects: "telemetry request returned HTTP 404" },
   {
-    # The one deliberately slow row in this file, and the only place the
-    # persisted-telemetry deadline itself is asserted from the runtime half.
-    # timeout_seconds is 90 and delay_seconds is 3, both hardcoded in the
-    # program, so an unready fixture costs ninety seconds of wall time. Making
-    # it cheaper means changing the program's own numbers, which is the opposite
-    # of what this file is for. The formatting of the same sentence is asserted
-    # cheaply, thirty times over, in the fixtures layer above.
+    # The only place the persisted-telemetry deadline is reached from the
+    # runtime half: a fixture that serves no system_stats record can never
+    # satisfy the poll, so the poll runs to its budget and then refuses.
+    #
+    # What this row asserts is that it terminates and names the categories --
+    # never the budget's value, which it would pass just as happily at thirty
+    # seconds. At the program's default of ninety, and delay_seconds of three,
+    # that was thirty sleeps and about ninety seconds of pure wait, and it was
+    # the floor of BOTH gate checks that run this file (#485). Six seconds is
+    # two passes through the same sleep path and the same refusal.
     name: "persisted telemetry that never becomes ready", mode: "verify",
-    state: { system_stats: [] , slow: true },
+    state: { system_stats: [] },
+    env: { "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS" => "6" },
     expects: "persisted telemetry unavailable or stale for system ID managed-system"
   },
   { name: "a converged Mac platform, whose policy requires no GPU sample",
@@ -1276,10 +1280,16 @@ RUNTIME_ROWS = [
     state: { notification_body: "not json at all" },
     expects: "returned malformed JSON" },
   {
-    # The anti-replay poll itself: the hub reports success but nothing arrives.
-    # Fifteen seconds, which is the program's own deadline.
+    # The anti-replay poll itself: the hub reports success but nothing arrives,
+    # so the loop runs to its deadline and refuses. Like the telemetry row
+    # above, what is asserted is termination and the sentence, not the number:
+    # the program's default of fifteen seconds is a real ntfy's delivery budget
+    # and stays the default. Four seconds is four passes through the same
+    # one-second sleep and the same refusal, and it keeps this row from becoming
+    # the floor the telemetry row stopped being (#485).
     name: "a notification that never reaches the disposable ntfy", mode: "notify",
-    state: { notification_never_delivers: true, slow: true },
+    state: { notification_never_delivers: true },
+    env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
     expects: "Beszel test notification did not reach disposable ntfy"
   }
 ].freeze
@@ -1327,7 +1337,12 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
             collected << "#{label}: the wrong-owner install this row builds on failed: " \
                          "#{err.strip}" unless seeded.success?
           end
-          stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths)
+          # Only the judged invocation takes the row's environment. The two
+          # pre-runs above install a fixture rather than being measured, and
+          # neither reaches a deadline, so widening the override to them would
+          # claim a property no row asserts.
+          stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths,
+                                               extra_env: row.fetch(:env, {}))
           collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
                                  prefix: DIAGNOSTIC_PREFIX))
           # Every credential this fixture holds, checked against every byte the
