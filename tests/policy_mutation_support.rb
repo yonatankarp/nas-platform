@@ -446,6 +446,10 @@ def check_fixture_index_hostile_environment(failures)
 end
 
 def check_direct_policy_hostile_environment(failures, retired_token)
+  # A mutation row that cannot use run_policy_scripts: the whole point is the
+  # hostile GIT_* environment it execs the script under, which that runner
+  # deliberately strips. So it counts itself -- see POLICY_AUDIT_COVERAGE.
+  record_direct_audit_bypass(:direct_policy_script)
   Dir.mktmpdir("nas-platform-direct-hostile-git-") do |parent|
     sandbox = File.join(parent, "sandbox")
     unrelated = File.join(parent, "unrelated")
@@ -607,6 +611,14 @@ POLICY_SCRIPTS = POLICY_SCRIPTS_BY_NAME.values.freeze
 # answer to the one thing narrowing cannot fail loudly on: a check added to a
 # script a row no longer runs stops covering that row, and nothing else would say
 # so. Deliberately not in CI -- it is exactly the eightfold cost narrowing removed.
+#
+# It reaches a row only through expect_failure, so what it guarantees is narrower
+# than "the manifest test came back clean": a row that runs a checker by any
+# other route declares no detecting set, has nothing to drift, and would say
+# nothing if a newly added check started covering it. That gap was invisible in
+# the output and legible only in the source, and "--audit came back clean" was
+# read as covering the whole file (#439), so the audit now reports the scope of
+# its own verdict -- see POLICY_AUDIT_COVERAGE.
 POLICY_AUDIT = ARGV.include?("--audit")
 
 # Keyed by call site rather than by label, because a call site inside a loop is
@@ -630,6 +642,48 @@ POLICY_AUDIT_SITES = {}
 # Counted from `detected_by`, never from the resolved script list: `--audit`
 # widens that to all eight, and the census must read the same in both modes.
 POLICY_MUTATION_CENSUS = { mutations: 0, single_script: 0, integration: 0, sites: {} }
+
+# What `--audit` did not re-derive, so its verdict states its own scope.
+#
+# The unit is one assertion that mutates a fixture sandbox and asserts on what a
+# checker then says about it. Which checker does not matter -- the rows the audit
+# cannot see mostly run tests/media_acquisition_foundation_test.rb, which is not
+# one of the eight, and reading "runs policy" as "runs one of the eight" is how
+# #439's first count came out too narrow while still counting those rows.
+#
+# Excluded by that rule, and each for a reason that is not judgement: a checker
+# run against the real tree with nothing mutated (the foundation script's
+# strict-CLI row), the Ansible syntax check a mutation runs on itself to prove
+# its own fixture is well formed, and the three guards the harness keeps on its
+# own sandbox builder, which run no checker at all: fixture identity, index
+# containment, and the git-routing guard over initialize_fixture_index. The other
+# git-routing guard is not among them -- it appends the retired token to a tracked
+# README and asserts tests/policy_test.rb rejects it, which is a mutation row
+# however it is filed.
+#
+# `policy_runs` counts those runs where they are executed rather than where they
+# are declared, so a shape added later is in the total whether or not anyone
+# remembers to label it, and `bypass_shapes` is the labelled breakdown. What is
+# printed is the labelled sum, because it reads the same in both modes; the
+# subtraction `policy_runs - re-derived` is the tripwire, and it is correct only
+# under `--audit`, where every audited run records itself. The tripwire catches a
+# new caller of run_policy_scripts, which is where the counting happens. It
+# cannot catch a shape that executes a checker itself -- those call
+# record_direct_audit_bypass, and forgetting both calls is invisible.
+#
+# `bypass_sites` is the same figure POLICY_AUDIT_SITES holds for the audited
+# half, so the two halves of the printed line can be compared: mutations and call
+# sites on both sides, in one unit. It is keyed on the whole chain of line numbers
+# inside the program under test rather than on one of them, because a bypass
+# shape is often reached through a helper of its own -- every acquisition row
+# enters run_policy from the same line of the lambda, and a single lineno would
+# collapse nineteen rows into one. The chain distinguishes them, and it collapses
+# a loop to one site on its own, which is what the audited half does too.
+POLICY_AUDIT_COVERAGE = { policy_runs: 0, bypass_shapes: Hash.new(0), bypass_sites: {} }
+
+# The program the mutation rows live in. Frames from anywhere else -- this file's
+# own helpers, and Ruby's -- are not call sites a reader can go and look at.
+POLICY_PROGRAM_PATH = File.expand_path($PROGRAM_NAME)
 
 def resolve_policy_scripts(names, label)
   raise "#{label}: detected_by must be a nonempty list of script names" if names.nil? || names.empty?
@@ -655,6 +709,7 @@ end
 # output a caller matches against stays in the caller's order and a failure
 # report does not depend on which script happened to exit first.
 def run_policy_scripts(scripts)
+  POLICY_AUDIT_COVERAGE[:policy_runs] += 1
   Dir.mktmpdir("nas-platform-policy-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
@@ -668,13 +723,23 @@ def run_policy_scripts(scripts)
   end
 end
 
+# The route around the audit: it takes an explicit script list -- including
+# scripts outside the eight, which is what the acquisition rows run -- and
+# reports failures itself, so no `detected_by` is declared and nothing here is
+# re-derived. Every caller is one such assertion, this one included, which is why
+# the label is recorded here rather than at each of them.
 def run_policy(scripts = POLICY_SCRIPTS, &mutation)
+  record_audit_bypass(:run_policy)
   results = run_policy_scripts(scripts, &mutation)
   output = results.map { |_script, script_output, _ok| script_output }.join
   [output, results.all? { |_script, _script_output, ok| ok }]
 end
 
 def run_compose_metadata_behavior
+  # Its checker is a behavioural Ansible suite rather than a policy script, which
+  # changes nothing about the shape: a mutated sandbox, an assertion on what the
+  # checker said, and no declared set for the audit to re-derive.
+  record_direct_audit_bypass(:compose_metadata_behavior)
   Dir.mktmpdir("nas-platform-compose-metadata-") do |sandbox|
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
@@ -743,8 +808,27 @@ def report_mutation_census
 end
 
 def record_audit_detection(label, message, declared, results, site)
-  entry = POLICY_AUDIT_SITES[site.lineno] ||= { declared: declared, actual: [], label: label }
+  entry = POLICY_AUDIT_SITES[site.lineno] ||= { declared: declared, actual: [], label: label, mutations: 0 }
+  entry[:mutations] += 1
   entry[:actual] |= detecting_script_names(message, results)
+end
+
+# One assertion the re-derivation cannot see, labelled by the shape that wrote
+# it. For the shapes that reach a sandbox through run_policy_scripts, whose run
+# is already counted there.
+def record_audit_bypass(shape)
+  POLICY_AUDIT_COVERAGE[:bypass_shapes][shape] += 1
+  chain = caller_locations.filter_map do |frame|
+    frame.lineno if File.expand_path(frame.path) == POLICY_PROGRAM_PATH
+  end
+  POLICY_AUDIT_COVERAGE[:bypass_sites][[shape, chain]] = true
+end
+
+# The same, for a shape that executes a checker itself. It has to count its own
+# run, because the place that counts every other one never sees it.
+def record_direct_audit_bypass(shape)
+  POLICY_AUDIT_COVERAGE[:policy_runs] += 1
+  record_audit_bypass(shape)
 end
 
 # Both directions are silent without this. A script that starts detecting a row
@@ -760,7 +844,40 @@ def audit_policy_detection(failures)
     failures << "#{where}: detected_by omits #{missing.join(', ')}" if missing.any?
     failures << "#{where}: detected_by names #{stale.join(', ')}, which no longer detect it" if stale.any?
   end
-  puts "policy mutation audit: #{POLICY_AUDIT_SITES.length} call sites re-derived against all eight scripts"
+  report_audit_coverage(failures)
+end
+
+# The audit's scope, printed with its verdict. Both figures are counted by the
+# run: stating either is the defect this reports, one level down, and the number
+# outside the audit rots on the next row added.
+#
+# The floor is on the re-derived side only. A dynamic subject list that silently
+# goes empty is how a guard here stops guarding while still passing, and a file
+# whose call sites run into the hundreds cannot legitimately fall to one. The
+# floor is two rather than the count of the day, which would rot -- what it
+# catches is the list collapsing, and any real count clears it by miles.
+#
+# There is deliberately no floor on the bypass count: routing a shape through
+# expect_failure would make zero the honest number, and the tripwire below
+# already reports the case a floor would -- when both sides go to zero together,
+# they agree.
+def report_audit_coverage(failures)
+  mutations = POLICY_AUDIT_SITES.sum { |_lineno, entry| entry.fetch(:mutations) }
+  shapes = POLICY_AUDIT_COVERAGE[:bypass_shapes]
+  bypassed = shapes.values.sum
+  breakdown = shapes.sort_by { |shape, _count| shape }.map { |shape, count| "#{count} #{shape}" }.join(", ")
+  puts "policy mutation audit: #{mutations} mutations at #{POLICY_AUDIT_SITES.length} call sites " \
+       "re-derived against all eight scripts; #{bypassed} mutations at " \
+       "#{POLICY_AUDIT_COVERAGE[:bypass_sites].length} call sites never reach expect_failure and " \
+       "were not re-derived (#{breakdown})"
+
+  failures << "policy mutation audit: re-derived only #{POLICY_AUDIT_SITES.length} call sites" if
+    POLICY_AUDIT_SITES.length < 2
+  unlabelled = POLICY_AUDIT_COVERAGE[:policy_runs] - mutations
+  return if unlabelled == bypassed
+
+  failures << "policy mutation audit: #{unlabelled} runs bypass the re-derivation but #{bypassed} " \
+              "are labelled; a shape outside the audit is not being reported"
 end
 
 # What a failing script said about its own failure, rather than whatever it
@@ -787,6 +904,7 @@ end
 # whose failure is indistinguishable from success is the defect class this
 # harness exists to find, so it must not be the harness's own reporting.
 def expect_success(failures, label)
+  record_audit_bypass(:expect_success)
   results = run_policy_scripts(POLICY_SCRIPTS) { |root| yield root }
   results.each do |script, output, ok|
     next if ok

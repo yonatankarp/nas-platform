@@ -20,6 +20,14 @@
 # below is. `--audit` runs all eight again and fails on any call site whose
 # declared set has drifted from what the scripts now do -- run it after adding a
 # check to a policy script.
+#
+# `--audit` reaches a row only through expect_failure, so the rows written any
+# other way -- the acquisition lambda below, the ad-hoc run_policy assertions,
+# expect_success, the foundation wrapper, and two shapes in the support file --
+# declare no set and are outside the re-derivation entirely. That is safe, and it
+# is narrower than "the audit came back clean" sounds, so the audit now prints
+# how many assertions it did not re-derive alongside how many it did (#439).
+# Both figures are counted by the run; neither is stated anywhere.
 
 require_relative "policy_mutation_support"
 
@@ -724,6 +732,11 @@ end
 
 run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,
                                    invocation_mode: "static", trace: false|
+  # Outside the audit like the acquisition rows above, and for the same reason:
+  # the checker it runs -- the foundation script, or the contract wrapper itself
+  # -- is not one of the eight, so there is no detecting set to re-derive. It
+  # execs that checker directly, so it counts its own run.
+  record_direct_audit_bypass(:foundation_wrapper)
   Dir.mktmpdir("nas-platform-foundation-wrapper-") do |root|
     copy_fixture(ROOT, root)
     initialize_fixture_index(root)
