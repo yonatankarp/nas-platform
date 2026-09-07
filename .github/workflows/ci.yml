@@ -577,3 +577,28 @@ jobs:
             reconciliation="${{ needs.reconciliation.result }}" \
             toolchain="${{ needs.toolchain.result }}" \
             suites="${{ needs.suites.result }}"
+
+      # DELIBERATE DUPLICATION -- do not remove this step because the same check
+      # already runs in the gate. That removal is the defect #480 filed. The
+      # other route is one line of shard 1 of the policy gate's manifest, whose
+      # preamble carries the other half of this comment.
+      #
+      # tests/ci/workflow_test.rb pins this workflow's shape: that `static`
+      # exists, that its `if:` matches its classifier output, that its matrix
+      # names every shard the gate declares. Run only from the gate, it is a
+      # check inside the job it guards -- gate `static` on `if: false`, delete
+      # the job, or empty its matrix, and the objection stops running along with
+      # the thing it objects to. This job then sees `static` as `skipped`, which
+      # is legitimately allowed because the classifier skips it on diffs that
+      # cannot reach it, so the run goes green with the guard never having run.
+      #
+      # It runs here because this job cannot be skipped -- `if: ${{ always() }}`
+      # above -- so no edit to another job's condition, matrix or existence can
+      # suppress it. It needs nothing but the checkout above and the Ruby the
+      # runner image ships, and takes about a second.
+      #
+      # Each copy is what catches the loss of the other, and the check asserts
+      # both directions itself: that this step is here, and that the gate still
+      # registers it exactly once.
+      - name: Pin the workflow's own shape
+        run: ruby tests/ci/workflow_test.rb

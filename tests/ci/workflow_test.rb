@@ -849,6 +849,33 @@ expected_needs.each do |job_id|
 end
 check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
       "validate must invoke the aggregate result validator")
+
+# This file's own two routes into CI, asserted in both directions, because from
+# the gate alone it is a check inside the job it guards. Everything above pins
+# the shape of `static` -- that it exists, that its `if:` matches its classifier
+# output, that its matrix names every shard the gate declares -- and every one of
+# those attacks also stops the gate running: `if: false`, a deleted job and an
+# empty matrix all leave `static` reporting `skipped`, which the aggregate
+# validator legitimately allows because the classifier skips that job on diffs
+# that cannot reach it. The run is green and the objection was never made (#480).
+#
+# So it runs from `validate` as well, which is `always()` and therefore the one
+# job no edit elsewhere can suppress. The duplication is the point, and these two
+# checks are what keep a tidy-up from noticing one script in two places and
+# leaving one: whichever copy survives is the one that names the loss. Same
+# reasoning as DOCS_CHECK_COMMANDS above, one level further out.
+workflow_guard_command = "ruby tests/ci/workflow_test.rb"
+check(failures, validate_commands.include?(workflow_guard_command),
+      "validate must invoke the workflow-shape guard directly: run only from the policy gate, " \
+      "#{workflow_guard_command.inspect} is a check inside the job it pins, so disabling " \
+      "`static` removes its own objection")
+check(failures, registers_command_once?(policy_source, workflow_guard_command),
+      "validate-policy.sh must still register #{workflow_guard_command.inspect} exactly once: " \
+      "the validate job runs it for the workflow's shape, the gate runs it for every other " \
+      "change, and moving it out of the gate is not the same fix as running it in both places")
+check(failures, Array(validate["steps"]).none? { |step| step.is_a?(Hash) && step.key?("if") },
+      "validate steps must be unconditional: this job is the route that cannot be skipped, and " \
+      "a step conditioned on another job's result restores exactly that hole")
 # One `needs` entry covers all three shards because `needs.<job>.result` for a
 # matrix job is the job's aggregate: `failure` if any leg failed, `cancelled` if
 # any was cancelled, and `success` only if every leg succeeded. The suites matrix
