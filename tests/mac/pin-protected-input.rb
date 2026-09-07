@@ -144,7 +144,7 @@ def execute_provider(directory, basename, provider_bytes, maximum_size)
       terminate_group(wait_thread.pid, "TERM")
       unless wait_thread.join(1)
         terminate_group(wait_thread.pid, "KILL")
-        wait_thread.join
+        wait_thread.join(1)
       end
     ensure
       unless writer.join(1)

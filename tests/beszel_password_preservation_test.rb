@@ -37,16 +37,18 @@ def capture3_with_timeout(environment, *command, chdir:, timeout_seconds:)
     stdin.close
     stdout_reader = Thread.new { stdout.read }
     stderr_reader = Thread.new { stderr.read }
+    stdout_reader.report_on_exception = false
+    stderr_reader.report_on_exception = false
     begin
       status = Timeout.timeout(timeout_seconds) { wait_thread.value }
     rescue Timeout::Error
       terminate_process_group(wait_thread.pid, "TERM")
       unless wait_thread.join(1)
         terminate_process_group(wait_thread.pid, "KILL")
-        wait_thread.join
+        wait_thread.join(1)
       end
-      stdout_reader.join
-      stderr_reader.join
+      stdout_reader.join(1)
+      stderr_reader.join(1)
       unit = timeout_seconds == 1 ? "second" : "seconds"
       raise FixtureTimeout, "Ansible fixture timed out after #{timeout_seconds} #{unit}"
     end
