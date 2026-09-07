@@ -1,0 +1,79 @@
+---
+# One recreate of a wedged Seafile server, included once per unit of the
+# seafile_wedged_boot_recreate_limit budget by deploy.yml's rescue. Everything
+# about why this exists is in deploy.yml beside the block it rescues; this file
+# is only how the recreate is performed and how its outcome is decided.
+#
+# It is a file rather than three tasks inline because the budget is a loop, and
+# `loop:` on an include is the only way Ansible repeats a sequence of tasks. That
+# is also why seafile_recreate_attempt is a loop_var nothing here reads: the
+# iteration count is the bound, not an input.
+
+# FORCED, because `up -d` will not do it. Measured against a throwaway container
+# with an always-failing health check: `docker compose up -d` with unchanged
+# configuration reports `Running`, keeps the same container id and recreates
+# nothing, and `up -d --wait` waits, reports unhealthy and still recreates
+# nothing. `recreate: always` is what the module turns into --force-recreate
+# (plugins/modules/docker_compose_v2.py, get_up_cmd), and --force-recreate is the
+# only thing that replaces a container whose spec has not changed.
+#
+# THE SERVER AND NOTHING ELSE, and both lines that say so are load-bearing.
+# --force-recreate applies to everything the `up` operates on, so without
+# `dependencies: false` -- which is what the module renders as --no-deps -- this
+# would recreate db and cache as well. That is precisely what the two-phase
+# bring-up in deploy.yml exists to avoid, and it is the same reason the
+# seafevents restart in reconcile_seafevents.yml names one service and disables
+# dependencies. One sentence applies here and not there: --no-deps also skips the
+# `depends_on: condition: service_healthy` gate the server would otherwise wait
+# on, which is safe ONLY because phase one already waited on both and the
+# credential probe between them already proved the database answers.
+#
+# The failure is caught rather than tolerated with failed_when. `--wait` returning
+# zero IS the recovery -- it is Docker's own health verdict, the same one that
+# failed the first attempt -- so a nested rescue lets the success path say
+# `recovered` without a second inspection inventing its own definition of
+# healthy. failed_when: false would have erased the module's `failed` and left
+# nothing to branch on.
+#
+# THE BUDGET'S EARLY EXIT IS THIS `when:`, and it has to be here rather than on
+# the include in deploy.yml. Measured against ansible-core 2.21.3: a looped
+# `include_tasks` expands every iteration before any of the included tasks runs
+# -- the transcript prints `included: ... (item=1)` and `(item=2)` back to back
+# -- and the include's own conditional is evaluated at that expansion and is NOT
+# copied onto the tasks inside. So a fact this file sets on iteration 1 cannot
+# stop iteration 2 from being expanded, and a budget of 2 recreated a server that
+# had already recovered. Evaluated here it is an ordinary task condition, read
+# when the block is reached, and the recreates stop the moment one works.
+- name: Recreate the wedged Seafile server
+  when: not seafile_boot_recovered | bool
+  block:
+    - name: Force-recreate the Seafile server container
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/seafile"
+        project_name: "{{ seafile_compose_project_name }}"
+        files: "{{ platform_service_compose_files['seafile'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+        services: [seafile]
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ seafile_compose_wait_timeout }}"
+      register: seafile_wedged_recreate
+
+    - name: Record the recovered Seafile boot
+      ansible.builtin.set_fact:
+        seafile_boot_recovered: true
+
+  rescue:
+    # The recreate's own message, kept for the refusal in deploy.yml. It is the
+    # second half of the story there -- the first attempt's health log is already
+    # printed, and this says what Compose made of the replacement -- and it is
+    # carried as a fact because ansible_failed_result belongs to whichever rescue
+    # is running.
+    - name: Record the Seafile boot that stayed wedged
+      ansible.builtin.set_fact:
+        seafile_boot_recovered: false
+        seafile_recreate_failure_message: >-
+          The recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}

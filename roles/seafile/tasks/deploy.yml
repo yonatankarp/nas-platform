@@ -191,17 +191,307 @@
     - seafile_deployment_enabled | bool
     - not ansible_check_mode
 
-- name: Deploy Seafile
-  community.docker.docker_compose_v2:
-    project_src: "{{ platform_current_dir }}/services/seafile"
-    project_name: "{{ seafile_compose_project_name }}"
-    files: "{{ platform_service_compose_files['seafile'] }}"
-    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
-    state: present
-    wait: true
-    wait_timeout: "{{ seafile_compose_wait_timeout }}"
-  register: seafile_deploy
-  when: seafile_deployment_enabled | bool
+# The application phase, wrapped in a rescue for one upstream defect and one
+# only. The defect is in the image, it is observed rather than theorised, and
+# the whole shape of what follows is dictated by what it does and does not do.
+#
+# /scripts/enterpoint.sh launches /scripts/start.py in the background and then
+# idles in `while [ 1 ]; do sleep 60 & wait $!; done` for ever. Nothing in that
+# loop ever looks at start.py again, so a start.py that stops making progress
+# leaves PID 1 perfectly happy. Two routes reach it and they are observationally
+# identical from outside:
+#
+#   * utils.call defaults to subprocess.check_call, so anything raising inside
+#     init_seafile_server() ends start.py outright;
+#   * utils.py's wait_for_mysql (~line 275) and wait_for_nginx (~line 297) are
+#     unbounded `while True` loops with time.sleep(2) and no attempt limit.
+#
+# Either way the container reports State: running with ExitCode 0 and never
+# serves. nginx is already listening on 80 -- enterpoint.sh blocks until it is --
+# and answers 502 until seahub binds, which was measured, so the health check in
+# services/seafile/compose.yml correctly reports the container unhealthy and
+# Compose's `--wait` fails the deployment below with
+# `container seafile is unhealthy`.
+#
+# WHY NOTHING SELF-HEALS, MEASURED against a throwaway always-failing-healthcheck
+# container rather than reasoned about:
+#
+#   * `restart: unless-stopped` never fires. A restart policy acts on a container
+#     that EXITS, and a wedged container does not exit. RestartCount stayed 0.
+#   * `docker compose up -d` with unchanged configuration reports `Running`,
+#     keeps the SAME container id and does not recreate. `up -d --wait` waits,
+#     reports unhealthy and still does not recreate.
+#   * only a CHANGED configuration recreates -- and there is none, because the
+#     revision being converged is the one that produced the wedge.
+#
+# So the next converge meets the same wedged container. On the NAS that is worse
+# than in CI: scripts/production_auto_deploy.py records the attempt BEFORE the
+# play, this is not a TransientDeploymentError, so forget_attempt() is never
+# reached and the revision is never retried on its own. Recovery is an operator
+# running --retry-failed <sha>, and there is no rollback.
+#
+# Observed in CI in 1 of 2 lane runs: run A reached healthy 13.6s after its
+# container was created, run B sat unhealthy for 424s -- start_period 300s plus
+# five failing probes 30s apart -- and Compose aborted the converge. That ratio
+# is why this is a recovery rather than a larger timeout: the budget already
+# grants thirty times the only successful boot anyone has measured.
+#
+# WHAT THIS CANNOT DO, stated because the failure below has to be read honestly.
+# A recreate does not clear /shared. If start.py died partway through
+# init_seafile_server() the seafile-data directory already exists, so the next
+# start takes bootstrap.py's "Skip running setup-seafile-mysql.py" early return
+# and the server can come back HEALTHY BUT HALF-CONFIGURED. Docker's health
+# verdict cannot tell that from a real recovery and neither can this rescue. What
+# catches it is the POST /api2/auth-token/ verification in verify.yml, which
+# authenticates against ccnet_db and seahub_db and fails by name when they are
+# not there.
+- name: Deploy Seafile, recovering one wedged first boot
+  block:
+    - name: Deploy Seafile
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/seafile"
+        project_name: "{{ seafile_compose_project_name }}"
+        files: "{{ platform_service_compose_files['seafile'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+        state: present
+        wait: true
+        wait_timeout: "{{ seafile_compose_wait_timeout }}"
+      register: seafile_deploy
+      # The gate stays on this task rather than on the block. A skipped task
+      # raises nothing, so the rescue is unreachable with the switch off without
+      # a second copy of the condition anywhere.
+      when: seafile_deployment_enabled | bool
+  rescue:
+    # First, and before anything can overwrite it. ansible_failed_result is
+    # rebound by the nested rescue inside recover_wedged_boot.yml, so the message
+    # this rescue may have to re-raise is copied out of it here, while it is
+    # still the deployment's own.
+    #
+    # seafile_boot_recovered is initialised in the same task for the same reason:
+    # the include below does not run on every path through this rescue -- not
+    # when the failure is something else, not when the budget is zero -- and a
+    # condition further down reading an undefined fact is an error, not a false.
+    - name: Record the failed Seafile deployment
+      ansible.builtin.set_fact:
+        seafile_boot_recovered: false
+        seafile_deploy_failure_message: >-
+          {{ ansible_failed_result.msg
+             | default('the Seafile deployment failed and reported no message') }}
+
+    # The state, not the failure. `Deploy Seafile` fails for several reasons -- a
+    # missing release path, a Compose file Docker will not parse, a daemon that
+    # is gone -- and only one of them is this defect, so the classification below
+    # reads what the container is actually doing rather than what the module
+    # said about it.
+    #
+    # Found by its Compose labels rather than by container_name. The production
+    # name is `seafile` and both disposable overrides namespace it with
+    # PLATFORM_PROJECT_NAME, so a name computed here would be a fourth place that
+    # has to agree with services/seafile/*.yml. The project label is already the
+    # value this role passes Compose. roles/container_cpu selects containers the
+    # same way.
+    #
+    # Not attempted under --check. Compose's own dry run does not wait on health,
+    # so a check run cannot produce this failure; if it fails for some other
+    # reason the classification stays `other` and the original error is
+    # re-raised unchanged.
+    - name: List the Seafile server container
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - ls
+          - --all
+          - --quiet
+          - --filter
+          - "label=com.docker.compose.project={{ seafile_compose_project_name }}"
+          - --filter
+          - "label=com.docker.compose.service=seafile"
+      register: seafile_server_container
+      when: not ansible_check_mode
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    # Exactly one container or nothing happens. Zero lines means the project was
+    # never created and the failure is upstream of this defect; more than one
+    # would make `| first` a guess about which. Either way the classification
+    # falls through to `other` and the deployment's own error is what the
+    # operator reads.
+    #
+    # {% raw %} because the format is a Go template and Jinja would otherwise
+    # try to resolve `json` as a variable. It renders to the literal and is not
+    # re-templated -- verified against ansible-core 2.21.3. The `if .State.Health`
+    # guard is what keeps this from dying on a container that declares no health
+    # check at all, which is a state, not an error.
+    - name: Read the Seafile server container state
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - inspect
+          - --format
+          - "{% raw %}{{.State.Running}} {{if .State.Health}}{{.State.Health.Status}}{{else}}unset{{end}}{% endraw %}"
+          - "{{ seafile_server_container.stdout_lines | first }}"
+      register: seafile_server_state
+      when:
+        - not ansible_check_mode
+        - seafile_server_container.stdout_lines | default([]) | length == 1
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    # `running AND unhealthy` and nothing else. A container that exited, one
+    # Docker still calls `starting`, one with no health check and one that was
+    # never created are all `other`, and `other` re-raises. The point of naming
+    # the condition this narrowly is that this rescue must not become a general
+    # retry: a Compose file that does not parse has to fail on the first converge
+    # with the message that says so.
+    - name: Classify the failed Seafile deployment
+      ansible.builtin.set_fact:
+        seafile_boot_failure: >-
+          {{ 'wedged-boot'
+             if (seafile_server_state.stdout | default('') | trim) == 'true unhealthy'
+             else 'other' }}
+
+    # BEFORE the recreate, because the evidence dies with the container.
+    #
+    # `--format '{{json .State.Health}}'` and nothing wider, which is the same
+    # decision tests/integration_controller_lib.sh took for the lane's own
+    # failure dump and for the same reasons: a bare `docker inspect` prints
+    # .Config.Env, and for this stack that is the rendered environment file --
+    # the MariaDB root password, the Seafile administrator password and the
+    # Valkey password, in full. .State.Health carries the last five probes'
+    # combined output, stderr included, and NOT the probe's own argv, which is
+    # what makes it safe to print even where a probe command embeds a credential.
+    # Only the server is inspected here in any case, and its probe is
+    # `curl --fail --silent --show-error http://localhost/`, whose recorded
+    # output is a curl diagnostic.
+    #
+    # So neither this task nor the report below carries no_log, deliberately.
+    # Redacting them would censor the only evidence this path exists to produce
+    # while protecting nothing.
+    - name: Capture the wedged Seafile server health verdict
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - inspect
+          - --format
+          - "{% raw %}{{json .State.Health}}{% endraw %}"
+          - "{{ seafile_server_container.stdout_lines | first }}"
+      register: seafile_server_health
+      when: seafile_boot_failure == 'wedged-boot'
+      failed_when: false
+      changed_when: false
+      check_mode: false
+
+    - name: Report the wedged Seafile server health verdict
+      ansible.builtin.debug:
+        msg: >-
+          The Seafile server container is running and Docker calls it unhealthy,
+          which is the wedged first boot /scripts/enterpoint.sh cannot recover
+          from on its own. Its health log follows, last five probes, and it is
+          captured here because a recreate destroys it:
+          {{ seafile_server_health.stdout | default('(no health state recorded)') }}
+      when: seafile_boot_failure == 'wedged-boot'
+
+    # The bound, and it is a loop rather than a single gated task so that the
+    # number means what it says. range(1, limit + 1) is empty at 0, one item at
+    # the default of 1 and two at 2, and each iteration re-checks
+    # seafile_boot_recovered, so the recreates stop the moment one works. A
+    # single task gated on `limit > 0` could not express 0 -- detect, report and
+    # deliberately touch nothing, which is what an operator debugging a live
+    # wedge actually wants -- and could not express 2 either, so the variable
+    # would be decoration.
+    #
+    # 1 is the default because this is a recovery, not a retry loop. A wedge that
+    # survives one recreate from an untouched image and an untouched volume is a
+    # deployment that is broken rather than unlucky, and the failure below is
+    # worth more than a fourth attempt.
+    #
+    # The condition here is only the classification, and deliberately: the early
+    # exit that stops the loop once a recreate has worked lives inside
+    # recover_wedged_boot.yml, because a looped include's own conditional is
+    # evaluated while the iterations are expanded and nothing the file sets can
+    # reach it. That file says so where the condition is.
+    - name: Recover a wedged Seafile boot
+      ansible.builtin.include_tasks: recover_wedged_boot.yml
+      loop: "{{ range(1, (seafile_wedged_boot_recreate_limit | int) + 1) | list }}"
+      loop_control:
+        loop_var: seafile_recreate_attempt
+      when: seafile_boot_failure == 'wedged-boot'
+
+    # Everything that is not this defect leaves with the error it arrived with.
+    # The message is the deployment's own, copied above before the nested rescue
+    # could rebind it.
+    - name: Re-raise a Seafile deployment failure that was not a wedged boot
+      ansible.builtin.fail:
+        msg: >-
+          {{ seafile_deploy_failure_message }}
+      when: seafile_boot_failure != 'wedged-boot'
+
+    # Loud, and it says it already retried. A remediation that quietly absorbed
+    # a persistent misconfiguration would turn a broken deployment into a slow
+    # one, and the next reader would debug a "flaky" service without knowing a
+    # recreate had been spent on it.
+    #
+    # Both halves of the budget sentence are spelled out, because a message that
+    # claims a retry it did not perform is exactly the dishonesty this task
+    # exists to avoid: at seafile_wedged_boot_recreate_limit 0 the container is
+    # untouched, and saying so is what tells the operator the evidence in front
+    # of them is the failed boot's own.
+    - name: Refuse a Seafile server that stayed wedged after its recreate budget
+      vars:
+        seafile_retried_report: >-
+          It was force-recreated
+          {{ seafile_wedged_boot_recreate_limit }} time(s), the seafile service
+          alone, and came back unhealthy every time. THIS FAILURE ALREADY
+          INCLUDES THOSE RETRIES -- it is not a service that needs one more
+          converge, and the run spent up to
+          {{ seafile_wedged_boot_recreate_limit | int + 1 }}x
+          {{ seafile_compose_wait_timeout }}s of health budget getting here, so a
+          failure slower than usual is this remediation rather than a new
+          symptom. {{ seafile_recreate_failure_message | default('') }}
+        seafile_unretried_report: >-
+          seafile_wedged_boot_recreate_limit is 0, so nothing was recreated and
+          the container is exactly as the wedged boot left it -- which is what
+          that setting is for.
+      ansible.builtin.fail:
+        msg: >-
+          Seafile's server container is running and Docker calls it unhealthy.
+          {{ seafile_retried_report
+          if seafile_wedged_boot_recreate_limit | int > 0
+          else seafile_unretried_report }}
+          Read the health log printed above first: it carries the probes' own
+          output, and `curl --fail http://localhost/` answering 502 means nginx
+          is up and seahub never bound. Then read the server's Compose logs.
+          /scripts/enterpoint.sh launches /scripts/start.py once and then idles
+          for ever, so a start.py that raised inside init_seafile_server() or
+          that is still in wait_for_mysql()/wait_for_nginx() leaves exactly this:
+          a container that runs and never serves. A database the server cannot
+          reach, a JWT key it will not accept and a /shared it cannot write are
+          the three that have produced it.
+      when:
+        - seafile_boot_failure == 'wedged-boot'
+        - not seafile_boot_recovered | bool
+
+# What a check run would do, said out loud rather than left to the reader. The
+# rescue above cannot be reached under --check -- Compose's dry run does not wait
+# on health, so it cannot produce the unhealthy verdict -- and a remediation
+# nothing announces is one nobody knows is armed.
+- name: Report the Seafile wedged-boot recovery check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would fail the Seafile deployment if the server container came
+      up running but unhealthy, capture its Docker health log, recreate the
+      seafile service alone at most
+      {{ seafile_wedged_boot_recreate_limit }} time(s) and fail naming the retry
+      if it stayed unhealthy. Compose's dry run does not wait on container
+      health, so check mode cannot reach that path and mutates nothing.
+  when:
+    - seafile_deployment_enabled | bool
+    - ansible_check_mode
 
 # The deployment report is not here. It has to be able to see the seafevents
 # reconciliation, which runs after this file, so it is its own stage in

@@ -72,6 +72,7 @@ FIXTURE_FILES = %w[
   roles/seafile/tasks/main.yml
   roles/seafile/tasks/storage.yml
   roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
@@ -120,6 +121,22 @@ end
 
 def compose_service(document, name)
   document.fetch("services").fetch(name)
+end
+
+# The role's deployment and its wedged-boot recovery live inside block/rescue,
+# so a row that reaches for one of those tasks cannot use `document.find`: the
+# task is not at the document's top level. This is the same descent
+# tests/policy_support.rb's flatten_tasks performs, restated here because the
+# rows mutate the parsed document in place and need the very objects
+# YAML.dump will write back.
+def nested_tasks(tasks, flattened = [])
+  Array(tasks).each do |task|
+    next unless task.is_a?(Hash)
+
+    flattened << task
+    %w[block rescue always].each { |section| nested_tasks(task[section], flattened) }
+  end
+  flattened
 end
 
 STATIC_ROWS = [
@@ -281,7 +298,7 @@ STATIC_ROWS = [
     name: "a deployment that ignores the operator switch",
     break: lambda { |root|
       edit_seafile_tasks(root, "deploy") do |document|
-        task = document.find do |candidate|
+        task = nested_tasks(document).find do |candidate|
           candidate.dig("community.docker.docker_compose_v2", "state") == "present" &&
             candidate["name"] == "Deploy Seafile"
         end
@@ -326,6 +343,70 @@ STATIC_ROWS = [
       File.write(File.join(root, "roles/seafile/handlers/main.yml"), "---\n[]\n")
     },
     expects: "the Seafile restart must be a task rather than a deferred handler"
+  },
+  {
+    name: "a wedged-boot recreate that bounces the database with the server",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "recover_wedged_boot") do |document|
+        task = nested_tasks(document).find do |candidate|
+          candidate.dig("community.docker.docker_compose_v2", "recreate") == "always"
+        end
+        task["community.docker.docker_compose_v2"]["dependencies"] = true
+      end
+    },
+    expects: "the wedged Seafile boot must be recovered by force-recreating the server alone"
+  },
+  {
+    name: "a recreate budget that keeps spending after the server recovered",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "recover_wedged_boot") do |document|
+        block = nested_tasks(document).find do |candidate|
+          Array(candidate["block"]).any? do |inner|
+            inner.dig("community.docker.docker_compose_v2", "recreate") == "always"
+          end
+        end
+        block.delete("when")
+      end
+    },
+    expects: "the wedged Seafile boot must be recovered by force-recreating the server alone"
+  },
+  {
+    name: "a health verdict read after the container it describes is replaced",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        recovery = nested_tasks(document).find { |candidate| candidate.key?("rescue") }.fetch("rescue")
+        capture = recovery.find do |candidate|
+          Array(candidate.dig("ansible.builtin.command", "argv"))
+            .any? { |value| value.to_s.include?("{{json .State.Health}}") }
+        end
+        recovery.delete(capture)
+        recovery.push(capture)
+      end
+    },
+    expects: "the wedged Seafile server's health verdict must be captured before it is recreated"
+  },
+  {
+    name: "an inspection wide enough to print the rendered environment",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        recovery = nested_tasks(document).find { |candidate| candidate.key?("rescue") }.fetch("rescue")
+        recovery.push(
+          "name" => "Inspect the wedged Seafile server",
+          "ansible.builtin.command" => { "argv" => %w[docker container inspect seafile] },
+          "changed_when" => false
+        )
+      end
+    },
+    expects: "Seafile diagnostics must narrow every inspection rather than print the container environment"
+  },
+  {
+    name: "a recreate budget the rescue cannot count with",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seafile/meta/argument_specs.yml") do |document|
+        document["argument_specs"]["main"]["options"]["seafile_wedged_boot_recreate_limit"]["type"] = "str"
+      end
+    },
+    expects: "the Seafile wedged-boot recreate budget must be one declared integer recreate"
   },
   {
     name: "a verification that authenticates as somebody else",
@@ -1224,6 +1305,43 @@ PROGRAM_MUTATIONS = [
     RUBY
     to: "true",
     rows: ["an index repair applied line by line"]
+  },
+  {
+    label: "the server-only force-recreate check",
+    program: :static,
+    # The whole condition rather than one clause, and two rows against it: the
+    # recreate has to stay narrow AND has to stop once it worked, and a plant
+    # that satisfied either half alone would prove neither.
+    from: 'recreate.length == 1 &&
+    recreate.first.dig("community.docker.docker_compose_v2", "state") == "present" &&
+    recreate.first.dig("community.docker.docker_compose_v2", "services") == ["seafile"] &&
+    recreate.first.dig("community.docker.docker_compose_v2", "dependencies") == false &&
+    Array(recreate_block&.fetch("when", nil)).include?("not seafile_boot_recovered | bool")',
+    to: "true",
+    rows: ["a wedged-boot recreate that bounces the database with the server",
+           "a recreate budget that keeps spending after the server recovered"]
+  },
+  {
+    label: "the diagnostics-before-recreate ordering",
+    program: :static,
+    from: "health_capture && recovery_include && health_capture < recovery_include",
+    to: "true",
+    rows: ["a health verdict read after the container it describes is replaced"]
+  },
+  {
+    label: "the narrowed-inspection check",
+    program: :static,
+    from: "unformatted_inspects.empty?",
+    to: "true",
+    rows: ["an inspection wide enough to print the rendered environment"]
+  },
+  {
+    label: "the wedged-boot recreate budget check",
+    program: :static,
+    from: 'options.dig("seafile_wedged_boot_recreate_limit", "type") == "int" &&
+    defaults["seafile_wedged_boot_recreate_limit"] == 1',
+    to: "true",
+    rows: ["a recreate budget the rescue cannot count with"]
   },
   {
     label: "the administrator token exchange check",

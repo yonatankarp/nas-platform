@@ -26,8 +26,11 @@ seafile_db_host_path: "{{ nas_docker_root }}/seafile/db"
 # Seafile comes up in two stages, so the two waits are sized separately. MariaDB
 # alone reaches its healthcheck quickly, but --mariadbupgrade keeps that check
 # red for as long as an in-place upgrade runs. The server then creates three
-# databases, runs every pending migration and starts seaf-server, seahub and
-# nginx before it answers on port 80 at all.
+# databases, runs every pending migration and starts seaf-server and seahub.
+# nginx is already listening on 80 before that sequence starts -- enterpoint.sh
+# blocks until it is -- and answers 502 until seahub binds, which is why the
+# server's health check is a seahub probe rather than a port check;
+# services/seafile/compose.yml records the measurement.
 #
 # NEITHER NUMBER IS THE BOOT BUDGET. The health checks in
 # services/seafile/compose.yml are, and this is worth stating flatly because the
@@ -55,14 +58,38 @@ seafile_db_host_path: "{{ nas_docker_root }}/seafile/db"
 # a bare module timeout, which names nothing. 600 > 450 and 300 > 210 hold, and
 # that is the whole of what these numbers are for.
 #
-# Deliberately NOT raised. Whether 424s was a boot still making progress or a
-# boot already wedged is not known -- nothing was captured from that run. The
-# seafile lane now dumps the health log and the Compose logs on a converge
-# failure (dump_seafile_diagnostics in tests/integration_controller_lib.sh);
-# that evidence, not an assumption that more time would have helped, is what
-# would justify enlarging the health check's own budget here.
+# Deliberately NOT raised, and it is now known that raising anything would not
+# have helped. The passing run before that one (13a00da) reported the server
+# healthy 13.6s after its container was created, from an empty /shared and an
+# empty MariaDB datadir. So the health check already grants roughly thirty
+# times what the only first boot anyone has measured needed -- 420s of budget
+# against 13.6s of boot -- and a server still silent at the end of that was not
+# one a larger budget would have caught. The mechanism is in the image, and
+# services/seafile/compose.yml carries it: enterpoint.sh idles for ever whether
+# start.py exits or merely stalls in one of its unbounded waits, so a setup that
+# does not finish leaves a container that runs and never serves. The seafile
+# lane dumps the health log and the Compose logs on a converge failure
+# (dump_seafile_diagnostics in tests/integration_controller_lib.sh); that
+# evidence is what would name the next occurrence, and there is no number here
+# that could pre-empt it.
 seafile_data_compose_wait_timeout: 300
 seafile_compose_wait_timeout: 600
+
+# How many times a wedged server container may be force-recreated before the
+# converge fails. The mechanism, the measurements and why nothing self-heals are
+# in roles/seafile/tasks/deploy.yml beside the rescue that spends this budget.
+#
+# 1, and the number is small on purpose. This is a recovery from one observed
+# upstream defect -- enterpoint.sh launches start.py once and idles for ever, so
+# a start.py that raised or stalled leaves a container that runs and never serves
+# -- and a wedge that survives a recreate from an untouched image against an
+# untouched volume is a broken deployment rather than an unlucky one. Raising
+# this buys more identical 424-second waits, not more information.
+#
+# 0 is a supported value and is the one to set while debugging a live wedge: the
+# converge still detects the state and still prints the container's health log,
+# and then fails without touching the evidence.
+seafile_wedged_boot_recreate_limit: 1
 
 # The role's own readiness budget, declared here rather than read from
 # platform_readiness_retries, because the shared value is explicitly sized for

@@ -24,6 +24,7 @@ required = %w[
   roles/seafile/tasks/main.yml
   roles/seafile/tasks/storage.yml
   roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
@@ -42,7 +43,7 @@ end
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-ROLE_TASK_FILES = %w[main storage deploy reconcile_seafevents report verify].freeze
+ROLE_TASK_FILES = %w[main storage deploy recover_wedged_boot reconcile_seafevents report verify].freeze
 VAULT_CREDENTIALS = %w[
   vault_seafile_admin_email
   vault_seafile_admin_password
@@ -186,6 +187,67 @@ if failures.empty?
     !deployments.empty? &&
     deployments.all? { |task| Array(task["when"]).include?("seafile_deployment_enabled | bool") }
 
+  # --- the wedged first boot ------------------------------------------------
+  #
+  # seafileltd/seafile-pro-mc's enterpoint.sh launches start.py once and then
+  # idles for ever, so a start.py that raised inside init_seafile_server() or
+  # that is still in one of utils.py's unbounded wait loops leaves a container
+  # Docker reports running with an unhealthy health check. Nothing recovers it:
+  # `restart: unless-stopped` acts on exit and a wedged container does not exit,
+  # and `up -d` with unchanged configuration keeps the same container id. The
+  # three checks below are what keeps the role's remediation bounded, honest and
+  # narrow -- the recreate task's own gating is structural rather than asserted,
+  # because it is reachable only from a rescue the operator switch already
+  # guards.
+  recovery = role_tasks(root, "recover_wedged_boot")
+  recreate = recovery.select do |task|
+    task.dig("community.docker.docker_compose_v2", "recreate") == "always"
+  end
+  # The guard that spends the budget once, and it is asserted on the block inside
+  # the included file rather than on the include that loops it. A looped
+  # include_tasks expands every iteration before any included task runs and
+  # evaluates its own conditional there, so a fact the file sets cannot stop the
+  # next iteration; a budget above one would recreate a server that had already
+  # recovered.
+  recreate_block = recovery.find do |task|
+    Array(task["block"]).any? do |inner|
+      inner.dig("community.docker.docker_compose_v2", "recreate") == "always"
+    end
+  end
+  # --force-recreate is what replaces a container whose spec has not changed, and
+  # `dependencies: false` is what keeps it from taking db and cache with it: the
+  # flag applies to everything the `up` operates on, and bouncing the data
+  # services is what the two-phase bring-up above exists to prevent.
+  failures << "the wedged Seafile boot must be recovered by force-recreating the server alone" unless
+    recreate.length == 1 &&
+    recreate.first.dig("community.docker.docker_compose_v2", "state") == "present" &&
+    recreate.first.dig("community.docker.docker_compose_v2", "services") == ["seafile"] &&
+    recreate.first.dig("community.docker.docker_compose_v2", "dependencies") == false &&
+    Array(recreate_block&.fetch("when", nil)).include?("not seafile_boot_recovered | bool")
+
+  # The evidence dies with the container, so the ordering is the property. The
+  # capture lives in deploy.yml and the recreate in the file deploy.yml includes,
+  # so the claim is made where both are visible: the health read must sit at a
+  # lower index than the include that spends the budget.
+  health_capture = deploy.index do |task|
+    task_strings(task["ansible.builtin.command"]).any? { |value| value.include?("{{json .State.Health}}") }
+  end
+  recovery_include = deploy.index do |task|
+    task["ansible.builtin.include_tasks"] == "recover_wedged_boot.yml"
+  end
+  failures << "the wedged Seafile server's health verdict must be captured before it is recreated" unless
+    health_capture && recovery_include && health_capture < recovery_include
+  # A bare `docker inspect` prints .Config.Env, which for this stack is the
+  # rendered environment file: the MariaDB root password, the Seafile
+  # administrator password and the Valkey password in full. Every inspection this
+  # role performs must therefore narrow its output with --format.
+  unformatted_inspects = (deploy + recovery).select do |task|
+    argv = Array(task.dig("ansible.builtin.command", "argv")).map(&:to_s)
+    argv.include?("inspect") && !argv.include?("--format")
+  end
+  failures << "Seafile diagnostics must narrow every inspection rather than print the container environment" unless
+    unformatted_inspects.empty?
+
   # Addressing the service by name forces the connection through the network
   # stack, where only root@% can answer and only a matching password gets in. A
   # probe over the container's own socket answers as root@localhost instead,
@@ -299,6 +361,16 @@ if failures.empty?
   failures << "the Seafile operator switch must be a required declared boolean" unless
     options.dig("seafile_deployment_enabled", "type") == "bool" &&
     options.dig("seafile_deployment_enabled", "required") == true
+  # Bounded at one recreate, and the bound is a declared integer because the
+  # rescue turns it into range(1, limit + 1): a string there is a Jinja error at
+  # the one moment the role is already recovering from a failure. A wedge that
+  # survives one recreate from an untouched image against an untouched volume is
+  # a broken deployment rather than an unlucky one, so raising this default is a
+  # policy change rather than a tuning knob, and 0 stays meaningful -- detect,
+  # report the health log and touch nothing.
+  failures << "the Seafile wedged-boot recreate budget must be one declared integer recreate" unless
+    options.dig("seafile_wedged_boot_recreate_limit", "type") == "int" &&
+    defaults["seafile_wedged_boot_recreate_limit"] == 1
 
   # Compose interpolates $ in an env file and silently truncates what follows. A
   # cut database password produces a server that cannot reach its database and a

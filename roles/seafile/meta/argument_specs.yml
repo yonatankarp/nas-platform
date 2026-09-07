@@ -42,6 +42,14 @@ argument_specs:
       seafile_readiness_retries:
         type: int
         required: false
+      # Declared int rather than left to the default, because the rescue in
+      # tasks/deploy.yml turns it into range(1, limit + 1) and a string there
+      # would be a Jinja error at the one moment the role is already recovering
+      # from a failure. 0 is a supported value and means detect and report
+      # without touching the container.
+      seafile_wedged_boot_recreate_limit:
+        type: int
+        required: false
       seafile_compose_project_name:
         type: str
         required: false
