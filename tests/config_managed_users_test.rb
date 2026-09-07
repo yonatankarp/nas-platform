@@ -1668,6 +1668,17 @@ if ARGV == ["--self-test"]
   # Python interpreter for the two plugin pairs. They share nothing but the
   # failure list, so they go through one pool as callables and are still
   # reported in the order written here.
+  #
+  # Every result local below is named so that it is assigned nowhere else in the
+  # file. `status`, `output`, `rendered` and `provisioned` are script-level here
+  # -- the main body's fixtures assign them at top level, and an `if` body does
+  # not open a scope -- so a case reusing one of those names would not get a
+  # local of its own: all four cases would read and write the one binding. That
+  # is silent rather than loud, because the mutant these cases run is supposed
+  # to fail, so a sibling's failing status reads as this case's own detection
+  # and the guard passes vacuously. `ruby -e 'p RubyVM::AbstractSyntaxTree
+  # .parse_file(ARGV[0]).children[0]' tests/config_managed_users_test.rb` prints
+  # the script's local table, which is the list a new case has to avoid.
   behavior_cases = behavior_mutations.map do |label, (task_name, variables)|
     lambda do |collected|
       with_ntfy_task_removed(task_name) do |mutant_path, found|
@@ -1675,7 +1686,7 @@ if ARGV == ["--self-test"]
           collected << "behavioral self-test baseline is missing #{task_name}"
           next
         end
-        _rendered, _output, mutant_status = run_ntfy_fixture(variables, mutant_path)
+        _mutant_rendered, _mutant_output, mutant_status = run_ntfy_fixture(variables, mutant_path)
         check(collected, mutant_status.success?,
               "behavioral self-test #{label} mutation did not escape its negative fixture")
       end
@@ -1693,12 +1704,12 @@ if ARGV == ["--self-test"]
         mutant = File.join(directory, "managed_user_state.py")
         mutated_source = state_filter.sub(before, after)
         File.write(mutant, mutated_source, mode: "w", perm: 0o600)
-        _stdout, _stderr, status = Open3.capture3(
+        _stdout, _stderr, mutant_status = Open3.capture3(
           { "MANAGED_USER_STATE_PLUGIN" => mutant, "PYTHONDONTWRITEBYTECODE" => "1" },
           ansible_python,
           File.join(ROOT, "tests", "managed_user_state_filter_test.py"), chdir: ROOT
         )
-        check(collected, mutated_source != state_filter && !status.success?,
+        check(collected, mutated_source != state_filter && !mutant_status.success?,
               "behavioral self-test did not reject #{label} mutation")
       end
     end
@@ -1713,14 +1724,14 @@ if ARGV == ["--self-test"]
         mutant = File.join(directory, "atomic_safe_slurp.py")
         mutated_source = safe_slurp.sub(before, after)
         File.write(mutant, mutated_source, mode: "w", perm: 0o600)
-        _stdout, _stderr, status = Open3.capture3(
+        _stdout, _stderr, mutant_status = Open3.capture3(
           {
             "ATOMIC_SAFE_SLURP_MODULE" => mutant,
             "PYTHONDONTWRITEBYTECODE" => "1"
           },
           ansible_python, File.join(ROOT, "tests", "safe_slurp_test.py"), chdir: ROOT
         )
-        check(collected, mutated_source != safe_slurp && !status.success?,
+        check(collected, mutated_source != safe_slurp && !mutant_status.success?,
               "behavioral self-test did not reject the #{label} mutation")
       end
     end
