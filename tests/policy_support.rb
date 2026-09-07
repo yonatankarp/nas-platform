@@ -414,6 +414,66 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     _stdout, _stderr, status = Open3.capture3("sh", "-n", contract_path)
     status.success?
   end
+
+  # tests/validate-policy.sh partitions its check list into one heredoc per CI
+  # shard: `policy_shard_<id>()` opens `cat <<'POLICY_CHECKS_<id>'` and closes on
+  # a bare terminator of the same name. This returns { id => [command, ...] } in
+  # the order the shards appear, and {} when neither boundary can be found --
+  # which is a state every caller has to refuse rather than read past, because a
+  # parse that quietly matches nothing satisfies every property asserted over it.
+  #
+  # Shared rather than copied because three programs now read this partition for
+  # three different reasons: the declaration guard compares it against literal
+  # lists, tests/policy_ci_test.rb requires each check it names to land in
+  # exactly one shard, and tests/ci/workflow_test.rb derives the CI matrix from
+  # it. The declaration guard keeps a second, independent reading of its own --
+  # see the awk program there -- so the one thing a shared parser could hide,
+  # a boundary located on the wrong line, still fails somewhere.
+  SHARD_OPEN = /\A  cat <<'POLICY_CHECKS_(\d+)'\z/
+  def gate_shards(manifest_path)
+    return {} unless File.file?(manifest_path)
+
+    shards = {}
+    current = nil
+    File.readlines(manifest_path, chomp: true).each do |line|
+      if current
+        if line == "POLICY_CHECKS_#{current}"
+          current = nil
+        else
+          shards[current] << line
+        end
+        next
+      end
+      match = SHARD_OPEN.match(line)
+      next unless match
+
+      current = match[1]
+      shards[current] = []
+    end
+    # A heredoc whose terminator never arrived was not read, it ran off the end
+    # of the file. Returning its accumulated lines would be a partition invented
+    # by the parser, so the whole reading is refused instead.
+    return {} if current
+
+    shards
+  end
+
+  # The shard identifiers tests/validate-policy.sh dispatches, read from the
+  # single-quoted POLICY_SHARD_IDS assignment. Separate from the heredocs on
+  # purpose: a shard whose list exists but which nothing cats is a shard that
+  # never runs, and comparing these two readings is what says so.
+  def gate_shard_ids(manifest_path)
+    return [] unless File.file?(manifest_path)
+
+    line = File.readlines(manifest_path, chomp: true)
+                .find { |candidate| candidate.start_with?("POLICY_SHARD_IDS=") }
+    return [] if line.nil?
+
+    match = /\APOLICY_SHARD_IDS='([^']*)'\z/.match(line)
+    return [] if match.nil?
+
+    match[1].split
+  end
 end
 
 # The mechanical scaffolding every check script in this suite used to retype:

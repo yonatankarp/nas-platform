@@ -320,6 +320,36 @@ check(failures, !classifier_run.include?("github.event.pull_request"),
       "event payload expressions must not be interpolated into shell source")
 
 check(failures, jobs.dig("static", "needs") == "changes", "static must depend only on changes")
+# The gate is sharded across runners (#469), and this is the agreement that
+# cannot be derived from anything else: the matrix must enumerate exactly the
+# shards tests/validate-policy.sh partitions its manifest into. A matrix short
+# of the manifest is the defect the whole partition is built to be incapable of,
+# and it is the one form of it every other guard misses -- the dropped shard's
+# checks are still declared, still in a heredoc, still claimed by exactly one
+# shard, and simply never dispatched. The run is green, and faster.
+#
+# Derived rather than a literal 3, because a hardcoded count agrees with the
+# manifest only until somebody changes one of them.
+GATE_SHARD_IDS = PolicySupport.gate_shard_ids(POLICY_PATH)
+check_floor(failures, GATE_SHARD_IDS.length, 2,
+            "the shards tests/validate-policy.sh declares")
+check(failures, jobs.dig("static", "strategy", "matrix", "shard") == GATE_SHARD_IDS,
+      "the static matrix must name every shard tests/validate-policy.sh declares " \
+      "(#{GATE_SHARD_IDS.inspect}), found " \
+      "#{jobs.dig('static', 'strategy', 'matrix', 'shard').inspect}: a shard missing from the " \
+      "matrix runs on no runner while every other guard still reports the gate whole")
+check(failures, GATE_SHARD_IDS == PolicySupport.gate_shards(POLICY_PATH).keys,
+      "tests/validate-policy.sh dispatches shards #{GATE_SHARD_IDS.inspect} and holds heredocs " \
+      "for #{PolicySupport.gate_shards(POLICY_PATH).keys.inspect}")
+check(failures, jobs.dig("static", "strategy", "matrix").keys == ["shard"],
+      "the static matrix must have exactly one dimension")
+check(failures, jobs.dig("static", "strategy", "fail-fast") == false,
+      "a failing shard must not cancel the other shards: the gate gave up stopping at its " \
+      "first failure so that one broken check cannot hide the state of the rest, and " \
+      "fail-fast would reinstate that a level up")
+check(failures, expression(jobs.dig("static", "name")) == "static (${{ matrix.shard }})",
+      "each static leg must report its own shard as the check name, found " \
+      "#{expression(jobs.dig('static', 'name')).inspect}")
 # The reconciliation contract is the workflow's heaviest single check. Each of
 # its three files gets its own runner so none of them serialises behind the
 # policy gate, behind each other, or starves the gate. The matrix is a literal
@@ -674,7 +704,22 @@ check(failures, static_steps.map { |step| step["name"] } == STATIC_STEP_NAMES,
       "static steps differ: got #{static_steps.map { |step| step['name'] }.inspect}, " \
       "expected #{STATIC_STEP_NAMES.inspect}")
 check(failures, static_steps.none? { |step| step.key?("if") },
-      "static steps must be unconditional: the changes job is the only classifier")
+      "static steps must be unconditional: the changes job is the only classifier, and a step " \
+      "conditioned on the shard is a check that runs on one leg of three")
+
+# The shard reaches the gate the way every other matrix value in this workflow
+# reaches its program: through the environment, never interpolated into shell
+# source.
+gate_steps = static_steps.select { |step| step["run"].to_s.include?("tests/validate-policy.sh") }
+check(failures, gate_steps.length == 1, "static must have exactly one policy gate step")
+gate_step = gate_steps.first || {}
+check(failures, gate_step.dig("env", "POLICY_SHARD") == "${{ matrix.shard }}",
+      "the matrix shard must reach the gate through env, not through shell interpolation")
+check(failures, gate_step["run"].to_s.strip == 'tests/validate-policy.sh "$POLICY_SHARD"',
+      "the gate step must pass the shard as the gate's one argument, found " \
+      "#{gate_step['run'].to_s.strip.inspect}")
+check(failures, !gate_step["run"].to_s.include?("${{ matrix"),
+      "the gate step must not interpolate a matrix value into shell source")
 
 static_commands = run_steps(static)
 [
@@ -804,6 +849,18 @@ expected_needs.each do |job_id|
 end
 check(failures, validate_commands.include?("ruby tests/ci/validate_results.rb"),
       "validate must invoke the aggregate result validator")
+# One `needs` entry covers all three shards because `needs.<job>.result` for a
+# matrix job is the job's aggregate: `failure` if any leg failed, `cancelled` if
+# any was cancelled, and `success` only if every leg succeeded. The suites matrix
+# has staked this workflow's verdict on exactly that reading since it existed, so
+# `static` gaining a matrix changes nothing here -- which is the reason the shard
+# count is asserted against the manifest above instead. An empty or short matrix
+# reports `skipped` or `success`, and `skipped` is legitimately allowed because
+# the classifier skips this job; the aggregate cannot tell those apart, and
+# nothing downstream of it can either.
+check(failures, !ValidateResults::NON_BLOCKING_JOBS.include?("static"),
+      "static must stay blocking: it is the aggregate of every policy shard, and tolerating " \
+      "its result would let a failed shard reach main green")
 
 # Which jobs the gate may not fail on is derived from the workflow rather than
 # restated here. A job the suites matrix depends on without requiring its success
