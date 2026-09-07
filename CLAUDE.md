@@ -515,10 +515,16 @@ fourth occurrence prescribed:
   a name already there, which needs the other question asked — for each case, is
   every name it assigns local to that case.
 - **Show an AST checker a real defect before trusting it.** The analyzer written
-  to answer that second question passed the known-buggy revision on its first
-  attempt: inside a block Ruby emits `DASGN`, not `LASGN`, and a multiple
-  assignment's targets hang off the `MASGN`'s second child. Running it against
-  the commit whose bug is known is what makes its clean report mean anything.
+  to answer that second question — `tests/case_pool_locals_test.rb` — passed the
+  known-buggy revision on its first attempt, carrying two mistakes at once:
+  inside a block Ruby emits `DASGN`, not `LASGN`, and a multiple assignment's
+  targets hang off the `MASGN`'s second child. Running it against the commit
+  whose bug is known is what makes its clean report mean anything. Only the first
+  of those is observable in the shipped checker, and its self-test says so rather
+  than claiming both: the second was planted back in and changed no verdict,
+  because the subtree walk special-cases nothing and finds those targets anyway.
+  A self-test that claims more coverage than a planted defect demonstrates is the
+  same vacuous pass in miniature.
 
 The fourth occurrence's `POLICY_JOBS=4` figures are still the useful baseline,
 read with the caveat that occurrence paid for: the totals are sums of contended
