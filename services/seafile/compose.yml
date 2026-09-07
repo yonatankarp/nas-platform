@@ -51,14 +51,40 @@ services:
     # variable that disables Caddy -- you simply do not deploy it, which is what
     # this stack does. The database and the cache join the stack's default
     # Compose network and publish nothing.
+    #
+    # So this is plain HTTP, as every published port on this platform is: nothing
+    # here terminates TLS and no reverse proxy is deployed. It costs more here
+    # than elsewhere, which is worth stating rather than inheriting. Seafile is
+    # the first service whose login guards the operator's own files, so the
+    # session cookie and every byte uploaded or downloaded are in clear on the
+    # wire -- already encrypted when the client arrives over the mesh VPN, not
+    # encrypted at all when it arrives across the LAN. That second case is the
+    # exposure, and on a platform that publishes no ingress beyond
+    # platform_public_host it is the whole of it. Nothing enforces that last
+    # part: preflight requires the coordinate to be stated, not to name a private
+    # address, so pointing it at a routable one widens this with no guard firing.
+    #
+    # Changing it is a platform decision rather than a Seafile one. A proxy
+    # fronting this stack alone would leave the other fifteen exactly where they
+    # are, and choosing one means choosing a certificate story for a network with
+    # no public DNS, so it is not taken in the pull request that adds this
+    # service.
     ports:
       - "8083:80"
     volumes:
       - ${SEAFILE_DATA_PATH:?}:/shared
     environment:
       TZ: ${TZ:?}
-      # Read on every start.
+      # Both read on every start.
       SEAFILE_SERVER_HOSTNAME: ${SEAFILE_SERVER_HOSTNAME:?}
+      # Not a listener setting -- nginx binds 80 either way. This is the scheme
+      # Seafile joins to the hostname above to derive SERVICE_URL and
+      # FILE_SERVER_ROOT, on every start, and those are what end up inside every
+      # share link and every seafhttp URL the server hands a client. So it may
+      # only ever say how clients actually reach the published port: `https` with
+      # nothing terminating TLS at that address would mint links to a listener
+      # that does not speak it. It changes when the decision above the ports does,
+      # and not before.
       SEAFILE_SERVER_PROTOCOL: http
       JWT_PRIVATE_KEY: ${SEAFILE_JWT_PRIVATE_KEY:?}
       SEAFILE_MYSQL_DB_HOST: db
