@@ -205,6 +205,8 @@ subjects.each do |path|
 end
 check_floor(failures, case_count, CASE_FLOOR, "pooled cases")
 
+judged_rows = 0
+
 if ARGV == ["--self-test"]
   # Each row is a source this checker has to judge, and the two that must be
   # reported are reductions of defects that really shipped. `expected` is the
@@ -306,6 +308,7 @@ if ARGV == ["--self-test"]
       RUBY
     ]
   }
+  judged_rows = rows.length + 1 # the synthetic rows, plus the real-subject plant
   rows.each do |label, (source, expected)|
     found = escaping_writes(RubyVM::AbstractSyntaxTree.parse(source)).flat_map(&:last)
     if expected.nil?
@@ -336,7 +339,13 @@ elsif !ARGV.empty?
   failures << "usage: case_pool_locals_test.rb [--self-test]"
 end
 
+# The success line names the row count so that a self-test which silently stopped
+# judging its rows -- an ARGV shape that no longer matches, a rows table that lost
+# entries -- reads differently from one that ran them. A gate check whose passing
+# output is identical whether or not it checked anything is the vacuous pass this
+# file exists to argue against.
 report(failures,
        "case pool locals: #{case_count} pooled cases across #{subjects.length} files own " \
-       "every name they assign",
+       "every name they assign#{judged_rows.zero? ? '' : ", and #{judged_rows} planted " \
+       "regressions are each named by this checker"}",
        "pooled case(s) assigning an enclosing local")
