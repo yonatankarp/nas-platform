@@ -72,11 +72,13 @@ FIXTURE_FILES = %w[
   roles/seafile/tasks/main.yml
   roles/seafile/tasks/storage.yml
   roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/pre_upgrade_backup.yml
   roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
   roles/seafile/templates/env.j2
+  roles/seafile/templates/backup_manifest.j2
   services/seafile/compose.yml
   services/seafile/compose.mac.yml
   services/seafile/compose.integration.yml
@@ -516,7 +518,131 @@ STATIC_ROWS = [
         entry["recovery"] = "user"
       end
     },
-    expects: "both Seafile storage roots must be declared unrecoverable without each other"
+    expects: "every Seafile storage root must be declared unrecoverable without the others"
+  },
+  # --- the pre-upgrade backup ------------------------------------------------
+  #
+  # Nine rows, and every one of them is a way the backup could still be present
+  # and no longer be a guard. A backup that runs after Compose, that cannot fail
+  # the run, that dumps three schemas one after another against a live server,
+  # or that copies the volume before the dump is a backup in the sense that
+  # something gets written -- and each of those restores something that never
+  # existed.
+  {
+    name: "a backup root anybody on the host can read",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        entry = document["nas_storage"].find do |candidate|
+          candidate["path"].to_s.end_with?("/seafile/backups")
+        end
+        entry["mode"] = "0755"
+      end
+    },
+    expects: "the Seafile backup root must be declared private"
+  },
+  {
+    name: "a backup taken after Compose has already started the stack",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        include_index = document.index do |task|
+          task["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml"
+        end
+        document.push(document.delete_at(include_index))
+      end
+    },
+    expects: "the Seafile pre-upgrade backup must run before Compose touches the stack"
+  },
+  {
+    name: "a backup that runs with the service switched off",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        task = document.find { |candidate| candidate["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml" }
+        task.delete("when")
+      end
+    },
+    expects: "the Seafile pre-upgrade backup must be gated on the operator switch"
+  },
+  {
+    # Three schemas dumped one after another against a server that is still
+    # writing restore as rows that never coexisted -- and the failure appears
+    # at the restore, months later, as a library with files nothing can open.
+    name: "three databases dumped without one consistent snapshot",
+    break: lambda { |root|
+      mutate_text(root, "roles/seafile/tasks/pre_upgrade_backup.yml",
+                  "--single-transaction --quick", "--quick")
+    },
+    expects: "the Seafile pre-upgrade dump must be one consistent snapshot of all three databases"
+  },
+  {
+    name: "a dump the run is allowed to survive",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("community.docker.docker_compose_v2_exec") }
+        task["failed_when"] = false
+      end
+    },
+    expects: "the Seafile pre-upgrade dump must be allowed to fail the run"
+  },
+  {
+    name: "a dump proved by its exit status rather than by its file",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find do |candidate|
+          Array(candidate.dig("ansible.builtin.assert", "that")).any? do |condition|
+            condition.to_s.include?("seafile_database_dump_file.stat")
+          end
+        end
+        task["ansible.builtin.assert"]["that"] =
+          ["seafile_database_dump_file.stat.exists"]
+      end
+    },
+    expects: "the Seafile upgrade must be refused unless the dump landed and is not empty"
+  },
+  {
+    # The ordering claim, and the plant leaves both tasks in place: what changes
+    # is only which of them writes into the backup first, which is exactly the
+    # defect a grep for either task cannot see.
+    name: "the volume copied before the database that names it",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        copy_index = document.index { |task| task.key?("ansible.builtin.copy") }
+        dump_index = document.index { |task| task.key?("community.docker.docker_compose_v2_exec") }
+        document.insert(dump_index, document.delete_at(copy_index))
+      end
+    },
+    expects: "the Seafile database dump must be taken before anything is copied out of the volume"
+  },
+  {
+    name: "a configuration backup that preserves the plaintext administrator handoff",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.find") }
+        task["ansible.builtin.find"]["excludes"] = []
+      end
+    },
+    expects: "the Seafile configuration backup must exclude the plaintext administrator handoff"
+  },
+  {
+    name: "a configuration copy that renders the database password in its diff",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.copy") }
+        task.delete("no_log")
+      end
+    },
+    expects: "the Seafile configuration copy carries a database password and must be redacted"
+  },
+  {
+    # !override replaces a volume list rather than extending it, so the Mac lane
+    # is the one place where forgetting the mount leaves a dump with nowhere to
+    # land and a refusal naming a path that exists on the host and not in the
+    # container.
+    name: "a Mac override whose database container has nowhere to dump",
+    break: lambda { |root|
+      mutate_text(root, "services/seafile/compose.mac.yml",
+                  "\n      - ${SEAFILE_BACKUP_PATH:?}:/backups", "")
+    },
+    expects: "the Mac Seafile override must keep the backup mount its !override replaces"
   }
 ].freeze
 
@@ -1373,9 +1499,54 @@ PROGRAM_MUTATIONS = [
   {
     label: "the storage recovery classification check",
     program: :static,
-    from: 'declarations.length == 2 && declarations.all? { |entry| entry["recovery"] == "critical" }',
+    from: 'declarations.length == 3 && declarations.all? { |entry| entry["recovery"] == "critical" }',
     to: "true",
     rows: ["a Seafile root that disaster recovery would skip"]
+  },
+  {
+    label: "the backup root privacy check",
+    program: :static,
+    from: 'backup_declaration && backup_declaration["mode"] == "0700"',
+    to: "true",
+    rows: ["a backup root anybody on the host can read"]
+  },
+  {
+    label: "the backup-before-Compose ordering check",
+    program: :static,
+    from: "backup_include && first_deployment && backup_include < first_deployment",
+    to: "true",
+    rows: ["a backup taken after Compose has already started the stack"]
+  },
+  {
+    label: "the consistent-snapshot check",
+    program: :static,
+    from: 'dump_argv.include?("--single-transaction") &&',
+    to: "",
+    rows: ["three databases dumped without one consistent snapshot"]
+  },
+  {
+    label: "the check that the dump may fail the run",
+    program: :static,
+    from: 'dump.any? { |task| task.key?("failed_when") }',
+    to: "false",
+    rows: ["a dump the run is allowed to survive"]
+  },
+  {
+    # The ordering is the claim the whole backup rests on, so its plant is the
+    # one to read first if this file ever goes quiet: with the comparison gone
+    # both tasks are still there and the backup still writes two things.
+    label: "the dump-before-copy ordering check",
+    program: :static,
+    from: "dump_index && conf_copy && dump_index < conf_copy",
+    to: "true",
+    rows: ["the volume copied before the database that names it"]
+  },
+  {
+    label: "the admin.txt exclusion check",
+    program: :static,
+    from: 'conf_find && Array(conf_find.dig("ansible.builtin.find", "excludes")).include?("admin.txt")',
+    to: "true",
+    rows: ["a configuration backup that preserves the plaintext administrator handoff"]
   },
   {
     label: "the healthy-container census",

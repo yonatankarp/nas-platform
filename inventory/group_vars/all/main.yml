@@ -632,6 +632,21 @@ nas_storage:
   - path: "{{ nas_docker_root }}/seafile/db"
     mode: "0755"
     recovery: critical
+  # The pre-upgrade backup root, a third root rather than a directory inside
+  # either of the two above: a backup nested in the tree it protects is not a
+  # backup, and a .sql file under /var/lib/mysql is a directory MariaDB scans as
+  # if it were a schema.
+  #
+  # critical because it is the only copy of the database that exists between one
+  # converge and the next, and 0700 -- the one Seafile path that is not 0755 --
+  # because unlike the live trees beside it, nothing manages access inside it.
+  # A mariadb-dump of ccnet_db and seahub_db is every account row Seafile holds
+  # in plain readable SQL, and the conf/ copy beside it carries the Seafile
+  # database account and the JWT signing key. CLAUDE.md's security boundary
+  # names this directory for the same reason it names Seafile's conf/.
+  - path: "{{ nas_docker_root }}/seafile/backups"
+    mode: "0700"
+    recovery: critical
 
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"

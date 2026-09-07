@@ -12,14 +12,24 @@
     that:
       - seafile_data_host_path == (nas_docker_root ~ '/seafile/data')
       - seafile_db_host_path == (nas_docker_root ~ '/seafile/db')
+      - seafile_backup_host_path == (nas_docker_root ~ '/seafile/backups')
       - seafile_seafevents_config_path == (seafile_data_host_path ~ '/seafile/conf/seafevents.conf')
-      - seafile_data_host_path != seafile_db_host_path
+      - >-
+        [seafile_data_host_path, seafile_db_host_path, seafile_backup_host_path]
+        | unique | length == 3
       - not seafile_db_host_path.startswith(seafile_data_host_path ~ '/')
       - not seafile_data_host_path.startswith(seafile_db_host_path ~ '/')
+      - not seafile_backup_host_path.startswith(seafile_data_host_path ~ '/')
+      - not seafile_data_host_path.startswith(seafile_backup_host_path ~ '/')
+      - not seafile_backup_host_path.startswith(seafile_db_host_path ~ '/')
+      - not seafile_db_host_path.startswith(seafile_backup_host_path ~ '/')
     fail_msg: >-
       Seafile storage paths overlap or differ from the owned policy. The
-      library and the database must be separate roots: the blocks under the
-      library are meaningless without the database that names them.
+      library, the database and the backups must be three separate roots: the
+      blocks under the library are meaningless without the database that names
+      them, and a backup nested inside either of the two it protects is not a
+      backup at all -- a dump under /var/lib/mysql is also a directory MariaDB
+      scans as if it were a schema.
 
 # The central declaration is what host_prep creates and what the recovery
 # documentation classifies, and this role refuses to deploy against a path
@@ -37,6 +47,14 @@
     seafile_required_storage_declarations:
       - {path: "{{ nas_docker_root }}/seafile/data", mode: "0755", recovery: critical}
       - {path: "{{ nas_docker_root }}/seafile/db", mode: "0755", recovery: critical}
+      # 0700, and it is the only mode in this role that differs from its
+      # neighbours. What lands here is a mariadb-dump of ccnet_db and seahub_db
+      # -- every account row Seafile holds, password hashes and API tokens
+      # included -- plus a copy of conf/, which carries the Seafile database
+      # account and the JWT signing key, all as plain readable files. The live
+      # trees beside it are 0755 because the container manages access inside
+      # them; nothing manages access inside this one.
+      - {path: "{{ nas_docker_root }}/seafile/backups", mode: "0700", recovery: critical}
 
 - name: Require unique central Seafile storage declarations
   ansible.builtin.assert:

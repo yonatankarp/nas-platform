@@ -1,0 +1,396 @@
+---
+# The pre-upgrade backup, and what it guards is narrower than "a backup of
+# Seafile" -- narrow on purpose, and the boundary is argued here rather than
+# left for a reader to discover from what the tasks happen to copy.
+#
+# WHAT AN UPGRADE CAN DESTROY. The seafile server runs /scripts/upgrade.py on a
+# version change, which collects every intervening migration and applies them to
+# ccnet_db, seafile_db and seahub_db, and rewrites conf/ as it goes. The db
+# container carries MARIADB_AUTO_UPGRADE=1, so a MariaDB image change migrates
+# the datadir in place before the health check goes green. Both are one-way.
+# What an upgrade does NOT do is rewrite the content-addressed blocks under
+# seafile-data/storage: they are immutable and appended to, and no migration
+# reaches them.
+#
+# So this backs up the database and conf/, and it does not copy the block store.
+# That is a size argument as much as a correctness one -- the store is the
+# users' entire library and this fires on every pinned digest bump Renovate
+# lands -- and it makes this a pre-upgrade backup rather than a
+# disaster-recovery one. The full procedure, block store included, is
+# docs/getting-started-nas.md's "Recover Seafile"; every backup this role takes
+# carries a manifest that says so beside the bytes.
+#
+# THE ORDERING IS LOAD-BEARING AND IT IS THE DUMP THAT COMES FIRST. Seafile
+# keeps the mapping from blocks to filenames, libraries and owners in the
+# database and nowhere else, so a filesystem half taken BEFORE the dump can only
+# be missing blocks the dump then names -- which restores as a library whose
+# files cannot be read. Taken after, the filesystem half is a superset of what
+# the dump names and the surplus is merely unreferenced. Seafile's own manual
+# states the same order for the same reason. Nothing below writes into the
+# backup before the dump has, and tests/contracts/seafile-static.rb pins that by
+# index.
+#
+# THE SERVICE IS NOT STOPPED. --single-transaction opens the dump in a
+# consistent snapshot of InnoDB, so the three schemas are consistent with each
+# other and with the store as of that instant while seahub keeps serving. A
+# backup that required an outage would be one nobody takes.
+#
+# AND THE UPGRADE DOES NOT PROCEED IF IT FAILED. Every task below is allowed to
+# fail the play, and the assertion after the dump requires a file that exists
+# and is not empty. roles/bindery/tasks/pre_upgrade_backup.yml is the shape this
+# follows and the reason is the same one: by the time the new image has answered
+# once, the old schema is gone.
+
+- name: Require a Seafile backup retention that keeps the backup it just took
+  ansible.builtin.assert:
+    that:
+      - seafile_pre_upgrade_backup_retain | int >= 1
+    fail_msg: >-
+      seafile_pre_upgrade_backup_retain must keep at least one backup. The prune
+      runs after the backup, so 0 would delete the backup this run took and
+      leave the upgrade guarded by nothing.
+
+- name: Read the released Seafile Compose definition
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/seafile/compose.yml"
+  register: seafile_release_compose
+
+# Only the two stateful containers. The cache persists nothing -- no volume, and
+# --save "" --appendonly no -- so an upgrade of it cannot lose anything and it
+# has no business gating a backup.
+- name: Resolve the pinned Seafile stateful images
+  ansible.builtin.set_fact:
+    seafile_pinned_images:
+      seafile: "{{ seafile_release_services.seafile.image }}"
+      db: "{{ seafile_release_services.db.image }}"
+  vars:
+    seafile_release_services: >-
+      {{ (seafile_release_compose.content | b64decode | from_yaml).services }}
+
+# Running containers only, found by their Compose labels rather than by
+# container_name: the production names are bare and both disposable overrides
+# namespace them, so a name computed here would be a fourth place that has to
+# agree with services/seafile/*.yml. tasks/deploy.yml and roles/container_cpu
+# select the same way.
+- name: List the running Seafile stack containers
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ seafile_compose_project_name }}"
+  register: seafile_stack_containers
+  changed_when: false
+  check_mode: false
+
+# --format, and narrowly. A bare `docker container inspect` prints .Config.Env,
+# which for this stack is the rendered environment file -- the MariaDB root
+# password, the administrator password and the cache password in full. This
+# emits one `service=image` line per container and nothing else, which is why it
+# needs no no_log and can therefore appear in a failure an operator has to read.
+- name: Read the deployed Seafile stack image references
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'container', 'inspect', '--format',
+          '{% raw %}{{index .Config.Labels "com.docker.compose.service"}}={{.Config.Image}}{% endraw %}']
+         + seafile_stack_containers.stdout_lines }}
+  register: seafile_deployed_images
+  when: seafile_stack_containers.stdout_lines | length > 0
+  changed_when: false
+  check_mode: false
+
+# Four outcomes, named rather than reduced to a boolean, because three of them
+# are things an operator wants to read in the transcript.
+#
+# `stack-not-running` is first and it is not a failure. With the containers
+# down there is no database to dump and no consistent snapshot to be had, so
+# saying so is better than taking a wrong backup -- the same call
+# roles/bindery makes about a stopped SQLite database. It is also the state a
+# genuine first converge is in, where there is nothing to protect yet.
+- name: Classify the Seafile pre-upgrade backup
+  ansible.builtin.set_fact:
+    seafile_backup_reason: >-
+      {{ 'stack-not-running' if seafile_stateful_deployed | length != 2
+         else 'forced' if seafile_pre_upgrade_backup_force | bool
+         else 'upgrade-pending'
+         if (seafile_stateful_deployed | symmetric_difference(seafile_stateful_pinned) | length > 0)
+         else 'converged' }}
+  vars:
+    seafile_stateful_deployed: >-
+      {{ seafile_deployed_images.stdout_lines | default([])
+         | select('match', '^(seafile|db)=') | list }}
+    seafile_stateful_pinned: >-
+      {{ ['seafile=' ~ seafile_pinned_images['seafile'],
+          'db=' ~ seafile_pinned_images['db']] }}
+
+- name: Resolve whether the Seafile pre-upgrade backup runs
+  ansible.builtin.set_fact:
+    seafile_backup_required: >-
+      {{ seafile_backup_reason in ['upgrade-pending', 'forced'] }}
+    seafile_backup_stamp: "{{ ansible_facts['date_time']['iso8601_basic_short'] }}"
+
+- name: Resolve the Seafile backup directory for this run
+  ansible.builtin.set_fact:
+    seafile_backup_run_dir: "{{ seafile_backup_host_path }}/{{ seafile_backup_stamp }}"
+
+# Said out loud rather than left to the reader, and it is the whole of what
+# check mode can do here: `docker_compose_v2_exec` does not run under --check,
+# and a dump that cannot be simulated must not be claimed. The classification
+# above is real in check mode -- every task it depends on carries
+# check_mode: false -- so this message names the actual state of the host.
+- name: Report the planned Seafile pre-upgrade backup
+  ansible.builtin.debug:
+    msg: >-
+      Seafile pre-upgrade backup: {{ seafile_backup_reason }}.
+      {{ seafile_backup_planned_report if seafile_backup_required | bool
+         else seafile_backup_skipped_report }}
+  vars:
+    seafile_backup_planned_report: >-
+      A live run would dump {{ seafile_backup_databases | join(', ') }} and copy
+      the server's conf/ directory, in that order, into
+      {{ seafile_backup_run_dir }}, and would refuse to deploy
+      {{ seafile_pinned_images['seafile'] }} unless the dump landed.
+    seafile_backup_skipped_report: >-
+      Nothing is dumped. `stack-not-running` means there is no running database
+      to snapshot, which is also what a first converge looks like; `converged`
+      means the running images already are the ones this release pins, so no
+      migration is pending and a backup would protect nothing.
+
+# Created here rather than by the container, so that the conf/ half below can be
+# written by Ansible into a directory it owns. Creating an empty directory backs
+# nothing up, so this does not weaken the ordering claim above: the first thing
+# WRITTEN into the backup is still the dump.
+- name: Create the Seafile backup directory for this run
+  ansible.builtin.file:
+    path: "{{ seafile_backup_run_dir }}"
+    state: directory
+    mode: "0700"
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+
+# FIRST, and everything about this command is deliberate.
+#
+# Over TCP as root, for the same reason tasks/deploy.yml's credential probe is:
+# addressing the service by name forces the connection through the network
+# stack, where only root@% -- the account MariaDB's own entrypoint created with
+# CREATE USER ... IDENTIFIED BY -- can answer, and only the password this
+# platform authored gets in. The Seafile account cannot be used here in any
+# case: it holds grants on the three schemas and not the SELECT on the whole
+# server a dump of all three needs.
+#
+# --single-transaction is what lets Seafile keep serving: InnoDB gives the dump
+# a consistent snapshot without locking the tables the running server is using.
+# --quick streams rows rather than buffering a table at a time, which matters on
+# a NAS held to cpus: 1.0. --routines and --events carry the schema objects a
+# plain table dump silently drops, and their absence would only be discovered at
+# a restore.
+#
+# --result-file rather than a redirect, so the dump never passes through this
+# module's stdout: a dump captured into a registered variable would be database
+# contents in Ansible's memory, would force no_log onto this task, and would
+# then censor the failure message an operator needs.
+#
+# user: root because the backup root is mode 0700 and owned by the host's root,
+# which is what makes it safe to keep a plaintext dump in.
+#
+# Redacted: the module renders the container's environment on failure, and that
+# environment is MYSQL_ROOT_PASSWORD.
+- name: Dump the Seafile databases before the pinned upgrade
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    service: db
+    user: root
+    argv:
+      - sh
+      - -ec
+      - >-
+        umask 077;
+        exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb-dump --protocol=tcp
+        --host=db --port=3306 --user=root --connect-timeout=15
+        --single-transaction --quick --routines --events
+        --databases {{ seafile_backup_databases | join(' ') }}
+        --result-file="/backups/{{ seafile_backup_stamp }}/databases.sql"
+    tty: false
+  register: seafile_database_dump
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  changed_when: true
+  no_log: true
+
+- name: Read the Seafile database dump this run produced
+  ansible.builtin.stat:
+    path: "{{ seafile_backup_run_dir }}/databases.sql"
+  register: seafile_database_dump_file
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  changed_when: false
+
+# The refusal. mariadb-dump exits 0 on some partial failures it has already
+# written a diagnostic about, and an empty result file is the shape those leave
+# behind, so the file itself is what is asserted rather than the exit status
+# above. Failing here fails the play with the OLD image still running and the
+# OLD schema still in place, which is the entire point of taking the backup
+# before the deployment rather than after it.
+- name: Require the Seafile database dump before the upgrade proceeds
+  ansible.builtin.assert:
+    that:
+      - seafile_database_dump_file.stat.exists
+      - seafile_database_dump_file.stat.size > 0
+    fail_msg: >-
+      The Seafile pre-upgrade database dump did not land at
+      {{ seafile_backup_run_dir }}/databases.sql, so the upgrade to
+      {{ seafile_pinned_images['seafile'] }} is refused rather than run against
+      a schema nothing has a copy of. The dump is taken over TCP as root against
+      the db service; a rotated MariaDB root credential and a full
+      {{ seafile_backup_host_path }} are what have to be ruled out first.
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+
+# SECOND. The upgrade rewrites conf/ -- seafile.conf, ccnet.conf and
+# seahub_settings.py all gain and lose keys across versions -- and a restored
+# database against a conf/ from the wrong version is a server that starts and
+# then behaves as neither version.
+- name: Create the Seafile configuration backup directory
+  ansible.builtin.file:
+    path: "{{ seafile_backup_run_dir }}/conf"
+    state: directory
+    mode: "0700"
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+
+# admin.txt is excluded here and the exclusion is a security requirement rather
+# than a size one. /scripts/start.py writes the administrator password there in
+# plaintext on EVERY container start and removes it in a `finally:`, so a
+# container killed mid-start leaves it on disk -- and a backup that swept conf/
+# blindly would preserve that plaintext for as long as the backup is kept, in a
+# directory nothing ever revisits. The list is
+# seafile_backup_excluded_paths, which the manifest renders, so the exclusion is
+# stated once and readable from inside the backup.
+- name: Find the Seafile configuration to preserve beside the dump
+  ansible.builtin.find:
+    paths: "{{ seafile_data_host_path }}/seafile/conf"
+    file_type: file
+    recurse: false
+    excludes: ["admin.txt"]
+  register: seafile_conf_sources
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  changed_when: false
+
+# Redacted: seafile.conf and ccnet.conf carry the Seafile database account and
+# its password, seahub_settings.py the Django signing key, and the copy module
+# renders file content in a diff. The credentials arrive as file content rather
+# than as vault_ names, which is exactly the case tasks/reconcile_seafevents.yml
+# already carries no_log for.
+- name: Preserve the Seafile configuration beside the dump
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ seafile_backup_run_dir }}/conf/{{ item.path | basename }}"
+    remote_src: true
+    mode: "0600"
+  loop: "{{ seafile_conf_sources.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  no_log: true
+
+# Reported rather than repaired, and reported rather than ignored. Finding
+# admin.txt on disk means a container was killed between start.py writing it and
+# the finally: that removes it, so the administrator password is sitting in
+# plaintext inside a bind mount. It is not deleted here: a start in progress
+# writes exactly this file, and a play racing it would be removing the file the
+# server is about to read on a genuine first run.
+- name: Read the Seafile administrator handoff file
+  ansible.builtin.stat:
+    path: "{{ seafile_data_host_path }}/seafile/conf/admin.txt"
+  register: seafile_admin_handoff
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  changed_when: false
+
+- name: Report a Seafile administrator handoff file left on disk
+  ansible.builtin.debug:
+    msg: >-
+      {{ seafile_data_host_path }}/seafile/conf/admin.txt exists. The image
+      writes the administrator password there in plaintext on every start and
+      removes it in a finally:, so either a start is in progress right now or a
+      container was killed inside that window and left it behind. It is excluded
+      from this backup either way. If no start is in progress, remove it -- and
+      note that rotating the vault administrator password does not change the
+      deployed account, which is why the file matters more here than it would
+      elsewhere.
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+    - seafile_admin_handoff.stat.exists | default(false)
+
+# Redacted for the same reason the conf copy is: the template renders in the
+# diff, and while the manifest carries no credential of its own it names the
+# images, the paths and the reason -- and `copy`-family diffs are the one place
+# a future edit to that template would leak whatever it started interpolating.
+- name: Record what the Seafile backup contains and what it does not
+  ansible.builtin.template:
+    src: backup_manifest.j2
+    dest: "{{ seafile_backup_run_dir }}/MANIFEST.txt"
+    mode: "0600"
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  no_log: true
+
+# Bounded, and bounded because this directory is on the same volume as the
+# database it protects: an unbounded backup root on /volume1 is a way to lose
+# the live copy too. The prune runs only on a run that took a backup, so an
+# ordinary converge removes nothing, and the slice is clamped at zero so a
+# retention larger than the number of backups present cannot delete the newest.
+- name: List the Seafile backups on the host
+  ansible.builtin.find:
+    paths: "{{ seafile_backup_host_path }}"
+    file_type: directory
+    recurse: false
+  register: seafile_existing_backups
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+  changed_when: false
+
+- name: Prune Seafile backups beyond the retention
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ seafile_prunable_backups }}"
+  vars:
+    seafile_sorted_backups: >-
+      {{ seafile_existing_backups.files | default([]) | map(attribute='path') | sort }}
+    seafile_prunable_backups: >-
+      {{ seafile_sorted_backups[:[0, (seafile_sorted_backups | length)
+                                     - (seafile_pre_upgrade_backup_retain | int)] | max] }}
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode
+
+- name: Report the completed Seafile pre-upgrade backup
+  ansible.builtin.debug:
+    msg: >-
+      Seafile {{ seafile_backup_databases | join(', ') }} and conf/ were backed
+      up into {{ seafile_backup_run_dir }} before deploying
+      {{ seafile_pinned_images['seafile'] }}. The block store is not in it and
+      the manifest beside the dump says so; the full recovery procedure is in
+      docs/getting-started-nas.md.
+  when:
+    - seafile_backup_required | bool
+    - not ansible_check_mode

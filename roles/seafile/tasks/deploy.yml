@@ -20,6 +20,7 @@
     deployment_target_extra_paths:
       - "{{ seafile_data_host_path }}"
       - "{{ seafile_db_host_path }}"
+      - "{{ seafile_backup_host_path }}"
       - "{{ seafile_seafevents_config_path }}"
 
 # Two properties, and neither is the credential contract's business.
@@ -90,6 +91,26 @@
       inventory/group_vars/all/main.yml and merge; the auto-deploy poller brings
       the stack up on its next five-minute tick.
   when: not seafile_deployment_enabled | bool
+
+# Before anything Compose does, and inside this file rather than as a stage of
+# main.yml, because it needs the .env rendered above: the dump runs through
+# `docker compose exec` against the project this environment file defines, and a
+# stage placed before the render would meet a runtime directory that does not
+# exist yet on a first converge. roles/bindery orders the same two the same way.
+#
+# Before BOTH Compose phases, and that is the part that is easy to get wrong.
+# The data services below are where a MariaDB image change happens, and
+# MARIADB_AUTO_UPGRADE migrates the datadir in place before the health check
+# goes green -- so a backup placed between the two phases would already be too
+# late for half of what it is meant to protect.
+#
+# The gate is on the include rather than repeated inside the file. A conditional
+# include applies its condition to every task it brings in, so with the switch
+# off nothing here reads or writes anything -- which is the same promise the
+# teardown report above makes.
+- name: Guard Seafile critical state before a pinned upgrade
+  ansible.builtin.include_tasks: pre_upgrade_backup.yml
+  when: seafile_deployment_enabled | bool
 
 # Two phases, because the server's setup runs against a database that has to be
 # accepting connections before the server container starts, and because the
