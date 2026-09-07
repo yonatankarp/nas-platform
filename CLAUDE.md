@@ -471,20 +471,71 @@ The occurrences, and what actually fixed each:
   `deployment_lock_refusal_test.sh` landed, so a run today prints 150 and is not
   comparable check-for-check — and no converted check is in its slowest ten any
   more.
+- **2026-09-07** — the gate's largest wait and its hard floor, taken together
+  (#485, #488), after #486's rebalance of the same shards won nothing measurable.
+  Both were found in the first uncontended per-check table this repository has
+  had, and both lower the gate's *total*, which no partition can do.
+  `beszel_contract_test.rb` and its `--self-test` cost ~209s of check time
+  between them, of which ~171s was one hardcoded literal: `beszel-runtime.rb`
+  polled persisted telemetry for 90 seconds, and exactly one row per deadline
+  reaches it and can never satisfy it — a fixture serving `system_stats: []`, so
+  the record stays nil and the poll runs its deadline out at 3 seconds a sleep.
+  The 403/404 rows raise instead, which is why they were always cheap. Both
+  budgets became `PLATFORM_BESZEL_*` environment inputs defaulted to the
+  deployment's own numbers, the #319 shape: 99.6s → 19.6s and 101.5s → 31.8s.
+  `config_managed_users_test.rb --self-test` was the floor at 241-305s on CI and
+  87.6s alone. Its issue scoped the fix to the mutation section, which is worth
+  only 17s of that 87.6s: the manifest registers the `--self-test` line, and that
+  invocation runs the whole main body first, so the check's cost is ~45 serial
+  Ansible fixture runs and not the mutations. Converting all of it through
+  `tests/case_pool_support.rb` gave 87.6s → 19.0s at eight workers and 27.6s at
+  the four a runner has.
 
-That last measurement is the useful baseline. Read it with the caveat the fourth
-occurrence paid for: the totals are sums of contended wall times, so they cannot
-separate a gate bound by its **total** work from a gate waiting on **one** item.
-Vary the width before believing either — `POLICY_JOBS` for the gate's own pool,
-`CASE_POOL_WORKERS` or a check's own `*_CASE_WORKERS` for a check's — and a cost
-that does not move when the width does is a wait, not work. There is nothing to
-parallelise in a wait: find the timeout and let the harness shorten it. For the
+Three things that generalise, the first of which replaces the width sweep the
+fourth occurrence prescribed:
+
+- **`time`'s user+sys column separates a wait from work in one pair of runs.**
+  Sleep consumes no CPU and contention does not change that, so a low ratio of
+  CPU to elapsed names a wait however loaded the machine was. The beszel pair was
+  14.5s of CPU in 99.6s elapsed and 19.1s in 101.5s before the fix, and 13.9s in
+  19.6s and 18.5s in 31.8s after it: the same work, the sleep gone. A width sweep
+  says the same thing in six runs and is confounded by a check's own pool cap.
+  The converse identifies work just as well — the managed-users conversion took
+  CPU *up*, 76.1s to 107.2s, because more of it now runs at once.
+- **A pooled case that assigns a name the script already carries shares one
+  binding across every thread.** Ruby resolves an already-declared local outward
+  rather than making a fresh one, and an `if` body opens no scope, so four cases
+  writing their subprocess result into a script-level `status` were writing and
+  reading one variable. The loss is silent, not loud: every mutant those cases
+  run is supposed to fail, so a sibling's failing status reads as this case's own
+  detection and a mutation that stopped biting is still reported as detected.
+  Declaring block-locals in the parameter list (`do |item, failures; status|`)
+  makes the class impossible rather than avoided. An AST dump of the script's
+  local table catches a case that *adds* a name; it cannot catch one that reuses
+  a name already there, which needs the other question asked — for each case, is
+  every name it assigns local to that case.
+- **Show an AST checker a real defect before trusting it.** The analyzer written
+  to answer that second question passed the known-buggy revision on its first
+  attempt: inside a block Ruby emits `DASGN`, not `LASGN`, and a multiple
+  assignment's targets hang off the `MASGN`'s second child. Running it against
+  the commit whose bug is known is what makes its clean report mean anything.
+
+The fourth occurrence's `POLICY_JOBS=4` figures are still the useful baseline,
+read with the caveat that occurrence paid for: the totals are sums of contended
+wall times, so they cannot separate a gate bound by its **total** work from a
+gate waiting on **one** item. Ask a suspect check's CPU column first, per the
+occurrence above — it costs two runs. Vary the width when you need to confirm it
+— `POLICY_JOBS` for the gate's own pool, `CASE_POOL_WORKERS` or a check's own
+`*_CASE_WORKERS` for a check's — and a cost that does not move when the width
+does is a wait, not work. There is nothing to parallelise in a wait: find the
+timeout and let the harness shorten it. For the
 work half, run the cases through a worker pool — `in_parallel_cases` in
 `tests/media_acquisition_reconciliation_support.rb` is the pattern and its
 comment records why the worker count must never exceed the core count;
-`tests/case_pool_support.rb` is the copy the checks converted for #319 share. The
-fourteen contract tests still carry their own copies, so a change there is still
-one careful change per file.
+`tests/case_pool_support.rb` is the copy the checks converted for #319 share,
+joined by `tests/config_managed_users_test.rb` in #488. The fourteen contract
+tests still carry their own copies, so a change there is still one careful change
+per file.
 
 Two consequences worth keeping:
 
