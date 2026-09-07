@@ -1365,6 +1365,70 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
 end
 
 # ---------------------------------------------------------------------------
+# Budget layer
+# ---------------------------------------------------------------------------
+#
+# The two waits the runtime program can spend are environment inputs defaulted
+# to the deployment's own numbers, and the two rows above that must reach a
+# deadline's refusal override them. Ninety of those seconds used to be the floor
+# of BOTH gate checks that run this file -- 86s and 85s of pure wait by
+# tests/validate-policy.sh's own measurement -- so what this layer protects is
+# 170-odd seconds of the static gate (#485).
+#
+# It exists because that arrangement reverts silently in four directions and no
+# row above can notice any of them: a row loses its `env:`, a name is misspelt
+# on one side, a deadline stops reading its constant, or a default is "cleaned
+# up" to a shorter number. All four leave every assertion in this file passing,
+# because none of them ever asserted a budget's VALUE -- both rows assert that
+# the loop terminates and names its refusal, which they would do just as
+# happily at thirty seconds. The only thing that moves is the gate's wall time,
+# and nothing in the repository watches that. So the pair is pinned from both
+# ends at once, the program's text and the rows' overrides, and each budget's
+# whole clause is pinned rather than its constant's name: a pin matching
+# TELEMETRY_POLL_TIMEOUT_SECONDS alone passes on a line that no longer defaults
+# to ninety.
+#
+# The retired literal is a negated conjunct for the reason tests/policy_test.rb
+# gives for its own: folding the constant back into the deadline site leaves the
+# constant defined above it, so the positive half alone stays satisfied.
+BUDGETS = {
+  "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS" => {
+    default: "90",
+    applied: "timeout_seconds: TELEMETRY_POLL_TIMEOUT_SECONDS",
+    retired: "timeout_seconds: 90"
+  },
+  "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => {
+    default: "15",
+    applied: "MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS",
+    retired: "MONOTONIC) + 15"
+  }
+}.freeze
+
+def budget_failures(runtime_source: File.read(RUNTIME_PROGRAM), rows: RUNTIME_ROWS)
+  failures = []
+  # A floor rather than non-emptiness. Everything below is a sweep of this hash
+  # against that list, and both sweeps are satisfied vacuously by an empty hash.
+  failures << "budgets: the budget set has shrunk to #{BUDGETS.length}; a wait was " \
+              "dropped from the pin rather than from the program" if BUDGETS.length < 2
+  BUDGETS.each do |name, budget|
+    failures << "budgets: #{name} is not read with a production default of " \
+                "#{budget.fetch(:default)}" unless
+      runtime_source.include?(%(ENV.fetch("#{name}", "#{budget.fetch(:default)}")))
+    failures << "budgets: the deadline #{name} sets is not spent through it" unless
+      runtime_source.include?(budget.fetch(:applied)) &&
+      !runtime_source.include?(budget.fetch(:retired))
+  end
+  overrides = rows.flat_map { |row| row.fetch(:env, {}).keys }
+  (BUDGETS.keys - overrides).each do |name|
+    failures << "budgets: no row overrides #{name}, so a row spends it in full"
+  end
+  (overrides - BUDGETS.keys).each do |name|
+    failures << "budgets: a row overrides #{name}, which the program never reads"
+  end
+  failures
+end
+
+# ---------------------------------------------------------------------------
 # Wrapper layer
 # ---------------------------------------------------------------------------
 #
@@ -2134,6 +2198,67 @@ RUNTIME_MUTATIONS = [
     detects: "runtime: notify did not send the vault-derived webhook URL" }
 ].freeze
 
+# One plant per direction the budget arrangement can revert in, because the
+# budget layer's whole reason to exist is that all four reverts leave the rest
+# of this file green. Four plant against the program's text and two against the
+# rows, so `from:`/`to:` and `rows:` are alternatives here rather than the
+# companions they are in every list above.
+#
+# `detects:` is a list, and this is the one layer that needs it to be: a
+# misspelt override name breaks the pin from both ends at once and the layer
+# reports both sentences, so a single required substring would be reported as
+# the wrong assertion for a plant it caught correctly.
+#
+# These cases run no subprocess and serve no fixture -- they are string and
+# array work over sources already in memory -- so all six together cost less
+# than one runtime row.
+BUDGET_MUTATIONS = [
+  { label: "the telemetry budget's production default",
+    from: %(ENV.fetch("PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS", "90")),
+    to: %(ENV.fetch("PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS", "6")),
+    detects: "PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS is not read with a " \
+             "production default of 90" },
+  { label: "the notification budget's production default",
+    from: %(ENV.fetch("PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS", "15")),
+    to: %(ENV.fetch("PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS", "4")),
+    detects: "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS is not read with a " \
+             "production default of 15" },
+  { label: "the telemetry deadline's read of its budget",
+    from: "timeout_seconds: TELEMETRY_POLL_TIMEOUT_SECONDS",
+    to: "timeout_seconds: 90",
+    detects: "the deadline PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS sets is not " \
+             "spent through it" },
+  { label: "the notification deadline's read of its budget",
+    from: "MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS",
+    to: "MONOTONIC) + 15",
+    detects: "the deadline PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS sets is not " \
+             "spent through it" },
+  {
+    # The revert that costs the gate its ~170s back, and the only one of the
+    # four with no trace in any file's text.
+    label: "every row's budget override",
+    rows: ->(rows) { rows.map { |row| row.reject { |key, _value| key == :env } } },
+    detects: ["no row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS",
+              "no row overrides PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS"]
+  },
+  {
+    # A name misspelt on the row's side only. The program still reads its own
+    # name, so its half of the pin holds and the override silently does nothing
+    # -- which is why the pin has to sweep both directions of the difference.
+    label: "a budget override's name",
+    rows: lambda { |rows|
+      rows.map do |row|
+        next row unless row.key?(:env)
+
+        row.merge(env: row.fetch(:env).transform_keys { |key| "#{key}_MISSPELT" })
+      end
+    },
+    detects: ["no row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS",
+              "a row overrides PLATFORM_BESZEL_TELEMETRY_POLL_TIMEOUT_SECONDS_MISSPELT, " \
+              "which the program never reads"]
+  }
+].freeze
+
 WRAPPER_MUTATIONS = [
   { label: "a dropped stdin redirect on the static invocation",
     from: %(  ruby -ryaml "$static_program" "$repo_dir" </dev/null\n),
@@ -2260,6 +2385,24 @@ def rows_named(rows, names)
   [selected, nil]
 end
 
+# The budget layer's own reporter. It cannot use report_mutation because a
+# correct catch there is every failure carrying one substring, and two of the
+# six budget plants are caught by two different sentences at once. Required
+# rather than exhaustive: each named sentence must appear somewhere in the
+# catch, and nothing else in the catch is held against the plant.
+def report_budget_mutation(collected, mutation, caught)
+  if caught.empty?
+    collected << "removing #{mutation.fetch(:label)} was accepted"
+    return
+  end
+
+  Array(mutation.fetch(:detects)).each do |sentence|
+    collected << "removing #{mutation.fetch(:label)} was caught by the wrong assertion: " \
+                 "#{caught.join(' | ')}" unless
+      caught.any? { |failure| failure.include?(sentence) }
+  end
+end
+
 def report_mutation(collected, mutation, caught, rows)
   detects = mutation.fetch(:detects, "accepted what it must refuse")
   if caught.empty?
@@ -2293,7 +2436,7 @@ if ARGV.include?("--self-test")
   end
   skipped.concat(
     (STATIC_MUTATIONS + SELF_READ_MUTATIONS + FIXTURES_MUTATIONS + RUNTIME_MUTATIONS +
-     WRAPPER_MUTATIONS)
+     BUDGET_MUTATIONS + WRAPPER_MUTATIONS)
       .select { |mutation| mutation[:skip] }
       .map { |mutation| "#{mutation.fetch(:label)}: #{mutation.fetch(:skip)}" }
   )
@@ -2302,6 +2445,27 @@ if ARGV.include?("--self-test")
   self_read_cases = prepare.call(SELF_READ_MUTATIONS, STATIC_PROGRAM, SELF_READ_ROWS)
   fixtures_cases = prepare.call(FIXTURES_MUTATIONS, FIXTURES_PROGRAM, FIXTURES_ROWS)
   runtime_cases = prepare.call(RUNTIME_MUTATIONS, RUNTIME_PROGRAM, RUNTIME_ROWS)
+  # Two shapes in one list, so prepare cannot be reused: a text plant carries
+  # `from:`, a row plant carries a `rows:` transform. Both are proved to have
+  # changed something, for the reason `plant` proves it -- a transform that
+  # returned the rows unchanged plants nothing and the case reports the layer as
+  # accepting what it must refuse.
+  budget_cases = BUDGET_MUTATIONS.reject { |mutation| mutation[:skip] }.filter_map do |mutation|
+    if mutation.key?(:from)
+      source, error = plant(File.read(RUNTIME_PROGRAM), mutation)
+      preparation_errors << error if error
+      next if error
+
+      [mutation, source, RUNTIME_ROWS]
+    else
+      rows = mutation.fetch(:rows).call(RUNTIME_ROWS)
+      if rows == RUNTIME_ROWS
+        preparation_errors << "planted nothing for #{mutation.fetch(:label)}"
+        next
+      end
+      [mutation, File.read(RUNTIME_PROGRAM), rows]
+    end
+  end
   wrapper_cases = WRAPPER_MUTATIONS.reject { |mutation| mutation[:skip] }
                                    .filter_map do |mutation|
     source, error = plant(File.read(CONTRACT), mutation)
@@ -2347,6 +2511,12 @@ if ARGV.include?("--self-test")
   end
   planted += runtime_cases.length
 
+  in_parallel_cases(mismatches, budget_cases) do |(mutation, source, rows), collected|
+    report_budget_mutation(collected, mutation,
+                           budget_failures(runtime_source: source, rows: rows))
+  end
+  planted += budget_cases.length
+
   in_parallel_cases(mismatches, wrapper_cases) do |(mutation, source), collected|
     caught = case mutation.fetch(:layer)
              when :stdin then stdin_failures(wrapper_source: source)
@@ -2370,8 +2540,8 @@ if ARGV.include?("--self-test")
 end
 
 failures = static_failures + missing_file_failures + fixtures_failures + runtime_failures +
-           wrapper_failures + self_read_failures + stdin_failures + two_roots_failures +
-           runtime_program_root_failures
+           budget_failures + wrapper_failures + self_read_failures + stdin_failures +
+           two_roots_failures + runtime_program_root_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Beszel contract violation(s)"
@@ -2379,5 +2549,6 @@ end
 
 puts "beszel contract: #{STATIC_ROWS.length} static, #{FIXTURES_ROWS.length} fixture and " \
      "#{RUNTIME_ROWS.length} runtime properties hold, both self-read guards bite against a " \
-     "sentinel that did not move, and the wrapper reaches all three programs from its own " \
-     "checkout while all three of its inspected-tree reads stay bound to the tree"
+     "sentinel that did not move, all #{BUDGETS.length} waiting budgets keep the deployment's " \
+     "default while a row overrides each, and the wrapper reaches all three programs from its " \
+     "own checkout while all three of its inspected-tree reads stay bound to the tree"
