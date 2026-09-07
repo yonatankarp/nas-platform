@@ -286,6 +286,7 @@ tests/mac/immich-drift-hook-test.sh
 ruby tests/mac/report.rb --self-test
 tests/mac/snapshot-paperless.sh --self-test
 ruby tests/mac/pin-protected-input-test.rb --self-test
+ruby tests/case_pool_locals_test.rb --self-test
 POLICY_CHECKS_3
 }
 
