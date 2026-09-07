@@ -1,0 +1,268 @@
+---
+# seafevents.conf is written by the server into the bind-mounted volume, not by
+# this repository, and one key in it is platform policy.
+#
+# Seafile Pro's pro.py writes `[INDEX FILES] enabled = true` when it generates
+# the file, and bootstrap.py writes `es_host = elasticsearch` beside it. This
+# platform does not deploy Elasticsearch: it needs vm.max_map_count, a host
+# sysctl nothing here manages and which cannot be set from inside the CI sandbox
+# container, and it needs the repository's first mem_limit. Left alone the index
+# updater resolves an unresolvable hostname every ten minutes for as long as the
+# server runs and logs a failure each time.
+#
+# A whole-file template is disqualified rather than merely inconvenient. The
+# server rewrites parts of this file itself, so a template would report changed
+# on every converge and the repository would stop describing a fixed point.
+# Everything not named below is carried through byte for byte.
+#
+# The transform is bounded to the [INDEX FILES] section rather than applied line
+# by line, which is where the trailarr precedent this file otherwise copies stops
+# being a safe guide. trailarr repairs a flat KEY=value file, where a per-line
+# rewrite of `enabled` names exactly one setting. This is an INI document in
+# which `enabled` is not a unique key -- upstream's documented seafevents.conf
+# carries one under [AUDIT] and one under [SEAHUB EMAIL] as well -- so the same
+# per-line rewrite would switch off unrelated features and report itself
+# converged.
+#
+# The repair converges because the server writes that key exactly once, and that
+# is a property of the image rather than an assumption. Read out of
+# seafileltd/seafile-pro-mc:13.0.27: `pro.py setup` is what calls
+# generate_seafevents_conf, and the only caller of `pro.py setup` in the whole
+# image is setup-seafile-mysql.py, which /scripts/start.py reaches through
+# bootstrap.py's init_seafile_server(). That function returns early --
+# "Skip running setup-seafile-mysql.py because there is existing seafile-data
+# folder" -- whenever /shared/seafile/seafile-data exists, which is every start
+# after the first. bootstrap.py's own `es_host = elasticsearch` insertion sits
+# after that same early return. So nothing in the start path rewrites
+# [INDEX FILES] once the volume is populated: the repair below runs once, the
+# restart makes the running process read it, and every converge after that finds
+# the file already saying what this platform wants.
+
+- name: Look for the Seafile event configuration
+  ansible.builtin.stat:
+    path: "{{ seafile_seafevents_config_path }}"
+  register: seafile_seafevents_stat
+  when: seafile_deployment_enabled | bool
+  changed_when: false
+  # A read that must really happen under --check: answering it from a simulation
+  # would report the file absent on a host where it exists, and the no-op branch
+  # below would then claim there is nothing to reconcile on a live deployment.
+  check_mode: false
+
+# Redacted: seafevents runs its own database connection, so this file opens with
+# a [DATABASE] section carrying the Seafile database account and its password.
+# Nothing in the repository's own no_log policy would catch that -- the rule
+# matches literal vault_ names and this credential arrives as file content -- so
+# it is redacted here on the same reasoning trailarr's .env read is.
+- name: Read the Seafile event configuration
+  ansible.builtin.slurp:
+    src: "{{ seafile_seafevents_config_path }}"
+  register: seafile_seafevents_read
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_stat.stat.exists | default(false)
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The three patterns are YAML single-quoted scalars so that the regular
+# expressions reach Jinja exactly as written. The backreference is spelled with
+# a single backslash for the same reason: these are folded block scalars, where
+# YAML performs no escape processing, so `\1` is what reaches the filter.
+# Written `\\1` -- the form the same expression needs inside a double-quoted
+# scalar -- regex_search fails to parse its own group argument and the run dies
+# on 'NoneType' object has no attribute 'group', which reads like a failed match
+# and is not one.
+#
+# [^\[]*? is what bounds the match to one section: a section header is the only
+# thing in this grammar that begins with an opening bracket, so the match cannot
+# reach an `enabled` key belonging to a later section.
+#
+# The presence test is a separate `search` rather than a None check on the
+# capture, because regex_search raises rather than returning None when it is
+# asked for a group of a match that did not happen.
+- name: Resolve the platform-owned Seafile event configuration
+  vars:
+    seafile_seafevents_current: "{{ seafile_seafevents_read.content | b64decode }}"
+    seafile_seafevents_index_key: '(?ms)^\[INDEX FILES\][^\[]*?^enabled\s*='
+    seafile_seafevents_index_capture: '(?ms)^\[INDEX FILES\][^\[]*?^enabled\s*=\s*([^\r\n]*)'
+    seafile_seafevents_index_assignment: '(?ms)^(\[INDEX FILES\][^\[]*?^enabled\s*=\s*)[^\r\n]*'
+  ansible.builtin.set_fact:
+    # Whether the key is there at all, which "the content did not change" cannot
+    # say: a file already carrying `enabled = false` and a file carrying no
+    # [INDEX FILES] section produce byte-identical results and a silent no-op,
+    # and only one of those two means indexing is off.
+    seafile_seafevents_index_declared: >-
+      {{ seafile_seafevents_current is search(seafile_seafevents_index_key) }}
+    seafile_seafevents_index_current: >-
+      {{ (seafile_seafevents_current
+          | regex_search(seafile_seafevents_index_capture, '\1') | first)
+         if seafile_seafevents_current is search(seafile_seafevents_index_key)
+         else '(undeclared)' }}
+    seafile_seafevents_repaired: >-
+      {{ seafile_seafevents_current
+         | regex_replace(seafile_seafevents_index_assignment,
+                         '\1' ~ (seafile_index_files_enabled | bool | lower)) }}
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_stat.stat.exists | default(false)
+  # Redacted: the computed content is the file, [DATABASE] section included.
+  no_log: true
+
+# The one task here that is not redacted, and deliberately. Everything it
+# renders is the path, whether the key is declared and what it currently says --
+# a boolean, not a credential -- which leaves the redacted repair below able to
+# say why it fired instead of reporting a silent `changed` with nothing to read.
+# The undeclared
+# case is called out by name: it means the key this platform owns is not in the
+# file the server wrote, so indexing is running on whatever the server's own
+# default is and this reconciliation is not managing it. That is a wrong
+# assumption about the image, not a wrong value, and it is deliberately reported
+# rather than asserted -- a converge that refuses to proceed because a future
+# release renamed a configuration section is a worse outcome than one that says
+# so and carries on.
+- name: Report the planned Seafile event configuration repair
+  vars:
+    # Named rather than spelled inline. A folded block scalar keeps the newline
+    # in front of any line indented further than its first, so a long branch
+    # written inside the conditional arrives with its own wrapping baked into
+    # the sentence the operator reads.
+    seafile_seafevents_declared_report: >-
+      [INDEX FILES] enabled is {{ seafile_seafevents_index_current }}, and this
+      platform requires {{ seafile_index_files_enabled | bool | lower }}.
+    seafile_seafevents_undeclared_report: >-
+      carries no [INDEX FILES] enabled key, so file indexing is left at whatever
+      the server defaults to and this reconciliation is managing nothing. Check
+      the section name against the deployed image before trusting that the index
+      updater is switched off.
+  ansible.builtin.debug:
+    msg: >-
+      {{ seafile_seafevents_config_path }}
+      {{ seafile_seafevents_declared_report
+         if seafile_seafevents_index_declared | bool
+         else seafile_seafevents_undeclared_report }}
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_stat.stat.exists | default(false)
+
+# The mode is the one the file already has, read back from the stat above rather
+# than declared. A literal here would be a claim about what the server's own
+# writer leaves behind, and getting that claim wrong in the loosening direction
+# publishes the [DATABASE] password to every account on the host: this file lives
+# in a bind mount, so its permissions are host permissions. Reading it back can
+# only preserve, and it is idempotent because a converged file already has it.
+# Ownership is deliberately not claimed either: the server runs as root with
+# NON_ROOT=false and owns every other file in this directory, and reassigning one
+# of them would be a change this platform re-applies on every run for no benefit.
+#
+# Redacted: the content is the file.
+- name: Own the Seafile event configuration
+  ansible.builtin.copy:
+    content: "{{ seafile_seafevents_repaired }}"
+    dest: "{{ seafile_seafevents_config_path }}"
+    mode: "{{ seafile_seafevents_stat.stat.mode }}"
+  register: seafile_seafevents_repair
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_stat.stat.exists | default(false)
+  no_log: true
+
+- name: Report the Seafile event configuration reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      {{ seafile_seafevents_config_path }} does not exist yet, so there is
+      nothing to reconcile. The server writes it during the setup its first
+      start runs, and the next converge finds it and switches file indexing off.
+  when:
+    - seafile_deployment_enabled | bool
+    - not seafile_seafevents_stat.stat.exists | default(false)
+
+# seafevents.conf lives under a bind mount rather than in the Compose spec, so
+# docker_compose_v2 does not recreate the container when it changes and
+# seafevents reads the file once, at start. Without this the repair above
+# silently does not take effect until some unrelated recreation.
+#
+# Not a handler: a handler runs at the end of the play, and the verification
+# below authenticates against the running server. Deferring the restart would
+# leave the process the verification talks to holding the configuration the
+# repair just replaced, and the operator reading the transcript could not tell
+# which of the two was proved.
+# The application container and nothing else, and both of the lines that say so
+# are load-bearing rather than tidy.
+#
+# `docker compose restart` does not honour depends_on: condition: service_healthy
+# -- that condition is an `up` property, and restart bounces whatever it is given
+# without waiting for anything. A restart that took db and cache with it would
+# therefore be free to bring the server back against a MariaDB not yet accepting
+# connections, which is precisely what the two-phase bring-up in deploy.yml
+# exists to prevent. Nothing in this file touched the database or the cache in
+# any case: the repair rewrites one key in a file only seafevents reads.
+#
+# dependencies: false is what makes `services:` mean what it says. The module
+# appends --no-deps only when that option is false, and `docker compose restart`
+# documents --no-deps as "Don't restart dependent services", so naming the one
+# service without it still bounces everything that service depends on.
+#
+# There is deliberately no wait:/wait_timeout: here. community.docker 5.2.2
+# silently ignores both for state: restarted --
+# plugins/modules/docker_compose_v2.py builds the restart argv in
+# get_restart_cmd (lines 639-651), which appends only --no-deps, --timeout and
+# --dry-run; --wait and --wait-timeout are appended by get_up_cmd alone (lines
+# 538-542). Written here they read as a readiness guarantee the module never
+# asked Compose for, while `docker compose restart` returns as soon as the
+# containers have been signalled. The wait below is that guarantee, made
+# explicitly.
+- name: Restart Seafile onto the repaired event configuration # noqa: no-handler
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/seafile"
+    project_name: "{{ seafile_compose_project_name }}"
+    files: "{{ platform_service_compose_files['seafile'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/seafile/.env"]
+    services: [seafile]
+    dependencies: false
+    state: restarted
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_repair is changed
+
+# Without this the verification one file later POSTs to a server that was
+# signalled a moment ago and is still starting gunicorn, and it fails with a
+# message blaming the database link or a rotated administrator password --
+# neither of which is the cause. That is the failure of the *first* converge
+# after an operator sets seafile_deployment_enabled, because that is the one run
+# where this repair is changed.
+#
+# GET /api2/ping/ on purpose, and it is the same endpoint verify.yml rejects for
+# its own job. There it is refused because it answers 'pong' with both databases
+# down and so proves nothing about the link; here that is exactly the right
+# property. Only the application container was restarted, so the database link is
+# not what this wait is in doubt about -- what it waits for is nginx and seahub
+# serving again, and a probe that also read the databases would confuse "not
+# started yet" with "cannot reach its database". The database proof stays where
+# it was.
+#
+# Not attempted under --check: the restart above was a dry run there, so nothing
+# was signalled and waiting could only invent a failure on a host whose server
+# happens to be down. deploy.yml treats its own live probe the same way.
+#
+# The refused connection is the case this loop is actually for, and that it is
+# retried rather than fatal on the first attempt was measured rather than
+# assumed: against ansible-core 2.21.3, a uri task pointed at a closed port
+# reports status -1 in its own result and the until loop reads that and retries,
+# which is why status_code can stay strict here. A shape that made the refusal
+# untestable would fail on attempt 1 of 101 during precisely the minutes this
+# exists to wait through.
+- name: Wait for Seafile to serve after the event configuration restart # noqa: no-handler
+  ansible.builtin.uri:
+    url: "{{ seafile_api }}/ping/"
+    status_code: [200]
+  register: seafile_restart_readiness
+  until: seafile_restart_readiness.status | default(0) | int == 200
+  retries: "{{ seafile_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_repair is changed
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false

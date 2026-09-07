@@ -197,7 +197,8 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
-  ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"]
+  ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
+  ["seafile", "seafile", "0.0.0.0", 8083, 80, "tcp"]
 ].freeze
 
 EXPECTED_STORAGE = {

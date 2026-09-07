@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running fifteen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running sixteen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -502,6 +502,9 @@ header the platform POSTs in), Beszel's private key, Seerr's mode-0644
 `settings.json` and the `settings.old.json` beside it, Bindery's whole
 configuration root (its SQLite database keeps every credential it holds in
 clear, the Audiobookshelf key it triggers library scans with included, and its
-pre-upgrade backup is a copy of that database beside it), and application data —
-treat those and their backups as secret-bearing. Losing the vault password
-means regenerating every credential; there is no backdoor.
+pre-upgrade backup is a copy of that database beside it), Seafile's `conf/`
+directory (the image's `/scripts/start.py` writes the plaintext administrator
+password to `conf/admin.txt` on **every** container start and removes it in a
+`finally:`, so a container killed mid-start leaves it on disk), and application
+data — treat those and their backups as secret-bearing. Losing the vault
+password means regenerating every credential; there is no backdoor.

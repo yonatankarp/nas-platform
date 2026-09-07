@@ -12,7 +12,7 @@ module PolicySupport
   # needed. It lives in this module rather than in one policy script because several
   # of them check different properties of the same roster.
   EXPECTED_SERVICES = %w[
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx
+    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx seafile
     arr downloaders bindery kapowarr pinchflat trailarr seerr
   ].freeze
   # Not every vault key belongs to a service; this one is platform-wide.

@@ -342,10 +342,10 @@ site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 # filter below reduces that to the roles whose .env carries bcrypt material,
 # which is two. Either can go quiet without the other noticing -- a renamed
 # templates/ directory empties the glob, and a template that spells its hash
-# differently drops out of the filter while the glob still returns fifteen and
+# differently drops out of the filter while the glob still returns sixteen and
 # the escaping assertion runs over nothing.
 #
-# Fifteen in the working tree and fifteen in the mutation sandbox, because
+# Sixteen in the working tree and sixteen in the mutation sandbox, because
 # fixture_paths adds every implemented service's env.j2, so one number sizes
 # both. Ten is chosen against the bands rather than by feel: a collapse leaves
 # zero (a glob that stopped matching) or a handful (a roles/ layout change),

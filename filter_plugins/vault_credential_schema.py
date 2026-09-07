@@ -217,6 +217,23 @@ CREDENTIAL_RULES = {
     "vault_trailarr_admin_password": ((NONEMPTY, None),),
     "vault_trailarr_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
     "vault_seerr_api_key": ((PATTERN, HEX_32),),
+    # Seafile. The administrator email is the account name the server stores, so
+    # it carries the same EMAIL rule the other administrator emails do. The
+    # database user is a MariaDB identifier -- Seafile has no Postgres backend --
+    # and takes DATABASE_IDENTIFIER for the same reason the Immich and Paperless
+    # ones do. The JWT key and the cache password are opaque to this platform:
+    # the server compares the first as bytes and Valkey compares the second as a
+    # string, so neither has a shape to pin beyond being declared. Seafile
+    # documents a 32-character minimum for the JWT key, which is why the value
+    # this platform generates is 32 hexadecimal digits; no rule here restates it,
+    # and nothing was verified about what the server does with a shorter one.
+    "vault_seafile_admin_email": ((PATTERN, EMAIL),),
+    "vault_seafile_admin_password": ((NONEMPTY, None),),
+    "vault_seafile_db_root_password": ((NONEMPTY, None),),
+    "vault_seafile_db_username": ((PATTERN, DATABASE_IDENTIFIER),),
+    "vault_seafile_db_password": ((NONEMPTY, None),),
+    "vault_seafile_jwt_private_key": ((NONEMPTY, None),),
+    "vault_seafile_cache_password": ((NONEMPTY, None),),
 }
 
 # The Usenet provider account belongs to a paid third-party subscription, so a

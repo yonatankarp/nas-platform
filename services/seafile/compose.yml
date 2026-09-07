@@ -1,0 +1,273 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # Seafile and the database start as root and their entrypoints drop to their
+  # service accounts with setuid(2), which no_new_privs does not restrict; the
+  # cache names its account outright below. Nothing in this stack executes a
+  # setuid binary afterwards, so refusing the escalation costs it nothing.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  seafile:
+    <<: *service-defaults
+    container_name: seafile
+    # Seafile Professional Edition, which upstream publishes on Docker Hub and
+    # licenses free at three users or fewer, so there is no license file and no
+    # `docker login` for Ansible to own. 14.x is testing-only -- no stable 14.0.x
+    # has ever been published -- so the stable series is what is pinned here.
+    image: docker.io/seafileltd/seafile-pro-mc:13.0.27@sha256:021127a3b98d39665cad335d165f7c28748d28441898bb01c169cecb8a8f9d70
+    cpus: 2.0
+    labels:
+      dev.dozzle.group: seafile
+      dev.dozzle.name: seafile
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    # The bundled nginx listens on 80 and multiplexes seahub, seafhttp and
+    # seafdav behind it, so one published port is the whole service. Upstream's
+    # own compose fronts this with Caddy for HTTPS; there is no environment
+    # variable that disables Caddy -- you simply do not deploy it, which is what
+    # this stack does. The database and the cache join the stack's default
+    # Compose network and publish nothing.
+    #
+    # So this is plain HTTP, as every published port on this platform is: nothing
+    # here terminates TLS and no reverse proxy is deployed. It costs more here
+    # than elsewhere, which is worth stating rather than inheriting. Seafile is
+    # the first service whose login guards the operator's own files, so the
+    # session cookie and every byte uploaded or downloaded are in clear on the
+    # wire -- already encrypted when the client arrives over the mesh VPN, not
+    # encrypted at all when it arrives across the LAN. That second case is the
+    # exposure, and on a platform that publishes no ingress beyond
+    # platform_public_host it is the whole of it. Nothing enforces that last
+    # part: preflight requires the coordinate to be stated, not to name a private
+    # address, so pointing it at a routable one widens this with no guard firing.
+    #
+    # Changing it is a platform decision rather than a Seafile one. A proxy
+    # fronting this stack alone would leave the other fifteen exactly where they
+    # are, and choosing one means choosing a certificate story for a network with
+    # no public DNS, so it is not taken in the pull request that adds this
+    # service.
+    ports:
+      - "8083:80"
+    volumes:
+      - ${SEAFILE_DATA_PATH:?}:/shared
+    environment:
+      TZ: ${TZ:?}
+      # Both read on every start.
+      SEAFILE_SERVER_HOSTNAME: ${SEAFILE_SERVER_HOSTNAME:?}
+      # Not a listener setting -- nginx binds 80 either way. This is the scheme
+      # Seafile joins to the hostname above to derive SERVICE_URL and
+      # FILE_SERVER_ROOT, on every start, and those are what end up inside every
+      # share link and every seafhttp URL the server hands a client. So it may
+      # only ever say how clients actually reach the published port: `https` with
+      # nothing terminating TLS at that address would mint links to a listener
+      # that does not speak it. It changes when the decision above the ports does,
+      # and not before.
+      SEAFILE_SERVER_PROTOCOL: http
+      JWT_PRIVATE_KEY: ${SEAFILE_JWT_PRIVATE_KEY:?}
+      SEAFILE_MYSQL_DB_HOST: db
+      SEAFILE_MYSQL_DB_PORT: "3306"
+      SEAFILE_MYSQL_DB_USER: ${SEAFILE_DB_USERNAME:?}
+      SEAFILE_MYSQL_DB_PASSWORD: ${SEAFILE_DB_PASSWORD:?}
+      SEAFILE_MYSQL_DB_SEAHUB_DB_NAME: seahub_db
+      # FIRST RUN ONLY. The two database names below and every INIT_* value are
+      # consumed by the image's setup scripts while the databases do not exist
+      # yet; afterwards the server reads what conf/ccnet.conf and conf/seafile.conf
+      # already record, so changing one of these on a converged deployment is a
+      # silent no-op rather than a rename.
+      SEAFILE_MYSQL_DB_CCNET_DB_NAME: ccnet_db
+      SEAFILE_MYSQL_DB_SEAFILE_DB_NAME: seafile_db
+      INIT_SEAFILE_MYSQL_ROOT_PASSWORD: ${SEAFILE_DB_ROOT_PASSWORD:?}
+      # FIRST RUN ONLY, and this pair is the load-bearing case. /scripts/start.py
+      # writes conf/admin.txt from these on *every* start and removes it in a
+      # `finally:`, but check_init_admin.py consumes the file only when
+      # need_create_admin() is true -- that is, only when the user table is empty.
+      # So rotating the vault password changes nothing here for ever after, and
+      # the documented remedy (reset-admin.sh) is interactive. The platform does
+      # not fake a reconciliation it cannot perform: roles/seafile authenticates
+      # as this account during verification instead, and fails by name when the
+      # vault and the account have diverged.
+      INIT_SEAFILE_ADMIN_EMAIL: ${SEAFILE_ADMIN_EMAIL:?}
+      INIT_SEAFILE_ADMIN_PASSWORD: ${SEAFILE_ADMIN_PASSWORD:?}
+      # FIRST RUN ONLY: this lands in seahub_settings.py inside the volume, and a
+      # later change means editing that file rather than this line.
+      TIME_ZONE: ${TZ:?}
+      # Seafile 13's own default and the manual's recommendation; memcached is
+      # legacy. Any value but redis or memcached raises at start. Valkey answers
+      # the Redis protocol -- the image ships redis-server as a symlink to
+      # valkey-server -- and Django's RedisCache backend uses only GET/SET/DEL/
+      # EXPIRE, so it is a drop-in here.
+      CACHE_PROVIDER: redis
+      REDIS_HOST: cache
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${SEAFILE_CACHE_PASSWORD:?}
+      # Without this the server logs to files inside the volume and Dozzle sees
+      # an empty stream.
+      SEAFILE_LOG_TO_STDOUT: "true"
+      # Upstream ships these as separate compose files (seadoc.yml,
+      # notification-server.yml, ai.yml) that this stack does not deploy, so the
+      # server must be told not to expect them.
+      ENABLE_SEADOC: "false"
+      ENABLE_NOTIFICATION_SERVER: "false"
+      ENABLE_SEAFILE_AI: "false"
+      # Upstream sets this and the image does not default to it, which is why it
+      # is here rather than omitted like SITE_ROOT below. Measured against
+      # seafileltd/seafile-pro-mc:13.0.27: seaserv/service.py opens with
+      # USE_GO_FILESERVER = False and raises it only from a
+      # `[fileserver] use_go_fileserver` key or this variable; nothing in the
+      # image writes that key -- setup never generates it -- and
+      # seafile-monitor.sh starts the go fileserver only when the variable holds
+      # the literal string "true". Omitted, the server would silently fall back
+      # to seaf-server's built-in C fileserver, which is not the configuration
+      # upstream's own seafile-server.yml describes.
+      ENABLE_GO_FILESERVER: "true"
+      # SITE_ROOT is deliberately not set. Upstream passes it explicitly as "/",
+      # and that is already the image's default in both places that read it:
+      # seahub/seahub/settings.py:157 assigns SITE_ROOT = '/' and overrides it
+      # only from a non-empty environment value (lines 1293-1294), and the start
+      # scripts export ${SITE_ROOT:-/} (seahub.sh:213, seafile.sh:91,
+      # seafile-background-tasks.sh:139). Setting it would restate a default
+      # rather than choose anything, and this platform serves Seafile at the root
+      # of its own port.
+      SEAF_SERVER_STORAGE_TYPE: disk
+      # true makes the container run as the seafile account throughout, which
+      # requires the bind-mounted volume to be 0777 or already owned by that
+      # uid; anything else exits 1 during setup. nas_storage declares this
+      # directory 0755 and claims no owner, so the container keeps its
+      # root-then-drop entrypoint and does the chown itself on first start.
+      NON_ROOT: "false"
+    healthcheck:
+      <<: *healthcheck-defaults
+      # This renders a page through nginx *and* gunicorn, so it is more than a
+      # port check -- but it is not a proof that the database link works: seahub
+      # serves its login page from cached constance config. The database proof is
+      # the POST /api2/auth-token/ assertion in roles/seafile, which authenticates
+      # against ccnet_db and seahub_db.
+      test: [CMD, curl, --fail, --silent, --show-error, "http://localhost/"]
+      # First boot creates three databases, runs every migration and builds the
+      # initial configuration before nginx binds; that is minutes, not seconds.
+      start_period: 300s
+    # An upload in flight has written blocks under seafile-data/storage and owes
+    # the database the rows that name them. A minute lets the request finish both
+    # halves, so a shutdown does not leave content-addressed blocks that no
+    # database row can ever resolve back into a file.
+    stop_grace_period: 1m
+
+  db:
+    <<: *service-defaults
+    container_name: seafile-db
+    # Seafile has no PostgreSQL backend, so this is the platform's only MariaDB.
+    # 10.11 is what upstream's own compose defaults SEAFILE_DB_IMAGE to, and it
+    # is an LTS series supported until 2028-02-16.
+    image: docker.io/library/mariadb:10.11.19@sha256:ce66c7be32a03aabe7241d0a10993a2db827ef652a35d25727d92a832ac8ef73
+    cpus: 1.0
+    labels:
+      dev.dozzle.group: seafile
+      dev.dozzle.name: db
+    volumes:
+      - ${SEAFILE_DB_PATH:?}:/var/lib/mysql
+    # Exactly the three variables upstream's own compose sets, plus the TZ every
+    # container on this platform carries, and no more. There is deliberately no
+    # MYSQL_DATABASE and no MYSQL_USER: Seafile's own setup connects
+    # as root and creates ccnet_db, seafile_db and seahub_db plus the account
+    # that owns them, so declaring any of that here would create a second,
+    # divergent owner.
+    environment:
+      TZ: ${TZ:?}
+      MYSQL_ROOT_PASSWORD: ${SEAFILE_DB_ROOT_PASSWORD:?}
+      MYSQL_LOG_CONSOLE: "true"
+      MARIADB_AUTO_UPGRADE: "1"
+    healthcheck:
+      <<: *healthcheck-defaults
+      # The image's own health command, taken verbatim from upstream's compose.
+      # --mariadbupgrade is what pairs with MARIADB_AUTO_UPGRADE above: it keeps
+      # the check red until an in-place upgrade has finished, so the server is
+      # not started against a data directory mid-migration.
+      test: [CMD, /usr/local/bin/healthcheck.sh, --connect, --mariadbupgrade, --innodb_initialized]
+    # InnoDB answers SIGTERM with a fast shutdown: connections dropped, then a
+    # checkpoint that flushes the buffer pool. This directory is recovery:
+    # critical and it is the only thing that can turn Seafile's blocks back into
+    # files, so a minute -- far past what a document store's working set costs --
+    # is what keeps a stop from becoming crash recovery.
+    stop_grace_period: 1m
+
+  cache:
+    <<: *service-defaults
+    container_name: seafile-cache
+    image: docker.io/valkey/valkey:9.1.2-alpine@sha256:ccfa19b0d743e48927e1c8c14e39e0acb97b5cea347fef0bfe340247fea920cd
+    cpus: 0.5
+    labels:
+      dev.dozzle.group: seafile
+      dev.dozzle.name: cache
+    # The image's own unprivileged account, named here because the `command:`
+    # below takes it away otherwise. The entrypoint drops to `valkey` only when
+    # argv[1] is literally `valkey-server`, and the command below is `sh` -- so
+    # without this line the server runs as root, which was measured and is not
+    # what the rest of the platform does. There is no volume, so there is no
+    # host ownership to reconcile and the image's own account is what to name.
+    user: valkey
+    environment:
+      TZ: ${TZ:?}
+      VALKEY_PASSWORD: ${SEAFILE_CACHE_PASSWORD:?}
+    # The password reaches valkey-server through the environment rather than
+    # through argv, so it never appears in the container's process table -- the
+    # plain `valkey-server --requirepass <secret>` form leaves it visible there
+    # on the entrypoint's own command line. Upstream runs its cache with no
+    # password at all; this platform authors every credential in the vault and
+    # pushes it, so the cache gets one too.
+    #
+    # --save "" --appendonly no are upstream's, copied rather than dropped, and
+    # they are what actually switches persistence off. Without them the
+    # compiled-in defaults apply -- `save 3600 1 300 100 60 10000` -- so the
+    # server would snapshot RDB files into /data in the container's writable
+    # layer, and `stop-writes-on-bgsave-error yes`, also a default, would turn one
+    # failed background save into refused writes on the cache seahub keeps its
+    # sessions in. The empty argument survives this form: the value is a plain
+    # YAML scalar, so the quotes reach the shell literally and `--save ""` arrives
+    # as an empty string.
+    command:
+      - sh
+      - -c
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --save "" --appendonly no
+    # Deliberately no volume, and nothing to put in one: the flags above leave the
+    # cache with no persistence at all, which is upstream's own choice -- sessions
+    # drop when it restarts -- kept here so this stack behaves like the one its
+    # documentation describes. There is nothing on disk to declare in nas_storage
+    # as a result.
+    healthcheck:
+      <<: *healthcheck-defaults
+      # The reply is matched, not just the exit status, and that is the whole
+      # point of the pipeline. valkey-cli exits 0 after printing "NOAUTH
+      # Authentication required." and after "WRONGPASS", so a bare
+      # `valkey-cli ping` reports healthy against a server this stack cannot
+      # actually use -- it fails only when nothing is listening at all. Requiring
+      # the literal PONG makes the probe able to say no to the case that matters
+      # here, which is the credential this platform pushes not matching.
+      test:
+        - CMD-SHELL
+        - valkey-cli --no-auth-warning -a "$$VALKEY_PASSWORD" ping | grep -q '^PONG$$'
+    # Nothing here is persisted, so this window is only about letting in-flight
+    # replies finish rather than about protecting data.
+    stop_grace_period: 30s
