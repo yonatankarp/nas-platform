@@ -1282,74 +1282,88 @@ check(failures,
         ntfy_verify_contract_valid?(ntfy_managed_tasks),
       "ntfy verification tasks do not pin Basic credentials, safety flags, and ordering")
 
+verification_cases = []
+
 if ntfy_verify_tasks.length == 3
-  responder = proc do |request|
-    if request["target"] == "/v1/account"
-      200
-    elsif request["method"] == "GET" && request["target"].start_with?("/nas-critical/")
-      200
-    else
-      403
+  # Both cases hand these parsed tasks to `task_playbook`, which only dumps
+  # them. Frozen because they are the same task objects `ntfy_managed_tasks`
+  # holds, which the self-test section mutates -- through a Marshal deep copy,
+  # and this is what says the copy is not optional.
+  deep_freeze(ntfy_verify_tasks)
+
+  verification_cases << lambda do |collected; responder, variables, expected_basic|
+    responder = proc do |request|
+      if request["target"] == "/v1/account"
+        200
+      elsif request["method"] == "GET" && request["target"].start_with?("/nas-critical/")
+        200
+      else
+        403
+      end
     end
-  end
-  with_http_probe(5, responder) do |port, requests|
-    variables = {
-      "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
-      "ntfy_port" => port,
-      "ntfy_managed_users_phase" => "verify",
-      "vault_managed_ntfy_users" => [
-        {
-          "username" => "reader", "password" => "managed-plaintext", "role" => "user",
-          "access" => [
-            { "topic" => "nas-critical", "permission" => "read-only" },
-            { "topic" => "private", "permission" => "deny" }
-          ]
-        }
-      ]
-    }
-    run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
-      check(failures, status.success?, "ntfy verification fixture failed: #{output.lines.last&.strip}")
+    with_http_probe(5, responder) do |port, requests|
+      variables = {
+        "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+        "ntfy_port" => port,
+        "ntfy_managed_users_phase" => "verify",
+        "vault_managed_ntfy_users" => [
+          {
+            "username" => "reader", "password" => "managed-plaintext", "role" => "user",
+            "access" => [
+              { "topic" => "nas-critical", "permission" => "read-only" },
+              { "topic" => "private", "permission" => "deny" }
+            ]
+          }
+        ]
+      }
+      run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
+        check(collected, status.success?, "ntfy verification fixture failed: #{output.lines.last&.strip}")
+      end
+      expected_basic = "Basic #{Base64.strict_encode64('reader:managed-plaintext')}"
+      check(collected, requests.length == 5 && requests.all? do |request|
+        request.dig("headers", "authorization") == expected_basic
+      end, "ntfy verification did not use the managed user's Basic credentials on every request")
+      check(collected,
+            requests.map { |request| [request["method"], request["target"], request["body"]] } == [
+              ["GET", "/v1/account", ""],
+              ["GET", "/nas-critical/json?poll=1", ""],
+              ["GET", "/private/json?poll=1", ""],
+              ["POST", "/nas-critical", "Managed-user provisioning verification"],
+              ["POST", "/private", "Managed-user provisioning verification"]
+            ],
+            "ntfy verification endpoints, methods, or bodies differ")
     end
-    expected_basic = "Basic #{Base64.strict_encode64('reader:managed-plaintext')}"
-    check(failures, requests.length == 5 && requests.all? do |request|
-      request.dig("headers", "authorization") == expected_basic
-    end, "ntfy verification did not use the managed user's Basic credentials on every request")
-    check(failures,
-          requests.map { |request| [request["method"], request["target"], request["body"]] } == [
-            ["GET", "/v1/account", ""],
-            ["GET", "/nas-critical/json?poll=1", ""],
-            ["GET", "/private/json?poll=1", ""],
-            ["POST", "/nas-critical", "Managed-user provisioning verification"],
-            ["POST", "/private", "Managed-user provisioning verification"]
-          ],
-          "ntfy verification endpoints, methods, or bodies differ")
   end
 
-  with_http_probe(3, proc { |_request| 200 }) do |port, requests|
-    variables = {
-      "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
-      "ntfy_port" => port,
-      "ntfy_managed_users_phase" => "verify",
-      "vault_managed_ntfy_users" => [{
-        "username" => "auditor", "password" => "admin-plaintext", "role" => "admin",
-        "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
-      }]
-    }
-    run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
-      check(failures, status.success?,
-            "ntfy administrator verification fixture failed: #{output.lines.last&.strip}")
+  verification_cases << lambda do |collected; variables, expected_basic|
+    with_http_probe(3, proc { |_request| 200 }) do |port, requests|
+      variables = {
+        "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
+        "ntfy_port" => port,
+        "ntfy_managed_users_phase" => "verify",
+        "vault_managed_ntfy_users" => [{
+          "username" => "auditor", "password" => "admin-plaintext", "role" => "admin",
+          "access" => [{ "topic" => "admin-topic", "permission" => "read-write" }]
+        }]
+      }
+      run_playbook(task_playbook(ntfy_verify_tasks, variables)) do |_tmp, output, status|
+        check(collected, status.success?,
+              "ntfy administrator verification fixture failed: #{output.lines.last&.strip}")
+      end
+      expected_basic = "Basic #{Base64.strict_encode64('auditor:admin-plaintext')}"
+      check(collected,
+            requests.all? { |request| request.dig("headers", "authorization") == expected_basic } &&
+              requests.map { |request| [request["method"], request["target"]] } == [
+                ["GET", "/v1/account"],
+                ["GET", "/admin-topic/json?poll=1"],
+                ["POST", "/admin-topic"]
+              ],
+            "ntfy administrator verification did not prove effective read-write access")
     end
-    expected_basic = "Basic #{Base64.strict_encode64('auditor:admin-plaintext')}"
-    check(failures,
-          requests.all? { |request| request.dig("headers", "authorization") == expected_basic } &&
-            requests.map { |request| [request["method"], request["target"]] } == [
-              ["GET", "/v1/account"],
-              ["GET", "/admin-topic/json?poll=1"],
-              ["POST", "/admin-topic"]
-            ],
-          "ntfy administrator verification did not prove effective read-write access")
   end
 end
+
+in_parallel_cases(failures, verification_cases) { |fixture, collected| fixture.call(collected) }
 
 if !ntfy_tasks.empty?
   provisioned, output, status = run_ntfy_fixture
