@@ -41,7 +41,7 @@ test_cleanup_service_registry() {
   }
 
   for expected_cleanup_project in ntfy beszel dozzle audiobookshelf komga jellyfin \
-    immich paperless arr downloaders; do
+    immich paperless seafile arr downloaders; do
     cleanup_project_registered=false
     for registered_cleanup_project in $cleanup_sandbox_projects; do
       [ "$registered_cleanup_project" != "$expected_cleanup_project" ] ||
@@ -59,7 +59,7 @@ test_cleanup_service_registry() {
     dozzle dozzle-alert-relay dozzle-socket-proxy audiobookshelf komga jellyfin \
     immich-server immich-machine-learning immich-redis immich-postgres \
     paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \
-    paperless-tika; do
+    paperless-tika seafile seafile-db seafile-cache; do
     cleanup_service_registered=false
     for registered_cleanup_project in $cleanup_sandbox_projects; do
       cleanup_sandbox_project_services "$registered_cleanup_project"

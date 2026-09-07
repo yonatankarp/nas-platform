@@ -252,6 +252,26 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
+    # The operator switch Seafile is gated on, requested by the lane that claims
+    # to converge it. The sandbox runs -i inventory/local.yml, which binds to
+    # nas_hosts -- the same group as the real NAS -- so there is no group_vars in
+    # which "false on the NAS, true in CI" can be written. Passed on every lane
+    # and not only this one, for the reason #295 gives: a lane handed the other
+    # state passes identically and proves nothing.
+    #
+    # The full lane is here because run_contracts.rb --execute runs every
+    # registered contract on it, seafile.sh among them, and a contract run
+    # against a stack the lane declined to deploy fails.
+    #
+    # This is an override, not a default: the day
+    # inventory/group_vars/all/main.yml turns the switch on for real, this line
+    # silently keeps Seafile out of smoke, idempotence-check and every other
+    # lane, so it has to be flipped or deleted in the same change.
+    integration_seafile_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      seafile|full) integration_seafile_deployment_enabled=true ;;
+    esac
+
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
     # It is passed explicitly rather than left to inventory, for the same reason
@@ -1177,6 +1197,26 @@ EOF
         -f "$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.integration.yml" \
         up -d --force-recreate --wait
       run_paperless_contract assert-persistence
+    fi
+
+    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is seafile; then
+      run_seafile_contract run
+      if [ $INTEGRATION_SUITE = seafile ]; then
+        # Destructive, and confined to this lane: it restarts the server and
+        # reads seafevents.conf back. Never reached from the full lane's
+        # run_contracts.rb sweep, which runs every registered contract under a
+        # 60-second cap and would TERM this one mid-restart.
+        run_seafile_contract restart-persistence
+        # The restart lands BEFORE the second converge deliberately. If Seafile
+        # rewrites [INDEX FILES] on every start rather than only on first run,
+        # the converge that follows repairs it, reports changed, and the recap
+        # check below fails -- which is that refutation arriving as a lane
+        # failure instead of as a contract that passed and proved nothing.
+        run_enabled_idempotence seafile
+        run_play --tags seafile --check --diff
+        run_seafile_verify_only
+        printf 'SEAFILE_RUNTIME_VERIFIED\n'
+      fi
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it
       # would add an 800 MB external model download. The Immich suite owns the

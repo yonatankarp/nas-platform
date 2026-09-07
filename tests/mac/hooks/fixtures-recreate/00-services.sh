@@ -70,4 +70,5 @@ mac_recreate_and_reassert seerr seerr seerr seerr run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container to recreate'

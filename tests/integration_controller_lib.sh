@@ -25,6 +25,7 @@ fixture_vars_file=${fixture_vars_file?}
 integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
+integration_seafile_deployment_enabled=${integration_seafile_deployment_enabled?}
 
 run_play() {
   ansible-playbook \
@@ -43,6 +44,7 @@ run_play() {
     -e media_usenet_enabled="$integration_media_usenet_enabled" \
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
+    -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$playbook" "$@"
@@ -171,6 +173,12 @@ run_contract() {
       set -- PLATFORM_PAPERLESS_WEBSERVER_CONTAINER="$integration_project_namespace-paperless-webserver" \
         "$@"
       ;;
+    seafile)
+      # The three container names the contract probes are all derived from the
+      # project namespace, so this is the only extra the lane owes it.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        "$@"
+      ;;
     *)
       printf 'unknown integration contract: %s\n' "$contract_service" >&2
       exit 1
@@ -239,6 +247,10 @@ run_jellyfin_contract() {
 
 run_immich_contract() {
   run_contract immich "$@"
+}
+
+run_seafile_contract() {
+  run_contract seafile "$@"
 }
 
 run_immich_clean_restore() {
@@ -464,6 +476,7 @@ run_verification() {
     -e platform_compose_kind=integration \
     -e platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
+    -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"
@@ -507,6 +520,10 @@ run_trailarr_verify_only() {
 
 run_seerr_verify_only() {
   run_verification seerr
+}
+
+run_seafile_verify_only() {
+  run_verification seafile
 }
 
 # Audiobookshelf is the one reader the seerr lane's own suite tags leave
