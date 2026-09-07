@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(ruby tests/:*)",
+      "Bash(python3 tests/:*)",
+      "Bash(python3 -m unittest:*)",
+      "Bash(tests/validate-policy.sh:*)",
+      "Bash(tests/validate-docs.sh:*)",
+      "Bash(tests/integration.sh --list-suites)",
+      "Bash(tests/integration.sh --describe-suite:*)",
+      "Bash(ansible-lint:*)",
+      "Bash(ansible-galaxy collection install:*)",
+      "Bash(ansible --version)",
+      "Bash(ansible-playbook --version)",
+      "Bash(ansible-inventory:*)",
+      "Bash(docker buildx imagetools inspect:*)",
+      "Bash(docker inspect:*)",
+      "Bash(docker compose config:*)",
+      "Bash(docker ps:*)",
+      "Bash(sh -n:*)",
+      "Bash(shellcheck:*)",
+      "Bash(gh pr view:*)",
+      "Bash(gh pr diff:*)",
+      "Bash(gh run list:*)",
+      "Bash(gh run view:*)",
+      "Bash(rtk git status:*)",
+      "Bash(rtk git diff:*)",
+      "Bash(rtk git log:*)",
+      "Bash(rtk git show:*)",
+      "Bash(rtk git branch:*)",
+      "Bash(tests/integration_suite_test.sh:*)",
+      "Bash(claude --version)"
+    ],
+    "ask": [
+      "Bash(ansible-playbook:*)",
+      "Bash(tests/mac/run.sh:*)",
+      "Bash(tests/integration.sh:*)"
+    ],
+    "deny": [
+      "Read(./inventory/group_vars/all/vault.yml)",
+      "Read(./**/.env)",
+      "Read(./**/*.key)",
+      "Read(./**/*.pem)",
+      "Bash(ansible-vault decrypt:*)"
+    ]
+  },
+  "env": {
+    "LANG": "en_US.UTF-8"
+  }
+}
