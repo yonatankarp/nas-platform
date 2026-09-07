@@ -59,9 +59,31 @@ policy_shard=${1:-}
 # (2026-09-07): 2342s of check time across 155 checks, whose ten slowest ran from
 # 247s down to 75s. Those ten are placed by hand so that no two of the top three
 # share a shard; every other line is round robin, which balances count, because
-# count is all a partition without a cost table can balance. Rebalancing as
-# checks change is a manual act, and the slowest-checks report below is what
-# informs it.
+# count is all a partition without a cost table can balance.
+#
+# SPREAD THE WAITS, and this rule outranks the one above it. A check that spends
+# its time waiting -- on a timeout, a poll, a port -- still occupies one of the
+# four worker slots, but it consumes none of the CPU the other three are
+# competing for. Two long waits in one shard therefore cut that shard's effective
+# pool from four workers to two, and every CPU-bound check in it stretches. This
+# is measured, not reasoned: `beszel_contract_test.rb` and its `--self-test` are
+# 86s and 85s of pure wait, #484 moved them into the same shard, and that shard's
+# *other* checks inflated by 298s on 412s of work added -- `komga_library_
+# reconciliation_test.rb` 134s to 236s, `dozzle_contract_test.rb --self-test`
+# 111s to 185s -- while the two shards that shed work got 15% and 24% cheaper in
+# the same run. The move was reverted. Keep those two apart.
+#
+# Rebalancing as checks change is a manual act, and the slowest-checks report
+# below is what informs it -- but read #484 before trusting an arithmetic
+# projection from it. A check's recorded seconds are its wall time at that
+# shard's load, so they are not work you can carry to another shard: the
+# rebalance above predicted a largest shard of 1170s and measured 1453s. #484
+# carries the isolated per-check table (elapsed and CPU measured separately, one
+# check at a time) that says which checks are work and which are wait, and the
+# arithmetic showing the gate cannot beat its own longest check -- 241-305s for
+# `config_managed_users_test.rb --self-test` against a worst observed shard wall
+# of 394s, so a perfect partition is worth about 90s and the two levers that
+# actually lower the floor are elsewhere.
 #
 # One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
 # that note the manifest can carry -- a comment between the heredoc markers would

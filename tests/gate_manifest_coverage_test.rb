@@ -82,12 +82,26 @@ failures = []
 # rest are round robin through the manifest, which balances count because count
 # is all a partition without a cost table can balance.
 #
+# SPREAD THE WAITS, and this outranks the rule above. A check that spends its
+# time waiting still holds one of the four worker slots while consuming none of
+# the CPU the other three compete for, so two long waits in one shard cut its
+# effective pool from four workers to two. #484 put `beszel_contract_test.rb`
+# (86s of wait) and its `--self-test` (85s) in the same shard and that shard's
+# other checks inflated by 298s; the move was reverted. Keep them apart.
+#
 # REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
 # manual act and it is meant to be: the gate prints its ten slowest checks on
 # every run, pass or fail, so the figures above can be replaced with a current
-# measurement rather than re-derived. Move lines between the shard blocks here
-# and in tests/validate-policy.sh together; every assertion below exists to fail
-# when only one of the two moves.
+# measurement rather than re-derived. What that report cannot support is
+# arithmetic: a check's seconds are its wall time at that shard's load, not work
+# that can be carried to another shard, and #484 predicted 1170s for the shard
+# that measured 1453s by treating them as though it could. #484 also carries the
+# isolated per-check table -- elapsed and CPU measured separately, one check at a
+# time -- which is the load-invariant version, and the argument that a perfect
+# three-way split is worth only about 90s because the gate cannot finish faster
+# than its own longest check. Move lines between the shard blocks here and in
+# tests/validate-policy.sh together; every assertion below exists to fail when
+# only one of the two moves.
 
 SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/policy_test.rb
