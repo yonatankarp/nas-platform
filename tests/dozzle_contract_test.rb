@@ -90,7 +90,7 @@ ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The nine base Compose files the labels program is handed, in the wrapper's
+# The ten base Compose files the labels program is handed, in the wrapper's
 # order. Stated here so a row can break exactly one of them and so the wrapper
 # layer can assert the list has not drifted from the wrapper's own invocation.
 BASE_COMPOSE_FILES = %w[
@@ -100,6 +100,7 @@ BASE_COMPOSE_FILES = %w[
   services/immich/compose.yml
   services/jellyfin/compose.yml
   services/komga/compose.yml
+  services/nextcloud/compose.yml
   services/ntfy/compose.yml
   services/paperless-ngx/compose.yml
   services/seafile/compose.yml
@@ -1374,7 +1375,7 @@ DOCKER_STUB = <<~STUB
   #!/bin/sh
   # Answers `docker compose --project-name dozzle-contract-<stack>-<variant> ... config`
   # with the canned render for that stack, and nothing else. The wrapper renders
-  # twenty-seven times in a static run; none of them needs a daemon here.
+  # thirty times in a static run; none of them needs a daemon here.
   project=
   for argument in "$@"; do
     case $argument in
@@ -1402,8 +1403,8 @@ WRAPPER_PROGRAM_SOURCES = {
 # here so the wrapper layer can assert the wrapper still renders exactly these.
 RENDERED_STACKS = {
   "beszel" => "beszel", "dozzle" => "dozzle", "paperless-ngx" => "paperless",
-  "immich" => "immich", "seafile" => "seafile", "audiobookshelf" => "",
-  "jellyfin" => "", "komga" => "", "ntfy" => ""
+  "immich" => "immich", "seafile" => "seafile", "nextcloud" => "nextcloud",
+  "audiobookshelf" => "", "jellyfin" => "", "komga" => "", "ntfy" => ""
 }.freeze
 
 def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))

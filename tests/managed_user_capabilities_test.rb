@@ -164,6 +164,20 @@ EXPECTED_SERVICES = {
       "authenticate" => "api2/auth-token",
       "reconcile" => "none; consumed only while the user table is empty"
     }
+  ),
+  # Declared in the environment like Seafile's and consumed just as narrowly,
+  # but with a reconcile interface Seafile does not have: occ can reset the
+  # password of an account that already exists. Conditional because
+  # roles/nextcloud probes first -- a reset re-hashes the password and drops the
+  # sessions derived from it, and the poller converges every five minutes.
+  "nextcloud" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "declarative_environment",
+    "interfaces" => {
+      "list" => "NEXTCLOUD_ADMIN_USER",
+      "create" => "NEXTCLOUD_ADMIN_USER/NEXTCLOUD_ADMIN_PASSWORD",
+      "authenticate" => "ocs/v2.php/cloud/user",
+      "reconcile" => "occ user:resetpassword, on an authentication failure only"
+    }
   )
 }.freeze
 
