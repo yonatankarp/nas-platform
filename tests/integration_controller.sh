@@ -1240,6 +1240,32 @@ EOF
         run_play --tags seafile --check --diff
         run_seafile_verify_only
         printf 'SEAFILE_RUNTIME_VERIFIED\n'
+
+        # The restore rehearsal, and it is last in this lane because it is the
+        # only destructive thing in it: it drops ccnet_db, seafile_db and
+        # seahub_db and puts them back from the backup roles/seafile took. It
+        # must sit AFTER run_enabled_idempotence for the reason that check
+        # exists -- the converge in the middle of it deliberately changes
+        # something, so a rehearsal placed earlier would fail idempotence for a
+        # change the lane itself asked for.
+        #
+        # Three steps rather than one, and the converge between them is the
+        # whole design. The seed uploads a file; the converge takes THIS
+        # PLATFORM'S backup, forced because no image changed and no upgrade is
+        # pending; the assert restores that backup and downloads the file back
+        # byte for byte. A rehearsal that dumped the database itself would prove
+        # the contract rather than the platform, which is the vacuous shape this
+        # repository keeps closing.
+        #
+        # What it settles cannot be settled any other way: Seafile keeps the
+        # mapping from content-addressed blocks back to filenames only in the
+        # database, so a restore that puts the schemas back and cannot resolve a
+        # filename into bytes is exactly the failure the backup exists to
+        # prevent, and only a download shows it.
+        run_seafile_contract restore-rehearsal-seed
+        run_play --tags seafile -e seafile_pre_upgrade_backup_force=true
+        run_seafile_contract restore-rehearsal-assert
+        printf 'SEAFILE_RESTORE_REHEARSED\n'
       fi
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it

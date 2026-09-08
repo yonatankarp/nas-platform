@@ -2,21 +2,29 @@
 set -eu
 set +x
 
-# Three modes, and the third one exists because of how contracts are swept.
+# Five modes, and three of them exist because of how contracts are swept.
 # tests/run_contracts.rb spawns every registered contract with NO argument --
 # so `run` is what a registry sweep reaches -- under CONTRACT_TIMEOUT_SECONDS,
 # 60 by default, and TERMs the process group when that expires. Restarting the
 # Seafile server and waiting for it to serve again is minutes of work
 # (roles/seafile budgets 600 seconds for the deployment wait alone), so it
-# cannot live in `run`. It is a mode of its own, invoked by the seafile lane
-# directly, on the precedent tests/contracts/immich.sh set with its
+# cannot live in `run`; dropping three databases and restoring them is both
+# slower and destructive. They are modes of their own, invoked by the seafile
+# lane directly, on the precedent tests/contracts/immich.sh set with its
 # clean-restore-seed / clean-restore-assert pair: modes the registry sweep never
 # selects because it passes no argument at all.
+#
+# The two rehearsal modes are a pair with a converge between them. The seed
+# uploads a file, the lane then runs roles/seafile with
+# seafile_pre_upgrade_backup_force so that THIS PLATFORM'S backup is what gets
+# taken, and the assert restores that backup and downloads the file back. A
+# single mode could not do that without dumping the database itself, which would
+# prove the contract rather than the platform.
 mode=${1:-run}
 case $mode in
-  static|run|restart-persistence) ;;
+  static|run|restart-persistence|restore-rehearsal-seed|restore-rehearsal-assert) ;;
   *)
-    printf '%s\n' 'seafile contract accepts only static, run or restart-persistence' >&2
+    printf '%s\n' 'seafile contract accepts only static, run, restart-persistence, restore-rehearsal-seed or restore-rehearsal-assert' >&2
     exit 2
     ;;
 esac
