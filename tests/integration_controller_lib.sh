@@ -41,9 +41,11 @@ integration_seafile_deployment_enabled=${integration_seafile_deployment_enabled?
 # inventory/local.yml, so it is a nas_hosts run like the NAS itself and there is
 # no group in which "2.18.0 there, 2.24.4 here" can be written; the lane requests
 # it instead, exactly as it requests every other state it claims to converge.
+# It sits below rather than first because tests/integration_controller_execution_test.sh
+# pins the leading argv of this invocation as one literal string, and a flag in
+# front of `-i` is a flag in front of that pin.
 run_play() {
   ansible-playbook \
-    -e nas_compose_minimum=2.24.4 \
     -i inventory/local.yml \
     --vault-password-file "$vault_password_file" \
     -e @"$vault_file" \
@@ -60,6 +62,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
+    -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$playbook" "$@"
