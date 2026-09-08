@@ -77,4 +77,5 @@ mac_recreate_and_reassert seafile seafile seafile 'seafile db cache' run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane has no Nextcloud container to recreate'

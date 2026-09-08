@@ -224,7 +224,7 @@ build_tree "$tree"
 # registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 16 of 16 registered services (ran 7, delegated 0, exempt 9)'
+  'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -235,7 +235,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 16 of 16 registered services (ran 12, delegated 1, exempt 3)'
+  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 12, delegated 1, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -251,7 +251,7 @@ seafile run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 3, exempt 2)'
+  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -266,7 +266,7 @@ seafile run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 16 of 16 registered services (ran 14, delegated 0, exempt 2)'
+  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 14, delegated 0, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -307,7 +307,7 @@ proof-seafile |runtime/services/seafile/.env |current/services/seafile/compose.y
 # entirely from the sibling filenames its roster pins.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
-  'mac drift hooks: covered 16 of 16 registered services (ran 0, delegated 13, exempt 3)'
+  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 13, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
@@ -318,7 +318,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 # could not ask.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
-  'mac pre-converge hooks: covered 16 of 16 registered services (ran 0, delegated 1, exempt 15)'
+  'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
 # A drift hook deleted must fail the group. This is the regression the group had
@@ -368,7 +368,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 3, exempt 2)'
+  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook

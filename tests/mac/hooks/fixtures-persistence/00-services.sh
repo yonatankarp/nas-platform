@@ -34,4 +34,5 @@ done
 mac_assert_service_coverage fixtures-persistence 00-services.sh "$mac_persisted" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=it has no contract suite of its own to reassert persistence with'
+ntfy=it has no contract suite of its own to reassert persistence with
+nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane starts no Nextcloud container to reassert persistence against'
