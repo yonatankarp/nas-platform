@@ -523,6 +523,52 @@ if failures.empty?
   failures << "no Nextcloud Jinja expression may contain a raw tag, which Jinja will not process" unless
     raw_inside_expression.empty?
 
+  # --- Python escape sequences, and the trap #500 fell into -----------------
+  #
+  # A backslash escape inside a `{{ }}` expression is never an escape under
+  # Ansible. AnsibleLexer pre-escapes every backslash in an expression's string
+  # constants before Jinja's own lexer can run its unicode_escape pass over
+  # them, so YAML is the only layer that processes a backslash and
+  # regex_replace('^(.*)_x$', '\1') means a backreference here rather than the
+  # byte \x01 it would mean under Jinja alone. The price is that '\n' inside an
+  # expression stays two characters, and a split on it finds no separator.
+  #
+  # UNLIKE THE RAW-TAG GUARD ABOVE, THIS ONE HAD A SUBJECT. Until the commit
+  # that added it, roles/nextcloud/tasks/reconcile_trusted_domains.yml split
+  # occ's output on '\n': the live trusted_domains array read as one blob, every
+  # managed domain read as missing, and the repair loop re-set all three on
+  # every converge. CI found it -- the nextcloud lane's second converge reported
+  # changed=1 -- and no check in this repository would have. It is the same
+  # shape as #492: an expression that is silently wrong rather than an error,
+  # producing a clean PLAY RECAP and a wrong answer.
+  #
+  # Scoped to `{{ }}` regions rather than to every string this role writes,
+  # because the pre-escaping is scoped that way too: AnsibleLexer exempts `{% %}`
+  # statements, and a folded `{% set p = raw.split('\n') %}` really does split on
+  # a newline while the `{{ }}` beside it does not. Measured on ansible-core
+  # 2.21.4, along with the fact that the YAML quoting does not decide it: folded,
+  # single-quoted and double-quoted scalars all read one element.
+  #
+  # Restricted to \n, \t and \r rather than to every backslash, because banning
+  # every backslash would ban the backreference the pre-escaping exists to make
+  # work. WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an
+  # escape handed to a regex filter is processed by Python's own re module, so
+  # regex_replace('\t', ' ') is correct and this guard would refuse it. No task
+  # here does that; the exemption belongs on this assertion when one arrives.
+  #
+  # The option this makes live, recorded rather than taken: this is the second
+  # scanner in this file reading the same regions, and a second ROLE needing
+  # either of them is the moment to promote the class to tests/policy_test.rb
+  # and sweep every role once instead of copying it a third time -- the same
+  # choice tests/contracts/seafile-static.rb records for the raw-tag half.
+  python_escape_in_expression = ROLE_TASK_FILES.flat_map do |file|
+    task_strings(role_tasks(root, file)).select do |value|
+      jinja_expression_regions(value).any? { |region| region.match?(/\\[ntr]/) }
+    end
+  end
+  failures << "no Nextcloud Jinja expression may contain a backslash escape, which Ansible will not process" unless
+    python_escape_in_expression.empty?
+
   # A bare `docker inspect` prints .Config.Env, which for this stack is the
   # rendered environment file: the PostgreSQL password, the Nextcloud
   # administrator password and the Valkey password in full. Every inspection this

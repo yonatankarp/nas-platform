@@ -632,6 +632,27 @@ ROLE_STATIC_ROWS = [
     expects: "no Nextcloud Jinja expression may contain a raw tag, which Jinja will not process"
   },
   {
+    # #500's OWN defect, planted rather than imagined. Unlike the raw-tag row
+    # above, this class had a real subject in the shipped role: until the commit
+    # that added the guard, reconcile_trusted_domains.yml split occ's output on
+    # '\n' inside a `{{ }}`, where Ansible processes no backslash escape at all,
+    # so the live trusted_domains array read as one blob and the repair loop
+    # re-set every managed domain on every converge. The nextcloud lane's second
+    # converge is what found it; nothing in this repository would have.
+    #
+    # The planted value is TWO characters, which is the whole trick of the row:
+    # a Ruby "\n" here would plant a real newline, Psych would dump a real
+    # newline, the scanner would see nothing and this row would be vacuous while
+    # reading as correct. Single quotes are load-bearing.
+    name: "a Python escape sequence inside a Jinja expression",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "report") do |document|
+        document.first["name"] = '{{ "Report the Nextcloud\ndeployment" }}'
+      end
+    },
+    expects: "no Nextcloud Jinja expression may contain a backslash escape, which Ansible will not process"
+  },
+  {
     # A bare `docker inspect` prints .Config.Env, which for this stack is three
     # passwords in full. Vacuous against the shipped role, which inspects
     # nothing, and this row is what proves it stops being vacuous.
@@ -1515,6 +1536,20 @@ PROGRAM_MUTATIONS = [
     from: "raw_inside_expression.empty?",
     to: "true",
     rows: ["a raw tag inside a Jinja expression"]
+  },
+  {
+    # The one guard in this file that was written against a defect rather than
+    # ahead of one, so this row proves it bites on the thing CI actually caught.
+    # `:detects` stays at the default for the reason recorded above: naming the
+    # assertion's own message selects judge's wrong-reason verdict, which passes
+    # exactly when a sibling fired first. Confirmed instead by running the
+    # program against the planted fixture directly -- one failure line, and it
+    # is this assertion's.
+    label: "the Python escape sequence scanner",
+    program: :static,
+    from: "python_escape_in_expression.empty?",
+    to: "true",
+    rows: ["a Python escape sequence inside a Jinja expression"]
   },
   {
     label: "the narrowed-inspection rule",
