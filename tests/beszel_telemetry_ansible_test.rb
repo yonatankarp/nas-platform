@@ -17,7 +17,7 @@ ROLE_VARS = File.join(ROOT, "roles/beszel/vars/main.yml")
 # This test executes real ansible-playbook runs and asserts exact output, so it is
 # pinned to the version CI installs rather than tolerating a range. Stated once and
 # maintained by Renovate; tests/ci/workflow_test.rb proves it still matches ci.yml.
-REQUIRED_ANSIBLE_CORE = "2.21.3" # renovate: datasource=pypi depName=ansible-core
+REQUIRED_ANSIBLE_CORE = "2.21.4" # renovate: datasource=pypi depName=ansible-core
 
 version_output, version_status = Open3.capture2("ansible-playbook", "--version")
 abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CORE}" unless
