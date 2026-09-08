@@ -580,6 +580,12 @@ if failures.empty?
   # today, so the guard lives here rather than in tests/policy_test.rb; the defect
   # class is not Seafile's and the next role to need a `--format` inherits this
   # comment along with the trap.
+  #
+  # Scope, stated because the diagnostic does not carry it: this reads the task
+  # files ROLE_TASK_FILES names -- pre_upgrade_backup among them, which is where
+  # the defect was -- and not templates/. env.j2 and backup_manifest.j2 are Jinja
+  # too and neither writes a Go template today; a template that starts to would
+  # need this widened rather than assumed covered.
   raw_inside_expression = ROLE_TASK_FILES.flat_map do |file|
     task_strings(role_tasks(root, file)).select do |value|
       jinja_expression_regions(value).any? { |region| region.include?("{%") }
