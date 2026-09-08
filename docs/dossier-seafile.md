@@ -25,9 +25,10 @@ contradicts its own documentation, and which decisions were forced rather than
 chosen.
 
 **Calibrate the markers before reading, because this dossier's evidence came
-from three places and the other six drew on one.** Every other dossier's
-Confirmed claims were requests issued against a container the author ran on a
-workstation. Seafile's split three ways, and the difference is load-bearing:
+from four places of unequal strength and the other six drew on one.** Every other
+dossier's Confirmed claims were requests issued against a container the author
+ran on a workstation. Only the last of the four below is that, and it is the
+smallest of them here. The difference is load-bearing:
 
 - **The CI `seafile` lane.** Real containers, a real Docker socket, a Linux
   runner. This is genuinely Confirmed and it is where every runtime number below
@@ -42,20 +43,33 @@ workstation. Seafile's split three ways, and the difference is load-bearing:
   precise — parts of it were taken at instruction level out of a compiled
   `seaf-server`, and it is still reading.
 - **Measurements taken on the authoring machine against a single container**, not
-  against the stack. This is the strength every other dossier's Confirmed claims
-  have, and it is the smallest source here, because the authoring machine cannot
-  run this stack: Docker Desktop ignores `chown` on bind mounts. What it could
-  measure is what one image does with one argument — how `docker inspect` reports
-  a field, what `mariadb-dump` does with an option it rejects — and those bullets
-  say so where they appear.
+  against the stack — the authoring machine cannot run this stack at all, because
+  Docker Desktop ignores `chown` on bind mounts. What it can measure is what one
+  image does with one argument: how `docker inspect` reports a field, what
+  `mariadb-dump` does with an option it rejects. Those bullets name the image and
+  the Docker version where they appear.
 
-And the flat statement the rest of this file should be read against:
-**Seafile has never run on the NAS.** `seafile_deployment_enabled` is `false` in
-[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml) and
-nothing but the two disposable lanes turns it on — the CI `seafile` suite
-through a per-suite override, the Mac lane through `-e` on its own
-`ansible-playbook`. The flip is deliberately its own change, because the first
-converge permanently fixes credentials no later converge can move.
+And the flat statement the rest of this file should be read against, scoped to
+when it was written because it is expected to stop being true:
+**as of this dossier, Seafile has never run on the NAS.**
+`seafile_deployment_enabled` was `false` in
+[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml)
+through all five slices, and nothing but the two disposable lanes turned it on —
+the CI `seafile` suite through a per-suite override, the Mac lane through `-e` on
+its own `ansible-playbook`. The flip is deliberately its own change, and the
+change immediately after this one: the first converge permanently fixes
+credentials no later converge can move, which is why it is worth watching rather
+than merging and walking away from.
+
+Read every "has never executed" in this file against that date rather than
+against the tree you are holding. **The one that does not expire is the
+distinction itself** — the lane, the stub and the image are three different
+strengths of evidence whatever the flag says, and a converge on the NAS upgrades
+some of these claims without touching the rest. What it upgrades first is
+narrower than it looks: a single converge exercises the boot path, the
+credential probe and the verification, and it exercises neither the wedged-boot
+recovery nor the forced backup, because both need a failure or a flag that a
+routine converge does not supply.
 
 ## Three decisions that were forced rather than chosen
 
@@ -170,8 +184,8 @@ retire it, all Inferred:
   `/etc/sysctl.conf` was dead on arrival; the hook that survives is
   `/usr/local/etc/init.d/SXXname.sh`.
 
-Two smaller corrections in the same area, both Inferred and both recorded so the
-search slice does not re-derive them. The image to use is stock
+Two smaller corrections in the same area, both Inferred and both recorded so
+whoever picks up #497 does not re-derive them. The image to use is stock
 `elasticsearch:8.15.0` — `seafileltd/elasticsearch-with-ik` is historical, and
 Seafile 13.0's own `.env` pins the upstream one. And `discovery.type=single-node`
 **downgrades** bootstrap failures to warnings rather than skipping them, so
@@ -609,25 +623,33 @@ where each lifetime is argued beside the line it renders.
   has not been tested here, and is marked Unverified rather than assumed to match
   either of the two cases above.
 
-The practical consequence is the reason the deployment flag is still off.
-**The first converge on the NAS permanently fixes the one-shot half of that
-list**, and it is the one converge worth watching rather than merging and walking
-away from.
+The practical consequence is why the deployment flag was held off through all
+five slices rather than flipped in one of them. **The first converge on the NAS
+permanently fixes the one-shot half of that list.** After it, those credentials
+are no longer things the vault decides — they are things the vault records, and
+the vault is only still correct because nothing has diverged yet. The root
+password is the one exception worth holding onto, because it is the only member
+of that half whose divergence something actually detects.
 
 ## What remains unsettled
 
-- **Search is genuinely undecided: Elasticsearch or SeaSearch.** SeaSearch is a
-  first-class option in 13.0 and needs no host sysctl, no `mem_limit`, no
-  ulimits and no JVM tuning; it costs two vault credentials and a floating
-  `1.0-latest` tag, which this repository's pinning convention has no shape for.
-  `pro.py` raises if both are enabled, so this is a choice and not a spectrum. If
-  Elasticsearch: `bootstrap.py` already writes `es_host = elasticsearch`
+- **Search is deferred, not merely undecided, and it is #497 now.** Seafile ships
+  without full-text search over content: filename search works, content search
+  does not. The engine choice — Elasticsearch or SeaSearch, and `pro.py` raises
+  if both are enabled, so it is exclusive — was split out of #445 so the rest
+  could ship and be used. Nothing here should be read as a slice about to land.
+  What the dossier contributes to that decision: SeaSearch needs no host sysctl,
+  no `mem_limit`, no ulimits and no JVM tuning, but ships on a floating
+  `1.0-latest` tag that this repository's `repo:1.2.3@sha256:` rule has no shape
+  for — so the lighter option may need a policy exception before it is lighter.
+  If Elasticsearch: `bootstrap.py` already writes `es_host = elasticsearch`
   unconditionally on first run, so naming the Compose service `elasticsearch`
-  reduces the change to one key. One of the two original objections has since
-  gone away: the container memory-limit policy #447 asked for has landed, so a
-  self-sizing JVM now *requires* a `mem_limit` by policy — `paperless_tika` is
-  the only member of `MEMORY_SELF_SIZING_IMAGES` today — rather than establishing
-  a one-off precedent, which is what #445 objected to.
+  reduces the change to one key. One of #445's two original objections has gone
+  away — the memory-limit policy it asked for landed under #447, and the list of
+  images that must declare a limit (`MEMORY_SELF_SIZING_IMAGES` in
+  `tests/policy_test.rb`) holds exactly one entry today, `docker.io/apache/tika`
+  — so an Elasticsearch `mem_limit` would now be policy-compliant rather than the
+  repository's first.
 - **The wedged-boot recovery has never fired.** Verified by design and by stubbed
   contract rows only. A first real occurrence should be read as this remediation
   running, not as a new symptom — the failure message says so, and the run will
@@ -648,12 +670,20 @@ away from.
   as stated above. It is the single claim whose failure would invalidate the
   design of the backup rather than its implementation.
 - **Nobody has measured `/volume1`.** `20g` is an asymmetry argument, not a
-  sizing one, and `df -h /volume1` on the NAS would settle it. The companion
-  question #445 opened — how much RAM the NAS has — *is* now answered and recorded
-  in [`CLAUDE.md`](../CLAUDE.md): 16 GB, with thirty containers holding 4.9 GiB
-  between them, measured 2026-09-08 and explicitly **not** including Seafile,
-  because it is gated off. Seafile plus a search index is the workload that would
-  move those figures.
+  sizing one, and `df -h /volume1` on the NAS would settle it.
+- **The NAS RAM figure is recorded, and the repository disagrees with itself
+  about whether it is.** [`CLAUDE.md`](../CLAUDE.md) states 16 GB, Docker
+  reporting 15.4 GiB, and thirty running containers holding 4.9 GiB between them,
+  measured 2026-09-08 — while #497, filed after that paragraph landed, says the
+  figure is "Still recorded nowhere in this repository". The paragraph is the
+  correct one on the narrow question and **neither settles the decision that
+  needs it**, which is why this is listed as unsettled rather than closed. Three
+  reasons: `CLAUDE.md` says of its own numbers, "These figures are an
+  observation, not a budget, and nothing validates them"; they were taken with
+  Seafile gated off, and that file says so explicitly; and what an Elasticsearch
+  path needs is not the total but the *headroom* under a co-resident JVM, which
+  nobody has measured at all. `free -h` on the NAS is still the thing to run, and
+  #497 is where the answer belongs.
 - **An untested edge in the quota reconciliation.** If a future image ships its
   own `[quota]` section, the marked block appends a second one. GKeyFile's
   duplicate-group behaviour was not verified.
