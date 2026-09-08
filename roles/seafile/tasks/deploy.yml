@@ -58,6 +58,69 @@
       asks seahub for a token.
   no_log: true
 
+# A third property, and it belongs to the cache credential alone. It is not the
+# env file's business and not the credential contract's either: it is about a
+# URL seahub builds for itself at every start.
+#
+# Measured against the pinned seafileltd/seafile-pro-mc:13.0.27.
+# seahub/seahub/settings.py:1261 assembles the Django cache location by
+# interpolating REDIS_PASSWORD into a URL with no percent-encoding at all --
+# f'redis://{(":" + redis_pwd + "@") if redis_pwd else ""}{host}:{port}' -- and
+# the bundled redis-py 6.2.0 then parses that string back with urlsplit. Six
+# characters do not survive the round trip, and each was checked rather than
+# reasoned about:
+#
+#   / ? #   end the URL's netloc early, so redis-py raises
+#           ValueError('Port could not be cast to integer value as ...')
+#   [ ]     are read as an IPv6 literal, so it raises ValueError('Invalid IPv6
+#           URL')
+#   %       is percent-decoded, so seahub silently authenticates with a
+#           different password than the one valkey was given
+#
+# Everything else measured is carried intact, `+ @ : = & | \ ^ ~ ! $ * ( , ; < "
+# '` and a space included, so this refuses exactly what breaks rather than
+# narrowing the alphabet.
+#
+# The first three are what this platform actually hit. The CI ephemeral vault
+# minted `openssl rand -base64 24`, whose alphabet includes `/`, so about two
+# draws in five produced a Seafile that started every process it has, answered
+# 500 to every request that touches the cache, and never went healthy --
+# indistinguishable from the wedged boot below, and unrecoverable by the
+# recreate, which redraws nothing. tests/generate-ephemeral-vault.sh now draws
+# from generate-secrets.yml's own alphabet, so no generated vault can reach
+# this; a hand-authored one still can, and it is refused here in under a second
+# instead of after two 600s health budgets.
+#
+# Two tasks rather than one more condition on the assert above, and the split is
+# what makes the refusal readable. Measured against ansible-core 2.21.3: a
+# failing assert under `no_log: true` still prints its fail_msg on the [ERROR]
+# line, but its result is replaced by {"censored": ...} -- so which of seven
+# conditions failed is exactly what a redacted multi-condition assert cannot
+# say. The fact below carries the redaction and resolves to a bare boolean, so
+# the assert on it is credential-free, keeps its whole result, and names one
+# thing.
+- name: Resolve a Seafile cache credential seahub cannot carry in a URL
+  ansible.builtin.set_fact:
+    seafile_cache_password_url_unsafe: >-
+      {{ vault_seafile_cache_password is search('[][/?#%]') }}
+  no_log: true
+
+- name: Require a Seafile cache credential seahub can carry in a URL
+  ansible.builtin.assert:
+    that:
+      - not seafile_cache_password_url_unsafe | bool
+    fail_msg: >-
+      The vault's Seafile cache password contains one of / ? # [ ] % and Seafile
+      cannot use it. seahub interpolates it into redis://:<password>@host:port
+      unencoded and parses that back with urlsplit, so those six characters
+      either raise before the cache client is built or change the password
+      silently. The server would start, answer 500 to every request and never go
+      healthy -- the same symptom as a wedged boot, and a force-recreate does not
+      clear it. Regenerate the value with letters and digits only, which is what
+      generate-secrets.yml mints.
+    success_msg: >-
+      The Seafile cache credential survives seahub's own redis URL round trip.
+
 # Redacted: this is where seven vault credentials enter the target filesystem.
 - name: Render the private Seafile environment
   ansible.builtin.template:
@@ -485,15 +548,23 @@
           {{ seafile_retried_report
           if seafile_wedged_boot_recreate_limit | int > 0
           else seafile_unretried_report }}
-          Read the health log printed above first: it carries the probes' own
-          output, and `curl --fail http://localhost/` answering 502 means nginx
-          is up and seahub never bound. Then read the server's Compose logs.
-          /scripts/enterpoint.sh launches /scripts/start.py once and then idles
-          for ever, so a start.py that raised inside init_seafile_server() or
-          that is still in wait_for_mysql()/wait_for_nginx() leaves exactly this:
-          a container that runs and never serves. A database the server cannot
-          reach, a JWT key it will not accept and a /shared it cannot write are
-          the three that have produced it.
+          Read the health log printed above first, because the status code in it
+          splits this failure in two and the two have nothing in common.
+          `curl --fail http://localhost/` answering 502 means nginx is up and
+          seahub never bound: /scripts/enterpoint.sh launches /scripts/start.py
+          once and then idles for ever, so a start.py that raised inside
+          init_seafile_server() or that is still in
+          wait_for_mysql()/wait_for_nginx() leaves a container that runs and
+          never serves. A database the server cannot reach, a JWT key it will
+          not accept and a /shared it cannot write are the three that have
+          produced that. 500 is the opposite and the Compose logs will show
+          seahub fully started: gunicorn is answering and Django is raising.
+          Nothing writes that traceback anywhere -- gunicorn daemonizes with no
+          errorlog -- so do not go looking for it. The one occurrence measured
+          was the cache: seahub builds redis://:<password>@host:port unencoded,
+          and a password containing / ? # [ ] % breaks or silently changes it.
+          The assert at the top of this file refuses that shape now, so a 500
+          here is a new cause and worth recording beside this sentence.
       when:
         - seafile_boot_failure == 'wedged-boot'
         - not seafile_boot_recovered | bool
