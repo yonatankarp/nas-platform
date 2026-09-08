@@ -8,6 +8,13 @@ FRESH_PHASES=' preflight deploy seed verify idempotence drift reconcile recreate
 mac_script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 . "$mac_script_dir/lib.sh"
+# Sourced for cleanup_sandbox_projects alone: capture_diagnostics collects
+# container state and logs per Compose project, and it used to name eight of them
+# by hand. Eight services had been promoted since, so a failed run's evidence was
+# missing every one of them. The roster it needs already exists here, and
+# tests/mac/cleanup.sh reads the same file for the same reason.
+cleanup_sandbox_repo_dir=$mac_repo_dir
+. "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
 
 usage() {
@@ -493,10 +500,8 @@ capture_diagnostics() {
   diagnostic_name=container-state.jsonl
   diagnostic_temporary=$(mktemp "$report_root/container-state.XXXXXX") || return 1
   : > "$diagnostic_temporary"
-  if for diagnostic_project in \
-      "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
-      "$project_name-audiobookshelf" "$project_name-komga" \
-      "$project_name-jellyfin" "$project_name-immich" "$project_name-paperless"; do
+  if for diagnostic_kind in $cleanup_sandbox_projects; do
+      diagnostic_project=$project_name-$diagnostic_kind
       docker ps -a --filter "label=com.docker.compose.project=$diagnostic_project" \
         --format '{"id":"{{.ID}}","image":"{{.Image}}","name":"{{.Names}}","status":"{{.Status}}"}' \
         >> "$diagnostic_temporary" || exit 1
@@ -508,11 +513,9 @@ capture_diagnostics() {
     "$mac_script_dir/report.rb" --diagnostic "$state_input" \
       --location "$diagnostic_name" || return 1
 
-    diagnostic_container_ids=$(for diagnostic_project in \
-        "$project_name-beszel" "$project_name-ntfy" "$project_name-dozzle" \
-        "$project_name-audiobookshelf" "$project_name-komga" \
-        "$project_name-jellyfin" "$project_name-immich" "$project_name-paperless"; do
-      docker ps -aq --filter "label=com.docker.compose.project=$diagnostic_project" || exit 1
+    diagnostic_container_ids=$(for diagnostic_kind in $cleanup_sandbox_projects; do
+      docker ps -aq \
+        --filter "label=com.docker.compose.project=$project_name-$diagnostic_kind" || exit 1
     done) || return 1
     for diagnostic_container_id in $diagnostic_container_ids; do
       diagnostic_container_name=$(docker inspect --format '{{.Name}}' \

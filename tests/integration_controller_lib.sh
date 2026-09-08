@@ -27,6 +27,23 @@ integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
 integration_seafile_deployment_enabled=${integration_seafile_deployment_enabled?}
 
+# nas_compose_minimum is the one -e below that is not about this sandbox's
+# identity, and it is here for the same reason the rest are: the value inventory
+# would supply is wrong for this lane and right for the NAS.
+#
+# services/jellyfin/compose.integration.yml and
+# services/immich/compose.integration.yml replace lists with Compose's own
+# `!override` tag, which landed in Compose 2.24.4. The declared floor is 2.18.0
+# -- what community.docker.docker_compose_v2 documents, and correct for the NAS,
+# whose canonical compose.yml files carry no tag at all. A controller at 2.18.0
+# would pass roles/preflight and then die on the first override it cannot parse,
+# blaming whichever service happened to converge first. This sandbox binds to
+# inventory/local.yml, so it is a nas_hosts run like the NAS itself and there is
+# no group in which "2.18.0 there, 2.24.4 here" can be written; the lane requests
+# it instead, exactly as it requests every other state it claims to converge.
+# It sits below rather than first because tests/integration_controller_execution_test.sh
+# pins the leading argv of this invocation as one literal string, and a flag in
+# front of `-i` is a flag in front of that pin.
 run_play() {
   ansible-playbook \
     -i inventory/local.yml \
@@ -45,6 +62,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
+    -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$playbook" "$@"

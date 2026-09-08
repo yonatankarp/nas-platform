@@ -38,6 +38,16 @@ private keys, password hashes, rendered environment files, or application logs.
       Server Sign-In" on in the settings, reconverge, and confirm it is off
       again — with it on, a Jellyfin user the platform never declared is
       silently created here.
+- [ ] Seafile: sign in with the deployed administrator identity, upload a
+      disposable file into a disposable library, and confirm it downloads back
+      byte for byte after recreation — the mapping lives in the database and the
+      content in the block store, so that round trip is the only check that
+      proves the two still agree. Confirm `conf/admin.txt` is not lying on disk;
+      the image writes the plaintext administrator password there on every start
+      and removes it in a `finally:`, so a container killed mid-start leaves it
+      behind. Note that every share link is `http://`: there is no TLS anywhere
+      on this platform, and Seafile is the first service whose login guards the
+      operator's own files.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.

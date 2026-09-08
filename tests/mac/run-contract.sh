@@ -142,6 +142,14 @@ case $mac_service in
   pinchflat)
     : "${PLATFORM_PINCHFLAT_PORT:?PLATFORM_PINCHFLAT_PORT is required}"
     ;;
+  # The port and nothing else. The Seafile contract derives all three container
+  # names from PLATFORM_PROJECT_NAME itself -- required above for every
+  # service -- so this lane has no identity to hand it, which is exactly the
+  # property that lets the same contract address the production stack and a
+  # sandbox copy of it without knowing which it is talking to.
+  seafile)
+    : "${PLATFORM_SEAFILE_PORT:?PLATFORM_SEAFILE_PORT is required}"
+    ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac
 

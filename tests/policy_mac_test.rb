@@ -459,22 +459,7 @@ MAC_REVIEW_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
-                   "proved by its Docker integration suite",
-  # Temporary, and it names the variable that ends it: Seafile ships implemented
-  # but gated, so no host -- the Mac lane included -- starts a Seafile container
-  # until an operator sets seafile_deployment_enabled. A checklist bullet would
-  # document a sign-in that always meets a refused connection, which is how an
-  # operator learns to skip a check. Whichever change flips that gate deletes
-  # this row and writes the real bullet into tests/mac/manual-review.md and
-  # docs/getting-started-mac.md, the two documents every other implemented
-  # service is checked against below; nothing here can catch that being
-  # forgotten, because a gated service is still implemented. Keying the row on
-  # seafile_deployment_enabled instead would expire it by construction, but this
-  # file reads no inventory today, and giving it a group_vars dependency for one
-  # temporary row is a larger change than the row it would retire.
-  "seafile" => "the stack is gated off on every host until an operator sets " \
-               "seafile_deployment_enabled, so the Mac lane starts no Seafile " \
-               "container to review"
+                   "proved by its Docker integration suite"
 }.freeze
 
 # One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"

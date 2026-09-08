@@ -84,6 +84,12 @@ cp "$mac_test_dir/manual-validation-handoff.rb" \
   "$fixture_mac/manual-validation-handoff.rb"
 cp "$mac_test_dir/pin-protected-input.rb" "$fixture_mac/pin-protected-input.rb"
 cp "$repo_dir/tests/integration_lock.sh" "$fixture_repo/tests/integration_lock.sh"
+# run.sh sources this for cleanup_sandbox_projects, which its failure
+# diagnostics iterate. It is the real file rather than a stub: the fixture's job
+# is to be a repository the runner can run in, and a stub roster here would let
+# the runner drift away from the one tests/mac/cleanup.sh reads without this
+# test noticing.
+cp "$repo_dir/tests/sandbox_cleanup.sh" "$fixture_repo/tests/sandbox_cleanup.sh"
 cat > "$fixture_repo/services/manifest.yml" <<'YAML'
 ---
 services:

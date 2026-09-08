@@ -27,10 +27,16 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # Trailarr's covers the same three access outcomes against its API key and its
 # published default administrator, and the one thing no other service has: that
 # the application's own /config/.env carries the platform's keys and none of the
-# ones only a hand edit writes.
+# ones only a hand edit writes. Seafile's run covers three healthy containers,
+# that the container and host copies of seafevents.conf are one file, the
+# platform-owned [INDEX FILES] setting inside it, the database credential
+# answering as root over TCP and a wrong one refused, an administrator token from
+# POST /api2/auth-token/ -- which is a real ccnet_db and seahub_db round trip
+# rather than a port probe -- and Valkey serving the cache behind it. It runs
+# last, which is where site.yml converges it.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
-    bindery trailarr seerr; do
+    bindery trailarr seerr seafile; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "
@@ -38,6 +44,5 @@ done
 
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container to verify' \
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

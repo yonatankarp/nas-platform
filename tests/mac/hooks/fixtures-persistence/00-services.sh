@@ -15,13 +15,16 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # telemetry and the alert-relay state the verify phase already polls. Pinchflat
 # reasserts through run for the same reason: it seeds no fixture, and its
 # persisted state is the database that phase already reads. Kapowarr, Bindery
-# and Trailarr are the same shape.
+# and Trailarr are the same shape, and so is Seafile: it seeds no fixture here,
+# and what has to survive the recreate is the three databases its run phase
+# authenticates against and the event configuration that phase reads back off the
+# bind mount.
 mac_persisted=
 for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
     jellyfin:assert-persistence \
     immich:assert-persistence pinchflat:run kapowarr:run bindery:run trailarr:run \
-    seerr:run; do
+    seerr:run seafile:run; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"
   mac_persisted="$mac_persisted$mac_persistence_service
@@ -31,5 +34,4 @@ done
 mac_assert_service_coverage fixtures-persistence 00-services.sh "$mac_persisted" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=it has no contract suite of its own to reassert persistence with
-seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container whose persistence could be reasserted'
+ntfy=it has no contract suite of its own to reassert persistence with'
