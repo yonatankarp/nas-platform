@@ -28,6 +28,16 @@ inventory/group_vars/all/vault-plain.yml
 __pycache__/
 *.pyc
 
+# .claude/ now holds one tracked thing, skills/, alongside two untracked ones.
+# `.worktrees/` above does not match `.claude/worktrees/`, and until skills/
+# landed nothing under .claude/ was tracked at all, so the directory was a single
+# untracked line in `git status` that was obviously wrong to stage. Now it is a
+# mix, and `git add .claude` or `git add -A` from the repository root would
+# commit whole agent worktrees, each a second full copy of the tree, plus a
+# settings.local.json carrying one machine's permission grants.
+.claude/worktrees/
+.claude/settings.local.json
+
 # Optional copies of sanitized Mac proof evidence.
 /mac-proof-reports/
 
