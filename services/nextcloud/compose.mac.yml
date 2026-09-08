@@ -1,0 +1,28 @@
+---
+services:
+  nextcloud:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud
+    ports: !override
+      - "${NEXTCLOUD_HOST_PORT:?}:80"
+    volumes: !override
+      - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+
+  # The identical mount the application above declares, and !override is why it
+  # has to be restated rather than inherited: the directive replaces the list
+  # instead of extending it, so omitting this would leave the cron container
+  # with its own empty /var/www/html and a crontab running cron.php against an
+  # installation that is not there.
+  cron:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-cron
+    volumes: !override
+      - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+
+  db:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-db
+    volumes: !override
+      - ${NEXTCLOUD_POSTGRES_PATH:?}:/var/lib/postgresql
+
+  # No volume to reset, and the container name is the whole override: the cache
+  # is the one container in this stack that persists nothing.
+  cache:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-cache

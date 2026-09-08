@@ -1,0 +1,33 @@
+---
+# The deployment report, a stage of its own rather than the last task of
+# deploy.yml because of where it has to sit. Both of Nextcloud's reconciliations
+# run after the stack is up -- they drive occ inside the application container,
+# so there is nothing to reconcile until it has started once -- and a report
+# rendered before them cannot see a converge whose only change was a
+# trusted-domain repair or an administrator password reset. Those are exactly
+# the events a deployment report exists to carry.
+#
+# The results this reads are registered in deploy.yml, reconcile_trusted_domains.yml
+# and reconcile_admin.yml. All three are imported statically, so they share one
+# variable scope with this file and nothing has to be recomputed or passed.
+#
+# Ungated on purpose, and it says nothing when nothing moved: the report is
+# gated on the results themselves, so a converge with the flag off and a project
+# already absent is silent, and the run that first tears the project down reports
+# that it did.
+#
+# The two repair terms carry defaults because their tasks are looped or
+# conditional in a way that can leave the name unbound rather than merely
+# skipped -- a loop over an empty list registers a result with no `changed` of
+# its own, and a reader of an undefined name is an error rather than a false.
+- name: Report the Nextcloud deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Nextcloud
+    ntfy_deployment_report_changed: >-
+      {{ (nextcloud_data_deploy is changed) or (nextcloud_deploy is changed) or
+         (nextcloud_teardown is changed) or
+         ((nextcloud_trusted_domains_repair | default({})) is changed) or
+         ((nextcloud_admin_repair | default({})) is changed) }}

@@ -48,3 +48,6 @@ services:
   - name: seafile
     role: seafile
     status: implemented
+  - name: nextcloud
+    role: nextcloud
+    status: implemented

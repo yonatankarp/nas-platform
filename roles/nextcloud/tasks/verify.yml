@@ -1,0 +1,91 @@
+---
+# Verification, and it has to prove the database link rather than that a port is
+# open. #445 established that rule the hard way and this stack is where it is
+# easiest to get wrong, because Nextcloud publishes an endpoint that looks like
+# a health check and is not one.
+#
+# Apache binds 80 long before there is anything behind it: the entrypoint rsyncs
+# the whole /usr/src/nextcloud tree into the volume and then installs, and
+# throughout that /status.php answers HTTP 200 with `"installed":false`. So a
+# check that reads only the status code passes against an instance that has
+# never had a database.
+#
+# What makes /status.php a real proof is what it has to do to produce its JSON.
+# status.php requires lib/base.php, whose OC::init boots the server, and the
+# boot builds the memcache factory by asking AppConfig for the installed app
+# versions -- which is a query against oc_appconfig. Measured against
+# nextcloud:34.0.3-apache with the database container stopped: an uncaught
+# Doctrine\DBAL\Exception, HTTP 500, zero bytes of body. The status code and the
+# three fields below therefore cannot be produced by the web tier alone.
+
+- name: Verify the Nextcloud status endpoint
+  tags: [platform_verify_nextcloud]
+  ansible.builtin.uri:
+    url: "{{ nextcloud_url }}/status.php"
+    method: GET
+    # Every status is accepted here so that the assertion below is what fails,
+    # with a message naming the causes. A uri task failing on its own status
+    # code reports an HTTP error and nothing about which half of the stack is
+    # broken.
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: nextcloud_verify_status
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# Deliberately not redacted: these conditions carry no credential -- they read a
+# status code and three booleans -- and assert prints the text of a condition
+# rather than what it evaluated to, so redacting this would hide the only
+# actionable sentence the verification produces while protecting nothing.
+- name: Require an installed and serving Nextcloud during exact verification
+  tags: [platform_verify_nextcloud]
+  ansible.builtin.assert:
+    that:
+      - nextcloud_verify_status.status | default(0) | int == 200
+      - (nextcloud_verify_status.json | default({})).installed | default(false) | bool == true
+      - (nextcloud_verify_status.json | default({})).maintenance | default(true) | bool == false
+      - (nextcloud_verify_status.json | default({})).needsDbUpgrade | default(true) | bool == false
+    fail_msg: >-
+      Nextcloud did not report an installed, serving instance at
+      {{ nextcloud_url }}/status.php, and the four conditions separate the
+      causes. A non-200 with an empty body is the database: status.php boots the
+      server, and booting queries oc_appconfig for the installed app versions,
+      so a Postgres that is gone surfaces here as HTTP 500 rather than as a
+      database error anyone can see. A 400 is the opposite problem -- the Host
+      header is not in trusted_domains, which is configuration rather than
+      breakage, and roles/nextcloud reconciles that list. installed false means
+      the entrypoint is still copying its tree in or its install failed;
+      maintenance true and needsDbUpgrade true both mean an image bump ran
+      `occ upgrade` and did not finish it, which is a restore rather than a
+      retry.
+
+# So that --tags platform_verify_nextcloud is never an empty selection. A tag run
+# that selects no task at all is indistinguishable from a tag that no longer
+# exists, and this pull request ships with the flag false everywhere.
+- name: Report the deferred Nextcloud verification
+  tags: [platform_verify_nextcloud]
+  ansible.builtin.debug:
+    msg: >-
+      nextcloud_deployment_enabled is false, so there is no Nextcloud instance
+      to query and the verification is not attempted. A live run would GET
+      {{ nextcloud_url }}/status.php and require installed true, maintenance
+      false and needsDbUpgrade false -- fields status.php cannot produce without
+      booting the server, which queries oc_appconfig and therefore proves the
+      database link rather than the web tier alone.
+  when: not nextcloud_deployment_enabled | bool
+
+- name: Report the Nextcloud verification check mode defers
+  tags: [platform_verify_nextcloud]
+  ansible.builtin.debug:
+    msg: >-
+      A live run would GET {{ nextcloud_url }}/status.php and require an
+      installed, non-maintenance instance reporting no pending database
+      upgrade. That is a real request to a server this run did not start, so
+      check mode reports the intent instead of making it.
+  when:
+    - nextcloud_deployment_enabled | bool
+    - ansible_check_mode

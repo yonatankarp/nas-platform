@@ -1,0 +1,19 @@
+---
+# Only container names move, and they are the same strings the Mac override
+# writes -- sandbox cleanup finds these containers by that prefix, so the two
+# files have to spell them identically. The stack already runs on its own Compose
+# network with the database and the cache unpublished, so there is nothing to
+# reset; the application keeps the production port, exactly as Immich, Paperless
+# and Seafile do.
+services:
+  nextcloud:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud
+
+  cron:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-cron
+
+  db:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-db
+
+  cache:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-nextcloud-cache

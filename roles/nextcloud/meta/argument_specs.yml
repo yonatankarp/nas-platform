@@ -1,0 +1,85 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Nextcloud and prove it against its own database
+    options:
+      platform_project_name:
+        type: str
+        required: false
+      # Nextcloud answers HTTP 400 to any Host header not in trusted_domains,
+      # and this is where the address a human types comes from. It also feeds
+      # overwrite.cli.url, which is what cron.php and occ put into the URLs they
+      # generate with no request to infer a host from.
+      platform_public_host:
+        type: str
+        required: false
+      # Declared bool rather than left to a truthy string. The teardown branch
+      # and the deploy branch are selected by this one value, and a string
+      # "false" is true in Jinja.
+      nextcloud_deployment_enabled:
+        type: bool
+        required: true
+      nextcloud_port:
+        type: int
+        required: false
+      nextcloud_url:
+        type: str
+        required: false
+      nextcloud_data_host_path:
+        type: path
+        required: false
+      nextcloud_postgres_host_path:
+        type: path
+        required: false
+      # Bare hostnames, no port and no scheme: Nextcloud compares each entry
+      # against the request's Host header alone. tasks/deploy.yml asserts that
+      # shape and the presence of 127.0.0.1 and localhost before anything is
+      # deployed, because a role argument spec cannot express either.
+      nextcloud_trusted_domains:
+        type: list
+        elements: str
+        required: false
+      nextcloud_additional_trusted_domains:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          Extra hostnames Nextcloud must answer for, such as a mesh VPN name.
+          Its own list rather than a second value folded into
+          platform_public_host, which roles/ntfy also builds its topic from.
+      nextcloud_overwrite_cli_url:
+        type: str
+        required: false
+      nextcloud_php_memory_limit:
+        type: str
+        required: false
+      # Declared int rather than left to the default because both are passed to
+      # Compose as a wait budget, where a string is a module error at the one
+      # moment the run is already waiting on a container.
+      nextcloud_compose_wait_timeout:
+        type: int
+        required: false
+      nextcloud_data_compose_wait_timeout:
+        type: int
+        required: false
+      nextcloud_compose_project_name:
+        type: str
+        required: false
+      vault_nextcloud_admin_username:
+        type: str
+        required: true
+      vault_nextcloud_admin_password:
+        type: str
+        required: true
+      vault_nextcloud_db_name:
+        type: str
+        required: true
+      vault_nextcloud_db_username:
+        type: str
+        required: true
+      vault_nextcloud_db_password:
+        type: str
+        required: true
+      vault_nextcloud_cache_password:
+        type: str
+        required: true

@@ -1,0 +1,110 @@
+---
+# The single operator switch. Inventory sets it true, and
+# inventory/group_vars/all/main.yml is where the deployment decision is made and
+# explained; this default stays false so the role converges to `state: absent`
+# for any caller that runs it without that inventory rather than deploying a
+# database on the strength of a missing variable. The gate lives inside the role
+# rather than on the site.yml entry, because a `when:` there would also skip the
+# deployment_bundle re-include that revalidates the paths this role touches and
+# the deployment report that says whether anything moved.
+nextcloud_deployment_enabled: false
+
+# 8084. The next free host port on this platform: 8080 is Dozzle, 8081 the
+# Dozzle alert relay, 8082 the qbittorrent web interface declared in
+# config/media-acquisition.yml, 8083 Seafile, 8085 SABnzbd and 8090 Beszel.
+nextcloud_port: 8084
+
+# Every role addresses services over 127.0.0.1, which is correct whether the
+# play runs on the NAS itself or over SSH from a workstation.
+nextcloud_url: "http://127.0.0.1:{{ nextcloud_port }}"
+
+nextcloud_data_host_path: "{{ nas_docker_root }}/nextcloud/data"
+nextcloud_postgres_host_path: "{{ nas_docker_root }}/nextcloud/postgres"
+
+# The addresses Nextcloud will answer on, and the reason there is a list at all.
+#
+# Nextcloud compares the request's Host header against trusted_domains and
+# answers HTTP 400 -- "Access through untrusted domain" -- for anything absent.
+# That refusal reads as a client problem, which is why the whole set is declared
+# here rather than discovered when somebody cannot log in.
+#
+# The port is deliberately not part of an entry. Measured against
+# nextcloud:34.0.3-apache: with `127.0.0.1` trusted, a request arriving on the
+# published 8084 answered 200, so the comparison is against the host alone.
+#
+# 127.0.0.1 is not optional. It is the address tasks/verify.yml polls, so an
+# instance that does not trust it fails its own verification with a 400 before
+# any of the assertions can say anything useful.
+# `localhost` is in the set because the application container's own health
+# check requests http://localhost/status.php from inside the container, so an
+# instance that stopped trusting it would report itself unhealthy for ever. It
+# is the one entry the installer writes on its own, at index 0, which is why
+# templates/env.j2 leaves it out of the value it renders for the install and
+# tasks/reconcile_trusted_domains.yml merely confirms it afterwards.
+nextcloud_trusted_domains: >-
+  {{ (['127.0.0.1', 'localhost', platform_public_host | default('')]
+      + nextcloud_additional_trusted_domains)
+     | select | map('trim') | select | unique | list }}
+
+# Where the mesh name goes, and why it is its own list rather than a second
+# value folded into platform_public_host.
+#
+# platform_public_host has blast radius well beyond this service: roles/ntfy
+# builds ntfy_base_url from it, and inventory/remote.yml records that it feeds
+# the topic ntfy registers with its upstream push server -- so repointing it to
+# reach Nextcloud over the mesh would silently move notifications to a topic no
+# device subscribes to. Nextcloud is the first service here that can hold
+# several hostnames at once, and this is the list that holds the extra ones.
+#
+# Empty by default: this platform has no mesh hostname declared anywhere today,
+# and inventing one here would put an address into config.php that resolves to
+# nothing. Set it in inventory/group_vars/all/main.yml when the name exists.
+nextcloud_additional_trusted_domains: []
+
+# What Nextcloud writes into the URLs it builds for itself when there is no
+# incoming request to infer a host from -- what cron.php and occ generate, which
+# is what lands in notification e-mails. Without it those come out as localhost.
+#
+# The port belongs here, unlike in trusted_domains above: this is a URL handed
+# to a reader, not a host compared against a header.
+nextcloud_overwrite_cli_url: "http://{{ platform_public_host }}:{{ nextcloud_port }}"
+
+# Two waits, sized separately because the stack comes up in two phases and they
+# have different worst cases.
+#
+# NEITHER IS THE BOOT BUDGET. The health checks in services/nextcloud/compose.yml
+# are, and this is worth stating flatly because the same numbers were read the
+# wrong way round on Seafile's first CI run. Compose's `--wait` stops the moment
+# Docker reports a container *unhealthy*, and Docker reports that after
+# `start_period` plus `retries` consecutive failing probes `interval` apart:
+#
+#   application (start_period 300s, retries 5, interval 30s) -> at most 450s
+#   cron        (start_period  30s, retries 5, interval 30s) -> at most 180s
+#   db, cache   (start_period  60s, retries 5, interval 30s) -> at most 210s
+#
+# The invariant is the ordering: each wait must stay strictly ABOVE its stage's
+# worst-case verdict time, so a wedged boot surfaces as Docker's own
+# `container nextcloud is unhealthy`, which names the container, rather than as
+# a bare module timeout, which names nothing. 600 > 450 and 300 > 210 hold, and
+# that is the whole of what these numbers are for.
+#
+# Measured for scale rather than for the budget: on an arm64 developer machine
+# against an empty bind mount the application container reported healthy 51s
+# after creation and the whole stack was healthy at 57s. The health check
+# therefore already grants roughly eight times the only first boot anyone has
+# timed, and these two are the backstop for the other failure -- the one where
+# Compose returns no health verdict at all.
+nextcloud_data_compose_wait_timeout: 300
+nextcloud_compose_wait_timeout: 600
+
+nextcloud_compose_project_name: >-
+  {{ (platform_project_name ~ '-nextcloud')
+     if platform_project_name | default('') | length > 0 else 'nextcloud' }}
+
+# PHP's per-request memory ceiling, restated here so the number is in the
+# repository rather than inherited from the image. It is a declared value and
+# not a derived one -- PHP reads it from ini and never from the host -- which is
+# why this stack declares no mem_limit and is not a MEMORY_SELF_SIZING_IMAGES
+# member. tests/policy_test.rb's memory check is about runtimes that size
+# themselves off whatever RAM they can see, and nothing in this stack does.
+nextcloud_php_memory_limit: 512M
