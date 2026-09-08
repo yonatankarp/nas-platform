@@ -299,11 +299,36 @@ mac_lib_roster = if File.file?(mac_lib_roster_path)
                  else
                    []
                  end
+#
+# The failure diagnostics are derived too, from a second roster, and this check
+# used to read their Compose projects as eight literal `"$project_name-<name>"`
+# strings. That is what let them fall eight services behind: arr, downloaders,
+# bindery, kapowarr, pinchflat, trailarr and seerr were all deployed by the lane
+# and none of them appeared in a failed run's evidence, and the literals here
+# said nothing about it because four of the eight were still present. So the
+# roster is now tests/sandbox_cleanup.sh's, which cleanup already holds current,
+# and what is asserted is the shape that cannot go stale: the namespace prefix is
+# applied to a roster rather than to a list, that roster is the shared one, and
+# the sample services are in both it and the port roster.
+mac_cleanup_registry_path = File.join(ROOT, "tests", "sandbox_cleanup.sh")
+mac_cleanup_projects = if File.file?(mac_cleanup_registry_path)
+                         File.read(mac_cleanup_registry_path).lines
+                             .select { |line| line.start_with?("cleanup_sandbox_projects=") }
+                             .flat_map do |line|
+                               line.sub(/\Acleanup_sandbox_projects=/, "").delete("'\"")
+                                   .sub("$cleanup_sandbox_projects", "").split
+                             end
+                       else
+                         []
+                       end
 check(failures,
       mac_run.include?("export PLATFORM_PROJECT_NAME=") &&
         mac_run.match?(/^mac_export_service_ports$/) &&
-        %w[beszel ntfy dozzle audiobookshelf].all? do |name|
-          mac_lib_roster.include?(name) && mac_run.include?(%Q{"$project_name-#{name}"})
+        mac_run.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
+        mac_run.include?("diagnostic_project=$project_name-$diagnostic_kind") &&
+        mac_run.include?('"label=com.docker.compose.project=$project_name-$diagnostic_kind"') &&
+        %w[beszel ntfy dozzle audiobookshelf seafile].all? do |name|
+          mac_lib_roster.include?(name) && mac_cleanup_projects.include?(name)
         end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
 

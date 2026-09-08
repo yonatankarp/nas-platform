@@ -5,12 +5,14 @@ your Mac. It does not SSH to or otherwise contact the physical NAS. Service
 data is disposable; credentials may deliberately match the NAS so that reused
 logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 
-This proof deploys the thirteen service projects in
+This proof deploys the fourteen service projects in
 [`services/manifest.yml`](../services/manifest.yml) that need no transport
 flag—Audiobookshelf, Beszel, Bindery, Dozzle, Immich, Jellyfin, Kapowarr,
-Komga, ntfy, Paperless-ngx, Pinchflat, Seerr, and Trailarr—and verifies the Arr
-and downloader projects in their inert, transport-disabled state alongside
-them. The production
+Komga, ntfy, Paperless-ngx, Pinchflat, Seafile, Seerr, and Trailarr—and
+verifies the Arr and downloader projects in their inert, transport-disabled
+state alongside them. Seafile is gated off on every host by
+`seafile_deployment_enabled`, and this lane requests it on for itself, exactly
+as the CI suites do; the platform-wide default is untouched. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
@@ -26,7 +28,7 @@ containers without exposing directory listings or secrets.
 The harness reserves isolated ports for the Phase 1 Arr and SABnzbd services,
 but
 [`inventory/group_vars/mac_hosts/main.yml`](../inventory/group_vars/mac_hosts/main.yml)
-keeps both transport flags false, so the ordinary ten-service Mac proof does
+keeps both transport flags false, so the ordinary Mac proof does
 not claim provider connectivity or content acquisition. The physical NAS is
 the one host that enables Usenet; its activation and acceptance follow the
 [Phase 1 operator handoff](media-acquisition-phase1.md).
@@ -148,7 +150,7 @@ unset proof_status
 ```
 
 Proceed only when the block prints `All automated phases passed`. Use
-[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the ten
+[`tests/mac/manual-review.md`](../tests/mac/manual-review.md) while the
 deployed services are running. Record the reviewer, manifest commit, decision,
 and non-secret notes. Credential continuity requires a private check for every
 active service:
@@ -202,6 +204,21 @@ active service:
   mutation into its own `/config/.env`, which it sources over the container
   environment at every start, so the change would otherwise survive forever;
   the role owns that file, and the reconcile is what reverts it.
+- Seafile: sign in with the deployed administrator identity, then upload a
+  disposable file and confirm it downloads back byte for byte after recreation.
+  That round trip is the check, because the mapping lives in the database and
+  the content lives in the block store, and independently intact copies of each
+  are not the same thing as a working library. This is also the one identity on
+  the platform the reconcile cannot repair: the image consumes
+  `INIT_SEAFILE_ADMIN_PASSWORD` only while the user table is empty, so rotating
+  the vault password changes nothing on the server and the documented remedy is
+  the interactive `reset-admin.sh` inside the container — a failed sign-in here
+  means exactly that, and never a converge that has not run. Confirm
+  `conf/admin.txt` is absent: the image writes the plaintext administrator
+  password there on every container start and removes it in a `finally:`, so a
+  container killed mid-start leaves it on disk. Every share link is `http://`;
+  there is no TLS anywhere on this platform, and this is the first service whose
+  login guards the operator's own files.
 
 After the review, produce the report and clean only the validated sandbox:
 
