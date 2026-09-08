@@ -530,8 +530,16 @@ def newest_backup
   fail_contract("this platform took no Seafile backup under #{BACKUP_ROOT}") unless
     Dir.exist?(BACKUP_ROOT)
 
-  newest = Dir.children(BACKUP_ROOT).select { |name| File.directory?(File.join(BACKUP_ROOT, name)) }
-             .sort.last
+  # The backup root is mode 0700 and owned by the host's root, which is the whole
+  # point of it, so a contract running as somebody else is a case worth naming
+  # rather than crashing on -- host_seafevents above takes the same care for the
+  # same reason.
+  newest = begin
+    Dir.children(BACKUP_ROOT).select { |name| File.directory?(File.join(BACKUP_ROOT, name)) }
+       .sort.last
+  rescue SystemCallError => error
+    fail_contract("the Seafile backup root #{BACKUP_ROOT} could not be read: #{error.class}")
+  end
   fail_contract("this platform took no Seafile backup under #{BACKUP_ROOT}") if newest.nil?
   File.join(BACKUP_ROOT, newest)
 end
@@ -622,8 +630,13 @@ def restore_rehearsal_mode(credentials)
   # Step 2 of docs/getting-started-nas.md's "Recover Seafile". --databases means
   # the dump carries its own CREATE DATABASE and USE statements, so this
   # recreates the three schemas that were just dropped.
+  dump_body = begin
+    File.binread(dump)
+  rescue SystemCallError => error
+    fail_contract("the Seafile dump at #{dump} could not be read: #{error.class}")
+  end
   _restore_out, restore_err, restored = database_sql(
-    RESTORE_SCRIPT, File.binread(dump), "the rehearsal database restore"
+    RESTORE_SCRIPT, dump_body, "the rehearsal database restore"
   )
   fail_contract("the Seafile backup would not restore: #{restore_err.to_s.lines.first.to_s.strip}") unless
     restored.success?
