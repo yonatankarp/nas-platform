@@ -180,6 +180,25 @@
       to snapshot, which is also what a first converge looks like; `converged`
       means the running images already are the ones this release pins, so no
       migration is pending and a backup would protect nothing.
+  when: ansible_check_mode
+
+# The one state a live run has to say out loud, and it is not `converged`. A
+# converged stack taking no backup is the normal case and silence is right for
+# it -- this fires every five minutes once the poller has Seafile -- but an
+# upgrade going ahead with the containers down means the guard did not run, and
+# an operator reading the transcript afterwards has no other way to know that.
+- name: Report a Seafile pre-upgrade backup that could not be taken
+  ansible.builtin.debug:
+    msg: >-
+      No Seafile container is running, so there is no database to snapshot and
+      no pre-upgrade backup was taken. On a first converge that is correct and
+      there is nothing to protect yet. On a host whose stack is merely down it
+      is not: whatever this run deploys will migrate the schemas under
+      {{ seafile_db_host_path }} with no copy of them anywhere, so bring the
+      stack up and converge again before changing the pinned images.
+  when:
+    - not ansible_check_mode
+    - seafile_backup_reason == 'stack-not-running'
 
 # Created here rather than by the container, so that the conf/ half below can be
 # written by Ansible into a directory it owns. Creating an empty directory backs

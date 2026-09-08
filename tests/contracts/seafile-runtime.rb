@@ -84,10 +84,10 @@ end
 # Every docker call is bounded and every failure to *make* the call is a
 # contract diagnostic rather than a backtrace: a lane that cannot run docker at
 # all must say so in the sentence a reader is looking for.
-def docker(*argv, label:)
-  Timeout.timeout(DOCKER_TIMEOUT_SECONDS) { Open3.capture3("docker", *argv) }
+def docker(*argv, label:, budget: DOCKER_TIMEOUT_SECONDS)
+  Timeout.timeout(budget) { Open3.capture3("docker", *argv) }
 rescue Timeout::Error
-  fail_contract("#{label} did not finish within #{DOCKER_TIMEOUT_SECONDS}s")
+  fail_contract("#{label} did not finish within #{budget}s")
 rescue SystemCallError => error
   fail_contract("#{label} could not run docker at all: #{error.class}")
 end
@@ -413,6 +413,15 @@ REHEARSAL_FILE = "restore-rehearsal.txt"
 REHEARSAL_CONTENT = "nas-platform seafile restore rehearsal payload\n"
 BACKUP_ROOT = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "seafile", "backups")
 RESTORE_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEAFILE_RESTORE_TIMEOUT_SECONDS", "300"), 10)
+# Its own budget rather than DOCKER_TIMEOUT_SECONDS, and the number is derived
+# from the deployment rather than picked: services/seafile/compose.yml gives the
+# server stop_grace_period: 1m, so Docker sends SIGKILL at 60 seconds and
+# `docker stop` returns just after -- exactly where the shared 60-second docker
+# budget expires. A stop that hit the grace period would race its own timeout and
+# fail as "did not finish", which is the #319 shape: a hardcoded wait that
+# becomes a failure nobody changed anything to cause. 120 is that period plus the
+# same again.
+STOP_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEAFILE_STOP_TIMEOUT_SECONDS", "120"), 10)
 
 # Every link Seafile hands a client is built from SEAFILE_SERVER_HOSTNAME, which
 # is the address a human types and not one this contract can reach from inside
@@ -624,7 +633,9 @@ def restore_rehearsal_mode(credentials)
     "rehearsal is not testing what it claims to"
   ) if code == "200" && !issued.to_s.empty?
 
-  _stop_out, _stop_err, stopped = docker("stop", SERVER, label: "the pre-restore server stop")
+  _stop_out, _stop_err, stopped = docker(
+    "stop", SERVER, label: "the pre-restore server stop", budget: STOP_TIMEOUT_SECONDS
+  )
   fail_contract("the Seafile server container #{SERVER} could not be stopped") unless stopped.success?
 
   # Step 2 of docs/getting-started-nas.md's "Recover Seafile". --databases means
