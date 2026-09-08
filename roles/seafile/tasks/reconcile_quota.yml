@@ -1,0 +1,145 @@
+---
+# seafile.conf is the second file the server generates into the bind-mounted
+# volume and the second one carrying platform policy: the per-user storage
+# quota. Everything the sibling reconcile_seafevents.yml says about why a
+# whole-file template is disqualified applies here unchanged -- the server
+# authored this file, the platform owns part of it, and the rest is carried
+# through byte for byte.
+#
+# ## Why a quota is here at all
+#
+# Seafile is the only stack on this platform whose stored volume is chosen by a
+# person rather than by a library that has a size, and it stores on /volume1 --
+# the NVMe service-state volume every other stack keeps its database on, not the
+# media volume. #445 states the failure in one line: left unset, one user fills
+# the volume and takes every other stack down with it.
+#
+# ## Which of the three quotas this is, established at instruction level
+#
+# seaf-server resolves a user's quota in three steps, and this key is the third.
+# Read out of quota-mgr.c in seafileltd/seafile-pro-mc:13.0.27 by disassembling
+# the binary rather than by reading the manual:
+#
+#   1. `SELECT quota FROM UserQuota WHERE "user"=?` -- a quota an administrator
+#      set on one account. Returned if positive or -2, which means unlimited.
+#   2. `SELECT quota FROM RoleQuota WHERE role=?` -- the role quota seahub
+#      writes. Returned if positive or -2.
+#   3. `[quota] default` out of seafile.conf, which is what this file owns.
+#
+# The manual is worth distrusting on the way here in both directions. It
+# documents `[quota] default`, and that key is genuinely read -- but the string
+# "default" appears in this binary only as the tail of another literal, so a
+# byte-level search for it finds nothing and says the opposite. Only following
+# the reference from the user-quota resolver settles it.
+#
+# The other two are not available to a converge. This platform manages exactly
+# one Seafile account -- the administrator, created once while the user table was
+# empty -- so a per-user push has no user list to iterate; and the role quota is
+# reachable only from seahub_settings.py's ENABLED_ROLE_PERMISSIONS, whose value
+# every call site in the image applies on a LOGIN path (the web login form, the
+# remote-user and Shibboleth backends, the OAuth and ADFS handlers). None of
+# those is the path POST /api2/auth-token/ takes, which is what verify.yml
+# authenticates with, so a role quota would not exist until somebody signed in to
+# the web interface. This key is read by the server at start, which is a
+# guarantee a converge can actually make.
+#
+# The consequence worth stating: because the platform sets neither of the first
+# two, this value is what every account resolves to, including guests. A
+# guest-specific bound would need the role mechanism and the login that activates
+# it, and a guest cannot create a library of their own in any case -- the role's
+# default permissions in seahub/role_permissions/settings.py deny can_add_repo.
+#
+# ## Why a marked block rather than a line rewrite
+#
+# The same reason the sibling file is section-scoped. The generated seafile.conf
+# carries no [quota] section at all, so there is no key to rewrite: what this
+# writes is a whole section, and a marked block is the shape that can be found
+# again, changed in place and told apart from a line an operator added. `#` opens
+# a comment in the GKeyFile grammar the server parses this file with, so the two
+# markers are comments rather than syntax the server has to tolerate.
+
+# Before anything is read or written, because the value this refuses is one the
+# server would accept and then ignore. seaf-server's parser takes a decimal
+# number and an optional k/kb/m/mb/g/gb/t/tb suffix -- a bare number meaning
+# gigabytes -- and anything else is not an error: it logs "Invalid default quota"
+# and falls back to unlimited. A misspelled quota is therefore a silent no-quota,
+# which is exactly the failure this platform must not ship.
+#
+# Deliberately not redacted: this is declared policy the repository publishes in
+# defaults/main.yml, and an assertion that cannot say which value it refused is
+# an assertion an operator cannot act on.
+- name: Require a Seafile quota seaf-server can parse
+  ansible.builtin.assert:
+    that:
+      - seafile_default_user_quota is match('^[0-9]+([kmgt]b?)?$')
+    fail_msg: >-
+      seafile_default_user_quota is {{ seafile_default_user_quota }}, and
+      seaf-server accepts a decimal number with an optional k, kb, m, mb, g, gb,
+      t or tb suffix. Anything else is logged as an invalid default quota and
+      falls back to unlimited, which sets no quota at all.
+  when: seafile_deployment_enabled | bool
+
+- name: Look for the Seafile server configuration
+  ansible.builtin.stat:
+    path: "{{ seafile_server_config_path }}"
+  register: seafile_server_config_stat
+  when: seafile_deployment_enabled | bool
+  changed_when: false
+  # A read that must really happen under --check, for the reason the sibling
+  # stat carries: a simulated answer would report the file absent on a host
+  # where it exists, and the no-op branch below would then claim there is
+  # nothing to reconcile on a live deployment.
+  check_mode: false
+
+# Not redacted, and it renders nothing that could be: the path and the quota,
+# which is policy this repository publishes in defaults/main.yml. It exists
+# because the repair below is redacted and would otherwise report a bare
+# `changed` with nothing an operator could read.
+- name: Report the planned Seafile storage quota
+  ansible.builtin.debug:
+    msg: >-
+      {{ seafile_server_config_path }} is owned for [quota] default only, and
+      this platform requires {{ seafile_default_user_quota }}. seaf-server reads
+      it at start, so the restart at the end of the next stage is what puts it
+      into effect; it applies to every account that has no quota of its own and
+      no role quota, which on this platform is every account.
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_server_config_stat.stat.exists | default(false)
+
+# Redacted: blockinfile reports the file it wrote, and this file opens with a
+# [database] section carrying the Seafile database account and its password.
+# Nothing in the repository's own no_log rule would catch that -- the rule
+# matches literal vault_ names and this credential arrives as file content -- so
+# it is redacted here on the reasoning the sibling slurp records.
+#
+# The mode is the one the file already has, read back from the stat above rather
+# than declared, for exactly the reason the sibling copy gives: this file lives
+# in a bind mount, so its permissions are host permissions, and a literal that
+# was wrong in the loosening direction would publish the database password to
+# every account on the host. Reading it back can only preserve. Ownership is not
+# claimed either -- the server runs as root and owns every other file in this
+# directory.
+- name: Own the Seafile storage quota
+  ansible.builtin.blockinfile:
+    path: "{{ seafile_server_config_path }}"
+    marker: "# {mark} nas-platform seafile quota"
+    mode: "{{ seafile_server_config_stat.stat.mode }}"
+    block: |
+      [quota]
+      default = {{ seafile_default_user_quota }}
+  register: seafile_server_config_repair
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_server_config_stat.stat.exists | default(false)
+  no_log: true
+
+- name: Report the Seafile server configuration reconciliation
+  ansible.builtin.debug:
+    msg: >-
+      {{ seafile_server_config_path }} does not exist yet, so there is nothing
+      to reconcile. The server writes it during the setup its first start runs,
+      and the next converge finds it and declares the default quota in it.
+  when:
+    - seafile_deployment_enabled | bool
+    - not seafile_server_config_stat.stat.exists | default(false)

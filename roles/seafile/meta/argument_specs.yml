@@ -33,6 +33,9 @@ argument_specs:
       seafile_seafevents_config_path:
         type: path
         required: false
+      seafile_server_config_path:
+        type: path
+        required: false
       seafile_backup_host_path:
         type: path
         required: false
@@ -81,6 +84,38 @@ argument_specs:
       seafile_index_files_enabled:
         type: bool
         required: false
+      seafile_audit_log_enabled:
+        type: bool
+        required: false
+      seafile_seafevents_managed_settings:
+        type: list
+        elements: dict
+        required: false
+        description: >-
+          The seafevents.conf settings this platform owns, each named by the
+          section it lives under. The section is required rather than optional
+          because `enabled` is not a unique key in that file.
+        options:
+          section:
+            type: str
+            required: true
+          key:
+            type: str
+            required: true
+          value:
+            type: str
+            required: true
+      # A decimal number with an optional k/kb/m/mb/g/gb/t/tb suffix, a bare
+      # number meaning gigabytes, and the spelling is load-bearing: seaf-server
+      # logs "Invalid default quota" for anything else and falls back to
+      # unlimited, so a wrong spelling is a silent no-quota rather than an
+      # error. Role argument specs cannot express a pattern, so the shape is
+      # asserted in tasks/reconcile_quota.yml, where a wrong value fails the run
+      # before it reaches the target.
+      seafile_default_user_quota:
+        type: str
+        required: false
+        description: Default per-user storage quota, as 20g.
       vault_seafile_admin_email:
         type: str
         required: true

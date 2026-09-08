@@ -25,11 +25,23 @@
 - name: Deploy the Seafile stack
   ansible.builtin.import_tasks: deploy.yml
 
-# After the deployment, not before it. Seafile writes seafevents.conf on its
-# first start, so on a fresh converge the file does not exist until the stack
-# above has run once. Reconciling first would let run 1 report nothing to do and
-# run 2 perform the first repair, and those two runs disagreeing is exactly what
-# the idempotence check compares.
+# After the deployment, not before it. The server writes both of the files these
+# two stages own -- seafile.conf and seafevents.conf -- during its own first
+# start, so on a fresh converge neither exists until the stack above has run
+# once. Reconciling first would let run 1 report nothing to do and run 2
+# perform the first repair, and those two runs disagreeing is exactly what the
+# idempotence check compares.
+#
+# This one is immediately before the event reconciliation rather than after it,
+# because the two files are read at start by two processes inside one container
+# and the restart that ends the stage below is what makes both repairs take
+# effect. A restart of its own here would bounce the server twice for one
+# converge.
+- name: Reconcile the platform-owned Seafile storage quota
+  ansible.builtin.import_tasks: reconcile_quota.yml
+
+# The stage that ends in the one restart both reconciliations depend on, which
+# is why it is last of the two.
 - name: Reconcile the platform-owned Seafile event configuration
   ansible.builtin.import_tasks: reconcile_seafevents.yml
 

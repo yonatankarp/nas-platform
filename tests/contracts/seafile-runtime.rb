@@ -59,6 +59,20 @@ CONTAINER_SEAFEVENTS = "/shared/seafile/conf/seafevents.conf"
 HOST_SEAFEVENTS = File.join(
   ENV.fetch("PLATFORM_DOCKER_ROOT"), "seafile", "data", "seafile", "conf", "seafevents.conf"
 )
+# The second generated file this platform owns part of, beside the first in the
+# same directory. Only the host side is read: what is asserted about it is a
+# block roles/seafile wrote, and the container half of the same claim is already
+# settled by seafevents.conf being one file rather than two.
+HOST_SERVER_CONFIG = File.join(
+  ENV.fetch("PLATFORM_DOCKER_ROOT"), "seafile", "data", "seafile", "conf", "seafile.conf"
+)
+# What roles/seafile/tasks/reconcile_quota.yml marks its block with. The number
+# inside is deliberately NOT pinned here -- an operator raising the quota is a
+# supported change and must not fail a lane -- but the spelling is, because
+# seaf-server logs "Invalid default quota" for anything its parser rejects and
+# falls back to unlimited, which is a silent no-quota.
+QUOTA_MARKER = "nas-platform seafile quota"
+DEFAULT_QUOTA = /^\[quota\][^\[]*?^default\s*=\s*([0-9]+(?:[kmgt]b?)?)\s*$/m
 # Never a real credential: it is the negative control for the database probe and
 # for the token exchange, and it has to be a value nothing could have authored.
 WRONG_PASSWORD = "seafile-contract-password-that-was-never-authored"
@@ -187,6 +201,7 @@ end
 # a section header being the only thing in this grammar that opens with a
 # bracket.
 INDEX_FILES_ENABLED = /^\[INDEX FILES\][^\[]*?^enabled\s*=\s*([^\r\n]*)/m
+AUDIT_ENABLED = /^\[AUDIT\][^\[]*?^enabled\s*=\s*([^\r\n]*)/m
 ANY_SECTION_ENABLED = /^\[([^\]]+)\][^\[]*?^enabled\s*=\s*([^\r\n]*)/m
 
 def host_seafevents
@@ -211,6 +226,15 @@ def index_files_enabled(content, where)
   match[1].strip
 end
 
+def audit_enabled(content, where)
+  match = content.match(AUDIT_ENABLED)
+  fail_contract(
+    "#{where} carries no [AUDIT] enabled key, so this platform is managing nothing there"
+  ) if match.nil?
+
+  match[1].strip
+end
+
 # (a) The path claim, which until this ran was read out of the image rather than
 # observed: bootstrap.py moves the generated conf/ to /shared/seafile/conf and
 # create_data_links.sh re-establishes the symlink on every later start. Proving
@@ -230,22 +254,81 @@ def assert_seafevents_path
   outside
 end
 
-def assert_index_files_disabled(content, where)
+# Both owned settings, which is why the name says "settings" and not "indexing".
+def assert_owned_settings(content, where)
   current = index_files_enabled(content, where)
   fail_contract("Seafile file indexing is #{current} in #{where}, and this platform requires false") unless
     current == "false"
+  # The other owned setting, and the one whose per-line failure mode is why this
+  # file is section-scoped at all: `enabled` appears under five sections of the
+  # generated document, and a repair that rewrote them all would leave [AUDIT]
+  # reading false while [INDEX FILES] read exactly what this platform asked for.
+  # Asserting both is what makes a lane able to tell those two apart.
+  audit = audit_enabled(content, where)
+  fail_contract("the Seafile audit log is #{audit} in #{where}, and this platform requires true") unless
+    audit == "true"
   # Reported rather than asserted, and the reason is the same one the socket
   # observation below carries: what upstream's own generator writes under
-  # [AUDIT] and [SEAHUB EMAIL] is not this repository's to control, so a lane
-  # failing on it would fail for something nobody here can fix. The property
-  # that IS this platform's -- that the repair is bounded to one section rather
-  # than applied per line -- is asserted by tests/contracts/seafile-static.rb
-  # against the role's own pattern, where breaking it is a repository change.
-  others = content.scan(ANY_SECTION_ENABLED).reject { |section, _value| section == "INDEX FILES" }
+  # [SEAHUB EMAIL], [STATISTICS] and [FILE HISTORY] is not this repository's to
+  # control, so a lane failing on it would fail for something nobody here can
+  # fix. The property that IS this platform's -- that the repair is bounded to
+  # one section rather than applied per line -- is asserted by
+  # tests/contracts/seafile-static.rb against the role's own pattern, where
+  # breaking it is a repository change.
+  #
+  # [AUDIT] left the observed set when the platform took it over. That is the
+  # whole of what "owned" means here: the two sections this repository names are
+  # asserted, and everything the same file happens to carry is reported.
+  owned = ["INDEX FILES", "AUDIT"]
+  others = content.scan(ANY_SECTION_ENABLED).reject { |section, _value| owned.include?(section) }
   observe(
     "seafevents.conf sections this platform does not own report enabled as " \
     "#{others.map { |section, value| "[#{section}] #{value.strip}" }.join(', ')}"
   ) unless others.empty?
+end
+
+# The quota half of the same ownership claim, read from the host copy of the
+# other generated file. Two properties, and the second is the one worth having:
+# the block roles/seafile marks is present, and the key inside it is under
+# [quota] and spelled the way seaf-server parses -- a decimal number with an
+# optional k/kb/m/mb/g/gb/t/tb suffix. Any other spelling is logged as an invalid
+# default quota and replaced with unlimited, and a `default` under any other
+# section is simply not read, so both are silent no-quotas rather than errors and
+# both are exactly the defect a running lane can catch and a reader cannot.
+#
+# The number itself is deliberately not pinned. Raising the quota is a supported
+# operator change and must not fail a lane.
+# One reader, two call sites, and the argument is what tells them apart in a
+# plant: the precondition and the survival check state different things about
+# different moments, and a plant that matched both would prove neither.
+def quota_block_present?(_moment)
+  File.file?(HOST_SERVER_CONFIG) && File.binread(HOST_SERVER_CONFIG).include?(QUOTA_MARKER)
+end
+
+def assert_default_quota_declared(where)
+  fail_contract("the Seafile server configuration did not land on the host at #{HOST_SERVER_CONFIG}") unless
+    File.file?(HOST_SERVER_CONFIG)
+
+  begin
+    content = File.binread(HOST_SERVER_CONFIG)
+  rescue SystemCallError => error
+    fail_contract("the Seafile server configuration at #{HOST_SERVER_CONFIG} could not be read: #{error.class}")
+  end
+
+  fail_contract(
+    "#{where} carries no #{QUOTA_MARKER} block, so no per-user storage quota is declared and one " \
+    "user can fill the volume every other stack keeps its database on"
+  ) unless content.include?(QUOTA_MARKER)
+
+  # Section-scoped for the reason seafevents.conf is, and it matters more here:
+  # `default` is a plausible key name under any section of an INI document, and
+  # the one seaf-server reads is the one under [quota].
+  fail_contract(
+    "#{where} declares no [quota] default that seaf-server would parse, so the quota it does " \
+    "declare is logged as invalid and replaced with unlimited"
+  ) unless content.match(DEFAULT_QUOTA)
+
+  content
 end
 
 # --- the database credential classification ---------------------------------
@@ -706,14 +789,16 @@ end
 def run_mode(credentials)
   census
   content = assert_seafevents_path
-  assert_index_files_disabled(content, "the deployed seafevents.conf")
+  assert_owned_settings(content, "the deployed seafevents.conf")
+  assert_default_quota_declared("the deployed seafile.conf")
   assert_database_credential
   before = cache_command_families("the cache command census")
   assert_administrator_token(credentials, "the deployed server's")
   sleep CACHE_SETTLE_SECONDS if CACHE_SETTLE_SECONDS.positive?
   assert_cache_is_serving(before, cache_command_families("the cache command census after the exchange"))
-  puts "seafile contract: three healthy containers, the platform-owned event configuration, " \
-       "the TCP-only database credential, an administrator token and a Valkey-backed cache hold"
+  puts "seafile contract: three healthy containers, the platform-owned event configuration and " \
+       "storage quota, the TCP-only database credential, an administrator token and a " \
+       "Valkey-backed cache hold"
 end
 
 # (b) The highest-stakes claim in this service, and the only one that can be
@@ -731,6 +816,15 @@ def restart_persistence_mode(credentials)
     "exists to test has not run"
   ) unless before == "false"
 
+  # The same precondition for the quota, and it is not decoration: without it a
+  # deployment whose quota was never written fails below saying the restart
+  # dropped a block that was never there, which is a confident diagnosis of the
+  # wrong failure.
+  fail_contract(
+    "seafile.conf carries no #{QUOTA_MARKER} block before the restart, so the reconciliation " \
+    "this mode exists to test has not run"
+  ) unless quota_block_present?("before the restart")
+
   _out, _err, status = docker("restart", SERVER, label: "the server restart")
   fail_contract("the Seafile server container #{SERVER} could not be restarted") unless status.success?
   wait_for_health(SERVER, RESTART_TIMEOUT_SECONDS, "the server restart")
@@ -744,10 +838,20 @@ def restart_persistence_mode(credentials)
 
   # Not decoration: a server that came back unable to reach its databases would
   # otherwise let the lane's second converge blame itself for this restart.
+  # The same first-run-only claim for the other generated file, and it is worth a
+  # separate assertion rather than a shared one: bootstrap.py appends to
+  # seafile.conf on the run that creates it, so "the server does not rewrite it
+  # later" is a different statement about a different writer.
+  fail_contract(
+    "Seafile rewrote seafile.conf on start and dropped the #{QUOTA_MARKER} block, so the " \
+    "repair-then-restart in roles/seafile/tasks/reconcile_quota.yml can never converge"
+  ) unless quota_block_present?("after the restart")
+
   wait_for_server("its API after the restart")
   assert_administrator_token(credentials, "the restarted server's")
-  puts "seafile contract: the platform-owned [INDEX FILES] setting survives a server restart and " \
-       "the administrator still authenticates against the databases"
+  puts "seafile contract: the platform-owned [INDEX FILES] setting and the declared [quota] " \
+       "default survive a server restart and the administrator still authenticates against " \
+       "the databases"
 end
 
 MODES = %w[run restart-persistence restore-rehearsal-seed restore-rehearsal-assert].freeze

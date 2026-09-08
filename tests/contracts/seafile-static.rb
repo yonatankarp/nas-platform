@@ -27,6 +27,7 @@ required = %w[
   roles/seafile/tasks/pre_upgrade_backup.yml
   roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
+  roles/seafile/tasks/reconcile_quota.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
   roles/seafile/templates/env.j2
@@ -37,6 +38,7 @@ required = %w[
   tests/expected/seafile.yml
   tests/contracts/seafile.sh
   inventory/group_vars/all/main.yml
+  roles/beszel/defaults/main.yml
 ]
 required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
@@ -46,7 +48,8 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_supp
 include PolicySupport
 
 ROLE_TASK_FILES = %w[
-  main storage deploy pre_upgrade_backup recover_wedged_boot reconcile_seafevents report verify
+  main storage deploy pre_upgrade_backup recover_wedged_boot reconcile_seafevents
+  reconcile_quota report verify
 ].freeze
 VAULT_CREDENTIALS = %w[
   vault_seafile_admin_email
@@ -181,15 +184,25 @@ if failures.empty?
   # --- the role -------------------------------------------------------------
 
   imports = role_tasks(root, "main").filter_map { |task| task["ansible.builtin.import_tasks"] }
-  expected_stages = %w[storage.yml deploy.yml reconcile_seafevents.yml report.yml verify.yml]
+  expected_stages = %w[
+    storage.yml deploy.yml reconcile_quota.yml reconcile_seafevents.yml report.yml verify.yml
+  ]
   failures << "the Seafile role must import every stage it owns" unless
     expected_stages.all? { |stage| imports.include?(stage) }
   # The load-bearing ordering claim, and it is compared by index rather than
   # grepped: Seafile writes seafevents.conf during its own first start, so a
   # reconciliation placed before the deployment finds nothing on run 1 and
   # repairs on run 2 -- two runs disagreeing, which is what idempotence forbids.
-  failures << "the Seafile event reconciliation must run after the deployment that creates the file" unless
-    imports.index("reconcile_seafevents.yml").to_i > imports.index("deploy.yml").to_i
+  # One assertion for both reconciliation stages, because the two orderings it
+  # states cannot be violated independently: any stage moved above the deployment
+  # also moves above the other reconciliation. The second half is the one that is
+  # not obvious -- the quota stage carries no restart of its own and depends on
+  # the one at the end of the event stage, so a quota repair placed after it is a
+  # repair nothing reloads until some later converge happens to change something
+  # else.
+  failures << "both Seafile reconciliations must run after the deployment, quota before events" unless
+    imports.index("reconcile_quota.yml").to_i > imports.index("deploy.yml").to_i &&
+    imports.index("reconcile_seafevents.yml").to_i > imports.index("reconcile_quota.yml").to_i
 
   deploy = role_tasks(root, "deploy")
   compose_tasks = deploy.select { |task| task.key?("community.docker.docker_compose_v2") }
@@ -289,15 +302,33 @@ if failures.empty?
     !probe_argv.include?("--socket") && !probe_argv.include?("localhost")
 
   reconcile = role_tasks(root, "reconcile_seafevents")
-  # `enabled` is not a unique key in this INI document -- upstream's own
-  # seafevents.conf carries one under [AUDIT] and one under [SEAHUB EMAIL] --
-  # so a per-line rewrite would switch off unrelated features and report itself
-  # converged. [^\[]*? is what bounds the match to one section: a section header
-  # is the only thing in this grammar that opens with a bracket.
-  assignment = reconcile.filter_map { |task| task.dig("vars", "seafile_seafevents_index_assignment") }
-  failures << "the Seafile index repair must be bounded to the [INDEX FILES] section" unless
+  # `enabled` is not a unique key in this INI document. pro.py's own first-run
+  # template declares one under every one of its five sections -- [SEAHUB EMAIL],
+  # [STATISTICS], [AUDIT], [INDEX FILES] and [FILE HISTORY] -- so a per-line
+  # rewrite switches off four features to change one and reports itself
+  # converged. Two properties make that unreachable rather than merely avoided:
+  # the pattern is built from the section of the setting being repaired, and
+  # [^\[]*? bounds the match to that section, a section header being the only
+  # thing in this grammar that opens with a bracket.
+  assignment = reconcile.filter_map { |task| task.dig("vars", "seafile_seafevents_assignment") }
+  failures << "the Seafile event repair must be bounded to the section of the setting it repairs" unless
     assignment.length == 1 &&
-    assignment.first.include?('\[INDEX FILES\]') && assignment.first.include?('[^\[]*?')
+    assignment.first.include?('\[{{ item.section }}\]') && assignment.first.include?('[^\[]*?')
+  # The same for the pattern the report reads with, because a report that named
+  # the wrong section would tell an operator a key is undeclared while the repair
+  # beside it rewrites that key perfectly well.
+  reported = reconcile.flat_map do |task|
+    %w[seafile_seafevents_key seafile_seafevents_capture].filter_map { |name| task.dig("vars", name) }
+  end
+  failures << "the Seafile event report must read the section of the setting it reports" unless
+    reported.length == 2 &&
+    reported.all? { |pattern| pattern.include?('\[{{ item.section }}\]') && pattern.include?('[^\[]*?') }
+  # Every task that repairs or reports must be driven by the declared list, so a
+  # setting added to that list is owned by construction rather than by a second
+  # edit somebody has to remember.
+  looped = reconcile.select { |task| task["loop"] == "{{ seafile_seafevents_managed_settings }}" }
+  failures << "the Seafile event reconciliation must loop over its declared settings" unless
+    looped.length == 2
 
   restart = reconcile.select do |task|
     task.dig("community.docker.docker_compose_v2", "state") == "restarted"
@@ -312,6 +343,13 @@ if failures.empty?
     restart.first.dig("community.docker.docker_compose_v2", "services") == ["seafile"] &&
     restart.first.dig("community.docker.docker_compose_v2", "dependencies") == false &&
     Array(restart.first["when"]).any? { |value| value.to_s.include?("seafile_seafevents_repair is changed") }
+  # The one restart in this role is the one both reconciliations depend on. A
+  # quota written into seafile.conf that nothing reloads is a converge reporting
+  # a change the running server has not seen, and seaf-server reads that file
+  # once, at start.
+  failures << "the restart must also carry the repaired Seafile quota policy" unless
+    restart.length == 1 &&
+    Array(restart.first["when"]).any? { |value| value.to_s.include?("seafile_server_config_repair is changed") }
   failures << "the Seafile restart must be a task rather than a deferred handler" if
     Dir.exist?(File.join(root, "roles/seafile/handlers"))
 
@@ -360,6 +398,86 @@ if failures.empty?
     defaults["seafile_seafevents_config_path"] == "{{ seafile_data_host_path }}/seafile/conf/seafevents.conf"
   failures << "this platform must own file indexing as switched off" unless
     defaults["seafile_index_files_enabled"] == false
+  # The audit log is a #445 requirement rather than a preference, and it is
+  # declared rather than left alone for a reason the value alone does not carry:
+  # seafevents' own reader falls through to enable_audit = False when the key is
+  # absent, so an image that stopped writing it would switch auditing off in
+  # silence. Owning the key is what turns that into a repair.
+  failures << "this platform must own the Seafile audit log as switched on" unless
+    defaults["seafile_audit_log_enabled"] == true
+  # Every owned setting names its section. A row without one is the line-scoped
+  # repair this file exists to refuse, arriving as data instead of as code.
+  managed = Array(defaults["seafile_seafevents_managed_settings"])
+  failures << "every owned Seafile event setting must name its section, key and value" unless
+    managed.any? &&
+    managed.all? { |setting| %w[section key value].all? { |field| setting[field].to_s != "" } }
+  owned = managed.map { |setting| [setting["section"], setting["key"]] }
+  failures << "this platform must own [INDEX FILES] enabled and [AUDIT] enabled" unless
+    owned.include?(["INDEX FILES", "enabled"]) && owned.include?(["AUDIT", "enabled"])
+
+  # seafile.conf sits beside seafevents.conf in the same generated conf/
+  # directory, and the same first-run-only argument makes the same repair
+  # converge there.
+  failures << "the Seafile server configuration must be the file the server writes inside the volume" unless
+    defaults["seafile_server_config_path"] == "{{ seafile_data_host_path }}/seafile/conf/seafile.conf"
+  # A decimal number with an optional k/kb/m/mb/g/gb/t/tb suffix, because
+  # seaf-server logs "Invalid default quota" for every other spelling and falls
+  # back to unlimited -- a silent no-quota rather than an error.
+  failures << "the Seafile quota must be spelled the way seaf-server parses it" unless
+    defaults["seafile_default_user_quota"].to_s.match?(/\A[0-9]+([kmgt]b?)?\z/)
+
+  quota = role_tasks(root, "reconcile_quota")
+  # The generated seafile.conf carries no [quota] section at all, so what this
+  # writes is a whole section rather than a key. A marked block is what can be
+  # found again, changed in place and told apart from a line an operator added;
+  # a lineinfile keyed on `default` would match a key of that name under any
+  # section, which is the same class of defect the section-scoping above exists
+  # to refuse, in a different file.
+  block = quota.select { |task| task.key?("ansible.builtin.blockinfile") }
+  failures << "the Seafile quota must be written as one owned block" unless
+    block.length == 1 &&
+    block.first.dig("ansible.builtin.blockinfile", "marker").to_s.include?("nas-platform seafile") &&
+    block.first.dig("ansible.builtin.blockinfile", "block").to_s.include?("[quota]")
+  failures << "the Seafile quota must not claim a literal mode" unless
+    block.length == 1 &&
+    block.first.dig("ansible.builtin.blockinfile", "mode").to_s
+         .include?("seafile_server_config_stat.stat.mode")
+  # seafile.conf opens with a [database] section carrying the Seafile database
+  # account and its password, and that credential arrives as file content rather
+  # than as a vault_ name, so the repository's own no_log rule cannot see it.
+  quota_io = quota.select { |task| task.key?("ansible.builtin.blockinfile") || task.key?("ansible.builtin.slurp") }
+  failures << "the Seafile server configuration carries a database password and must be redacted" unless
+    quota_io.length >= 1 && quota_io.all? { |task| task["no_log"] == true }
+  # A refusal before the write, because the value it refuses is one seaf-server
+  # accepts and then ignores: an unparseable quota is logged and replaced with
+  # unlimited, so shipping one is shipping no quota at all.
+  guard = quota.select { |task| task.key?("ansible.builtin.assert") }
+  failures << "the Seafile quota must be refused before it is written" unless
+    guard.length == 1 &&
+    Array(guard.first.dig("ansible.builtin.assert", "that"))
+      .any? { |value| value.to_s.include?("seafile_default_user_quota is match") } &&
+    quota.index(guard.first).to_i < quota.index(block.first).to_i
+
+  # --- what watches the volume Seafile fills ---------------------------------
+  #
+  # Seafile is the only stack here whose stored volume is chosen by a person, and
+  # it stores on /volume1 -- the volume every other stack keeps its database on.
+  # The quota above is the bound; this is the backstop, and it is Beszel's
+  # system-level Disk alert rather than anything Seafile-specific. Beszel's
+  # managed alerts are per-system with no container dimension, and roles/beszel's
+  # own reconciliation refuses a duplicate (user, system, name), so ONE Disk
+  # alert per system is the whole of what can exist: there is no warn-then-page
+  # tier and no per-service alert to add. What makes the one alert the right one
+  # is that the agent's FILESYSTEM names volume1, which services/beszel's compose
+  # file declares and tests/contracts/beszel covers.
+  #
+  # Asserted here rather than in roles/beszel's own tests because this is where
+  # the dependency is: removing the Disk alert would leave Seafile's unbounded
+  # growth watched by nothing, and nothing in roles/beszel knows that.
+  beszel_defaults = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
+  disk_alert = Array(beszel_defaults["beszel_alerts"]).find { |alert| alert["name"] == "Disk" }
+  failures << "Seafile's unbounded growth must leave a managed Beszel disk alert behind it" unless
+    disk_alert && disk_alert["value"].to_i.positive? && disk_alert["value"].to_i <= 90
 
   # The wrapper beside this program is read out of the INSPECTED tree, like
   # tests/policy_support.rb above and for the same reason: it is that tree's own

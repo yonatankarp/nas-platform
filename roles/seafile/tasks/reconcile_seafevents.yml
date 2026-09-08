@@ -15,14 +15,27 @@
 # on every converge and the repository would stop describing a fixed point.
 # Everything not named below is carried through byte for byte.
 #
-# The transform is bounded to the [INDEX FILES] section rather than applied line
-# by line, which is where the trailarr precedent this file otherwise copies stops
-# being a safe guide. trailarr repairs a flat KEY=value file, where a per-line
-# rewrite of `enabled` names exactly one setting. This is an INI document in
-# which `enabled` is not a unique key -- upstream's documented seafevents.conf
-# carries one under [AUDIT] and one under [SEAHUB EMAIL] as well -- so the same
-# per-line rewrite would switch off unrelated features and report itself
-# converged.
+# The transform is bounded to a SECTION rather than applied line by line, which
+# is where the trailarr precedent this file otherwise copies stops being a safe
+# guide. trailarr repairs a flat KEY=value file, where a per-line rewrite of
+# `enabled` names exactly one setting. This is an INI document in which
+# `enabled` is not a unique key: pro.py's own first-run template declares one
+# under every one of its five sections -- [SEAHUB EMAIL], [STATISTICS] (spelled
+# `enabled=true`, with no spaces, which is why the patterns below say `\s*=`
+# rather than ` = `), [AUDIT], [INDEX FILES] and [FILE HISTORY]. A per-line
+# rewrite therefore switches off four features to change one and reports itself
+# converged, and the audit log is the one that hurts: seafevents' own reader
+# falls through to `enable_audit = False` when the key is missing or false, so
+# the loss is silent in both directions.
+#
+# That is a lesson this file learned the expensive way and now enforces
+# structurally. Every setting is declared in seafile_seafevents_managed_settings
+# as (section, key, value), and every pattern below is built from `item.section`
+# -- so a section-scoped repair is what this file can express, and a line-scoped
+# one is not something a later edit can reach by accident.
+# tests/contracts/seafile-static.rb asserts the shape and
+# tests/seafile_contract_test.rb plants the line-scoped version to prove the
+# assertion bites.
 #
 # The repair converges because the server writes that key exactly once, and that
 # is a property of the image rather than an assumption. Read out of
@@ -65,85 +78,106 @@
   check_mode: false
   no_log: true
 
-# The three patterns are YAML single-quoted scalars so that the regular
-# expressions reach Jinja exactly as written. The backreference is spelled with
-# a single backslash for the same reason: these are folded block scalars, where
-# YAML performs no escape processing, so `\1` is what reaches the filter.
-# Written `\\1` -- the form the same expression needs inside a double-quoted
-# scalar -- regex_search fails to parse its own group argument and the run dies
-# on 'NoneType' object has no attribute 'group', which reads like a failed match
+# The patterns are YAML single-quoted scalars so that the regular expressions
+# reach Jinja exactly as written. The backreference is spelled with a single
+# backslash for the same reason: these are folded block scalars, where YAML
+# performs no escape processing, so `\1` is what reaches the filter. Written
+# `\\1` -- the form the same expression needs inside a double-quoted scalar --
+# regex_search fails to parse its own group argument and the run dies on
+# 'NoneType' object has no attribute 'group', which reads like a failed match
 # and is not one.
 #
-# [^\[]*? is what bounds the match to one section: a section header is the only
-# thing in this grammar that begins with an opening bracket, so the match cannot
-# reach an `enabled` key belonging to a later section.
+# Every pattern opens with the section named by the declared setting, and
+# [^\[]*? is what keeps the match inside it: a section header is the only thing
+# in this grammar that begins with an opening bracket, so the match cannot reach
+# a key of the same name belonging to a later section. Building the pattern from
+# `item.section` rather than from the key alone is the structural half of that --
+# there is no spelling of these lines that is section-blind and still renders.
 #
 # The presence test is a separate `search` rather than a None check on the
 # capture, because regex_search raises rather than returning None when it is
 # asked for a group of a match that did not happen.
-- name: Resolve the platform-owned Seafile event configuration
+#
+# This report runs BEFORE the repair below rather than after it, which is the one
+# thing about the ordering worth stating: it reads what the server wrote, and a
+# repair that has already run leaves nothing to report.
+#
+# It is also the one task here that is not redacted, and deliberately. Everything
+# it renders is the path, the section, whether the key is declared and what it
+# currently says -- a boolean, not a credential -- which leaves the redacted
+# repair below able to say why it fired instead of reporting a silent `changed`
+# with nothing to read. The undeclared case is called out by name: it means a key
+# this platform owns is not in the file the server wrote, so that setting is
+# running on whatever the server's own default is and this reconciliation is
+# managing nothing there. That is a wrong assumption about the image, not a wrong
+# value, and it is deliberately reported rather than asserted -- a converge that
+# refuses to proceed because a future release renamed a configuration section is
+# a worse outcome than one that says so and carries on.
+- name: Report the planned Seafile event configuration repairs
   vars:
     seafile_seafevents_current: "{{ seafile_seafevents_read.content | b64decode }}"
-    seafile_seafevents_index_key: '(?ms)^\[INDEX FILES\][^\[]*?^enabled\s*='
-    seafile_seafevents_index_capture: '(?ms)^\[INDEX FILES\][^\[]*?^enabled\s*=\s*([^\r\n]*)'
-    seafile_seafevents_index_assignment: '(?ms)^(\[INDEX FILES\][^\[]*?^enabled\s*=\s*)[^\r\n]*'
-  ansible.builtin.set_fact:
-    # Whether the key is there at all, which "the content did not change" cannot
-    # say: a file already carrying `enabled = false` and a file carrying no
-    # [INDEX FILES] section produce byte-identical results and a silent no-op,
-    # and only one of those two means indexing is off.
-    seafile_seafevents_index_declared: >-
-      {{ seafile_seafevents_current is search(seafile_seafevents_index_key) }}
-    seafile_seafevents_index_current: >-
+    seafile_seafevents_key: '(?ms)^\[{{ item.section }}\][^\[]*?^{{ item.key }}\s*='
+    seafile_seafevents_capture: '(?ms)^\[{{ item.section }}\][^\[]*?^{{ item.key }}\s*=\s*([^\r\n]*)'
+    seafile_seafevents_declared: >-
+      {{ seafile_seafevents_current is search(seafile_seafevents_key) }}
+    seafile_seafevents_value: >-
       {{ (seafile_seafevents_current
-          | regex_search(seafile_seafevents_index_capture, '\1') | first)
-         if seafile_seafevents_current is search(seafile_seafevents_index_key)
+          | regex_search(seafile_seafevents_capture, '\1') | first)
+         if seafile_seafevents_current is search(seafile_seafevents_key)
          else '(undeclared)' }}
-    seafile_seafevents_repaired: >-
-      {{ seafile_seafevents_current
-         | regex_replace(seafile_seafevents_index_assignment,
-                         '\1' ~ (seafile_index_files_enabled | bool | lower)) }}
-  when:
-    - seafile_deployment_enabled | bool
-    - seafile_seafevents_stat.stat.exists | default(false)
-  # Redacted: the computed content is the file, [DATABASE] section included.
-  no_log: true
-
-# The one task here that is not redacted, and deliberately. Everything it
-# renders is the path, whether the key is declared and what it currently says --
-# a boolean, not a credential -- which leaves the redacted repair below able to
-# say why it fired instead of reporting a silent `changed` with nothing to read.
-# The undeclared
-# case is called out by name: it means the key this platform owns is not in the
-# file the server wrote, so indexing is running on whatever the server's own
-# default is and this reconciliation is not managing it. That is a wrong
-# assumption about the image, not a wrong value, and it is deliberately reported
-# rather than asserted -- a converge that refuses to proceed because a future
-# release renamed a configuration section is a worse outcome than one that says
-# so and carries on.
-- name: Report the planned Seafile event configuration repair
-  vars:
     # Named rather than spelled inline. A folded block scalar keeps the newline
     # in front of any line indented further than its first, so a long branch
     # written inside the conditional arrives with its own wrapping baked into
     # the sentence the operator reads.
     seafile_seafevents_declared_report: >-
-      [INDEX FILES] enabled is {{ seafile_seafevents_index_current }}, and this
-      platform requires {{ seafile_index_files_enabled | bool | lower }}.
+      [{{ item.section }}] {{ item.key }} is {{ seafile_seafevents_value }}, and
+      this platform requires {{ item.value }}.
     seafile_seafevents_undeclared_report: >-
-      carries no [INDEX FILES] enabled key, so file indexing is left at whatever
-      the server defaults to and this reconciliation is managing nothing. Check
-      the section name against the deployed image before trusting that the index
-      updater is switched off.
+      carries no [{{ item.section }}] {{ item.key }} key, so that setting is left
+      at whatever the server defaults to and this reconciliation is managing
+      nothing there. Check the section name against the deployed image before
+      trusting that this platform owns it.
   ansible.builtin.debug:
     msg: >-
       {{ seafile_seafevents_config_path }}
       {{ seafile_seafevents_declared_report
-         if seafile_seafevents_index_declared | bool
+         if seafile_seafevents_declared | bool
          else seafile_seafevents_undeclared_report }}
+  loop: "{{ seafile_seafevents_managed_settings }}"
+  loop_control:
+    label: "[{{ item.section }}] {{ item.key }}"
   when:
     - seafile_deployment_enabled | bool
     - seafile_seafevents_stat.stat.exists | default(false)
+
+# One pass per declared setting, each folding its own repair into the result of
+# the last. seafile_seafevents_repaired is undefined on the first iteration, so
+# the fold starts from the file the server wrote; every iteration after that
+# reads the fact the previous one set. A single set_fact rewriting several
+# sections at once cannot be written -- regex_replace takes one pattern -- and
+# writing the file once per setting would restart the server once per setting.
+#
+# Nothing is asserted about a section that is absent. regex_replace with no match
+# returns its input unchanged, so a missing section carries through untouched and
+# the report above is where an operator learns it was missing.
+- name: Resolve the platform-owned Seafile event configuration
+  vars:
+    seafile_seafevents_pending: >-
+      {{ seafile_seafevents_repaired
+         | default(seafile_seafevents_read.content | b64decode, true) }}
+    seafile_seafevents_assignment: '(?ms)^(\[{{ item.section }}\][^\[]*?^{{ item.key }}\s*=\s*)[^\r\n]*'
+  ansible.builtin.set_fact:
+    seafile_seafevents_repaired: >-
+      {{ seafile_seafevents_pending
+         | regex_replace(seafile_seafevents_assignment, '\1' ~ item.value) }}
+  loop: "{{ seafile_seafevents_managed_settings }}"
+  loop_control:
+    label: "[{{ item.section }}] {{ item.key }}"
+  when:
+    - seafile_deployment_enabled | bool
+    - seafile_seafevents_stat.stat.exists | default(false)
+  # Redacted: the computed content is the file, [DATABASE] section included.
+  no_log: true
 
 # The mode is the one the file already has, read back from the stat above rather
 # than declared. A literal here would be a claim about what the server's own
@@ -172,7 +206,8 @@
     msg: >-
       {{ seafile_seafevents_config_path }} does not exist yet, so there is
       nothing to reconcile. The server writes it during the setup its first
-      start runs, and the next converge finds it and switches file indexing off.
+      start runs, and the next converge finds it and takes over every setting
+      seafile_seafevents_managed_settings names.
   when:
     - seafile_deployment_enabled | bool
     - not seafile_seafevents_stat.stat.exists | default(false)
@@ -212,7 +247,16 @@
 # asked Compose for, while `docker compose restart` returns as soon as the
 # containers have been signalled. The wait below is that guarantee, made
 # explicitly.
-- name: Restart Seafile onto the repaired event configuration # noqa: no-handler
+#
+# It covers BOTH generated-configuration repairs, which is why the stage that
+# reconciles seafile.conf runs immediately before this file rather than carrying
+# a restart of its own. seaf-server reads seafile.conf once, at start, exactly as
+# seafevents reads seafevents.conf once at start, and both processes live in this
+# one container -- so one restart makes both repairs take effect and two would
+# bounce the server twice for the same converge. The ordering is the whole
+# mechanism: a repair whose restart ran before it did is a repair that has not
+# taken effect.
+- name: Restart Seafile onto the repaired configuration # noqa: no-handler
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/seafile"
     project_name: "{{ seafile_compose_project_name }}"
@@ -224,6 +268,7 @@
   when:
     - seafile_deployment_enabled | bool
     - seafile_seafevents_repair is changed
+      or seafile_server_config_repair is changed
 
 # Without this the verification one file later POSTs to a server that was
 # signalled a moment ago and is still starting gunicorn, and it fails with a
@@ -252,7 +297,7 @@
 # which is why status_code can stay strict here. A shape that made the refusal
 # untestable would fail on attempt 1 of 101 during precisely the minutes this
 # exists to wait through.
-- name: Wait for Seafile to serve after the event configuration restart # noqa: no-handler
+- name: Wait for Seafile to serve after the configuration restart # noqa: no-handler
   ansible.builtin.uri:
     url: "{{ seafile_api }}/ping/"
     status_code: [200]
@@ -263,6 +308,7 @@
   when:
     - seafile_deployment_enabled | bool
     - seafile_seafevents_repair is changed
+      or seafile_server_config_repair is changed
     - not ansible_check_mode
   changed_when: false
   check_mode: false
