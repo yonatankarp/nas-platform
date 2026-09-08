@@ -1301,6 +1301,62 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   end
 end
 
+# The Compose floor the disposable lanes actually need, which is not the one
+# inventory declares.
+#
+# Compose's `!override` and `!reset` tags -- which replace a list rather than
+# merge into it, and which is the whole reason a sandbox override can drop the
+# NAS's /dev/dri device or its production port -- were introduced in Compose
+# 2.24.4. nas_compose_minimum is 2.18.0, the floor
+# community.docker.docker_compose_v2 documents, and roles/preflight asserts it on
+# every host. That floor is right for the NAS, whose canonical compose.yml files
+# carry no tag at all, and wrong for both disposable lanes: a host at 2.18.0
+# passes preflight and then dies on the first override it cannot parse, which is
+# ntfy rather than whatever anybody was changing.
+#
+# The tags are found as text, and that is the point rather than an economy.
+# Psych resolves an unrecognised tag away without complaint, so the loop above --
+# which reads these very files through YAML.safe_load_file -- cannot see the one
+# thing that sets the floor, and neither can any other parse-based check in this
+# repository. That blindness is why the defect survived two lanes and sixteen
+# services. The pattern matches a tag in value position, so a `!override` written
+# inside a comment (services/seafile/compose.mac.yml has one) is not mistaken for
+# a use of it.
+#
+# What this proves, exactly: the floors the two harnesses request are consistent
+# with the tags present in the tree, in both directions -- a kind that gains the
+# tags, and a harness that stops requesting the floor, both fail here. It does
+# not prove any real Mac or CI runner has that Compose installed, and 2.24.4 is
+# taken from Compose's own release notes rather than measured here.
+compose_override_tag_minimum = Gem::Version.new("2.24.4")
+compose_override_tag = /^[ \t]*(?:-[ \t]+)?[\w.\-]+:[ \t]+!(?:override|reset)(?:[ \t]|$)/
+compose_tagged_kinds = Dir[File.join(ROOT, "services", "*", "compose.*.yml")].sort.filter_map do |path|
+  kind = File.basename(path)[/\Acompose\.(.+)\.yml\z/, 1]
+  next if kind.nil?
+
+  kind if File.read(path).match?(compose_override_tag)
+end.uniq.sort
+check(failures, compose_tagged_kinds == %w[integration mac],
+      "Compose !override/!reset tags belong to the disposable lanes alone, " \
+      "found in: #{compose_tagged_kinds.join(', ')}")
+# Neither harness can put this in inventory. tests/policy_platform_test.rb holds
+# a host group to machine facts and PLATFORM_* port lookups, so mac_hosts cannot
+# carry it; the integration sandbox binds to inventory/local.yml and is a
+# nas_hosts run like the NAS, so there is no group in which "2.18.0 there,
+# 2.24.4 here" is expressible at all. Both request it on the command line.
+{
+  "tests/mac/lib.sh" => "the Mac lifecycle harness",
+  "tests/integration_controller_lib.sh" => "the integration controller"
+}.each do |relative_path, label|
+  path = File.join(ROOT, relative_path)
+  source = File.file?(path) ? File.read(path) : ""
+  requested = source.scan(/nas_compose_minimum=([0-9]+(?:\.[0-9]+)*)/).flatten
+  check(failures, !requested.empty? &&
+                  requested.all? { |value| Gem::Version.new(value) >= compose_override_tag_minimum },
+        "#{relative_path}: #{label} must request a Compose floor of at least " \
+        "#{compose_override_tag_minimum}, because the overrides it deploys use !override")
+end
+
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.
 Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
