@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running sixteen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -263,9 +263,13 @@ memory sat at 27% with PSI reporting about 1% stall; and the two workloads that
 could be large, Immich's ML container and Jellyfin transcoding, read 93 MiB and
 785 MiB because they are bursty rather than resident. Swap is 2 GB and was
 entirely consumed at a swappiness of 60, about 2.4 GB paged out over 23 hours of
-uptime, which is a trickle and not pressure. Seafile is deployment-gated off, so
-none of those figures include it, and it plus a search index is the workload
-that would change them. Only `paperless_tika` declares `mem_limit`, and only
+uptime, which is a trickle and not pressure. Those figures were taken while
+Seafile was still deployment-gated off, so none of them include it; #499 has
+since flipped that gate, which means the measurement is now one stack behind the
+host it describes and the next one has to be taken fresh rather than adjusted.
+Nextcloud is gated off in its turn (#500), so its four containers are not in
+these numbers either, and a PostgreSQL cluster plus a PHP application is the
+workload most likely to move them. Only `paperless_tika` declares `mem_limit`, and only
 because it is a JVM and sized its own heap off the host without one (the
 convention below, #447); nothing declares `memswap_limit` or
 `deploy.resources`, so every other container may still take the whole host,
@@ -679,6 +683,10 @@ password to `conf/admin.txt` on **every** container start and removes it in a
 mode-0700 backup root (`roles/seafile` writes a `mariadb-dump` of `ccnet_db`,
 `seafile_db` and `seahub_db` there before every pinned upgrade — every account
 row Seafile holds, as plain readable SQL — beside a copy of that same `conf/`,
-with `admin.txt` excluded by name rather than by luck), and application
+with `admin.txt` excluded by name rather than by luck), Nextcloud's
+`config/config.php` inside its data root (the installer writes the database
+password, the instance `secret` and `passwordsalt`, and the cache password into
+it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
+user's own documents), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
