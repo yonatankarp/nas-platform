@@ -84,6 +84,12 @@ argument_specs:
       vault_seafile_db_password: {type: str, required: true}
       vault_seafile_jwt_private_key: {type: str, required: true}
       vault_seafile_cache_password: {type: str, required: true}
+      vault_nextcloud_admin_username: {type: str, required: true}
+      vault_nextcloud_admin_password: {type: str, required: true}
+      vault_nextcloud_db_name: {type: str, required: true}
+      vault_nextcloud_db_username: {type: str, required: true}
+      vault_nextcloud_db_password: {type: str, required: true}
+      vault_nextcloud_cache_password: {type: str, required: true}
       vault_managed_users:
         type: dict
         required: true

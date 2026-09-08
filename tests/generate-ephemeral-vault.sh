@@ -414,6 +414,12 @@ vault_seafile_db_username: seafile
 vault_seafile_db_password: '$(random_password)'
 vault_seafile_jwt_private_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_seafile_cache_password: '$(random_password)'
+vault_nextcloud_admin_username: ephemeral-admin
+vault_nextcloud_admin_password: '$(random_password)'
+vault_nextcloud_db_name: nextcloud
+vault_nextcloud_db_username: nextcloud
+vault_nextcloud_db_password: '$(random_password)'
+vault_nextcloud_cache_password: '$(random_password)'
 vault_managed_users:
   audiobookshelf:
     - username: reader-ephemeral-example-invalid
