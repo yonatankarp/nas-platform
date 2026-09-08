@@ -40,6 +40,12 @@ OCC_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_OCC_TIMEOUT_SECONDS"
 HTTP_OPEN_TIMEOUT = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_HTTP_OPEN_TIMEOUT_SECONDS", "10"), 10)
 HTTP_READ_TIMEOUT = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_HTTP_READ_TIMEOUT_SECONDS", "30"), 10)
 POLL_INTERVAL_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_POLL_INTERVAL_SECONDS", "2"), 10)
+# The one budget here that is not a timeout, and nothing waits on it: it is how
+# old an installation may be before "no background job mode has been recorded"
+# stops meaning "the sidecar's schedule has not fired yet" and starts meaning
+# "the sidecar has never run". assert_background_jobs_belong_to_the_sidecar
+# below is the single call site and records the arithmetic behind the default.
+CRON_GRACE_SECONDS = Integer(ENV.fetch("PLATFORM_NEXTCLOUD_CRON_GRACE_SECONDS", "900"), 10)
 
 MODE = ARGV.fetch(0, "run")
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NEXTCLOUD_PORT'), 10)}")
@@ -50,6 +56,15 @@ CACHE = ENV.fetch("PLATFORM_NEXTCLOUD_CACHE_CONTAINER")
 # Never a real credential: it is the negative control for the administrator
 # exchange, and it has to be a value nothing could have authored.
 WRONG_PASSWORD = "nextcloud-contract-password-that-was-never-authored"
+# Handed to `occ config:app:get` as --default-value so that a key which has
+# never been written arrives as a value this program can recognise rather than
+# as an exit code carrying no output at all. It has to be a string nothing could
+# have stored in oc_appconfig, for the same reason WRONG_PASSWORD does.
+UNSET_APP_CONFIG = "nextcloud-contract-app-config-never-written"
+# The crontab busybox crond reads inside the sidecar. It ships in the image
+# rather than in the shared volume, so this is the sidecar's own copy and not
+# the application container's.
+CRON_CRONTAB_PATH = "/var/spool/cron/crontabs/www-data"
 
 # One line, always. tests/nextcloud_contract_test.rb judges a refusal by finding
 # its fragment on a line that starts with this prefix, so a message wrapped onto
@@ -71,11 +86,61 @@ end
 # contract diagnostic rather than a backtrace: a lane that cannot run docker at
 # all must say so in the sentence a reader is looking for.
 def docker(*argv, label:, budget: DOCKER_TIMEOUT_SECONDS)
-  Timeout.timeout(budget) { Open3.capture3("docker", *argv) }
+  # Open3.capture3 reads the two pipes on threads of its own, and a Timeout
+  # closes those pipes underneath them: each thread then dies of IOError and Ruby
+  # prints its backtrace on stderr, immediately above the refusal below.
+  # Measured against a docker that sleeps past its budget -- two backtraces and
+  # then the sentence. A diagnostic standing next to a backtrace is what #352 was
+  # about, so the report is switched off for the duration of the call and
+  # restored afterwards; it governs threads created while it is off, which is
+  # exactly capture3's two.
+  reported = Thread.report_on_exception
+  Thread.report_on_exception = false
+  begin
+    Timeout.timeout(budget) { Open3.capture3("docker", *argv) }
+  ensure
+    Thread.report_on_exception = reported
+  end
 rescue Timeout::Error
   fail_contract("#{label} did not finish within #{budget}s")
 rescue SystemCallError => error
   fail_contract("#{label} could not run docker at all: #{error.class}")
+end
+
+# The first non-empty line of a stream, bounded. A refusal is one line, and a
+# docker error can be a paragraph.
+def first_line(stream)
+  line = stream.to_s.lines.map(&:strip).find { |candidate| !candidate.empty? }
+  return nil if line.nil?
+
+  line.length > 160 ? "#{line[0, 160]}..." : line
+end
+
+# Why a failed call needs saying more than its stderr does. The first CI run of
+# this lane refused with `the background job mode census failed: ` -- a sentence
+# that ends at its colon and names nothing -- because the message interpolated
+# the first line of stderr alone and there was no stderr:
+# core/Command/Config/App/GetConfig.php returns 1 from its
+# AppConfigUnknownKeyException branch, printing nothing on either stream, for an
+# app config key that has never been written. Measured against the pinned image:
+# `occ config:app:get core backgroundjobs_mode` on a fresh install answers
+# exit 1 with both streams empty.
+#
+# So every failure mode gets a distinguishable clause: the exit status always,
+# then stderr if there is any, then stdout if the command put its complaint on
+# the wrong stream, and otherwise the fact that it said nothing at all -- which
+# is a diagnosis rather than a hole, because it is what sends a reader to the
+# command's own exit codes. A call that never returned is not routed here: the
+# Timeout rescue in `docker` names the label and the budget it blew.
+def diagnosis(stdout, stderr, status)
+  code = status.exitstatus.nil? ? "signal #{status.termsig}" : "exit #{status.exitstatus}"
+  if (line = first_line(stderr))
+    "#{code}, stderr: #{line}"
+  elsif (line = first_line(stdout))
+    "#{code}, nothing on stderr, stdout: #{line}"
+  else
+    "#{code}, no output on stdout or stderr"
+  end
 end
 
 # occ, as the account that owns the installation. Running it as root writes
@@ -86,8 +151,17 @@ def occ(*arguments, label:)
     "exec", "--user", "www-data", APPLICATION, "php", "occ", *arguments,
     label: label, budget: OCC_TIMEOUT_SECONDS
   )
-  fail_contract("#{label} failed: #{stderr.lines.first.to_s.strip}") unless status.success?
+  fail_contract("#{label} failed (#{diagnosis(stdout, stderr, status)})") unless status.success?
   stdout.strip
+end
+
+# An oc_appconfig read whose "this key has never been written" is a value rather
+# than a silent exit 1. Without --default-value that state and a broken occ are
+# the same exit code with the same empty output, and no message can tell a reader
+# which of the two it met.
+def app_config(key, label:)
+  value = occ("config:app:get", "core", key, "--default-value=#{UNSET_APP_CONFIG}", label: label)
+  value == UNSET_APP_CONFIG ? nil : value
 end
 
 def container_state(container, label)
@@ -261,19 +335,115 @@ def assert_trusted_domains
   live
 end
 
-# The cron sidecar, proved by what it did rather than by its being up. Nextcloud
-# runs background jobs in `ajax` mode until cron.php is executed for the first
-# time, at which point it records `cron` in oc_appconfig. So this single value
-# separates "a fourth container is running" from "the background job runner this
-# platform added a container for has actually run", which is the whole reason the
-# sidecar exists.
-def assert_cron_has_run
-  mode = occ("config:app:get", "core", "backgroundjobs_mode", label: "the background job mode census")
+# The schedule the sidecar will run cron.php from, read out of the container that
+# would run it. crond takes no argument naming a job, so the crontab is the only
+# place this claim exists; the compose file's `entrypoint: /cron.sh` says which
+# program starts, not what it has to do.
+def cron_sidecar_schedule
+  stdout, stderr, status = docker("exec", CRON, "cat", CRON_CRONTAB_PATH,
+                                  label: "the cron sidecar schedule census")
   fail_contract(
-    "Nextcloud still runs background jobs in #{mode} mode, so the cron sidecar has never " \
-    "executed cron.php. The AJAX default fires only when a browser requests a page, which on " \
-    "an idle instance is never, and it is the reason this stack carries a fourth container."
-  ) unless mode == "cron"
+    "the Nextcloud cron sidecar's crontab #{CRON_CRONTAB_PATH} could not be read " \
+    "(#{diagnosis(stdout, stderr, status)})"
+  ) unless status.success?
+
+  schedule = stdout.lines.map(&:strip).find { |line| line.include?("cron.php") }
+  fail_contract(
+    "the Nextcloud cron sidecar's crontab #{CRON_CRONTAB_PATH} schedules no cron.php, so nothing " \
+    "in that container will ever run a background job however healthy it reports"
+  ) if schedule.nil?
+  schedule
+end
+
+# The installation's own age, from the timestamp Nextcloud writes at install.
+# Read through refusals rather than through Ruby's own exceptions, for the reason
+# #352 recorded: a backtrace is not a diagnostic.
+def installation_age_seconds
+  recorded = app_config("installedat", label: "the installation age census")
+  fail_contract(
+    "Nextcloud records no core|installedat, so the absence of a background job mode cannot be " \
+    "told apart from a cron sidecar that has never run"
+  ) if recorded.nil?
+
+  installed = begin
+    Float(recorded)
+  rescue ArgumentError, TypeError
+    fail_contract("Nextcloud records core|installedat as #{recorded.inspect}, which is not a timestamp")
+  end
+  (Time.now.to_f - installed).round
+end
+
+# The cron sidecar, proved by what it did rather than by its being up -- as far
+# as a fresh converge permits that to be proved at all, which is the whole
+# subtlety here and the reason this reads longer than the one value it started
+# as.
+#
+# Nextcloud does not record a background job mode until cron.php runs:
+# CronService::runCli writes `cron` into oc_appconfig, and until then the key is
+# absent and every reader falls back to the `ajax` default in code. Measured
+# against the pinned image on a fresh install, `occ config:app:get core
+# backgroundjobs_mode` answers exit 1 with both streams empty, and after one
+# `php -f /var/www/html/cron.php` in the sidecar it answers `cron`.
+#
+# **So "the sidecar has run" is not a property a fresh converge can be asked
+# for.** The sidecar is `*/5 * * * * php -f cron.php` under busybox crond, so the
+# first run lands at the next wall-clock five-minute boundary after the container
+# starts -- and that container starts only once the application reports healthy,
+# which is when the install finished. The failing CI run is exactly that: a stack
+# created at 21:43 and a contract that reached this line at 21:43:48, with the
+# earliest possible fire at 21:45.
+#
+# Waiting for it was considered and rejected. tests/run_contracts.rb spawns this
+# contract with a 60-second default and a 300-second cap, and the wait needed is
+# up to 300 seconds of schedule plus the run itself, measured at 37 seconds cold
+# -- a budget that cannot fit inside the ceiling its own caller enforces. The
+# lane cannot supply the time either: it runs this contract between converge 1
+# and the idempotence reconverge, so what it sees is always a stack about a
+# minute old. Executing cron.php from here instead would settle it, and is
+# refused for a different reason: `run` mode restarts nothing, stops nothing and
+# drops nothing, and running the job queue is a larger action than any of those.
+#
+# What is asserted instead is the true property, in three parts, and only the
+# first is the one this function used to claim:
+#
+#   * a recorded mode of `cron` is the sidecar having run, and passes;
+#   * a recorded mode that is anything else -- `ajax`, `webcron`, `none` -- is a
+#     deliberate setting that ignores the sidecar, and is refused, because
+#     nothing writes those values by accident;
+#   * no recorded mode is the fresh-converge state, and is accepted only while
+#     the installation is younger than CRON_GRACE_SECONDS *and* the sidecar's own
+#     crontab schedules cron.php. Past that age the schedule has had its chance
+#     and the absence is the failure the fourth container exists to prevent.
+#
+# The 900-second default is 300 seconds of worst-case schedule with room for a
+# slow first run and a slow converge; on the NAS, where an installation is days
+# old, every path but the first is a refusal, so the original claim is intact
+# exactly where it can be made. In CI the third bullet is the only branch ever
+# taken, which is what makes the crontab assertion load-bearing there rather than
+# a nicety: it is the whole difference between "a fourth container is up" and
+# "the container that is up will run background jobs".
+def assert_background_jobs_belong_to_the_sidecar
+  mode = app_config("backgroundjobs_mode", label: "the background job mode census")
+  return "a cron sidecar that has run" if mode == "cron"
+
+  fail_contract(
+    "Nextcloud still runs background jobs in #{mode.inspect} mode rather than cron, so the " \
+    "sidecar's cron.php is not what runs them. The AJAX default fires only when a browser " \
+    "requests a page, which on an idle instance is never, and it is the reason this stack " \
+    "carries a fourth container. Recover with occ background:cron."
+  ) unless mode.nil?
+
+  schedule = cron_sidecar_schedule
+  age = installation_age_seconds
+  fail_contract(
+    "Nextcloud has recorded no background job mode #{age}s after it was installed, which is past " \
+    "the #{CRON_GRACE_SECONDS}s this contract allows a #{schedule.inspect} schedule to reach its " \
+    "first run: the cron sidecar has never executed cron.php. Read the sidecar's log -- crond " \
+    "runs the job as www-data and a job that fails leaves the mode unwritten."
+  ) if age > CRON_GRACE_SECONDS
+
+  "a cron sidecar scheduled as #{schedule.inspect}, #{age}s into an installation whose first " \
+    "run is still ahead of it"
 end
 
 def run_mode(credentials)
@@ -282,7 +452,7 @@ def run_mode(credentials)
   assert_vault_owns_the_database(credentials)
   assert_trusted_domains
   assert_administrator(credentials)
-  assert_cron_has_run
+  cron = assert_background_jobs_belong_to_the_sidecar
   apps = occ("app:list", "--output=json", label: "the application census")
   enabled = begin
     JSON.parse(apps).fetch("enabled", {}).keys.sort
@@ -292,8 +462,7 @@ def run_mode(credentials)
   observe("the shipped app set currently enables #{enabled.length} apps: #{enabled.join(' ')}")
   puts "nextcloud contract: four healthy containers, an installed #{status['versionstring']} " \
        "serving its status endpoint, the vault's own database account rather than a minted " \
-       "one, the reconciled trusted domains, an administrator that authenticates and a cron " \
-       "sidecar that has run"
+       "one, the reconciled trusted domains, an administrator that authenticates and #{cron}"
 end
 
 MODES = %w[run].freeze

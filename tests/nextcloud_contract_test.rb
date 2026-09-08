@@ -715,7 +715,20 @@ RUNTIME_DEFAULTS = {
   live_dbuser: DB_USERNAME,
   live_dbname: DB_NAME,
   trusted_domains: "127.0.0.1\nlocalhost\n",
+  # `cron` is the settled state; nil is the one a fresh install is really in,
+  # because oc_appconfig holds no `core|backgroundjobs_mode` row until cron.php
+  # writes one. The stub models nil as GetConfig.php does -- exit 1 with nothing
+  # on either stream unless --default-value was passed.
   backgroundjobs_mode: "cron",
+  # An age rather than a timestamp, because a frozen timestamp in a fixture ages
+  # with the file. nil is an installation that records no core|installedat.
+  installed_age_seconds: 5,
+  crontab_ok: true,
+  crontab: "*/5 * * * * php -f /var/www/html/cron.php\n",
+  # What a failed `docker exec` says, and where. The default is the shape the
+  # first CI run of this lane actually met: exit 1 and silence.
+  occ_error_text: "",
+  occ_error_stream: "stderr",
   app_list: { "enabled" => { "files" => "2.0.0", "dav" => "1.32.0" }, "disabled" => {} }.freeze,
   status_code: 200,
   status_body: nil,
@@ -738,7 +751,13 @@ RUNTIME_BUDGETS = {
   "PLATFORM_NEXTCLOUD_OCC_TIMEOUT_SECONDS" => "30",
   "PLATFORM_NEXTCLOUD_HTTP_OPEN_TIMEOUT_SECONDS" => "5",
   "PLATFORM_NEXTCLOUD_HTTP_READ_TIMEOUT_SECONDS" => "5",
-  "PLATFORM_NEXTCLOUD_POLL_INTERVAL_SECONDS" => "1"
+  "PLATFORM_NEXTCLOUD_POLL_INTERVAL_SECONDS" => "1",
+  # Not a timeout and nothing waits on it: it is the age at which a missing
+  # background job mode stops being excused. Pinned here rather than left at the
+  # deployment's own 900 so that the two rows either side of it -- an
+  # installation minutes old and one that has had its chance -- state their own
+  # verdict, and raising the shipped default can never silently flip one.
+  "PLATFORM_NEXTCLOUD_CRON_GRACE_SECONDS" => "60"
 }.freeze
 
 def vault_document
@@ -765,15 +784,49 @@ def docker_stub_source(options_path)
       exit 1 unless options.fetch("inspect_ok")
       puts options.fetch("states").fetch(argv.last, "running healthy")
     when "exec"
-      exit 1 unless options.fetch("occ_ok")
+      # The crontab read is an exec but not an occ, so it is dispatched before
+      # the occ gate: an occ that cannot run says nothing about whether the
+      # sidecar's crontab can be read.
+      if joined.include?("/var/spool/cron/crontabs/")
+        unless options.fetch("crontab_ok")
+          warn "Error response from daemon: No such container: \#{argv[1]}"
+          exit 1
+        end
+        print options.fetch("crontab")
+        exit 0
+      end
+      unless options.fetch("occ_ok")
+        text = options.fetch("occ_error_text").to_s
+        unless text.empty?
+          options.fetch("occ_error_stream") == "stdout" ? puts(text) : warn(text)
+        end
+        exit 1
+      end
       if joined.include?("config:system:get dbuser")
         puts options.fetch("live_dbuser")
       elsif joined.include?("config:system:get dbname")
         puts options.fetch("live_dbname")
       elsif joined.include?("config:system:get trusted_domains")
         print options.fetch("trusted_domains")
-      elsif joined.include?("config:app:get core backgroundjobs_mode")
-        puts options.fetch("backgroundjobs_mode")
+      elsif (match = joined.match(/config:app:get core (\\S+)/))
+        # GetConfig.php, faithfully: a key that has never been written raises
+        # AppConfigUnknownKeyException, and the command returns 1 -- printing
+        # nothing at all on either stream -- unless --default-value was passed,
+        # in which case it prints that value and returns 0. Modelling this as an
+        # ordinary `puts` is what let the shipped defect look tested.
+        age = options.fetch("installed_age_seconds")
+        value = case match[1]
+                when "backgroundjobs_mode" then options.fetch("backgroundjobs_mode")
+                when "installedat" then age.nil? ? nil : (Time.now.to_f - age).to_s
+                end
+        default = argv.find { |argument| argument.start_with?("--default-value=") }
+        if !value.nil?
+          puts value
+        elsif default.nil?
+          exit 1
+        else
+          puts default.split("=", 2).last
+        end
       elsif joined.include?("app:list")
         puts JSON.generate(options.fetch("app_list"))
       else
@@ -802,6 +855,11 @@ def build_runtime_sandbox(root, options)
     "live_dbname" => options.fetch(:live_dbname),
     "trusted_domains" => options.fetch(:trusted_domains),
     "backgroundjobs_mode" => options.fetch(:backgroundjobs_mode),
+    "installed_age_seconds" => options.fetch(:installed_age_seconds),
+    "crontab_ok" => options.fetch(:crontab_ok),
+    "crontab" => options.fetch(:crontab),
+    "occ_error_text" => options.fetch(:occ_error_text),
+    "occ_error_stream" => options.fetch(:occ_error_stream),
     "app_list" => options.fetch(:app_list)
   ))
 
@@ -954,16 +1012,79 @@ RUNTIME_ROWS = [
     expects: "authorised a password the vault never authored"
   },
   {
-    # A fourth container that is up and has never run cron.php is exactly the
-    # failure the sidecar was added to prevent, and only this value shows it.
+    # A recorded mode that is not `cron` is somebody having chosen a runner that
+    # is not the sidecar -- nothing writes `ajax` by accident, it is the value in
+    # code that applies while the row is absent -- so this stays a refusal.
     name: "a cron sidecar that has never executed cron.php",
     given: { backgroundjobs_mode: "ajax" },
-    expects: "still runs background jobs in ajax mode"
+    expects: 'still runs background jobs in "ajax" mode'
   },
   {
+    # THE STATE THE LANE IS ACTUALLY IN, and the reason this contract failed its
+    # first CI run. oc_appconfig holds no background job mode until cron.php
+    # runs, the sidecar runs it on a */5 schedule, and the lane reaches this
+    # contract about a minute after the install finished. It has to pass, and
+    # what keeps it from being a hole is the row below it and the crontab row
+    # after that.
+    name: "an installation whose cron schedule has not fired yet",
+    given: { backgroundjobs_mode: nil },
+    expects: nil
+  },
+  {
+    # The other side of the grace. Past it the schedule has had its chance, so
+    # the absence is the failure the fourth container exists to prevent -- which
+    # is the state the NAS would be in, where an installation is days old.
+    name: "an installation old enough that its cron sidecar must have fired",
+    given: { backgroundjobs_mode: nil, installed_age_seconds: 600 },
+    expects: "has never executed cron.php"
+  },
+  {
+    # What makes the tolerated branch an assertion rather than a shrug: crond
+    # takes no argument naming a job, so a sidecar whose crontab schedules
+    # nothing is up, healthy, and will never run a background job.
+    name: "a cron sidecar whose crontab schedules nothing",
+    given: { backgroundjobs_mode: nil, crontab: "# nothing here\n" },
+    expects: "schedules no cron.php"
+  },
+  {
+    # A docker exec that fails with the daemon's own sentence, which is what a
+    # container name this contract derived wrongly would produce.
+    name: "a cron sidecar container docker cannot exec into",
+    given: { backgroundjobs_mode: nil, crontab_ok: false },
+    expects: "No such container: #{CRON_CONTAINER}"
+  },
+  {
+    # Without core|installedat there is no age, so there is nothing to excuse the
+    # missing mode with. It fails closed rather than tolerating both absences.
+    name: "an installation that records no install time",
+    given: { backgroundjobs_mode: nil, installed_age_seconds: nil },
+    expects: "records no core|installedat"
+  },
+  {
+    # THE SHIPPED DEFECT, pinned as a whole sentence. `occ config:app:get` exits
+    # 1 with both streams empty for a key that has never been written, and the
+    # message that reached CI was "the background job mode census failed: " --
+    # everything after the colon was the empty stderr. A row matching the
+    # fragment before the colon accepts that sentence, which is why this one
+    # names the clause the diagnosis has to add.
     name: "an occ that cannot run at all",
     given: { occ_ok: false },
-    expects: "the database account census failed"
+    expects: "the database account census failed (exit 1, no output on stdout or stderr)"
+  },
+  {
+    # A command that puts its complaint on stdout and exits non-zero. Reading
+    # stderr alone reports this as silence, which is a diagnosis of the wrong
+    # failure rather than no diagnosis at all.
+    name: "an occ that complains on the wrong stream",
+    given: { occ_ok: false, occ_error_text: "PHP Fatal error: allowed memory size exhausted",
+             occ_error_stream: "stdout" },
+    expects: "nothing on stderr, stdout: PHP Fatal error"
+  },
+  {
+    name: "an occ that fails with the daemon's own sentence",
+    given: { occ_ok: false,
+             occ_error_text: "Error response from daemon: No such container: #{APPLICATION_CONTAINER}" },
+    expects: "stderr: Error response from daemon: No such container: #{APPLICATION_CONTAINER}"
   }
 ].freeze
 
@@ -1456,11 +1577,98 @@ PROGRAM_MUTATIONS = [
     rows: ["a server that authorises a password nobody authored"]
   },
   {
-    label: "the proof that the cron sidecar has run",
+    label: "the refusal of a background job runner that is not the sidecar",
     program: :runtime,
-    from: 'unless mode == "cron"',
-    to: "unless true",
+    from: ") unless mode.nil?",
+    to: ") if false",
     rows: ["a cron sidecar that has never executed cron.php"]
+  },
+  {
+    # The grace, in the direction that matters on the NAS: an installation that
+    # has had every chance to run cron.php and has not. This mutation and the one
+    # after it plant the same comparison in opposite directions, and `plant`
+    # counts each `from` separately: both strings must stay unique in the
+    # program, so a second `age > CRON_GRACE_SECONDS` anywhere would abort the
+    # whole self-test on the main thread rather than fail one row.
+    label: "the age past which a missing background job mode is a failure",
+    program: :runtime,
+    from: ") if age > CRON_GRACE_SECONDS",
+    to: ") if false",
+    rows: ["an installation old enough that its cron sidecar must have fired"]
+  },
+  {
+    # The same line inverted, and it is what stops the tolerated branch from
+    # being decoration: with every installation past the grace, the row that must
+    # pass on a fresh converge stops passing. `detects` says so, because judge
+    # reports a success row that refused as "expected success" and not as the
+    # refusal wording.
+    label: "the grace a fresh installation is entitled to",
+    program: :runtime,
+    from: "age > CRON_GRACE_SECONDS",
+    to: "true",
+    rows: ["an installation whose cron schedule has not fired yet"],
+    detects: "expected success"
+  },
+  {
+    label: "the requirement that the sidecar's crontab schedules cron.php",
+    program: :runtime,
+    from: ") if schedule.nil?",
+    to: ") if false",
+    rows: ["a cron sidecar whose crontab schedules nothing"]
+  },
+  {
+    # Removing this refusal does not make the program accept the fixture -- it
+    # makes Float(nil) raise, and the rescue below then names the wrong thing. A
+    # backtrace or a misdirected sentence is the #352 shape, so the row catches
+    # it as a wrong reason rather than as an acceptance.
+    label: "the refusal of an installation that records no install time",
+    program: :runtime,
+    from: ") if recorded.nil?",
+    to: ") if false",
+    rows: ["an installation that records no install time"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    # THE FIX ITSELF. Without --default-value, a key that has never been written
+    # and a broken occ are the same exit code with the same empty output, and the
+    # state every fresh converge is in becomes a refusal -- which is exactly what
+    # the first CI run of this lane did.
+    label: "reading an app config key through a default rather than an exit code",
+    program: :runtime,
+    from: 'occ("config:app:get", "core", key, "--default-value=#{UNSET_APP_CONFIG}", label: label)',
+    to: 'occ("config:app:get", "core", key, label: label)',
+    rows: ["an installation whose cron schedule has not fired yet"],
+    detects: "expected success"
+  },
+  {
+    # The three clauses of the diagnosis, each proved by the row that pins the
+    # one it adds. All three are caught as a wrong reason rather than as an
+    # acceptance, because the program still refuses -- it just goes back to
+    # refusing without saying why, which is the defect being fixed. The most
+    # travelled clause is this first one, and leaving it unplanted would have
+    # left the branch every ordinary docker failure takes unproven.
+    label: "reading the complaint a command left on stderr",
+    program: :runtime,
+    from: "if (line = first_line(stderr))",
+    to: "if false",
+    rows: ["an occ that fails with the daemon's own sentence"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "saying that a failed command said nothing at all",
+    program: :runtime,
+    from: '"#{code}, no output on stdout or stderr"',
+    to: '"#{code}"',
+    rows: ["an occ that cannot run at all"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "reading a complaint the command put on stdout",
+    program: :runtime,
+    from: "elsif (line = first_line(stdout))",
+    to: "elsif false",
+    rows: ["an occ that complains on the wrong stream"],
+    detects: "refused for the wrong reason"
   }
 ].freeze
 
