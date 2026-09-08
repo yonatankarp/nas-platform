@@ -302,6 +302,16 @@ fix what it names by its own words. It enforces, among others:
   logging with both `max-size` and `max-file`.
 - Volume sources are `${VARIABLE:?}` references; a literal `/volume1/...` is
   rejected.
+- A container on an image whose runtime sizes its own memory declares
+  `mem_limit`, and a container declaring a JVM heap declares a limit at least
+  twice it. `MEMORY_SELF_SIZING_IMAGES` is the stated list, because a Compose
+  file does not say what runtime an image holds; `EXPECTED_SELF_SIZING_CONTAINERS`
+  pins which containers it reaches, in both directions, so the subject list
+  cannot empty quietly. Tika is the only member today and satisfies it with a
+  limit alone, letting the JVM derive its heap from that limit rather than from
+  the host's RAM, which is what it did before (#447). Nothing declares a heap
+  yet, so four mutations in `tests/policy_manifest_test.rb` are that half's only
+  proof.
 - Every implemented service has either a verification task — name containing
   `verify`/`verification`, tag `platform_verify_<service>`, and either a `uri`
   task naming the service with `status_code:` or an `assert` whose every
