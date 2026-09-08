@@ -965,10 +965,22 @@ RUNTIME_DEFAULTS = {
 # has nothing to wait for. CACHE_SETTLE is zero rather than ten because it is a
 # sleep rather than a deadline -- ten there would be ten seconds off every row's
 # wall time, which is the shape CLAUDE.md's budget section keeps recording.
+#
+# The three deadlines below are 30 rather than the 10 they shipped at, and the
+# distinction is what makes raising them free. A budget a passing row waits out
+# costs that budget on every run; these are ceilings on how long the docker STUB
+# may take to answer, and the stub answers immediately, so a larger ceiling costs
+# nothing when nothing is slow. That 10 was too small was measured rather than
+# guessed: run alone this check passes, and run inside the gate's own
+# twelve-worker pool on a twelve-core Mac its stub invocations exceeded 10
+# seconds of wall time and up to eight rows failed with "did not finish within
+# 10s" -- process-spawn latency wearing a refusal's clothes, which reports the
+# wrong row as broken. The row that genuinely tests a deadline sets its own (1)
+# and is unaffected.
 RUNTIME_BUDGETS = {
-  "PLATFORM_SEAFILE_READY_TIMEOUT_SECONDS" => "10",
-  "PLATFORM_SEAFILE_RESTART_TIMEOUT_SECONDS" => "10",
-  "PLATFORM_SEAFILE_DOCKER_TIMEOUT_SECONDS" => "10",
+  "PLATFORM_SEAFILE_READY_TIMEOUT_SECONDS" => "30",
+  "PLATFORM_SEAFILE_RESTART_TIMEOUT_SECONDS" => "30",
+  "PLATFORM_SEAFILE_DOCKER_TIMEOUT_SECONDS" => "30",
   "PLATFORM_SEAFILE_HTTP_OPEN_TIMEOUT_SECONDS" => "5",
   "PLATFORM_SEAFILE_HTTP_READ_TIMEOUT_SECONDS" => "5",
   "PLATFORM_SEAFILE_CACHE_SETTLE_SECONDS" => "0",
