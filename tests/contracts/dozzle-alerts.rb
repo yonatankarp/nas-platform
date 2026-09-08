@@ -19,7 +19,7 @@ mac_verify = File.read(ARGV.fetch(4))
 mac_verify_labels = File.read(ARGV.fetch(5))
 expected = {
   "OOM" => ['name == "oom"', 300],
-  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])', 300],
+  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143"])', 300],
   "Unhealthy" => ['name == "health_status" && attributes["healthStatus"] == "unhealthy"', 0],
   "Recovery" => ['name == "health_status" && attributes["healthStatus"] == "healthy"', 0]
 }

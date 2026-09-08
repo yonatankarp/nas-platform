@@ -281,9 +281,20 @@ cgroup v1 and no `swapaccount=1`, so both controls are available whenever one is
 wanted. Two alerts sit under that, neither of them a limit: Beszel warns above
 90% of host memory sustained ten minutes, and Dozzle carries an `OOM` rule that
 names the container. Whether that rule fires for a host-level kill on a
-container with no limit set is untested, and the `die` rule beside it excludes
-exit 137, so the only kind of OOM this platform can currently suffer may be
-silent in both. These figures are an observation, not a budget, and nothing
+container with no limit set is still untested, and it is cgroup-scoped by
+construction, so it probably cannot report one. The `die` rule beside it no
+longer excludes exit 137 (#493), which is what a SIGKILL produces, so a
+host-level OOM kill now pages with the container named whatever the `oom` rule
+does. The deliberate stops that exclusion was protecting stay quiet regardless:
+a stop that completes inside its grace period exits 0 or 143, both still
+excluded, and every database and cache declares a `stop_grace_period` well above
+Docker's ten-second default. Twelve containers, none of them a database or a
+cache, declare none and take that default, and one was measured and does not
+make it: `alert-relay` runs Python as PID 1 with no SIGTERM handler, so a stop
+is ignored and it exits 137 after the full ten seconds on every recreation. It
+cannot report that itself, being the delivery path every alert takes. For the
+other eleven, exiting inside ten seconds is an expectation rather than a
+measurement. These figures are an observation, not a budget, and nothing
 validates them: if a memory policy lands (#447) the RAM figure belongs beside
 `platform_container_cpu_budget` with a preflight assert against what the Docker
 daemon reports, the way the logical CPU capacity already is.

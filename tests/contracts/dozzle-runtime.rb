@@ -37,7 +37,7 @@ RELAY_ALERTS_URL = "http://alert-relay:#{Integer(
 SAFE_ID = /\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/
 ALERTS = {
   "OOM" => ['name == "oom"', 300],
-  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])', 300],
+  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143"])', 300],
   "Unhealthy" => ['name == "health_status" && attributes["healthStatus"] == "unhealthy"', 0],
   "Recovery" => ['name == "health_status" && attributes["healthStatus"] == "healthy"', 0]
 }.freeze

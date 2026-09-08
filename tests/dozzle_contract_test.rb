@@ -967,7 +967,7 @@ EXPECTED_TEMPLATE = JSON.generate(
 
 DESIRED_ALERTS = {
   "OOM" => ['name == "oom"', 300],
-  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])', 300],
+  "Unexpected exit" => ['name == "die" && !(attributes["exitCode"] in ["0", "130", "143"])', 300],
   "Unhealthy" => ['name == "health_status" && attributes["healthStatus"] == "unhealthy"', 0],
   "Recovery" => ['name == "health_status" && attributes["healthStatus"] == "healthy"', 0]
 }.freeze
