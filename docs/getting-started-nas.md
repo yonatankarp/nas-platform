@@ -804,6 +804,126 @@ Do not interpret a clean play recap as proof that old application records were
 restored. Verify representative photos, users, albums, documents, metadata, and
 search results in each active application.
 
+## Seafile operational policy
+
+Seafile is the only stack here whose stored volume is chosen by a person rather
+than by a library that has a size, and it stores on `/volume1` -- the NVMe
+service-state volume every other stack keeps its database on, not the media
+volume. Four decisions follow from that, and this section records what each one
+is, what enforces it, and what it does **not** cover.
+
+### Per-user quota: 20 GB
+
+Declared in `roles/seafile/defaults/main.yml` as `seafile_default_user_quota`
+and written into
+`/volume1/Docker/seafile/data/seafile/conf/seafile.conf` as a marked `[quota]`
+section. Raise it there and merge; nothing is edited on the NAS by hand.
+`seaf-server` reads the file at start, so the value takes effect at the restart
+the same converge performs.
+
+**The value is deliberately small and is the operator's to raise.** Nothing in
+this repository has measured `/volume1`, and the argument for the number is an
+asymmetry rather than a measurement: raising a quota costs nothing, while
+lowering one below what a user already stores leaves that user over quota,
+unable to upload, holding data the platform cannot delete for them. Run
+`df -h /volume1` before raising it. The Pro edition is free to three users, so
+the worst case this bounds is three times the value set -- 60 GB at the shipped
+20 GB.
+
+**Which of Seafile's three quotas this is.** `seaf-server` resolves a user's
+quota in three steps, established by disassembling the binary in
+`seafileltd/seafile-pro-mc:13.0.27` rather than read out of the manual:
+
+1. `SELECT quota FROM UserQuota WHERE "user"=?` -- a quota an administrator set
+   on one account. Returned if positive, or if `-2`, which means unlimited.
+2. `SELECT quota FROM RoleQuota WHERE role=?` -- the role quota seahub writes.
+   Returned on the same terms.
+3. `[quota] default` from `seafile.conf`, which is the key this platform owns.
+
+This platform sets neither of the first two, so the third is what every account
+resolves to, guests included. That is also why the first two were rejected: this
+platform manages exactly one Seafile account -- the administrator, created once
+while the user table was empty -- so a per-user push has no user list to iterate,
+and the role quota is reachable only through seahub's
+`ENABLED_ROLE_PERMISSIONS`, whose value every call site in the image applies on a
+**login** path (the web login form, the remote-user and Shibboleth backends, the
+OAuth and ADFS handlers). None of those is the path `POST /api2/auth-token/`
+takes, so a role quota would not exist until somebody signed in to the web
+interface. A guest-specific bound would need that mechanism and that login; a
+guest cannot create a library of their own in any case, because the role's
+default permissions deny `can_add_repo`.
+
+**The spelling is load-bearing.** `seaf-server` takes a decimal number with an
+optional `k`/`kb`/`m`/`mb`/`g`/`gb`/`t`/`tb` suffix, and a bare number means
+gigabytes. Anything else is not an error: it logs `Invalid default quota` and
+falls back to unlimited, so a misspelled quota is a silent no-quota. `roles/seafile`
+refuses one before the run reaches the target.
+
+### Audit log: on, kept for ever, queryable in place
+
+`[AUDIT] enabled = true` in `seafevents.conf` is owned by
+`roles/seafile/tasks/reconcile_seafevents.yml` rather than left at the image's
+own default, because seafevents falls through to `enable_audit = False` when the
+key is absent: an image that stopped writing it would switch auditing off in
+silence.
+
+**There is no configurable retention, and nothing prunes the tables.** The image
+ships one cleanup, `seahub`'s `clean_db_records` management command, whose
+cutoff is a hardcoded 90 days in the SQL itself and which **nothing in the image
+invokes** -- no cron entry, no background task, no reference anywhere outside the
+file that defines it. So retention today is unbounded, and that is the recorded
+decision rather than an oversight: audit rows are small beside the file data
+beside them, and the command that would prune them also deletes `FileTrash`,
+`FileHistory` and `Activity` rows in the same transaction, which is a different
+decision about different data than "how long is the audit log kept".
+
+The records are `FileAudit`, `FileUpdate` and `PermAudit` in `seahub_db`,
+readable through the admin web interface and `api2/endpoints/admin/file_audit.py`.
+They are **queried in place and surfaced nowhere else**: no ntfy topic, no Dozzle
+rule, no verification assertion. An audit log exists to be read after something
+happened, and a stream of routine file reads pushed at a phone is a notification
+channel people learn to ignore.
+
+An operator who does want the 90-day prune runs it by hand, and should read what
+else it deletes first:
+
+```sh
+docker exec <seafile container> /opt/seafile/seafile-server-latest/seahub.sh \
+  python-env python3 /opt/seafile/seafile-server-latest/seahub/manage.py clean_db_records
+```
+
+### File locking: available, always on, left at its defaults
+
+Seafile Pro supports file locking and this platform neither enables nor disables
+it -- there is no switch to set. A user locks a file from the web interface or
+the desktop client, and `FILE_LOCK_EXPIRATION_DAYS` is `0` in the image's own
+settings, meaning a lock never expires on its own.
+
+It changes nothing about the backup story, and that is reasoning from how
+Seafile stores data rather than an observation: a lock is an advisory row that
+stops another *user* from writing, not a hold on any file the backup reads.
+Blocks are content-addressed and immutable once written, so the pre-upgrade
+backup's ordering argument -- database first, block store second -- is unaffected
+by whether anything is locked while it runs.
+
+### Disk: one system-level Beszel alert, and what it cannot see
+
+The quota above is the bound; the alert is the backstop. It is
+`roles/beszel`'s managed `Disk` alert at 85% sustained for 10 minutes, and the
+Beszel agent's `FILESYSTEM` names `volume1`, so it watches the volume Seafile
+fills.
+
+**It is a system-level alert with no container dimension, and there can be only
+one of it.** Beszel's managed alerts are per-system; `roles/beszel/tasks/alert.yml`
+refuses a duplicate `(user, system, name)`, so a warn-at-70-page-at-90 pair is
+not expressible and neither is a Seafile-specific disk alert. What pages is "the
+volume is 85% full", never "Seafile is what filled it" -- `df -h /volume1` and
+`du -sh /volume1/Docker/*` are what answer that, after the page.
+
+`tests/contracts/seafile-static.rb` asserts the `Disk` alert stays declared,
+because removing it would leave Seafile's unbounded growth watched by nothing and
+nothing in `roles/beszel` knows that Seafile depends on it.
+
 ## Recover Seafile
 
 Seafile is the one stack here where **the files on disk are not the files**.
