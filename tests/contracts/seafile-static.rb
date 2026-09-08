@@ -67,6 +67,24 @@ def role_tasks(root, file)
   )
 end
 
+# Every `{{ ... }}` region of a string, as Jinja's own lexer would find them:
+# `{{` opens a variable block and the FIRST `}}` closes it. That last part is the
+# whole of #492 and it is why this is a scanner rather than a regexp over the
+# source -- a Go template nested inside a Jinja expression closes that expression
+# early, so what looks like one construct is two.
+def jinja_expression_regions(value)
+  regions = []
+  index = 0
+  while (opened = value.index("{{", index))
+    closed = value.index("}}", opened + 2)
+    break if closed.nil?
+
+    regions << value[(opened + 2)...closed]
+    index = closed + 2
+  end
+  regions
+end
+
 if failures.empty?
   compose = YAML.safe_load_file(File.join(root, "services/seafile/compose.yml"), aliases: true)
   services = compose.fetch("services")
@@ -245,7 +263,11 @@ if failures.empty?
   # rendered environment file: the MariaDB root password, the Seafile
   # administrator password and the Valkey password in full. Every inspection this
   # role performs must therefore narrow its output with --format.
-  unformatted_inspects = (deploy + recovery).select do |task|
+  # pre_upgrade_backup inspects containers too, and the reason this guard exists
+  # applies to it unchanged, so it is read here rather than at its own section
+  # further down.
+  backup = role_tasks(root, "pre_upgrade_backup")
+  unformatted_inspects = (deploy + recovery + backup).select do |task|
     argv = Array(task.dig("ansible.builtin.command", "argv")).map(&:to_s)
     argv.include?("inspect") && !argv.include?("--format")
   end
@@ -414,7 +436,6 @@ if failures.empty?
   # about the backup happening BEFORE Compose is asked to do anything, in the
   # right internal order, and failing loudly rather than quietly.
 
-  backup = role_tasks(root, "pre_upgrade_backup")
   backup_include = deploy.index do |task|
     task["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml"
   end
@@ -542,6 +563,56 @@ if failures.empty?
     mac_database_volumes.any? { |volume| volume.to_s.start_with?("${SEAFILE_BACKUP_PATH:?}:") }
   failures << "the Seafile environment must render the backup root Compose mounts" unless
     template.include?("SEAFILE_BACKUP_PATH={{ seafile_backup_host_path }}")
+
+  # --- Go templates, and the trap #492 fell into ----------------------------
+  #
+  # `{% raw %}` is a Jinja TAG, and a tag is only a tag in template context. Put
+  # one inside a `{{ }}` expression -- as the string literal of a list this role
+  # then joined into an argv -- and Jinja is lexing a string, so the tag is
+  # characters. Measured against ansible-core 2.21.3: the expression form renders
+  # with `{% raw %}` still in it, and `docker container inspect --format` then
+  # prints that wrapper around every value (Docker 29.7.2). The image census came
+  # back as `{% raw %}seafile=...`, matched nothing, and this role reported
+  # `stack-not-running` against a stack that was serving its API -- silently, on
+  # every converge, which on a NAS is a backup guard that never fires.
+  #
+  # roles/seafile is the only role in this repository that writes Go templates
+  # today, so the guard lives here rather than in tests/policy_test.rb; the defect
+  # class is not Seafile's and the next role to need a `--format` inherits this
+  # comment along with the trap.
+  raw_inside_expression = ROLE_TASK_FILES.flat_map do |file|
+    task_strings(role_tasks(root, file)).select do |value|
+      jinja_expression_regions(value).any? { |region| region.include?("{%") }
+    end
+  end
+  failures << "no Seafile Jinja expression may contain a raw tag, which Jinja will not process" unless
+    raw_inside_expression.empty?
+
+  # THE GENERAL LESSON, pinned so the next classifier cannot repeat it. A read
+  # that finds containers and cannot parse one of them is a broken read, not a
+  # stopped stack, and every way of being broken -- a format that did not render,
+  # a label Compose stopped setting, a Docker whose output shape moved -- makes
+  # this whole file a no-op that reports success. It has to fail instead.
+  census_guard = backup.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+      condition.to_s.include?("seafile_stack_containers.stdout_lines") &&
+        condition.to_s.include?("seafile_stateful_deployed")
+    end
+  end
+  failures << "a Seafile stack census that parsed nothing must fail rather than read as stopped" unless
+    census_guard
+  # A forced backup is an explicit request, so a request that cannot be honoured
+  # is a failure rather than a debug line. `stack-not-running` still outranks
+  # `forced` -- no flag can dump a database that is not up -- and what is refused
+  # is the silence, which is what made #492 cost a whole lane run to find.
+  force_guard = backup.find do |task|
+    Array(task["when"]).any? { |value| value.to_s.include?("seafile_pre_upgrade_backup_force") } &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+        condition.to_s.include?("stack-not-running")
+      end
+  end
+  failures << "a forced Seafile backup with no stack to dump must fail rather than report itself away" unless
+    force_guard
 end
 
 unless failures.empty?

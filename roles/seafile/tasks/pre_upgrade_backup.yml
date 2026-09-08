@@ -102,16 +102,84 @@
 # as that same string byte for byte, digest included, while .Image and the
 # com.docker.compose.image label both reported sha256:589f31... -- the image ID,
 # which is the field that would NOT have worked here.
+#
+# One container per iteration, with the Go template written as a plain scalar in
+# the argv list. That shape is not stylistic and it is the whole of #492.
+#
+# The first version of this task built its argv with an expression --
+# `{{ ['docker', ..., '{%- raw -%}...{%- endraw -%}'] + ids }}` -- and Jinja does
+# not process a `{%- raw -%}` tag inside a `{{ }}` expression: within a variable
+# block the lexer is tokenising a STRING LITERAL, so the tag is characters rather
+# than a tag. Measured against ansible-core 2.21.3: the expression form renders
+# to `{%- raw -%}{{index .Config.Labels "..."}}={{.Config.Image}}{%- endraw -%}`
+# with the wrapper intact, while the same text as a plain scalar renders to the
+# Go template alone. Docker then does exactly what it is told -- measured against
+# Docker 29.7.2, `docker container inspect --format` with that argument printed
+# `{%- raw -%}probe=docker.io/valkey/...{%- endraw -%}` -- so every census line
+# came back wearing a prefix, the `^(seafile|db)=` match found nothing, and the
+# classifier below reported `stack-not-running` against a stack that was serving
+# its API. It did that on all three of the seafile lane's converges and on a real
+# NAS it would have done it for ever: no backup, no error, and a pinned upgrade
+# migrating the schemas with no copy anywhere.
+#
+# The looped form costs one `docker` invocation per container and cannot express
+# the defect, because there is no expression for a raw tag to be swallowed by.
+# tasks/deploy.yml already used the plain-scalar shape and its comment already
+# said it had been verified; the guard now in tests/contracts/seafile-static.rb
+# is what makes that verification apply to the whole role rather than to the one
+# task somebody remembered.
 - name: Read the deployed Seafile stack image references
   ansible.builtin.command:
-    argv: >-
-      {{ ['docker', 'container', 'inspect', '--format',
-          '{% raw %}{{index .Config.Labels "com.docker.compose.service"}}={{.Config.Image}}{% endraw %}']
-         + seafile_stack_containers.stdout_lines }}
+    argv:
+      - docker
+      - container
+      - inspect
+      - --format
+      - "{% raw %}{{index .Config.Labels \"com.docker.compose.service\"}}={{.Config.Image}}{% endraw %}"
+      - "{{ item }}"
+  loop: "{{ seafile_stack_containers.stdout_lines }}"
+  loop_control:
+    label: "{{ item }}"
   register: seafile_deployed_images
-  when: seafile_stack_containers.stdout_lines | length > 0
   changed_when: false
   check_mode: false
+
+# Resolved once and read three times -- by the guard below, by the
+# classification and by the manifest -- rather than spelled out at each. Three
+# copies of this expression is how the bug above survived being written down: the
+# `stack-not-running` branch and the report agreed with each other perfectly and
+# both were wrong.
+- name: Resolve the running Seafile stateful images
+  ansible.builtin.set_fact:
+    seafile_stateful_deployed: >-
+      {{ seafile_deployed_images.results | default([])
+         | selectattr('stdout', 'defined') | map(attribute='stdout') | map('trim')
+         | select('match', '^(seafile|db)=') | sort | list }}
+
+# THE GUARD THAT WOULD HAVE MADE #492 LOUD, and it is the general lesson rather
+# than a patch for one defect: a classifier whose view of the world disagrees
+# with the world must fail, not choose the quietest branch. Docker naming
+# containers in this project and none of them answering with a parseable
+# `service=image` line is a broken read -- a format string that did not render, a
+# Docker whose output shape changed, a label Compose stopped setting -- and every
+# one of those degrades this whole file to a no-op that reports success.
+#
+# `stack-not-running` is only ever allowed to mean what it says: docker found
+# nothing running.
+- name: Require a readable Seafile stack census
+  ansible.builtin.assert:
+    that:
+      - seafile_stack_containers.stdout_lines | length == 0 or
+        seafile_stateful_deployed | length > 0
+    fail_msg: >-
+      docker reports {{ seafile_stack_containers.stdout_lines | length }} running
+      container(s) in Compose project {{ seafile_compose_project_name }}, and not
+      one of them answered the image census with a `service=image` line. That is
+      a broken read rather than a stopped stack, and it is refused here because
+      the alternative is this backup silently classifying itself away and letting
+      an upgrade migrate the schemas with no copy of them anywhere. The census
+      returned: {{ seafile_deployed_images.results | default([])
+                   | selectattr('stdout', 'defined') | map(attribute='stdout') | list }}
 
 # Four outcomes, named rather than reduced to a boolean, because three of them
 # are things an operator wants to read in the transcript.
@@ -120,7 +188,8 @@
 # down there is no database to dump and no consistent snapshot to be had, so
 # saying so is better than taking a wrong backup -- the same call
 # roles/bindery makes about a stopped SQLite database. It is also the state a
-# genuine first converge is in, where there is nothing to protect yet.
+# genuine first converge is in, where there is nothing to protect yet. The guard
+# above is what keeps it meaning that and nothing else.
 - name: Classify the Seafile pre-upgrade backup
   ansible.builtin.set_fact:
     seafile_backup_reason: >-
@@ -130,12 +199,29 @@
          if (seafile_stateful_deployed | symmetric_difference(seafile_stateful_pinned) | length > 0)
          else 'converged' }}
   vars:
-    seafile_stateful_deployed: >-
-      {{ seafile_deployed_images.stdout_lines | default([])
-         | select('match', '^(seafile|db)=') | list }}
     seafile_stateful_pinned: >-
       {{ ['seafile=' ~ seafile_pinned_images['seafile'],
           'db=' ~ seafile_pinned_images['db']] }}
+
+# `stack-not-running` still outranks `forced`, and deliberately: there is no way
+# to dump a database that is not up, and a flag cannot conjure one. What is
+# refused is the SILENCE. Setting the flag is an explicit request for a backup,
+# so a request that cannot be honoured is a failure rather than a debug line --
+# which is precisely the 14 seconds and 6m40s #492 spent finding out, the lane
+# converging happily and the contract failing afterwards about a directory that
+# was never created. Nothing on the NAS sets this flag, so this can only ever
+# fire for a caller who asked.
+- name: Require a Seafile stack that can honour a forced backup
+  ansible.builtin.assert:
+    that:
+      - seafile_backup_reason != 'stack-not-running'
+    fail_msg: >-
+      seafile_pre_upgrade_backup_force was set, and no running Seafile stack was
+      found in Compose project {{ seafile_compose_project_name }} to dump. A
+      forced backup is an explicit request, so it fails here rather than being
+      reported away: nothing downstream would have a backup to read, and the
+      failure would surface somewhere that cannot name this cause.
+  when: seafile_pre_upgrade_backup_force | bool
 
 # Kept whole rather than reduced to the boolean below, because it is the one
 # line an operator reads out of the manifest when deciding whether the dump
@@ -144,9 +230,7 @@
 # upgrade and a Seafile schema migration are not the same risk.
 - name: Record the Seafile images this backup was taken against
   ansible.builtin.set_fact:
-    seafile_deployed_image_report: >-
-      {{ seafile_deployed_images.stdout_lines | default([])
-         | select('match', '^(seafile|db)=') | sort | join(', ') }}
+    seafile_deployed_image_report: "{{ seafile_stateful_deployed | join(', ') }}"
 
 - name: Resolve whether the Seafile pre-upgrade backup runs
   ansible.builtin.set_fact:

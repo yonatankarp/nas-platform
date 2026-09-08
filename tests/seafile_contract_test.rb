@@ -651,6 +651,67 @@ STATIC_ROWS = [
                   "\n      - ${SEAFILE_BACKUP_PATH:?}:/backups", "")
     },
     expects: "the Mac Seafile override must keep the backup mount its !override replaces"
+  },
+  # --- #492, the defect that reached CI --------------------------------------
+  #
+  # The plant is the argv this role actually shipped, restored byte for byte. It
+  # is worth reading beside the row below it: a reviewer looking at that YAML sees
+  # a `{% raw %}` wrapper around a Go template and a list being built, and every
+  # part of it is individually correct. What is wrong is only that the tag is
+  # inside the expression, where Jinja lexes a string literal rather than a tag,
+  # so the wrapper survives into docker's --format and every census line comes
+  # back prefixed. The role then reported `stack-not-running` against a stack
+  # that was serving its API, on all three of the lane's converges, with a clean
+  # PLAY RECAP.
+  {
+    name: "an image census whose Go template Jinja will not process",
+    # Planted against the parsed document rather than the source text, so the
+    # row states the SHAPE that is wrong -- one templated string in place of a
+    # list of literals -- rather than an indentation the next edit would break.
+    # The string is what the shipped folded scalar parsed to.
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find do |candidate|
+          Array(candidate.dig("ansible.builtin.command", "argv")).include?("inspect")
+        end
+        task["ansible.builtin.command"]["argv"] =
+          "{{ ['docker', 'container', 'inspect', '--format', " \
+          "'{% raw %}{{index .Config.Labels \"com.docker.compose.service\"}}={{.Config.Image}}{% endraw %}'] " \
+          "+ seafile_stack_containers.stdout_lines }}"
+        task.delete("loop")
+        task.delete("loop_control")
+      end
+    },
+    expects: "no Seafile Jinja expression may contain a raw tag, which Jinja will not process"
+  },
+  {
+    # The general lesson rather than the specific bug: whatever stops the census
+    # parsing, a classifier that answers `stopped` to `unreadable` turns this
+    # whole file into a no-op that reports success.
+    name: "a stack census that parsed nothing reported as a stopped stack",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        document.reject! do |task|
+          Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+            condition.to_s.include?("seafile_stack_containers.stdout_lines") &&
+              condition.to_s.include?("seafile_stateful_deployed")
+          end
+        end
+      end
+    },
+    expects: "a Seafile stack census that parsed nothing must fail rather than read as stopped"
+  },
+  {
+    name: "a forced backup with no stack to dump reported away",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        document.reject! do |task|
+          Array(task["when"]).any? { |value| value.to_s.include?("seafile_pre_upgrade_backup_force") } &&
+            task.key?("ansible.builtin.assert")
+        end
+      end
+    },
+    expects: "a forced Seafile backup with no stack to dump must fail rather than report itself away"
   }
 ].freeze
 
@@ -1768,6 +1829,30 @@ PROGRAM_MUTATIONS = [
     from: "dump_index && conf_copy && dump_index < conf_copy",
     to: "true",
     rows: ["the volume copied before the database that names it"]
+  },
+  {
+    # The #492 guard, and the one plant in this file whose absence has already
+    # cost a lane run: with it gone the contract passes and the role's census
+    # comes back wearing a `{% raw %}` prefix that matches nothing.
+    label: "the raw-tag-inside-an-expression check",
+    program: :static,
+    from: "raw_inside_expression.empty?",
+    to: "true",
+    rows: ["an image census whose Go template Jinja will not process"]
+  },
+  {
+    label: "the unreadable-census guard",
+    program: :static,
+    from: "failures << \"a Seafile stack census that parsed nothing must fail rather than read as stopped\" unless\n    census_guard",
+    to: "failures << \"\" if false",
+    rows: ["a stack census that parsed nothing reported as a stopped stack"]
+  },
+  {
+    label: "the forced-backup guard",
+    program: :static,
+    from: "failures << \"a forced Seafile backup with no stack to dump must fail rather than report itself away\" unless\n    force_guard",
+    to: "failures << \"\" if false",
+    rows: ["a forced backup with no stack to dump reported away"]
   },
   {
     label: "the admin.txt exclusion check",
