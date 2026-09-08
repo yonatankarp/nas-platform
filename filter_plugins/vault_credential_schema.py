@@ -234,6 +234,15 @@ CREDENTIAL_RULES = {
     "vault_seafile_db_password": ((NONEMPTY, None),),
     "vault_seafile_jwt_private_key": ((NONEMPTY, None),),
     "vault_seafile_cache_password": ((NONEMPTY, None),),
+    # The administrator name is NONEMPTY rather than an email pattern: unlike
+    # Seafile, Nextcloud's administrator is a plain login name and the image
+    # neither requires nor validates an address.
+    "vault_nextcloud_admin_username": ((NONEMPTY, None),),
+    "vault_nextcloud_admin_password": ((NONEMPTY, None),),
+    "vault_nextcloud_db_name": ((PATTERN, DATABASE_IDENTIFIER),),
+    "vault_nextcloud_db_username": ((PATTERN, DATABASE_IDENTIFIER),),
+    "vault_nextcloud_db_password": ((NONEMPTY, None),),
+    "vault_nextcloud_cache_password": ((NONEMPTY, None),),
 }
 
 # The Usenet provider account belongs to a paid third-party subscription, so a

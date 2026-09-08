@@ -170,6 +170,22 @@ vault_seafile_db_password: example-password
 vault_seafile_jwt_private_key: example-seafile-jwt-key-00000000
 vault_seafile_cache_password: example-password
 
+# Nextcloud's administrator pair is consumed by the image's entrypoint only
+# while the volume holds no version.php, exactly as Seafile's is -- but unlike
+# Seafile's it is still rotatable, because occ can reset the password of an
+# account that already exists and roles/nextcloud does so when the value here
+# stops authenticating. The three database values are PostgreSQL's, and they are
+# pushed on every read as NC_db* environment overrides rather than trusted to
+# config.php, which is what keeps this file authoritative for them. The cache
+# password authenticates the Valkey Nextcloud keeps its file locks and sessions
+# in.
+vault_nextcloud_admin_username: example-admin
+vault_nextcloud_admin_password: example-password
+vault_nextcloud_db_name: example_nextcloud
+vault_nextcloud_db_username: example_nextcloud
+vault_nextcloud_db_password: example-password
+vault_nextcloud_cache_password: example-password
+
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.
 vault_managed_users:

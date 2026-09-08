@@ -1,0 +1,371 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The application and cron containers start as root and drop to www-data with
+  # setuid(2), which no_new_privs does not restrict; Postgres does the same to
+  # reach its own account and the cache names its account outright below.
+  # Nothing in this stack executes a setuid binary afterwards, so refusing the
+  # escalation costs it nothing.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  nextcloud:
+    <<: *service-defaults
+    container_name: nextcloud
+    # The apache variant, and the choice is forced rather than preferred. The
+    # fpm images speak FastCGI and nothing else, so deploying one means adding a
+    # web-server container in front of it; this platform runs no reverse proxy
+    # and publishes every service directly on a host port. Measured against the
+    # tree: the only nginx/traefik/caddy mentions under services/ are comments
+    # about the nginx bundled inside Seafile's own image.
+    #
+    # The tag is the exact version rather than `stable-apache` or
+    # `production-apache`, which both resolved to this same digest when it was
+    # pinned. A channel tag names whatever upstream has promoted today, and this
+    # platform writes the version in one place a human and Renovate both read.
+    image: docker.io/library/nextcloud:34.0.3-apache@sha256:b97df9e0e1ee3c8c6cc009cb3f12ddce915d624d543b3bb93882025fe323a407
+    cpus: 2.0
+    labels:
+      dev.dozzle.group: nextcloud
+      dev.dozzle.name: nextcloud
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_healthy
+    # 8084. The next free host port on this platform: 8080 is Dozzle, 8081 the
+    # Dozzle alert relay, 8082 the qbittorrent web interface declared in
+    # config/media-acquisition.yml, 8083 Seafile, 8085 SABnzbd and 8090 Beszel.
+    #
+    # Plain HTTP, as every published port here is: nothing on this platform
+    # terminates TLS and no reverse proxy is deployed. Nextcloud is the second
+    # service whose login guards the operator's own files, so the session cookie
+    # and every byte uploaded or downloaded are in clear on the wire -- already
+    # encrypted when the client arrives over the mesh VPN, not encrypted at all
+    # across the LAN. services/seafile/compose.yml records the same exposure and
+    # why choosing a proxy is a platform decision rather than one this stack
+    # makes for itself.
+    ports:
+      - "8084:80"
+    # One volume, and the cron container below mounts the identical source at
+    # the identical target. Upstream's own compose says so in a comment on that
+    # container: the two share /var/www/html, because cron.php is the same
+    # installation's code operating on the same config.php and the same data
+    # directory. A cron container with its own copy would run an uninstalled
+    # Nextcloud against the live database.
+    volumes:
+      - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+    environment:
+      TZ: ${TZ:?}
+      # ------------------------------------------------------------------
+      # INSTALL ONLY. The entrypoint reads version.php out of the volume and
+      # runs its whole init block only when that file is absent -- the
+      # installed_version it derives is then 0.0.0.0. So every variable in this
+      # section is consumed once, while the volume is empty, and changing one on
+      # a converged deployment is a silent no-op rather than a reconfiguration.
+      # This is the same shape as Seafile's check_init_admin.py and it is
+      # documented here for the same reason: the failure mode is silence.
+      # ------------------------------------------------------------------
+      POSTGRES_HOST: db
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:?}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USERNAME:?}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?}
+      NEXTCLOUD_ADMIN_USER: ${NEXTCLOUD_ADMIN_USERNAME:?}
+      NEXTCLOUD_ADMIN_PASSWORD: ${NEXTCLOUD_ADMIN_PASSWORD:?}
+      # Consumed by the install only, and roles/nextcloud reconciles the list
+      # with `occ config:system:set trusted_domains` afterwards. It is set here
+      # as well so that the very first boot already trusts the addresses this
+      # platform serves on: an install that trusted only `localhost` would
+      # answer HTTP 400 to every request arriving on the published port,
+      # including the role's own verification, before the reconciliation could
+      # run.
+      #
+      # The install writes trusted_domains[0] = 'localhost' itself and appends
+      # this list after it, so `localhost` is already trusted and naming it here
+      # again would only duplicate the entry. Measured on a fresh install with
+      # this variable holding `127.0.0.1 <mesh name>`: the resulting array was
+      # localhost, 127.0.0.1, <mesh name>, in that order and with no repeat.
+      NEXTCLOUD_TRUSTED_DOMAINS: ${NEXTCLOUD_TRUSTED_DOMAINS:?}
+      # THE ONE THAT CANNOT BE FIXED LATER, and it is not an ordinary setting.
+      #
+      # With PostgreSQL, Nextcloud's installer does not use the database account
+      # it was handed. lib/private/Setup/PostgreSQL.php checks whether that
+      # account can create roles and, if it can, sets dbUser to the literal
+      # 'oc_admin', generates a random password for it and writes both into
+      # config.php -- explicitly so it need not store the credential it was
+      # given. The postgres image always grants POSTGRES_USER SUPERUSER, so that
+      # branch is always taken. The result is a database account this vault has
+      # never heard of, holding a password nothing here can reproduce, which
+      # makes the credential unrotatable and the stack unrecoverable from the
+      # vault alone.
+      #
+      # setup_create_db_user = false is what suppresses it, and
+      # AbstractDatabase::initialize reads the value with an explicit accept of
+      # the *string* 'false' precisely because environment values arrive as
+      # strings. Measured on a fresh install with it set: `\du` listed only the
+      # vault's own role and config.php held exactly the credential that was
+      # pushed.
+      #
+      # It must be present on the FIRST converge. The install branch never runs
+      # again, so adding this variable to a deployment that already installed
+      # itself changes nothing at all -- recovery from that state is manual
+      # (occ config:system:set dbuser/dbpassword, then dropping the stray role).
+      # Do not remove it, and do not let a first converge run without it.
+      NC_setup_create_db_user: "false"
+      # ------------------------------------------------------------------
+      # EVERY READ. The NC_ prefix is Nextcloud's own environment override for
+      # system configuration: lib/private/Config.php consults an env cache
+      # before the file cache on every getValue, and writeData serialises only
+      # the file cache -- so these values are authoritative at runtime and are
+      # never written to config.php. That is what keeps the vault the single
+      # direction credentials flow: config.php's copy of the database password
+      # becomes advisory, and rotating the vault value is an ordinary converge
+      # rather than an occ task.
+      #
+      # There is one thing this mechanism cannot carry, and it is the reason
+      # trusted_domains is reconciled with occ instead. A system setting whose
+      # value is an array cannot be expressed as an environment string:
+      # NC_trusted_domains set to a space-separated list makes the setting a
+      # scalar, and every request -- /status.php included, whatever Host header
+      # it carries -- then answers HTTP 400. Measured; do not reintroduce it.
+      # ------------------------------------------------------------------
+      NC_dbhost: db
+      NC_dbname: ${NEXTCLOUD_DB_NAME:?}
+      NC_dbuser: ${NEXTCLOUD_DB_USERNAME:?}
+      NC_dbpassword: ${NEXTCLOUD_DB_PASSWORD:?}
+      # Read on every start by config/redis.config.php, which builds the whole
+      # redis system setting from these; the entrypoint also rewrites
+      # redis-session.ini from them each time. So a rotated cache password
+      # reconciles on the next converge with nothing else to do. Valkey answers
+      # the Redis protocol and the image ships redis-server as a symlink to
+      # valkey-server, so it is a drop-in here as it is for Seafile and
+      # Paperless.
+      REDIS_HOST: cache
+      REDIS_HOST_PORT: "6379"
+      REDIS_HOST_PASSWORD: ${NEXTCLOUD_CACHE_PASSWORD:?}
+      # Read on every start by config/reverse-proxy.config.php. These are what
+      # Nextcloud writes into the URLs it generates for itself -- notably the
+      # ones cron.php and occ construct, which have no incoming request to infer
+      # a host from. Without overwrite.cli.url those come out as localhost and
+      # land in notification e-mails and federation metadata.
+      OVERWRITEPROTOCOL: http
+      OVERWRITECLIURL: ${NEXTCLOUD_OVERWRITE_CLI_URL:?}
+      # PHP's per-request memory ceiling. A declared value and not a derived
+      # one -- PHP reads memory_limit from ini and never from the host -- which
+      # is why this stack declares no mem_limit and is not a
+      # MEMORY_SELF_SIZING_IMAGES member: tests/policy_test.rb's memory check is
+      # about runtimes that size themselves off whatever RAM they can see, and
+      # nothing in this stack does. The number itself lives in
+      # roles/nextcloud/defaults/main.yml.
+      PHP_MEMORY_LIMIT: ${NEXTCLOUD_PHP_MEMORY_LIMIT:?}
+    healthcheck:
+      <<: *healthcheck-defaults
+      # Not a port check, and the grep is what makes it one thing rather than
+      # two. Apache binds 80 long before the install has finished -- the
+      # entrypoint rsyncs the whole /usr/src/nextcloud tree into the volume and
+      # then runs maintenance:install -- and /status.php answers 200 with
+      # `"installed":false` throughout. So `curl --fail` alone reports healthy
+      # on a container that has no database link yet, and Compose's --wait would
+      # return before the stack was usable.
+      #
+      # Requiring the literal `"installed":true` closes both ends. status.php
+      # cannot produce that JSON without booting the server, and booting queries
+      # oc_appconfig for the installed app versions, so with Postgres gone the
+      # request is an uncaught Doctrine exception -- HTTP 500, zero-byte body --
+      # and --fail turns it into a failing probe. Measured both ways.
+      test: [CMD-SHELL, "curl --fail --silent http://localhost/status.php | grep -q '\"installed\":true'"]
+      # While start_period is open Docker probes every start_interval rather
+      # than every interval, and omitting the key means "whatever this daemon
+      # defaults to" rather than "use interval". Pinned so the cadence the
+      # arithmetic below depends on is written down. Needs an engine carrying
+      # health start-interval (Docker 25.0).
+      start_interval: 5s
+      # A first boot is not a start: the entrypoint rsyncs the whole
+      # /usr/src/nextcloud tree into the bind mount before it installs anything,
+      # and that copy is bounded by the disk rather than by Nextcloud. Measured
+      # cold on this image against an empty bind mount, the application
+      # container reported healthy 51 seconds after it was created, with the
+      # whole four-container stack healthy at 57.
+      #
+      # 300s is that measurement with a great deal of room, and the room is
+      # deliberate rather than slack. The only first boot anyone has timed here
+      # is an arm64 developer machine writing to a local SSD; the NAS is a
+      # Celeron N5105 held to `cpus: 2.0` writing to /volume1, and it has never
+      # run this stack. The headroom is paid for only by a deployment that was
+      # going to fail -- a boot that finishes is reported within one
+      # start_interval of finishing.
+      #
+      # With the inherited retries: 5 and interval: 30s this sets the ceiling on
+      # a failing converge at 300 + 4x30 = 420s, since the probe landing on the
+      # start_period boundary is already outside it and counts as the first of
+      # the five. nextcloud_compose_wait_timeout in roles/nextcloud must stay
+      # above that, so that a wedged boot surfaces as Docker's own
+      # `container nextcloud is unhealthy`, which names the container, rather
+      # than as a bare module timeout, which names nothing.
+      start_period: 300s
+    # An upgrade is the case this window is sized for, not a request. The
+    # entrypoint runs `occ upgrade` itself on an image bump, and that walks every
+    # app's migration steps against the database. Killing it partway leaves the
+    # instance in maintenance mode with a schema between two versions, which is
+    # a restore rather than a restart.
+    stop_grace_period: 2m
+
+  cron:
+    <<: *service-defaults
+    container_name: nextcloud-cron
+    # The same image as the application, and that is a requirement rather than
+    # convenience: cron.php is the code in the shared volume, so the two
+    # containers must agree about what that code is. Renovate has to move both
+    # pins together for the same reason -- a split bump would leave one
+    # container's rsync fighting the other's.
+    image: docker.io/library/nextcloud:34.0.3-apache@sha256:b97df9e0e1ee3c8c6cc009cb3f12ddce915d624d543b3bb93882025fe323a407
+    cpus: 1.0
+    labels:
+      dev.dozzle.group: nextcloud
+      dev.dozzle.name: cron
+    depends_on:
+      nextcloud:
+        condition: service_healthy
+    # /cron.sh instead of /entrypoint.sh, which is upstream's own shape for this
+    # container. It is `exec busybox crond -f -L /dev/stdout` and nothing else,
+    # so this container runs none of the install or upgrade logic -- the
+    # entrypoint's main block is gated on argv[1] being apache*/php-fpm anyway.
+    # The image ships /var/spool/cron/crontabs/www-data carrying
+    # `*/5 * * * * php -f /var/www/html/cron.php`.
+    #
+    # Why there is a container here at all: Nextcloud's AJAX background-job mode
+    # runs pending jobs on whatever page load happens to arrive, so on an
+    # instance nobody is looking at, nothing runs. The alternative to this
+    # container is a host timer, and this platform manages no systemd units.
+    entrypoint: /cron.sh
+    # The identical source at the identical target as the application above.
+    volumes:
+      - ${NEXTCLOUD_DATA_PATH:?}:/var/www/html
+    environment:
+      TZ: ${TZ:?}
+    healthcheck:
+      <<: *healthcheck-defaults
+      # crond itself needs no probe: /cron.sh execs it as PID 1, so a crond that
+      # dies takes the container with it and `restart: unless-stopped` is what
+      # answers that. What this checks is the other half -- whether the
+      # container can still do the work when the cron fires -- and it is the
+      # pair of things cron.php needs before it can do anything at all: the
+      # shared installation visible in the volume, and the database reachable.
+      #
+      # bash rather than the shell CMD-SHELL would pick, because /dev/tcp is a
+      # bash feature and Debian's /bin/sh is dash. services/paperless-ngx's Tika
+      # probe is the same construction for the same reason.
+      test: [CMD, bash, -ec, "test -f /var/www/html/occ && exec 3<>/dev/tcp/db/5432"]
+      # This container has nothing to install, so it is ready as soon as the
+      # volume is mounted -- the inherited 60s is the right budget and the long
+      # start_period the application declares would only delay Compose's verdict.
+      start_period: 30s
+    # busybox crond answers SIGTERM by exiting; a job already running is a php
+    # process the platform would rather let finish than truncate mid-write.
+    stop_grace_period: 30s
+
+  db:
+    <<: *service-defaults
+    container_name: nextcloud-db
+    # The same PostgreSQL the Paperless stack pins, deliberately: this platform
+    # already carries a Postgres major-version story for that image in
+    # renovate.json, and reusing it means Nextcloud inherits it rather than
+    # opening a second one. Immich's Postgres is not a candidate -- it is
+    # Immich's own vector-patched fork held at major 14.
+    image: docker.io/library/postgres:18.6-alpine@sha256:d3e1620b530c944afa6e887d22eb899824da68e19c52024bf98f5220c88a65b2
+    cpus: 2.0
+    labels:
+      dev.dozzle.group: nextcloud
+      dev.dozzle.name: db
+    # /var/lib/postgresql, not /var/lib/postgresql/data, and the difference is a
+    # data-loss shape rather than a preference. This image declares
+    # PGDATA=/var/lib/postgresql/18/docker and a VOLUME at /var/lib/postgresql,
+    # so the cluster lives in a version-named directory beneath this mount.
+    # Mounting one level deeper -- which is correct for Postgres 17 and earlier
+    # and is what services/immich/compose.yml still does on its pinned 14 --
+    # would put the cluster somewhere this bind mount does not reach.
+    volumes:
+      - ${NEXTCLOUD_POSTGRES_PATH:?}:/var/lib/postgresql
+    # These three create the role and the database on an empty data directory
+    # and are ignored on every start after that. They are the credential
+    # Nextcloud's installer is handed, and NC_setup_create_db_user above is what
+    # stops it from replacing them with an account of its own.
+    environment:
+      TZ: ${TZ:?}
+      POSTGRES_DB: ${NEXTCLOUD_DB_NAME:?}
+      POSTGRES_USER: ${NEXTCLOUD_DB_USERNAME:?}
+      POSTGRES_PASSWORD: ${NEXTCLOUD_DB_PASSWORD:?}
+    healthcheck:
+      <<: *healthcheck-defaults
+      # pg_isready against the stack's own database and role rather than the
+      # defaults, so a container that came up with the wrong credential does not
+      # report ready. The doubled $$ is Compose escaping: the variable is
+      # resolved inside the container, not while this file is parsed.
+      test: [CMD-SHELL, "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+    # The image's STOPSIGNAL is SIGINT, which is a Postgres fast shutdown:
+    # connections dropped, open transactions aborted, then a checkpoint that
+    # flushes every dirty buffer. This directory is recovery: critical, and
+    # being killed mid-checkpoint means coming back through WAL recovery.
+    stop_grace_period: 2m
+
+  cache:
+    <<: *service-defaults
+    container_name: nextcloud-cache
+    image: docker.io/valkey/valkey:9.1.2-alpine@sha256:a0dbf4c1d5708782907c10e2c72deff317518518b5288a58416981d9db95d30b
+    cpus: 0.5
+    labels:
+      dev.dozzle.group: nextcloud
+      dev.dozzle.name: cache
+    # The image's own unprivileged account, named here because the `command:`
+    # below takes it away otherwise: the entrypoint drops to `valkey` only when
+    # argv[1] is literally `valkey-server`, and the command below is `sh`. There
+    # is no volume, so there is no host ownership to reconcile.
+    user: valkey
+    environment:
+      TZ: ${TZ:?}
+      VALKEY_PASSWORD: ${NEXTCLOUD_CACHE_PASSWORD:?}
+    # The password reaches valkey-server through the environment rather than
+    # through argv, so it never appears in the container's process table.
+    # --save "" --appendonly no switch persistence off: without them the
+    # compiled-in `save` defaults apply and the server would snapshot RDB files
+    # into the container's writable layer, where `stop-writes-on-bgsave-error
+    # yes` would turn one failed background save into refused writes on the
+    # cache Nextcloud keeps its file locks and sessions in.
+    command:
+      - sh
+      - -c
+      - exec valkey-server --requirepass "$$VALKEY_PASSWORD" --save "" --appendonly no
+    healthcheck:
+      <<: *healthcheck-defaults
+      # The reply is matched, not just the exit status. valkey-cli exits 0 after
+      # printing "NOAUTH Authentication required." and after "WRONGPASS", so a
+      # bare ping reports healthy against a server this stack cannot use --
+      # requiring the literal PONG makes the probe able to say no to the case
+      # that matters, which is the credential this platform pushes not matching.
+      test:
+        - CMD-SHELL
+        - valkey-cli --no-auth-warning -a "$$VALKEY_PASSWORD" ping | grep -q '^PONG$$'
+    # Nothing here is persisted, so this window is only about letting in-flight
+    # replies finish. Nextcloud keeps its transactional file locks here, though,
+    # so a reply lost mid-flight is a lock a client believes it holds.
+    stop_grace_period: 30s

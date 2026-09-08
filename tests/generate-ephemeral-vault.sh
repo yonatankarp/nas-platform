@@ -414,6 +414,22 @@ vault_seafile_db_username: seafile
 vault_seafile_db_password: '$(random_password)'
 vault_seafile_jwt_private_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_seafile_cache_password: '$(random_password)'
+vault_nextcloud_admin_username: ephemeral-admin
+vault_nextcloud_admin_password: '$(random_password)'
+# Not the bare service name, and the eight-byte threshold in
+# tests/assert-no-vault-secrets.rb is the reason. That scanner treats every
+# vault String of at least eight bytes as a secret and refuses any failure
+# evidence containing one, so an ephemeral value that is also an ordinary word
+# of Ansible output -- a role name, a path segment, a Compose label -- fails
+# every lane that emits evidence, while the lane's own run reports failed=0.
+# "nextcloud" is nine bytes and did exactly that. immich (6) and seafile (7)
+# use their bare names and survive only by sitting under the threshold, which
+# is a cliff rather than a convention; paperless (9) is the one that met it
+# before and answered it here, in this shape. Follow paperless, not immich.
+vault_nextcloud_db_name: ephemeral-nextcloud-db
+vault_nextcloud_db_username: ephemeral-nextcloud-db-user
+vault_nextcloud_db_password: '$(random_password)'
+vault_nextcloud_cache_password: '$(random_password)'
 vault_managed_users:
   audiobookshelf:
     - username: reader-ephemeral-example-invalid

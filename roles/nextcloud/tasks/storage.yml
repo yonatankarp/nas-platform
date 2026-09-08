@@ -1,0 +1,64 @@
+---
+# Storage. Nothing here touches the target: every task is an assertion, so a
+# path this role does not own fails before the release is read.
+#
+# Two roots and no third. Unlike Seafile there is no separate backup root yet --
+# the pre-upgrade backup is a later slice of #500 -- and unlike Paperless there
+# is no second layout to resolve, because Nextcloud keeps everything under the
+# Docker root on both platforms.
+
+- name: Require exact Nextcloud host storage policy
+  ansible.builtin.assert:
+    that:
+      - nextcloud_data_host_path == (nas_docker_root ~ '/nextcloud/data')
+      - nextcloud_postgres_host_path == (nas_docker_root ~ '/nextcloud/postgres')
+      - >-
+        [nextcloud_data_host_path, nextcloud_postgres_host_path]
+        | unique | length == 2
+      - not nextcloud_postgres_host_path.startswith(nextcloud_data_host_path ~ '/')
+      - not nextcloud_data_host_path.startswith(nextcloud_postgres_host_path ~ '/')
+    fail_msg: >-
+      Nextcloud storage paths overlap or differ from the owned policy. The
+      installation tree and the database cluster must be two separate roots:
+      /var/www/html is rsynced from the image on every version bump, and a
+      PostgreSQL cluster living inside a directory that gets rsynced over is a
+      cluster that does not survive an upgrade.
+
+# The central declaration is what host_prep creates and what the recovery
+# documentation classifies, and this role refuses to deploy against a path
+# nas_storage does not name.
+#
+# Both roots are recovery: critical, and for once that is the ordinary reason
+# rather than Seafile's. Nextcloud stores files as files -- the data directory
+# can be read with ls and cp whatever state the database is in -- so the tree is
+# critical because it is the user's own documents, and the cluster is critical
+# because it holds the sharing, versioning and account state that says what
+# those documents mean. Neither is regenerable from the other.
+- name: Resolve required central Nextcloud storage declarations
+  ansible.builtin.set_fact:
+    nextcloud_required_storage_declarations:
+      - {path: "{{ nas_docker_root }}/nextcloud/data", mode: "0755", recovery: critical}
+      # 0755 rather than the 0700 an exposed database root would otherwise
+      # take, and the reason is the same one recorded beside
+      # paperless-ngx/postgres: PostgreSQL 18 creates its versioned PGDATA
+      # directory *beneath* this mount and protects that directory with 0700
+      # itself. The parent has to stay traversable after the entrypoint drops
+      # from root to the postgres account, so tightening this one would break
+      # the container rather than harden it.
+      - {path: "{{ nas_docker_root }}/nextcloud/postgres", mode: "0755", recovery: critical}
+
+- name: Require unique central Nextcloud storage declarations
+  ansible.builtin.assert:
+    that:
+      - nextcloud_storage_matches | length == 1
+      - nextcloud_storage_matches[0].mode == item.mode
+      - nextcloud_storage_matches[0].recovery == item.recovery
+    fail_msg: >-
+      {{ item.path }} must have one exact mode/recovery declaration in nas_storage;
+      host_prep alone owns its creation and ownership policy.
+  vars:
+    nextcloud_storage_matches: >-
+      {{ nas_storage | selectattr('path', 'equalto', item.path) | list }}
+  loop: "{{ nextcloud_required_storage_declarations }}"
+  loop_control:
+    label: "{{ item.path }}"

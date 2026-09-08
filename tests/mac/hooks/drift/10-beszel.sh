@@ -43,8 +43,13 @@ fi
 # single-service --tags playbook, while tests/mac/verify.sh verifies every
 # service in one, which is what #440's discriminator needs and is not narrowed
 # here. The scanner is fail-closed on every vault String of at least eight bytes
-# bar four allowlisted database identifiers, so a leak it reports from any role
-# is a true positive to fix in that role.
+# bar six allowlisted database identifiers, so a leak it reports from any role
+# is a true positive to fix in that role. The breadth is also why two of those
+# six exist: this capture carries a "TASK [<role> : ...]" banner for every
+# verification tests/mac/verify.sh selects, so a vault whose database
+# identifiers are a bare service name of at least eight bytes trips on the
+# banner of a role that did nothing. tests/assert-no-vault-secrets.rb records
+# which names that reaches.
 "$mac_repo_dir/tests/assert-no-vault-secrets.rb" \
   "$PLATFORM_MAC_VAULT_FILE" "$PLATFORM_MAC_VAULT_PASSWORD_FILE" "$expected_failure"
 # The failing guard's own fail_msg, and only Beszel's. tests/mac/verify.sh runs

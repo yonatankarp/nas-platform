@@ -1,0 +1,99 @@
+---
+# trusted_domains, and it is reconciled with occ because it is the one setting
+# this platform owns that neither mechanism in the image can carry.
+#
+# NEXTCLOUD_TRUSTED_DOMAINS is consumed by the installer alone -- the entrypoint
+# reads it inside the branch gated on an empty volume -- so a domain added to
+# the vault or the inventory afterwards never reaches a converged deployment.
+# And the NC_ environment override, which is what makes every other install-only
+# setting in this stack push-able, cannot express it: a system setting whose
+# value is an array becomes a scalar when it arrives as an environment string,
+# and Nextcloud then answers HTTP 400 to every request, /status.php included,
+# whatever Host header it carries. That was measured; do not reintroduce it.
+#
+# So this stage reads the live array and appends what is missing. It does not
+# remove anything: an entry an operator added by hand is not drift this role can
+# distinguish from a deliberate addition, and removing a trusted domain is how
+# an instance stops answering for somebody.
+
+- name: Read the reconciled Nextcloud trusted domains
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/nextcloud"
+    project_name: "{{ nextcloud_compose_project_name }}"
+    files: "{{ platform_service_compose_files['nextcloud'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+    service: nextcloud
+    user: www-data
+    argv: [php, occ, config:system:get, trusted_domains]
+    tty: false
+  register: nextcloud_trusted_domains_current
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+  # A missing key exits non-zero and prints nothing, which is a state rather
+  # than an error: it means every managed domain is missing and the loop below
+  # adds all of them.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Resolve the missing Nextcloud trusted domains
+  ansible.builtin.set_fact:
+    nextcloud_trusted_domains_live: "{{ nextcloud_trusted_domains_live_value }}"
+    nextcloud_trusted_domains_missing: >-
+      {{ nextcloud_trusted_domains | difference(nextcloud_trusted_domains_live_value) }}
+  vars:
+    nextcloud_trusted_domains_live_value: >-
+      {{ (nextcloud_trusted_domains_current.stdout | default('')).split('\n')
+         | map('trim') | select | list }}
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+
+# Appended at the first free index, which is why the live list is read rather
+# than assumed. `occ config:system:set trusted_domains N` writes position N, so
+# starting anywhere inside the existing array would overwrite a domain that is
+# already trusted rather than adding one.
+#
+# The task runs only for domains that are genuinely absent, so a converged
+# deployment skips the loop entirely and reports no change. Setting the same
+# index to the same value is idempotent and exits 0 -- measured -- but it would
+# still report changed, and a converge that claims a change it did not make is
+# what the platform's idempotence check exists to catch.
+- name: Reconcile the platform-owned Nextcloud trusted domains
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/nextcloud"
+    project_name: "{{ nextcloud_compose_project_name }}"
+    files: "{{ platform_service_compose_files['nextcloud'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+    service: nextcloud
+    user: www-data
+    argv:
+      - php
+      - occ
+      - config:system:set
+      - trusted_domains
+      - "{{ nextcloud_trusted_domains_live | length + index }}"
+      - "--value={{ item }}"
+    tty: false
+  register: nextcloud_trusted_domains_repair
+  loop: "{{ nextcloud_trusted_domains_missing | default([]) }}"
+  loop_control:
+    index_var: index
+  changed_when: true
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Report the Nextcloud trusted domain reconciliation check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read Nextcloud's trusted_domains with occ and append any
+      of {{ nextcloud_trusted_domains | join(', ') }} that are missing. That
+      reads a running container this run did not start, so check mode reports
+      the intent instead of acting on it. An absent entry is not cosmetic:
+      Nextcloud answers HTTP 400 to every request whose Host header it does not
+      trust.
+  when:
+    - nextcloud_deployment_enabled | bool
+    - ansible_check_mode

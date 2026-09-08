@@ -459,7 +459,23 @@ MAC_REVIEW_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
-                   "proved by its Docker integration suite"
+                   "proved by its Docker integration suite",
+  # Temporary, and it names the variable that ends it: Nextcloud ships
+  # implemented but gated, so no host -- the Mac lane included -- starts a
+  # Nextcloud container until an operator sets nextcloud_deployment_enabled. A
+  # checklist bullet would document a sign-in that always meets a refused
+  # connection, which is how an operator learns to skip a check. Whichever
+  # change flips that gate deletes this row and writes the real bullet into
+  # tests/mac/manual-review.md and docs/getting-started-mac.md, the two
+  # documents every other implemented service is checked against below; nothing
+  # here can catch that being forgotten, because a gated service is still
+  # implemented. This is the same row Seafile carried between #460 and #495, and
+  # it is retired the same way -- by giving the service real Mac hooks, not by
+  # deleting the row on its own, because a service may hold a hook or an
+  # exemption and never both.
+  "nextcloud" => "the stack is gated off on every host until an operator sets " \
+                 "nextcloud_deployment_enabled, so the Mac lane starts no " \
+                 "Nextcloud container to review"
 }.freeze
 
 # One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"

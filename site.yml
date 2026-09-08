@@ -158,6 +158,19 @@
     - role: seafile
       tags: [seafile, documents]
 
+    # Beside Seafile rather than replacing it, and that is the point of the
+    # gate. #500 adds Nextcloud as the first half of migrating file sync off
+    # Seafile, and both stacks are meant to run side by side while that is
+    # evaluated with real files -- the teardown is a separate issue and must not
+    # start until this one has been judged.
+    #
+    # No `when:` here either, and for the reason recorded above: the gate is
+    # `nextcloud_deployment_enabled` and it lives inside the role, so the
+    # deployment_bundle target re-include and the ntfy deployment report still
+    # run when it is false.
+    - role: nextcloud
+      tags: [nextcloud, documents]
+
   post_tasks:
     # After every service, so reaching it means the whole run converged: the
     # summary reports a deployment that actually finished. The per-service

@@ -125,6 +125,14 @@ render_group_contract() {
     SEAFILE_DB_USERNAME=contract SEAFILE_DB_PASSWORD=contract \
     SEAFILE_DB_ROOT_PASSWORD=contract SEAFILE_CACHE_PASSWORD=contract \
     SEAFILE_ADMIN_EMAIL=contract@example.invalid SEAFILE_ADMIN_PASSWORD=contract \
+    NEXTCLOUD_HOST_PORT=38084 NEXTCLOUD_PHP_MEMORY_LIMIT=512M \
+    NEXTCLOUD_DATA_PATH=/tmp/dozzle-contract/nextcloud-data \
+    NEXTCLOUD_POSTGRES_PATH=/tmp/dozzle-contract/nextcloud-postgres \
+    NEXTCLOUD_DB_NAME=contract NEXTCLOUD_DB_USERNAME=contract \
+    NEXTCLOUD_DB_PASSWORD=contract NEXTCLOUD_CACHE_PASSWORD=contract \
+    NEXTCLOUD_ADMIN_USERNAME=contract NEXTCLOUD_ADMIN_PASSWORD=contract \
+    NEXTCLOUD_TRUSTED_DOMAINS=127.0.0.1 \
+    NEXTCLOUD_OVERWRITE_CLI_URL=http://nextcloud.contract.invalid:38084 \
     USER_ID=1000 GROUP_ID=100 TZ=UTC \
     docker compose --project-name "dozzle-contract-$stack-$variant" "$@" config --format json) ||
     fail_contract "$stack $variant Compose render failed"
@@ -161,6 +169,7 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/immich/compose.yml" \
     "$repo_dir/services/jellyfin/compose.yml" \
     "$repo_dir/services/komga/compose.yml" \
+    "$repo_dir/services/nextcloud/compose.yml" \
     "$repo_dir/services/ntfy/compose.yml" \
     "$repo_dir/services/paperless-ngx/compose.yml" \
     "$repo_dir/services/seafile/compose.yml" </dev/null
@@ -169,6 +178,7 @@ if [ "$mode" = static ]; then
   render_group_variants paperless-ngx paperless
   render_group_variants immich immich
   render_group_variants seafile seafile
+  render_group_variants nextcloud nextcloud
   render_group_variants audiobookshelf ""
   render_group_variants jellyfin ""
   render_group_variants komga ""
