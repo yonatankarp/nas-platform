@@ -992,6 +992,70 @@ FRAGMENT_EXEMPTIONS = {
 # never the one a denylist names.
 HEALTHCHECK_PROBE = %r{https?://|/dev/tcp/|\bping\b|isready|\bhealth(check)?\b}
 
+# Images whose runtime picks its own memory ceiling out of whatever it can see,
+# rather than out of anything an operator wrote. A JVM has done this since JDK
+# 10: it reads its cgroup limit and takes MaxRAMPercentage of it, defaulting to
+# 25%, and where there is no limit it falls back to *host* physical memory. So
+# paperless_tika reported MaxHeapSize=4135583744 {ergonomic} on the NAS,
+# measured 2026-09-08 -- a quarter of 16 GB, chosen by nobody -- and the 4 GB to
+# 16 GB upgrade quadrupled it silently, because no file here names either
+# figure. A limit is therefore not only a containment ceiling for these images;
+# it is the only thing that makes their heap a decision.
+#
+# The list is stated rather than derived because a Compose file does not say
+# what runtime is inside an image and nothing here can find out. That is this
+# check's honest limit: a third self-sizing image can land unlisted and the
+# check stays green. EXPECTED_SELF_SIZING_CONTAINERS keeps the entries that are
+# here from going quiet; nothing can guard the omission itself, for the same
+# reason BASE_FIXTURE_PATHS cannot derive its own contents.
+#
+# Matched against the repository half of the image reference, so the version
+# stays written only in the tag and digest.
+MEMORY_SELF_SIZING_IMAGES = ["docker.io/apache/tika"].freeze
+
+# Which containers that list is expected to reach, exactly and in both
+# directions. A one-directional sweep passes when the tree loses Tika: the
+# subject list empties, every remaining assertion holds, and the check reports
+# success having examined nothing.
+EXPECTED_SELF_SIZING_CONTAINERS = { "paperless-ngx" => ["tika"] }.freeze
+
+# Environment keys a JVM heap gets written in. ES_JAVA_OPTS is Elasticsearch's
+# own name for it; JAVA_TOOL_OPTIONS is the one any JVM honours however the
+# image launches it.
+HEAP_DECLARATION_KEYS = %w[JAVA_TOOL_OPTIONS JAVA_OPTS ES_JAVA_OPTS].freeze
+
+BYTE_SUFFIXES = { "b" => 1, "k" => 1024, "kb" => 1024, "m" => 1024**2, "mb" => 1024**2,
+                  "g" => 1024**3, "gb" => 1024**3 }.freeze
+
+# Compose accepts 2g, 2G, 2gb, 2048m and a bare byte count; -Xmx accepts the
+# same shapes without the two-letter forms. An unreadable form raises rather
+# than returning nil, because nil would read as "no limit declared" and turn a
+# gap in this parser into a check that quietly stopped applying.
+def parse_bytes(value, what)
+  text = value.to_s.strip.downcase
+  return Integer(text, 10) if text.match?(/\A\d+\z/)
+
+  match = text.match(/\A(\d+(?:\.\d+)?)(b|kb?|mb?|gb?)\z/)
+  raise ArgumentError, "#{what}: cannot read #{value.inspect} as a byte quantity" if match.nil?
+
+  (match[1].to_f * BYTE_SUFFIXES.fetch(match[2])).round
+end
+
+# The heap a container's environment asks for, in bytes, given the limit it runs
+# under. -Xmx states it outright; MaxRAMPercentage states it as a share of the
+# limit and so means nothing until a limit exists. nil when no heap is declared.
+def declared_heap_bytes(environment, limit_bytes, what)
+  text = HEAP_DECLARATION_KEYS.filter_map { |key| environment[key] }.join(" ")
+  if (explicit = text.match(/-Xmx(\d+(?:\.\d+)?[bkmg]?)\b/i))
+    return parse_bytes(explicit[1], "#{what} -Xmx")
+  end
+  if (share = text.match(/MaxRAMPercentage=(\d+(?:\.\d+)?)/))
+    return limit_bytes.nil? ? nil : (limit_bytes * share[1].to_f / 100).round
+  end
+
+  nil
+end
+
 # The keys every long-running container on the platform shares. A stack may add
 # to its own fragment -- networks, or a shutdown window every consumer genuinely
 # wants -- but never disagree about these four. stop_grace_period is deliberately
@@ -1020,6 +1084,12 @@ end
 # How many library/staging pairs the same-mount import check below found. It
 # derives its own subject list, so the count is asserted after the sweep.
 import_pairs = 0
+
+# Which containers the self-sizing image list actually reached. Collected during
+# the sweep and compared against EXPECTED_SELF_SIZING_CONTAINERS afterwards, in
+# both directions, because the failure this guards against is the subject list
+# emptying rather than a subject misbehaving.
+self_sizing_containers = Hash.new { |hash, key| hash[key] = [] }
 
 service_dirs.each do |dir|
   name = File.basename(dir)
@@ -1096,6 +1166,45 @@ service_dirs.each do |dir|
           "#{label}: image must be digest-pinned with a version tag")
     check(failures, !spec.key?("build"),
           "#{label}: must use a published image, not build")
+
+    # Two obligations, and only the first has a subject in the tree today.
+    #
+    # A self-sizing image must carry a limit, because without one its runtime
+    # reads host memory instead. Recorded per container in
+    # self_sizing_containers below and compared against the stated expectation
+    # after the sweep, so losing the subject fails instead of passing quietly.
+    image_repository = spec["image"].to_s.split("@").first.to_s.rpartition(":").first
+    if MEMORY_SELF_SIZING_IMAGES.include?(image_repository)
+      self_sizing_containers[name] << container
+      check(failures, spec.key?("mem_limit"),
+            "#{label}: an image that sizes its own memory from what it can see must " \
+            "declare mem_limit, or its runtime reads the host's RAM instead")
+    end
+
+    # And a declared heap must leave room beside it. Half is the boundary
+    # because off-heap -- metaspace, code cache, thread stacks, direct buffers --
+    # runs to roughly the heap again, so a heap above half the limit is a
+    # container arranged to be killed. Stated as an inequality and not a ratio
+    # so a deliberately generous limit stays legal.
+    #
+    # Nothing declares a heap here yet: Tika satisfies the rule above with a
+    # limit alone and lets the JVM derive the heap from it, and Elasticsearch is
+    # the first that must state one, because it fails a bootstrap check unless
+    # -Xms equals -Xmx. Zero subjects is correct rather than a gap, so no floor
+    # is asserted on this one. What proves it works is the pair of mutations in
+    # tests/policy_manifest_test.rb that plant a heap on Tika, one without a
+    # limit and one above half of it; without both, a version of this check
+    # that skips whenever mem_limit is absent would pass unnoticed.
+    limit_bytes = spec.key?("mem_limit") ? parse_bytes(spec.fetch("mem_limit"), label) : nil
+    heap_bytes = declared_heap_bytes(spec["environment"] || {}, limit_bytes, label)
+    unless heap_bytes.nil?
+      check(failures, !limit_bytes.nil?,
+            "#{label}: a container declaring a JVM heap must declare mem_limit, " \
+            "so the heap is bounded by a number this repository chose")
+      check(failures, limit_bytes.nil? || heap_bytes * 2 <= limit_bytes,
+            "#{label}: declared heap must be at most half of mem_limit, leaving " \
+            "off-heap the room it needs")
+    end
     check(failures, spec["privileged"] != true,
           "#{label}: privileged mode is not allowed")
     # The other half of the same boundary. Refusing `privileged` says the
@@ -1234,6 +1343,18 @@ end
 check(failures, import_pairs >= 2,
       "the same-mount import check paired #{import_pairs} libraries with their staging roots; " \
       "at least the two Bindery declares must stay discoverable")
+
+# Exactly, in both directions. An unlisted container reaching a self-sizing
+# image fails here, and so does the list ceasing to reach a container it is
+# expected to -- an image bumped to another repository, a container renamed, a
+# stack retired. A floor would pass the second case as long as something else
+# still matched.
+check(failures,
+      self_sizing_containers.transform_values(&:sort).sort.to_h ==
+        EXPECTED_SELF_SIZING_CONTAINERS.transform_values(&:sort).sort.to_h,
+      "containers on self-sizing images are " \
+      "#{self_sizing_containers.transform_values(&:sort).sort.to_h.inspect}, and the pinned " \
+      "expectation is #{EXPECTED_SELF_SIZING_CONTAINERS.inspect}; update both together")
 
 # Service templates write their storage paths as literals, and Compose takes
 # those rendered values straight through as bind sources. That makes the
