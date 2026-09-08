@@ -46,7 +46,7 @@ dozzle_alerts:
     enabled: true
     containerExpression: "true"
     logExpression: ""
-    eventExpression: 'name == "die" && !(attributes["exitCode"] in ["0", "130", "143", "137"])'
+    eventExpression: 'name == "die" && !(attributes["exitCode"] in ["0", "130", "143"])'
     cooldown: 300
   - name: Unhealthy
     enabled: true

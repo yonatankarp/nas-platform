@@ -278,7 +278,7 @@ def validate_envelope(payload):
         ):
             raise SchemaError("invalid unexpected-exit relationship")
         numeric_exit = int(exit_code)
-        if numeric_exit > 255 or numeric_exit in {0, 130, 137, 143}:
+        if numeric_exit > 255 or numeric_exit in {0, 130, 143}:
             raise SchemaError("invalid unexpected exit code")
     elif rule in RELATIONSHIPS:
         if (event, health_status, exit_code) != RELATIONSHIPS[rule]:

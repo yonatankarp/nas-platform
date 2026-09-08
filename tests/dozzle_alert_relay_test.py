@@ -395,6 +395,36 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.ntfy.requests, [])
         self.assertFalse(self.state_path.exists())
 
+    def test_sigkill_exit_pages_while_the_graceful_codes_stay_quiet(self):
+        """137 is what an out-of-memory kill produces, so it must reach ntfy.
+
+        Docker's own `oom` event is cgroup-scoped, so a host-level kill can only
+        be seen here. The three codes beside it are deliberate stops: a graceful
+        shutdown exits 143 under the grace periods the services declare, and a
+        suppression list emptied by accident has to fail rather than go quiet.
+        """
+        status_code, body = self.post(
+            self.envelope("Unexpected exit", container="jellyfin", exitCode="137")
+        )
+
+        self.assertEqual((status_code, body), (204, b""))
+        published = self.ntfy.requests[-1]["json"]
+        self.assertEqual(published["topic"], "nas-critical")
+        self.assertEqual(published["title"], "Unexpected exit · jellyfin")
+        self.assertEqual(
+            published["message"],
+            "**Host:** `nas`\n**Container:** `jellyfin`\n**Exit code:** `137`",
+        )
+
+        request_count = len(self.ntfy.requests)
+        for exit_code in ("0", "130", "143"):
+            with self.subTest(exit_code=exit_code):
+                self.assertEqual(
+                    self.post(self.envelope("Unexpected exit", exitCode=exit_code)),
+                    (400, b"invalid request\n"),
+                )
+        self.assertEqual(len(self.ntfy.requests), request_count)
+
     def test_timestamp_is_a_real_canonical_utc_instant(self):
         leap_day = self.envelope("OOM", timestamp="2024-02-29T23:59:59Z")
         self.assertEqual(self.post(leap_day), (204, b""))
