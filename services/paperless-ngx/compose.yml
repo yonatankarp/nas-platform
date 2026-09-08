@@ -195,6 +195,28 @@ services:
     container_name: paperless_tika
     image: docker.io/apache/tika:3.3.1.0@sha256:90b7fa1dc018434075fce9e1d9b88b1e3d0ea6979d0cf86e116c79a8073ae973
     cpus: 2.0
+    # The only container here that needs a memory ceiling, and it needs one for
+    # a reason no other container has: it is a JVM, so it picks its own heap out
+    # of whatever memory it can see. Unlimited, it saw the host and computed
+    # MaxHeapSize=4135583744 -- a quarter of 16 GB -- which measurement on the
+    # NAS 2026-09-08 confirmed, and which the 4 GB to 16 GB RAM upgrade had
+    # quadrupled with nothing in this repository recording either number.
+    #
+    # The heap is deliberately not written here. With a limit in place the JVM
+    # derives it from the limit at its own default MaxRAMPercentage of 25%, so
+    # 2g yields a 512 MiB heap and leaves about 1.5 GiB for off-heap and the
+    # page cache Tika's document parsing touches. Restating 25% as a flag would
+    # be a second place for the number to live while deciding nothing the limit
+    # has not already decided; the image is digest-pinned, so that default
+    # cannot move without a reviewed bump. Against a 213 MiB resident reading
+    # and a 341 MiB high-water mark that includes cache, 2g is generous on
+    # purpose: a limit that is too low does not throttle a JVM, it kills it.
+    #
+    # A heap stated outright would have to satisfy the other half of the rule in
+    # tests/policy_test.rb -- at most half the limit -- which is what
+    # Elasticsearch will need, because it fails a bootstrap check unless -Xms
+    # equals -Xmx.
+    mem_limit: 2g
     labels:
       dev.dozzle.group: paperless
       dev.dozzle.name: tika
