@@ -62,6 +62,16 @@
       maintenance true and needsDbUpgrade true both mean an image bump ran
       `occ upgrade` and did not finish it, which is a restore rather than a
       retry.
+  # The same two conditions the request above carries, and for the reason
+  # roles/seafile's equivalent assertion carries them. Without them this
+  # assertion runs against a register the gate skipped, reads its four
+  # `default`s -- status 0, installed false, maintenance true, needsDbUpgrade
+  # true -- and fails every lane where the stack is switched off or the run is
+  # a check, reporting an absent instance as a broken one. The two debug tasks
+  # below are what those cases get instead.
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
 
 # So that --tags platform_verify_nextcloud is never an empty selection. A tag run
 # that selects no task at all is indistinguishable from a tag that no longer

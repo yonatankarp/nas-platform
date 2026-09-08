@@ -41,6 +41,8 @@ def allowlist_contract(scanner)
     vault_immich_db_username
     vault_paperless_db_name
     vault_paperless_db_username
+    vault_nextcloud_db_name
+    vault_nextcloud_db_username
   ]
   Open3.capture3(
     "ruby", "-e",
@@ -62,6 +64,8 @@ stdout, stderr, status = run_scanner(
     vault_immich_db_username: #{non_secret_database_identity}
     vault_paperless_db_name: #{non_secret_database_identity}
     vault_paperless_db_username: #{non_secret_database_identity}
+    vault_nextcloud_db_name: #{non_secret_database_identity}
+    vault_nextcloud_db_username: #{non_secret_database_identity}
   YAML
   "Dozzle check output names #{non_secret_database_identity}\n"
 )
@@ -73,6 +77,8 @@ failures << "public database identity produced a false positive" unless
   vault_immich_db_username
   vault_paperless_db_name
   vault_paperless_db_username
+  vault_nextcloud_db_name
+  vault_nextcloud_db_username
 ].each do |key|
   relocated_value = "synthetic-relocated-#{key}"
   [
@@ -117,6 +123,31 @@ stdout, stderr, status = run_scanner("vault_short_secret: '12345678'\n", "123456
 failures << "eight-byte scalar was not rejected" if status.success?
 failures << "eight-byte scalar rejection disclosed evidence" unless stdout.empty?
 failures << "eight-byte scalar rejection changed the fixed diagnostic" unless
+  stderr == "failure evidence contains a vault value\n"
+
+# The class the threshold above creates, stated as its own row because it costs
+# whole lanes rather than one check and it reads as a lane failure rather than
+# as a vault problem. A vault value that is also an ordinary word of ansible
+# output -- a role name in a "TASK [...]" banner, a path segment, a Compose
+# label -- is a scanned secret the moment it reaches eight bytes, so every lane
+# that emits evidence is refused while its own run reports failed=0. That is
+# not hypothetical: the ephemeral vault gave Nextcloud the bare nine-byte
+# service name as its database identifiers and four integration lanes failed on
+# their banners. This row pins that the scanner is right to refuse it -- the
+# repair belongs in whichever file authored the value, which is
+# tests/generate-ephemeral-vault.sh for the ephemeral vault and
+# PUBLIC_DATABASE_IDENTITY_KEYS above for a real vault's public database
+# identifiers -- and never in a rule that lets a short value through.
+service_name_value = "nextcloud"
+failures << "the service-name row no longer sits above the byte threshold" unless
+  service_name_value.bytesize >= 8
+stdout, stderr, status = run_scanner(
+  "vault_future_service_db_name: #{service_name_value}\n",
+  "TASK [#{service_name_value} : Report the deferred verification] ***\n"
+)
+failures << "a service name in a task banner was not rejected" if status.success?
+failures << "service-name rejection disclosed evidence" unless stdout.empty?
+failures << "service-name rejection changed the fixed diagnostic" unless
   stderr == "failure evidence contains a vault value\n"
 
 malformed_tag_sentinel = "SyntheticVaultTagMustRemainPrivate"
@@ -217,7 +248,7 @@ Dir.mktmpdir("assert-no-vault-controller-path") do |directory|
 end
 
 stdout, stderr, status = allowlist_contract(SCANNER)
-failures << "scanner does not expose exactly the four approved public database identities" unless
+failures << "scanner does not expose exactly the six approved public database identities" unless
   status.success? && stdout.empty? && stderr.empty?
 
 Dir.mktmpdir("assert-no-vault-secrets-mutant") do |directory|
@@ -232,7 +263,7 @@ Dir.mktmpdir("assert-no-vault-secrets-mutant") do |directory|
     RUBY
   )
   stdout, stderr, status = allowlist_contract(mutant)
-  failures << "a fifth public database identity allowlist entry escaped detection" if status.success?
+  failures << "a seventh public database identity allowlist entry escaped detection" if status.success?
   failures << "allowlist mutation contract wrote to stdout" unless stdout.empty?
 end
 
