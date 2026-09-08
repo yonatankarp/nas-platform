@@ -1,12 +1,12 @@
 ---
-# The single operator switch, mirrored from inventory/group_vars/all/main.yml so
-# the role reads correctly on its own. False here and there: PR 1 lands the whole
-# stack without converging it anywhere. The gate lives inside the role rather
-# than on the site.yml entry, because a `when:` there would also skip the
+# The single operator switch. Inventory sets it true, and
+# inventory/group_vars/all/main.yml is where the deployment decision is made and
+# explained; this default stays false so the role converges to `state: absent`
+# for any caller that runs it without that inventory rather than deploying a
+# database on the strength of a missing variable. The gate lives inside the role
+# rather than on the site.yml entry, because a `when:` there would also skip the
 # deployment_bundle re-include that revalidates the paths this role touches and
-# the deployment report that says whether anything moved. Flip
-# seafile_deployment_enabled to true in inventory and merge, and the auto-deploy
-# poller brings the stack up on its next tick.
+# the deployment report that says whether anything moved.
 seafile_deployment_enabled: false
 
 # 8083. The next free host port on this platform: 8080 is Dozzle, 8081 the

@@ -245,19 +245,31 @@ platform_media_control_network: >-
 trailarr_monitoring_enabled: >-
   {{ platform_project_name | default('') | length == 0 }}
 
-# The one operator switch that deploys Seafile. Flipping this to true and merging
-# is what puts the stack on the NAS -- the auto-deploy poller converges the newest
-# released main revision within five minutes, so a brand-new three-container stack
-# carrying a database arriving on a CI signal alone is not a handoff anyone made.
-# With it false, roles/seafile converges the stack to `state: absent` instead, so
-# the flag is a deployment decision in both directions rather than a skip.
+# The one operator switch that deploys Seafile, and it is now on. The auto-deploy
+# poller converges the newest released main revision within five minutes, so the
+# commit that set this true is what put a three-container stack carrying a
+# database on the NAS. Setting it back to false converges that stack to
+# `state: absent` rather than skipping it, so the flag is a deployment decision in
+# both directions -- but read the next paragraph before reaching for it, because
+# the two directions are not symmetric.
+#
+# Four of the seven Seafile credentials were fixed permanently by the first
+# converge and cannot be rotated by changing the vault: the administrator email
+# and password, the database root password, and the database username.
+# `check_init_admin.py` acts only when the user table is empty, so a later vault
+# edit is a silent no-op forever after and the documented remedy is an
+# interactive `reset-admin.sh`. Only the JWT signing key and the cache password
+# stay rotatable. Turning the flag off and on again does not re-run first-run
+# setup either -- `init_seafile_server()` returns early once `seafile-data`
+# exists -- so a teardown leaves the databases and block store on disk holding
+# those same four credentials.
 #
 # It lives here rather than in a host group because both real inventories bind to
 # nas_hosts and the integration sandbox is a nas_hosts run like any other, so
 # "false on the NAS, true in CI" is not expressible there; and because
 # tests/policy_platform_test.rb holds a host group to machine facts only, which
 # this is not. This is nonsecret policy, so it is group_vars and not the vault.
-seafile_deployment_enabled: false
+seafile_deployment_enabled: true
 
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"
