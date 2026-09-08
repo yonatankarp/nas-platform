@@ -1310,13 +1310,16 @@ PROGRAM_MUTATIONS = [
   },
   {
     # This mutation and "the redaction of the administrator repair" below both
-    # leave `:detects` at its default, which is deliberate rather than an
-    # omission. `judge`'s wrong-reason text quotes the row's own `:expects`, so a
-    # `:detects` naming the assertion's own message matches a sibling firing
-    # first exactly as well as it matches the clean outcome, and discriminates
-    # nothing. The default -- "accepted what it must refuse" -- is the strict
-    # reading, because it holds only when removing the assertion left the fixture
-    # break unrefused by anything at all. Both were confirmed that way.
+    # leave `:detects` at its default, which is deliberate. `:detects` names
+    # which of `judge`'s two verdicts the mutant must produce, not which
+    # assertion caught the break, and only one of those two is the strict
+    # reading: "accepted what it must refuse" holds when removing the assertion
+    # left the fixture break unrefused by anything at all, which is the question
+    # a mutation is asking. Naming the assertion's own message instead selects
+    # the OTHER verdict, because the wrong-reason line is the one that quotes
+    # `:expects` -- it would pass exactly when a sibling fired first and fail
+    # when the guard was the sole detector. Both rows were confirmed against the
+    # default.
     label: "the cluster's own database and owner",
     program: :static,
     from: 'database_environment["POSTGRES_DB"].to_s.include?("NEXTCLOUD_DB_NAME") &&',
