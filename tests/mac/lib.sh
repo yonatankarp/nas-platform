@@ -140,8 +140,22 @@ mac_validate_integration_callback() {
 # survive the gate. The second is that this is not a fact about the machine at
 # all -- it is a property of the Compose files this lane selects, which is
 # exactly the shape of state #295 says a lane must request for itself.
+#
+# seafile_deployment_enabled is the second, and it is here rather than in
+# inventory for the same two reasons plus a third. Seafile ships gated off on
+# every host -- roles/seafile/defaults and inventory/group_vars/all both say
+# false -- so a lane that did not ask for it would deploy nothing, verify
+# nothing, and report a full pass over fifteen services while the sixteenth was
+# never started. tests/integration_controller.sh asks for it per suite for
+# exactly that reason; this lane has no suites, so it asks once, here.
+#
+# The third reason is what happens on the day the platform-wide default flips to
+# true: a `true` requested here stays correct and becomes redundant, where the
+# integration controller's per-suite `false` default would silently keep Seafile
+# out of every lane and has to be deleted in the same change. Nothing has to
+# come back to this line.
 mac_ansible_playbook() {
-  set -- "$@" -e nas_compose_minimum=2.24.4
+  set -- "$@" -e nas_compose_minimum=2.24.4 -e seafile_deployment_enabled=true
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
@@ -197,7 +211,8 @@ mac_target_container_names() {
         "$mac_project-paperless-webserver" "$mac_project-paperless-gotenberg" \
         "$mac_project-paperless-tika" "$mac_project-pinchflat" \
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
-        "$mac_project-seerr"
+        "$mac_project-seerr" "$mac_project-seafile" "$mac_project-seafile-db" \
+        "$mac_project-seafile-cache"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -220,7 +235,7 @@ mac_target_container_names() {
 # no caller outside that function can observe an order at all.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr'
+trailarr seerr seafile'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

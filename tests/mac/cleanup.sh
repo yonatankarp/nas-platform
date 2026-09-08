@@ -9,10 +9,30 @@ cleanup_sandbox_repo_dir=$mac_repo_dir
 . "$mac_repo_dir/tests/sandbox_cleanup.sh"
 . "$mac_repo_dir/tests/integration_lock.sh"
 
+# The Compose projects one Mac run owns, which is what every discovery and every
+# emptiness check below is filtered by, and what mac_projects_are_owned refuses
+# an observed label outside of.
+#
+# It was a literal list of the original eight and it had fallen eight services
+# behind: arr, downloaders, bindery, kapowarr, pinchflat, trailarr and seerr were
+# all promoted, all deployed by this lane, and none of them named here. That is
+# not a leak, it is a refusal -- mac_projects_are_owned sees `<project>-seerr`,
+# finds it in no known list, and returns 1 -- so preflight_mac_resources fails and
+# the cleanup phase declines to remove anything at all. Adding a ninth literal for
+# Seafile would have left the same eight-service hole with one more entry in it.
+#
+# tests/sandbox_cleanup.sh already holds the authoritative roster, seafile
+# included, and this file already sources it for cleanup_sandbox_contents. Read
+# it rather than restating it: the two lists are the same fact, and only one of
+# them was ever kept current. The Mac alias of paperless-ngx is `paperless` in
+# both, which is what makes them the same list rather than two that nearly agree.
+#
+# The legacy loop stays literal. It is a closed historical set -- the project
+# names this harness used before the namespace derivation landed -- so it does
+# not grow with the platform and deriving it would be wrong rather than tidy.
 mac_owned_project_labels() {
   mac_label_project=$1
-  for mac_label_suffix in \
-    beszel ntfy dozzle audiobookshelf komga jellyfin immich paperless; do
+  for mac_label_suffix in $cleanup_sandbox_projects; do
     printf '%s-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
   for mac_label_suffix in \
