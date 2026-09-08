@@ -33,6 +33,31 @@ argument_specs:
       seafile_seafevents_config_path:
         type: path
         required: false
+      seafile_backup_host_path:
+        type: path
+        required: false
+      seafile_backup_databases:
+        type: list
+        elements: str
+        required: false
+      seafile_backup_excluded_paths:
+        type: list
+        elements: str
+        required: false
+      # Declared int for the reason the recreate budget below is: the prune
+      # slices the sorted backup list with it, and a string there is a Jinja
+      # error on the one run that has just written a backup and not yet
+      # deployed anything.
+      seafile_pre_upgrade_backup_retain:
+        type: int
+        required: false
+      # Declared bool rather than left to a truthy string: the seafile lane
+      # passes it as an extra variable, where "false" would arrive as a string
+      # and be true in Jinja -- which would make every lane run take a backup
+      # while reporting that it had not been asked to.
+      seafile_pre_upgrade_backup_force:
+        type: bool
+        required: false
       seafile_compose_wait_timeout:
         type: int
         required: false

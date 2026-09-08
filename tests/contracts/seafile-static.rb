@@ -24,11 +24,13 @@ required = %w[
   roles/seafile/tasks/main.yml
   roles/seafile/tasks/storage.yml
   roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/pre_upgrade_backup.yml
   roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
   roles/seafile/templates/env.j2
+  roles/seafile/templates/backup_manifest.j2
   services/seafile/compose.yml
   services/seafile/compose.mac.yml
   services/seafile/compose.integration.yml
@@ -43,7 +45,9 @@ end
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
-ROLE_TASK_FILES = %w[main storage deploy recover_wedged_boot reconcile_seafevents report verify].freeze
+ROLE_TASK_FILES = %w[
+  main storage deploy pre_upgrade_backup recover_wedged_boot reconcile_seafevents report verify
+].freeze
 VAULT_CREDENTIALS = %w[
   vault_seafile_admin_email
   vault_seafile_admin_password
@@ -61,6 +65,24 @@ def role_tasks(root, file)
   flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/seafile/tasks/#{file}.yml"), aliases: true)
   )
+end
+
+# Every `{{ ... }}` region of a string, as Jinja's own lexer would find them:
+# `{{` opens a variable block and the FIRST `}}` closes it. That last part is the
+# whole of #492 and it is why this is a scanner rather than a regexp over the
+# source -- a Go template nested inside a Jinja expression closes that expression
+# early, so what looks like one construct is two.
+def jinja_expression_regions(value)
+  regions = []
+  index = 0
+  while (opened = value.index("{{", index))
+    closed = value.index("}}", opened + 2)
+    break if closed.nil?
+
+    regions << value[(opened + 2)...closed]
+    index = closed + 2
+  end
+  regions
 end
 
 if failures.empty?
@@ -241,7 +263,11 @@ if failures.empty?
   # rendered environment file: the MariaDB root password, the Seafile
   # administrator password and the Valkey password in full. Every inspection this
   # role performs must therefore narrow its output with --format.
-  unformatted_inspects = (deploy + recovery).select do |task|
+  # pre_upgrade_backup inspects containers too, and the reason this guard exists
+  # applies to it unchanged, so it is read here rather than at its own section
+  # further down.
+  backup = role_tasks(root, "pre_upgrade_backup")
+  unformatted_inspects = (deploy + recovery + backup).select do |task|
     argv = Array(task.dig("ansible.builtin.command", "argv")).map(&:to_s)
     argv.include?("inspect") && !argv.include?("--format")
   end
@@ -389,8 +415,210 @@ if failures.empty?
   declarations = Array(inventory["nas_storage"]).select do |entry|
     entry.is_a?(Hash) && entry["path"].to_s.include?("/seafile/")
   end
-  failures << "both Seafile storage roots must be declared unrecoverable without each other" unless
-    declarations.length == 2 && declarations.all? { |entry| entry["recovery"] == "critical" }
+  failures << "every Seafile storage root must be declared unrecoverable without the others" unless
+    declarations.length == 3 && declarations.all? { |entry| entry["recovery"] == "critical" }
+  # 0700, and it is the one Seafile path whose mode is asserted here rather than
+  # left to nas_storage's own conventions. A mariadb-dump of ccnet_db and
+  # seahub_db is every account row Seafile holds in plain readable SQL and the
+  # conf/ copy beside it carries the database account and the JWT signing key,
+  # so this directory is secret-bearing in a way the two live trees are not --
+  # inside those the container manages access, and inside this one nothing does.
+  backup_declaration = declarations.find { |entry| entry["path"].to_s.end_with?("/seafile/backups") }
+  failures << "the Seafile backup root must be declared private" unless
+    backup_declaration && backup_declaration["mode"] == "0700"
+
+  # --- the pre-upgrade backup -----------------------------------------------
+  #
+  # An upgrade migrates ccnet_db, seafile_db and seahub_db one way and rewrites
+  # conf/ as it goes, and MARIADB_AUTO_UPGRADE migrates the datadir in place
+  # before the database container reports healthy. By the time either has
+  # answered once there is nothing left to copy, so the whole of what follows is
+  # about the backup happening BEFORE Compose is asked to do anything, in the
+  # right internal order, and failing loudly rather than quietly.
+
+  backup_include = deploy.index do |task|
+    task["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml"
+  end
+  # The first Compose task that BRINGS THE STACK UP, not the first Compose task:
+  # the teardown branch above it is a `state: absent` that runs only with the
+  # switch off, and comparing against that would let the backup sit after the
+  # data services and still pass.
+  first_deployment = deploy.index do |task|
+    task.dig("community.docker.docker_compose_v2", "state") == "present"
+  end
+  # Before BOTH Compose phases rather than merely before the application one:
+  # the data phase is where a MariaDB image change lands, and its datadir
+  # migration is exactly as one-way as the server's schema migration.
+  failures << "the Seafile pre-upgrade backup must run before Compose touches the stack" unless
+    backup_include && first_deployment && backup_include < first_deployment
+  # Gated on the include rather than inside the file. A conditional include
+  # applies to every task it brings in, so the switched-off branch reads and
+  # writes nothing -- and a gate repeated per task is one a later task forgets.
+  failures << "the Seafile pre-upgrade backup must be gated on the operator switch" unless
+    backup_include &&
+    Array(deploy.fetch(backup_include)["when"]).include?("seafile_deployment_enabled | bool")
+
+  dump = backup.select do |task|
+    task_strings(task["community.docker.docker_compose_v2_exec"]).any? do |value|
+      value.include?("mariadb-dump")
+    end
+  end
+  dump_argv = Array(dump.first&.dig("community.docker.docker_compose_v2_exec", "argv")).join(" ")
+  # --single-transaction is what makes "the service does not have to be stopped"
+  # true rather than hopeful: without it the three schemas are dumped one after
+  # another against a server that is still writing, and the restore is a set of
+  # rows that never coexisted. The three database names come from the role's own
+  # list so the contract cannot drift from what the dump actually names.
+  backup_defaults = YAML.safe_load_file(File.join(root, "roles/seafile/defaults/main.yml"))
+  declared_databases = Array(backup_defaults["seafile_backup_databases"])
+  failures << "the Seafile dump must name ccnet_db, seafile_db and seahub_db" unless
+    declared_databases.sort == %w[ccnet_db seafile_db seahub_db]
+  # The argv interpolates the list rather than spelling the three names, which is
+  # the point: the dump, the manifest and this contract all read one declaration,
+  # so a fourth schema added to the role reaches the dump without anybody having
+  # to remember this file.
+  failures << "the Seafile pre-upgrade dump must be one consistent snapshot of all three databases" unless
+    dump.length == 1 &&
+    dump_argv.include?("--single-transaction") &&
+    dump_argv.include?("--databases {{ seafile_backup_databases | join(' ') }}")
+  # Over TCP as root for the reason tasks/deploy.yml's probe is: only root@% can
+  # answer through the network stack, and the Seafile account holds grants on
+  # the three schemas rather than the server-wide read a dump of all three needs.
+  failures << "the Seafile pre-upgrade dump must authenticate over TCP as root" unless
+    dump_argv.include?("--protocol=tcp") && dump_argv.include?("--user=root") &&
+    !dump_argv.include?("localhost")
+  # --result-file rather than a redirect, so database contents never pass
+  # through the module's stdout: a dump captured into a registered variable
+  # would force no_log onto this task and censor the failure an operator reads.
+  failures << "the Seafile pre-upgrade dump must write to a file rather than through Ansible" unless
+    dump_argv.include?("--result-file")
+  # The refusal. `failed_when: false` anywhere on the dump would turn the whole
+  # guard into a report, and the upgrade would proceed over a backup that never
+  # landed.
+  failures << "the Seafile pre-upgrade dump must be allowed to fail the run" if
+    dump.any? { |task| task.key?("failed_when") }
+  # Exit status is not enough on its own: mariadb-dump has exited 0 having
+  # written a diagnostic and an empty file, and an empty file is a backup only in
+  # the sense that something is there.
+  dump_assertions = backup.select do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+      condition.to_s.include?("seafile_database_dump_file.stat")
+    end
+  end
+  failures << "the Seafile upgrade must be refused unless the dump landed and is not empty" unless
+    dump_assertions.length == 1 &&
+    Array(dump_assertions.first.dig("ansible.builtin.assert", "that")).any? do |condition|
+      condition.to_s.include?("size > 0")
+    end
+
+  # THE ORDERING, and it is the claim this whole file exists to keep. Seafile
+  # keeps the mapping from content-addressed blocks back to filenames in the
+  # database and nowhere else, so anything copied out of the volume BEFORE the
+  # dump can only be missing what the dump then names. Compared by index rather
+  # than grepped, because both tasks would still be present in a file that ran
+  # them the wrong way round.
+  conf_copy = backup.index { |task| task.key?("ansible.builtin.copy") }
+  dump_index = backup.index do |task|
+    task_strings(task["community.docker.docker_compose_v2_exec"]).any? do |value|
+      value.include?("mariadb-dump")
+    end
+  end
+  failures << "the Seafile database dump must be taken before anything is copied out of the volume" unless
+    dump_index && conf_copy && dump_index < conf_copy
+  # conf/ carries the Seafile database account, its password and the JWT signing
+  # key as file content rather than as vault_ names, which is the same case
+  # tasks/reconcile_seafevents.yml already carries no_log for.
+  failures << "the Seafile configuration copy carries a database password and must be redacted" unless
+    conf_copy && backup.fetch(conf_copy)["no_log"] == true
+  # admin.txt, excluded by name. /scripts/start.py writes the administrator
+  # password there in plaintext on every container start and removes it in a
+  # finally:, so a container killed mid-start leaves it on disk -- and a backup
+  # that swept conf/ blindly would preserve that plaintext for as long as the
+  # backup is kept.
+  conf_find = backup.find do |task|
+    task.key?("ansible.builtin.find") &&
+      task_strings(task["ansible.builtin.find"]).any? { |value| value.include?("conf") }
+  end
+  failures << "the Seafile configuration backup must exclude the plaintext administrator handoff" unless
+    conf_find && Array(conf_find.dig("ansible.builtin.find", "excludes")).include?("admin.txt")
+  failures << "admin.txt must be named in the exclusions every Seafile backup records" unless
+    Array(backup_defaults["seafile_backup_excluded_paths"]).sort ==
+      ["conf/admin.txt", "logs", "pro-data/search"]
+
+  # A third root, and separate from both trees it protects. A backup inside the
+  # library is lost with the library, and a .sql file under /var/lib/mysql is a
+  # directory MariaDB scans as if it were a schema.
+  failures << "the Seafile backup must land on a root of its own under the Docker root" unless
+    backup_defaults["seafile_backup_host_path"] == "{{ nas_docker_root }}/seafile/backups"
+  # The mount is on the database container because mariadb-dump lives there, and
+  # !override replaces a volume list rather than extending it, so the Mac
+  # override has to spell both mounts or the dump lands nowhere.
+  failures << "the Seafile database container must mount the backup root" unless
+    Array(database["volumes"]).any? { |volume| volume.to_s.start_with?("${SEAFILE_BACKUP_PATH:?}:") }
+  mac_database_volumes = Array(
+    YAML.safe_load_file(File.join(root, "services/seafile/compose.mac.yml"))
+        .dig("services", "db", "volumes")
+  )
+  failures << "the Mac Seafile override must keep the backup mount its !override replaces" unless
+    mac_database_volumes.any? { |volume| volume.to_s.start_with?("${SEAFILE_BACKUP_PATH:?}:") }
+  failures << "the Seafile environment must render the backup root Compose mounts" unless
+    template.include?("SEAFILE_BACKUP_PATH={{ seafile_backup_host_path }}")
+
+  # --- Go templates, and the trap #492 fell into ----------------------------
+  #
+  # `{% raw %}` is a Jinja TAG, and a tag is only a tag in template context. Put
+  # one inside a `{{ }}` expression -- as the string literal of a list this role
+  # then joined into an argv -- and Jinja is lexing a string, so the tag is
+  # characters. Measured against ansible-core 2.21.3: the expression form renders
+  # with `{% raw %}` still in it, and `docker container inspect --format` then
+  # prints that wrapper around every value (Docker 29.7.2). The image census came
+  # back as `{% raw %}seafile=...`, matched nothing, and this role reported
+  # `stack-not-running` against a stack that was serving its API -- silently, on
+  # every converge, which on a NAS is a backup guard that never fires.
+  #
+  # roles/seafile is the only role in this repository that writes Go templates
+  # today, so the guard lives here rather than in tests/policy_test.rb; the defect
+  # class is not Seafile's and the next role to need a `--format` inherits this
+  # comment along with the trap.
+  #
+  # Scope, stated because the diagnostic does not carry it: this reads the task
+  # files ROLE_TASK_FILES names -- pre_upgrade_backup among them, which is where
+  # the defect was -- and not templates/. env.j2 and backup_manifest.j2 are Jinja
+  # too and neither writes a Go template today; a template that starts to would
+  # need this widened rather than assumed covered.
+  raw_inside_expression = ROLE_TASK_FILES.flat_map do |file|
+    task_strings(role_tasks(root, file)).select do |value|
+      jinja_expression_regions(value).any? { |region| region.include?("{%") }
+    end
+  end
+  failures << "no Seafile Jinja expression may contain a raw tag, which Jinja will not process" unless
+    raw_inside_expression.empty?
+
+  # THE GENERAL LESSON, pinned so the next classifier cannot repeat it. A read
+  # that finds containers and cannot parse one of them is a broken read, not a
+  # stopped stack, and every way of being broken -- a format that did not render,
+  # a label Compose stopped setting, a Docker whose output shape moved -- makes
+  # this whole file a no-op that reports success. It has to fail instead.
+  census_guard = backup.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+      condition.to_s.include?("seafile_stack_containers.stdout_lines") &&
+        condition.to_s.include?("seafile_stateful_deployed")
+    end
+  end
+  failures << "a Seafile stack census that parsed nothing must fail rather than read as stopped" unless
+    census_guard
+  # A forced backup is an explicit request, so a request that cannot be honoured
+  # is a failure rather than a debug line. `stack-not-running` still outranks
+  # `forced` -- no flag can dump a database that is not up -- and what is refused
+  # is the silence, which is what made #492 cost a whole lane run to find.
+  force_guard = backup.find do |task|
+    Array(task["when"]).any? { |value| value.to_s.include?("seafile_pre_upgrade_backup_force") } &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+        condition.to_s.include?("stack-not-running")
+      end
+  end
+  failures << "a forced Seafile backup with no stack to dump must fail rather than report itself away" unless
+    force_guard
 end
 
 unless failures.empty?

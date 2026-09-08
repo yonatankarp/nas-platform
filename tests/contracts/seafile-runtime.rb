@@ -5,16 +5,17 @@
 #
 # usage: seafile-runtime.rb MODE
 #
-# MODE is `run` or `restart-persistence`, and everything else arrives in the
-# environment, exported by tests/contracts/seafile.sh: PLATFORM_SEAFILE_PORT,
-# the three container names, PLATFORM_DOCKER_ROOT, PLATFORM_CONTRACT_VAULT_FILE
-# and PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
+# MODE is `run`, `restart-persistence`, `restore-rehearsal-seed` or
+# `restore-rehearsal-assert`, and everything else arrives in the environment,
+# exported by tests/contracts/seafile.sh: PLATFORM_SEAFILE_PORT, the three
+# container names, PLATFORM_DOCKER_ROOT, PLATFORM_CONTRACT_VAULT_FILE and
+# PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
 #
 # `run` is what a registry sweep reaches -- tests/run_contracts.rb spawns every
 # registered contract with no argument at all, under a 60-second cap -- so it is
-# cheap and touches nothing. `restart-persistence` restarts the server and is
-# invoked only by the seafile lane, which is the whole reason it is a second
-# mode rather than more work inside the first.
+# cheap and touches nothing. The other three restart, stop or drop things and
+# are invoked only by the seafile lane, which is the whole reason they are modes
+# of their own rather than more work inside the first.
 #
 # Every claim this program settles was an inference until it ran. PR 1 shipped
 # Seafile switched off, so nothing had ever started one of these containers.
@@ -23,6 +24,7 @@ require "digest/sha2"
 require "json"
 require "net/http"
 require "open3"
+require "stringio"
 require "timeout"
 require "uri"
 require "yaml"
@@ -82,10 +84,10 @@ end
 # Every docker call is bounded and every failure to *make* the call is a
 # contract diagnostic rather than a backtrace: a lane that cannot run docker at
 # all must say so in the sentence a reader is looking for.
-def docker(*argv, label:)
-  Timeout.timeout(DOCKER_TIMEOUT_SECONDS) { Open3.capture3("docker", *argv) }
+def docker(*argv, label:, budget: DOCKER_TIMEOUT_SECONDS)
+  Timeout.timeout(budget) { Open3.capture3("docker", *argv) }
 rescue Timeout::Error
-  fail_contract("#{label} did not finish within #{DOCKER_TIMEOUT_SECONDS}s")
+  fail_contract("#{label} did not finish within #{budget}s")
 rescue SystemCallError => error
   fail_contract("#{label} could not run docker at all: #{error.class}")
 end
@@ -383,6 +385,322 @@ def assert_cache_is_serving(before, after)
   observe("the Seafile cache served #{grown.join(', ')} across the administrator token exchange")
 end
 
+# --- the restore rehearsal ---------------------------------------------------
+#
+# (f) A backup nobody has restored is a hypothesis, and for this service it is a
+# hypothesis with a specific way of being false: Seafile stores content as
+# content-addressed blocks and keeps the mapping from blocks back to filenames,
+# libraries and owners only in the database, so a restore that puts the schemas
+# back and cannot resolve a filename into bytes is the failure mode the whole
+# backup exists to prevent. Nothing short of downloading a file proves it did
+# not happen.
+#
+# Two modes rather than one, on the precedent tests/contracts/immich.sh set with
+# its clean-restore-seed / clean-restore-assert pair, because roles/seafile has
+# to run BETWEEN them: the seed uploads a file, the lane converges the role with
+# seafile_pre_upgrade_backup_force so THIS PLATFORM'S backup is what gets taken,
+# and the assert restores that backup. A rehearsal that dumped its own database
+# with its own command would prove the rehearsal rather than the platform.
+#
+# Neither mode is reachable from a registry sweep, which spawns every contract
+# with no argument at all under a 60-second cap.
+REHEARSAL_LIBRARY = "nas-platform-restore-rehearsal"
+REHEARSAL_FILE = "restore-rehearsal.txt"
+# Fixed rather than generated, and that is what lets the two modes share no
+# state: the assert looks the library up by name and compares the download
+# against this constant, so there is no file between them to lose or to leave
+# behind.
+REHEARSAL_CONTENT = "nas-platform seafile restore rehearsal payload\n"
+BACKUP_ROOT = File.join(ENV.fetch("PLATFORM_DOCKER_ROOT"), "seafile", "backups")
+RESTORE_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEAFILE_RESTORE_TIMEOUT_SECONDS", "300"), 10)
+# Its own budget rather than DOCKER_TIMEOUT_SECONDS, and the number is derived
+# from the deployment rather than picked: services/seafile/compose.yml gives the
+# server stop_grace_period: 1m, so Docker sends SIGKILL at 60 seconds and
+# `docker stop` returns just after -- exactly where the shared 60-second docker
+# budget expires. A stop that hit the grace period would race its own timeout and
+# fail as "did not finish", which is the #319 shape: a hardcoded wait that
+# becomes a failure nobody changed anything to cause. 120 is that period plus the
+# same again.
+STOP_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEAFILE_STOP_TIMEOUT_SECONDS", "120"), 10)
+
+# Every link Seafile hands a client is built from SEAFILE_SERVER_HOSTNAME, which
+# is the address a human types and not one this contract can reach from inside
+# the sandbox. Only the path and query survive; the coordinate is this
+# program's own.
+def local_url(value, label)
+  target = begin
+    URI.parse(value.to_s)
+  rescue URI::InvalidURIError
+    fail_contract("Seafile answered #{label} with something that is not a URL")
+  end
+  fail_contract("Seafile answered #{label} with no path") if target.path.to_s.empty?
+  URI.join(BASE, target.request_uri)
+end
+
+def api(request, token, label)
+  request["Authorization"] = "Token #{token}"
+  response = http(request, label)
+  fail_contract("Seafile answered #{label} with HTTP #{response.code}") unless
+    response.code.start_with?("2")
+  response
+end
+
+def administrator_token(credentials, label)
+  code, token = token_exchange(
+    credentials.fetch("email"), credentials.fetch("password"), label
+  )
+  # Written as a refusal on the negation rather than as `unless code == "200" &&
+  # !token.empty?`, which is the assertion in assert_administrator_token above.
+  # The two say the same thing about different callers, and a self-test plant
+  # that matched both would prove neither.
+  fail_contract("Seafile did not issue an API token for the vault administrator (HTTP #{code})") if
+    code != "200" || token.to_s.empty?
+  token
+end
+
+def rehearsal_library(token, label)
+  response = api(Net::HTTP::Get.new(URI.join(BASE, "/api2/repos/")), token, label)
+  libraries = begin
+    JSON.parse(response.body.to_s)
+  rescue JSON::ParserError
+    fail_contract("Seafile answered #{label} with something that is not JSON")
+  end
+  fail_contract("Seafile answered #{label} with something that is not a list") unless
+    libraries.is_a?(Array)
+
+  match = libraries.find { |entry| entry.is_a?(Hash) && entry["name"] == REHEARSAL_LIBRARY }
+  match && (match["id"] || match["repo_id"]).to_s
+end
+
+def seed_mode(credentials)
+  census
+  token = administrator_token(credentials, "the seed token exchange")
+
+  # Created only if it is not already there, so the seed is safe to run twice
+  # against a sandbox somebody kept.
+  library = rehearsal_library(token, "the library census")
+  if library.nil? || library.empty?
+    request = Net::HTTP::Post.new(URI.join(BASE, "/api2/repos/"))
+    request.set_form_data("name" => REHEARSAL_LIBRARY)
+    created = api(request, token, "the library creation")
+    body = begin
+      JSON.parse(created.body.to_s)
+    rescue JSON::ParserError
+      {}
+    end
+    library = (body["repo_id"] || body["id"]).to_s
+    library = rehearsal_library(token, "the library census after creation") if library.empty?
+  end
+  fail_contract("Seafile did not create the rehearsal library #{REHEARSAL_LIBRARY}") if
+    library.nil? || library.empty?
+
+  # set_form's multipart form is Ruby's own rather than hand-rolled, which
+  # matters more here than anywhere else in this file: seafhttp is strict about
+  # the boundary and a malformed body would fail as a Seafile error rather than
+  # as this program's.
+  link = api(
+    Net::HTTP::Get.new(URI.join(BASE, "/api2/repos/#{library}/upload-link/")),
+    token, "the upload link request"
+  )
+  upload = Net::HTTP::Post.new(local_url(JSON.parse(link.body.to_s), "the upload link"))
+  upload.set_form(
+    [["parent_dir", "/"],
+     ["replace", "1"],
+     ["file", StringIO.new(REHEARSAL_CONTENT),
+      { filename: REHEARSAL_FILE, content_type: "text/plain" }]],
+    "multipart/form-data"
+  )
+  api(upload, token, "the rehearsal upload")
+
+  # Downloaded back before the mode reports success, because an upload that
+  # answered 200 and stored nothing would make the assert mode fail against a
+  # backup that was never wrong.
+  fail_contract("the rehearsal file did not read back as uploaded") unless
+    download_rehearsal_file(token, library, "the seed download") == REHEARSAL_CONTENT
+
+  puts "seafile contract: the restore rehearsal seeded #{REHEARSAL_FILE} into " \
+       "#{REHEARSAL_LIBRARY} and read it back"
+end
+
+def download_rehearsal_file(token, library, label)
+  link = api(
+    Net::HTTP::Get.new(URI.join(BASE, "/api2/repos/#{library}/file/?p=/#{REHEARSAL_FILE}&reuse=1")),
+    token, "#{label} link request"
+  )
+  content = api(Net::HTTP::Get.new(local_url(JSON.parse(link.body.to_s), "#{label} link")),
+                token, label)
+  content.body.to_s
+end
+
+# The newest backup this platform took, found the way an operator finds it. It
+# is not created here and must not be: the whole point of the rehearsal is that
+# roles/seafile's own backup is the thing being restored.
+def newest_backup
+  fail_contract("this platform took no Seafile backup under #{BACKUP_ROOT}") unless
+    Dir.exist?(BACKUP_ROOT)
+
+  # The backup root is mode 0700 and owned by the host's root, which is the whole
+  # point of it, so a contract running as somebody else is a case worth naming
+  # rather than crashing on -- host_seafevents above takes the same care for the
+  # same reason.
+  newest = begin
+    Dir.children(BACKUP_ROOT).select { |name| File.directory?(File.join(BACKUP_ROOT, name)) }
+       .sort.last
+  rescue SystemCallError => error
+    fail_contract("the Seafile backup root #{BACKUP_ROOT} could not be read: #{error.class}")
+  end
+  fail_contract("this platform took no Seafile backup under #{BACKUP_ROOT}") if newest.nil?
+  File.join(BACKUP_ROOT, newest)
+end
+
+def assert_backup_shape(backup)
+  dump = File.join(backup, "databases.sql")
+  fail_contract("the Seafile backup at #{backup} carries no databases.sql") unless File.file?(dump)
+  fail_contract("the Seafile backup at #{backup} carries an empty databases.sql") unless
+    File.size(dump).positive?
+  fail_contract("the Seafile backup at #{backup} carries no manifest") unless
+    File.file?(File.join(backup, "MANIFEST.txt"))
+  # The security requirement, proved against a real backup rather than against
+  # the role that claims it. /scripts/start.py writes the administrator password
+  # to conf/admin.txt in plaintext on every container start, so a backup that
+  # swept conf/ blindly would keep that plaintext for as long as the backup is
+  # kept.
+  fail_contract("the Seafile backup at #{backup} preserved the plaintext administrator handoff") if
+    File.exist?(File.join(backup, "conf", "admin.txt"))
+  # Not an empty directory either: a conf/ backup that copied nothing would
+  # satisfy the exclusion above by copying nothing at all.
+  preserved = Dir.exist?(File.join(backup, "conf")) ? Dir.children(File.join(backup, "conf")) : []
+  fail_contract("the Seafile backup at #{backup} preserved no configuration at all") if preserved.empty?
+  observe("the Seafile backup at #{backup} preserved #{preserved.sort.join(', ')}")
+  dump
+end
+
+DROP_SCRIPT = <<~'SH'
+  exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb --protocol=tcp --host=db --port=3306 \
+    --user=root --batch --execute="drop database ccnet_db; drop database seafile_db; drop database seahub_db"
+SH
+# Reads its statements from stdin rather than from argv, and that is the whole
+# reason this is a script rather than an --execute. The account recreation below
+# carries the vault's own database password, and an --execute would put it in
+# the argv of `docker exec` where the host's process table can read it.
+RESTORE_SCRIPT = <<~'SH'
+  exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb --protocol=tcp --host=db --port=3306 \
+    --user=root --batch
+SH
+
+def sql_literal(value)
+  "'#{value.to_s.gsub('\\', '\\\\\\\\').gsub("'", "\\\\'")}'"
+end
+
+def database_sql(script, payload, label)
+  stdout, stderr, status = begin
+    Timeout.timeout(RESTORE_TIMEOUT_SECONDS) do
+      Open3.capture3("docker", "exec", "-i", DATABASE, "sh", "-ec", script, stdin_data: payload)
+    end
+  rescue Timeout::Error
+    fail_contract("#{label} did not finish within #{RESTORE_TIMEOUT_SECONDS}s")
+  rescue SystemCallError => error
+    fail_contract("#{label} could not run docker at all: #{error.class}")
+  end
+  [stdout, stderr, status]
+end
+
+def restore_rehearsal_mode(credentials)
+  census
+  backup = newest_backup
+  dump = assert_backup_shape(backup)
+
+  token = administrator_token(credentials, "the pre-restore token exchange")
+  library = rehearsal_library(token, "the pre-restore library census")
+  fail_contract(
+    "#{REHEARSAL_LIBRARY} is not on this server, so the seed mode has not run and there is " \
+    "nothing this rehearsal could prove"
+  ) if library.nil? || library.empty?
+
+  _out, _err, dropped = docker(
+    "exec", DATABASE, "sh", "-ec", DROP_SCRIPT, label: "the rehearsal database drop"
+  )
+  fail_contract("the three Seafile databases could not be dropped") unless dropped.success?
+
+  # THE NEGATIVE CONTROL, and without it every assertion after the restore is
+  # vacuous: a rehearsal that never actually broke anything reports a successful
+  # restore of a server that was working the whole time.
+  code, issued = token_exchange(
+    credentials.fetch("email"), credentials.fetch("password"), "the dropped-database token exchange"
+  )
+  fail_contract(
+    "Seafile issued an API token with ccnet_db, seafile_db and seahub_db dropped, so this " \
+    "rehearsal is not testing what it claims to"
+  ) if code == "200" && !issued.to_s.empty?
+
+  _stop_out, _stop_err, stopped = docker(
+    "stop", SERVER, label: "the pre-restore server stop", budget: STOP_TIMEOUT_SECONDS
+  )
+  fail_contract("the Seafile server container #{SERVER} could not be stopped") unless stopped.success?
+
+  # Step 2 of docs/getting-started-nas.md's "Recover Seafile". --databases means
+  # the dump carries its own CREATE DATABASE and USE statements, so this
+  # recreates the three schemas that were just dropped.
+  dump_body = begin
+    File.binread(dump)
+  rescue SystemCallError => error
+    fail_contract("the Seafile dump at #{dump} could not be read: #{error.class}")
+  end
+  _restore_out, restore_err, restored = database_sql(
+    RESTORE_SCRIPT, dump_body, "the rehearsal database restore"
+  )
+  fail_contract("the Seafile backup would not restore: #{restore_err.to_s.lines.first.to_s.strip}") unless
+    restored.success?
+
+  # Step 3 of the same procedure, the case where the MariaDB data directory
+  # itself was lost. It is a no-op here -- a db-level grant survives DROP
+  # DATABASE on this image -- and it is rehearsed anyway, because a documented
+  # recovery step nobody has ever executed is the other half of the hypothesis
+  # this mode exists to remove. Fed through stdin so the vault's own database
+  # password never reaches the host's process table.
+  account = <<~SQL
+    CREATE USER IF NOT EXISTS #{sql_literal(credentials.fetch('db_username'))}@'%'
+      IDENTIFIED BY #{sql_literal(credentials.fetch('db_password'))};
+    GRANT ALL PRIVILEGES ON ccnet_db.* TO #{sql_literal(credentials.fetch('db_username'))}@'%';
+    GRANT ALL PRIVILEGES ON seafile_db.* TO #{sql_literal(credentials.fetch('db_username'))}@'%';
+    GRANT ALL PRIVILEGES ON seahub_db.* TO #{sql_literal(credentials.fetch('db_username'))}@'%';
+    FLUSH PRIVILEGES;
+  SQL
+  _account_out, account_err, granted = database_sql(
+    RESTORE_SCRIPT, account, "the rehearsal account recreation"
+  )
+  account.replace("\0" * account.bytesize)
+  fail_contract(
+    "the documented Seafile account recreation would not run: " \
+    "#{account_err.to_s.lines.first.to_s.strip}"
+  ) unless granted.success?
+
+  _start_out, _start_err, started = docker("start", SERVER, label: "the post-restore server start")
+  fail_contract("the Seafile server container #{SERVER} could not be started again") unless
+    started.success?
+  wait_for_health(SERVER, RESTART_TIMEOUT_SECONDS, "the post-restore start")
+  wait_for_server("its API after the restore")
+
+  restored_token = administrator_token(credentials, "the post-restore token exchange")
+  restored_library = rehearsal_library(restored_token, "the post-restore library census")
+  fail_contract("#{REHEARSAL_LIBRARY} did not come back from the restored database") if
+    restored_library.nil? || restored_library.empty?
+
+  # The claim this mode exists for. Downloading resolves a filename through
+  # seahub and seaf-server into content-addressed blocks on disk, so bytes that
+  # come back identical are the coupling working end to end: the blocks were
+  # never in the backup, and the database that names them was rebuilt from it.
+  content = download_rehearsal_file(restored_token, restored_library, "the post-restore download")
+  fail_contract(
+    "#{REHEARSAL_FILE} came back from the restored database as #{content.bytesize} bytes that do " \
+    "not match what was uploaded, so the restored database does not resolve its blocks"
+  ) unless content == REHEARSAL_CONTENT
+
+  puts "seafile contract: #{backup} restored the three databases this platform dumped, the " \
+       "documented account recreation ran, and #{REHEARSAL_FILE} downloaded back byte for byte " \
+       "from blocks no backup ever carried"
+end
+
 # --- modes -------------------------------------------------------------------
 
 def run_mode(credentials)
@@ -432,14 +750,31 @@ def restart_persistence_mode(credentials)
        "the administrator still authenticates against the databases"
 end
 
-fail_contract("unknown mode: #{MODE}") unless %w[run restart-persistence].include?(MODE)
+MODES = %w[run restart-persistence restore-rehearsal-seed restore-rehearsal-assert].freeze
+fail_contract("unknown mode: #{MODE}") unless MODES.include?(MODE)
 
 document = vault
+# The database pair is read for one caller only -- the restore rehearsal's
+# account recreation, which is step 3 of the documented recovery -- and it is
+# read here rather than there so that every mode fails the same way on a vault
+# that is missing a key: at the top, naming the vault, rather than halfway
+# through a restore.
+#
+# Fetched through a refusal rather than through Ruby's own KeyError, for the
+# reason #352 recorded: a backtrace is not a diagnostic, and a row asserting
+# "this must be refused" would accept one.
 credentials = {
-  "email" => document.fetch("vault_seafile_admin_email"),
-  "password" => document.fetch("vault_seafile_admin_password")
-}
+  "email" => "vault_seafile_admin_email",
+  "password" => "vault_seafile_admin_password",
+  "db_username" => "vault_seafile_db_username",
+  "db_password" => "vault_seafile_db_password"
+}.transform_values do |key|
+  fail_contract("the encrypted vault carries no #{key}") unless document.key?(key)
+  document.fetch(key)
+end
 case MODE
 when "run" then run_mode(credentials)
-else restart_persistence_mode(credentials)
+when "restart-persistence" then restart_persistence_mode(credentials)
+when "restore-rehearsal-seed" then seed_mode(credentials)
+else restore_rehearsal_mode(credentials)
 end

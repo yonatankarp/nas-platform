@@ -60,7 +60,15 @@ STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "seafile-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "seafile-runtime.rb")
 
 SUCCESS_LINE = "seafile static contract: gated three-container file store ownership holds"
-MODE_REFUSAL = "seafile contract accepts only static, run or restart-persistence"
+# The rehearsal's own fixed names, spelled here rather than imported, because
+# the point of pinning them is that a rename in the runtime program has to be a
+# deliberate edit in two places rather than a silently passing test.
+REHEARSAL_LIBRARY = "nas-platform-restore-rehearsal"
+REHEARSAL_FILE = "restore-rehearsal.txt"
+REHEARSAL_CONTENT = "nas-platform seafile restore rehearsal payload\n"
+REHEARSAL_REPO = "fixture-repo-id"
+MODE_REFUSAL = "seafile contract accepts only static, run, restart-persistence, "\
+               "restore-rehearsal-seed or restore-rehearsal-assert"
 
 # Exactly the static program's own `required` list plus the shared
 # flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR. tests/contracts/
@@ -72,11 +80,13 @@ FIXTURE_FILES = %w[
   roles/seafile/tasks/main.yml
   roles/seafile/tasks/storage.yml
   roles/seafile/tasks/deploy.yml
+  roles/seafile/tasks/pre_upgrade_backup.yml
   roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
   roles/seafile/templates/env.j2
+  roles/seafile/templates/backup_manifest.j2
   services/seafile/compose.yml
   services/seafile/compose.mac.yml
   services/seafile/compose.integration.yml
@@ -516,7 +526,192 @@ STATIC_ROWS = [
         entry["recovery"] = "user"
       end
     },
-    expects: "both Seafile storage roots must be declared unrecoverable without each other"
+    expects: "every Seafile storage root must be declared unrecoverable without the others"
+  },
+  # --- the pre-upgrade backup ------------------------------------------------
+  #
+  # Nine rows, and every one of them is a way the backup could still be present
+  # and no longer be a guard. A backup that runs after Compose, that cannot fail
+  # the run, that dumps three schemas one after another against a live server,
+  # or that copies the volume before the dump is a backup in the sense that
+  # something gets written -- and each of those restores something that never
+  # existed.
+  {
+    name: "a backup root anybody on the host can read",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        entry = document["nas_storage"].find do |candidate|
+          candidate["path"].to_s.end_with?("/seafile/backups")
+        end
+        entry["mode"] = "0755"
+      end
+    },
+    expects: "the Seafile backup root must be declared private"
+  },
+  {
+    name: "a backup taken after Compose has already started the stack",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        include_index = document.index do |task|
+          task["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml"
+        end
+        document.push(document.delete_at(include_index))
+      end
+    },
+    expects: "the Seafile pre-upgrade backup must run before Compose touches the stack"
+  },
+  {
+    name: "a backup that runs with the service switched off",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "deploy") do |document|
+        task = document.find { |candidate| candidate["ansible.builtin.include_tasks"] == "pre_upgrade_backup.yml" }
+        task.delete("when")
+      end
+    },
+    expects: "the Seafile pre-upgrade backup must be gated on the operator switch"
+  },
+  {
+    # Three schemas dumped one after another against a server that is still
+    # writing restore as rows that never coexisted -- and the failure appears
+    # at the restore, months later, as a library with files nothing can open.
+    name: "three databases dumped without one consistent snapshot",
+    break: lambda { |root|
+      mutate_text(root, "roles/seafile/tasks/pre_upgrade_backup.yml",
+                  "--single-transaction --quick", "--quick")
+    },
+    expects: "the Seafile pre-upgrade dump must be one consistent snapshot of all three databases"
+  },
+  {
+    name: "a dump the run is allowed to survive",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("community.docker.docker_compose_v2_exec") }
+        task["failed_when"] = false
+      end
+    },
+    expects: "the Seafile pre-upgrade dump must be allowed to fail the run"
+  },
+  {
+    name: "a dump proved by its exit status rather than by its file",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find do |candidate|
+          Array(candidate.dig("ansible.builtin.assert", "that")).any? do |condition|
+            condition.to_s.include?("seafile_database_dump_file.stat")
+          end
+        end
+        task["ansible.builtin.assert"]["that"] =
+          ["seafile_database_dump_file.stat.exists"]
+      end
+    },
+    expects: "the Seafile upgrade must be refused unless the dump landed and is not empty"
+  },
+  {
+    # The ordering claim, and the plant leaves both tasks in place: what changes
+    # is only which of them writes into the backup first, which is exactly the
+    # defect a grep for either task cannot see.
+    name: "the volume copied before the database that names it",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        copy_index = document.index { |task| task.key?("ansible.builtin.copy") }
+        dump_index = document.index { |task| task.key?("community.docker.docker_compose_v2_exec") }
+        document.insert(dump_index, document.delete_at(copy_index))
+      end
+    },
+    expects: "the Seafile database dump must be taken before anything is copied out of the volume"
+  },
+  {
+    name: "a configuration backup that preserves the plaintext administrator handoff",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.find") }
+        task["ansible.builtin.find"]["excludes"] = []
+      end
+    },
+    expects: "the Seafile configuration backup must exclude the plaintext administrator handoff"
+  },
+  {
+    name: "a configuration copy that renders the database password in its diff",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.copy") }
+        task.delete("no_log")
+      end
+    },
+    expects: "the Seafile configuration copy carries a database password and must be redacted"
+  },
+  {
+    # !override replaces a volume list rather than extending it, so the Mac lane
+    # is the one place where forgetting the mount leaves a dump with nowhere to
+    # land and a refusal naming a path that exists on the host and not in the
+    # container.
+    name: "a Mac override whose database container has nowhere to dump",
+    break: lambda { |root|
+      mutate_text(root, "services/seafile/compose.mac.yml",
+                  "\n      - ${SEAFILE_BACKUP_PATH:?}:/backups", "")
+    },
+    expects: "the Mac Seafile override must keep the backup mount its !override replaces"
+  },
+  # --- #492, the defect that reached CI --------------------------------------
+  #
+  # The plant is the argv this role actually shipped, restored byte for byte. It
+  # is worth reading beside the row below it: a reviewer looking at that YAML sees
+  # a `{% raw %}` wrapper around a Go template and a list being built, and every
+  # part of it is individually correct. What is wrong is only that the tag is
+  # inside the expression, where Jinja lexes a string literal rather than a tag,
+  # so the wrapper survives into docker's --format and every census line comes
+  # back prefixed. The role then reported `stack-not-running` against a stack
+  # that was serving its API, on all three of the lane's converges, with a clean
+  # PLAY RECAP.
+  {
+    name: "an image census whose Go template Jinja will not process",
+    # Planted against the parsed document rather than the source text, so the
+    # row states the SHAPE that is wrong -- one templated string in place of a
+    # list of literals -- rather than an indentation the next edit would break.
+    # The string is what the shipped folded scalar parsed to.
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        task = document.find do |candidate|
+          Array(candidate.dig("ansible.builtin.command", "argv")).include?("inspect")
+        end
+        task["ansible.builtin.command"]["argv"] =
+          "{{ ['docker', 'container', 'inspect', '--format', " \
+          "'{% raw %}{{index .Config.Labels \"com.docker.compose.service\"}}={{.Config.Image}}{% endraw %}'] " \
+          "+ seafile_stack_containers.stdout_lines }}"
+        task.delete("loop")
+        task.delete("loop_control")
+      end
+    },
+    expects: "no Seafile Jinja expression may contain a raw tag, which Jinja will not process"
+  },
+  {
+    # The general lesson rather than the specific bug: whatever stops the census
+    # parsing, a classifier that answers `stopped` to `unreadable` turns this
+    # whole file into a no-op that reports success.
+    name: "a stack census that parsed nothing reported as a stopped stack",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        document.reject! do |task|
+          Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+            condition.to_s.include?("seafile_stack_containers.stdout_lines") &&
+              condition.to_s.include?("seafile_stateful_deployed")
+          end
+        end
+      end
+    },
+    expects: "a Seafile stack census that parsed nothing must fail rather than read as stopped"
+  },
+  {
+    name: "a forced backup with no stack to dump reported away",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "pre_upgrade_backup") do |document|
+        document.reject! do |task|
+          Array(task["when"]).any? { |value| value.to_s.include?("seafile_pre_upgrade_backup_force") } &&
+            task.key?("ansible.builtin.assert")
+        end
+      end
+    },
+    expects: "a forced Seafile backup with no stack to dump must fail rather than report itself away"
   }
 ].freeze
 
@@ -590,7 +785,26 @@ RUNTIME_DEFAULTS = {
   wrong_token_body: { "non_field_errors" => ["Unable to login with provided credentials."] }.freeze,
   restart_ok: true,
   restart_states: nil,
-  restart_conf: nil
+  restart_conf: nil,
+  stop_ok: true,
+  start_ok: true,
+  drop_ok: true,
+  restore_ok: true,
+  grant_ok: true,
+  # The library is already there by default, so the assert rows exercise the
+  # path the lane actually takes and one seed row turns it off to exercise the
+  # creation the seed does on a fresh sandbox.
+  library_exists: true,
+  restored_library: true,
+  create_code: 200,
+  upload_code: 200,
+  token_after_drop: false,
+  seeded_content: REHEARSAL_CONTENT,
+  restored_content: REHEARSAL_CONTENT,
+  backup_present: true,
+  backup_manifest: true,
+  backup_admin_txt: false,
+  backup_dump: "-- MariaDB dump fixture\nCREATE DATABASE ccnet_db;\n"
 }.freeze
 
 # Every budget the runtime half reads, set low because no row here is entitled
@@ -612,7 +826,12 @@ def vault_document
   {
     "vault_seafile_admin_email" => ADMIN_EMAIL,
     "vault_seafile_admin_password" => ADMIN_PASSWORD,
-    "vault_seafile_db_root_password" => "fixture-root-password"
+    "vault_seafile_db_root_password" => "fixture-root-password",
+    # The database pair the restore rehearsal's account recreation needs. Read
+    # by every mode, because a vault missing a key must fail at the top naming
+    # the vault rather than halfway through a restore.
+    "vault_seafile_db_username" => "fixture-db-user",
+    "vault_seafile_db_password" => "fixture-db-password"
   }
 end
 
@@ -636,7 +855,26 @@ def docker_stub_source(options_path)
       states = File.exist?(marker) && options["restart_states"] ? options.fetch("restart_states") : options.fetch("states")
       puts states.fetch(container, "running healthy")
     when "exec"
-      if joined.include?("seafevents.conf")
+      # The rehearsal branches come first because both of their commands also
+      # carry --protocol=tcp and MYSQL_ROOT_PASSWORD, so the credential branch
+      # below would answer for them and the drop would silently never happen.
+      if joined.include?("drop database")
+        exit 1 unless options.fetch("drop_ok")
+        File.write(options.fetch("dropped_marker"), "dropped")
+      elsif argv.include?("-i")
+        # Both statements the rehearsal feeds through stdin arrive here, and
+        # they are told apart by what they say rather than by which call it is:
+        # the restore is the dump, the recreation is the documented CREATE USER.
+        payload = $stdin.read
+        if payload.include?("CREATE USER")
+          exit(options.fetch("grant_ok") ? 0 : 1)
+        end
+        unless options.fetch("restore_ok")
+          warn "ERROR 1064 (42000): the fixture refused this dump"
+          exit 1
+        end
+        File.write(options.fetch("restored_marker"), "restored")
+      elsif joined.include?("seafevents.conf")
         # The bytes are printed before the status is decided, which is what
         # makes the path row's plant surgical: a `docker exec cat` that writes
         # output and still fails is a coherent fixture, and it leaves nothing
@@ -662,6 +900,13 @@ def docker_stub_source(options_path)
         warn "docker stub reached an exec it does not know: \#{joined}"
         exit 127
       end
+    when "stop"
+      exit(options.fetch("stop_ok") ? 0 : 1)
+    when "start"
+      exit 1 unless options.fetch("start_ok")
+      # The same marker `restart` writes, so restart_states describes the state
+      # after a start exactly as it describes the state after a restart.
+      File.write(marker, "restarted")
     when "restart"
       exit 1 unless options.fetch("restart_ok")
       File.write(marker, "restarted")
@@ -684,8 +929,32 @@ def build_runtime_sandbox(root, options)
   container_conf = File.join(root, "container-seafevents.conf")
   File.write(container_conf, options.fetch(:container_conf) || host_body)
 
+  # The backup roles/seafile would have taken, laid out on disk the way it lays
+  # one out. The rehearsal never creates this -- the whole point is that it
+  # restores the platform's own backup -- so a row that removes or empties it is
+  # describing a platform that did not back up rather than a contract that did
+  # not look.
+  backup_root = File.join(docker_root, "seafile", "backups")
+  if options.fetch(:backup_present)
+    backup = File.join(backup_root, "20260101T000000")
+    FileUtils.mkdir_p(File.join(backup, "conf"))
+    File.write(File.join(backup, "databases.sql"), options.fetch(:backup_dump))
+    File.write(File.join(backup, "MANIFEST.txt"), "fixture manifest\n") if
+      options.fetch(:backup_manifest)
+    File.write(File.join(backup, "conf", "seafile.conf"), "[database]\n")
+    File.write(File.join(backup, "conf", "admin.txt"), "leaked\n") if
+      options.fetch(:backup_admin_txt)
+  end
+
   options_path = File.join(root, "docker-stub.json")
   File.write(options_path, JSON.generate(
+    "dropped_marker" => File.join(root, "dropped-marker"),
+    "restored_marker" => File.join(root, "restored-marker"),
+    "drop_ok" => options.fetch(:drop_ok),
+    "restore_ok" => options.fetch(:restore_ok),
+    "grant_ok" => options.fetch(:grant_ok),
+    "stop_ok" => options.fetch(:stop_ok),
+    "start_ok" => options.fetch(:start_ok),
     "inspect_ok" => options.fetch(:inspect_ok),
     "states" => options.fetch(:states),
     "restart_states" => options.fetch(:restart_states),
@@ -719,18 +988,62 @@ def build_runtime_sandbox(root, options)
   [bin, docker_root]
 end
 
+# Which of the three phases of a restore rehearsal the fixture is in, read from
+# the markers the docker stub writes rather than from a counter here: the
+# program decides when to drop and when to restore, and a responder counting
+# requests would agree with it only by accident.
+def rehearsal_phase(options)
+  sandbox = options[:sandbox]
+  return :initial if sandbox.nil?
+  return :restored if File.exist?(File.join(sandbox, "restored-marker"))
+  return :dropped if File.exist?(File.join(sandbox, "dropped-marker"))
+
+  :initial
+end
+
+# Every link Seafile hands a client is built from SEAFILE_SERVER_HOSTNAME, so
+# the fixture answers with a host the contract cannot reach on purpose: if the
+# program stopped rewriting the coordinate, these rows would fail by timing out
+# against seafile.example rather than by passing.
+def rehearsal_link(path)
+  JSON.generate("http://seafile.example:8083#{path}")
+end
+
 def runtime_responder(options)
   lambda do |method, target, _headers, body|
     path = target.split("?").first
+    phase = rehearsal_phase(options)
     if method == "GET" && path == "/api2/ping/"
       [options.fetch(:ping_code), '"pong"']
     elsif method == "POST" && path == "/api2/auth-token/"
       form = URI.decode_www_form(body.to_s).to_h
-      if form["username"] == ADMIN_EMAIL && form["password"] == ADMIN_PASSWORD
-        [options.fetch(:token_code), JSON.generate(options.fetch(:token_body))]
-      else
+      if form["username"] != ADMIN_EMAIL || form["password"] != ADMIN_PASSWORD
         [options.fetch(:wrong_token_code), JSON.generate(options.fetch(:wrong_token_body))]
+      elsif phase == :dropped && !options.fetch(:token_after_drop)
+        # What a real seahub does with its databases gone. A row can turn this
+        # off, and the contract has to refuse that fixture rather than report a
+        # successful restore of a server nothing ever broke.
+        [500, JSON.generate("detail" => "no such table")]
+      else
+        [options.fetch(:token_code), JSON.generate(options.fetch(:token_body))]
       end
+    elsif method == "GET" && path == "/api2/repos/"
+      present = case phase
+                when :dropped then false
+                when :restored then options.fetch(:restored_library)
+                else options.fetch(:library_exists)
+                end
+      [200, JSON.generate(present ? [{ "id" => REHEARSAL_REPO, "name" => REHEARSAL_LIBRARY }] : [])]
+    elsif method == "POST" && path == "/api2/repos/"
+      [options.fetch(:create_code), JSON.generate("repo_id" => REHEARSAL_REPO)]
+    elsif method == "GET" && path.end_with?("/upload-link/")
+      [200, rehearsal_link("/seafhttp/upload-api/fixture-token")]
+    elsif method == "POST" && path == "/seafhttp/upload-api/fixture-token"
+      [options.fetch(:upload_code), '"fixture-file-id"']
+    elsif method == "GET" && path.end_with?("/file/")
+      [200, rehearsal_link("/seafhttp/files/fixture/#{REHEARSAL_FILE}")]
+    elsif method == "GET" && path.start_with?("/seafhttp/files/")
+      [200, phase == :restored ? options.fetch(:restored_content) : options.fetch(:seeded_content)]
     else
       [404, "{}"]
     end
@@ -889,6 +1202,108 @@ RUNTIME_ROWS = [
     name: "a restarted server that comes back without its databases",
     given: { mode: "restart-persistence", token_code: 500, token_body: { "detail" => "server error" } },
     expects: "did not issue an API token for the vault administrator"
+  },
+  # --- the restore rehearsal -------------------------------------------------
+  #
+  # The two modes the seafile lane runs a converge between. Everything the
+  # rehearsal can get wrong is a way of reporting a successful restore of
+  # something that was never broken, or of a backup nothing wrote, so most of
+  # these rows are about the rehearsal refusing to flatter itself.
+  {
+    name: "a seeded rehearsal library that already exists",
+    given: { mode: "restore-rehearsal-seed" },
+    expects: nil
+  },
+  {
+    name: "a seeded rehearsal library created from nothing",
+    given: { mode: "restore-rehearsal-seed", library_exists: false },
+    expects: nil
+  },
+  {
+    name: "a library the server will not create",
+    given: { mode: "restore-rehearsal-seed", library_exists: false, create_code: 500 },
+    expects: "Seafile answered the library creation with HTTP 500"
+  },
+  {
+    # An upload that answers 200 and stores nothing would leave the assert mode
+    # failing against a backup that was never wrong, which is the wrong place
+    # for that failure to appear.
+    name: "an upload the server answered and did not store",
+    given: { mode: "restore-rehearsal-seed", seeded_content: "not what was uploaded\n" },
+    expects: "the rehearsal file did not read back as uploaded"
+  },
+  {
+    name: "a rehearsed restore of the platform's own backup",
+    given: { mode: "restore-rehearsal-assert" },
+    expects: nil
+  },
+  {
+    name: "a platform that took no backup at all",
+    given: { mode: "restore-rehearsal-assert", backup_present: false },
+    expects: "took no Seafile backup under"
+  },
+  {
+    name: "a backup whose dump is an empty file",
+    given: { mode: "restore-rehearsal-assert", backup_dump: "" },
+    expects: "carries an empty databases.sql"
+  },
+  {
+    name: "a backup with no manifest beside its dump",
+    given: { mode: "restore-rehearsal-assert", backup_manifest: false },
+    expects: "carries no manifest"
+  },
+  {
+    # The security requirement, proved against a real backup directory rather
+    # than against the role that claims to exclude it.
+    name: "a backup that kept the plaintext administrator handoff",
+    given: { mode: "restore-rehearsal-assert", backup_admin_txt: true },
+    expects: "preserved the plaintext administrator handoff"
+  },
+  {
+    name: "a rehearsal whose seed never ran",
+    given: { mode: "restore-rehearsal-assert", library_exists: false },
+    expects: "the seed mode has not run and there is nothing this rehearsal could prove"
+  },
+  {
+    # THE VACUOUS PASS, and the row that matters most here. A server still
+    # answering with its three databases dropped means the drop did nothing, so
+    # every assertion after the restore is about a server that was working the
+    # whole time.
+    name: "a server still issuing tokens with its databases dropped",
+    given: { mode: "restore-rehearsal-assert", token_after_drop: true },
+    expects: "so this rehearsal is not testing what it claims to"
+  },
+  {
+    name: "three databases that cannot be dropped",
+    given: { mode: "restore-rehearsal-assert", drop_ok: false },
+    expects: "the three Seafile databases could not be dropped"
+  },
+  {
+    name: "a backup the database will not restore",
+    given: { mode: "restore-rehearsal-assert", restore_ok: false },
+    expects: "the Seafile backup would not restore"
+  },
+  {
+    # Step 3 of the documented recovery, the case where the data directory
+    # itself was lost. It is a no-op against a surviving datadir and it is
+    # rehearsed anyway, so it has to be able to fail.
+    name: "a documented account recreation the database refuses",
+    given: { mode: "restore-rehearsal-assert", grant_ok: false },
+    expects: "the documented Seafile account recreation would not run"
+  },
+  {
+    name: "a library that did not come back from the restore",
+    given: { mode: "restore-rehearsal-assert", restored_library: false },
+    expects: "did not come back from the restored database"
+  },
+  {
+    # The claim the whole rehearsal exists for. The blocks were never in the
+    # backup; the database that names them was rebuilt from it. Bytes that come
+    # back different are that coupling failing, and they are the one outcome no
+    # amount of green containers would have shown.
+    name: "a file that came back as bytes nobody uploaded",
+    given: { mode: "restore-rehearsal-assert", restored_content: "wrong blocks\n" },
+    expects: "do not match what was uploaded, so the restored database does not resolve its blocks"
   }
 ].freeze
 
@@ -920,7 +1335,7 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
           collected.concat(judge("runtime: #{row.fetch(:name)}", row.fetch(:expects), stdout, stderr, status,
                                  prefix: DIAGNOSTIC_PREFIX))
         end,
-        &runtime_responder(options)
+        &runtime_responder(options.merge(sandbox: root))
       )
     end
   end
@@ -1373,9 +1788,78 @@ PROGRAM_MUTATIONS = [
   {
     label: "the storage recovery classification check",
     program: :static,
-    from: 'declarations.length == 2 && declarations.all? { |entry| entry["recovery"] == "critical" }',
+    from: 'declarations.length == 3 && declarations.all? { |entry| entry["recovery"] == "critical" }',
     to: "true",
     rows: ["a Seafile root that disaster recovery would skip"]
+  },
+  {
+    label: "the backup root privacy check",
+    program: :static,
+    from: 'backup_declaration && backup_declaration["mode"] == "0700"',
+    to: "true",
+    rows: ["a backup root anybody on the host can read"]
+  },
+  {
+    label: "the backup-before-Compose ordering check",
+    program: :static,
+    from: "backup_include && first_deployment && backup_include < first_deployment",
+    to: "true",
+    rows: ["a backup taken after Compose has already started the stack"]
+  },
+  {
+    label: "the consistent-snapshot check",
+    program: :static,
+    from: 'dump_argv.include?("--single-transaction") &&',
+    to: "",
+    rows: ["three databases dumped without one consistent snapshot"]
+  },
+  {
+    label: "the check that the dump may fail the run",
+    program: :static,
+    from: 'dump.any? { |task| task.key?("failed_when") }',
+    to: "false",
+    rows: ["a dump the run is allowed to survive"]
+  },
+  {
+    # The ordering is the claim the whole backup rests on, so its plant is the
+    # one to read first if this file ever goes quiet: with the comparison gone
+    # both tasks are still there and the backup still writes two things.
+    label: "the dump-before-copy ordering check",
+    program: :static,
+    from: "dump_index && conf_copy && dump_index < conf_copy",
+    to: "true",
+    rows: ["the volume copied before the database that names it"]
+  },
+  {
+    # The #492 guard, and the one plant in this file whose absence has already
+    # cost a lane run: with it gone the contract passes and the role's census
+    # comes back wearing a `{% raw %}` prefix that matches nothing.
+    label: "the raw-tag-inside-an-expression check",
+    program: :static,
+    from: "raw_inside_expression.empty?",
+    to: "true",
+    rows: ["an image census whose Go template Jinja will not process"]
+  },
+  {
+    label: "the unreadable-census guard",
+    program: :static,
+    from: "failures << \"a Seafile stack census that parsed nothing must fail rather than read as stopped\" unless\n    census_guard",
+    to: "failures << \"\" if false",
+    rows: ["a stack census that parsed nothing reported as a stopped stack"]
+  },
+  {
+    label: "the forced-backup guard",
+    program: :static,
+    from: "failures << \"a forced Seafile backup with no stack to dump must fail rather than report itself away\" unless\n    force_guard",
+    to: "failures << \"\" if false",
+    rows: ["a forced backup with no stack to dump reported away"]
+  },
+  {
+    label: "the admin.txt exclusion check",
+    program: :static,
+    from: 'conf_find && Array(conf_find.dig("ansible.builtin.find", "excludes")).include?("admin.txt")',
+    to: "true",
+    rows: ["a configuration backup that preserves the plaintext administrator handoff"]
   },
   {
     label: "the healthy-container census",
@@ -1475,9 +1959,49 @@ PROGRAM_MUTATIONS = [
   {
     label: "the mode guard",
     program: :runtime,
-    from: 'fail_contract("unknown mode: #{MODE}") unless %w[run restart-persistence].include?(MODE)',
+    from: 'fail_contract("unknown mode: #{MODE}") unless MODES.include?(MODE)',
     to: "nil",
     rows: ["a mode the contract does not implement"]
+  },
+  # --- the restore rehearsal -------------------------------------------------
+  #
+  # Five plants, and the first two are the ones that matter: a rehearsal that
+  # stops checking whether it broke anything, and one that stops checking what
+  # came back, both still run every step and both still report success.
+  {
+    label: "the dropped-database negative control",
+    program: :runtime,
+    from: ') if code == "200" && !issued.to_s.empty?',
+    to: ") if false",
+    rows: ["a server still issuing tokens with its databases dropped"]
+  },
+  {
+    label: "the restored content comparison",
+    program: :runtime,
+    from: "  ) unless content == REHEARSAL_CONTENT",
+    to: "  ) unless true",
+    rows: ["a file that came back as bytes nobody uploaded"]
+  },
+  {
+    label: "the seeded read-back",
+    program: :runtime,
+    from: 'download_rehearsal_file(token, library, "the seed download") == REHEARSAL_CONTENT',
+    to: "true",
+    rows: ["an upload the server answered and did not store"]
+  },
+  {
+    label: "the backup admin.txt exclusion proof",
+    program: :runtime,
+    from: 'File.exist?(File.join(backup, "conf", "admin.txt"))',
+    to: "false",
+    rows: ["a backup that kept the plaintext administrator handoff"]
+  },
+  {
+    label: "the empty-dump check",
+    program: :runtime,
+    from: "File.size(dump).positive?",
+    to: "true",
+    rows: ["a backup whose dump is an empty file"]
   }
 ].freeze
 
@@ -1510,7 +2034,7 @@ WRAPPER_MUTATIONS = [
   },
   {
     label: "the mode guard",
-    from: "  static|run|restart-persistence) ;;",
+    from: "  static|run|restart-persistence|restore-rehearsal-seed|restore-rehearsal-assert) ;;",
     to: "  static|run|restart-persistence|verify|drift|notify|--platform|restart) ;;",
     layer: :wrapper
   },
@@ -1619,5 +2143,5 @@ unless failures.empty?
 end
 
 puts "seafile contract: #{STATIC_ROWS.length} static and #{RUNTIME_ROWS.length} runtime properties " \
-     "hold across both runtime modes, the run-mode environment contract refuses each name with the " \
-     "wrapper's own message, and both programs come from the checkout with an empty stdin"
+     "hold across all four runtime modes, the run-mode environment contract refuses each name with " \
+     "the wrapper's own message, and both programs come from the checkout with an empty stdin"

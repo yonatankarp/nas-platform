@@ -9,8 +9,14 @@ services:
 
   db:
     container_name: ${PLATFORM_PROJECT_NAME:?}-seafile-db
+    # Both mounts, and the second one is not optional decoration: !override
+    # replaces the list rather than extending it, so omitting the backup mount
+    # here would leave the Mac lane's database container with nowhere for the
+    # pre-upgrade dump to land and the refusal would name a path that exists on
+    # the host and not in the container.
     volumes: !override
       - ${SEAFILE_DB_PATH:?}:/var/lib/mysql
+      - ${SEAFILE_BACKUP_PATH:?}:/backups
 
   # No volume to reset, and the container name is the whole override: the cache
   # is the one container in this stack that persists nothing.

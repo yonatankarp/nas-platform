@@ -120,6 +120,7 @@ render_group_contract() {
     SEAFILE_HOST_PORT=38083 SEAFILE_SERVER_HOSTNAME=seafile.contract.invalid \
     SEAFILE_DATA_PATH=/tmp/dozzle-contract/seafile-data \
     SEAFILE_DB_PATH=/tmp/dozzle-contract/seafile-db \
+    SEAFILE_BACKUP_PATH=/tmp/dozzle-contract/seafile-backups \
     SEAFILE_JWT_PRIVATE_KEY=contractcontractcontractcontract \
     SEAFILE_DB_USERNAME=contract SEAFILE_DB_PASSWORD=contract \
     SEAFILE_DB_ROOT_PASSWORD=contract SEAFILE_CACHE_PASSWORD=contract \

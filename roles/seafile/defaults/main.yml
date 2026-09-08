@@ -133,3 +133,63 @@ seafile_index_files_enabled: false
 # silently treated as converged. Both of those reports are what to read on the
 # first converge after the flag is flipped.
 seafile_seafevents_config_path: "{{ seafile_data_host_path }}/seafile/conf/seafevents.conf"
+
+# Where the pre-upgrade backup lands. A third root beside the data and the
+# database, and separate from both on purpose: a backup inside the tree it
+# protects is not a backup, and a dump inside /var/lib/mysql would be a
+# directory MariaDB scans as if it were a schema.
+#
+# 0700 in nas_storage, unlike the two 0755 roots beside it, because what lands
+# here is secret-bearing in a way the live trees are not. mariadb-dump of
+# ccnet_db and seahub_db carries every account row Seafile holds -- password
+# hashes, session material and API tokens included -- as plain readable SQL,
+# and the conf/ copy carries the Seafile database account and the JWT signing
+# key. CLAUDE.md's security boundary names this directory for that reason.
+seafile_backup_host_path: "{{ nas_docker_root }}/seafile/backups"
+
+# The three schemas Seafile's own setup creates, dumped together in one
+# transaction so they are consistent with each other. Order matters to nothing
+# here -- --databases writes them into one file -- but the list is stated once
+# and read by the dump, the manifest and the contract rather than spelled three
+# times.
+seafile_backup_databases:
+  - ccnet_db
+  - seafile_db
+  - seahub_db
+
+# What a full backup must leave out, rendered into every backup's manifest so
+# the operator holding one reads it beside the dump rather than in a document
+# somewhere else.
+#
+# `pro-data/search` is a Seafile-side index. It is regenerable from the files it
+# indexes and is `recovery: cache` in kind even though it sits inside a
+# `recovery: critical` root, so carrying it doubles a backup that restores no
+# faster for it. `logs` is diagnostics. `conf/admin.txt` is the one entry here
+# that is a security requirement rather than a size one: /scripts/start.py
+# writes the administrator password there in plaintext on every container start
+# and removes it in a `finally:`, so a container killed mid-start leaves it on
+# disk, and a backup that swept conf/ blindly would preserve that plaintext for
+# as long as the backup is kept.
+seafile_backup_excluded_paths:
+  - pro-data/search
+  - logs
+  - conf/admin.txt
+
+# How many pre-upgrade backups are kept. Three, so the two upgrades before the
+# current one are still recoverable, and bounded at all because this directory
+# sits on the same volume as the database it protects: an unbounded backup root
+# on /volume1 is a way to lose the live copy as well.
+#
+# Pruning happens only on a run that took a backup, so a converge that changes
+# nothing removes nothing.
+seafile_pre_upgrade_backup_retain: 3
+
+# Take the backup even when no upgrade is pending. False everywhere but the
+# seafile integration lane, which sets it so the restore rehearsal exercises
+# THIS role's backup rather than a copy of the same commands written inside the
+# contract -- a rehearsal that restores its own dump proves the rehearsal, not
+# the platform.
+#
+# It cannot manufacture a backup out of nothing: with the stack not running
+# there is no database to dump, and this flag does not change that branch.
+seafile_pre_upgrade_backup_force: false
