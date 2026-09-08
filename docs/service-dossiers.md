@@ -2,7 +2,9 @@
 
 Each media-acquisition project is investigated once, against upstream source
 *and* a running container, and what the investigation found is written down here
-so the next person does not pay for it twice.
+so the next person does not pay for it twice. Six of the seven files indexed
+below came out of that programme; the seventh is Seafile, which is not a
+media-acquisition project and is described in its own section for that reason.
 
 A dossier is not a design and not an approval. It records what the deployed
 version of a service actually does, which of the repository's own rules that
@@ -37,7 +39,25 @@ when the answer is that it cannot be closed.
 The two answer that question almost exactly opposite to each other, which is the
 argument for reading them as a pair.
 
-The design they are read against is
+## Alongside an implementation
+
+One file was written neither before a promotion nor after one, but across the
+five slices that built the service. It asks a third question: **what did
+building this teach that no amount of reading upstream would have**. Its subject
+is `implemented` in the manifest and still deployment-gated off, so it is also
+the one dossier whose service has never run on the NAS.
+
+- [Seafile](dossier-seafile.md) — file sync and share, the sixteenth service and
+  the first with a database engine of its own
+
+It is the exception to two things stated below and states both in its own
+header. Its evidence came from three sources of unequal strength — the CI
+`seafile` lane, contract programs run against stubbed Docker, and reading the
+image — where the six above drew on a container the author could restart at
+will; and it is derived from three images rather than one, so its pins are in its
+own header rather than in the block at the end of this file.
+
+The design the six acquisition dossiers are read against is
 [the media acquisition platform design](superpowers/specs/2026-08-21-media-acquisition-platform-design.md).
 [Adding a service](adding-a-service.md) is the mechanics; a dossier is the part
 that mechanics cannot tell you.
@@ -65,8 +85,10 @@ at the end of each file.
 
 ## The pins these files rest on
 
-Behaviour is a property of a version. Each dossier is derived from exactly one
-image, digest-pinned the way `tests/policy_test.rb` requires — a readable tag
+Behaviour is a property of a version. Each of the six acquisition dossiers is
+derived from exactly one image, and the Seafile dossier from the three its stack
+runs; all of them are digest-pinned the way `tests/policy_test.rb` requires — a
+readable tag
 for humans and Renovate, and the top-level manifest-list digest for
 reproducibility. When Renovate moves one of these, the findings are suspect
 until re-derived, in the same way
@@ -89,10 +111,10 @@ ghcr.io/kieraneglin/pinchflat:v2025.6.6@sha256:4e975edf58f0861a5cbfe8fc6aac4851f
 docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
 ```
 
-All seven publish `linux/amd64` and `linux/arm64`, so one pin resolves on the
-AS6704T and on an arm64 Mac lane. Each was taken from the top-level `Digest:`
-of `docker buildx imagetools inspect`, never a per-platform entry. Confirmed
-for all seven.
+All seven images above publish `linux/amd64` and `linux/arm64`, so one pin
+resolves on the AS6704T and on an arm64 Mac lane. Each was taken from the
+top-level `Digest:` of `docker buildx imagetools inspect`, never a per-platform
+entry. Confirmed for all seven.
 
 ## What the four have in common
 
