@@ -115,6 +115,49 @@ seafile_compose_project_name: >-
 # explicitly and reconciled by tasks/reconcile_seafevents.yml.
 seafile_index_files_enabled: false
 
+# What [AUDIT] enabled must say in the same file. True: Seafile Pro keeps a real
+# audit log -- FileAudit, FileUpdate and PermAudit in seahub_db -- and #445 makes
+# it a requirement rather than a preference, because this is the first service
+# whose contents are the user's own documents and "who read this file" is a
+# question the platform must be able to answer afterwards.
+#
+# It is declared here rather than left alone even though the image already
+# writes `true`, and the difference matters. Read out of pro.py's
+# generate_seafevents_conf in seafileltd/seafile-pro-mc:13.0.27, the first-run
+# template carries `[AUDIT] enabled = true` -- so today the audit log is on by
+# coincidence of an upstream default, not by a decision this repository records.
+# seafevents' own reader is where that becomes load-bearing: app/config.py's
+# is_audit_enabled and app/mq_handler.py's init_message_handlers both fall
+# through to `enable_audit = False` when the key is absent, so an image that
+# stopped writing it would switch auditing off silently and nothing here would
+# notice. Owning the key turns that into a repair the converge performs and
+# reports.
+seafile_audit_log_enabled: true
+
+# The settings in seafevents.conf this platform owns, as (section, key, value)
+# rather than as a key and a value. The section is the whole point.
+#
+# `enabled` is not a unique key in this INI document. The first-run template in
+# pro.py declares one under EVERY one of its five sections -- [SEAHUB EMAIL],
+# [STATISTICS] (written `enabled=true`, with no spaces around the `=`), [AUDIT],
+# [INDEX FILES] and [FILE HISTORY] -- so a transform that rewrites `enabled` per
+# line switches off four features to change one, and reports itself converged
+# having done it. That is not hypothetical: it is what the line-scoped first
+# draft of this reconciliation did to the audit log, which is why this list
+# names a section for every value and why tasks/reconcile_seafevents.yml builds
+# its patterns from that section rather than from the key alone.
+#
+# Adding a row here is how this platform takes over another seafevents setting.
+# Nothing else has to change: the repair, the report and the restart all loop
+# over this list.
+seafile_seafevents_managed_settings:
+  - section: INDEX FILES
+    key: enabled
+    value: "{{ seafile_index_files_enabled | bool | lower }}"
+  - section: AUDIT
+    key: enabled
+    value: "{{ seafile_audit_log_enabled | bool | lower }}"
+
 # conf/ inside the bind-mounted volume, which is where the server keeps the
 # files its setup generated. The volume is mounted at /shared and the server
 # lays out /shared/seafile/conf/, so seafevents.conf lands here.
@@ -133,6 +176,74 @@ seafile_index_files_enabled: false
 # silently treated as converged. Both of those reports are what to read on the
 # first converge after the flag is flipped.
 seafile_seafevents_config_path: "{{ seafile_data_host_path }}/seafile/conf/seafevents.conf"
+
+# seafile.conf, beside seafevents.conf in the same generated conf/ directory and
+# written by the same first-run setup: setup-seafile-mysql.py generates it and
+# bootstrap.py appends to it, both inside init_seafile_server(), which returns
+# early once /shared/seafile/seafile-data exists. Grepped across /scripts and the
+# server directory of seafileltd/seafile-pro-mc:13.0.27, nothing else writes it
+# on an ordinary start -- only the cluster setup script and the major-version
+# upgrade scripts, and both of those append. So the same repair-then-restart
+# shape that converges for seafevents.conf converges here.
+#
+# Secret-bearing, like the file beside it: seafile.conf carries the Seafile
+# database account and its password under [database]. Every task that reads or
+# writes it is redacted for that reason.
+seafile_server_config_path: "{{ seafile_data_host_path }}/seafile/conf/seafile.conf"
+
+# The per-user storage quota, and the reason there is one at all: Seafile is the
+# only service here whose stored volume is chosen by a person rather than by a
+# library that has a size. #445 states the failure directly -- left unset, one
+# user fills the volume and takes every other stack down with it -- and the
+# volume in question is /volume1, the NVMe service-state volume that carries
+# every other stack's database, not the media volume.
+#
+# ## What reads it, established by disassembling seaf-server rather than read
+#    out of the manual
+#
+# seaf-server resolves a user's quota in three steps, and the third is this
+# value. Read out of quota-mgr.c in
+# seafileltd/seafile-pro-mc:13.0.27 at instruction level:
+#
+#   1. `SELECT quota FROM UserQuota WHERE "user"=?` -- a quota an administrator
+#      set on one account. Returned if positive or -2 (unlimited).
+#   2. `SELECT quota FROM RoleQuota WHERE role=?` -- the role quota seahub
+#      writes. Returned if positive or -2.
+#   3. `[quota] default` from seafile.conf, which is this key.
+#
+# This platform sets neither of the first two, so this is the value every
+# account resolves to, and it is the only one of the three that a converge can
+# push. The role quota is reachable only from seahub_settings.py's
+# ENABLED_ROLE_PERMISSIONS, and every call to set_role_quota in the image sits
+# on a LOGIN path -- the web login form, the remote-user and Shibboleth
+# backends, the OAuth and ADFS handlers -- none of which is the path
+# POST /api2/auth-token/ takes. A quota declared there would not exist until
+# somebody signed in to the web interface, which is a worse guarantee than one
+# the server reads at start.
+#
+# ## Why the value looks like `20g`
+#
+# seaf-server's own parser takes a decimal number followed by an optional
+# k/kb/m/mb/g/gb/t/tb suffix, and a bare number means GIGABYTES -- the empty
+# suffix multiplies by 10^9. A value it cannot parse is not an error either: it
+# logs "Invalid default quota" and falls back to unlimited, which is a silent
+# no-quota. The suffix is written out here so the unit is on the page rather
+# than in a reader's memory, and tasks/reconcile_quota.yml refuses a spelling
+# the parser would reject before the run reaches the target.
+#
+# ## Why 20 GB, when nothing here has measured /volume1
+#
+# It is deliberately small, and the argument for it is an asymmetry rather than
+# a measurement. Raising a quota is free and takes effect at the next server
+# start; lowering one below what a user already stores leaves that user over
+# quota, unable to upload, with data the platform cannot delete for them. So the
+# value to ship is the smallest one that is plausibly useful, and the operator
+# raises it against a number this repository does not have. Before raising it,
+# run `df -h /volume1` on the NAS and record what is actually free: the Pro
+# edition is free to three users, so the worst case this bounds is three times
+# whatever is set here, and at 20g that is 60 GB of a volume sixteen stacks
+# share.
+seafile_default_user_quota: 20g
 
 # Where the pre-upgrade backup lands. A third root beside the data and the
 # database, and separate from both on purpose: a backup inside the tree it

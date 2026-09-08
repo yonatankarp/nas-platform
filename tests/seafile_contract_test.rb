@@ -83,6 +83,7 @@ FIXTURE_FILES = %w[
   roles/seafile/tasks/pre_upgrade_backup.yml
   roles/seafile/tasks/recover_wedged_boot.yml
   roles/seafile/tasks/reconcile_seafevents.yml
+  roles/seafile/tasks/reconcile_quota.yml
   roles/seafile/tasks/report.yml
   roles/seafile/tasks/verify.yml
   roles/seafile/templates/env.j2
@@ -94,6 +95,7 @@ FIXTURE_FILES = %w[
   tests/contracts/seafile.sh
   inventory/group_vars/all/main.yml
   tests/policy_support.rb
+  roles/beszel/defaults/main.yml
 ].freeze
 
 def build_fixture_repository(root)
@@ -292,7 +294,7 @@ STATIC_ROWS = [
         document.insert(0, reconcile)
       end
     },
-    expects: "the Seafile event reconciliation must run after the deployment that creates the file"
+    expects: "both Seafile reconciliations must run after the deployment, quota before events"
   },
   {
     name: "a teardown that leaves the containers a revision no longer declares",
@@ -327,14 +329,144 @@ STATIC_ROWS = [
     expects: "the Seafile database probe must authenticate over TCP as root"
   },
   {
-    name: "an index repair applied line by line",
+    name: "an event repair applied line by line",
     break: lambda { |root|
       edit_seafile_tasks(root, "reconcile_seafevents") do |document|
-        task = document.find { |candidate| candidate.dig("vars", "seafile_seafevents_index_assignment") }
-        task["vars"]["seafile_seafevents_index_assignment"] = '(?ms)^(enabled\s*=\s*)[^\r\n]*'
+        task = document.find { |candidate| candidate.dig("vars", "seafile_seafevents_assignment") }
+        task["vars"]["seafile_seafevents_assignment"] = '(?ms)^({{ item.key }}\s*=\s*)[^\r\n]*'
       end
     },
-    expects: "the Seafile index repair must be bounded to the [INDEX FILES] section"
+    expects: "the Seafile event repair must be bounded to the section of the setting it repairs"
+  },
+  {
+    name: "an event report that reads the first matching key in the file",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_seafevents") do |document|
+        task = document.find { |candidate| candidate.dig("vars", "seafile_seafevents_capture") }
+        task["vars"]["seafile_seafevents_capture"] = '(?ms)^{{ item.key }}\s*=\s*([^\r\n]*)'
+      end
+    },
+    expects: "the Seafile event report must read the section of the setting it reports"
+  },
+  {
+    name: "a repair that owns one hardcoded setting rather than the declared list",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_seafevents") do |document|
+        task = document.find { |candidate| candidate.dig("vars", "seafile_seafevents_assignment") }
+        task.delete("loop")
+        task.delete("loop_control")
+      end
+    },
+    expects: "the Seafile event reconciliation must loop over its declared settings"
+  },
+  {
+    name: "an audit log left to whatever the image happens to default to",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seafile/defaults/main.yml") do |document|
+        document["seafile_seafevents_managed_settings"] =
+          document["seafile_seafevents_managed_settings"].reject { |setting| setting["section"] == "AUDIT" }
+      end
+    },
+    expects: "this platform must own [INDEX FILES] enabled and [AUDIT] enabled"
+  },
+  {
+    name: "an owned event setting that names no value",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seafile/defaults/main.yml") do |document|
+        document["seafile_seafevents_managed_settings"].first.delete("value")
+      end
+    },
+    expects: "every owned Seafile event setting must name its section, key and value"
+  },
+  {
+    name: "an audit log switched off",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seafile/defaults/main.yml") do |document|
+        document["seafile_audit_log_enabled"] = false
+      end
+    },
+    expects: "this platform must own the Seafile audit log as switched on"
+  },
+  {
+    name: "a quota spelled the way a human writes it rather than the way seaf-server parses it",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seafile/defaults/main.yml") do |document|
+        document["seafile_default_user_quota"] = "20 gigabytes"
+      end
+    },
+    expects: "the Seafile quota must be spelled the way seaf-server parses it"
+  },
+  {
+    name: "a quota written without the refusal that would have caught a bad one",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_quota") do |document|
+        document.reject! { |task| task.key?("ansible.builtin.assert") }
+      end
+    },
+    expects: "the Seafile quota must be refused before it is written"
+  },
+  {
+    name: "a quota in a block nothing marks as this platform's",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_quota") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.blockinfile") }
+        task["ansible.builtin.blockinfile"]["marker"] = "# {mark} ANSIBLE MANAGED BLOCK"
+      end
+    },
+    expects: "the Seafile quota must be written as one owned block"
+  },
+  {
+    name: "a quota that declares the mode of a file it did not read",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_quota") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.blockinfile") }
+        task["ansible.builtin.blockinfile"]["mode"] = "0644"
+      end
+    },
+    expects: "the Seafile quota must not claim a literal mode"
+  },
+  {
+    name: "a quota repair that renders the database password into the transcript",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_quota") do |document|
+        task = document.find { |candidate| candidate.key?("ansible.builtin.blockinfile") }
+        task["no_log"] = false
+      end
+    },
+    expects: "the Seafile server configuration carries a database password and must be redacted"
+  },
+  {
+    name: "a quota repair nothing reloads",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "reconcile_seafevents") do |document|
+        task = document.find { |candidate| candidate.dig("community.docker.docker_compose_v2", "state") == "restarted" }
+        task["when"] = task["when"].map do |value|
+          value.to_s.include?("seafile_server_config_repair") ? "seafile_seafevents_repair is changed" : value
+        end
+      end
+    },
+    expects: "the restart must also carry the repaired Seafile quota policy"
+  },
+  {
+    name: "a quota reconciliation ordered after the restart it depends on",
+    break: lambda { |root|
+      edit_seafile_tasks(root, "main") do |document|
+        quota = document.find { |task| task["ansible.builtin.import_tasks"] == "reconcile_quota.yml" }
+        events = document.find { |task| task["ansible.builtin.import_tasks"] == "reconcile_seafevents.yml" }
+        document.delete(quota)
+        document.insert(document.index(events) + 1, quota)
+      end
+    },
+    expects: "both Seafile reconciliations must run after the deployment, quota before events"
+  },
+  {
+    name: "an unbounded file store with no disk alert behind it",
+    break: lambda { |root|
+      edit_yaml(root, "roles/beszel/defaults/main.yml") do |document|
+        document["beszel_alerts"] = document["beszel_alerts"].reject { |alert| alert["name"] == "Disk" }
+      end
+    },
+    expects: "Seafile's unbounded growth must leave a managed Beszel disk alert behind it"
   },
   {
     name: "a restart that bounces the database with the server",
@@ -750,12 +882,30 @@ CACHE_CONTAINER = "fixture-seafile-cache"
 # What the server's own generator writes, as far as this contract is concerned:
 # a [DATABASE] section carrying a credential, the key this platform owns, and
 # the two other `enabled` keys that make a per-line rewrite the wrong transform.
-def seafevents_document(index_enabled: "false", index_section: true)
+def seafevents_document(index_enabled: "false", index_section: true,
+                        audit_enabled: "true", audit_section: true)
   sections = ["[DATABASE]\ntype = mysql\nhost = db\nusername = seafile\npassword = fixture\n"]
-  sections << "[AUDIT]\nenabled = true\n"
+  sections << "[AUDIT]\nenabled = #{audit_enabled}\n" if audit_section
   sections << "[INDEX FILES]\nenabled = #{index_enabled}\ninterval = 10m\n" if index_section
   sections << "[SEAHUB EMAIL]\nenabled = true\ninterval = 30m\n"
   sections.join("\n")
+end
+
+# What roles/seafile leaves in the other generated file: the server's own
+# configuration, which opens with the database credential this fixture spells out
+# so a row can prove the contract never renders it, plus the marked block the
+# platform owns. `section` writes the block with a header other than [quota],
+# which is the shape a section-blind repair produces and the one a reader most
+# easily mistakes for correct.
+def seafile_conf_document(quota: "20g", block: true, marker: true, section: "quota")
+  body = +"[database]\ntype = mysql\nhost = db\nuser = seafile\npassword = fixture\n\n"
+  return body unless block
+
+  body << "# BEGIN nas-platform seafile quota\n" if marker
+  body << "[#{section}]\n"
+  body << "default = #{quota}\n" if quota
+  body << "# END nas-platform seafile quota\n" if marker
+  body
 end
 
 RUNTIME_DEFAULTS = {
@@ -769,6 +919,9 @@ RUNTIME_DEFAULTS = {
   vault_ok: true,
   host_conf: nil,
   host_conf_present: true,
+  host_server_conf: nil,
+  host_server_conf_present: true,
+  restart_server_conf: nil,
   container_conf: nil,
   container_conf_ok: true,
   tcp_ok: true,
@@ -911,6 +1064,8 @@ def docker_stub_source(options_path)
       exit 1 unless options.fetch("restart_ok")
       File.write(marker, "restarted")
       File.write(options.fetch("host_conf_path"), options.fetch("restart_conf")) if options["restart_conf"]
+      File.write(options.fetch("host_server_conf_path"), options.fetch("restart_server_conf")) if
+        options["restart_server_conf"]
     else
       warn "docker stub reached a subcommand it does not know: \#{joined}"
       exit 127
@@ -928,6 +1083,9 @@ def build_runtime_sandbox(root, options)
   File.write(host_conf, host_body) if options.fetch(:host_conf_present)
   container_conf = File.join(root, "container-seafevents.conf")
   File.write(container_conf, options.fetch(:container_conf) || host_body)
+  host_server_conf = File.join(docker_root, "seafile", "data", "seafile", "conf", "seafile.conf")
+  File.write(host_server_conf, options.fetch(:host_server_conf) || seafile_conf_document) if
+    options.fetch(:host_server_conf_present)
 
   # The backup roles/seafile would have taken, laid out on disk the way it lays
   # one out. The rehearsal never creates this -- the whole point is that it
@@ -961,6 +1119,7 @@ def build_runtime_sandbox(root, options)
     "container_conf_ok" => options.fetch(:container_conf_ok),
     "container_conf_path" => container_conf,
     "host_conf_path" => host_conf,
+    "host_server_conf_path" => host_server_conf,
     "tcp_ok" => options.fetch(:tcp_ok),
     "tcp_identity" => options.fetch(:tcp_identity),
     "wrong_tcp_ok" => options.fetch(:wrong_tcp_ok),
@@ -971,7 +1130,8 @@ def build_runtime_sandbox(root, options)
     "cache_counter" => File.join(root, "cache-counter"),
     "restart_marker" => File.join(root, "restart-marker"),
     "restart_ok" => options.fetch(:restart_ok),
-    "restart_conf" => options.fetch(:restart_conf)
+    "restart_conf" => options.fetch(:restart_conf),
+    "restart_server_conf" => options.fetch(:restart_server_conf)
   ))
 
   File.write(File.join(bin, "docker"), docker_stub_source(options_path))
@@ -1093,6 +1253,47 @@ RUNTIME_ROWS = [
     expects: "carries no [INDEX FILES] enabled key"
   },
   {
+    name: "an event configuration with no [AUDIT] key",
+    given: { host_conf: seafevents_document(audit_section: false) },
+    expects: "carries no [AUDIT] enabled key"
+  },
+  # The exact shape a per-line repair produces: the key this platform asked for
+  # reads what it asked for, and the identically named key in the next section
+  # was switched off in the same pass. A contract that read only [INDEX FILES]
+  # would call this converged.
+  {
+    name: "an audit log switched off by a repair that hit every enabled key",
+    given: { host_conf: seafevents_document(audit_enabled: "false") },
+    expects: "the Seafile audit log is false in the deployed seafevents.conf"
+  },
+  {
+    name: "a server configuration that never reached the host",
+    given: { host_server_conf_present: false },
+    expects: "the Seafile server configuration did not land on the host at"
+  },
+  # A quota present but no marker: a value somebody typed into the file by hand,
+  # which is exactly what a platform-owned block is supposed to be
+  # distinguishable from. The next converge would append its own block anyway,
+  # so a deployment in this state has never been reconciled.
+  {
+    name: "a storage quota no marker identifies as this platform's",
+    given: { host_server_conf: seafile_conf_document(marker: false) },
+    expects: "carries no nas-platform seafile quota block"
+  },
+  {
+    name: "a quota seaf-server parses as no quota",
+    given: { host_server_conf: seafile_conf_document(quota: "20 gigs") },
+    expects: "declares no [quota] default that seaf-server would parse"
+  },
+  # The section-blind failure, in the file where it is easiest to miss: the key
+  # is spelled exactly right and sits under the wrong header, and seaf-server
+  # reads only the one under [quota].
+  {
+    name: "a default quota declared under a section seaf-server does not read",
+    given: { host_server_conf: seafile_conf_document(section: "general") },
+    expects: "declares no [quota] default that seaf-server would parse"
+  },
+  {
     name: "file indexing left running against an absent Elasticsearch",
     given: { host_conf: seafevents_document(index_enabled: "true") },
     expects: "Seafile file indexing is true"
@@ -1174,6 +1375,33 @@ RUNTIME_ROWS = [
     name: "a server that cannot be restarted",
     given: { mode: "restart-persistence", restart_ok: false },
     expects: "could not be restarted"
+  },
+  # The precondition, and it is worth a row of its own: without it a deployment
+  # whose quota was never written fails saying the restart dropped a block that
+  # was never there, which is a confident diagnosis of the wrong failure.
+  {
+    name: "a restart probe run before the quota reconciliation",
+    # The restart puts the block back, for the reason the indexing precondition
+    # row carries: with the precondition removed the mode has to PASS, or the
+    # plant against it proves nothing about which assertion refused.
+    given: {
+      mode: "restart-persistence",
+      host_server_conf: seafile_conf_document(block: false),
+      restart_server_conf: seafile_conf_document
+    },
+    expects: "carries no nas-platform seafile quota block before the restart"
+  },
+  {
+    # The other first-run-only claim, and a different writer: bootstrap.py appends
+    # to seafile.conf on the run that creates it, so "the server does not rewrite
+    # it later" is its own statement rather than a corollary of the seafevents
+    # one.
+    name: "a start that regenerates the server configuration over the owned block",
+    given: {
+      mode: "restart-persistence",
+      restart_server_conf: seafile_conf_document(block: false)
+    },
+    expects: "Seafile rewrote seafile.conf on start and dropped the"
   },
   {
     name: "a server that never becomes healthy again",
@@ -1688,9 +1916,15 @@ PROGRAM_MUTATIONS = [
   {
     label: "the reconcile-after-deploy ordering",
     program: :static,
-    from: 'imports.index("reconcile_seafevents.yml").to_i > imports.index("deploy.yml").to_i',
+    from: <<~'RUBY'.chomp,
+      imports.index("reconcile_quota.yml").to_i > imports.index("deploy.yml").to_i &&
+          imports.index("reconcile_seafevents.yml").to_i > imports.index("reconcile_quota.yml").to_i
+    RUBY
     to: "true",
-    rows: ["a reconciliation that runs before the deployment writes the file"]
+    rows: [
+      "a reconciliation that runs before the deployment writes the file",
+      "a quota reconciliation ordered after the restart it depends on"
+    ]
   },
   {
     label: "the deployment gate check",
@@ -1712,14 +1946,108 @@ PROGRAM_MUTATIONS = [
     rows: ["a database probe over the container's own socket"]
   },
   {
-    label: "the section-bounded index repair check",
+    label: "the section-bounded event repair check",
     program: :static,
     from: <<~'RUBY'.chomp,
       assignment.length == 1 &&
-          assignment.first.include?('\[INDEX FILES\]') && assignment.first.include?('[^\[]*?')
+          assignment.first.include?('\[{{ item.section }}\]') && assignment.first.include?('[^\[]*?')
     RUBY
     to: "true",
-    rows: ["an index repair applied line by line"]
+    rows: ["an event repair applied line by line"]
+  },
+  {
+    label: "the section-bounded event report check",
+    program: :static,
+    from: <<~'RUBY'.chomp,
+      reported.length == 2 &&
+          reported.all? { |pattern| pattern.include?('\[{{ item.section }}\]') && pattern.include?('[^\[]*?') }
+    RUBY
+    to: "true",
+    rows: ["an event report that reads the first matching key in the file"]
+  },
+  {
+    label: "the declared-settings loop check",
+    program: :static,
+    from: "looped.length == 2",
+    to: "true",
+    rows: ["a repair that owns one hardcoded setting rather than the declared list"]
+  },
+  {
+    label: "the owned audit log check",
+    program: :static,
+    from: 'defaults["seafile_audit_log_enabled"] == true',
+    to: "true",
+    rows: ["an audit log switched off"]
+  },
+  {
+    label: "the owned-setting shape check",
+    program: :static,
+    from: <<~'RUBY'.chomp,
+      managed.any? &&
+          managed.all? { |setting| %w[section key value].all? { |field| setting[field].to_s != "" } }
+    RUBY
+    to: "true",
+    rows: ["an owned event setting that names no value"]
+  },
+  {
+    label: "the owned sections check",
+    program: :static,
+    from: 'owned.include?(["INDEX FILES", "enabled"]) && owned.include?(["AUDIT", "enabled"])',
+    to: "true",
+    rows: ["an audit log left to whatever the image happens to default to"]
+  },
+  {
+    label: "the parseable quota check",
+    program: :static,
+    from: 'defaults["seafile_default_user_quota"].to_s.match?(/\A[0-9]+([kmgt]b?)?\z/)',
+    to: "true",
+    rows: ["a quota spelled the way a human writes it rather than the way seaf-server parses it"]
+  },
+  {
+    label: "the owned quota block check",
+    program: :static,
+    from: <<~'RUBY'.chomp,
+      block.length == 1 &&
+          block.first.dig("ansible.builtin.blockinfile", "marker").to_s.include?("nas-platform seafile") &&
+          block.first.dig("ansible.builtin.blockinfile", "block").to_s.include?("[quota]")
+    RUBY
+    to: "true",
+    rows: ["a quota in a block nothing marks as this platform's"]
+  },
+  {
+    label: "the preserved quota-file mode check",
+    program: :static,
+    from: <<~'RUBY'.chomp,
+      block.length == 1 &&
+          block.first.dig("ansible.builtin.blockinfile", "mode").to_s
+               .include?("seafile_server_config_stat.stat.mode")
+    RUBY
+    to: "true",
+    rows: ["a quota that declares the mode of a file it did not read"]
+  },
+  {
+    label: "the redacted web configuration check",
+    program: :static,
+    from: 'quota_io.length >= 1 && quota_io.all? { |task| task["no_log"] == true }',
+    to: "true",
+    rows: ["a quota repair that renders the database password into the transcript"]
+  },
+  {
+    label: "the restart-carries-the-quota check",
+    program: :static,
+    from: <<~'RUBY'.chomp,
+      restart.length == 1 &&
+          Array(restart.first["when"]).any? { |value| value.to_s.include?("seafile_server_config_repair is changed") }
+    RUBY
+    to: "true",
+    rows: ["a quota repair nothing reloads"]
+  },
+  {
+    label: "the disk alert behind the file store check",
+    program: :static,
+    from: 'disk_alert && disk_alert["value"].to_i.positive? && disk_alert["value"].to_i <= 90',
+    to: "true",
+    rows: ["an unbounded file store with no disk alert behind it"]
   },
   {
     label: "the server-only force-recreate check",
@@ -1895,6 +2223,44 @@ PROGRAM_MUTATIONS = [
     from: 'current == "false"',
     to: "true",
     rows: ["file indexing left running against an absent Elasticsearch"]
+  },
+  {
+    label: "the audit log setting check",
+    program: :runtime,
+    from: 'audit == "true"',
+    to: "true",
+    rows: ["an audit log switched off by a repair that hit every enabled key"]
+  },
+  {
+    label: "the declared quota block check",
+    program: :runtime,
+    from: "content.include?(QUOTA_MARKER)",
+    to: "true",
+    rows: ["a storage quota no marker identifies as this platform's"]
+  },
+  {
+    label: "the parseable default quota check",
+    program: :runtime,
+    from: "content.match(DEFAULT_QUOTA)",
+    to: "true",
+    rows: [
+      "a quota seaf-server parses as no quota",
+      "a default quota declared under a section seaf-server does not read"
+    ]
+  },
+  {
+    label: "the quota restart precondition",
+    program: :runtime,
+    from: %q(quota_block_present?("before the restart")),
+    to: "true",
+    rows: ["a restart probe run before the quota reconciliation"]
+  },
+  {
+    label: "the quota block restart-persistence check",
+    program: :runtime,
+    from: %q(quota_block_present?("after the restart")),
+    to: "true",
+    rows: ["a start that regenerates the server configuration over the owned block"]
   },
   {
     label: "the root identity check",

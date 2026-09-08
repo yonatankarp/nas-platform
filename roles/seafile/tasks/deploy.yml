@@ -22,6 +22,7 @@
       - "{{ seafile_db_host_path }}"
       - "{{ seafile_backup_host_path }}"
       - "{{ seafile_seafevents_config_path }}"
+      - "{{ seafile_server_config_path }}"
 
 # Two properties, and neither is the credential contract's business.
 #
