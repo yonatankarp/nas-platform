@@ -283,11 +283,11 @@ installs the same toolchain inside the container the way the harness always did.
 `INTEGRATION_TOOLCHAIN=off` forces that last path.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, Paperless-ngx, Pinchflat, and Kapowarr — every implemented
-service except `arr` and `downloaders`, whose Phase 1 runtime is
-default-disabled in that lane and proved by its Docker integration suite, and
-Seafile, whose stack stays absent on every host until an operator sets
-`seafile_deployment_enabled: true`.
+Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, and Seafile — every
+implemented service except `arr` and `downloaders`, whose Phase 1 runtime is
+default-disabled in that lane and proved by its Docker integration suite. The
+Mac lane starts Seafile with its own `-e seafile_deployment_enabled=true`, so
+its coverage does not depend on what the platform default happens to be.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 
