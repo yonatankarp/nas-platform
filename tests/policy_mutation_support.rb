@@ -1040,6 +1040,11 @@ def implement_paperless(root)
         image: docker.io/apache/tika:3.0.0@sha256:#{'0' * 64}
         cpuset: \${PLATFORM_CONTAINER_CPUSET:?}
         cpus: 2.0
+        # For the same reason the fragments above are spelled out: this image is
+        # on MEMORY_SELF_SIZING_IMAGES, so policy_test.rb requires a limit on it,
+        # and a synthetic stack omitting one would fail every row built on this
+        # fixture for a reason none of them is testing.
+        mem_limit: 2g
         restart: unless-stopped
         security_opt:
           - no-new-privileges:true
