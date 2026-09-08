@@ -215,8 +215,38 @@ select_omitted_credential_keys() {
   set +f
 }
 
+# Letters and digits only, thirty-two of them, which is exactly the alphabet
+# and length generate-secrets.yml mints a real credential with
+# (`chars=ascii_letters,digits length=32`). That agreement is the point, not a
+# coincidence: a fixture drawn from a wider alphabet than the platform's own
+# generator makes CI test values an operator's vault can never hold, and the
+# lane then fails -- or passes -- for a reason production does not share.
+#
+# This was `openssl rand -base64 24`, whose alphabet adds `+` and `/`, and the
+# `/` is what made the seafile lane fail intermittently and unrecoverably.
+# Measured against the pinned seafileltd/seafile-pro-mc:13.0.27:
+# seahub/seahub/settings.py:1261 builds its Django cache location by
+# interpolating REDIS_PASSWORD into a URL raw --
+# f'redis://{(":" + redis_pwd + "@") if redis_pwd else ""}{host}:{port}' -- with
+# no percent-encoding, so a password containing `/` ends the URL's netloc early.
+# The bundled redis-py 6.2.0 then raises ValueError('Port could not be cast to
+# integer value as ...') out of Redis.from_url, every seahub request that
+# touches the cache answers 500, and the container never goes healthy. A full
+# local stack reproduced it exactly -- the same `curl: (22) The requested URL
+# returned error: 500` health log CI recorded -- and the same stack with a
+# letters-and-digits password of the same length was healthy in thirteen
+# seconds. It was intermittent because it needed a draw containing `/`, and
+# unrecoverable because the force-recreate redraws nothing.
+#
+# So this is not a Seafile workaround: it is the fixture agreeing with the
+# generator. roles/seafile refuses the shape outright, for an operator who
+# authors the value by hand.
+#
+# Ninety-six bytes in, thirty-two characters out: base64 yields 128 characters,
+# `tr -dc` keeps the ~97% that are alphanumeric, and the draw stays uniform
+# because discarding symbols from a uniform alphabet is rejection sampling.
 random_password() {
-  openssl rand -base64 24 2>/dev/null | tr -d '\n'
+  openssl rand -base64 96 2>/dev/null | tr -dc 'A-Za-z0-9' | cut -c1-32
 }
 
 bcrypt_password() {
