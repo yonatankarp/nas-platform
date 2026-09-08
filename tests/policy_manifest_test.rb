@@ -425,6 +425,49 @@ expect_failure(failures, "container-local logging variant",
   end
 end
 
+# Tika is the only container on a self-sizing image today, and nothing in the
+# tree declares a heap at all, so these four rows are the whole proof that the
+# memory-limit checks work. The two heap rows exist separately on purpose: a
+# check that skipped its relation whenever mem_limit was absent would pass the
+# second row while failing to guard anything, and one that never fired without a
+# heap would pass the first. Neither row alone distinguishes those.
+expect_failure(failures, "self-sizing image without a memory limit",
+               "paperless-ngx/tika: an image that sizes its own memory from what it can see " \
+               "must declare mem_limit",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/paperless-ngx/compose.yml") do |compose|
+    compose.fetch("services").fetch("tika").delete("mem_limit")
+  end
+end
+
+expect_failure(failures, "self-sizing image bumped off the pinned expectation",
+               "update both together",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/paperless-ngx/compose.yml") do |compose|
+    tika = compose.fetch("services").fetch("tika")
+    tika["image"] = tika.fetch("image").sub("apache/tika", "apache/tika-renamed")
+  end
+end
+
+expect_failure(failures, "declared heap with no memory limit",
+               "paperless-ngx/tika: a container declaring a JVM heap must declare mem_limit",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/paperless-ngx/compose.yml") do |compose|
+    tika = compose.fetch("services").fetch("tika")
+    tika.delete("mem_limit")
+    tika["environment"] = tika.fetch("environment").merge("JAVA_TOOL_OPTIONS" => "-Xmx512m")
+  end
+end
+
+expect_failure(failures, "declared heap above half its memory limit",
+               "paperless-ngx/tika: declared heap must be at most half of mem_limit",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/paperless-ngx/compose.yml") do |compose|
+    tika = compose.fetch("services").fetch("tika")
+    tika["environment"] = tika.fetch("environment").merge("JAVA_TOOL_OPTIONS" => "-Xmx1500m")
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent",
                detected_by: %i[policy]) do |root|
