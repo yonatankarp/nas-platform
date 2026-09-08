@@ -238,9 +238,18 @@ def assert_administrator(credentials)
 end
 
 # The trusted domain list, read back from the server the reconciliation wrote to.
-# Every entry roles/nextcloud declares must be present, and 127.0.0.1 must be
-# among them or this contract's own requests would have been answered 400 -- so
-# this is partly a statement about why the assertions above could run at all.
+#
+# What this proves is that the list is not empty and that it holds 127.0.0.1. It
+# deliberately does not compare the list against what roles/nextcloud declares,
+# because it cannot: nextcloud_trusted_domains is a Jinja template over
+# platform_public_host and nextcloud_additional_trusted_domains, and rendering it
+# needs an inventory and a variable context this runtime half has neither of --
+# it holds an HTTP port, a container name and a vault, and nothing that would
+# resolve that default. So the one entry asserted is the one whose absence has a
+# consequence right here: without 127.0.0.1 the server answers HTTP 400 to every
+# request, and roles/nextcloud's own verification -- and every assertion above --
+# would have been refused rather than served. That makes this as much a statement
+# about why they could run at all as it is a check.
 def assert_trusted_domains
   live = occ("config:system:get", "trusted_domains", label: "the trusted domain census")
              .lines.map(&:strip).reject(&:empty?)

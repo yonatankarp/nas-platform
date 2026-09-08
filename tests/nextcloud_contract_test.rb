@@ -34,7 +34,10 @@
 # carries each of its timeout budgets in its own environment. Nothing here is
 # entitled to wait -- a row whose expected outcome is a refusal has no reason to
 # sit out a readiness budget, and that shape is exactly what cost the seerr
-# self-test 368 seconds before #331.
+# self-test 368 seconds before #331. RUNTIME_BUDGETS is the shared set, and a row
+# may override any of them through `environment:`; exactly one does, because it
+# is the only row whose expected refusal IS a deadline expiring, and it says so
+# where it stands.
 
 require "fileutils"
 require "json"
@@ -291,6 +294,23 @@ COMPOSE_STATIC_ROWS = [
     expects: "Nextcloud must not push an array-valued system setting through NC_"
   },
   {
+    # The installer landmine's second half. Suppressing setup_create_db_user keeps
+    # the installer on the account it was handed; this is what makes that account
+    # the vault's own rather than whatever the postgres image would otherwise
+    # initialise. A cluster created as `postgres`@`postgres` is a stack holding a
+    # credential this vault never authored, unrotatable for the same reason the
+    # minted `oc_admin` is -- so both halves have to be asserted, not one.
+    name: "a cluster initialised with an account the vault never authored",
+    break: lambda { |root|
+      edit_yaml(root, "services/nextcloud/compose.yml") do |document|
+        environment = compose_service(document, "db")["environment"]
+        environment["POSTGRES_DB"] = "nextcloud"
+        environment["POSTGRES_USER"] = "postgres"
+      end
+    },
+    expects: "the Nextcloud cluster must declare the vault's own database and owner"
+  },
+  {
     name: "a cluster probe asking about the image defaults",
     break: lambda { |root|
       edit_yaml(root, "services/nextcloud/compose.yml") do |document|
@@ -482,6 +502,25 @@ ROLE_STATIC_ROWS = [
       end
     },
     expects: "the Nextcloud administrator must be repaired only when the server refuses the vault"
+  },
+  {
+    # The redaction rule beside it cannot see this task: it selects on tasks that
+    # spell a `vault_nextcloud_` name, and this one reads the password out of the
+    # rendered container environment instead. So the guard is separate and this
+    # row is what proves it still runs -- an unredacted failure of that exec
+    # prints the whole container environment into the play's output, and from
+    # there into whatever CI or the poller kept.
+    name: "an administrator repair that would print the container environment",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_admin") do |document|
+        task = document.find do |candidate|
+          Array(candidate.dig("community.docker.docker_compose_v2_exec", "argv"))
+            .map(&:to_s).any? { |value| value.include?("user:resetpassword") }
+        end
+        task.delete("no_log")
+      end
+    },
+    expects: "the Nextcloud administrator repair carries a credential and must be redacted"
   },
   {
     # A port check passes here and this does not, which is the whole point:
@@ -845,8 +884,18 @@ RUNTIME_ROWS = [
   {
     # A port check passes in this state and this does not, which is the property
     # #500 asked for in so many words.
+    #
+    # The one row that overrides a budget, and the only one entitled to: its
+    # expected outcome IS the readiness deadline expiring, so the deployment's
+    # own 30 seconds buy nothing here except 30 seconds of sleep. Every other row
+    # reaches its verdict on the first request and does not wait at all. Left at
+    # the shared budget this single row was 30.9s of the check's 36.3s and took
+    # its CPU-to-elapsed ratio to 33% -- a check that waits becomes the floor for
+    # its whole shard, which is what CLAUDE.md's `static` budget section is about
+    # and what #331 cost the seerr self-test 368 seconds to learn.
     name: "a status endpoint answering 500 with an empty body",
     given: { status_code: 500 },
+    environment: { "PLATFORM_NEXTCLOUD_READY_TIMEOUT_SECONDS" => "3" },
     expects: "never served its status endpoint"
   },
   {
@@ -1260,6 +1309,21 @@ PROGRAM_MUTATIONS = [
     rows: ["an installer left free to mint its own database account"]
   },
   {
+    # This mutation and "the redaction of the administrator repair" below both
+    # leave `:detects` at its default, which is deliberate rather than an
+    # omission. `judge`'s wrong-reason text quotes the row's own `:expects`, so a
+    # `:detects` naming the assertion's own message matches a sibling firing
+    # first exactly as well as it matches the clean outcome, and discriminates
+    # nothing. The default -- "accepted what it must refuse" -- is the strict
+    # reading, because it holds only when removing the assertion left the fixture
+    # break unrefused by anything at all. Both were confirmed that way.
+    label: "the cluster's own database and owner",
+    program: :static,
+    from: 'database_environment["POSTGRES_DB"].to_s.include?("NEXTCLOUD_DB_NAME") &&',
+    to: "true ||",
+    rows: ["a cluster initialised with an account the vault never authored"]
+  },
+  {
     label: "the refusal of an array-valued setting pushed through NC_",
     program: :static,
     from: 'application_environment.key?("NC_trusted_domains")',
@@ -1302,6 +1366,17 @@ PROGRAM_MUTATIONS = [
     from: %(reset && Array(reset["when"]).any? { |value| value.to_s.include?("== 'rotated'") }),
     to: "true",
     rows: ["an administrator reset on every converge rather than on a refusal"]
+  },
+  {
+    # The credential guard, and the one with no second line of defence: the
+    # `vault_nextcloud_` sweep beside it cannot see this task, so removing this
+    # is removing the only thing that keeps a failed exec from printing the
+    # rendered container environment.
+    label: "the redaction of the administrator repair",
+    program: :static,
+    from: 'reset && reset["no_log"] == true',
+    to: "true",
+    rows: ["an administrator repair that would print the container environment"]
   },
   {
     label: "the database-backed verification endpoint",
