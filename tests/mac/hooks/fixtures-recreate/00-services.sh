@@ -67,8 +67,14 @@ mac_recreate_and_reassert kapowarr kapowarr kapowarr kapowarr run
 mac_recreate_and_reassert bindery bindery bindery bindery run
 mac_recreate_and_reassert trailarr trailarr trailarr trailarr run
 mac_recreate_and_reassert seerr seerr seerr seerr run
+# All three, and the order is Compose's problem rather than this table's: the
+# stack declares the server depending on a healthy db and cache, and `up -d
+# --force-recreate --wait` honours that. Recreating the server alone would prove
+# less than the other rows do -- the claim here is that a stack rebuilt from the
+# deployed bundle still authenticates against databases whose data outlived their
+# containers.
+mac_recreate_and_reassert seafile seafile seafile 'seafile db cache' run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container to recreate'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'

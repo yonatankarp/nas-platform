@@ -23,7 +23,7 @@
 # every Mac converge with nothing to say so, and a newly promoted service can be
 # added to the platform without anyone being asked whether its converge needs a
 # fixture on disk first. The exemption list below is where that question gets
-# answered, which is why it is fourteen lines of "no" rather than a shorter file.
+# answered, which is why it is fifteen lines of "no" rather than a shorter file.
 #
 # The roster is exact in both directions: a hook deleted and a hook added both
 # fail here. The exemption list is exact too, and not append-only — a service
@@ -57,5 +57,5 @@ kapowarr=its only fixture would be a real comic download, which needs a ComicVin
 bindery=its only fixture would be a real Usenet download, which this lane has no transport for, so its converge has nothing to read
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make, so its converge has nothing to read
 seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first
-seafile=the server writes its own event configuration on first start and the converge repairs that file in place, so nothing has to exist on disk before run_site, and the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container at all' \
+seafile=the server writes its own event configuration on first start and the converge repairs that file in place, so nothing has to exist on disk before run_site' \
   "$mac_pre_converge_hooks" ''

@@ -31,18 +31,19 @@ for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
 "
 done
 
-# Seafile is exempt in all six coverage groups, on one claim: the stack is gated
-# off on every host -- the Mac lane included -- until an operator sets
-# seafile_deployment_enabled, so there is no container to seed, reassert,
-# recreate, verify or drift. It became a registered service the moment
-# tests/contracts/registry.yml gained its row, which is why a change that ships
-# only a CI lane still has to answer for it here.
+# Seafile is one of the two groups it is still exempt from, and this is now a
+# property of the service rather than of the gate. The other four groups run it:
+# the lane requests seafile_deployment_enabled for itself, so there is a stack to
+# verify, reassert, recreate and drift.
 #
-# The exemption lists are not append-only: mac_assert_service_coverage refuses a
-# stale row, so whichever change flips that gate must delete this line and the
-# five like it in the sibling groups, in the same change that gives Seafile real
-# hooks. That is the same obligation tests/policy_mac_test.rb's
-# MAC_REVIEW_EXEMPTIONS row records for the two manual-review documents.
+# Seeding is the group where nothing fits. Its contract has no seed phase in the
+# sense this table means -- the pair it does have, restore-rehearsal-seed and
+# restore-rehearsal-assert, is not a fixture at all but two halves of a restore
+# drill with a forced-backup converge required between them, and this lane has no
+# phase that could run that converge. Every state a later phase asserts is state
+# the converge itself created: the administrator account the server fixes on its
+# first start, the three databases behind it, and the event configuration the
+# server writes and the role repairs. There is nothing left for a fixture to add.
 mac_assert_service_coverage fixtures-seed 00-services.sh "$mac_seeded" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
@@ -52,4 +53,4 @@ kapowarr=its only fixture would be a real comic download, which needs a ComicVin
 bindery=its only fixture would be a real Usenet download, which this lane has no transport for; its persisted state is the database its own run phase asserts
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make; its persisted state is the database and the application environment its own run phase asserts
 seerr=its fixtures are the two permission identities the converge itself creates, and a request fixture would ask Radarr and Sonarr for a real download this lane has no transport for; its persisted state is the database its own run phase asserts
-seafile=the stack is gated off on every host until an operator sets seafile_deployment_enabled, so the Mac lane starts no Seafile container to seed a fixture into'
+seafile=every state its later phases assert is state the converge itself created -- the first-start administrator, the three databases behind it and the event configuration the role repairs -- and its restore rehearsal is a drill needing a forced-backup converge between its halves rather than a fixture this phase could place'
