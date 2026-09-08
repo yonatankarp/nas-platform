@@ -26,6 +26,7 @@ integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
 integration_seafile_deployment_enabled=${integration_seafile_deployment_enabled?}
+integration_nextcloud_deployment_enabled=${integration_nextcloud_deployment_enabled?}
 
 # nas_compose_minimum is the one -e below that is not about this sandbox's
 # identity, and it is here for the same reason the rest are: the value inventory
@@ -62,6 +63,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
+    -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
@@ -200,6 +202,65 @@ dump_seafile_diagnostics() {
   printf '=== END SEAFILE CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
 }
 
+# The same, for Nextcloud, and it is written BEFORE this lane's first CI run
+# rather than after it. The Seafile dump exists because its first run printed
+# `container <ns>-seafile is unhealthy` and then nothing; Nextcloud is in exactly
+# that position and worse informed -- services/nextcloud/compose.yml gives the
+# application a 300s start_period over a first boot that has never been measured
+# on CI hardware, so "slow or wedged?" is the only question that will matter and
+# there is no measurement to answer it with.
+#
+# Every constraint the Seafile dump records applies here unchanged: every docker
+# call guarded, because this runs after a failure against containers that may
+# never have been created and one non-zero exit under `sh -eu` would reproduce
+# the silence it exists to end; `--format '{{json .State.Health}}'` and nothing
+# wider, because a bare inspect prints .Config.Env, which for this stack is the
+# PostgreSQL password, the Nextcloud administrator password and the Valkey
+# password in full; and the Compose logs written to a file, scanned against the
+# ephemeral vault, and printed only if that comes back clean.
+dump_nextcloud_diagnostics() {
+  nextcloud_diagnostics_project=$integration_project_namespace-nextcloud
+  nextcloud_diagnostics_logs=/tmp/nextcloud-converge-failure-logs.txt
+  printf '=== NEXTCLOUD CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
+  for nextcloud_diagnostics_container in \
+      "$integration_project_namespace-nextcloud" \
+      "$integration_project_namespace-nextcloud-cron" \
+      "$integration_project_namespace-nextcloud-db" \
+      "$integration_project_namespace-nextcloud-cache"; do
+    printf -- '--- health log: %s ---\n' "$nextcloud_diagnostics_container" >&2
+    docker inspect --format '{{json .State.Health}}' \
+      "$nextcloud_diagnostics_container" >&2 ||
+      printf 'no health state recorded for %s\n' \
+        "$nextcloud_diagnostics_container" >&2
+  done
+  printf -- '--- container states: %s ---\n' "$nextcloud_diagnostics_project" >&2
+  docker ps --all \
+    --filter "label=com.docker.compose.project=$nextcloud_diagnostics_project" \
+    --format '{{.Names}} {{.Status}} {{.Image}}' >&2 ||
+    printf 'container states unavailable for %s\n' \
+      "$nextcloud_diagnostics_project" >&2
+  if docker compose --project-name "$nextcloud_diagnostics_project" \
+      logs --no-color --timestamps --tail 200 \
+      >"$nextcloud_diagnostics_logs" 2>&1; then
+    if /repo/tests/assert-no-vault-secrets.rb \
+        "$vault_file" "$vault_password_file" "$nextcloud_diagnostics_logs" \
+        >/dev/null 2>&1; then
+      printf -- '--- compose logs, last 200 lines per container ---\n' >&2
+      cat "$nextcloud_diagnostics_logs" >&2
+    else
+      printf '%s\n' \
+        "compose logs WITHHELD: they matched ephemeral vault material and were" \
+        "left at $nextcloud_diagnostics_logs inside the disposable container." \
+        "Read the health log above: it carries the probes' own output, and" \
+        "never the probe command, so no credential in a probe argv reaches it." >&2
+    fi
+  else
+    printf 'compose logs unavailable for %s\n' \
+      "$nextcloud_diagnostics_project" >&2
+  fi
+  printf '=== END NEXTCLOUD CONVERGE FAILURE DIAGNOSTICS ===\n' >&2
+}
+
 # One launcher for every contract. The environment ABI every contract reads
 # is written once here and a service's extras arrive as a case arm, so the
 # twelve wrappers below carry only the name they run under. Each layer is
@@ -269,6 +330,12 @@ run_contract() {
       ;;
     seafile)
       # The three container names the contract probes are all derived from the
+      # project namespace, so this is the only extra the lane owes it.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        "$@"
+      ;;
+    nextcloud)
+      # The four container names the contract probes are all derived from the
       # project namespace, so this is the only extra the lane owes it.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         "$@"
@@ -345,6 +412,10 @@ run_immich_contract() {
 
 run_seafile_contract() {
   run_contract seafile "$@"
+}
+
+run_nextcloud_contract() {
+  run_contract nextcloud "$@"
 }
 
 run_immich_clean_restore() {
@@ -571,6 +642,7 @@ run_verification() {
     -e platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
     -e seafile_deployment_enabled="$integration_seafile_deployment_enabled" \
+    -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"
@@ -618,6 +690,10 @@ run_seerr_verify_only() {
 
 run_seafile_verify_only() {
   run_verification seafile
+}
+
+run_nextcloud_verify_only() {
+  run_verification nextcloud
 }
 
 # Audiobookshelf is the one reader the seerr lane's own suite tags leave
