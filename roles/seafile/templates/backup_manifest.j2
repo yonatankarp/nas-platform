@@ -14,6 +14,10 @@ Taken by roles/seafile before deploying:
   seafile  {{ seafile_pinned_images['seafile'] }}
   db       {{ seafile_pinned_images['db'] }}
 
+The stack it was taken against was running:
+
+  {{ seafile_deployed_image_report }}
+
 Reason: {{ seafile_backup_reason }}
 {% if seafile_backup_reason == 'forced' %}
   seafile_pre_upgrade_backup_force was set, so this backup was taken without an
@@ -21,7 +25,10 @@ Reason: {{ seafile_backup_reason }}
   rehearsal exercises this role's own backup.
 {% else %}
   The running stack did not match the images the release pins, so a schema
-  migration or an in-place MariaDB datadir upgrade was about to run.
+  migration or an in-place MariaDB datadir upgrade was about to run. Compare the
+  two lists above to see which: a seafile move is /scripts/upgrade.py against the
+  three schemas, a db move is MARIADB_AUTO_UPGRADE against the datadir, and they
+  are not the same risk.
 {% endif %}
 
 WHAT IS HERE

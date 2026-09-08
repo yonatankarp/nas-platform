@@ -90,6 +90,18 @@
 # password, the administrator password and the cache password in full. This
 # emits one `service=image` line per container and nothing else, which is why it
 # needs no no_log and can therefore appear in a failure an operator has to read.
+#
+# .Config.Image is comparable with the `image:` key in the Compose file, and
+# that is measured rather than assumed, because the classification below is
+# wrong in the loud direction if it is not: a field reporting the resolved image
+# ID would differ from the pinned reference on every converge, so every converge
+# would take a backup and report changed, and the idempotence check would fail
+# on the second run of a stack nobody had touched. Against Docker 29.7.2 a
+# container Compose created from
+# docker.io/valkey/valkey:9.1.2-alpine@sha256:a0dbf4... reported .Config.Image
+# as that same string byte for byte, digest included, while .Image and the
+# com.docker.compose.image label both reported sha256:589f31... -- the image ID,
+# which is the field that would NOT have worked here.
 - name: Read the deployed Seafile stack image references
   ansible.builtin.command:
     argv: >-
@@ -124,6 +136,17 @@
     seafile_stateful_pinned: >-
       {{ ['seafile=' ~ seafile_pinned_images['seafile'],
           'db=' ~ seafile_pinned_images['db']] }}
+
+# Kept whole rather than reduced to the boolean below, because it is the one
+# line an operator reads out of the manifest when deciding whether the dump
+# beside it is enough. `upgrade-pending` alone says a migration was coming; the
+# pair says which of the two containers was about to move, and a MariaDB datadir
+# upgrade and a Seafile schema migration are not the same risk.
+- name: Record the Seafile images this backup was taken against
+  ansible.builtin.set_fact:
+    seafile_deployed_image_report: >-
+      {{ seafile_deployed_images.stdout_lines | default([])
+         | select('match', '^(seafile|db)=') | sort | join(', ') }}
 
 - name: Resolve whether the Seafile pre-upgrade backup runs
   ansible.builtin.set_fact:
@@ -194,7 +217,17 @@
 # then censor the failure message an operator needs.
 #
 # user: root because the backup root is mode 0700 and owned by the host's root,
-# which is what makes it safe to keep a plaintext dump in.
+# which is what makes it safe to keep a plaintext dump in. Stated rather than
+# inherited: docker.io/library/mariadb:10.11.19 declares no USER, so `exec`
+# already lands as root today -- measured -- and an upstream image that starts
+# declaring one would otherwise turn this task into a permission error nobody
+# changed anything to cause.
+#
+# There is deliberately no --connect-timeout. mariadb-dump does not accept it --
+# measured against 10.11.19, which answers `unknown variable
+# 'connect-timeout=15'` -- and the way it fails is the reason the assertion two
+# tasks below reads the file rather than the exit status: it had already created
+# /backups/<stamp>/databases.sql, empty, before refusing the option.
 #
 # Redacted: the module renders the container's environment on failure, and that
 # environment is MYSQL_ROOT_PASSWORD.
@@ -212,7 +245,7 @@
       - >-
         umask 077;
         exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb-dump --protocol=tcp
-        --host=db --port=3306 --user=root --connect-timeout=15
+        --host=db --port=3306 --user=root
         --single-transaction --quick --routines --events
         --databases {{ seafile_backup_databases | join(' ') }}
         --result-file="/backups/{{ seafile_backup_stamp }}/databases.sql"

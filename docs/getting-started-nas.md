@@ -804,6 +804,178 @@ Do not interpret a clean play recap as proof that old application records were
 restored. Verify representative photos, users, albums, documents, metadata, and
 search results in each active application.
 
+## Recover Seafile
+
+Seafile is the one stack here where **the files on disk are not the files**.
+Content is stored as content-addressed blocks under
+`/volume1/Docker/seafile/data/seafile-data/storage`, and the mapping from those
+blocks back to filenames, libraries and owners lives only in the database under
+`/volume1/Docker/seafile/db`. A filesystem copy of the library taken without a
+database dump consistent with it restores an unreadable pile of blocks. Both
+roots are `recovery: critical` in `nas_storage` for that reason, and neither is
+recoverable without the other.
+
+Every command below runs on the NAS. Three paths recur:
+
+- release: `/volume1/Docker/nas-platform/current/services/seafile`
+- rendered environment: `/volume1/Docker/nas-platform/runtime/services/seafile/.env`
+- backups: `/volume1/Docker/seafile/backups`
+
+### What the platform already backs up, and what it does not
+
+`roles/seafile` takes a backup before every pinned upgrade — before either
+Compose phase, because the Seafile server migrates the three schemas one way and
+`MARIADB_AUTO_UPGRADE` migrates the MariaDB data directory in place — and the
+run fails there if the dump did not land. Each backup is one timestamped
+directory under `/volume1/Docker/seafile/backups` holding:
+
+- `databases.sql`: `ccnet_db`, `seafile_db` and `seahub_db`, one `mariadb-dump`
+  under `--single-transaction`, so the three are consistent with each other.
+- `conf/`: the server's configuration directory, minus `admin.txt`.
+- `MANIFEST.txt`: what is in the directory, what is not, and which images the
+  stack was running when it was taken.
+
+It does **not** copy the block store, and that boundary is deliberate: an upgrade
+migrates schemas and rewrites `conf/`, it does not rewrite immutable blocks, so
+copying the whole library before every pinned digest bump would cost the size of
+the library to protect something the upgrade cannot touch. So a pre-upgrade
+backup restores the database that names the blocks still on disk. It cannot put
+back blocks that are gone; that is what the full backup below is for.
+
+The backup root is mode `0700` and it is secret-bearing. `databases.sql` carries
+every account row Seafile holds as plain readable SQL, and `conf/` carries the
+Seafile database account and the JWT signing key. Treat a copy of it exactly as
+you would treat a decrypted vault.
+
+### Take a full backup
+
+Two halves, and **the database comes first**. Seafile's own manual states the
+same order and the reason is the coupling above: a block store copied *before*
+the dump can only be missing blocks the dump then names, which restores as a
+library whose files cannot be opened. Copied *after*, the store is a superset of
+what the dump names and the surplus blocks are merely unreferenced.
+
+The service does not have to be stopped. `--single-transaction` gives the dump a
+consistent InnoDB snapshot while seahub keeps serving.
+
+```sh
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+mkdir -m 0700 -p "/volume1/Docker/seafile/backups/$stamp"
+
+# 1. the database, first
+docker compose --project-name seafile \
+  --env-file /volume1/Docker/nas-platform/runtime/services/seafile/.env \
+  -f /volume1/Docker/nas-platform/current/services/seafile/compose.yml \
+  exec -T -u root db sh -ec 'umask 077; exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" \
+    mariadb-dump --protocol=tcp --host=db --port=3306 --user=root \
+    --single-transaction --quick --routines --events \
+    --databases ccnet_db seafile_db seahub_db \
+    --result-file="/backups/'"$stamp"'/databases.sql"'
+
+# 2. the block store, second, and only then
+tar --create --file "/volume1/Docker/seafile/backups/$stamp/seafile-data.tar" \
+  --exclude=pro-data/search --exclude=logs --exclude=conf/admin.txt \
+  --directory /volume1/Docker/seafile/data .
+```
+
+The three exclusions are not tidiness:
+
+- `pro-data/search` is a regenerable index. It is `cache` in kind even though it
+  sits inside a `critical` root, so carrying it doubles a backup that restores no
+  faster for it.
+- `logs` is diagnostics.
+- `conf/admin.txt` is a security requirement. The image writes the administrator
+  password there in plaintext on **every** container start and removes it in a
+  `finally:`, so a container killed mid-start leaves it on disk — and a backup
+  that swept `conf/` blindly would preserve that plaintext for as long as the
+  backup is kept. `roles/seafile` reports one it finds during a pre-upgrade
+  backup rather than deleting it, because a start in progress writes exactly that
+  file.
+
+Do not put the tar under `/volume1/Docker/seafile/data` or the dump under
+`/volume1/Docker/seafile/db`: a backup inside the tree it protects is lost with
+that tree, and a `.sql` file under `/var/lib/mysql` is a directory MariaDB scans
+as if it were a schema.
+
+### Restore
+
+Pick the case first, because they differ in exactly one step.
+
+**Case A — the database is wrong or lost, the MariaDB data directory survives.**
+This is the case a failed upgrade leaves. The Seafile account and its grants are
+still in `mysql.*`, and they survive a `DROP DATABASE` — measured against
+`mariadb:10.11.19`, where a `GRANT ALL PRIVILEGES ON ccnet_db.*` was still listed
+after the database was dropped and worked again once the dump was restored. So
+there is nothing to recreate.
+
+**Case B — `/volume1/Docker/seafile/db` is gone.** MariaDB starts with an empty
+data directory and creates only `root` from `MYSQL_ROOT_PASSWORD`. The Seafile
+account does not exist and is not in the dump, so it has to be recreated — from
+the vault, which is where it was authored, and not recovered from anywhere on
+disk. That is step 3.
+
+```sh
+cd /volume1/Docker/nas-platform/current/services/seafile
+env_file=/volume1/Docker/nas-platform/runtime/services/seafile/.env
+backup=/volume1/Docker/seafile/backups/<stamp>
+
+# 1. stop the server, leave the database up. seahub writing during a restore is
+#    how you get rows that never coexisted.
+docker compose --project-name seafile --env-file "$env_file" -f compose.yml stop seafile
+
+# 2. restore the three schemas. --databases means the dump carries its own
+#    CREATE DATABASE and USE statements, so this recreates them if they are gone.
+docker compose --project-name seafile --env-file "$env_file" -f compose.yml \
+  exec -T -u root db sh -ec 'exec env MYSQL_PWD="$MYSQL_ROOT_PASSWORD" \
+    mariadb --protocol=tcp --host=db --port=3306 --user=root' < "$backup/databases.sql"
+
+# 3. CASE B ONLY: recreate the Seafile account from the vault. Read
+#    vault_seafile_db_username and vault_seafile_db_password out of the encrypted
+#    vault -- they are also in the rendered .env as SEAFILE_DB_USERNAME and
+#    SEAFILE_DB_PASSWORD -- and grant them the three schemas.
+#
+#      CREATE USER IF NOT EXISTS '<user>'@'%' IDENTIFIED BY '<password>';
+#      GRANT ALL PRIVILEGES ON ccnet_db.* TO '<user>'@'%';
+#      GRANT ALL PRIVILEGES ON seafile_db.* TO '<user>'@'%';
+#      GRANT ALL PRIVILEGES ON seahub_db.* TO '<user>'@'%';
+#      FLUSH PRIVILEGES;
+
+# 4. restore the block store only if it was lost. If it is intact, skip this --
+#    the dump above already names the blocks that are there.
+#      tar --extract --file "$backup/seafile-data.tar" \
+#        --directory /volume1/Docker/seafile/data
+
+# 5. restore conf/ only if it was lost, and note it has no admin.txt by design.
+#      cp -a "$backup/conf/." /volume1/Docker/seafile/data/seafile/conf/
+
+# 6. start the server again
+docker compose --project-name seafile --env-file "$env_file" -f compose.yml \
+  up -d --wait seafile
+```
+
+Then prove it, and prove it against the database rather than against the port.
+`GET /api2/ping/` answers a constant with both databases down; the platform's own
+verification exchanges the vault administrator for a token, which reads
+`ccnet_db` and `seahub_db`:
+
+```sh
+ansible-playbook -i inventory/local.yml verify.yml --tags platform_verify_seafile \
+  --ask-vault-pass
+```
+
+A clean recap is not proof that content came back. Open a library and download a
+file: that is the one operation that has to resolve a filename through the
+database into blocks on disk, which is the coupling this whole section is about.
+
+### This procedure is rehearsed
+
+The `seafile` integration lane runs it. It uploads a file through the Seafile
+API, has `roles/seafile` take its own backup, drops the three databases, restores
+them with the commands above, restarts the server and downloads the file back,
+comparing it byte for byte. A backup nobody has restored is a hypothesis, and the
+block/database coupling means the first restore is where it would have been
+falsified.
+
 ## Recovery and rollback boundary
 
 Ansible converges configuration; it is not a database rollback tool. A failed

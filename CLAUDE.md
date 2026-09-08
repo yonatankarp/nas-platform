@@ -636,6 +636,10 @@ clear, the Audiobookshelf key it triggers library scans with included, and its
 pre-upgrade backup is a copy of that database beside it), Seafile's `conf/`
 directory (the image's `/scripts/start.py` writes the plaintext administrator
 password to `conf/admin.txt` on **every** container start and removes it in a
-`finally:`, so a container killed mid-start leaves it on disk), and application
+`finally:`, so a container killed mid-start leaves it on disk), Seafile's
+mode-0700 backup root (`roles/seafile` writes a `mariadb-dump` of `ccnet_db`,
+`seafile_db` and `seahub_db` there before every pinned upgrade — every account
+row Seafile holds, as plain readable SQL — beside a copy of that same `conf/`,
+with `admin.txt` excluded by name rather than by luck), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
