@@ -207,6 +207,42 @@ if failures.empty?
   failures << "the Bindery pre-upgrade state guard must run before the deployment" unless
     backup_include && deploy_index && backup_include < deploy_index
 
+  # #509. A converge that reports success while the container it manages is
+  # crash-looping is what let Bindery restart 144 times over three days with
+  # nothing but a five-minute "Exit code: 1" relay to show for it. The refusal
+  # is required to sit immediately after the deployment and before anything that
+  # trusts it: a container in `Restarting` still appears in
+  # `docker container ls`, so the CPU verification sails straight past one and
+  # the readiness probe then fails on a timeout that names nothing.
+  health_include = tasks.find { |task| task.dig("vars", "container_health_service_name") == "bindery" }
+  failures << "Bindery must refuse a container that runs but never serves" unless
+    tasks.count { |task| task.dig("vars", "container_health_service_name") == "bindery" } == 1
+  health_index = tasks.index { |task| task.dig("vars", "container_health_service_name") == "bindery" }
+  cpu_index = tasks.index { |task| task.dig("vars", "container_cpu_service_name") == "bindery" }
+  failures << "the Bindery container health refusal must run before anything trusts the deployment" unless
+    health_index && cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index
+  failures << "the Bindery container health refusal must name the deployed Compose project" unless
+    health_include &&
+    health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"
+
+  # Compose fails a crash-looping container with "container bindery is
+  # unhealthy", which says nothing about why, and a deployment that failed for
+  # some OTHER reason has to leave with the message that says so. Both need the
+  # deployment's own message, so the deploy sits in a block whose rescue records
+  # it and hands it on.
+  deploy_block = tasks.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? { |inner| inner.key?("community.docker.docker_compose_v2") }
+  end
+  failures << "the Bindery deployment must catch its own failure" unless
+    deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
+    end
+  failures << "the Bindery container health refusal must be handed the deployment's own failure" unless
+    health_include &&
+    health_include.dig("vars", "container_health_deploy_failure_message")
+                 .to_s.include?("bindery_deploy_failure_message")
+
   backup_tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/pre_upgrade_backup.yml"),
                         aliases: true)

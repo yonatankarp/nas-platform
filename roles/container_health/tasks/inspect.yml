@@ -1,0 +1,160 @@
+---
+# Two daemon-side filters rather than one, and the union of them, because
+# neither alone sees both shapes this is about. Measured against throwaway
+# crash-looping projects on Docker 29.7.2:
+#
+#   * a container that declares a health check and crash-loops reports
+#     Status=restarting AND Health=unhealthy, so either filter finds it;
+#   * a container that declares NO health check and crash-loops reports
+#     Status=restarting and Health=unset, and `--filter health=unhealthy`
+#     returns nothing at all. Twelve containers on this platform declare no
+#     health check, so a fix built on the health filter alone would have missed
+#     every one of them;
+#   * a container that is running, health-checked and failing its probe -- the
+#     wedged boot roles/seafile carried a private recovery for until #501
+#     removed the service -- reports Running=true and Health=unhealthy while
+#     Status stays `running`, so `--filter status=restarting` returns nothing.
+#
+# Both filters are evaluated by the daemon, so the converged case is two
+# commands that print nothing and this file mutates and decides nothing. That is
+# what makes the idempotence structural rather than argued.
+#
+# `--all` is deliberately NOT passed. It would additionally return exited
+# containers, and an exited container keeps whatever health status it last had,
+# so a one-shot job that has finished would be reported as a service that never
+# serves.
+- name: List restarting containers in the managed Compose project
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ container_health_project_name }}"
+      - --filter
+      - status=restarting
+  register: container_health_restarting
+  changed_when: false
+  check_mode: false
+
+- name: List unhealthy containers in the managed Compose project
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ container_health_project_name }}"
+      - --filter
+      - health=unhealthy
+  register: container_health_unhealthy
+  changed_when: false
+  check_mode: false
+
+- name: Resolve the containers of the managed Compose project that never serve
+  ansible.builtin.set_fact:
+    container_health_stuck_ids: >-
+      {{ (container_health_restarting.stdout_lines
+          + container_health_unhealthy.stdout_lines) | unique }}
+
+# Narrow fields and nothing wider, which is the decision roles/seafile's removed
+# recovery took and recorded: a bare `docker container inspect` prints
+# .Config.Env, and for a service stack that is the whole rendered environment
+# file -- every credential the stack holds. Each field named below was chosen
+# against that.
+#
+# `{{json .State.Health}}` carries the last five probes' combined output,
+# stderr included, and NOT the probe's own argv, so it is safe to print even
+# where a probe command embeds a credential. .State.Error is the daemon's own
+# last error string. The rest are integers and enum values.
+#
+# The container's log is deliberately NOT captured here even though #509 says
+# the cause was one line in `docker logs bindery`. An application's stdout is
+# unbounded and this platform has no way to know what a given image writes to
+# it; Dozzle already ships every line of it, and the refusal below names the
+# command that reads it. Printing an arbitrary tail into an Ansible transcript
+# that a poller records would be a credential exposure decided by whatever the
+# image felt like logging.
+#
+# So neither this task nor the report below carries no_log, deliberately.
+# Redacting them would censor the only evidence this path produces while
+# protecting nothing.
+- name: Read what the stuck containers of the managed Compose project are doing
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'container', 'inspect', '--format', container_health_format]
+         + container_health_stuck_ids }}
+  vars:
+    container_health_format: >-
+      {% raw %}{{.Name}} service={{index .Config.Labels
+      "com.docker.compose.service"}} image={{.Config.Image}}
+      status={{.State.Status}} exit={{.State.ExitCode}}
+      restarts={{.RestartCount}} error={{.State.Error}}
+      health={{if .State.Health}}{{json .State.Health}}{{else}}unset{{end}}{% endraw %}
+  register: container_health_evidence
+  when: container_health_stuck_ids | length > 0
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+- name: Report what the stuck containers of the managed Compose project are doing
+  ansible.builtin.debug:
+    msg: >-
+      Compose project {{ container_health_project_name }} holds
+      {{ container_health_stuck_ids | length }} container(s) that Docker reports
+      as restarting or unhealthy. Their state follows, one per line:
+      {{ container_health_evidence.stdout | default('', true) | trim
+         | default('(no container state recorded)', true) }}
+  when: container_health_stuck_ids | length > 0
+
+# A deployment that failed for anything other than this leaves with the error it
+# arrived with. The point of naming the condition this narrowly is that this
+# role must not become a general reinterpretation of every Compose failure: a
+# Compose file that does not parse, a missing release path and a daemon that is
+# gone all have to fail with the message that says so.
+- name: Re-raise a deployment failure that no stuck container explains
+  ansible.builtin.fail:
+    msg: "{{ container_health_deploy_failure_message }}"
+  when:
+    - container_health_stuck_ids | length == 0
+    - container_health_deploy_failure_message | length > 0
+
+# The refusal, and it is a refusal rather than a warning on purpose. #509's third
+# question was whether a converge that reports success against a `Restarting`
+# container should fail in its own right, and the three days it took to notice
+# one is the answer: the stack was reported deployed by every tick, the only
+# other signal was a five-minute `Exit code: 1` relay naming no reason, and the
+# play walked straight past it into verification failures that blamed
+# credentials (#510).
+- name: Refuse a Compose project holding a container that runs but never serves
+  vars:
+    container_health_deploy_report: >-
+      The deployment that produced this state also failed, and reported:
+      {{ container_health_deploy_failure_message }}
+    container_health_silent_report: >-
+      The deployment that produced this state reported success, which is the
+      part that makes this class silent: nothing else in the run would have said
+      a word.
+  ansible.builtin.assert:
+    that:
+      - container_health_stuck_ids | length == 0
+    fail_msg: >-
+      The {{ container_health_service_name }} deployment left
+      {{ container_health_stuck_ids | length }} container(s) of Compose project
+      {{ container_health_project_name }} restarting or unhealthy. Their state is
+      printed above, captured before anything could destroy it.
+      {{ container_health_deploy_report
+         if container_health_deploy_failure_message | length > 0
+         else container_health_silent_report }}
+      Do not expect the next converge to repair this: measured on Docker 29.7.2,
+      `docker compose up` against an unchanged specification keeps the same
+      container and recreates nothing, and `restart: unless-stopped` is what
+      produces the loop rather than what ends it, so only a changed image or an
+      explicit force-recreate replaces the container. Read
+      `docker logs {{ container_health_service_name }}` -- for #509 the cause was
+      one line there and in no other reading -- or the same lines in Dozzle. The
+      fix belongs in this repository and reaches the host on the poller's next
+      tick; clearing the wedged container itself is the one step a converge
+      cannot take today, which is the open half of #509.

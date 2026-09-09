@@ -893,6 +893,73 @@ STATIC_ROWS = [
     expects: "the Bindery API-key refusal must classify what its probes saw"
   },
   {
+    # #509. Nothing else in the run says a word about a container that runs and
+    # never serves: the deploy reported changed=0 against one in `Restarting`
+    # and the play walked on.
+    name: "a deployment nothing checks the container state after",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+      end
+    },
+    expects: "Bindery must refuse a container that runs but never serves"
+  },
+  {
+    # A container in `Restarting` still appears in `docker container ls`, so a
+    # refusal placed after the CPU verification lets that verification pass
+    # against a container that is crash-looping.
+    name: "a container health refusal that runs after the CPU verification",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+        document.delete(health)
+        cpu = document.index { |task| task.is_a?(Hash) && task.dig("vars", "container_cpu_service_name") }
+        document.insert(cpu + 1, health)
+      end
+    },
+    expects: "the Bindery container health refusal must run before anything trusts the deployment"
+  },
+  {
+    # The project label is what selects the containers. Aimed at another project
+    # it inspects nothing and passes against any state at all.
+    name: "a container health refusal aimed at another Compose project",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+        health["vars"]["container_health_project_name"] = "bindery"
+      end
+    },
+    expects: "the Bindery container health refusal must name the deployed Compose project"
+  },
+  {
+    # Compose fails a crash-looping container with "container bindery is
+    # unhealthy" and a parse error with something else entirely. Throwing the
+    # message away turns the second kind into the first.
+    name: "a deployment whose own failure message is thrown away",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
+        end
+        task["ansible.builtin.set_fact"] = { "bindery_deploy_failed" => true }
+      end
+    },
+    expects: "the Bindery deployment must catch its own failure"
+  },
+  {
+    # A refusal handed nothing cannot re-raise a failure it could not classify,
+    # so a Compose file that does not parse would fail with a message about
+    # container health instead.
+    name: "a container health refusal handed no deployment failure",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+        health["vars"]["container_health_deploy_failure_message"] = ""
+      end
+    },
+    expects: "the Bindery container health refusal must be handed the deployment's own failure"
+  },
+  {
     name: "a world-readable environment render",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1968,6 +2035,46 @@ PROGRAM_MUTATIONS = [
     from: "credential_tasks.length >= 16 && credential_tasks.all? { |task| task[\"no_log\"] == true }",
     to: "true",
     rows: ["a credential-bearing request rendered in full"]
+  },
+  {
+    label: "the container health refusal existence check",
+    program: :static,
+    from: 'tasks.count { |task| task.dig("vars", "container_health_service_name") == "bindery" } == 1',
+    to: "true",
+    rows: ["a deployment nothing checks the container state after"]
+  },
+  {
+    label: "the container health refusal ordering check",
+    program: :static,
+    from: "health_index && cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index",
+    to: "true",
+    rows: ["a container health refusal that runs after the CPU verification"]
+  },
+  {
+    label: "the container health project check",
+    program: :static,
+    from: 'health_include &&
+    health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"',
+    to: "true",
+    rows: ["a container health refusal aimed at another Compose project"]
+  },
+  {
+    label: "the caught deployment failure check",
+    program: :static,
+    from: 'deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
+    end',
+    to: "true",
+    rows: ["a deployment whose own failure message is thrown away"]
+  },
+  {
+    label: "the handed-on deployment failure check",
+    program: :static,
+    from: 'health_include &&
+    health_include.dig("vars", "container_health_deploy_failure_message")
+                 .to_s.include?("bindery_deploy_failure_message")',
+    to: "true",
+    rows: ["a container health refusal handed no deployment failure"]
   },
   {
     label: "the readable recoverability guard check",

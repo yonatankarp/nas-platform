@@ -1,0 +1,18 @@
+---
+# The Compose service directory this project deploys, as services/manifest.yml
+# names it. Read only by the messages this role prints, so an operator reading a
+# refusal knows which role produced it.
+container_health_service_name: ""
+# The Compose project label the containers carry, which is what selects them.
+# Passed rather than derived: a project name computed here would be a second
+# place that has to agree with the role's own
+# `<service>_compose_project_name`, and roles/container_cpu takes it the same
+# way for the same reason.
+container_health_project_name: ""
+# The message the caller's deployment failed with, when it failed. Empty means
+# the deployment succeeded, which is the case this role exists for: a converge
+# that reports success while a container it manages is crash-looping. When it is
+# set, this role either explains the failure in terms of the container state it
+# can see, or re-raises the caller's own message unchanged -- a deployment that
+# failed for some other reason must fail with the message that says so.
+container_health_deploy_failure_message: ""

@@ -1,0 +1,13 @@
+---
+argument_specs:
+  main:
+    short_description: Refuse a Compose project holding a container that runs but never serves
+    options:
+      container_health_service_name:
+        type: str
+        required: true
+      container_health_project_name:
+        type: str
+        required: true
+      container_health_deploy_failure_message:
+        type: str

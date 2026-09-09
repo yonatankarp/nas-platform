@@ -41,16 +41,47 @@
 - name: Guard Bindery critical state before a pinned upgrade
   ansible.builtin.include_tasks: pre_upgrade_backup.yml
 
-- name: Deploy Bindery
-  community.docker.docker_compose_v2:
-    project_src: "{{ platform_current_dir }}/services/bindery"
-    project_name: "{{ bindery_compose_project_name }}"
-    files: "{{ platform_service_compose_files['bindery'] }}"
-    env_files: ["{{ platform_runtime_dir }}/services/bindery/.env"]
-    state: present
-    wait: true
-    wait_timeout: "{{ platform_compose_wait_timeout }}"
-  register: bindery_deploy
+# The block exists for one thing the rescue does with the failure and nothing
+# else: it hands the deployment's own message to roles/container_health, which
+# either explains it in terms of the container state Docker reports or re-raises
+# it unchanged. Compose's `--wait` fails this task with "container bindery is
+# unhealthy" against a crash-looping container -- measured -- and that message
+# says nothing about why. #509 also recorded the opposite outcome on the NAS,
+# the deploy reporting changed=0 and the play continuing past a container in
+# `Restarting`; the include below runs on both paths for that reason.
+- name: Deploy Bindery, catching a container that runs but never serves
+  block:
+    - name: Deploy Bindery
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/bindery"
+        project_name: "{{ bindery_compose_project_name }}"
+        files: "{{ platform_service_compose_files['bindery'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/bindery/.env"]
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: bindery_deploy
+  rescue:
+    # First, and before anything else can rebind it: ansible_failed_result
+    # belongs to whichever rescue is running.
+    - name: Record the failed Bindery deployment
+      ansible.builtin.set_fact:
+        bindery_deploy_failure_message: >-
+          {{ ansible_failed_result.msg
+             | default('the Bindery deployment failed and reported no message') }}
+
+# Immediately after the deployment and before everything that follows it. A
+# container in `Restarting` still appears in `docker container ls --quiet`, so
+# the CPU verification below would sail straight past one and the readiness probe
+# further down would fail on a timeout that names nothing.
+- name: Refuse a Bindery container that runs but never serves
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: bindery
+    container_health_project_name: "{{ bindery_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ bindery_deploy_failure_message | default('') }}
 
 - name: Report the Bindery deployment
   ansible.builtin.include_role:
