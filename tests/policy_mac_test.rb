@@ -207,11 +207,25 @@ end
 # Komga, Jellyfin, Immich, Pinchflat and Kapowarr were never named -- and it
 # proved only that the text existed, never that a port reached the variable.
 # Running the real derivation over a seeded roster proves both, for all fifteen.
+#
+# THE FLOOR IS THE ONLY THING HOLDING THIS ROSTER, which is why it is the real
+# count and not comfortably under it. Nothing ties MAC_SERVICE_PORT_ORDER to
+# services/manifest.yml and nothing can: five of its entries are containers
+# inside a manifest service rather than services -- radarr, sonarr, prowlarr and
+# bazarr under `arr`, sabnzbd under `downloaders` -- so there is no set to
+# compare it against in either direction. It was written `>= 15` when the roster
+# held nineteen, so four names could be deleted with this check still green and
+# nothing else in the repository to notice (#512). Raising it costs one edit here
+# when a service that publishes a host port is added or removed, which is a
+# visible diff in a file a reviewer is already reading for that change.
+MAC_PORT_ROSTER_FLOOR = 19
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
-check(failures, mac_port_roster.length >= 15 &&
+check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
                 mac_port_roster.uniq.length == mac_port_roster.length &&
                 mac_port_roster.all? { |service| service.match?(/\A[a-z][a-z0-9]*\z/) },
-      "Mac lifecycle must declare a distinct-service port roster")
+      "Mac lifecycle must declare a distinct-service port roster of at least " \
+      "#{MAC_PORT_ROSTER_FLOOR} entries, found #{mac_port_roster.length}: " \
+      "#{mac_port_roster.inspect}")
 mac_port_probe = <<~PROBE
   set -eu
   . "$1"

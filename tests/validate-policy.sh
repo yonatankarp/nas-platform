@@ -181,6 +181,7 @@ ruby tests/policy_platform_test.rb
 ruby tests/policy_integration_test.rb
 ruby tests/policy_deployment_test.rb
 ruby tests/gate_manifest_coverage_test.rb
+ruby tests/deployment_gate_coverage_test.rb
 tests/target_docker_dependency_preflight_test.sh
 ruby tests/media_acquisition_foundation_test.rb
 ruby tests/configarr_job_test.rb

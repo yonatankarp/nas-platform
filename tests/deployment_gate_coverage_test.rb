@@ -1,0 +1,355 @@
+#!/usr/bin/env ruby
+# What a service must already have before its deployment gate is allowed to be on.
+#
+# THE HOLE THIS CLOSES (#512). Flipping `<role>_deployment_enabled` to true in
+# inventory is what converges a stack on the NAS, and until this file no check
+# read that value at all. The registrations that make a service *provable* --
+# an integration lane that converges it, a Mac lifecycle that recreates and
+# verifies it -- were held only by pairwise agreement between hand-maintained
+# literals: tests/ci/suites.conf against SERVICE_NAMES in
+# tests/ci/classify_changes.rb, against the LANES/NTFY_LANES/expected-output
+# blocks in tests/ci/classify_changes_test.rb, against INTEGRATION_SUITES in
+# tests/ci/workflow_test.rb. Every one of those agrees with its neighbour and
+# none of them is anchored to services/manifest.yml, so a service that was never
+# written into any of them is invisible to all of them rather than failing any.
+#
+# That was demonstrated rather than argued, on this tree: removing Nextcloud
+# consistently from all four literals -- leaving `status: implemented` and
+# `nextcloud_deployment_enabled: true` exactly as they are -- left
+# tests/policy_test.rb, tests/policy_ci_test.rb, tests/policy_mac_test.rb,
+# tests/policy_platform_test.rb, tests/ci/workflow_test.rb and
+# tests/gate_manifest_coverage_test.rb all green. The one objection came from
+# tests/ci/classify_changes_test.rb's harness-closure check, and it was
+# incidental: it fires because tests/expected/nextcloud.yml is reached from a
+# contract, so a service with no contract escapes it. ntfy is the control that
+# proves so -- it is implemented, deployed on every lane, and
+# `ClassifyChanges.suites(classify(["tests/expected/ntfy.yml"]))` is `[]` today
+# with every check green.
+#
+# THE SUBJECT IS THE GATE, NOT THE MANIFEST, and that distinction is the whole
+# design. Requiring a lane of every implemented service would forbid the
+# land-dark-then-flip idiom that .claude/skills/implement-issue/SKILL.md
+# prefers and that both Seafile and Nextcloud were promoted through: step 1
+# lands the entire stack with the gate false and no registrations anywhere,
+# step 2 adds the lane and the contract, step 3 flips the gate. What was missing
+# was any reason step 2 had to happen before step 3. So a service whose gate is
+# off is deliberately out of scope here, and a service with no gate variable at
+# all is in scope: no gate means it converges unconditionally, which is the same
+# position as a gate that is on.
+#
+# WHAT IS REQUIRED, AND WHY EACH ONE AND NOT THE OTHERS.
+#
+#   1. An integration lane converges its Ansible tag. This is the property that
+#      means "CI has deployed this and watched it come up": tests/integration.sh
+#      asserts of every lane that the run converges, that a second run changes
+#      nothing, and that --check --diff works. Membership is by *tag* rather than
+#      by a lane of its own, because ntfy has no lane and needs none -- every
+#      service lane converges it, since each service role reports its deployment
+#      there. Deriving the requirement from the tags rather than from lane names
+#      is what lets ntfy pass without an exemption list, and an exemption list is
+#      the defect this file exists to remove.
+#
+#   2. The Mac lifecycle accounts for it. tests/mac/lib.sh builds every coverage
+#      roster as `mac_registry_services + MAC_UNREGISTERED_SERVICES`, and
+#      MAC_UNREGISTERED_SERVICES is the literal string 'ntfy' with nothing tying
+#      either half to the manifest. Asserting that roster against the gate-on
+#      services closes it in both directions: a gate-on service missing from both
+#      halves fails, and a name in either half that is not an implemented service
+#      fails too.
+#
+# NOT REQUIRED HERE, deliberately, because each is already closed elsewhere and a
+# second copy of an assertion is a second thing to keep true:
+#
+#   - tests/expected/<service>.yml. tests/policy_support.rb pins those against
+#     the service roster in both directions already.
+#   - A contract of its own. tests/policy_test.rb requires every implemented
+#     service to carry `role_verification || contract_verification`, and
+#     demanding a registry row specifically would fail ntfy, which has neither a
+#     contract nor any need of one -- and would therefore need the exemption list
+#     this file is here to delete. Requirement 2 above reaches the registry
+#     anyway: a gate-on service absent from MAC_UNREGISTERED_SERVICES has to be
+#     registered to satisfy it.
+#
+# WHY A FILE OF ITS OWN rather than a section of one of the eight scripts in
+# POLICY_SCRIPTS. The same reason tests/gate_manifest_coverage_test.rb states for
+# itself, and it is measured rather than aesthetic: this check reads
+# services/manifest.yml, tests/contracts/registry.yml, tests/ci/suites.conf,
+# tests/integration.sh and tests/mac/lib.sh, and tests/policy_mutation_support.rb
+# plants defects in several of those. Inside one of the eight, every such
+# mutation would newly be detected by that script, the per-site declared sets in
+# tests/policy_manifest_test.rb would drift, and `--audit` would fail. Outside
+# them, it cannot happen. The cost is one line in tests/validate-policy.sh and
+# the matching entry in tests/gate_manifest_coverage_test.rb's shard list.
+
+require "yaml"
+
+require_relative "policy_support"
+
+include TestScaffold
+
+ROOT = File.expand_path("..", __dir__)
+
+# The floors. Every list below is derived from the tree, so each one can go quiet
+# and take its assertions with it: a renamed variable empties the gate scan, a
+# regex that stops matching empties the roster, and the run reports success.
+#
+# They are today's counts rather than something comfortably below them, which is
+# the opposite of what TestScaffold.check_floor's own comment advises, and the
+# reason is that these lists have a second guard and mac_port_roster did not.
+# #512 objected to `mac_port_roster.length >= 15` over nineteen entries precisely
+# because the floor was the only thing holding that list, so four names could go
+# and nothing would say. Every list here is also closed in both directions
+# below, so a single deletion fails by name whatever the floor is; the floor's
+# job is only the collapse a set comparison cannot report usefully. Holding it at
+# the real count costs one visible edit when a service is genuinely removed --
+# #501 removed Seafile and rewrote some forty files to do it -- and buys a
+# failure that names the number rather than one that lists fifteen missing
+# services.
+#
+# SUBJECT_FLOOR is the one exception, and it is deliberate: it sits at the
+# implemented count minus the gated services, because turning a stack dark is an
+# operation this repository performs -- #528 switched Seafile's gate off four
+# days before this was written -- and a guard that refused it would be fighting
+# the very idiom the rest of this file exists to protect.
+IMPLEMENTED_FLOOR = 16       # services/manifest.yml holds 16 implemented services
+GATE_VARIABLE_FLOOR = 1      # nextcloud_deployment_enabled is the only gate today
+SUBJECT_FLOOR = 15           # 16 implemented, of which at most the 1 gated one may be dark
+MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
+TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 16          # the distinct service tags those rows converge
+
+failures = []
+
+# ---------------------------------------------------------------------------
+# The roster, and each service's role and Ansible tag.
+
+manifest_document = begin
+  YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+manifest_entries = manifest_document.is_a?(Hash) && manifest_document["services"].is_a?(Array) ?
+                     manifest_document["services"] : []
+service_roles = manifest_entries.each_with_object({}) do |entry, roles|
+  next unless entry.is_a?(Hash) && entry["name"].is_a?(String) && entry["role"].is_a?(String)
+
+  roles[entry["name"]] = entry["role"]
+end
+implemented = PolicySupport.implemented_services(ROOT)
+check_floor(failures, implemented.length, IMPLEMENTED_FLOOR,
+            "implemented services in services/manifest.yml")
+role_of = implemented.to_h { |name| [name, service_roles[name]] }
+missing_roles = role_of.select { |_name, role| role.nil? }.keys
+check(failures, missing_roles.empty?,
+      "services/manifest.yml names no role for #{missing_roles.inspect}: this check resolves a " \
+      "service's deployment gate through its role, and a service with no role has no gate to read")
+
+# The tag each service converges under. Read out of tests/integration.sh rather
+# than restated, because tests/policy_ci_test.rb already pins that table against
+# the manifest in both directions -- so it is the one tag/service mapping in the
+# repository that cannot drift from the roster, and a copy here would be a second
+# one that can.
+integration_path = File.join(ROOT, "tests", "integration.sh")
+integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
+service_tags = integration_body[/^service_image_sources='\n(.*?)'$/m].to_s
+                                .scan(/^([a-z0-9_-]+) ([a-z0-9-]+)$/)
+                                .to_h { |tag, directory| [directory, tag] }
+check(failures, !service_tags.empty?,
+      "tests/integration.sh: service_image_sources could not be read, so no service's Ansible " \
+      "tag is known and every lane requirement below would pass vacuously")
+
+# ---------------------------------------------------------------------------
+# The gates themselves, and how each one resolves.
+#
+# A gate is a role default that inventory may override, so both homes are read
+# and inventory wins. Nothing here reproduces Ansible's full precedence ladder:
+# what it needs to know is whether a stack converges, and a variable set in two
+# inventory files with different values is reported rather than resolved, because
+# guessing which one Ansible would pick is exactly the kind of quiet answer this
+# file exists to stop giving.
+GATE_SUFFIX = "_deployment_enabled"
+GATE_KEY = /\A([a-z][a-z0-9_]*)#{GATE_SUFFIX}\z/
+
+# Walks a loaded document for gate keys at any depth. Depth matters because
+# inventory/*.yml are inventory files whose variables sit under a group's `vars`
+# mapping, while group_vars and role defaults are flat: a scan that only read top
+# level keys would miss the first home entirely and report "no gates found",
+# which the floor below would catch but only after the reason had been lost.
+def gate_keys(node, found = {})
+  case node
+  when Hash
+    node.each do |key, value|
+      found[key] = value if key.is_a?(String) && key.match?(GATE_KEY)
+      gate_keys(value, found)
+    end
+  when Array
+    node.each { |element| gate_keys(element, found) }
+  end
+  found
+end
+
+def load_plain_yaml(path)
+  source = File.read(path)
+  # An encrypted vault is not YAML and is not where a nonsecret policy switch
+  # belongs; tests/policy_vault_test.rb is what says it stays encrypted.
+  return nil if source.start_with?("$ANSIBLE_VAULT")
+
+  YAML.safe_load(source, aliases: true)
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+
+role_gates = {}
+Dir[File.join(ROOT, "roles", "*", "defaults", "main.yml")].sort.each do |path|
+  role = File.basename(File.dirname(File.dirname(path)))
+  gate_keys(load_plain_yaml(path)).each do |key, value|
+    role_gates[key] = { "role" => role, "value" => value, "path" => path }
+  end
+end
+
+inventory_gates = Hash.new { |hash, key| hash[key] = [] }
+Dir[File.join(ROOT, "inventory", "**", "*.yml")].sort.each do |path|
+  gate_keys(load_plain_yaml(path)).each do |key, value|
+    inventory_gates[key] << { "value" => value, "path" => path.delete_prefix("#{ROOT}/") }
+  end
+end
+
+gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
+check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
+            "#{GATE_SUFFIX} variables found under roles/ and inventory/")
+
+# Both directions on the gate scan itself. A gate whose prefix is not a manifest
+# role is either a typo -- in which case the switch the operator edits is read by
+# nothing -- or a gate on something this file cannot reason about; and a gate
+# that inventory sets with no role default behind it is a switch with no declared
+# off position, which is how a role ends up depending on a variable that is
+# simply undefined on some other host.
+roles_by_name = role_of.values.compact.to_h { |role| [role, true] }
+gated_off = []
+gate_states = {}
+gate_names.each do |name|
+  prefix = name[GATE_KEY, 1]
+  check(failures, roles_by_name.key?(prefix),
+        "#{name} names no implemented role in services/manifest.yml: a deployment gate whose " \
+        "prefix is not a role is a switch nothing reads")
+  declaration = role_gates[name]
+  check(failures, !declaration.nil? && declaration["role"] == prefix,
+        "#{name} must be declared in roles/#{prefix}/defaults/main.yml: a gate that only " \
+        "inventory sets has no declared off position")
+
+  overrides = inventory_gates[name]
+  values = overrides.empty? ? [declaration&.fetch("value")] : overrides.map { |entry| entry["value"] }
+  check(failures, values.uniq.length == 1,
+        "#{name} is set to conflicting values by #{overrides.map { |entry| entry['path'] }.inspect}: " \
+        "which stack converges must not depend on reproducing Ansible's precedence ladder here")
+  value = values.first
+  # Anything that is not a YAML boolean stops the run by name. Reading an
+  # unrecognised value as "off" would drop the service out of the subject list,
+  # and every requirement below would then hold for it vacuously -- the exact
+  # failure the floors are here to make impossible.
+  check(failures, value == true || value == false,
+        "#{name} resolves to #{value.inspect}, which is not a YAML boolean; this check cannot " \
+        "say whether the stack converges and will not guess")
+  gate_states[prefix] = value
+  gated_off << prefix if value == false
+end
+
+# A service with no gate variable converges unconditionally, so it is a subject.
+subjects = implemented.reject { |name| gate_states[role_of[name]] == false }
+check_floor(failures, subjects.length, SUBJECT_FLOOR,
+            "implemented services whose deployment gate is on")
+check(failures, subjects.length >= implemented.length - gate_names.length,
+      "#{implemented.length - subjects.length} of #{implemented.length} implemented services " \
+      "read as gated off, but only #{gate_names.length} gate variable(s) exist: the resolution " \
+      "above has broken rather than that many stacks having been turned dark")
+
+# ---------------------------------------------------------------------------
+# Requirement 1: an integration lane converges the service's tag.
+
+suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
+suite_rows = []
+if File.file?(suite_table_path)
+  File.readlines(suite_table_path, chomp: true).each do |line|
+    fields = line.sub(/#.*/, "").split
+    next unless fields.length == 3
+
+    suite, kind, tags = fields
+    suite_rows << [suite, kind, tags == "-" ? [] : tags.split(",")]
+  end
+end
+tagged_rows = suite_rows.select { |_suite, kind, _tags| %w[acquisition service].include?(kind) }
+check_floor(failures, tagged_rows.length, TAGGED_LANE_FLOOR,
+            "acquisition and service rows of tests/ci/suites.conf")
+lane_tags = tagged_rows.flat_map(&:last).uniq
+check_floor(failures, lane_tags.length, LANE_TAG_FLOOR,
+            "distinct service tags converged by the lanes of tests/ci/suites.conf")
+
+subjects.each do |name|
+  tag = service_tags[name]
+  next if tag.nil? # already reported against service_image_sources above
+
+  check(failures, lane_tags.include?(tag),
+        "#{name} deploys -- its gate is on -- and no integration lane in tests/ci/suites.conf " \
+        "converges its `#{tag}` tag, so nothing has ever proved the stack comes up. Give it a " \
+        "lane before turning it on, or turn the gate back off")
+end
+
+# The other direction: a lane that converges nothing on the roster. Held against
+# every manifest service rather than the gate-on ones, because a lane landed
+# ahead of the flip -- which is the sequence this file exists to require -- is
+# correct and must not fail here.
+manifest_tags = manifest_entries.filter_map { |entry| entry["name"] }
+                                .filter_map { |name| service_tags[name] }
+tagged_rows.each do |suite, _kind, tags|
+  stray = tags.reject { |tag| manifest_tags.include?(tag) || tag == "host_prep" ||
+                              tag == "deployment_bundle" || tag == "media_acquisition_foundation" }
+  check(failures, stray.empty?,
+        "the #{suite} lane converges #{stray.inspect}, which names no service in " \
+        "services/manifest.yml and no shared foundation tag")
+end
+
+# ---------------------------------------------------------------------------
+# Requirement 2: the Mac lifecycle accounts for the service.
+
+registry_document = begin
+  YAML.safe_load_file(File.join(ROOT, "tests", "contracts", "registry.yml"))
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+registry_entries = registry_document.is_a?(Hash) && registry_document["contracts"].is_a?(Array) ?
+                     registry_document["contracts"] : []
+registry_services = registry_entries.filter_map do |entry|
+  entry["service"] if entry.is_a?(Hash) && entry["service"].is_a?(String)
+end
+mac_lib_path = File.join(ROOT, "tests", "mac", "lib.sh")
+mac_lib = File.file?(mac_lib_path) ? File.read(mac_lib_path) : ""
+unregistered = mac_lib[/^MAC_UNREGISTERED_SERVICES='([^']*)'/m, 1].to_s.split
+# The Mac lane's own spelling of a service, which tests/mac/lib.sh derives from
+# the registry with exactly the paperless-ngx exception PolicySupport applies to
+# a contract basename.
+mac_roster = (registry_services.map { |name| PolicySupport.contract_basename(name) } +
+              unregistered).uniq
+check_floor(failures, mac_roster.length, MAC_ROSTER_FLOOR,
+            "the Mac coverage roster (tests/contracts/registry.yml plus MAC_UNREGISTERED_SERVICES)")
+
+subjects.each do |name|
+  alias_name = PolicySupport.contract_basename(name)
+  check(failures, mac_roster.include?(alias_name),
+        "#{name} deploys -- its gate is on -- and the Mac lifecycle accounts for it nowhere: " \
+        "`#{alias_name}` is in neither tests/contracts/registry.yml nor MAC_UNREGISTERED_SERVICES " \
+        "in tests/mac/lib.sh, so every Mac coverage roster is built without it and a full pass " \
+        "reports clean having skipped the service entirely")
+end
+
+implemented_aliases = implemented.map { |name| PolicySupport.contract_basename(name) }
+stray_roster = mac_roster - implemented_aliases
+check(failures, stray_roster.empty?,
+      "the Mac coverage roster names #{stray_roster.inspect}, which no implemented service in " \
+      "services/manifest.yml accounts for. MAC_UNREGISTERED_SERVICES is a literal list and this " \
+      "is the only thing holding it to the roster in that direction")
+
+report(failures,
+       "deployment gates: #{subjects.length} of #{implemented.length} implemented services " \
+       "converge (#{gate_names.length} gate variable(s), #{gated_off.length} dark), and every " \
+       "one of them has an integration lane and Mac coverage",
+       "deployment gate coverage violation(s)")
