@@ -101,6 +101,34 @@
   changed_when: false
   check_mode: false
 
+# The Compose service names, which is what a caller's force-recreate names in
+# `services:`. Read from the containers' own labels rather than derived from a
+# Compose file, because the label is what Docker actually applied and it is the
+# same selector the two filters above used. roles/container_cpu resolves
+# containers the same way.
+- name: Read the Compose services of the stuck containers
+  ansible.builtin.command:
+    argv: >-
+      {{ ['docker', 'container', 'inspect', '--format', container_health_service_format]
+         + container_health_stuck_ids }}
+  vars:
+    container_health_service_format: >-
+      {% raw %}{{index .Config.Labels "com.docker.compose.service"}}{% endraw %}
+  register: container_health_service_probe
+  when: container_health_stuck_ids | length > 0
+  failed_when: false
+  changed_when: false
+  check_mode: false
+
+# Published unconditionally, and empty when nothing is stuck, because a caller
+# gates its recreate on this list and a fact that only exists on the failing
+# path would be an undefined-variable error on the healthy one.
+- name: Resolve the Compose services of the stuck containers
+  ansible.builtin.set_fact:
+    container_health_stuck_services: >-
+      {{ container_health_service_probe.stdout_lines | default([], true)
+         | select | unique | list }}
+
 - name: Report what the stuck containers of the managed Compose project are doing
   ansible.builtin.debug:
     msg: >-
@@ -131,7 +159,13 @@
 # play walked straight past it into verification failures that blamed
 # credentials (#510).
 - name: Refuse a Compose project holding a container that runs but never serves
+  when: container_health_refuse | bool
   vars:
+    container_health_retried_report: >-
+      A force-recreate of exactly {{ container_health_stuck_services | join(', ') }}
+      has already been spent on this and the replacement came back stuck too, so
+      the container in front of you is a fresh one and THIS FAILURE ALREADY
+      INCLUDES THAT RETRY -- it is not a service that needs one more converge.
     container_health_deploy_report: >-
       The deployment that produced this state also failed, and reported:
       {{ container_health_deploy_failure_message }}
@@ -147,17 +181,17 @@
       {{ container_health_stuck_ids | length }} container(s) of Compose project
       {{ container_health_project_name }} restarting or unhealthy. Their state is
       printed above, captured before anything could destroy it.
+      {{ container_health_retried_report if container_health_retried | bool else '' }}
       {{ container_health_deploy_report
          if container_health_deploy_failure_message | length > 0
          else container_health_silent_report }}
-      Do not expect the next converge to repair this: measured on Docker 29.7.2,
-      `docker compose up` against an unchanged specification keeps the same
-      container and recreates nothing, and `restart: unless-stopped` is what
-      produces the loop rather than what ends it, so only a changed image or an
-      explicit force-recreate replaces the container. Read `docker logs` for
-      each container named above -- a Compose project may hold several and only
-      its own name reaches the daemon -- because for #509 the cause was one line
-      there and in no other reading; Dozzle carries the same lines. The
-      fix belongs in this repository and reaches the host on the poller's next
-      tick; clearing the wedged container itself is the one step a converge
-      cannot take today, which is the open half of #509.
+      Compose alone will not repair it: measured on Docker 29.7.2, `docker
+      compose up` against an unchanged specification keeps the same container
+      and recreates nothing, and `restart: unless-stopped` is what produces the
+      loop rather than what ends it, so only a changed image or an explicit
+      force-recreate replaces it. Read `docker logs` for each container named
+      above -- a Compose project may hold several and only its own name reaches
+      the daemon -- because for #509 the cause was one line there and in no
+      other reading; Dozzle carries the same lines. The fix for whatever it
+      names belongs in this repository and reaches the host on the poller's next
+      tick.

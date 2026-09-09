@@ -16,3 +16,14 @@ container_health_project_name: ""
 # can see, or re-raises the caller's own message unchanged -- a deployment that
 # failed for some other reason must fail with the message that says so.
 container_health_deploy_failure_message: ""
+# Whether this pass ends in a refusal. A caller that intends to attempt one
+# bounded force-recreate calls this role twice: once with `false`, which detects,
+# captures the evidence and publishes container_health_stuck_services without
+# failing, and once after its recreate with the default, which is the verdict.
+# The re-raise of a deployment failure no stuck container explains happens on
+# both passes -- that failure is not the thing a recreate is allowed to absorb.
+container_health_refuse: true
+# Message only. Set on the second pass when a force-recreate was actually spent,
+# so a refusal says the run has already retried instead of reading as a service
+# that needs one more converge.
+container_health_retried: false

@@ -192,8 +192,14 @@ if failures.empty?
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/main.yml"), aliases: true)
   )
 
+  # Two `up`s now, told apart by `recreate`: the deployment, and the bounded
+  # recovery #509 added. Counted separately rather than as a total of two, so a
+  # second plain deployment is still refused.
+  compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Bindery must deploy through docker_compose_v2" unless
-    tasks.count { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" } == 1
+    compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
+  failures << "Bindery must force-recreate a stuck container exactly once per converge" unless
+    compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1
   failures << "Bindery must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "bindery" } == 1
 
@@ -215,24 +221,74 @@ if failures.empty?
   # `docker container ls`, so the CPU verification sails straight past one and
   # the readiness probe then fails on a timeout that names nothing.
   #
-  # The three properties below sit inside `if health_include` on purpose. Each
-  # check must name one defect: with them unguarded, deleting the include was
-  # reported by all three at once and the existence check above became the one
-  # thing no mutation needed, which is the shape this repository keeps closing.
-  # The self-test found it.
-  health_include = tasks.find { |task| task.dig("vars", "container_health_service_name") == "bindery" }
-  failures << "Bindery must refuse a container that runs but never serves" unless
-    tasks.count { |task| task.dig("vars", "container_health_service_name") == "bindery" } == 1
-  if health_include
-    health_index = tasks.index { |task| task.dig("vars", "container_health_service_name") == "bindery" }
+  # Each property below sits inside a presence guard on purpose. Each check must
+  # name one defect: with them unguarded, deleting the includes was reported by
+  # all of them at once and the existence check became the one assertion no
+  # mutation needed, which is the shape this repository keeps closing. The
+  # self-test found it.
+  health_indexes = tasks.each_index.select do |index|
+    tasks[index].dig("vars", "container_health_service_name") == "bindery"
+  end
+  failures << "Bindery must detect and then refuse a container that runs but never serves" unless
+    health_indexes.length == 2
+
+  # The recovery `up`, told apart from the deployment by `recreate` rather than
+  # by position, because position is what the ordering property below is for.
+  recreate = tasks.find { |task| task.dig("community.docker.docker_compose_v2", "recreate") }
+  recreate_options = recreate ? recreate["community.docker.docker_compose_v2"] : {}
+  failures << "Bindery must force-recreate only the services Docker reports as stuck" unless
+    recreate_options["recreate"] == "always" &&
+    recreate_options["dependencies"] == false &&
+    recreate_options["services"] == "{{ container_health_stuck_services }}"
+  # THE idempotence property. An unconditional force-recreate would replace this
+  # stack on every five-minute converge; the list it is gated on is empty on a
+  # converged host and empty under --check.
+  failures << "the Bindery force-recreate must be conditional on a container actually being stuck" unless
+    recreate && recreate["when"].to_s.include?("container_health_stuck_services")
+  recreate_block = tasks.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? { |inner| inner.dig("community.docker.docker_compose_v2", "recreate") }
+  end
+  failures << "the Bindery force-recreate must catch its own failure" unless
+    recreate_block && flatten_tasks(recreate_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_recreate_failure_message")
+    end
+
+  if health_indexes.length == 2
+    detect_index, verdict_index = health_indexes
+    detect = tasks[detect_index]
+    verdict = tasks[verdict_index]
+    recreate_index = recreate ? tasks.index(recreate) : nil
     cpu_index = tasks.index { |task| task.dig("vars", "container_cpu_service_name") == "bindery" }
-    failures << "the Bindery container health refusal must run before anything trusts the deployment" unless
-      cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index
-    failures << "the Bindery container health refusal must name the deployed Compose project" unless
-      health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"
-    failures << "the Bindery container health refusal must be handed the deployment's own failure" unless
-      health_include.dig("vars", "container_health_deploy_failure_message")
-                    .to_s.include?("bindery_deploy_failure_message")
+    # Detect, recreate, refuse, and all three before anything trusts the
+    # deployment: a container in `Restarting` still appears in
+    # `docker container ls`, so the CPU verification would sail past one.
+    failures << "the Bindery container health passes must bracket the force-recreate" unless
+      cpu_index && deploy_index && recreate_index &&
+      deploy_index < detect_index && detect_index < recreate_index &&
+      recreate_index < verdict_index && verdict_index < cpu_index
+    failures << "the Bindery container health detection must not refuse before the recreate" unless
+      detect["vars"]["container_health_refuse"] == false
+    failures << "the Bindery container health verdict must be the one that refuses" unless
+      verdict["vars"].fetch("container_health_refuse", true) == true
+    failures << "each Bindery container health pass must name the deployed Compose project" unless
+      [detect, verdict].all? do |pass|
+        pass["vars"]["container_health_project_name"] == "{{ bindery_compose_project_name }}"
+      end
+    # Compose fails a crash-looping container with "container bindery is
+    # unhealthy", which says nothing about why, and a deployment or a recreate
+    # that failed for some OTHER reason has to leave with the message that says
+    # so. Each pass carries the message of the operation before it.
+    failures << "the Bindery container health detection must be handed the deployment's own failure" unless
+      detect["vars"]["container_health_deploy_failure_message"]
+            .to_s.include?("bindery_deploy_failure_message")
+    failures << "the Bindery container health verdict must be handed the recreate's own failure" unless
+      verdict["vars"]["container_health_deploy_failure_message"]
+             .to_s.include?("bindery_recreate_failure_message")
+    # A refusal that does not say the retry was already spent reads as a service
+    # needing one more converge, which is the dishonesty the bound exists against.
+    failures << "the Bindery container health verdict must say whether a recreate was spent" unless
+      verdict["vars"]["container_health_retried"].to_s.include?("bindery_recreate_spent")
   end
 
   # Compose fails a crash-looping container with "container bindery is
@@ -242,7 +298,10 @@ if failures.empty?
   # it and hands it on.
   deploy_block = tasks.find do |task|
     task["block"].is_a?(Array) &&
-      flatten_tasks(task["block"]).any? { |inner| inner.key?("community.docker.docker_compose_v2") }
+      flatten_tasks(task["block"]).any? do |inner|
+        compose = inner["community.docker.docker_compose_v2"]
+        compose.is_a?(Hash) && !compose.key?("recreate")
+      end
   end
   failures << "the Bindery deployment must catch its own failure" unless
     deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|

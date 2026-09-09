@@ -74,7 +74,13 @@
 # container in `Restarting` still appears in `docker container ls --quiet`, so
 # the CPU verification below would sail straight past one and the readiness probe
 # further down would fail on a timeout that names nothing.
-- name: Refuse a Bindery container that runs but never serves
+#
+# This pass detects, prints the evidence and publishes
+# container_health_stuck_services WITHOUT refusing, because the recreate below
+# has to happen before the verdict. It still re-raises a deployment failure that
+# no stuck container explains: a Compose file that does not parse is not
+# something a recreate is allowed to absorb.
+- name: Detect a Bindery container that runs but never serves
   ansible.builtin.include_role:
     name: container_health
   vars:
@@ -82,6 +88,91 @@
     container_health_project_name: "{{ bindery_compose_project_name }}"
     container_health_deploy_failure_message: >-
       {{ bindery_deploy_failure_message | default('') }}
+    container_health_refuse: false
+
+# EXACTLY ONE, and only of the services Docker says are stuck. This is the
+# repair a human performed by hand on 2026-09-08 (`docker rm -f bindery`, then a
+# converge), and it is here because CLAUDE.md's standing rule is that a broken
+# host is repaired by merging to `main` rather than by a hand on the NAS -- a
+# converge that can only refuse is a converge that cannot heal it.
+#
+# FORCED, because `up -d` will not do it: measured against a throwaway project
+# on Docker 29.7.2, `up -d` against an unchanged specification keeps the same
+# container id and recreates nothing, `up -d --wait` waits and still recreates
+# nothing, and `recreate: always` -- which the module renders as
+# --force-recreate -- replaced the container. `dependencies: false` renders as
+# --no-deps, which matters the moment a stack has more than one service; Bindery
+# has one, and naming exactly the stuck services rather than the project keeps
+# that true if it ever gains another.
+#
+# CONDITIONAL, and that condition is the whole idempotence argument. An
+# unconditional force-recreate would churn this stack on every five-minute tick.
+# The list is empty on a converged host and empty under --check, so this task is
+# skipped on every run that has nothing to repair.
+#
+# BOUNDED AT ONE PER RUN by being a single task rather than a loop, and the
+# re-check below is what keeps that honest: a container that comes back stuck
+# fails the converge naming the retry it already spent, so a container looping
+# for a reason a recreate cannot fix never goes green and never becomes an
+# invisible retry loop.
+- name: Recreate a Bindery container that runs but never serves
+  block:
+    - name: Force-recreate the stuck Bindery services
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/bindery"
+        project_name: "{{ bindery_compose_project_name }}"
+        files: "{{ platform_service_compose_files['bindery'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/bindery/.env"]
+        services: "{{ container_health_stuck_services }}"
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      when: container_health_stuck_services | default([]) | length > 0
+      register: bindery_wedged_recreate
+  rescue:
+    # Carried rather than re-raised here. `--wait` fails a container that came
+    # back unhealthy, which the re-check below diagnoses far better than Compose
+    # can; a recreate that failed for any OTHER reason left no stuck container
+    # behind, and the second pass re-raises this message unchanged for exactly
+    # that case.
+    - name: Record the Bindery recreate that did not recover the service
+      ansible.builtin.set_fact:
+        bindery_recreate_failure_message: >-
+          The force-recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}
+
+# Whether a recreate was actually spent, recorded before the second pass
+# overwrites the list it was decided from.
+- name: Record whether a Bindery recreate was spent
+  ansible.builtin.set_fact:
+    bindery_recreate_spent: >-
+      {{ container_health_stuck_services | default([]) | length > 0 }}
+
+- name: Report the Bindery wedged-container recovery check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ bindery_compose_project_name }} that Docker reports as restarting or
+      unhealthy, print its state, force-recreate exactly those services once
+      with no dependencies, and fail naming that retry if any of them came back
+      stuck. Compose's dry run starts nothing and does not wait on container
+      health, so check mode cannot reach that path and recreates nothing.
+  when: ansible_check_mode
+
+# The verdict. Nothing stuck here means the recreate worked, or that there was
+# never anything to repair; either way the run continues. Anything still stuck
+# fails, and says the retry has already been spent.
+- name: Refuse a Bindery container that stayed wedged after its recreate
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: bindery
+    container_health_project_name: "{{ bindery_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ bindery_recreate_failure_message | default('') }}
+    container_health_retried: "{{ bindery_recreate_spent }}"
 
 - name: Report the Bindery deployment
   ansible.builtin.include_role:
@@ -89,7 +180,14 @@
     tasks_from: deployment_report
   vars:
     ntfy_deployment_report_service: Bindery
-    ntfy_deployment_report_changed: "{{ bindery_deploy is changed }}"
+    # Both Compose results, because a force-recreate that repaired a wedged
+    # container changed the deployment as surely as the deploy above did, and a
+    # report gated on the deploy alone would say nothing on the one converge an
+    # operator most wants to hear about. It is registered even when skipped, and
+    # `default({})` covers the paths that never reach it at all.
+    ntfy_deployment_report_changed: >-
+      {{ (bindery_deploy is changed)
+         or ((bindery_wedged_recreate | default({})) is changed) }}
 
 - name: Verify Bindery effective container CPU policy
   ansible.builtin.include_role:

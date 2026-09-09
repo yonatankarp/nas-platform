@@ -895,41 +895,65 @@ STATIC_ROWS = [
   {
     # #509. Nothing else in the run says a word about a container that runs and
     # never serves: the deploy reported changed=0 against one in `Restarting`
-    # and the play walked on.
+    # and the play walked on for three days.
     name: "a deployment nothing checks the container state after",
     break: lambda { |root|
       role_tasks(root) do |document|
         document.reject! { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
       end
     },
-    expects: "Bindery must refuse a container that runs but never serves"
+    expects: "Bindery must detect and then refuse a container that runs but never serves"
   },
   {
     # A container in `Restarting` still appears in `docker container ls`, so a
-    # refusal placed after the CPU verification lets that verification pass
+    # verdict placed after the CPU verification lets that verification pass
     # against a container that is crash-looping.
-    name: "a container health refusal that runs after the CPU verification",
+    name: "a container health verdict that runs after the CPU verification",
     break: lambda { |root|
       role_tasks(root) do |document|
-        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
-        document.delete(health)
+        verdict = document.select { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }.last
+        document.delete(verdict)
         cpu = document.index { |task| task.is_a?(Hash) && task.dig("vars", "container_cpu_service_name") }
-        document.insert(cpu + 1, health)
+        document.insert(cpu + 1, verdict)
       end
     },
-    expects: "the Bindery container health refusal must run before anything trusts the deployment"
+    expects: "the Bindery container health passes must bracket the force-recreate"
+  },
+  {
+    # A first pass that refuses is a first pass the recreate below never runs
+    # after, which is refuse-only wearing the shape of a recovery.
+    name: "a container health detection that refuses before the recreate can run",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        detect = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+        detect["vars"]["container_health_refuse"] = true
+      end
+    },
+    expects: "the Bindery container health detection must not refuse before the recreate"
+  },
+  {
+    # A second pass that refuses nothing is a converge that goes green on a
+    # container the recreate failed to repair.
+    name: "a container health verdict that refuses nothing",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        verdict = document.select { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }.last
+        verdict["vars"]["container_health_refuse"] = false
+      end
+    },
+    expects: "the Bindery container health verdict must be the one that refuses"
   },
   {
     # The project label is what selects the containers. Aimed at another project
     # it inspects nothing and passes against any state at all.
-    name: "a container health refusal aimed at another Compose project",
+    name: "a container health pass aimed at another Compose project",
     break: lambda { |root|
       role_tasks(root) do |document|
-        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
-        health["vars"]["container_health_project_name"] = "bindery"
+        verdict = document.select { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }.last
+        verdict["vars"]["container_health_project_name"] = "bindery"
       end
     },
-    expects: "the Bindery container health refusal must name the deployed Compose project"
+    expects: "each Bindery container health pass must name the deployed Compose project"
   },
   {
     # Compose fails a crash-looping container with "container bindery is
@@ -947,17 +971,101 @@ STATIC_ROWS = [
     expects: "the Bindery deployment must catch its own failure"
   },
   {
-    # A refusal handed nothing cannot re-raise a failure it could not classify,
-    # so a Compose file that does not parse would fail with a message about
-    # container health instead.
-    name: "a container health refusal handed no deployment failure",
+    name: "a container health detection handed no deployment failure",
     break: lambda { |root|
       role_tasks(root) do |document|
-        health = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
-        health["vars"]["container_health_deploy_failure_message"] = ""
+        detect = document.find { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }
+        detect["vars"]["container_health_deploy_failure_message"] = ""
       end
     },
-    expects: "the Bindery container health refusal must be handed the deployment's own failure"
+    expects: "the Bindery container health detection must be handed the deployment's own failure"
+  },
+  {
+    # A recreate that failed for a reason other than the container coming back
+    # stuck leaves nothing for the verdict to find, so its message is the only
+    # thing that can still fail the run.
+    name: "a recreate whose own failure message is thrown away",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.set_fact", "bindery_recreate_failure_message")
+        end
+        task["ansible.builtin.set_fact"] = { "bindery_recreate_failed" => true }
+      end
+    },
+    expects: "the Bindery force-recreate must catch its own failure"
+  },
+  {
+    name: "a container health verdict handed no recreate failure",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        verdict = document.select { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }.last
+        verdict["vars"]["container_health_deploy_failure_message"] = ""
+      end
+    },
+    expects: "the Bindery container health verdict must be handed the recreate's own failure"
+  },
+  {
+    # A refusal that does not say the retry was already spent reads as a service
+    # needing one more converge, which is the dishonesty the bound exists to
+    # avoid.
+    name: "a verdict that never says the retry was spent",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        verdict = document.select { |task| task.is_a?(Hash) && task.dig("vars", "container_health_service_name") }.last
+        verdict["vars"].delete("container_health_retried")
+      end
+    },
+    expects: "the Bindery container health verdict must say whether a recreate was spent"
+  },
+  {
+    # THE idempotence property. Unconditional, this replaces the Bindery stack
+    # on every five-minute converge for ever.
+    name: "a force-recreate spent on every converge",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) { |candidate| candidate.dig("community.docker.docker_compose_v2", "recreate") }
+        task.delete("when")
+      end
+    },
+    expects: "the Bindery force-recreate must be conditional on a container actually being stuck"
+  },
+  {
+    # --no-deps is what keeps a recovery from recreating a database beside the
+    # application that wedged. Bindery has one service today; naming them is
+    # what keeps that true when it gains another.
+    name: "a force-recreate that takes a stack's dependencies with it",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) { |candidate| candidate.dig("community.docker.docker_compose_v2", "recreate") }
+        task["community.docker.docker_compose_v2"]["dependencies"] = true
+      end
+    },
+    expects: "Bindery must force-recreate only the services Docker reports as stuck"
+  },
+  {
+    name: "a second plain Bindery deployment",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          compose = candidate["community.docker.docker_compose_v2"]
+          compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
+        end
+        document.push(Marshal.load(Marshal.dump(task)))
+      end
+    },
+    expects: "Bindery must deploy through docker_compose_v2"
+  },
+  {
+    # The bound is one per converge, and it is a bound because it is one task.
+    name: "a force-recreate spent twice in one converge",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) { |candidate| candidate.dig("community.docker.docker_compose_v2", "recreate") }
+        document.push(Marshal.load(Marshal.dump(task)))
+      end
+    },
+    expects: "Bindery must force-recreate a stuck container exactly once per converge"
   },
   {
     name: "a world-readable environment render",
@@ -2037,25 +2145,44 @@ PROGRAM_MUTATIONS = [
     rows: ["a credential-bearing request rendered in full"]
   },
   {
-    label: "the container health refusal existence check",
+    label: "the container health pass existence check",
     program: :static,
-    from: 'tasks.count { |task| task.dig("vars", "container_health_service_name") == "bindery" } == 1',
-    to: "true",
+    from: 'failures << "Bindery must detect and then refuse a container that runs but never serves" unless
+    health_indexes.length == 2',
+    to: 'failures << "" if false',
     rows: ["a deployment nothing checks the container state after"]
   },
   {
-    label: "the container health refusal ordering check",
+    label: "the container health bracketing check",
     program: :static,
-    from: "cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index",
+    from: "cpu_index && deploy_index && recreate_index &&
+      deploy_index < detect_index && detect_index < recreate_index &&
+      recreate_index < verdict_index && verdict_index < cpu_index",
     to: "true",
-    rows: ["a container health refusal that runs after the CPU verification"]
+    rows: ["a container health verdict that runs after the CPU verification"]
+  },
+  {
+    label: "the deferred detection check",
+    program: :static,
+    from: 'detect["vars"]["container_health_refuse"] == false',
+    to: "true",
+    rows: ["a container health detection that refuses before the recreate can run"]
+  },
+  {
+    label: "the refusing verdict check",
+    program: :static,
+    from: 'verdict["vars"].fetch("container_health_refuse", true) == true',
+    to: "true",
+    rows: ["a container health verdict that refuses nothing"]
   },
   {
     label: "the container health project check",
     program: :static,
-    from: 'health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"',
+    from: '[detect, verdict].all? do |pass|
+        pass["vars"]["container_health_project_name"] == "{{ bindery_compose_project_name }}"
+      end',
     to: "true",
-    rows: ["a container health refusal aimed at another Compose project"]
+    rows: ["a container health pass aimed at another Compose project"]
   },
   {
     label: "the caught deployment failure check",
@@ -2069,10 +2196,64 @@ PROGRAM_MUTATIONS = [
   {
     label: "the handed-on deployment failure check",
     program: :static,
-    from: 'health_include.dig("vars", "container_health_deploy_failure_message")
-                    .to_s.include?("bindery_deploy_failure_message")',
+    from: 'detect["vars"]["container_health_deploy_failure_message"]
+            .to_s.include?("bindery_deploy_failure_message")',
     to: "true",
-    rows: ["a container health refusal handed no deployment failure"]
+    rows: ["a container health detection handed no deployment failure"]
+  },
+  {
+    label: "the caught recreate failure check",
+    program: :static,
+    from: 'recreate_block && flatten_tasks(recreate_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_recreate_failure_message")
+    end',
+    to: "true",
+    rows: ["a recreate whose own failure message is thrown away"]
+  },
+  {
+    label: "the handed-on recreate failure check",
+    program: :static,
+    from: 'verdict["vars"]["container_health_deploy_failure_message"]
+             .to_s.include?("bindery_recreate_failure_message")',
+    to: "true",
+    rows: ["a container health verdict handed no recreate failure"]
+  },
+  {
+    label: "the spent-retry disclosure check",
+    program: :static,
+    from: 'verdict["vars"]["container_health_retried"].to_s.include?("bindery_recreate_spent")',
+    to: "true",
+    rows: ["a verdict that never says the retry was spent"]
+  },
+  {
+    label: "the conditional force-recreate check",
+    program: :static,
+    from: 'recreate && recreate["when"].to_s.include?("container_health_stuck_services")',
+    to: "true",
+    rows: ["a force-recreate spent on every converge"]
+  },
+  {
+    label: "the narrow force-recreate check",
+    program: :static,
+    from: 'recreate_options["recreate"] == "always" &&
+    recreate_options["dependencies"] == false &&
+    recreate_options["services"] == "{{ container_health_stuck_services }}"',
+    to: "true",
+    rows: ["a force-recreate that takes a stack's dependencies with it"]
+  },
+  {
+    label: "the single deployment check",
+    program: :static,
+    from: 'compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1',
+    to: "true",
+    rows: ["a second plain Bindery deployment"]
+  },
+  {
+    label: "the single force-recreate check",
+    program: :static,
+    from: 'compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1',
+    to: "true",
+    rows: ["a force-recreate spent twice in one converge"]
   },
   {
     label: "the readable recoverability guard check",
