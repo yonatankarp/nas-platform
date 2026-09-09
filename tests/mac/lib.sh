@@ -154,8 +154,18 @@ mac_validate_integration_callback() {
 # integration controller's per-suite `false` default would silently keep Seafile
 # out of every lane and has to be deleted in the same change. Nothing has to
 # come back to this line.
+#
+# nextcloud_deployment_enabled is the third, and every word above applies to it
+# unchanged -- #500 lands Nextcloud gated off exactly as #460 landed Seafile, so
+# without this line the lane would deploy nothing and report a full pass over
+# sixteen services while the seventeenth was never started. It is a separate
+# request rather than a shared one because the two gates are separate decisions:
+# the point of #500's first half is that both stacks run side by side while the
+# choice between them is evaluated, so a lane that could only ask for both at
+# once could not prove either alone.
 mac_ansible_playbook() {
-  set -- "$@" -e nas_compose_minimum=2.24.4 -e seafile_deployment_enabled=true
+  set -- "$@" -e nas_compose_minimum=2.24.4 -e seafile_deployment_enabled=true \
+    -e nextcloud_deployment_enabled=true
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
@@ -212,7 +222,9 @@ mac_target_container_names() {
         "$mac_project-paperless-tika" "$mac_project-pinchflat" \
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
         "$mac_project-seerr" "$mac_project-seafile" "$mac_project-seafile-db" \
-        "$mac_project-seafile-cache"
+        "$mac_project-seafile-cache" "$mac_project-nextcloud" \
+        "$mac_project-nextcloud-cron" "$mac_project-nextcloud-db" \
+        "$mac_project-nextcloud-cache"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -235,7 +247,7 @@ mac_target_container_names() {
 # no caller outside that function can observe an order at all.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr seafile'
+trailarr seerr seafile nextcloud'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

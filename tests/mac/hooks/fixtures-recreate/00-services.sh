@@ -74,8 +74,13 @@ mac_recreate_and_reassert seerr seerr seerr seerr run
 # deployed bundle still authenticates against databases whose data outlived their
 # containers.
 mac_recreate_and_reassert seafile seafile seafile 'seafile db cache' run
+# All four, for the reason above and one of its own: the application and the cron
+# sidecar share the /var/www/html volume, so recreating either alone would leave
+# the claim that the shared mount is re-established from the deployed bundle
+# untested. The run phase that follows is what notices -- cron.php can only have
+# recorded a background job mode if the sidecar found a real installation there.
+mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache' run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane has no Nextcloud container to recreate'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'
