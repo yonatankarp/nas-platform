@@ -2249,6 +2249,59 @@ def python_top_level_definitions(path)
   definitions
 end
 
+# One line of Python with its string literals removed, so a bracket count over
+# what is left counts code brackets. Without this,
+# MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])") is a line whose
+# brackets happen to balance inside the quoted character class and whose `#`
+# would read as a comment. Triple-quoted strings are not handled and no
+# module-level constant here uses one; one that did would be caught by the
+# per-constant line count below rather than silently mis-extracted.
+PYTHON_STRING_LITERAL = /
+  (?:[rRbBfFuU]{0,2})
+  (?: "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' )
+/x
+def python_bracket_delta(line)
+  code = line.gsub(PYTHON_STRING_LITERAL, "").sub(/#.*\z/, "")
+  code.count("([{") - code.count(")]}")
+end
+
+# Every top-level constant assignment in a Python file as raw source text, keyed
+# by name and collected as a list so a reassignment further down is visible
+# rather than hidden behind the first -- the same shape, and the same reasons, as
+# python_top_level_definitions above. A comment above an assignment belongs to no
+# constant, which is what lets one copy carry prose the other cannot honestly
+# repeat.
+#
+# The extent of an assignment is bracket depth rather than indentation, because a
+# dict or tuple constant closes on a column-0 `}` or `)` that an indentation rule
+# would read as the next top-level statement.
+def python_top_level_constants(path)
+  lines = File.readlines(path, chomp: true)
+  constants = Hash.new { |hash, key| hash[key] = [] }
+  index = 0
+  while index < lines.length
+    name = lines[index][/\A(_?[A-Z][A-Z_0-9]*)\s*=(?!=)/, 1]
+    if name.nil?
+      index += 1
+      next
+    end
+
+    body = [lines[index]]
+    depth = python_bracket_delta(lines[index])
+    while (depth.positive? || body.last.end_with?("\\")) && index + 1 < lines.length
+      index += 1
+      body << lines[index]
+      depth += python_bracket_delta(lines[index])
+    end
+    constants[name] << body.join("\n").rstrip
+    index += 1
+  end
+  # Same reason as python_top_level_definitions: [nil, nil].uniq.length == 1, so
+  # an absent name would read as two files agreeing rather than raising.
+  constants.default_proc = nil
+  constants
+end
+
 
 # scripts/production_auto_deploy.py and scripts/image_prune.py are two
 # self-sufficient single-file programs, and that is structural rather than an
@@ -2354,6 +2407,149 @@ check(failures, unlisted_identical.empty?,
       "scripts/*.py program but are not listed in duplicated_helper_floors, so " \
       "nothing would notice them drifting apart. A verbatim copy is identical " \
       "only until someone edits one side; name it there, with a floor")
+
+
+# --- the same rule one level down, and one file wider (#515) -----------------
+#
+# Two holes in everything above, both of them the #354 shape displaced.
+#
+# THE PINNED FUNCTION'S OWN INPUT WAS UNPINNED. markdown_escape is compared
+# byte-for-byte; MARKDOWN_PATTERN, the character class it escapes with, is
+# byte-identical in all three copies and was referenced by no test at all. Cut
+# to r"([\\`*])" in one script, both markdown_escape bodies left untouched,
+# policy_test.rb reported all properties holding and the pruner's ntfy
+# notification would have shipped unescaped _ * [ ] # | > while the deploy
+# poller's did not -- with the identity check on the consumer reporting the two
+# copies identical. NOTIFICATION_TIMEOUT_SECONDS = 10 is the same class in two
+# files and was compared by nothing either.
+#
+# THE SUBJECT COULD NOT SEE THE RELAY. Everything above globs scripts/*.py and
+# derives its reverse direction with reduce(:&), so it needs BOTH scripts to
+# define a name. services/dozzle/alert_relay.py is outside that glob by design
+# and CLAUDE.md names it as a third copy site, so a verbatim copy shared by the
+# relay and exactly one script was pinned by nothing: planted as _shared_bound in
+# image_prune.py and alert_relay.py, it left this file green.
+#
+# NOT CLOSED BY CONVERGING BODIES, and the comment above is right about why: the
+# relay's markdown_escape takes a different bound and no annotations and declines
+# to escape intra-word underscores, so it is a relative rather than a duplicate.
+# What it shares with the scripts is the DATA, and data has no such excuse.
+DUPLICATION_SITES = (duplicated_scripts + [File.join(ROOT, "services/dozzle/alert_relay.py")])
+                    .map { |path| path.delete_prefix("#{ROOT}/") }.uniq.sort
+check_floor(failures, DUPLICATION_SITES.length, 3, "single-file programs sharing copied helpers")
+
+site_definitions = DUPLICATION_SITES.to_h do |relative|
+  [relative, python_top_level_definitions(File.join(ROOT, relative))]
+end
+site_constants = DUPLICATION_SITES.to_h do |relative|
+  constants = python_top_level_constants(File.join(ROOT, relative))
+  # An extractor that matched nothing would compare empty to empty and report
+  # every property below as holding. The smallest of the three carries 14.
+  check_floor(failures, constants.length, 10, "#{relative}: top-level constants")
+  [relative, constants]
+end
+
+# Which copies of a constant must agree, and how long the extraction of each must
+# be. The site list is exact in both directions rather than a floor: a copy that
+# disappears is as much a change to this contract as one that diverges, and a
+# floor of two would let the relay drop MARKDOWN_PATTERN silently.
+#
+# `lines` is the honesty half, and it is an exact count rather than the floor the
+# function table uses, because one line is a legitimate length for a constant and
+# a floor of one is not a check. It catches both an extraction that stopped early
+# on a multi-line constant and one that ran into the next statement. A legitimate
+# reformat costs one edit here, which is the stated-number posture this file
+# takes everywhere else.
+duplicated_constant_sites = {
+  "MARKDOWN_PATTERN" => {
+    "sites" => %w[
+      scripts/image_prune.py
+      scripts/production_auto_deploy.py
+      services/dozzle/alert_relay.py
+    ],
+    "lines" => 1
+  },
+  "NOTIFICATION_TIMEOUT_SECONDS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
+    "lines" => 1
+  }
+}
+check_floor(failures, duplicated_constant_sites.length, 2,
+            "module-level constants held identical across the copy sites")
+
+duplicated_constant_sites.each do |constant, expectation|
+  sources = site_constants.select { |_relative, constants| constants.key?(constant) }
+  check(failures, sources.keys.sort == expectation.fetch("sites").sort,
+        "#{constant} is defined in #{sources.keys.sort.inspect}, and this table says " \
+        "#{expectation.fetch('sites').sort.inspect}. A copy that disappeared is as much a " \
+        "change to this contract as one that diverged; say which happened here")
+  sources.each do |relative, constants|
+    # Only the first assignment is compared, so a second one further down the
+    # file would be a value nothing reads.
+    check(failures, constants[constant].length == 1,
+          "#{relative}: assigns #{constant} #{constants[constant].length} times, " \
+          "and only the first is compared")
+    body = constants[constant].first
+    check(failures, body.lines.length == expectation.fetch("lines"),
+          "#{relative}: #{constant} extracted as #{body.lines.length} lines rather than the " \
+          "#{expectation.fetch('lines')} this table states -- the extraction stopped early or " \
+          "ran past the assignment, and either way the comparison below is not reading the " \
+          "whole value")
+    assignments = body.lines.count { |line| line.match?(/\A_?[A-Z][A-Z_0-9]*\s*=(?!=)/) }
+    check(failures, assignments == 1,
+          "#{relative}: the #{constant} extraction covers #{assignments} top-level " \
+          "assignments, so it ran past the one it is supposed to compare")
+  end
+  bodies = sources.values.map { |constants| constants[constant].first }
+  check(failures, bodies.uniq.length == 1,
+        "every copy site must spell #{constant} identically, and " \
+        "#{sources.keys.sort.inspect} do not. This is the input to a helper the check " \
+        "above already pins: markdown_escape can be byte-identical in all three files " \
+        "while one of them escapes a different character class, and that reads as the " \
+        "copies agreeing (#515)")
+end
+
+# The reverse direction, derived rather than stated, exactly as the reduce(:&)
+# stanza above derives it for functions across scripts/*.py -- and for the same
+# reason, since a stated list of what must match fails open.
+#
+# TWO DIFFERENCES FROM THAT STANZA, both of them the holes this closes. The
+# subject is the three copy sites rather than the glob, so the relay is in it.
+# And the rule is "SOME PAIR is byte-identical" rather than "every site that
+# defines it agrees": the weaker phrasing fails open on precisely the shape being
+# closed, because a name in all three where two agree and the third differs on
+# purpose would go unflagged while those two sat unpinned. markdown_escape is
+# clean here because it is excluded by name, not because its bodies disagree.
+#
+# The stanza above is this rule over a narrower subject and is left alone: its
+# glob picks up a fourth scripts/*.py program that this stated site list would
+# not, so the two cover different futures. A divergence in their overlap is
+# reported twice, which is noise rather than a defect.
+site_names = DUPLICATION_SITES.to_h do |relative|
+  [relative, site_definitions.fetch(relative).keys.to_set + site_constants.fetch(relative).keys.to_set]
+end
+shared_across_sites = site_names.values.combination(2).map { |left, right| left & right }
+                                .reduce(Set.new, :|).sort
+check_floor(failures, shared_across_sites.length, 15,
+            "top-level names shared by at least two of the copy sites")
+listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
+unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|
+  bodies = DUPLICATION_SITES.flat_map do |relative|
+    [site_definitions.fetch(relative), site_constants.fetch(relative)]
+      .filter_map { |table| table[name].first if table.key?(name) }
+  end
+  # Two sites spelling it the same way is what makes it a copy. Comparing
+  # lengths rather than asking whether every site agrees is the whole point:
+  # a third site differing on purpose must not excuse the pair that does not.
+  bodies.length != bodies.uniq.length
+end
+check(failures, unlisted_pairwise.empty?,
+      "#{unlisted_pairwise.inspect} are spelled byte-identically in two or more of " \
+      "#{DUPLICATION_SITES.inspect} but are listed in neither duplicated_helper_floors nor " \
+      "duplicated_constant_sites, so nothing would notice them drifting apart. These files " \
+      "cannot share a module -- each is installed as exactly one file, and the relay's copy " \
+      "lives inside a container -- so a verbatim copy is identical only until someone edits " \
+      "one side. Name it in the table that fits, with its floor or its line count")
 
 
 report(failures, "policy: all properties hold", "policy violation(s)")

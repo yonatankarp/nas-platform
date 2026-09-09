@@ -2742,6 +2742,49 @@ expect_failure(failures, "fresh duplicate helper left unlisted",
   File.write(path, "#{File.read(path)}\n\n#{source[opening...closing].rstrip}\n")
 end
 
+# The same rule one level down, on the pinned function's own input. #515's own
+# probe, planted rather than described: MARKDOWN_PATTERN cut from fifteen
+# metacharacters to three, with both markdown_escape bodies left byte-identical.
+# Before the check this row proves, the policy set reported all properties
+# holding and the pruner's ntfy notification would have shipped unescaped
+# _ * [ ] # | > while the deploy poller's did not -- the identity guard on the
+# consumer saying the copies agreed the whole time.
+expect_failure(failures, "escaping character class diverged",
+               "every copy site must spell MARKDOWN_PATTERN identically",
+               detected_by: %i[policy]) do |root|
+  mutate_text(root, "scripts/image_prune.py",
+              /^MARKDOWN_PATTERN = .*$/, 'MARKDOWN_PATTERN = re.compile(r"([\\\\`*])")')
+end
+
+# The other direction on the same table: a copy site that stops carrying the
+# constant at all. The site list is exact rather than a floor because a copy that
+# disappears changes the contract as much as one that diverges, and a floor of
+# two would let the relay drop it in silence.
+expect_failure(failures, "escaping character class dropped by the relay",
+               "A copy that disappeared is as much a change to this contract as one that diverged",
+               detected_by: %i[policy]) do |root|
+  mutate_text(root, "services/dozzle/alert_relay.py", /^MARKDOWN_PATTERN = .*\n/, "")
+end
+
+# The hole the reduce(:&) tripwire above could not reach: it needs BOTH
+# scripts/*.py programs to define a name, so a verbatim copy shared by the relay
+# and exactly one script was pinned by nothing. #515 planted this and the policy
+# set stayed green.
+expect_failure(failures, "fresh duplicate shared with the relay left unlisted",
+               "are spelled byte-identically in two or more of",
+               detected_by: %i[policy]) do |root|
+  helper = <<~PYTHON
+
+    def _shared_bound(value: int) -> int:
+        """The bound both copies must agree on."""
+        return min(value, 128)
+  PYTHON
+  %w[scripts/image_prune.py services/dozzle/alert_relay.py].each do |relative|
+    path = File.join(root, relative)
+    File.write(path, "#{File.read(path).rstrip}\n\n#{helper}")
+  end
+end
+
 audit_policy_detection(failures)
 report_mutation_census
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")
