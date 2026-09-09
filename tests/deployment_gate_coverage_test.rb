@@ -117,7 +117,7 @@ SUBJECT_FLOOR = 15           # 16 implemented, of which at most the 1 gated one 
 MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
 TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
 LANE_TAG_FLOOR = 16          # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 25          # the role tags site.yml declares
+SITE_TAG_FLOOR = 29          # the role tags site.yml declares
 
 failures = []
 
@@ -289,7 +289,16 @@ check_floor(failures, (lane_tags & manifest_tags).length, LANE_TAG_FLOOR,
 
 subjects.each do |name|
   tag = service_tags[name]
-  next if tag.nil? # already reported against service_image_sources above
+  # Reported rather than skipped. A subject with no tag would otherwise drop out
+  # of the requirement below and take its assertion with it -- the exact shape
+  # this file exists to remove -- and the emptiness check above says nothing
+  # about one missing row. tests/policy_ci_test.rb does hold that table against
+  # the manifest, but a check that relies on another check to notice its own
+  # subject going quiet is relying on a coupling nothing states.
+  check(failures, !tag.nil?,
+        "#{name} has no tests/integration.sh service_image_sources entry, so this check " \
+        "cannot say which lane would converge it and would otherwise pass it over in silence")
+  next if tag.nil?
 
   check(failures, lane_tags.include?(tag),
         "#{name} deploys -- its gate is on -- and no integration lane in tests/ci/suites.conf " \
