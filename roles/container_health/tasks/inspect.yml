@@ -1,7 +1,8 @@
 ---
 # Two daemon-side filters rather than one, and the union of them, because
-# neither alone sees both shapes this is about. Measured against throwaway
-# crash-looping projects on Docker 29.7.2:
+# neither alone sees both shapes this is about. Every case below was measured
+# against a throwaway project on Docker 29.7.2, and each was then put through
+# this role rather than only through `docker`:
 #
 #   * a container that declares a health check and crash-loops reports
 #     Status=restarting AND Health=unhealthy, so either filter finds it;
@@ -12,8 +13,9 @@
 #     every one of them;
 #   * a container that is running, health-checked and failing its probe -- the
 #     wedged boot roles/seafile carried a private recovery for until #501
-#     removed the service -- reports Running=true and Health=unhealthy while
-#     Status stays `running`, so `--filter status=restarting` returns nothing.
+#     removed the service -- reports Running=true, Health=unhealthy,
+#     RestartCount=0 and Status=`running`, so `--filter status=restarting`
+#     returns nothing and only the health filter selects it.
 #
 # Both filters are evaluated by the daemon, so the converged case is two
 # commands that print nothing and this file mutates and decides nothing. That is
