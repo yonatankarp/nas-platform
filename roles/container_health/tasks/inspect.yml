@@ -21,10 +21,15 @@
 # commands that print nothing and this file mutates and decides nothing. That is
 # what makes the idempotence structural rather than argued.
 #
-# `--all` is deliberately NOT passed. It would additionally return exited
-# containers, and an exited container keeps whatever health status it last had,
-# so a one-shot job that has finished would be reported as a service that never
-# serves.
+# `--all` is deliberately NOT passed, for two reasons that were both observed.
+# It would additionally return exited containers, and an exited container keeps
+# whatever health status it last had, so a one-shot job that has finished would
+# be reported as a service that never serves. And an exited container is not
+# this class anyway: a plain `up` starts one, which is exactly what a converge
+# already does before this runs. Measured while building the fixture -- a
+# container stopped by hand with `docker kill` does NOT come back under
+# `restart: unless-stopped`, because Docker treats a manual stop as a stop, so
+# it sits `exited` until the next `up`, and the next `up` is what repairs it.
 - name: List restarting containers in the managed Compose project
   ansible.builtin.command:
     argv:
