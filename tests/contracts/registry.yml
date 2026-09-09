@@ -28,7 +28,5 @@ contracts:
     path: tests/contracts/pinchflat.sh
   - service: seerr
     path: tests/contracts/seerr.sh
-  - service: seafile
-    path: tests/contracts/seafile.sh
   - service: nextcloud
     path: tests/contracts/nextcloud.sh

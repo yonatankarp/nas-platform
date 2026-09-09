@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running sixteen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -98,7 +98,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 ```
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile
+smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
 nextcloud idempotence-check full` — the roster is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
@@ -263,11 +263,11 @@ memory sat at 27% with PSI reporting about 1% stall; and the two workloads that
 could be large, Immich's ML container and Jellyfin transcoding, read 93 MiB and
 785 MiB because they are bursty rather than resident. Swap is 2 GB and was
 entirely consumed at a swappiness of 60, about 2.4 GB paged out over 23 hours of
-uptime, which is a trickle and not pressure. Those figures were taken while
-Seafile was still deployment-gated off, so none of them include it; #499 has
-since flipped that gate, which means the measurement is now one stack behind the
-host it describes and the next one has to be taken fresh rather than adjusted.
-Nextcloud is gated off in its turn (#500), so its four containers are not in
+uptime, which is a trickle and not pressure. Those figures were taken before
+this host's file-sync stack changed twice over -- Seafile was gated off then,
+#499 turned it on, and #501 removed it -- so the measurement is behind the host
+it describes and the next one has to be taken fresh rather than adjusted.
+Nextcloud replaced it (#500), so its four containers are not in
 these numbers either, and a PostgreSQL cluster plus a PHP application is the
 workload most likely to move them. Only `paperless_tika` declares `mem_limit`, and only
 because it is a JVM and sized its own heap off the host without one (the
@@ -402,7 +402,7 @@ The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
 for: `static`, `docs`, `reconciliation` and three suite legs instead of all
-seventeen (#395). One leg stands for the rest because the matrix is uniform and
+sixteen (#395). One leg stands for the rest because the matrix is uniform and
 stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
 `case "$SUITE"` for every suite and asserts the argv, and
 `tests/ci/classify_changes_test.rb` reads each job's `needs.changes.outputs.*`
@@ -687,14 +687,7 @@ header the platform POSTs in), Beszel's private key, Seerr's mode-0644
 `settings.json` and the `settings.old.json` beside it, Bindery's whole
 configuration root (its SQLite database keeps every credential it holds in
 clear, the Audiobookshelf key it triggers library scans with included, and its
-pre-upgrade backup is a copy of that database beside it), Seafile's `conf/`
-directory (the image's `/scripts/start.py` writes the plaintext administrator
-password to `conf/admin.txt` on **every** container start and removes it in a
-`finally:`, so a container killed mid-start leaves it on disk), Seafile's
-mode-0700 backup root (`roles/seafile` writes a `mariadb-dump` of `ccnet_db`,
-`seafile_db` and `seahub_db` there before every pinned upgrade — every account
-row Seafile holds, as plain readable SQL — beside a copy of that same `conf/`,
-with `admin.txt` excluded by name rather than by luck), Nextcloud's
+pre-upgrade backup is a copy of that database beside it), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the

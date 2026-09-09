@@ -3,9 +3,9 @@
 Each media-acquisition project is investigated once, against upstream source
 *and* a running container, and what the investigation found is written down here
 so the next person does not pay for it twice. Six of the eight files indexed
-below came out of that programme; the other two are Seafile and Nextcloud, which
-are not media-acquisition projects and are described in their own section for
-that reason.
+below came out of that programme; the other two are Nextcloud and the retired
+Seafile, which are not media-acquisition projects and are described in their own
+section for that reason.
 
 A dossier is not a design and not an approval. It records what the deployed
 version of a service actually does, which of the repository's own rules that
@@ -49,7 +49,9 @@ this teach that no amount of reading upstream would have**. Both subjects are
 dossier was written.
 
 - [Seafile](dossier-seafile.md) — file sync and share, the sixteenth service and
-  the first with a database engine of its own
+  the first with a database engine of its own. **Retired**: #501 removed the
+  service after #500 replaced it with Nextcloud; the dossier is kept for what it
+  recorded, and its header says what stayed on disk
 - [Nextcloud](dossier-nextcloud.md) — the seventeenth service, and the first
   written about a service intended to replace one this platform already runs
 
@@ -57,7 +59,7 @@ They are the exception to two things stated below and each states it in its own
 header: both are derived from several images rather than one, so their pins are
 their own rather than in the block at the end of this file. Read as a pair they
 also answer a question neither answers alone — the Seafile dossier's evidence
-came mostly from a lane nobody can reproduce at a shell, because Docker Desktop
+came mostly from a lane nobody could reproduce at a shell, because Docker Desktop
 ignores `chown` on bind mounts and its stack will not start there, while
 Nextcloud's stack does run on a workstation and most of its confirmations were
 taken that way. The same platform, the same marker convention, and two very
@@ -97,8 +99,8 @@ at the end of each file.
 ## The pins these files rest on
 
 Behaviour is a property of a version. Each of the six acquisition dossiers is
-derived from exactly one image, and the Seafile dossier from the three its stack
-runs; all of them are digest-pinned the way `tests/policy_test.rb` requires — a
+derived from exactly one image, and the Seafile dossier from the three that
+stack ran; all of them are digest-pinned the way `tests/policy_test.rb` requires — a
 readable tag
 for humans and Renovate, and the top-level manifest-list digest for
 reproducibility. When Renovate moves one of these, the findings are suspect

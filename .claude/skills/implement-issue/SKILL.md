@@ -53,7 +53,7 @@ Refuse these rather than weighing them.
    - **Land dark, then flip.** The `<service>_deployment_enabled` idiom. The
      first pull request lands the whole stack converging nothing; the second
      flips the flag in inventory. Preferred, because it never fights the gate's
-     atomicity. `roles/seafile/defaults/main.yml` records why the flag belongs
+     atomicity. `roles/nextcloud/defaults/main.yml` records why the flag belongs
      inside the role rather than on the `site.yml` entry.
    - **Independent issues in sequence.** One pull request each.
 

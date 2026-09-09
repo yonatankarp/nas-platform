@@ -252,29 +252,13 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
-    # The operator switch Seafile is gated on, requested by the lane that claims
-    # to converge it. The sandbox runs -i inventory/local.yml, which binds to
-    # nas_hosts -- the same group as the real NAS -- so there is no group_vars in
-    # which "false on the NAS, true in CI" can be written. Passed on every lane
-    # and not only this one, for the reason #295 gives: a lane handed the other
-    # state passes identically and proves nothing.
-    #
-    # The full lane is here because run_contracts.rb --execute runs every
-    # registered contract on it, seafile.sh among them, and a contract run
-    # against a stack the lane declined to deploy fails.
-    #
-    # This is an override, not a default: the day
-    # inventory/group_vars/all/main.yml turns the switch on for real, this line
-    # silently keeps Seafile out of smoke, idempotence-check and every other
-    # lane, so it has to be flipped or deleted in the same change.
-    integration_seafile_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      seafile|full) integration_seafile_deployment_enabled=true ;;
-    esac
-
-    # The same switch for Nextcloud, and the same three reasons: it is passed on
-    # every lane so a lane requests the state it claims to converge, the full
-    # lane is included because run_contracts.rb --execute reaches nextcloud.sh
+    # The operator switch Nextcloud is gated on, requested by the lane that
+    # claims to converge it. The sandbox runs -i inventory/local.yml, which binds
+    # to nas_hosts -- the same group as the real NAS -- so there is no group_vars
+    # in which "false on the NAS, true in CI" can be written. Passed on every
+    # lane and not only this one, for the reason #295 gives: a lane handed the
+    # other state passes identically and proves nothing. The full lane is
+    # included because run_contracts.rb --execute reaches nextcloud.sh
     # there, and this is an override rather than a default -- the day
     # inventory/group_vars/all/main.yml turns the switch on for real, this line
     # silently keeps Nextcloud out of smoke, idempotence-check and every other
@@ -609,14 +593,14 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       case $lifecycle_event in
         converge)
           # A converge that fails takes the controller with it -- `sh -eu`, no
-          # message -- and the seafile lane's first CI run is what that costs:
-          # `container <ns>-seafile is unhealthy`, then silence after the PLAY
+          # message. The first lane to pay for that was Seafile's, removed in
+          # #501: `container <ns>-... is unhealthy`, then silence after the PLAY
           # RECAP, and no way to tell a slow boot from a wedged one.
           #
-          # Gated on the deployment switch rather than on `suite_is seafile`,
-          # because the switch is the thing that actually says the stack exists
-          # to be read. `suite_is` also matches lanes the switch leaves off, and
-          # a dump of three containers that were never created explains nothing.
+          # Gated on the deployment switch rather than on `suite_is`, because the
+          # switch is the thing that actually says the stack exists to be read.
+          # `suite_is` also matches lanes the switch leaves off, and a dump of
+          # containers that were never created explains nothing.
           #
           # The call is spelled once. tests/integration_controller_execution_test.sh
           # plants "initial converge dropped" on this exact text as a single
@@ -626,9 +610,6 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           converge_status=0
           perform_initial_converge $@ || converge_status=$?
           if [ $converge_status -ne 0 ]; then
-            if [ $integration_seafile_deployment_enabled = true ]; then
-              dump_seafile_diagnostics
-            fi
             if [ $integration_nextcloud_deployment_enabled = true ]; then
               dump_nextcloud_diagnostics
             fi
@@ -1238,50 +1219,6 @@ EOF
       run_paperless_contract assert-persistence
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is seafile; then
-      run_seafile_contract run
-      if [ $INTEGRATION_SUITE = seafile ]; then
-        # Destructive, and confined to this lane: it restarts the server and
-        # reads seafevents.conf back. Never reached from the full lane's
-        # run_contracts.rb sweep, which runs every registered contract under a
-        # 60-second cap and would TERM this one mid-restart.
-        run_seafile_contract restart-persistence
-        # The restart lands BEFORE the second converge deliberately. If Seafile
-        # rewrites [INDEX FILES] on every start rather than only on first run,
-        # the converge that follows repairs it, reports changed, and the recap
-        # check below fails -- which is that refutation arriving as a lane
-        # failure instead of as a contract that passed and proved nothing.
-        run_enabled_idempotence seafile
-        run_play --tags seafile --check --diff
-        run_seafile_verify_only
-        printf 'SEAFILE_RUNTIME_VERIFIED\n'
-
-        # The restore rehearsal, and it is last in this lane because it is the
-        # only destructive thing in it: it drops ccnet_db, seafile_db and
-        # seahub_db and puts them back from the backup roles/seafile took. It
-        # must sit AFTER run_enabled_idempotence for the reason that check
-        # exists -- the converge in the middle of it deliberately changes
-        # something, so a rehearsal placed earlier would fail idempotence for a
-        # change the lane itself asked for.
-        #
-        # Three steps rather than one, and the converge between them is the
-        # whole design. The seed uploads a file; the converge takes THIS
-        # PLATFORM'S backup, forced because no image changed and no upgrade is
-        # pending; the assert restores that backup and downloads the file back
-        # byte for byte. A rehearsal that dumped the database itself would prove
-        # the contract rather than the platform, which is the vacuous shape this
-        # repository keeps closing.
-        #
-        # What it settles cannot be settled any other way: Seafile keeps the
-        # mapping from content-addressed blocks back to filenames only in the
-        # database, so a restore that puts the schemas back and cannot resolve a
-        # filename into bytes is exactly the failure the backup exists to
-        # prevent, and only a download shows it.
-        run_seafile_contract restore-rehearsal-seed
-        run_play --tags seafile -e seafile_pre_upgrade_backup_force=true
-        run_seafile_contract restore-rehearsal-assert
-        printf 'SEAFILE_RESTORE_REHEARSED\n'
-      fi
     fi
 
     if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is nextcloud; then

@@ -327,7 +327,7 @@ check(failures,
         mac_run.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
         mac_run.include?("diagnostic_project=$project_name-$diagnostic_kind") &&
         mac_run.include?('"label=com.docker.compose.project=$project_name-$diagnostic_kind"') &&
-        %w[beszel ntfy dozzle audiobookshelf seafile].all? do |name|
+        %w[beszel ntfy dozzle audiobookshelf nextcloud].all? do |name|
           mac_lib_roster.include?(name) && mac_cleanup_projects.include?(name)
         end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
@@ -1466,7 +1466,7 @@ end
 # thing that sets the floor, and neither can any other parse-based check in this
 # repository. That blindness is why the defect survived two lanes and sixteen
 # services. The pattern matches a tag in value position, so a `!override` written
-# inside a comment (services/seafile/compose.mac.yml has one) is not mistaken for
+# inside a comment (services/nextcloud/compose.mac.yml has one) is not mistaken for
 # a use of it.
 #
 # What this proves, exactly: the floors the two harnesses request are consistent

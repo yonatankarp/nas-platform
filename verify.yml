@@ -81,7 +81,5 @@
       tags: [never]
     - role: paperless_ngx
       tags: [never]
-    - role: seafile
-      tags: [never]
     - role: nextcloud
       tags: [never]

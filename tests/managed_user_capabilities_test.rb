@@ -150,24 +150,9 @@ EXPECTED_SERVICES = {
       "reconcile" => "api/v1/user/{id}/settings/permissions"
     }
   ),
-  # Pinchflat's shape with one deliberate difference. Both declare their single
-  # identity in the environment, but Seafile's is read only while its user table
-  # is empty -- start.py writes conf/admin.txt on every start and
-  # check_init_admin.py consumes it only then -- so there is no reconcile
-  # interface to pin, and the contract says so rather than naming the variables
-  # a second time and claiming a push path the image does not have.
-  "seafile" => MULTI_USER_DEFAULTS.merge(
-    "mode" => "declarative_environment",
-    "interfaces" => {
-      "list" => "INIT_SEAFILE_ADMIN_EMAIL",
-      "create" => "INIT_SEAFILE_ADMIN_EMAIL/INIT_SEAFILE_ADMIN_PASSWORD",
-      "authenticate" => "api2/auth-token",
-      "reconcile" => "none; consumed only while the user table is empty"
-    }
-  ),
-  # Declared in the environment like Seafile's and consumed just as narrowly,
-  # but with a reconcile interface Seafile does not have: occ can reset the
-  # password of an account that already exists. Conditional because
+  # Declared in the environment and consumed narrowly, but with a real reconcile
+  # interface: occ can reset the password of an account that already exists.
+  # Conditional because
   # roles/nextcloud probes first -- a reset re-hashes the password and drops the
   # sessions derived from it, and the poller converges every five minutes.
   "nextcloud" => MULTI_USER_DEFAULTS.merge(

@@ -887,8 +887,8 @@ else
                            "the documentation link sweep found too few documents under docs/")
   documentation_contracts = {
     "README.md" => {
-      /manifest.*seventeen implemented service projects.*no planned (?:media-)?acquisition projects/im =>
-        "distinguish the seventeen implemented service projects from the empty planned set",
+      /manifest.*sixteen implemented service projects.*no planned (?:media-)?acquisition projects/im =>
+        "distinguish the sixteen implemented service projects from the empty planned set",
       /production retirement checkpoint has passed/i => "state that the production retirement checkpoint passed",
       /former metadata manager.*outside repository management.*not deleted/im =>
         "preserve former metadata-manager state outside repository management without claiming deletion",

@@ -74,7 +74,7 @@
     mode: "0600"
   no_log: true
 
-# The switched-off branch. Mirrors roles/seafile and roles/downloaders: the
+# The switched-off branch. Mirrors roles/downloaders: the
 # project is removed rather than merely left alone, so flipping the flag back off
 # is a converge that actually undoes the deployment instead of leaving four
 # containers running that nothing in the repository claims. remove_orphans
@@ -121,20 +121,22 @@
   when: nextcloud_deployment_enabled | bool
 
 # The application and its cron sidecar. No rescue here, and that is a deliberate
-# difference from roles/seafile rather than an omission.
+# decision rather than an omission.
 #
-# Seafile's rescue exists for a specific upstream defect: enterpoint.sh launches
-# start.py in the background and then idles for ever, so a setup that raised or
-# stalled leaves a container that runs and never serves, which no restart policy
+# The platform's one wedged-boot rescue lived in roles/seafile until #501 removed
+# it, and it existed for a specific upstream defect: enterpoint.sh launched
+# start.py in the background and then idled for ever, so a setup that raised or
+# stalled left a container that ran and never served, which no restart policy
 # can see. Nextcloud's entrypoint is not that shape -- it runs the install and
 # the upgrade in the foreground and then execs apache2-foreground, so a failure
 # during either ends PID 1 and the container exits. An exited container is
 # something `restart: unless-stopped` acts on and something Compose reports, so
 # the failure mode that needed a recovery there reports itself here.
 #
-# If that turns out to be wrong in practice, roles/seafile/tasks/deploy.yml and
-# recover_wedged_boot.yml are the pattern to copy, and #500 records that the
-# structure is reusable.
+# If that turns out to be wrong in practice, the pattern to copy is
+# roles/seafile/tasks/recover_wedged_boot.yml as it stood before #501 removed
+# it; #500 records that the structure is reusable and #509 proposes generalising
+# it, because no service on this platform carries that recovery any more.
 - name: Deploy Nextcloud
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/nextcloud"

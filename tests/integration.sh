@@ -305,7 +305,6 @@ komga komga
 jellyfin jellyfin
 immich immich
 paperless paperless-ngx
-seafile seafile
 nextcloud nextcloud
 arr arr
 downloaders downloaders

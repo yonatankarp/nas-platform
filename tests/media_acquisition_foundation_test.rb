@@ -198,7 +198,6 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
-  ["seafile", "seafile", "0.0.0.0", 8083, 80, "tcp"],
   ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"]
 ].freeze
 

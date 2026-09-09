@@ -227,13 +227,6 @@ CREDENTIAL_RULES = {
     # documents a 32-character minimum for the JWT key, which is why the value
     # this platform generates is 32 hexadecimal digits; no rule here restates it,
     # and nothing was verified about what the server does with a shorter one.
-    "vault_seafile_admin_email": ((PATTERN, EMAIL),),
-    "vault_seafile_admin_password": ((NONEMPTY, None),),
-    "vault_seafile_db_root_password": ((NONEMPTY, None),),
-    "vault_seafile_db_username": ((PATTERN, DATABASE_IDENTIFIER),),
-    "vault_seafile_db_password": ((NONEMPTY, None),),
-    "vault_seafile_jwt_private_key": ((NONEMPTY, None),),
-    "vault_seafile_cache_password": ((NONEMPTY, None),),
     # The administrator name is NONEMPTY rather than an email pattern: unlike
     # Seafile, Nextcloud's administrator is a plain login name and the image
     # neither requires nor validates an address.

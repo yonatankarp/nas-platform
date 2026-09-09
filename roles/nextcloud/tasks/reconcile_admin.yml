@@ -17,8 +17,8 @@
 #
 # The probe is a push being checked, not a credential being read back. Nothing
 # here asks Nextcloud what its password is; it presents the vault's value and
-# observes whether the server accepts it, which is the same shape
-# roles/seafile's verification uses.
+# observes whether the server accepts it, which is the shape every verification
+# on this platform uses.
 
 - name: Probe the vault Nextcloud administrator credential
   ansible.builtin.uri:

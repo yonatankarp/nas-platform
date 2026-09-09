@@ -58,7 +58,6 @@ module ClassifyChanges
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx],
-    "seafile" => %w[seafile],
     "nextcloud" => %w[nextcloud]
   }.freeze
   # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
@@ -448,10 +447,10 @@ module ClassifyChanges
   # acquisition_lane has routed its own since it was written: the file declares
   # the per-container CPU ceilings the converge checks against Docker's applied
   # quota once the stack is up, so a change to it changes what the lane asserts
-  # rather than only what the policy gate reads. tests/contracts/seafile-static.rb
-  # is the first contract to read one directly, which is how the omission
-  # surfaced -- the harness closure in tests/ci/classify_changes_test.rb reached
-  # tests/expected/seafile.yml and found it selecting no suite at all.
+  # rather than only what the policy gate reads. The first contract to read one
+  # directly was Seafile's, removed in #501, which is how the omission surfaced:
+  # the harness closure in tests/ci/classify_changes_test.rb reached that
+  # service's tests/expected/ fixture and found it selecting no suite at all.
   def service_lane(path)
     SERVICE_NAMES.each do |lane, names|
       names.each do |name|

@@ -245,42 +245,6 @@ platform_media_control_network: >-
 trailarr_monitoring_enabled: >-
   {{ platform_project_name | default('') | length == 0 }}
 
-# The one operator switch that deploys Seafile, and it is now on. The auto-deploy
-# poller converges the newest released main revision within five minutes, so the
-# commit that set this true is what put a three-container stack carrying a
-# database on the NAS. Setting it back to false converges that stack to
-# `state: absent` rather than skipping it, so the flag is a deployment decision in
-# both directions -- but read the next paragraph before reaching for it, because
-# the two directions are not symmetric.
-#
-# Four of the seven Seafile credentials were fixed permanently by the first
-# converge and cannot be rotated by changing the vault: the administrator email
-# and password, the database root password, and the database username.
-# `check_init_admin.py` acts only when the user table is empty, so a later vault
-# edit is a silent no-op forever after and the documented remedy is an
-# interactive `reset-admin.sh`. Only the JWT signing key and the cache password
-# stay rotatable. Turning the flag off and on again does not re-run first-run
-# setup either -- `init_seafile_server()` returns early once `seafile-data`
-# exists -- so a teardown leaves the databases and block store on disk holding
-# those same four credentials.
-#
-# It lives here rather than in a host group because both real inventories bind to
-# nas_hosts and the integration sandbox is a nas_hosts run like any other, so
-# "false on the NAS, true in CI" is not expressible there; and because
-# tests/policy_platform_test.rb holds a host group to machine facts only, which
-# this is not. This is nonsecret policy, so it is group_vars and not the vault.
-#
-# It is now false. #500 replaced this stack with Nextcloud, which has been
-# converging beside it, and #501 removes the code. This flag going false is the
-# first step of that: the next poller tick converges the project to
-# `state: absent`, which stops the three containers and removes the network.
-#
-# It removes nothing from disk. host_prep only ever creates the directories it
-# declares, and every Seafile mount is a bind rather than a named volume, so
-# /volume1/Docker/seafile survives this change untouched. Deleting it is an
-# operator action and deliberately not something this repository can do.
-seafile_deployment_enabled: false
-
 # The one operator switch that deploys Nextcloud, and it is now on. #500 added
 # this stack as the first half of migrating file sync off Seafile, and both run
 # side by side from here -- that side-by-side period is what the gate existed
@@ -680,41 +644,6 @@ nas_storage:
     recovery: critical
   - path: "{{ nas_media_root }}/Documents/export"
     mode: "0755"
-    recovery: critical
-
-  # Seafile, and the thing that makes it unlike every other stack here: the files
-  # on disk are not the files. Seafile stores content as content-addressed blocks
-  # under seafile-data/storage, and the mapping from those blocks back to
-  # filenames, libraries and owners lives in the database. A filesystem copy of
-  # the data directory taken without a database dump consistent with it restores
-  # an unreadable pile of blocks, so both entries are critical together -- the
-  # primary artifact is the user's own documents, not metadata that could be
-  # re-fetched. The cache container persists nothing and declares no entry.
-  #
-  # Ownership is left unclaimed for the reason the Immich block records: the
-  # container's entrypoint sets up its own accounts inside these trees, and
-  # declaring an owner here that the container then falsifies makes host_prep
-  # reset it on every converge.
-  - path: "{{ nas_docker_root }}/seafile/data"
-    mode: "0755"
-    recovery: critical
-  - path: "{{ nas_docker_root }}/seafile/db"
-    mode: "0755"
-    recovery: critical
-  # The pre-upgrade backup root, a third root rather than a directory inside
-  # either of the two above: a backup nested in the tree it protects is not a
-  # backup, and a .sql file under /var/lib/mysql is a directory MariaDB scans as
-  # if it were a schema.
-  #
-  # critical because it is the only copy of the database that exists between one
-  # converge and the next, and 0700 -- the one Seafile path that is not 0755 --
-  # because unlike the live trees beside it, nothing manages access inside it.
-  # A mariadb-dump of ccnet_db and seahub_db is every account row Seafile holds
-  # in plain readable SQL, and the conf/ copy beside it carries the Seafile
-  # database account and the JWT signing key. CLAUDE.md's security boundary
-  # names this directory for the same reason it names Seafile's conf/.
-  - path: "{{ nas_docker_root }}/seafile/backups"
-    mode: "0700"
     recovery: critical
 
   # Nextcloud, and both roots are critical for the ordinary reason rather than
