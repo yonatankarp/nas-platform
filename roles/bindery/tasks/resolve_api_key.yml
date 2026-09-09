@@ -70,12 +70,118 @@
          else (bindery_session_config.json | default({})).apiKey | default('') }}
   no_log: true
 
-- name: Refuse an unrecoverable Bindery administrator identity
+# Redacted because it names the resolved key, and reduced to a bare boolean so
+# that everything downstream of it can stay readable. A failing assert under
+# no_log still prints its fail_msg, but its result is replaced by
+# {"censored": ...}, so a redacted refusal is one that can no longer say which
+# of the states below it was in.
+- name: Resolve whether the Bindery API key was recovered
+  ansible.builtin.set_fact:
+    bindery_key_recovered: "{{ bindery_api_key | length > 0 }}"
+  no_log: true
+
+# Credential-free: every input is an HTTP status code, and no response body,
+# header or vault value reaches it.
+#
+# The three probes above accept every status and defer, which is what lets this
+# tell four states apart that a bare `did a key come back` collapses into one.
+# The order is deliberate rather than incidental:
+#
+#   * A negative status is what ansible.builtin.uri reports for a connection
+#     that never completed -- measured as -1 against a closed port on
+#     ansible-core 2.21.3. It is tested FIRST because it is evidence about the
+#     service and no evidence at all about the credentials, and because a
+#     crash-looping container answers some requests in this file and not others:
+#     the readiness gate in main.yml demands a 200 from /health with no retries
+#     left over, so reaching this file at all means Bindery was serving a moment
+#     ago. A probe that then failed to connect means it stopped between two
+#     requests, which is exactly what a container in `Restarting` does. That is
+#     #509, not a credential.
+#   * 429 next, because Bindery's login limiter is per IP at five failures in
+#     fifteen minutes and answers 429 to the correct password once tripped, so a
+#     429 says nothing about whether the submitted identity is right.
+#   * 401/403 on BOTH probes is the only state in which the identity claim is
+#     established, and it is the only one that may propose the destructive
+#     remedy.
+#   * Anything else reports the statuses rather than inferring a cause.
+#
+# A status of 0 means the request was never made: the login is skipped when the
+# key probe already answered 200, and the session read is skipped when the login
+# did not.
+- name: Classify the Bindery API key resolution
+  ansible.builtin.set_fact:
+    bindery_key_resolution: >-
+      {{ 'resolved'
+         if bindery_key_recovered | bool
+         else 'unreachable'
+         if (bindery_key_probe.status | default(-1) | int) < 0
+            or (bindery_identity_login.status | default(0) | int) < 0
+            or (bindery_session_config.status | default(0) | int) < 0
+         else 'rate-limited'
+         if (bindery_key_probe.status | default(-1) | int) == 429
+            or (bindery_identity_login.status | default(0) | int) == 429
+         else 'rejected-identity'
+         if (bindery_key_probe.status | default(-1) | int) in [401, 403]
+            and (bindery_identity_login.status | default(0) | int) in [401, 403]
+         else 'unexpected' }}
+
+# One assert, four messages, and the remedy is chosen by the cause rather than
+# offered whatever the cause was. Until #510 this refusal asserted a single
+# cause -- an identity the platform did not author -- and proposed removing the
+# Bindery database, which destroys every author, book and setting it holds. It
+# printed that against a container that was answering nothing at all, and sent
+# two people down a credentials investigation while the actual fault was a
+# container that had exited 144 times.
+#
+# Not redacted, deliberately: every value it renders is a status code, and the
+# diagnostic is the entire reason the task exists.
+- name: Refuse an unresolved Bindery API key
+  vars:
+    bindery_key_probe_status: "{{ bindery_key_probe.status | default(-1) | int }}"
+    bindery_login_status: "{{ bindery_identity_login.status | default(0) | int }}"
+    bindery_session_status: "{{ bindery_session_config.status | default(0) | int }}"
+    bindery_observed_statuses: >-
+      The API-key read reported HTTP {{ bindery_key_probe_status }}, the
+      administrator login {{ bindery_login_status }} and the session read
+      {{ bindery_session_status }} (0 means the request was never made, and a
+      negative status means the connection never completed).
+    bindery_key_refusals:
+      unreachable: >-
+        Bindery stopped answering while this run was resolving its API key.
+        {{ bindery_observed_statuses }} That is a service which is not serving,
+        and it is no evidence at all about the deployed credentials: the
+        readiness gate above demanded a 200 from /health, so the container was
+        answering moments earlier and stopped between two requests, which is
+        what a container in `Restarting` does. Read `docker ps --filter
+        name=bindery` and `docker logs bindery` before reading anything about
+        the vault, and do not touch the Bindery database -- nothing here says it
+        is at fault.
+      rate-limited: >-
+        Bindery's login limiter is tripped and answered 429.
+        {{ bindery_observed_statuses }} The limiter is per IP at five failures
+        in fifteen minutes and refuses the correct password once tripped, so
+        this says nothing about whether the vault-authored identity is right.
+        Wait fifteen minutes without logging in from this host; every further
+        attempt, this platform's own five-minute converge included, extends the
+        window rather than shortening it.
+      rejected-identity: >-
+        Bindery refused both the vault-authored API key and the vault-authored
+        administrator. {{ bindery_observed_statuses }} It is therefore holding
+        an identity this platform did not author, and no converge can replace
+        it: BINDERY_API_KEY seeds the stored key only while that key is absent,
+        and the only route that changes one afterwards mints a random value.
+        Recover the deployed credentials into the vault, or -- and only because
+        this is the one state in which the cause is established -- remove the
+        Bindery database under {{ bindery_config_host_path }}, which destroys
+        every author, book, quality profile and setting it holds, before running
+        again.
+      unexpected: >-
+        Bindery did not hand over an API key and did not report a cause this
+        play recognises. {{ bindery_observed_statuses }} Read those statuses
+        rather than inferring a credential fault from them; none of them
+        establishes one, and nothing here justifies touching the Bindery
+        database.
   ansible.builtin.assert:
     that:
-      - bindery_api_key | length > 0
-    fail_msg: >-
-      Bindery accepts neither the vault-authored API key nor the vault-authored
-      administrator, so it is holding an identity this platform did not author
-      and no converge can replace it. Recover the deployed credentials or remove
-      the Bindery database before running again.
+      - bindery_key_resolution == 'resolved'
+    fail_msg: "{{ bindery_key_refusals[bindery_key_resolution] }}"

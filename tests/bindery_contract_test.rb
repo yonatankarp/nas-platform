@@ -835,19 +835,62 @@ STATIC_ROWS = [
     expects: "the Bindery credential shape guard must use no_log"
   },
   {
-    # The recoverability guard measures only the resolved key's length, and its
-    # whole purpose is the diagnostic it prints when Bindery is holding an
-    # identity this platform did not author.
+    # The recoverability guard's whole purpose is the diagnostic it prints when
+    # Bindery will not hand over its API key, and a redacted assert prints its
+    # fail_msg beside a result of {"censored": ...}.
     name: "a recoverability guard redacted away",
     break: lambda { |root|
       role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
         task = find_task(document) do |candidate|
-          candidate.key?("ansible.builtin.assert") && candidate.to_s.include?("bindery_api_key | length")
+          Array(candidate.dig("ansible.builtin.assert", "that")).any? do |condition|
+            condition.to_s.include?("bindery_key_resolution")
+          end
         end
         task["no_log"] = true
       end
     },
     expects: "the Bindery recoverability guard must stay readable"
+  },
+  {
+    # #510. Removing the Bindery database destroys every author, book, quality
+    # profile and setting it holds, and it was offered against a container that
+    # was answering nothing at all.
+    name: "a destructive remedy offered whatever the probes saw",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
+        task = find_task(document) { |candidate| candidate.dig("vars", "bindery_key_refusals") }
+        task["vars"]["bindery_key_refusals"]["unreachable"] +=
+          " Or remove the Bindery database before running again."
+      end
+    },
+    expects: "only a refused Bindery identity may propose removing its database"
+  },
+  {
+    # A classification blind to the login status cannot separate a tripped login
+    # limiter from an identity the platform did not author, which is the pair
+    # that decides whether the destructive remedy is even offered.
+    name: "an API-key classification blind to the administrator login",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
+        task = find_task(document) { |candidate| candidate.dig("ansible.builtin.set_fact", "bindery_key_resolution") }
+        task["ansible.builtin.set_fact"]["bindery_key_resolution"] =
+          task["ansible.builtin.set_fact"]["bindery_key_resolution"]
+              .gsub("bindery_identity_login.status", "bindery_key_probe.status")
+      end
+    },
+    expects: "the Bindery API-key classification must read bindery_identity_login.status"
+  },
+  {
+    # The classification is what every refusal message below it is chosen by, so
+    # a run that cannot see which state it was in falls back to asserting one.
+    name: "an API-key refusal that classifies nothing",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/resolve_api_key.yml") do |document|
+        task = find_task(document) { |candidate| candidate.dig("ansible.builtin.set_fact", "bindery_key_resolution") }
+        document.delete(task)
+      end
+    },
+    expects: "the Bindery API-key refusal must classify what its probes saw"
   },
   {
     name: "a world-readable environment render",
@@ -1932,6 +1975,28 @@ PROGRAM_MUTATIONS = [
     from: 'recovery_guard && !recovery_guard["no_log"]',
     to: "true",
     rows: ["a recoverability guard redacted away"]
+  },
+  {
+    label: "the API-key classification existence check",
+    program: :static,
+    from: 'failures << "the Bindery API-key refusal must classify what its probes saw" unless
+    key_classification',
+    to: 'failures << "" if false',
+    rows: ["an API-key refusal that classifies nothing"]
+  },
+  {
+    label: "the API-key classification probe check",
+    program: :static,
+    from: 'classification.include?("#{probe}.status")',
+    to: "true",
+    rows: ["an API-key classification blind to the administrator login"]
+  },
+  {
+    label: "the confined destructive remedy check",
+    program: :static,
+    from: 'destructive.keys == ["rejected-identity"]',
+    to: "true",
+    rows: ["a destructive remedy offered whatever the probes saw"]
   },
   {
     label: "the one-login-attempt check",

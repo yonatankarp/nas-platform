@@ -477,19 +477,66 @@ if failures.empty?
     credential_tasks.length >= 16 && credential_tasks.all? { |task| task["no_log"] == true }
 
   # The shape guard compares the authored values themselves, so it is redacted.
-  # The recoverability guard only measures the resolved key's length, and its
-  # whole purpose is the diagnostic it prints when Bindery is holding an
-  # identity this platform did not author, so it must stay readable.
+  # The recoverability guard's whole purpose is the diagnostic it prints, so it
+  # must stay readable.
   shape_guard = role_tasks.find do |task|
     task.key?("ansible.builtin.assert") && task.to_s.include?("vault_bindery_api_key")
   end
   failures << "the Bindery credential shape guard must use no_log" unless
     shape_guard && shape_guard["no_log"] == true
+
+  # #510: the refusal has to distinguish a Bindery that is not serving from one
+  # that is refusing the platform's identity, because the two demand opposite
+  # remedies and the destructive one was previously offered for both. The
+  # classification is what makes that possible, so it is required to read every
+  # probe's status -- one that ignores the login status cannot tell a 429 from a
+  # 401 -- and it is required to stay readable, since a censored result is
+  # exactly what a redacted classification produces.
+  key_classification = role_tasks.find do |task|
+    task.dig("ansible.builtin.set_fact", "bindery_key_resolution")
+  end
+  failures << "the Bindery API-key refusal must classify what its probes saw" unless
+    key_classification
+  if key_classification
+    classification = key_classification.dig("ansible.builtin.set_fact", "bindery_key_resolution").to_s
+    %w[bindery_key_probe bindery_identity_login bindery_session_config].each do |probe|
+      failures << "the Bindery API-key classification must read #{probe}.status" unless
+        classification.include?("#{probe}.status")
+    end
+    failures << "the Bindery API-key classification must stay readable" if
+      key_classification["no_log"]
+  end
+
   recovery_guard = role_tasks.find do |task|
-    task.key?("ansible.builtin.assert") && task.to_s.include?("bindery_api_key | length")
+    task.key?("ansible.builtin.assert") &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+        condition.to_s.include?("bindery_key_resolution")
+      end
   end
   failures << "the Bindery recoverability guard must stay readable" unless
     recovery_guard && !recovery_guard["no_log"]
+  if recovery_guard
+    refusals = recovery_guard.dig("vars", "bindery_key_refusals")
+    refusals = {} unless refusals.is_a?(Hash)
+    %w[unreachable rate-limited rejected-identity unexpected].each do |cause|
+      failures << "the Bindery API-key refusal must carry a #{cause} message" unless
+        refusals.key?(cause)
+    end
+    # The destructive remedy is the whole point of the split. It is catastrophic
+    # advice in every state but the one where the identity fault is established,
+    # and it was printed against a container answering nothing at all.
+    destructive = refusals.select { |_cause, text| text.to_s.match?(/remove the Bindery database/i) }
+    failures << "only a refused Bindery identity may propose removing its database" unless
+      destructive.keys == ["rejected-identity"]
+    # A message that names no status is a message that asserts a cause again.
+    %w[unreachable rate-limited rejected-identity unexpected].each do |cause|
+      text = refusals.fetch(cause, "").to_s
+      next if text.empty?
+
+      failures << "the Bindery #{cause} refusal must report the statuses it saw" unless
+        text.include?("bindery_observed_statuses")
+    end
+  end
 
   environment_render = tasks.find do |task|
     task.dig("ansible.builtin.template", "src") == "env.j2"
