@@ -116,7 +116,8 @@ GATE_VARIABLE_FLOOR = 1      # nextcloud_deployment_enabled is the only gate tod
 SUBJECT_FLOOR = 15           # 16 implemented, of which at most the 1 gated one may be dark
 MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
 TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 16          # the distinct service tags those rows converge
+LANE_TAG_FLOOR = 16          # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 25          # the role tags site.yml declares
 
 failures = []
 
@@ -281,7 +282,9 @@ tagged_rows = suite_rows.select { |_suite, kind, _tags| %w[acquisition service].
 check_floor(failures, tagged_rows.length, TAGGED_LANE_FLOOR,
             "acquisition and service rows of tests/ci/suites.conf")
 lane_tags = tagged_rows.flat_map(&:last).uniq
-check_floor(failures, lane_tags.length, LANE_TAG_FLOOR,
+manifest_tags = manifest_entries.filter_map { |entry| entry["name"] }
+                                .filter_map { |name| service_tags[name] }
+check_floor(failures, (lane_tags & manifest_tags).length, LANE_TAG_FLOOR,
             "distinct service tags converged by the lanes of tests/ci/suites.conf")
 
 subjects.each do |name|
@@ -294,18 +297,30 @@ subjects.each do |name|
         "lane before turning it on, or turn the gate back off")
 end
 
-# The other direction: a lane that converges nothing on the roster. Held against
-# every manifest service rather than the gate-on ones, because a lane landed
-# ahead of the flip -- which is the sequence this file exists to require -- is
-# correct and must not fail here.
-manifest_tags = manifest_entries.filter_map { |entry| entry["name"] }
-                                .filter_map { |name| service_tags[name] }
+# The other direction: a lane that converges a tag nothing answers to. A tag no
+# role carries selects no role, so the lane runs a shorter play than its row
+# claims and still reports success -- which is the same defect as a missing lane,
+# arrived at from the other side. The comparison is against site.yml's own role
+# tags rather than a list of foundation tags written here, so `host_prep`,
+# `deployment_bundle` and the `media_acquisition_foundation` a planned
+# acquisition lane converges are admitted by being real rather than by being
+# named. Held against every manifest service and not only the gate-on ones,
+# because a lane landed ahead of the flip -- the sequence this file exists to
+# require -- is correct and must not fail here.
+site_play = begin
+  Array(YAML.safe_load_file(File.join(ROOT, "site.yml"))).first
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+site_tags = Array(site_play.is_a?(Hash) ? site_play["roles"] : nil)
+            .select { |role| role.is_a?(Hash) }
+            .flat_map { |role| Array(role["tags"]) }.uniq
+check_floor(failures, site_tags.length, SITE_TAG_FLOOR, "role tags declared by site.yml")
 tagged_rows.each do |suite, _kind, tags|
-  stray = tags.reject { |tag| manifest_tags.include?(tag) || tag == "host_prep" ||
-                              tag == "deployment_bundle" || tag == "media_acquisition_foundation" }
+  stray = tags - site_tags
   check(failures, stray.empty?,
-        "the #{suite} lane converges #{stray.inspect}, which names no service in " \
-        "services/manifest.yml and no shared foundation tag")
+        "the #{suite} lane converges #{stray.inspect}, which site.yml applies to no role: the " \
+        "lane runs a shorter play than its row claims and reports success anyway")
 end
 
 # ---------------------------------------------------------------------------
