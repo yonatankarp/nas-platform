@@ -17,7 +17,11 @@
 # WHAT THIS FILE DOES NOT COVER, stated because the absence is a decision.
 # roles/nextcloud has no pre-upgrade backup and no wedged-boot recovery, so
 # roughly a third of tests/contracts/seafile-static.rb has no counterpart here.
-# The backup is #500's own later phase. The recovery is a considered absence:
+# The backup is not a later phase: #500 dropped it, because the server holds no
+# data yet and there is nothing to copy -- which is also why renovate.json
+# withholds Nextcloud majors behind dashboard approval rather than labelling
+# them, an upgrade being one-way with nothing to go back to. The recovery is a
+# considered absence:
 # Seafile needs one because enterpoint.sh launches start.py and then idles, so a
 # failed setup leaves a container running for ever, while Nextcloud's entrypoint
 # runs install and upgrade in the foreground and then execs apache -- a failure

@@ -247,8 +247,9 @@ services:
     # all (renovatebot/renovate#16176), so there is no discriminator available
     # to build a second branch from. A rule guarding an impossible case is
     # noise. What renovate.json does carry for this image is the opposite kind
-    # of rule: majors are labelled and held back from automerge, because
-    # /entrypoint.sh migrates the shared volume itself and will not go back.
+    # of rule: majors are withheld behind dependency dashboard approval, because
+    # /entrypoint.sh migrates the shared volume itself, will not start again on
+    # anything older, and this stack keeps no pre-upgrade backup to go back to.
     image: docker.io/library/nextcloud:34.0.3-apache@sha256:b97df9e0e1ee3c8c6cc009cb3f12ddce915d624d543b3bb93882025fe323a407
     cpus: 1.0
     labels:

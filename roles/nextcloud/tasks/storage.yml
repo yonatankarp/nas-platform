@@ -2,10 +2,19 @@
 # Storage. Nothing here touches the target: every task is an assertion, so a
 # path this role does not own fails before the release is read.
 #
-# Two roots and no third. Unlike Seafile there is no separate backup root yet --
-# the pre-upgrade backup is a later slice of #500 -- and unlike Paperless there
-# is no second layout to resolve, because Nextcloud keeps everything under the
-# Docker root on both platforms.
+# Two roots and no third. Unlike Seafile there is no separate backup root, and
+# unlike Paperless there is no second layout to resolve, because Nextcloud keeps
+# everything under the Docker root on both platforms.
+#
+# The missing backup root is a decision rather than a gap: #500 dropped the
+# pre-upgrade backup instead of deferring it, on the grounds that this server
+# holds no data yet, so there is nothing to copy and a bad upgrade is repaired by
+# recreating the stack. What that costs is stated where it bites -- the image's
+# own entrypoint runs `occ upgrade` against /var/www/html unattended at container
+# start and will not start again on anything older, so an upgrade is one-way with
+# nothing to go back to. renovate.json holds Nextcloud majors behind
+# dependencyDashboardApproval for exactly that reason. Give this role a backup
+# root the day the server holds data somebody would miss.
 
 - name: Require exact Nextcloud host storage policy
   ansible.builtin.assert:
