@@ -113,9 +113,14 @@ PLANT_SUBSTITUTIONS = [
    "    return items.each { |item| case_body.call(item, failures) }\n"]
 ].freeze
 
-# The fragments the planted helper has to be reported with. Named separately,
-# because a self-test that only required "something failed" would pass on a
-# checker that had lost one of the two defects.
+# The fragments the planted helper has to be reported with, rather than just
+# "something failed": the loss and the divergence are two claims, and a test
+# that had stopped making either one would still fail on the other.
+#
+# Be precise about what this does *not* pin, because the two substitutions are
+# only ever applied together. It cannot tell "both applied" from "the first
+# applied and the second silently stopped matching" -- that guarantee lives in
+# the individual `reverted != mutant` checks above, not here.
 REQUIRED_DETECTIONS = [
   "escaped the pool",
   "entries the run must report",
