@@ -181,7 +181,24 @@
         rather than inferring a credential fault from them; none of them
         establishes one, and nothing here justifies touching the Bindery
         database.
+  # `.get` with a fallback, not a subscript, and the reason is not defensive
+  # style. Ansible finalizes a task's arguments BEFORE it decides the assertion
+  # passed, so fail_msg is rendered on the success path too -- where
+  # bindery_key_resolution is 'resolved', which this table deliberately has no
+  # entry for. A subscript there raised "object of type 'dict' has no attribute
+  # 'resolved'" and killed the run at task 658 of the bindery lane, on the
+  # happy path, after every assertion before it had passed.
+  #
+  # The fallback also covers a state the classification could grow that nobody
+  # adds a row for: it names the state rather than rendering empty, so the next
+  # such omission reads as itself instead of as a blank refusal.
   ansible.builtin.assert:
     that:
       - bindery_key_resolution == 'resolved'
-    fail_msg: "{{ bindery_key_refusals[bindery_key_resolution] }}"
+    fail_msg: >-
+      {{ bindery_key_refusals.get(
+           bindery_key_resolution,
+           'Bindery API-key resolution ended in the state ' ~ bindery_key_resolution ~
+           ', which this role has no refusal text for. ' ~ bindery_observed_statuses ~
+           ' Treat the statuses as the whole of what is known and do not infer a
+           credential fault from them.') }}
