@@ -8,11 +8,11 @@ logins, ntfy tokens, Beszel keys, and future integrations are proven portable.
 This proof deploys the fourteen service projects in
 [`services/manifest.yml`](../services/manifest.yml) that need no transport
 flag—Audiobookshelf, Beszel, Bindery, Dozzle, Immich, Jellyfin, Kapowarr,
-Komga, ntfy, Paperless-ngx, Pinchflat, Seafile, Seerr, and Trailarr—and
+Komga, Nextcloud, ntfy, Paperless-ngx, Pinchflat, Seerr, and Trailarr—and
 verifies the Arr and downloader projects in their inert, transport-disabled
-state alongside them. Seafile is gated off on every host by
-`seafile_deployment_enabled`, and this lane requests it on for itself, exactly
-as the CI suites do; the platform-wide default is untouched. The production
+state alongside them. This lane requests
+`nextcloud_deployment_enabled` on for itself, exactly as the CI suites do, so
+its coverage does not depend on the platform default. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
@@ -204,25 +204,10 @@ active service:
   mutation into its own `/config/.env`, which it sources over the container
   environment at every start, so the change would otherwise survive forever;
   the role owns that file, and the reconcile is what reverts it.
-- Seafile: sign in with the deployed administrator identity, then upload a
-  disposable file and confirm it downloads back byte for byte after recreation.
-  That round trip is the check, because the mapping lives in the database and
-  the content lives in the block store, and independently intact copies of each
-  are not the same thing as a working library. This is also the one identity on
-  the platform the reconcile cannot repair: the image consumes
-  `INIT_SEAFILE_ADMIN_PASSWORD` only while the user table is empty, so rotating
-  the vault password changes nothing on the server and the documented remedy is
-  the interactive `reset-admin.sh` inside the container — a failed sign-in here
-  means exactly that, and never a converge that has not run. Confirm
-  `conf/admin.txt` is absent: the image writes the plaintext administrator
-  password there on every container start and removes it in a `finally:`, so a
-  container killed mid-start leaves it on disk. Every share link is `http://`;
-  there is no TLS anywhere on this platform, and this is the first service whose
-  login guards the operator's own files.
 - Nextcloud: sign in with the vault administrator identity, then upload a
   disposable file and confirm it survives recreation byte for byte. The round
-  trip checks something different from Seafile's: the file is a plain file on
-  disk that `ls` and `cp` can read whatever state the database is in, so what is
+  trip checks that the file is a plain file on disk that `ls` and `cp` can read
+  whatever state the database is in, so what is
   being confirmed is that the account, sharing and versioning state in
   PostgreSQL still agrees with a tree that was never in question. The
   administrator identity is repairable here, which is the other difference:

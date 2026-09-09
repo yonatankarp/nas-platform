@@ -16,7 +16,8 @@
 #
 # WHAT THIS FILE DOES NOT COVER, stated because the absence is a decision.
 # roles/nextcloud has no pre-upgrade backup and no wedged-boot recovery, so
-# roughly a third of tests/contracts/seafile-static.rb has no counterpart here.
+# roughly a third of what the Seafile contract covered before #501 removed it has
+# no counterpart here.
 # The backup is not a later phase: #500 dropped it, because the server holds no
 # data yet and there is nothing to copy -- which is also why renovate.json
 # withholds Nextcloud majors behind dashboard approval rather than labelling
@@ -649,8 +650,8 @@ if failures.empty?
   # one inside a `{{ }}` expression and Jinja is lexing a string, so the tag is
   # characters: the expression renders with `{% raw %}` still in it and
   # `docker inspect --format` prints that wrapper around every value. In
-  # roles/seafile that made a backup classifier report `stack-not-running`
-  # against a serving stack, silently, on every converge.
+  # roles/seafile -- removed in #501 -- that made a backup classifier report
+  # `stack-not-running` against a serving stack, silently, on every converge.
   #
   # THIS GUARD HAS NO SUBJECT IN roles/nextcloud TODAY, and that is worth stating
   # plainly rather than letting a green check imply otherwise: this role writes
@@ -659,10 +660,12 @@ if failures.empty?
   # carried because the class is cheap to close before the first `--format`
   # arrives, not because it is currently doing work.
   #
-  # The option this makes live, recorded rather than taken: roles/seafile and
-  # roles/nextcloud are now two roles carrying the same scanner, and a third
-  # would be the moment to promote the class to tests/policy_test.rb and sweep
-  # every role once instead of copying it again.
+  # The option this makes live, and #501 made it more live rather than less:
+  # roles/seafile carried the only other copy of this scanner, so removing that
+  # service left the class guarded for exactly one role out of sixteen -- after
+  # the platform has already been bitten by it once, silently. A second role
+  # needing it is the moment to promote the class to tests/policy_test.rb and
+  # sweep every role once instead of copying it again.
   raw_inside_expression = ROLE_TASK_FILES.flat_map do |file|
     task_strings(role_tasks(root, file)).select do |value|
       jinja_expression_regions(value).any? { |region| region.include?("{%") }
@@ -710,7 +713,7 @@ if failures.empty?
   # scanner in this file reading the same regions, and a second ROLE needing
   # either of them is the moment to promote the class to tests/policy_test.rb
   # and sweep every role once instead of copying it a third time -- the same
-  # choice tests/contracts/seafile-static.rb records for the raw-tag half.
+  # choice the raw-tag guard above records.
   python_escape_in_expression = ROLE_TASK_FILES.flat_map do |file|
     task_strings(role_tasks(root, file)).select do |value|
       jinja_expression_regions(value).any? { |region| region.match?(/\\[ntr]/) }

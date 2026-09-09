@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-seventeen implemented service projects from no planned media-acquisition
+sixteen implemented service projects from no planned media-acquisition
 projects. The media acquisition catalog is fully implemented; a project added
 to it in future stays inert, with no runtime role or Compose directory, until
 its own promotion.
@@ -283,12 +283,12 @@ installs the same toolchain inside the container the way the harness always did.
 `INTEGRATION_TOOLCHAIN=off` forces that last path.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, Seafile, and Nextcloud —
+Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, and Nextcloud —
 every implemented service except `arr` and `downloaders`, whose Phase 1 runtime
 is default-disabled in that lane and proved by its Docker integration suite. The
-Mac lane starts Seafile and Nextcloud with its own
-`-e seafile_deployment_enabled=true -e nextcloud_deployment_enabled=true`, so
-their coverage does not depend on what the platform default happens to be.
+Mac lane starts Nextcloud with its own
+`-e nextcloud_deployment_enabled=true`, so its coverage does not depend on what
+the platform default happens to be.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 

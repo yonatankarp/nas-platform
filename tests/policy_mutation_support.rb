@@ -186,8 +186,7 @@ EXPECTED_FIXTURE_ROLES = {
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
   "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",
   "bindery" => "bindery", "kapowarr" => "kapowarr", "pinchflat" => "pinchflat",
-  "trailarr" => "trailarr", "seerr" => "seerr", "seafile" => "seafile",
-  "nextcloud" => "nextcloud"
+  "trailarr" => "trailarr", "seerr" => "seerr", "nextcloud" => "nextcloud"
 }.freeze
 
 # The task files a role reaches through static import_tasks, main.yml included.

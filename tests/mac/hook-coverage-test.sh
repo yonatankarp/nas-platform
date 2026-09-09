@@ -29,7 +29,7 @@
 # The pre-converge group is the same accounting on a group of one. Its
 # membership rule is narrow — a service belongs there only when its converge
 # reads fixture state off disk — so its roster names Audiobookshelf and its
-# exemptions name the other sixteen. A group of one is already safe against a
+# exemptions name the other fifteen. A group of one is already safe against a
 # deletion, since mac_run_hooks refuses an empty group; the cases here are the
 # two it was blind to, a hook added outside the roster and a service registered
 # without anyone deciding whether its converge needs a fixture placed first.
@@ -219,12 +219,12 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all seventeen services: the sixteen registered
+# Every group must account for all sixteen services: the fifteen registered
 # contracts plus ntfy, which has no contract of its own and so is never in the
 # registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
+  'mac fixtures-seed hooks: covered 16 of 16 registered services (ran 7, delegated 0, exempt 9)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -235,7 +235,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 13, delegated 1, exempt 3)'
+  'mac fixtures-persistence hooks: covered 16 of 16 registered services (ran 12, delegated 1, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -247,12 +247,11 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-seafile run
 nextcloud run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
+  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -263,12 +262,11 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-seafile run
 nextcloud run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 15, delegated 0, exempt 2)'
+  'mac fixtures-recreate hooks: covered 16 of 16 registered services (ran 14, delegated 0, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -282,7 +280,6 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-seafile run
 nextcloud run' 'fixtures-recreate'
 # The recreate table also carries the deployed bundle directory and the Compose
 # container set, which no other assertion here would notice going wrong.
@@ -300,7 +297,6 @@ proof-kapowarr |runtime/services/kapowarr/.env |current/services/kapowarr/compos
 proof-bindery |runtime/services/bindery/.env |current/services/bindery/compose.yml |bindery
 proof-trailarr |runtime/services/trailarr/.env |current/services/trailarr/compose.yml |trailarr
 proof-seerr |runtime/services/seerr/.env |current/services/seerr/compose.yml |seerr
-proof-seafile |runtime/services/seafile/.env |current/services/seafile/compose.yml |seafile db cache
 proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/compose.yml |nextcloud cron db cache' \
   'fixtures-recreate compose'
 
@@ -311,7 +307,7 @@ proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/com
 # entirely from the sibling filenames its roster pins.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
-  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 14, exempt 3)'
+  'mac drift hooks: covered 16 of 16 registered services (ran 0, delegated 13, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
@@ -322,7 +318,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 # could not ask.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
-  'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
+  'mac pre-converge hooks: covered 16 of 16 registered services (ran 0, delegated 1, exempt 15)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
 # A drift hook deleted must fail the group. This is the regression the group had
@@ -372,7 +368,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
+  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook
@@ -387,7 +383,6 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-seafile run
 nextcloud run' 'verify wrapper'
 
 tree=$fixture/verify-wrapper-registered-surplus

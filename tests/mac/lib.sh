@@ -141,42 +141,28 @@ mac_validate_integration_callback() {
 # all -- it is a property of the Compose files this lane selects, which is
 # exactly the shape of state #295 says a lane must request for itself.
 #
-# seafile_deployment_enabled is the second, and it is here rather than in
-# inventory for the same two reasons plus a third. Seafile ships gated off on
-# every host -- roles/seafile/defaults and inventory/group_vars/all both say
-# false -- so a lane that did not ask for it would deploy nothing, verify
-# nothing, and report a full pass over fifteen services while the sixteenth was
-# never started. tests/integration_controller.sh asks for it per suite for
-# exactly that reason; this lane has no suites, so it asks once, here.
+# nextcloud_deployment_enabled is the second, and it is here rather than in
+# inventory for the same two reasons. #500 landed Nextcloud gated off, so a lane
+# that did not ask for it would deploy nothing, verify nothing, and report a full
+# pass over the other services while this one was never started.
+# tests/integration_controller.sh asks for it per suite for exactly that reason;
+# this lane has no suites, so it asks once, here.
 #
-# The third reason is what happens on the day the platform-wide default flips to
-# true: a `true` requested here stays correct and becomes redundant, where the
-# integration controller's per-suite `false` default would silently keep Seafile
-# out of every lane and has to be deleted in the same change. Nothing has to
-# come back to this line.
+# Its platform default has since flipped true, so this request stays correct and
+# is now redundant -- and nothing had to come back to this line to make it so,
+# which is the property that made requesting it here right in the first place.
 #
-# nextcloud_deployment_enabled is the third, and the two reasons above carry over
-# unchanged -- #500 landed Nextcloud gated off exactly as #460 landed Seafile, so
-# the lane had to ask for it. Its platform default has since flipped true, which
-# is the flip-day case that paragraph anticipated: this request stays correct and
-# is now redundant, and nothing had to come back to this line to make it so.
+# Deleting it now would be loud rather than quiet, because #500 landed the hooks
+# in the same change as the gate: verify/30-services.sh runs the Nextcloud
+# contract unconditionally, and its census fails on four containers that were
+# never created. The hooks are what make a missing stack visible. This line is
+# what makes the stack exist, and it is worth keeping for that alone.
 #
-# What does NOT carry over is the consequence of omitting it. Seafile's paragraph
-# describes a silent pass because #460 landed the gate line before Seafile had
-# any hooks; #500 lands the hooks in the same change, so deleting this line now
-# is loud rather than quiet: verify/30-services.sh runs the Nextcloud contract
-# unconditionally, and its census fails on four containers that were never
-# created. The hooks are what make a missing stack visible. This line is what
-# makes the stack exist, and it is worth keeping for that alone.
-#
-# It is a separate request rather than a shared one because the two gates are
-# separate decisions:
-# the point of #500's first half is that both stacks run side by side while the
-# choice between them is evaluated, so a lane that could only ask for both at
-# once could not prove either alone.
+# Seafile carried the same request until #501 removed the service. The reasoning
+# above is its inheritance, and docs/dossier-seafile.md is where the rest of it
+# lives.
 mac_ansible_playbook() {
-  set -- "$@" -e nas_compose_minimum=2.24.4 -e seafile_deployment_enabled=true \
-    -e nextcloud_deployment_enabled=true
+  set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
@@ -232,8 +218,7 @@ mac_target_container_names() {
         "$mac_project-paperless-webserver" "$mac_project-paperless-gotenberg" \
         "$mac_project-paperless-tika" "$mac_project-pinchflat" \
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
-        "$mac_project-seerr" "$mac_project-seafile" "$mac_project-seafile-db" \
-        "$mac_project-seafile-cache" "$mac_project-nextcloud" \
+        "$mac_project-seerr" "$mac_project-nextcloud" \
         "$mac_project-nextcloud-cron" "$mac_project-nextcloud-db" \
         "$mac_project-nextcloud-cache"
       ;;
@@ -258,7 +243,7 @@ mac_target_container_names() {
 # no caller outside that function can observe an order at all.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr seafile nextcloud'
+trailarr seerr nextcloud'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

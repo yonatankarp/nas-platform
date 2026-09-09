@@ -73,7 +73,6 @@ mac_recreate_and_reassert seerr seerr seerr seerr run
 # less than the other rows do -- the claim here is that a stack rebuilt from the
 # deployed bundle still authenticates against databases whose data outlived their
 # containers.
-mac_recreate_and_reassert seafile seafile seafile 'seafile db cache' run
 # All four, for the reason above and one of its own: the application and the cron
 # sidecar share the /var/www/html volume, so recreating either alone would leave
 # the claim that the shared mount is re-established from the deployed bundle

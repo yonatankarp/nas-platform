@@ -15,10 +15,8 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # telemetry and the alert-relay state the verify phase already polls. Pinchflat
 # reasserts through run for the same reason: it seeds no fixture, and its
 # persisted state is the database that phase already reads. Kapowarr, Bindery
-# and Trailarr are the same shape, and so is Seafile: it seeds no fixture here,
-# and what has to survive the recreate is the three databases its run phase
-# authenticates against and the event configuration that phase reads back off the
-# bind mount. Nextcloud is that shape too, with one difference worth naming: what
+# and Trailarr are the same shape. Nextcloud is that shape too, with one
+# difference worth naming: what
 # must survive is the PostgreSQL cluster its run phase authenticates against and
 # the installation tree under /var/www/html that the application and its cron
 # sidecar share, because a cron container that came back onto an empty volume
@@ -28,7 +26,7 @@ for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
     jellyfin:assert-persistence \
     immich:assert-persistence pinchflat:run kapowarr:run bindery:run trailarr:run \
-    seerr:run seafile:run nextcloud:run; do
+    seerr:run nextcloud:run; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"
   mac_persisted="$mac_persisted$mac_persistence_service

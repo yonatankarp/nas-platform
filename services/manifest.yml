@@ -45,9 +45,6 @@ services:
   - name: seerr
     role: seerr
     status: implemented
-  - name: seafile
-    role: seafile
-    status: implemented
   - name: nextcloud
     role: nextcloud
     status: implemented

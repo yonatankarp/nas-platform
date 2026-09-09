@@ -13,8 +13,8 @@
     # source.
     #
     # Keyed by vault_managed_users, not by the service roster, and the two are
-    # not the same set: arr, downloaders, bindery, kapowarr, pinchflat, trailarr,
-    # seerr and seafile all have vault administrators and no rows here, because
+    # not the same set: arr, downloaders, bindery, kapowarr, pinchflat, trailarr
+    # and seerr all have vault administrators and no rows here, because
     # they have no managed users for a reserved identity to protect an account
     # from. tests/managed_users_vault_test.rb pins that exactly --
     # `reserved_identities.keys.sort == ENTRY_FIELDS.keys.sort` -- so adding a
@@ -170,13 +170,6 @@
           'vault_paperless_django_secret_key': vault_paperless_django_secret_key,
           'vault_paperless_gmail_account': vault_paperless_gmail_account,
           'vault_paperless_gmail_app_password': vault_paperless_gmail_app_password,
-          'vault_seafile_admin_email': vault_seafile_admin_email,
-          'vault_seafile_admin_password': vault_seafile_admin_password,
-          'vault_seafile_db_root_password': vault_seafile_db_root_password,
-          'vault_seafile_db_username': vault_seafile_db_username,
-          'vault_seafile_db_password': vault_seafile_db_password,
-          'vault_seafile_jwt_private_key': vault_seafile_jwt_private_key,
-          'vault_seafile_cache_password': vault_seafile_cache_password,
           'vault_nextcloud_admin_username': vault_nextcloud_admin_username,
           'vault_nextcloud_admin_password': vault_nextcloud_admin_password,
           'vault_nextcloud_db_name': vault_nextcloud_db_name,

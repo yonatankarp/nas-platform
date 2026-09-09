@@ -62,9 +62,8 @@ services:
     # service whose login guards the operator's own files, so the session cookie
     # and every byte uploaded or downloaded are in clear on the wire -- already
     # encrypted when the client arrives over the mesh VPN, not encrypted at all
-    # across the LAN. services/seafile/compose.yml records the same exposure and
-    # why choosing a proxy is a platform decision rather than one this stack
-    # makes for itself.
+    # across the LAN. Choosing a proxy is a platform decision rather than one
+    # this stack makes for itself, and no stack here makes it today.
     ports:
       - "8084:80"
     # One volume, and the cron container below mounts the identical source at

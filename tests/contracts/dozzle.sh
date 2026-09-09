@@ -117,14 +117,6 @@ render_group_contract() {
     PAPERLESS_GOTENBERG_ENDPOINT=http://gotenberg:3000 PAPERLESS_AI_ENABLED=false \
     PAPERLESS_AI_LLM_ENDPOINT=http://example.invalid:11434 PAPERLESS_AI_LLM_MODEL=contract \
     PAPERLESS_SECRET_KEY=contract DB_NAME=contract DB_USER=contract DB_PASSWORD=contract \
-    SEAFILE_HOST_PORT=38083 SEAFILE_SERVER_HOSTNAME=seafile.contract.invalid \
-    SEAFILE_DATA_PATH=/tmp/dozzle-contract/seafile-data \
-    SEAFILE_DB_PATH=/tmp/dozzle-contract/seafile-db \
-    SEAFILE_BACKUP_PATH=/tmp/dozzle-contract/seafile-backups \
-    SEAFILE_JWT_PRIVATE_KEY=contractcontractcontractcontract \
-    SEAFILE_DB_USERNAME=contract SEAFILE_DB_PASSWORD=contract \
-    SEAFILE_DB_ROOT_PASSWORD=contract SEAFILE_CACHE_PASSWORD=contract \
-    SEAFILE_ADMIN_EMAIL=contract@example.invalid SEAFILE_ADMIN_PASSWORD=contract \
     NEXTCLOUD_HOST_PORT=38084 NEXTCLOUD_PHP_MEMORY_LIMIT=512M \
     NEXTCLOUD_DATA_PATH=/tmp/dozzle-contract/nextcloud-data \
     NEXTCLOUD_POSTGRES_PATH=/tmp/dozzle-contract/nextcloud-postgres \
@@ -171,13 +163,11 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/komga/compose.yml" \
     "$repo_dir/services/nextcloud/compose.yml" \
     "$repo_dir/services/ntfy/compose.yml" \
-    "$repo_dir/services/paperless-ngx/compose.yml" \
-    "$repo_dir/services/seafile/compose.yml" </dev/null
+    "$repo_dir/services/paperless-ngx/compose.yml" </dev/null
   render_group_variants beszel beszel
   render_group_variants dozzle dozzle
   render_group_variants paperless-ngx paperless
   render_group_variants immich immich
-  render_group_variants seafile seafile
   render_group_variants nextcloud nextcloud
   render_group_variants audiobookshelf ""
   render_group_variants jellyfin ""

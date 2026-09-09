@@ -437,13 +437,6 @@ vault_paperless_db_password: '$(random_password)'
 vault_paperless_django_secret_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_paperless_gmail_account: ephemeral@example.invalid
 vault_paperless_gmail_app_password: '$(random_password)'
-vault_seafile_admin_email: ephemeral-admin@example.invalid
-vault_seafile_admin_password: '$(random_password)'
-vault_seafile_db_root_password: '$(random_password)'
-vault_seafile_db_username: seafile
-vault_seafile_db_password: '$(random_password)'
-vault_seafile_jwt_private_key: '$(openssl rand -hex 32 2>/dev/null)'
-vault_seafile_cache_password: '$(random_password)'
 vault_nextcloud_admin_username: ephemeral-admin
 vault_nextcloud_admin_password: '$(random_password)'
 # Not the bare service name, and the eight-byte threshold in

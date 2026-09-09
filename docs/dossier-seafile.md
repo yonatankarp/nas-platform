@@ -1,7 +1,27 @@
 # Seafile dossier — the sixteenth service, written alongside its implementation
 
+> **Retired 2026-09-09.** Nextcloud replaced Seafile as this platform's
+> file-sync service under #500, and #501 removed the role, the stack, the
+> contract, the CI lane and the Mac coverage. This dossier stays because a
+> dossier records what was learned rather than what runs, and most of what is
+> below outlived the service — the block-store coupling, the one-shot
+> credentials, the `/` character that broke a Redis URL, and the raw-tag trap
+> that made a backup classifier report a serving stack as absent.
+>
+> **The data was not deleted with the code.** `roles/host_prep` only ever
+> created those directories and the teardown removed containers, not binds, so
+> `/volume1/Docker/seafile/{data,db,backups}` persists on the NAS unmanaged
+> until an operator removes it. The last of the three is mode 0700 and holds
+> `mariadb-dump` output — every account row Seafile held, as plain readable
+> SQL — beside a copy of `conf/`. CLAUDE.md's security boundary named those two
+> paths until #501; this note is where that record now lives.
+>
+> References below to files under `roles/seafile/`, `services/seafile/` and
+> `tests/contracts/seafile*` are historical. They were removed in #501 and are
+> recoverable from git history.
+
 Derived from the three images
-[`services/seafile/compose.yml`](../services/seafile/compose.yml) pins, which
+`services/seafile/compose.yml` pins, which
 move when Renovate moves the deployment:
 
 ```
@@ -201,7 +221,7 @@ process's uid and ignores the password entirely, so a credential probe over the
 container's socket would report success whatever the vault said. Three files in
 this repository justified the TCP probe partly on that claim, and it is wrong
 here: against `docker.io/library/mariadb:10.11.19`,
-[`tests/contracts/seafile-runtime.rb`](../tests/contracts/seafile-runtime.rb)
+`tests/contracts/seafile-runtime.rb`
 measured the socket **refusing** a password nothing wrote. Confirmed in the
 `seafile` lane. The plugin default is Debian and Ubuntu packaging rather than a
 property of the upstream image.
@@ -230,7 +250,7 @@ This collides head-on with what [`CLAUDE.md`](../CLAUDE.md) promises — every
 credential authored in the vault and pushed outward, configuration changed by
 hand reverted by the next run — and the role does not paper over it. It pushes
 the credential once and then **proves** it:
-[`roles/seafile/tasks/verify.yml`](../roles/seafile/tasks/verify.yml)
+`roles/seafile/tasks/verify.yml`
 authenticates against `POST /api2/auth-token/` and fails naming both causes, so
 drift is loud at verification time rather than silently "reconciled". That
 endpoint choice is itself a finding: `GET /api2/ping/` returns a constant from a
@@ -344,7 +364,7 @@ half taken *before* the dump can only be missing blocks the dump then names,
 which restores as a library whose files cannot be read. Taken *after*, the
 filesystem half is a superset of what the dump names and the surplus is merely
 unreferenced. Seafile's own manual states the same order for the same reason, and
-[`tests/contracts/seafile-static.rb`](../tests/contracts/seafile-static.rb) pins
+`tests/contracts/seafile-static.rb` pins
 it by task index so the ordering cannot drift into a comment.
 
 **The service is not stopped.** `--single-transaction` gives the dump a
@@ -451,7 +471,7 @@ have made the red leg later rather than green.
 How often is the one number this dossier cannot state cleanly. The record
 disagrees with itself: #445's progress comment says the wedge appeared in **1 of
 3** lane runs, and the comment in
-[`roles/seafile/tasks/deploy.yml`](../roles/seafile/tasks/deploy.yml) says **1 of
+`roles/seafile/tasks/deploy.yml` says **1 of
 2**. What is not in doubt is that it happened once, on a named run, and that the
 lane has been green since. Treat it as observed and rare, not as a rate — and
 note that neither record is large enough to be one.
@@ -598,7 +618,7 @@ are one guard and one false confidence.
 Seven vault credentials, and they do not behave alike. Sorting them by mechanism
 is more useful than counting them, because the platform's one-directional
 credential flow means something different in each case. Read out of
-[`roles/seafile/templates/env.j2`](../roles/seafile/templates/env.j2), which is
+`roles/seafile/templates/env.j2`, which is
 where each lifetime is argued beside the line it renders.
 
 - **A rotation reconciles.** The JWT signing key and the cache password. Both are
@@ -709,7 +729,7 @@ is deliberate. Every runtime confirmation above was produced inside the CI
 workstation can start —
 [`tests/integration.sh --suite seafile`](../tests/integration.sh) is the
 reproduction, and
-[`tests/contracts/seafile.sh`](../tests/contracts/seafile.sh) with its static and
+`tests/contracts/seafile.sh` with its static and
 runtime halves is where each assertion is written down. A block of copy-pasteable
 `docker run` lines would be a fabrication of provenance this dossier does not
 have.

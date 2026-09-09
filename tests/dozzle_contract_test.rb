@@ -14,7 +14,7 @@
 #
 #   Group render -- what only the document Compose actually merges can decide:
 #   the friendly container name on every service and the Running Containers
-#   grouping. The wrapper renders nine stacks in three variants and hands each
+#   grouping. The wrapper renders eight stacks in three variants and hands each
 #   over in one environment variable, so the program fixtures completely: no
 #   Docker, no compose files, one canned render per row.
 #
@@ -43,7 +43,7 @@
 #   as sequences.
 #
 #   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into up to
-#   twenty-seven invocations. Its rows prove every program is reached, that each
+#   twenty-four invocations. Its rows prove every program is reached, that each
 #   is resolved from the script's own checkout while the tree to inspect is
 #   passed in, that the `-r` preload deliberately still names the inspected tree,
 #   and that none of the six can consume the caller's stdin.
@@ -90,7 +90,7 @@ ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The ten base Compose files the labels program is handed, in the wrapper's
+# The nine base Compose files the labels program is handed, in the wrapper's
 # order. Stated here so a row can break exactly one of them and so the wrapper
 # layer can assert the list has not drifted from the wrapper's own invocation.
 BASE_COMPOSE_FILES = %w[
@@ -103,7 +103,6 @@ BASE_COMPOSE_FILES = %w[
   services/nextcloud/compose.yml
   services/ntfy/compose.yml
   services/paperless-ngx/compose.yml
-  services/seafile/compose.yml
 ].freeze
 
 # The five arguments the stack program receives, in the wrapper's order, each
@@ -1375,7 +1374,7 @@ DOCKER_STUB = <<~STUB
   #!/bin/sh
   # Answers `docker compose --project-name dozzle-contract-<stack>-<variant> ... config`
   # with the canned render for that stack, and nothing else. The wrapper renders
-  # thirty times in a static run; none of them needs a daemon here.
+  # twenty-four times in a static run; none of them needs a daemon here.
   project=
   for argument in "$@"; do
     case $argument in
@@ -1403,7 +1402,7 @@ WRAPPER_PROGRAM_SOURCES = {
 # here so the wrapper layer can assert the wrapper still renders exactly these.
 RENDERED_STACKS = {
   "beszel" => "beszel", "dozzle" => "dozzle", "paperless-ngx" => "paperless",
-  "immich" => "immich", "seafile" => "seafile", "nextcloud" => "nextcloud",
+  "immich" => "immich", "nextcloud" => "nextcloud",
   "audiobookshelf" => "", "jellyfin" => "", "komga" => "", "ntfy" => ""
 }.freeze
 
@@ -2230,8 +2229,8 @@ if ARGV.include?("--self-test")
   [
     ["\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\" </dev/null\n",
      "\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\"\n"],
-    ["\"$repo_dir/services/seafile/compose.yml\" </dev/null\n",
-     "\"$repo_dir/services/seafile/compose.yml\"\n"],
+    ["\"$repo_dir/services/paperless-ngx/compose.yml\" </dev/null\n",
+     "\"$repo_dir/services/paperless-ngx/compose.yml\"\n"],
     ["\"$deployment_inputs\" \"$deployment_bundle\" </dev/null\n",
      "\"$deployment_inputs\" \"$deployment_bundle\"\n"],
     ["\"$mac_verify\" \"$mac_verify_labels\" \"$mode\" </dev/null\n",

@@ -27,12 +27,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # Trailarr's covers the same three access outcomes against its API key and its
 # published default administrator, and the one thing no other service has: that
 # the application's own /config/.env carries the platform's keys and none of the
-# ones only a hand edit writes. Seafile's run covers three healthy containers,
-# that the container and host copies of seafevents.conf are one file, the
-# platform-owned [INDEX FILES] setting inside it, the database credential
-# answering as root over TCP and a wrong one refused, an administrator token from
-# POST /api2/auth-token/ -- which is a real ccnet_db and seahub_db round trip
-# rather than a port probe -- and Valkey serving the cache behind it.
+# ones only a hand edit writes.
 #
 # Nextcloud's run covers four healthy containers, an installed instance out of
 # maintenance mode with no unfinished database upgrade, and then the three
@@ -45,7 +40,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # site.yml converges it.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
-    bindery trailarr seerr seafile nextcloud; do
+    bindery trailarr seerr nextcloud; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "

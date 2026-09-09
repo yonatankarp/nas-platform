@@ -18,11 +18,11 @@ cleanup_sandbox_repo_dir=$mac_repo_dir
 # all promoted, all deployed by this lane, and none of them named here. That is
 # not a leak, it is a refusal -- mac_projects_are_owned sees `<project>-seerr`,
 # finds it in no known list, and returns 1 -- so preflight_mac_resources fails and
-# the cleanup phase declines to remove anything at all. Adding a ninth literal for
-# Seafile would have left the same eight-service hole with one more entry in it.
+# the cleanup phase declines to remove anything at all. Adding a ninth literal
+# per service would have left the same eight-service hole with one more entry.
 #
-# tests/sandbox_cleanup.sh already holds the authoritative roster, seafile
-# included, and this file already sources it for cleanup_sandbox_contents. Read
+# tests/sandbox_cleanup.sh already holds the authoritative roster, and this file
+# already sources it for cleanup_sandbox_contents. Read
 # it rather than restating it: the two lists are the same fact, and only one of
 # them was ever kept current. The Mac alias of paperless-ngx is `paperless` in
 # both, which is what makes them the same list rather than two that nearly agree.

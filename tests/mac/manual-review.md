@@ -38,22 +38,12 @@ private keys, password hashes, rendered environment files, or application logs.
       Server Sign-In" on in the settings, reconverge, and confirm it is off
       again — with it on, a Jellyfin user the platform never declared is
       silently created here.
-- [ ] Seafile: sign in with the deployed administrator identity, upload a
-      disposable file into a disposable library, and confirm it downloads back
-      byte for byte after recreation — the mapping lives in the database and the
-      content in the block store, so that round trip is the only check that
-      proves the two still agree. Confirm `conf/admin.txt` is not lying on disk;
-      the image writes the plaintext administrator password there on every start
-      and removes it in a `finally:`, so a container killed mid-start leaves it
-      behind. Note that every share link is `http://`: there is no TLS anywhere
-      on this platform, and Seafile is the first service whose login guards the
-      operator's own files.
 - [ ] Nextcloud: sign in with the vault administrator identity, upload a
       disposable file, and confirm it is still there and downloads back byte for
-      byte after recreation — unlike Seafile the content is a plain file on
-      disk, so this checks the account and sharing state in PostgreSQL still
-      agrees with a tree `ls` can already read. Unlike Seafile the administrator
-      password *is* repairable: the role probes it and runs
+      byte after recreation — the content is a plain file on disk, so this
+      checks the account and sharing state in PostgreSQL still agrees with a
+      tree `ls` can already read. The administrator password is repairable:
+      the role probes it and runs
       `occ user:resetpassword` when it stops working, so a failed sign-in here
       means the repair failed rather than that the credential is lost. Add a
       trusted domain by hand and reconverge: confirm it is still there

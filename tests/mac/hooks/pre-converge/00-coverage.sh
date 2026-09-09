@@ -57,6 +57,5 @@ kapowarr=its only fixture would be a real comic download, which needs a ComicVin
 bindery=its only fixture would be a real Usenet download, which this lane has no transport for, so its converge has nothing to read
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make, so its converge has nothing to read
 seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first
-seafile=the server writes its own event configuration on first start and the converge repairs that file in place, so nothing has to exist on disk before run_site
 nextcloud=the installer writes config.php on first start and the converge reconciles the trusted domains inside it afterwards, so nothing has to exist on disk before run_site' \
   "$mac_pre_converge_hooks" ''
