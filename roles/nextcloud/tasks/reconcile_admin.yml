@@ -100,11 +100,13 @@
   # occ writes most of its refusals to stdout rather than stderr, so a message
   # quoting stderr alone would be empty exactly when it was needed -- the shape
   # tests/contracts/nextcloud-runtime.rb's diagnosis helper exists for. None is
-  # written here regardless, because the result is censored by the line below
-  # and no message could survive it. The diagnosis lives in two places that are
-  # not: the probe at the top of this file, which classified the credential from
-  # an HTTP status and reports that status unredacted, and verify.yml's
-  # administrator probe, which names the failure by service on the next run.
+  # written here regardless, and that is the redaction working rather than a
+  # hole: the line below censors the whole result and no message could survive
+  # it. What a reader gets is the task banner and where the run stopped, which
+  # is more than it looks -- reaching this task at all means the probe above
+  # answered 401, so the credential is rotated and occ refused to reset it.
+  # `docker compose exec --user www-data nextcloud php occ user:resetpassword
+  # <admin>` by hand is what prints the sentence that says why.
   failed_when: nextcloud_admin_repair.rc | default(0) | int != 0
   # The exec renders the container environment on failure, which is the whole
   # rendered credential set.

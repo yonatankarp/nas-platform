@@ -22,9 +22,12 @@
 # be read if one ever could be: Django writes that traceback to stderr but the
 # scripts in files/ print their answers to stdout, and a message naming one
 # stream is the wager tests/contracts/nextcloud-runtime.rb's diagnosis helper
-# exists to avoid. What names these failures instead is identity.yml, which
-# rereads the administrator over the API later in the same run and asserts its
-# email and its three flags against the vault -- unredacted, by service name.
+# exists to avoid. So the task banner is the whole of what a reader gets, and
+# identity.yml -- which would otherwise reread the administrator over the API
+# and name the drift -- is not the fallback, because a fatal stage here stops
+# the role before it. Which of the three stopped is the diagnosis: the same
+# `manage.py shell -c` run by hand against the webserver container prints the
+# traceback the run could not.
 
 - name: Inspect the vault Paperless administrator identity
   community.docker.docker_compose_v2_exec:

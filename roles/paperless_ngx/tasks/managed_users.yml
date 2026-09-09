@@ -9,9 +9,10 @@
 # and a task without this line converts a deliberate refusal into a clean recap.
 #
 # Every one of them is also no_log, so no message accompanies the refusal: the
-# `env:` mapping carries the managed password or the managed token, and Ansible
-# censors the whole result rather than a chosen field. Which stream would have
-# to be read if one ever could be: Django writes the traceback to stderr, the
+# writes pass the managed password or the managed token through `env:`, the two
+# listings put every managed username and email on stdout, and Ansible censors
+# the whole result rather than a chosen field. Which stream would have to be
+# read if one ever could be: Django writes the traceback to stderr, the
 # listing scripts print their JSON to stdout, and a message naming one of the
 # two is the wager tests/contracts/nextcloud-runtime.rb's diagnosis helper
 # exists to avoid. So the task name is the whole of what a reader gets, which is
@@ -490,8 +491,9 @@
   # access", which is what its own comment claims and what this line is required
   # for. Both raises exited nonzero into a module that reported success, and
   # changed_when then announced a repair that had rolled back. The verify phase
-  # at the bottom of this file catches the drift on a later run; this catches
-  # the write.
+  # at the bottom of this file is not the backstop it looks like: it is reached
+  # through a second include and a fatal failure here stops the role before it,
+  # which is the point -- the write is caught where it happens.
   failed_when: paperless_managed_user_repair.rc | default(0) | int != 0
   no_log: true
 
