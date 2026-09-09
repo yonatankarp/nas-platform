@@ -426,6 +426,41 @@ if failures.empty?
   # and report no change.
   failures << "the Nextcloud application disable must loop over what is still enabled rather than over the declared list" unless
     disable && disable["loop"].to_s.include?("nextcloud_apps_still_enabled")
+  # THE OTHER END OF THAT LOOP, and it was pinned by nothing until this line.
+  # The loop reads `nextcloud_apps_still_enabled | default([])`, so a stage that
+  # binds the name nowhere loops zero times for ever: eight apps stay enabled
+  # behind a clean recap, and the `| default([])` that makes the stage inert
+  # when the operator switch is off is the same expression that makes that
+  # silent. Deleting the set_fact outright was planted and every other property
+  # in this program still held.
+  binder = apps.find do |task|
+    task["ansible.builtin.set_fact"].is_a?(Hash) &&
+      task["ansible.builtin.set_fact"].key?("nextcloud_apps_still_enabled")
+  end
+  failures << "the Nextcloud application policy must bind the set its disable loop reads" unless binder
+  # What that name is bound TO, asserted separately from whether it is bound at
+  # all so that each break is caught by its own line rather than by the other.
+  # Two halves, both of them a defect that went undetected here. The list must be
+  # the EFFECTIVE one: reading `nextcloud_disabled_apps` orphans the
+  # nextcloud_additional_disabled_apps escape hatch while defaults/main.yml, the
+  # argument_specs and the check-mode debug all still describe it as live, and
+  # the plain name is a prefix of the effective one, so this has to match the
+  # longer spelling to tell them apart. And it must be intersected with the
+  # census this stage just read, which is the whole of why a converged
+  # deployment skips the loop instead of reporting a change it did not make.
+  if binder
+    bound = binder.fetch("ansible.builtin.set_fact").fetch("nextcloud_apps_still_enabled").to_s
+    intersected = bound.include?("nextcloud_disabled_apps_effective") &&
+                  bound.include?("intersect") && bound.include?("nextcloud_app_census")
+    failures << "the Nextcloud applications still to disable must be the effective list intersected with the live census" unless intersected
+  end
+  # `occ app:disable` exits 0 on an app that is already off and prints "No such
+  # app enabled", so a task without this line reports a change it did not make
+  # and the platform's idempotence check catches it a lane later rather than
+  # this contract catching it here. Negative on purpose, and the role says why:
+  # the success line embeds the app's version, which every image bump moves.
+  failures << "the Nextcloud application disable must not report a change on an app that was already off" unless
+    disable && disable["changed_when"].to_s.include?("No such app enabled")
   # The one entry #500's own scope derives rather than chooses: "Photos,
   # documents and media are already covered by Immich, Paperless and
   # Jellyfin/Audiobookshelf/Komga". Immich is this platform's photo service.

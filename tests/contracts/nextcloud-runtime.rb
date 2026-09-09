@@ -498,8 +498,12 @@ def assert_platform_app_policy
   # must be off says nothing about `occ upgrade` disabling something that should
   # have stayed on, and a lane that starts reporting 43 apps where it reported 50
   # is that. Asserting a count instead would pin a number the image owns.
+  # Nothing is returned. The count is already in the run's output one line above,
+  # and the summary line run_mode prints is a list of properties that HELD --
+  # putting an observation into it would say the same number twice and blur the
+  # difference between the two.
   observe("the shipped app set currently enables #{enabled.length} apps: #{enabled.join(' ')}")
-  enabled
+  nil
 end
 
 def run_mode(credentials)

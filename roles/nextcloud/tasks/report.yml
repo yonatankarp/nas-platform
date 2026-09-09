@@ -7,9 +7,10 @@
 # trusted-domain repair or an administrator password reset. Those are exactly
 # the events a deployment report exists to carry.
 #
-# The results this reads are registered in deploy.yml, reconcile_trusted_domains.yml,
-# reconcile_admin.yml and reconcile_apps.yml. All three are imported statically, so they share one
-# variable scope with this file and nothing has to be recomputed or passed.
+# The results this reads are registered in deploy.yml,
+# reconcile_trusted_domains.yml, reconcile_admin.yml and reconcile_apps.yml. All
+# four are imported statically, so they share one variable scope with this file
+# and nothing has to be recomputed or passed.
 #
 # Ungated on purpose, and it says nothing when nothing moved: the report is
 # gated on the results themselves, so a converge with the flag off and a project

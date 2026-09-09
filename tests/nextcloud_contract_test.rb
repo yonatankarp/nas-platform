@@ -738,6 +738,62 @@ ROLE_STATIC_ROWS = [
       end
     },
     expects: "must loop over what is still enabled"
+  },
+  {
+    # The stage's silent no-op. The loop reads the name with `| default([])`, so
+    # a reconciliation that binds it nowhere runs zero times for ever and every
+    # app this platform disables stays enabled behind a clean recap.
+    name: "an application policy that binds nothing for its own loop to read",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        document.reject! { |task| task.key?("ansible.builtin.set_fact") }
+      end
+    },
+    expects: "must bind the set its disable loop reads"
+  },
+  {
+    # The same shape one step in: the name is bound, from the declared list
+    # rather than the effective one, which orphans nextcloud_additional_disabled_apps
+    # while the defaults, the argument_specs and the check-mode debug all still
+    # describe that escape hatch as live.
+    name: "an application policy that resolves the declared list rather than the effective one",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        task = document.find { |entry| entry["ansible.builtin.set_fact"].is_a?(Hash) }
+        expression = task.fetch("ansible.builtin.set_fact").fetch("nextcloud_apps_still_enabled")
+        task["ansible.builtin.set_fact"]["nextcloud_apps_still_enabled"] =
+          expression.sub("nextcloud_disabled_apps_effective", "nextcloud_disabled_apps")
+      end
+    },
+    expects: "must be the effective list intersected with the live census"
+  },
+  {
+    # `occ app:disable` exits 0 on an app that is already off, so without the
+    # discriminator every such run reports changed and the idempotence lane is
+    # what notices rather than this contract.
+    name: "an application disable that reports a change on an app that was already off",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        document.each { |task| task.delete("changed_when") if task["register"] == "nextcloud_app_repair" }
+      end
+    },
+    expects: "must not report a change on an app that was already off"
+  },
+  {
+    # The other half of the placement, and it moves the stage PAST the report
+    # rather than to the front: the conjunct above still has to hold, or this row
+    # is caught by that one instead of by its own. An app switched back off is a
+    # change the deployment report has to carry.
+    name: "an app policy that runs after the report that has to carry its change",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "main") do |document|
+        stage = document.find { |task| task["ansible.builtin.import_tasks"] == "reconcile_apps.yml" }
+        document.delete(stage)
+        report = document.find { |task| task["ansible.builtin.import_tasks"] == "report.yml" }
+        document.insert(document.index(report) + 1, stage)
+      end
+    },
+    expects: "must run after the administrator probe and before the report"
   }
 ].freeze
 
@@ -1561,6 +1617,38 @@ PROGRAM_MUTATIONS = [
     from: 'disable && disable["loop"].to_s.include?("nextcloud_apps_still_enabled")',
     to: "true",
     rows: ["an application disable that loops over the declared list rather than what is enabled"]
+  },
+  {
+    # Removing this one restores the state the review found: the whole set_fact
+    # can be deleted and every other property still holds.
+    label: "the requirement that the app policy binds the set its loop reads",
+    program: :static,
+    from: "unless binder",
+    to: "unless true",
+    rows: ["an application policy that binds nothing for its own loop to read"]
+  },
+  {
+    label: "the requirement that the bound set is the effective list intersected with the census",
+    program: :static,
+    from: "unless intersected",
+    to: "unless true",
+    rows: ["an application policy that resolves the declared list rather than the effective one"]
+  },
+  {
+    label: "the requirement that the disable does not claim a change on an already-disabled app",
+    program: :static,
+    from: 'disable && disable["changed_when"].to_s.include?("No such app enabled")',
+    to: "true",
+    rows: ["an application disable that reports a change on an app that was already off"]
+  },
+  {
+    # The second conjunct of the placement, which had no row and no mutation of
+    # its own: deleting it left the whole contract green.
+    label: "the placement of the app policy before the report that carries its change",
+    program: :static,
+    from: 'imports.index("reconcile_apps.yml").to_i < imports.index("report.yml").to_i',
+    to: "true",
+    rows: ["an app policy that runs after the report that has to carry its change"]
   },
   {
     label: "the image pin check",

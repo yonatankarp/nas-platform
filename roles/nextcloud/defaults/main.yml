@@ -67,10 +67,11 @@ nextcloud_additional_trusted_domains: []
 # is the image's decision, deliberately.
 #
 # AN OFF-SET, NOT AN ON-SET, and that asymmetry is the design. Declaring the
-# apps that must stay on would mean copying ~36 names out of the image's own
-# core/shipped.json defaultEnabled -- a value restated in this repository is a
-# copy nothing bumps, which is what CLAUDE.md refuses -- and it would fight the
-# image on every version bump that adds or removes one. The cost is real and
+# apps that must stay on would mean copying 38 names out of the image's own
+# core/shipped.json defaultEnabled -- it holds 46, and all eight below are in
+# it -- a value restated in this repository is a copy nothing bumps, which is
+# what CLAUDE.md refuses, and it would fight the image on every version bump
+# that adds or removes one. The cost is real and
 # stated rather than hidden: re-asserting the off-set does NOT notice
 # `occ upgrade` disabling something. tests/contracts/nextcloud-runtime.rb
 # reports the enabled count on every run, and that observation is the on-side
@@ -107,9 +108,14 @@ nextcloud_disabled_apps:
   - firstrunwizard
   # Judgement, with evidence: the shipped `office` app is not an editor. Its
   # appinfo/info.xml declares no <commands>, no <repair-steps> and no
-  # <background-jobs>, and its whole tree is js/, css/, img/ and one template --
-  # it is a navigation entry pointing at onboarding for a Collabora backend this
-  # platform does not deploy. Enabling it advertises a feature that is not there.
+  # <background-jobs> -- only a <navigations> entry routed at office.page.index
+  # -- and the code behind that route is three PHP files: lib/AppInfo/Application.php,
+  # a PageController whose only action returns the one template in templates/,
+  # and an ApiController whose only action answers {"message": "Hello world!"}.
+  # The rest of the tree is js/, css/, img/, l10n/, openapi.json and a
+  # package.json. It is a navigation entry pointing at onboarding for a Collabora
+  # backend this platform does not deploy, so enabling it advertises a feature
+  # that is not there.
   - office
   # Judgement. A dashboard widget that calls a weather API per user, from a NAS.
   - weather_status
