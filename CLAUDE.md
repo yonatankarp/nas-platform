@@ -346,6 +346,18 @@ fix what it names by its own words. It enforces, among others:
   condition compares against such a registered result — or an executable
   `tests/contracts/<name>.sh` registered in `tests/contracts/registry.yml`.
   A `debug` named "verify" satisfies nothing.
+- A `community.docker.docker_compose_v2_exec` task that is not `detach: true`
+  states `failed_when`. The module sets `check_rc` only in the `detach` branch,
+  so without that line the task reports success on any exit code — and paired
+  with `changed_when: true` it asserts a change it never verified. Twelve tasks
+  were in that state until #521. `failed_when: false` satisfies the rule, which
+  is the point: a task that tolerates failure says so, because deleting the line
+  would not make it fail. The rc default is `1`, not `0`: `failed_when` replaces
+  the module's own failure verdict and re-enables `changed_when`, so a module
+  that refuses before it runs anything — an unreadable `project_src`, a
+  non-string `env` value, a compose too old — sets no `rc` at all, and
+  `default(0)` would report that refusal as a successful change. Under the
+  `no_log` these tasks carry, that is a green line and nothing else.
 
 Idempotence is a hard requirement: mark reads `changed_when: false`, and
 `check_mode: false` where a read must really run during `--check`. Use

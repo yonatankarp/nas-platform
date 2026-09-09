@@ -60,6 +60,7 @@
       - "null"
       - "-"
     tty: false
+  register: jellyfin_qsv_probe
   when:
     - platform_kind == 'nas'
     - >-
@@ -70,3 +71,28 @@
       jellyfin_qsv_container_info.rc | default(1) | int == 0
   changed_when: false
   check_mode: false
+  # A proof that cannot fail, stated rather than left to be inferred from a
+  # missing line -- which is the whole point of the #521 rule: a task tolerating
+  # failure says so, because deleting the line would not make it fail.
+  #
+  # Measured against community.docker 5.3.0: docker_compose_v2_exec sets
+  # check_rc only when `detach` is true, so a render device the container could
+  # not open, an iHD driver that stopped loading, or a QSV stack an image bump
+  # broke all exit nonzero and report success. Nothing registers or reads the
+  # result, so today this task establishes nothing at all.
+  #
+  # Making it fatal was implemented and then withdrawn, because it is a bigger
+  # decision than an exit-code sweep should carry. This file is included from
+  # BOTH roles/jellyfin/tasks/deploy.yml and roles/jellyfin/tasks/verify.yml,
+  # and it runs for real under --check (check_mode: false, and its `when` admits
+  # check mode whenever the container exists). So a fatal probe fails the
+  # converge, the poller's platform_verify_jellyfin leg, AND the --check --diff
+  # review the platform requires before applying -- and because jellyfin
+  # precedes seerr, immich, paperless_ngx and nextcloud in site.yml, it would
+  # strand those four unconverged on a hardware fault that harms none of them.
+  #
+  # The question that leaves open -- whether a proof belongs in the converge
+  # path at all, or only in verify.yml, which CLAUDE.md calls structurally
+  # incapable of converging -- is filed separately. It needs the probe's live
+  # exit code on the NAS to decide, which is not knowable from the tree.
+  failed_when: false

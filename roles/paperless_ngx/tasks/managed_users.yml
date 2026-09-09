@@ -1,4 +1,25 @@
 ---
+# Every exec in this file states failed_when, and none of them is decoration.
+# Measured against community.docker 5.3.0: docker_compose_v2_exec sets check_rc
+# only when `detach` is true, so every other invocation returns whatever exit
+# code the command produced and Ansible reports success regardless. The scripts
+# in files/ are written to raise rather than to return a status -- an assert
+# that a token belongs to the user it was proven against, a group set whose
+# length must match, a transaction that rolls back -- so rc carries all of it,
+# and a task without this line converts a deliberate refusal into a clean recap.
+#
+# Every one of them is also no_log, so no message accompanies the refusal: the
+# writes pass the managed password or the managed token through `env:`, the two
+# listings put every managed username and email on stdout, and Ansible censors
+# the whole result rather than a chosen field. Which stream would have to be
+# read if one ever could be: Django writes the traceback to stderr, the
+# listing scripts print their JSON to stdout, and a message naming one of the
+# two is the wager tests/contracts/nextcloud-runtime.rb's diagnosis helper
+# exists to avoid. So the task name is the whole of what a reader gets, which is
+# a reason to keep these names as specific as they are: no_log censors an
+# assert's fail_msg exactly as it censors a module result, and the banner
+# Ansible prints above the censored line is the one field it does not touch.
+#
 # include_tasks never applies meta/argument_specs.yml, and the tasks below are
 # gated on this phase, so an unrecognised value would silently skip them while
 # the run still reported success. verify.yml reaches its verification tasks
@@ -31,6 +52,11 @@
   register: paperless_managed_users_probe
   changed_when: false
   check_mode: false
+  # The listing every decision in this file is taken from. Without it a failed
+  # read fell through to the set_fact below, which parses the last stdout line
+  # as JSON -- and a listing that exited nonzero while still printing a parsable
+  # line would have been reconciled against as though it were the user set.
+  failed_when: paperless_managed_users_probe.rc | default(1) | int != 0
   no_log: true
 
 - name: Resolve sanitized Paperless managed-user listing
@@ -176,6 +202,13 @@
   loop_control:
     label: paperless-managed-user
   changed_when: true
+  # files/create_managed_user.py commits the row and its password in one
+  # transaction on purpose, so that a half-created account cannot survive; until
+  # this line the rollback that protects it was invisible. The exception exited
+  # nonzero, the module reported success, changed_when asserted a creation that
+  # rolled back, and the re-list below then failed on a user that is absent --
+  # naming the listing rather than the create that never landed.
+  failed_when: paperless_managed_user_creation.rc | default(1) | int != 0
   no_log: true
 
 - name: Re-list sanitized Paperless users after managed-user creation
@@ -198,6 +231,11 @@
     - not ansible_check_mode
   changed_when: false
   check_mode: false
+  # The same read as the first listing and the same reason, one stage on: this
+  # is what the created identities are re-resolved against, so a failure here
+  # that reported success would send the repair below at primary keys taken from
+  # a listing that was never produced.
+  failed_when: paperless_managed_users_refreshed_probe.rc | default(1) | int != 0
   no_log: true
 
 - name: Resolve refreshed sanitized Paperless users
@@ -393,11 +431,20 @@
       - -c
       - "{{ lookup('ansible.builtin.file', role_path ~ '/files/bind_managed_identity.py') }}"
     tty: false
+  register: paperless_managed_user_binding
   when: not ansible_check_mode
   loop: "{{ vault_managed_paperless_ngx_users }}"
   loop_control:
     label: paperless-managed-user
   changed_when: false
+  # The most consequential of the five, because this task exists only to refuse.
+  # files/bind_managed_identity.py locks the token and the row and asserts that
+  # the authenticated token belongs to the primary key the repair is about to
+  # write, so that a concurrent rename cannot land the repair on a different
+  # account. Until this line the refusal was inert: the AssertionError exited
+  # nonzero, the module reported success, and the repair below ran against the
+  # identity the binding had just rejected.
+  failed_when: paperless_managed_user_binding.rc | default(1) | int != 0
   no_log: true
 
 - name: Repair Paperless managed-user non-secret properties
@@ -433,10 +480,21 @@
       paperless_effective_managed_user_matches[item.username][0].is_staff | bool != item.is_staff | bool or
       paperless_effective_managed_user_matches[item.username][0].is_superuser | bool != item.is_superuser | bool or
       paperless_effective_managed_user_matches[item.username][0].groups | sort != item.groups | sort
+  register: paperless_managed_user_repair
   loop: "{{ vault_managed_paperless_ngx_users }}"
   loop_control:
     label: paperless-managed-user
   changed_when: true
+  # files/repair_managed_user.py re-proves the identity binding inside the
+  # transaction that writes, and asserts that every declared group resolved --
+  # "so a missing group fails the play instead of silently narrowing the user's
+  # access", which is what its own comment claims and what this line is required
+  # for. Both raises exited nonzero into a module that reported success, and
+  # changed_when then announced a repair that had rolled back. The verify phase
+  # at the bottom of this file is not the backstop it looks like: it is reached
+  # through a second include and a fatal failure here stops the role before it,
+  # which is the point -- the write is caught where it happens.
+  failed_when: paperless_managed_user_repair.rc | default(1) | int != 0
   no_log: true
 
 - name: Verify exact Paperless managed users

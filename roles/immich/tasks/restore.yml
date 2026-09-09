@@ -55,6 +55,25 @@
           - "{{ immich_restore_backup_filename }}"
           - "{{ immich_restore_backup_container_path }}"
         tty: false
+      register: immich_restore_database_load
+      # Stated rather than inherited, and this is not decoration. Measured
+      # against community.docker 5.3.0: docker_compose_v2_exec sets check_rc only
+      # when `detach` is true, so every other invocation returns whatever exit
+      # code the command produced and Ansible reports success regardless.
+      # Without this line a psql that refused the dump -- a truncated archive, a
+      # role the restore cannot assume, ON_ERROR_STOP firing on the first
+      # statement -- came back green and the evidence read below was the first
+      # thing to notice. That is a stage late: the rescue writes
+      # immich_restore_stage into the failure marker, so the run would be
+      # recorded as `database-verification` and send a reader to the query
+      # instead of to the restore that never applied.
+      #
+      # No diagnostic accompanies it, which is the redaction rather than a hole.
+      # The comment above this task says why: both commands run psql with
+      # PGPASSWORD and POSTGRES_USER, and a connection failure echoes them, so
+      # the result stays censored and the stage marker is what names the
+      # failure.
+      failed_when: immich_restore_database_load.rc | default(1) | int != 0
       no_log: true
 
     - name: Record the restored Immich database verification stage

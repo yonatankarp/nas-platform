@@ -33,6 +33,12 @@
   # A missing key exits non-zero and prints nothing, which is a state rather
   # than an error: it means every managed domain is missing and the loop below
   # adds all of them.
+  #
+  # And read this line as documentation, not as the requirement it looks like.
+  # docker_compose_v2_exec sets check_rc only when `detach` is true, so deleting
+  # it would not make this task fail on the missing key -- it would leave the
+  # same tolerance in force with nothing stating it, which is how the repair
+  # below went unguarded for as long as it did.
   failed_when: false
   changed_when: false
   check_mode: false
@@ -114,6 +120,20 @@
   loop_control:
     index_var: index
   changed_when: true
+  # Stated rather than inherited, and the pairing with the line above is the
+  # point. docker_compose_v2_exec sets check_rc only when `detach` is true, so
+  # until this line a `config:system:set` occ refused reported success and this
+  # task then asserted a change it had not made -- once per missing domain, on
+  # every five-minute poller tick, behind a clean recap, while Nextcloud went on
+  # answering HTTP 400 to every request carrying the Host it was told to trust.
+  #
+  # occ writes its refusals to stdout, not stderr: measured for `app:disable` in
+  # reconcile_apps.yml and recorded in docs/dossier-nextcloud.md. So read stdout
+  # first in the failed result. No message is written here that could quote the
+  # wrong stream -- this task carries no no_log, its argv holds an index and a
+  # domain rather than a credential, and the module returns rc, stdout and
+  # stderr together.
+  failed_when: nextcloud_trusted_domains_repair.rc | default(1) | int != 0
   when:
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode

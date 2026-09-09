@@ -55,7 +55,7 @@
   # census that failed would read as an empty app set, the intersection below
   # would be empty, and the stage would report a converged deployment on a
   # container it never reached.
-  failed_when: nextcloud_app_census.rc | default(0) | int != 0
+  failed_when: nextcloud_app_census.rc | default(1) | int != 0
   changed_when: false
   check_mode: false
 
@@ -108,7 +108,7 @@
   # Note which stream the diagnostic has to read. Disable.php writes that
   # sentence to stdout, so a message quoting stderr would come back empty --
   # the shape tests/contracts/nextcloud-runtime.rb's diagnosis helper exists for.
-  failed_when: nextcloud_app_repair.rc | default(0) | int != 0
+  failed_when: nextcloud_app_repair.rc | default(1) | int != 0
   # Negative, and deliberately so. The success line embeds the app's version
   # ("photos 7.0.0 disabled"), which every image bump moves, so matching it
   # positively would be a regex over a value this repository does not control.

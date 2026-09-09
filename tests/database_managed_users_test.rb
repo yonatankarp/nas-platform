@@ -404,7 +404,16 @@ PAPERLESS_EXECUTOR_MODULE = <<~'PYTHON'
 
   with open(path, "w", encoding="utf-8") as handle:
       json.dump(state, handle)
-  module.exit_json(changed=changed, stdout=stdout, stdout_lines=stdout.splitlines())
+  # rc=0, because the real module always returns rc on success and #521 made the
+  # role's failed_when read it. Omitting it made every guarded task fail under
+  # this fixture the moment the default became 1 -- the stub was unfaithful, not
+  # the role. tests/paperless_mail_reconciliation_test.rb's stub already said rc.
+  #
+  # The failure path below is still fail_json rather than a nonzero rc, which is
+  # NOT what the real module does -- that mismatch is the whole of #521 -- so
+  # this fixture proves the role unbroken, never that the new guards bite. Their
+  # teeth are the pre-fix sweep and the two mutation rows.
+  module.exit_json(changed=changed, rc=0, stdout=stdout, stdout_lines=stdout.splitlines())
 PYTHON
 
 def with_paperless_executor(state)

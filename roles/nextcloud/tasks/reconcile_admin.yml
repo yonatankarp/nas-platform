@@ -87,6 +87,27 @@
     - not ansible_check_mode
     - nextcloud_admin_status | default('') == 'rotated'
   changed_when: true
+  # Stated rather than inherited, and it is the example issue #521 was filed on.
+  # Measured against community.docker 5.3.0: docker_compose_v2_exec sets
+  # check_rc only when `detach` is true, so until this line a reset occ refused
+  # -- an OC_PASS the container never received, an oc_users table the command
+  # could not reach, any refusal at all -- returned its exit code and Ansible
+  # reported success. The converge went green, the deployment report announced a
+  # repaired administrator, and the vault password still did not authenticate.
+  # Paired with the changed_when above it was worse than silent: the stage
+  # claimed a repair it had not verified, on every five-minute poller tick.
+  #
+  # occ writes most of its refusals to stdout rather than stderr, so a message
+  # quoting stderr alone would be empty exactly when it was needed -- the shape
+  # tests/contracts/nextcloud-runtime.rb's diagnosis helper exists for. None is
+  # written here regardless, and that is the redaction working rather than a
+  # hole: the line below censors the whole result and no message could survive
+  # it. What a reader gets is the task banner and where the run stopped, which
+  # is more than it looks -- reaching this task at all means the probe above
+  # answered 401, so the credential is rotated and occ refused to reset it.
+  # `docker compose exec --user www-data nextcloud php occ user:resetpassword
+  # <admin>` by hand is what prints the sentence that says why.
+  failed_when: nextcloud_admin_repair.rc | default(1) | int != 0
   # The exec renders the container environment on failure, which is the whole
   # rendered credential set.
   no_log: true

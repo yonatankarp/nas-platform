@@ -302,8 +302,12 @@ stderr. And `community.docker.docker_compose_v2_exec` **does not fail on a
 nonzero exit code** — it sets `check_rc` only when `detach` is true — so without
 an explicit `failed_when` the module reports success, `changed_when` evaluates
 true, and the stage claims a change it did not make on every five-minute poller
-tick behind a clean `PLAY RECAP`. The same assumption is filed against
-`reconcile_admin.yml` as its own issue.
+tick behind a clean `PLAY RECAP`. The same assumption was live in
+`reconcile_admin.yml` and in eleven other tasks across four roles, and #521
+closed all twelve: every non-detached `docker_compose_v2_exec` in `roles/` now
+states a decided `failed_when`, and `tests/policy_test.rb` refuses one that does
+not. The trap survives as a **module** property rather than as a live defect —
+the next exec written here inherits it and has to say what it requires.
 
 ## There is no pre-upgrade backup, and what that costs
 
