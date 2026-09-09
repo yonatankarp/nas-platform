@@ -549,9 +549,11 @@ if failures.empty?
   # 2.21.4, along with the fact that the YAML quoting does not decide it: folded,
   # single-quoted and double-quoted scalars all read one element.
   #
-  # Restricted to \n, \t and \r rather than to every backslash, because banning
-  # every backslash would ban the backreference the pre-escaping exists to make
-  # work. WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an
+  # Restricted to the whitespace escapes \n, \t and \r rather than to every
+  # backslash -- which is why the message says whitespace and not backslash,
+  # since Ansible processes none of them and this refuses only the three.
+  # Banning every backslash would ban the backreference the pre-escaping exists
+  # to make work. WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an
   # escape handed to a regex filter is processed by Python's own re module, so
   # regex_replace('\t', ' ') is correct and this guard would refuse it. No task
   # here does that; the exemption belongs on this assertion when one arrives.
@@ -566,7 +568,7 @@ if failures.empty?
       jinja_expression_regions(value).any? { |region| region.match?(/\\[ntr]/) }
     end
   end
-  failures << "no Nextcloud Jinja expression may contain a backslash escape, which Ansible will not process" unless
+  failures << "no Nextcloud Jinja expression may contain a whitespace backslash escape, which Ansible will not process" unless
     python_escape_in_expression.empty?
 
   # A bare `docker inspect` prints .Config.Env, which for this stack is the

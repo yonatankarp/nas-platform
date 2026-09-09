@@ -650,7 +650,7 @@ ROLE_STATIC_ROWS = [
         document.first["name"] = '{{ "Report the Nextcloud\ndeployment" }}'
       end
     },
-    expects: "no Nextcloud Jinja expression may contain a backslash escape, which Ansible will not process"
+    expects: "no Nextcloud Jinja expression may contain a whitespace backslash escape, which Ansible will not process"
   },
   {
     # A bare `docker inspect` prints .Config.Env, which for this stack is three
