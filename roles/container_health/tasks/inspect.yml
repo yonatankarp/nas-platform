@@ -152,9 +152,10 @@
       `docker compose up` against an unchanged specification keeps the same
       container and recreates nothing, and `restart: unless-stopped` is what
       produces the loop rather than what ends it, so only a changed image or an
-      explicit force-recreate replaces the container. Read
-      `docker logs {{ container_health_service_name }}` -- for #509 the cause was
-      one line there and in no other reading -- or the same lines in Dozzle. The
+      explicit force-recreate replaces the container. Read `docker logs` for
+      each container named above -- a Compose project may hold several and only
+      its own name reaches the daemon -- because for #509 the cause was one line
+      there and in no other reading; Dozzle carries the same lines. The
       fix belongs in this repository and reaches the host on the poller's next
       tick; clearing the wedged container itself is the one step a converge
       cannot take today, which is the open half of #509.
