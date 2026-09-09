@@ -50,11 +50,15 @@ true of this file, and the difference should be used rather than assumed away.**
   and marked where it appears. It covers the whole of the Mac coverage.
 
 And the flat statement the rest of this file should be read against:
-**as of this dossier, Nextcloud has never run on the NAS.**
-`nextcloud_deployment_enabled` is `false` in
-[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml), and
-only the two disposable lanes turn it on — CI through a per-suite override, the
-Mac lane through `-e` on its own `ansible-playbook`.
+**every finding above was established before Nextcloud ran on the NAS at all.**
+#500's last slice set `nextcloud_deployment_enabled` true in
+[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml), so
+the stack converges there now; until that commit it had run only in the two
+disposable lanes — CI through a per-suite override, the Mac lane through `-e` on
+its own `ansible-playbook`. Nothing in this file was learned from the production
+stack, so treat its behaviour on that hardware as unobserved rather than
+confirmed until somebody has watched it. Every claim marked Unverified below is
+where that distinction bites.
 
 ## The one thing the first converge fixes forever
 

@@ -288,8 +288,7 @@ every implemented service except `arr` and `downloaders`, whose Phase 1 runtime
 is default-disabled in that lane and proved by its Docker integration suite. The
 Mac lane starts Seafile and Nextcloud with its own
 `-e seafile_deployment_enabled=true -e nextcloud_deployment_enabled=true`, so
-their coverage does not depend on what the platform default happens to be —
-which matters for Nextcloud, whose platform default is still `false`.
+their coverage does not depend on what the platform default happens to be.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 
