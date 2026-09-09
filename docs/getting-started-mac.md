@@ -219,6 +219,22 @@ active service:
   container killed mid-start leaves it on disk. Every share link is `http://`;
   there is no TLS anywhere on this platform, and this is the first service whose
   login guards the operator's own files.
+- Nextcloud: sign in with the vault administrator identity, then upload a
+  disposable file and confirm it survives recreation byte for byte. The round
+  trip checks something different from Seafile's: the file is a plain file on
+  disk that `ls` and `cp` can read whatever state the database is in, so what is
+  being confirmed is that the account, sharing and versioning state in
+  PostgreSQL still agrees with a tree that was never in question. The
+  administrator identity is repairable here, which is the other difference:
+  `NEXTCLOUD_ADMIN_PASSWORD` is consumed only by the installer, but
+  roles/nextcloud probes the vault credential and runs `occ user:resetpassword`
+  when it no longer authenticates — so a failed sign-in means that repair
+  failed, not that the credential is unrecoverable. Add a trusted domain by hand
+  and reconverge: it should still be there. The reconcile appends what is
+  missing and removes nothing, because an entry an operator added by hand is not
+  drift the role can distinguish from a deliberate addition, and removing a
+  trusted domain is how an instance stops answering for somebody. Every link is
+  `http://`; there is no TLS anywhere on this platform.
 
 After the review, produce the report and clean only the validated sandbox:
 

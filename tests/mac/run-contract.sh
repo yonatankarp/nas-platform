@@ -81,6 +81,15 @@ set -- "$mac_phase" "$@"
 # refused rather than run with an incomplete environment, which is the other half
 # of the unknown-service guard: adding a contract to the registry without giving
 # it a Mac environment fails loudly here.
+#
+# "Here" is a lane that takes hours of Docker Desktop and runs in no CI job, so
+# that refusal is the second line rather than the first. tests/policy_mac_test.rb
+# parses the arms out of this table and holds them to the registry in both
+# directions -- every registered service reaches an arm, and every arm names a
+# registered service -- so the omission this comment describes is a static gate
+# failure in seconds, and this refusal only has to catch what a parse cannot see.
+# The services this table deliberately omits are declared there with a reason
+# each, rather than left as a silent gap.
 case $mac_service in
   audiobookshelf)
     : "${PLATFORM_AUDIOBOOKSHELF_PORT:?PLATFORM_AUDIOBOOKSHELF_PORT is required}"
@@ -149,6 +158,13 @@ case $mac_service in
   # sandbox copy of it without knowing which it is talking to.
   seafile)
     : "${PLATFORM_SEAFILE_PORT:?PLATFORM_SEAFILE_PORT is required}"
+    ;;
+  # Nextcloud is the same shape as Seafile above and for the same reason, with a
+  # fourth container: the contract derives the application, cron sidecar,
+  # database and cache names from PLATFORM_PROJECT_NAME itself, so the port is
+  # genuinely the whole of its Mac environment.
+  nextcloud)
+    : "${PLATFORM_NEXTCLOUD_PORT:?PLATFORM_NEXTCLOUD_PORT is required}"
     ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac

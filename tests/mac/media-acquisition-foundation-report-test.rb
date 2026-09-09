@@ -59,6 +59,7 @@ def report_input
     "trailarr_port" => 37_889,
     "seerr_port" => 35_055,
     "seafile_port" => 38_083,
+    "nextcloud_port" => 38_084,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,
     "diagnostic_locations" => [],

@@ -42,12 +42,12 @@ mac_drift_hooks='10-beszel.sh
 60-jellyfin.sh
 70-immich.sh
 80-paperless.sh
-85-seafile.sh'
+85-seafile.sh
+90-nextcloud.sh'
 mac_drift_coverage_neutral_hooks='15-media-acquisition-foundation.sh'
 
 mac_assert_service_coverage drift 00-coverage.sh '' \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=no hand edit to its own provisioning is reproduced here; the ntfy-facing state this lane drifts is the Dozzle dispatcher record, which 20-dozzle.sh drifts and requires verification to refuse
-nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane has no Nextcloud configuration to drift a hand edit against' \
+ntfy=no hand edit to its own provisioning is reproduced here; the ntfy-facing state this lane drifts is the Dozzle dispatcher record, which 20-dozzle.sh drifts and requires verification to refuse' \
   "$mac_drift_hooks" "$mac_drift_coverage_neutral_hooks"

@@ -74,8 +74,25 @@ mac_recreate_and_reassert seerr seerr seerr seerr run
 # deployed bundle still authenticates against databases whose data outlived their
 # containers.
 mac_recreate_and_reassert seafile seafile seafile 'seafile db cache' run
+# All four, for the reason above and one of its own: the application and the cron
+# sidecar share the /var/www/html volume, so recreating either alone would leave
+# the claim that the shared mount is re-established from the deployed bundle
+# untested.
+#
+# What notices an empty volume is the census the run phase opens with, and it
+# notices through container health rather than through anything the contract
+# asks Nextcloud about itself. Both probes read the mount: the cron sidecar's is
+# `test -f /var/www/html/occ`, and the application's greps /status.php for
+# `"installed":true`, which the server cannot print without an installation tree
+# to boot. A volume that came back empty leaves both unhealthy and the census
+# refuses before a single assertion runs.
+#
+# Not the background job mode, which is the reading a reader reaches for first
+# and the one thing here that would NOT notice: backgroundjobs_mode lives in
+# oc_appconfig, which is Postgres, and Postgres is a separate volume that this
+# recreate leaves alone. It would still read `cron` over an empty installation.
+mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache' run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane has no Nextcloud container to recreate'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'

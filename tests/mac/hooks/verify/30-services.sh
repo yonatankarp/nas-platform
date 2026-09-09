@@ -32,11 +32,20 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # platform-owned [INDEX FILES] setting inside it, the database credential
 # answering as root over TCP and a wrong one refused, an administrator token from
 # POST /api2/auth-token/ -- which is a real ccnet_db and seahub_db round trip
-# rather than a port probe -- and Valkey serving the cache behind it. It runs
-# last, which is where site.yml converges it.
+# rather than a port probe -- and Valkey serving the cache behind it.
+#
+# Nextcloud's run covers four healthy containers, an installed instance out of
+# maintenance mode with no unfinished database upgrade, and then the three
+# claims #500 exists to settle: that the database account is the vault's own
+# rather than the oc_admin the installer mints when NC_setup_create_db_user is
+# unset, that the reconciled trusted domains hold, and that the administrator
+# authenticates while a password the vault never authored is refused. It also
+# proves the cron sidecar is the thing running the background jobs, which is the
+# one claim no other service here has a shape for. It runs last, which is where
+# site.yml converges it.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
-    bindery trailarr seerr seafile; do
+    bindery trailarr seerr seafile nextcloud; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "
@@ -44,6 +53,5 @@ done
 
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane has no Nextcloud container to verify' \
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

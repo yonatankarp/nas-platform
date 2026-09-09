@@ -24,6 +24,7 @@ ROOT_KEYS = %w[
   schema lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
   jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
   pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port seafile_port
+  nextcloud_port
   git_revision vault_checksum diagnostic_locations phases
 ].freeze
 IDENTITY_KEYS = %w[git_sha platform_kind platform_compose_kind].freeze
@@ -113,6 +114,7 @@ def validate_input(input)
     beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
     jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
     pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port seafile_port
+    nextcloud_port
   ]
   service_port_fields.each do |field|
     port = input[field]
@@ -234,6 +236,7 @@ def markdown_report(report)
     lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
     jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
     pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port seafile_port
+    nextcloud_port
     git_revision vault_checksum generated_at
   ].each do |key|
     next unless report.key?(key)
@@ -362,6 +365,7 @@ def initialize_input(path, options)
     "trailarr_port" => options.fetch(:trailarr_port),
     "seerr_port" => options.fetch(:seerr_port),
     "seafile_port" => options.fetch(:seafile_port),
+    "nextcloud_port" => options.fetch(:nextcloud_port),
     "git_revision" => options.fetch(:git_revision),
     "vault_checksum" => options.fetch(:vault_checksum),
     "diagnostic_locations" => [],
@@ -454,6 +458,7 @@ def self_test
       "trailarr_port" => 37_889,
       "seerr_port" => 35_055,
       "seafile_port" => 38_083,
+      "nextcloud_port" => 38_084,
       "git_revision" => "abc123",
       "vault_checksum" => "0" * 64,
       "diagnostic_locations" => [],
@@ -685,6 +690,7 @@ parser = OptionParser.new do |opts|
   opts.on("--trailarr-port PORT", Integer) { |value| options[:trailarr_port] = value }
   opts.on("--seerr-port PORT", Integer) { |value| options[:seerr_port] = value }
   opts.on("--seafile-port PORT", Integer) { |value| options[:seafile_port] = value }
+  opts.on("--nextcloud-port PORT", Integer) { |value| options[:nextcloud_port] = value }
   opts.on("--git-revision SHA") { |value| options[:git_revision] = value }
   opts.on("--vault-checksum SHA256") { |value| options[:vault_checksum] = value }
   opts.on("--phase NAME") { |value| options[:phase] = value }

@@ -70,13 +70,14 @@ for expected_name in ntfy beszel beszel-agent-intel beszel-agent-portable \
     komga jellyfin immich-server immich-machine-learning immich-redis immich-postgres \
     paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \
     paperless-tika pinchflat kapowarr bindery trailarr seerr seafile \
-    seafile-db seafile-cache; do
+    seafile-db seafile-cache nextcloud nextcloud-cron nextcloud-db \
+    nextcloud-cache; do
   printf '%s\n' "$integration_names" | grep -qx "proof-$expected_name" || {
     printf 'integration-context-error: missing target identity: %s\n' "$expected_name" >&2
     exit 1
   }
 done
-[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 28 ] || {
+[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 32 ] || {
   printf '%s\n' 'integration-context-error: integration target identity set differs' >&2
   exit 1
 }

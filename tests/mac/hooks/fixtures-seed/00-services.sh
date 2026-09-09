@@ -31,8 +31,8 @@ for mac_seed_entry in beszel:verify dozzle:verify audiobookshelf:seed-progress \
 "
 done
 
-# Seafile is one of the two groups it is still exempt from, and this is now a
-# property of the service rather than of the gate. The other four groups run it:
+# Seafile and Nextcloud are each exempt from two groups only, and in both cases
+# this is now a property of the service rather than of the gate. The other four groups run it:
 # the lane requests seafile_deployment_enabled for itself, so there is a stack to
 # verify, reassert, recreate and drift.
 #
@@ -54,4 +54,4 @@ bindery=its only fixture would be a real Usenet download, which this lane has no
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make; its persisted state is the database and the application environment its own run phase asserts
 seerr=its fixtures are the two permission identities the converge itself creates, and a request fixture would ask Radarr and Sonarr for a real download this lane has no transport for; its persisted state is the database its own run phase asserts
 seafile=every state its later phases assert is state the converge itself created -- the first-start administrator, the three databases behind it and the event configuration the role repairs -- and its restore rehearsal is a drill needing a forced-backup converge between its halves rather than a fixture this phase could place
-nextcloud=the stack is gated off on every host until an operator sets nextcloud_deployment_enabled, so this lane starts no Nextcloud container to seed a fixture into'
+nextcloud=its contract declares only static and run, so there is no seed phase to dispatch; every state its later phases assert is state the converge itself created -- the administrator the installer fixes on first start, the cluster behind it, and the trusted domains the role reconciles'

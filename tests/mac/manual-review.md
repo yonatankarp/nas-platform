@@ -48,6 +48,19 @@ private keys, password hashes, rendered environment files, or application logs.
       behind. Note that every share link is `http://`: there is no TLS anywhere
       on this platform, and Seafile is the first service whose login guards the
       operator's own files.
+- [ ] Nextcloud: sign in with the vault administrator identity, upload a
+      disposable file, and confirm it is still there and downloads back byte for
+      byte after recreation — unlike Seafile the content is a plain file on
+      disk, so this checks the account and sharing state in PostgreSQL still
+      agrees with a tree `ls` can already read. Unlike Seafile the administrator
+      password *is* repairable: the role probes it and runs
+      `occ user:resetpassword` when it stops working, so a failed sign-in here
+      means the repair failed rather than that the credential is lost. Add a
+      trusted domain by hand and reconverge: confirm it is still there
+      afterwards. That list is append-only by design — the role cannot tell an
+      operator's deliberate entry from drift — so an entry that vanished would
+      be the bug. Every link is `http://`; there is no TLS anywhere on this
+      platform.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.
