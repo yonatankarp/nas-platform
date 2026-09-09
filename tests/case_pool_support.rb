@@ -42,40 +42,87 @@ CASE_POOL_WORKERS = Integer(
   end
 )
 
+# One case, run with its own failure list. Both widths below go through this,
+# so the parallel and the serial paths cannot report different things: there is
+# one per-case body, not two kept in agreement by hand.
+#
+# A case that raises a StandardError becomes a failure of that case -- named,
+# with the exception class and message -- rather than the end of the run. A row
+# whose fixture cannot be built is a broken row, and the five contract tests
+# that pool by return value already record it this way.
+#
+# The message is *appended* to the case's list rather than replacing it, which
+# is the one place this differs from those four. They can rebuild the list
+# because their block returns its findings; here the block appends to the list
+# it is handed, so a case that recorded two findings and then raised owes three
+# entries, not one. Only StandardError is caught -- SystemExit and the rest
+# still end the run, which is the next comment.
+def run_pool_case(item, collected)
+  yield item, collected
+rescue StandardError => error
+  collected << "#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: case raised " \
+               "#{error.class}: #{error.message}"
+end
+
 # Runs +items+ through the pool, appending each case's failures to +failures+.
 #
 # The block takes the case and *its own* failure list, never the shared one:
 # every case collects into a private array and the arrays are concatenated in
 # the original order once the pool drains, so the report a developer reads is
-# the same list in the same order the serial version produced. A single worker
-# yields the shared list directly, which is the serial path POLICY_JOBS=1 takes.
+# the same list in the same order the serial version produced. Both widths run
+# the same per-case body, `run_pool_case` above, and a single worker runs it in
+# the calling thread -- which is the serial path POLICY_JOBS=1 takes.
 #
-# Anything a case needs to `abort` over -- a fixture that cannot be built, a row
-# that names something absent -- belongs before the pool. `abort` inside a worker
-# raises SystemExit there: the thread dies without recording its result and the
-# pool reports a KeyError in place of the sentence that explains what happened.
-def in_parallel_cases(failures, items)
+# That invariant did not hold before #514, and `tests/case_pool_behavior_test.rb`
+# is what holds it now, one child process per width so each meets the real
+# environment variable. A case raising a StandardError used to kill its worker,
+# `Thread#join` re-raised it here, and the concatenation below was never
+# reached: seven cases' real findings were discarded to report the eighth's
+# exception, and the two widths reported different lists -- 0 failures at
+# CASE_POOL_WORKERS=4 against 2 at POLICY_JOBS=1, so the flag CLAUDE.md
+# prescribes for bisecting a load-dependent failure changed the evidence rather
+# than serialising it.
+#
+# `abort` in a case still ends the run and still reports nothing, and that is
+# deliberate rather than the same bug in a smaller form. SystemExit is not a
+# StandardError, so `run_pool_case` does not rescue it: the worker thread dies,
+# `Thread#join` re-raises it here, and the process exits on it with whatever
+# `abort` wrote on stderr and no report assembled. Anything a case needs to
+# abort over -- a fixture that cannot be built, a row that names something
+# absent -- is the check saying it cannot continue, and belongs before the pool.
+# Recording each case's array *before* running it, so the other cases' findings
+# could ride out alongside the abort, was considered and rejected: the
+# concatenation below is still not reached, so those findings would land in an
+# array no caller ever prints, and the mechanism would be one nothing could
+# observe.
+def in_parallel_cases(failures, items, &case_body)
   items = items.to_a
   workers = [CASE_POOL_WORKERS, items.length].min
-  return items.each { |item| yield item, failures } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
   collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        local = []
-        yield item, local
-        lock.synchronize { collected[index] = local }
-      end
+  if workers <= 1
+    items.each_with_index do |item, index|
+      local = []
+      run_pool_case(item, local, &case_body)
+      collected[index] = local
     end
-  end.each(&:join)
+  else
+    pending = Queue.new
+    items.each_with_index { |item, index| pending << [index, item] }
+    lock = Mutex.new
+    Array.new(workers) do
+      Thread.new do
+        loop do
+          index, item = begin
+                          pending.pop(true)
+                        rescue ThreadError
+                          break
+                        end
+          local = []
+          run_pool_case(item, local, &case_body)
+          lock.synchronize { collected[index] = local }
+        end
+      end
+    end.each(&:join)
+  end
   collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
 end
