@@ -246,10 +246,9 @@ trailarr_monitoring_enabled: >-
   {{ platform_project_name | default('') | length == 0 }}
 
 # The one operator switch that deploys Nextcloud, and it is now on. #500 added
-# this stack as the first half of migrating file sync off Seafile, and both run
-# side by side from here -- that side-by-side period is what the gate existed
-# for. The teardown of Seafile is a separate issue and must not be started until
-# the choice between them has been evaluated with real files.
+# this stack as the file-sync service replacing Seafile, which ran beside it for
+# exactly as long as the comparison needed and was removed by #501. Nextcloud is
+# the only file-sync service this platform runs.
 #
 # The commit that set this true is what put four containers on the NAS -- the
 # application, its cron sidecar, a PostgreSQL 18 cluster and a Valkey -- because
