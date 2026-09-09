@@ -269,7 +269,17 @@ trailarr_monitoring_enabled: >-
 # "false on the NAS, true in CI" is not expressible there; and because
 # tests/policy_platform_test.rb holds a host group to machine facts only, which
 # this is not. This is nonsecret policy, so it is group_vars and not the vault.
-seafile_deployment_enabled: true
+#
+# It is now false. #500 replaced this stack with Nextcloud, which has been
+# converging beside it, and #501 removes the code. This flag going false is the
+# first step of that: the next poller tick converges the project to
+# `state: absent`, which stops the three containers and removes the network.
+#
+# It removes nothing from disk. host_prep only ever creates the directories it
+# declares, and every Seafile mount is a bind rather than a named volume, so
+# /volume1/Docker/seafile survives this change untouched. Deleting it is an
+# operator action and deliberately not something this repository can do.
+seafile_deployment_enabled: false
 
 # The one operator switch that deploys Nextcloud, and it is now on. #500 added
 # this stack as the first half of migrating file sync off Seafile, and both run
