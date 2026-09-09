@@ -60,6 +60,7 @@
       - "null"
       - "-"
     tty: false
+  register: jellyfin_qsv_probe
   when:
     - platform_kind == 'nas'
     - >-
@@ -70,3 +71,24 @@
       jellyfin_qsv_container_info.rc | default(1) | int == 0
   changed_when: false
   check_mode: false
+  # A proof, and until this line it could not fail. Both callers say so in their
+  # own names -- deploy.yml's "Prove Jellyfin QSV during convergence",
+  # verify.yml's "Prove Jellyfin QSV during exact verification" -- and nothing
+  # registers or reads the result anywhere, so the exit code is the whole of
+  # what this task establishes. Measured against community.docker 5.3.0:
+  # docker_compose_v2_exec sets check_rc only when `detach` is true, so a render
+  # device the container could not open, an iHD driver that stopped loading, or
+  # a QSV stack an image bump broke all exited nonzero and reported success.
+  #
+  # `failed_when: false` was the honest alternative and it is refused here rather
+  # than left implicit: a probe permitted to fail whose result nothing reads
+  # asserts nothing at all, and the treatment for that is deleting the task, not
+  # documenting it.
+  #
+  # No message is written. ffmpeg puts its diagnosis on stderr and -loglevel
+  # error keeps stdout empty, but a message naming one stream is exactly the
+  # wager tests/contracts/nextcloud-runtime.rb's diagnosis helper exists to
+  # avoid; this task carries no no_log -- its argv holds a device path and no
+  # credential -- so the failed result renders rc, stdout and stderr together
+  # and nothing has to choose between them.
+  failed_when: jellyfin_qsv_probe.rc | default(0) | int != 0

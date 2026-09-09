@@ -1659,6 +1659,59 @@ check(failures, external_fetch_tasks >= 2,
 check(failures, deploys_through_module,
       "no role deploys anything through docker_compose_v2")
 
+# community.docker.docker_compose_v2_exec does not fail on a nonzero exit code.
+# Read out of the module rather than inferred (plugins/modules/
+# docker_compose_v2_exec.py, identical in 5.2.2 and the 5.3.0 requirements.yml
+# pins): `run` sets check_rc only inside `if self.detach:`, call_cli defaults it
+# to False, and every other invocation returns {"changed": True, "rc": rc, ...}
+# whatever rc was. So an exec task with no failed_when cannot fail, and one that
+# also states `changed_when: true` asserts a change it never verified -- the
+# clean PLAY RECAP with the wrong answer behind it (#521). Twelve tasks were in
+# that state when this check was written, one of them the occ password reset
+# whose failure left the vault credential unable to authenticate while the
+# deployment report announced a repair.
+#
+# The rule is the broad one deliberately: every non-detached exec, not only the
+# changed_when: true subset the issue named. A read that reports success on a
+# failed command is the same defect one stage earlier -- the Paperless identity
+# inspection fed a from_json that named neither container nor command -- and
+# `failed_when: false` satisfies the rule, so a task that genuinely tolerates
+# failure states that it does instead of leaving it to be inferred from silence.
+#
+# `detach` is exempt because the module checks rc itself in exactly that branch.
+# The exemption is deliberately narrow: only a literal true is honoured, so a
+# templated or unrecognised value stays a subject and the check fails toward
+# refusing rather than toward excusing.
+compose_exec_tasks = 0
+role_task_files.each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    arguments = task["community.docker.docker_compose_v2_exec"]
+    next unless arguments.is_a?(Hash)
+
+    compose_exec_tasks += 1
+    next if arguments["detach"] == true
+
+    check(failures, task.key?("failed_when"),
+          "#{relative_path}: \"#{task['name'] || 'an unnamed task'}\" runs " \
+          "docker_compose_v2_exec without failed_when; the module sets check_rc only " \
+          "for detach, so this task reports success on any exit code. State the rc " \
+          "condition it requires, or state failed_when: false and say why the failure " \
+          "is tolerated")
+  end
+end
+# A floor, not `!empty?`: this sweep discovers its own subjects from the tree, so
+# renaming the module key or moving these tasks somewhere the flattener does not
+# walk would report a clean repository having inspected nothing. Twenty exec
+# tasks are in roles/ today. The floor is twelve rather than twenty because the
+# mutation sandbox copies only a role's statically imported stage files plus the
+# paths BASE_FIXTURE_PATHS names, and jellyfin/tasks/qsv_probe.yml and
+# paperless_ngx/tasks/managed_users.yml are reached by include_tasks -- so this
+# check sees fourteen there, and raising the floor to today's count would redden
+# every sandbox rather than catch anything.
+check_floor(failures, compose_exec_tasks, 12,
+            "docker_compose_v2_exec tasks the exit-code policy inspected")
+
 # Every deployed service reports its own deployment, so adding a tenth service
 # cannot silently ship without one. The report is gated on the Compose result,
 # which is why each deploying task must register: an ungated report would send

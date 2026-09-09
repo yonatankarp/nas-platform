@@ -6,6 +6,25 @@
 # past it. `meta: end_role` ends the role and not merely this file: a statically
 # imported stage is spliced into the role's task list, so the stages imported
 # after it are not reached either.
+#
+# Every exec below states failed_when, and none of them is decoration. Measured
+# against community.docker 5.3.0: docker_compose_v2_exec sets check_rc only when
+# `detach` is true, so every other invocation returns whatever exit code the
+# command produced and Ansible reports success regardless. `manage.py shell -c`
+# has one failure mode and it is reliable -- an uncaught exception from the
+# script in files/ leaves Django's own traceback on the process and exits
+# nonzero -- so rc is the whole signal and each of these tasks is one line away
+# from asserting a change it never verified.
+#
+# None of them carries a message, because all three are no_log: the argv embeds
+# a vault username or the container password environment, and Ansible censors
+# the whole result rather than a chosen field. Note which stream would have to
+# be read if one ever could be: Django writes that traceback to stderr but the
+# scripts in files/ print their answers to stdout, and a message naming one
+# stream is the wager tests/contracts/nextcloud-runtime.rb's diagnosis helper
+# exists to avoid. What names these failures instead is identity.yml, which
+# rereads the administrator over the API later in the same run and asserts its
+# email and its three flags against the vault -- unredacted, by service name.
 
 - name: Inspect the vault Paperless administrator identity
   community.docker.docker_compose_v2_exec:
@@ -26,6 +45,12 @@
   register: paperless_admin_identity_probe
   changed_when: false
   check_mode: false
+  # The read this whole stage decides from. Without it a failed inspection fell
+  # through to the set_fact below, which parses the last stdout line as JSON, so
+  # the run died on a from_json template error naming neither the container nor
+  # the command -- and an inspection that exited nonzero while still printing a
+  # parsable line would have been read as an answer.
+  failed_when: paperless_admin_identity_probe.rc | default(0) | int != 0
   no_log: true
 
 - name: Resolve the vault Paperless administrator identity
@@ -95,10 +120,17 @@
       - "{{ vault_paperless_admin_username }}"
       - "{{ vault_paperless_admin_email }}"
     tty: false
+  register: paperless_admin_creation
   when:
     - not ansible_check_mode
     - paperless_admin_identity_count | int == 0
   changed_when: true
+  # createsuperuser --noinput refuses on a duplicate username, an email Django's
+  # validator rejects, or a DJANGO_SUPERUSER_PASSWORD the container never
+  # received, and it exits nonzero for each. Without this line the role claimed
+  # to have created an administrator that does not exist, and the first thing to
+  # notice would have been authentication.yml failing to log in as it.
+  failed_when: paperless_admin_creation.rc | default(0) | int != 0
   no_log: true
 
 - name: Repair the vault Paperless administrator
@@ -118,8 +150,16 @@
       - -c
       - "{{ lookup('ansible.builtin.file', role_path ~ '/files/repair_admin.py') }}"
     tty: false
+  register: paperless_admin_repair
   when:
     - not ansible_check_mode
     - paperless_admin_repair_required | bool
   changed_when: true
+  # files/repair_admin.py uses `get` rather than `filter().first()` precisely so
+  # that a row count that changed under the inspection raises instead of
+  # guessing, and it says so. Until this line that raise was swallowed: the
+  # DoesNotExist or MultipleObjectsReturned exited nonzero, the module reported
+  # success, and the stage announced a repaired administrator whose privileges
+  # were never written.
+  failed_when: paperless_admin_repair.rc | default(0) | int != 0
   no_log: true

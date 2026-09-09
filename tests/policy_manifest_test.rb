@@ -1661,6 +1661,43 @@ expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a r
   File.symlink("../../beszel/tasks/main.yml", path)
 end
 
+# docker_compose_v2_exec sets check_rc only when `detach` is true, so a task
+# without failed_when reports success on any exit code (#521). The reset is
+# picked as the subject because it is the one the issue was filed on and because
+# it is reached by import_tasks, so the sandbox has it -- qsv_probe.yml and
+# paperless_ngx/tasks/managed_users.yml carry seven more of these tasks between
+# them and are both reached by include_tasks, which the fixture deliberately does
+# not follow.
+expect_failure(failures, "Compose exec exit code left unchecked",
+               "runs docker_compose_v2_exec without failed_when",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "roles", "nextcloud", "tasks", "reconcile_admin.yml")
+  tasks = YAML.safe_load_file(path)
+  reset = tasks.find { |task| task["register"] == "nextcloud_admin_repair" }
+  raise "the Nextcloud administrator reset is absent" unless reset
+  raise "the Nextcloud administrator reset states no failed_when" unless reset.key?("failed_when")
+
+  reset.delete("failed_when")
+  File.write(path, YAML.dump(tasks))
+end
+
+# The other half of that check, and the half a passing sweep cannot report on
+# its own: the subject list is discovered from the tree, so a module key that
+# stopped matching empties it and every task in the repository satisfies the
+# rule by not being looked at. Renaming the key is the cheapest way to produce
+# exactly that, and the floor is what turns it back into a failure.
+expect_failure(failures, "Compose exec subjects renamed out of the sweep",
+               "docker_compose_v2_exec tasks the exit-code policy inspected",
+               detected_by: %i[policy]) do |root|
+  Dir[File.join(root, "roles", "*", "tasks", "**", "*.yml")].each do |path|
+    body = File.read(path)
+    next unless body.include?("community.docker.docker_compose_v2_exec")
+
+    File.write(path, body.gsub("community.docker.docker_compose_v2_exec",
+                               "community.docker.docker_compose_v2_renamed_exec"))
+  end
+end
+
 expect_failure(failures, "dirty controller enabled by default",
                "deployment bundle must refuse dirty controller sources by default",
                detected_by: %i[deployment]) do |root|
