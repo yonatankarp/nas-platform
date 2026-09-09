@@ -328,6 +328,24 @@ seafile_deployment_enabled: false
 # than a machine fact.
 nextcloud_deployment_enabled: true
 
+# The addresses Nextcloud answers for beyond the three roles/nextcloud derives.
+# platform_public_host already contributes the Tailscale MagicDNS name, so these
+# are the two literal addresses a client may put in the Host header instead:
+# the LAN address the NAS holds on the local network, and its Tailscale address.
+#
+# Nextcloud checks the Host header against this list and answers "Access through
+# untrusted domain" to anything absent -- an HTTP 400 that reads as a client
+# fault and is configuration. It is the one setting no environment override can
+# carry: an array arriving as a string makes every request answer 400, so
+# roles/nextcloud/tasks/reconcile_trusted_domains.yml appends these with occ.
+#
+# They are literal addresses rather than names, so they are exactly as durable
+# as the DHCP reservation and the Tailscale assignment behind them. A name would
+# outlive both; there is none for either today.
+nextcloud_additional_trusted_domains:
+  - 192.168.0.139
+  - 100.102.136.50
+
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"
 
