@@ -1109,6 +1109,31 @@ expect_failure(failures, "removed NAS mount guard",
   end
 end
 
+# The two halves of #530's promoted scanner, planted separately because they are
+# separate subjects: the role half is what the nextcloud-scoped original covered,
+# and the playbook half is what it could not reach, so a role-only row would
+# leave the extension green before and after.
+#
+# THE PLANTED VALUE IS TWO CHARACTERS in both rows, which is the whole trick: a
+# Ruby "\n" here would plant a real newline, Psych would dump a real newline, the
+# scanner would see nothing and both rows would be vacuous while reading as
+# correct. Single quotes are load-bearing.
+expect_failure(failures, "a whitespace escape inside a role's Jinja expression",
+               "contains a whitespace backslash escape, which Ansible will not process",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/host_prep/tasks/main.yml") do |tasks|
+    tasks.first["name"] = '{{ "Create service state\ndirectories" }}'
+  end
+end
+
+expect_failure(failures, "a whitespace escape inside a root playbook's Jinja expression",
+               "contains a whitespace backslash escape, which Ansible will not process",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "site.yml") do |plays|
+    plays.first["name"] = '{{ "Converge\tthe platform" }}'
+  end
+end
+
 expect_failure(failures, "weakened GPU device proof",
                "GPU availability must require declared capability and an existing character device",
                detected_by: %i[platform]) do |root|

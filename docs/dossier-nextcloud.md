@@ -213,11 +213,14 @@ Jinja console. Confirmed by measuring all four forms.
 
 `.splitlines()` is the house pattern —
 [`roles/trailarr/tasks/reconcile_env.yml`](../roles/trailarr/tasks/reconcile_env.yml)
-already used it — and `tests/contracts/nextcloud-static.rb` now scans every
-`{{ }}` region of the role's task files for Python escape sequences. That guard
-had a real subject when it was written, which distinguishes it from the
-`{% raw %}` guard beside it: that one is carried deliberately with **no subject
-in this role today**, and says so, rather than letting a green check imply
+had already hit the same defect and fixed it by hoisting the separator into a
+double-quoted `vars` entry — and the scan for it is repository-wide. It lived in
+`tests/contracts/nextcloud-static.rb` for one release and #530 promoted it to
+`tests/policy_test.rb`, which now reads every `{{ }}` region of **every** role's
+task files and every root playbook: the class had bitten twice, in two unrelated
+roles, and a comment in one role cannot enforce anything in another. What stayed
+behind is the `{% raw %}` guard beside it, carried deliberately with **no subject
+in any role today** and saying so, rather than letting a green check imply
 coverage it does not have.
 
 The kinship with #492 is the point. There, a `{% raw %}` inside a `{{ }}` was a

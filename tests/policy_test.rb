@@ -1588,6 +1588,87 @@ role_task_files.each do |path|
   end
 end
 
+# --- whitespace backslash escapes inside Jinja expressions -------------------
+#
+# A backslash escape inside a `{{ }}` expression is never an escape under
+# Ansible. AnsibleLexer pre-escapes every backslash in an expression's string
+# constants before Jinja's own lexer can run its unicode_escape pass over them,
+# so YAML is the only layer that processes a backslash and
+# regex_replace('^(.*)_x$', '\1') means a backreference here rather than the
+# byte \x01 it would mean under Jinja alone. The price is that '\n' inside an
+# expression stays two characters, and a split on it finds no separator.
+#
+# THE CLASS HAS BITTEN TWICE, in two unrelated roles, which is why it is here
+# rather than in one service contract (#530):
+#   * roles/nextcloud/tasks/reconcile_trusted_domains.yml split occ's output on
+#     '\n', so the live trusted_domains array read as one blob, every managed
+#     domain read as missing, and the repair loop re-set all three on every
+#     converge. The nextcloud lane's second converge reported changed=1; no
+#     check in this repository would have (#513).
+#   * roles/trailarr/tasks/reconcile_env.yml joined on '\n' and every following
+#     run found the environment it had just written back differing again. Fixed
+#     by hoisting the separator into a double-quoted `vars` entry, where YAML
+#     resolves it to a real newline before Jinja is handed the expression.
+# Two comments in two roles cannot enforce each other, so this file does it for
+# all of them. It lands green on the tree as it stands: the sweep that motivated
+# it found zero hits across every role task file and every root playbook.
+#
+# Scoped to `{{ }}` regions rather than to every string, because the
+# pre-escaping is scoped that way too: AnsibleLexer exempts `{% %}` statements,
+# and a folded `{% set p = raw.split('\n') %}` really does split on a newline
+# while the `{{ }}` beside it does not. Measured on ansible-core 2.21.4, along
+# with the fact that the YAML quoting does not decide it -- folded,
+# single-quoted and double-quoted scalars all read one element, which the
+# message repeats so the next reader does not reach for a different quote.
+#
+# Restricted to the whitespace escapes \n, \t and \r rather than to every
+# backslash -- which is why the message says whitespace and not backslash, since
+# Ansible processes none of them and this refuses only the three. Banning every
+# backslash would ban the backreference the pre-escaping exists to make work.
+#
+# WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an escape
+# handed to a regex filter is processed by Python's own re module, so
+# regex_replace('\t', ' ') is correct and this would refuse it. Nothing in the
+# repository does that today; the exemption belongs here when one arrives.
+#
+# The subject is every role task and handler file plus every root playbook. The
+# playbook half is the part the nextcloud-scoped original could not reach, and
+# it is floored separately: a combined floor passes while the playbook list
+# silently empties, because the role list is twenty times its size.
+root_playbook_files = Dir[File.join(ROOT, "*.yml")].sort.select do |path|
+  document = YAML.safe_load_file(path, aliases: true)
+  document.is_a?(Array) && document.all? { |play| play.is_a?(Hash) && play.key?("hosts") }
+end
+# 60 and 5 are sized against the mutation sandbox, not the tree: the harness
+# copies each role's main.yml and what it statically imports, so the role list
+# is 66 there against 117 here, while every root playbook is a stated fixture
+# path and all five are present in both.
+check_floor(failures, role_task_files.length, 60,
+            "the Jinja escape scanner found too few role task files")
+check_floor(failures, root_playbook_files.length, 5,
+            "the Jinja escape scanner found too few root playbooks")
+(role_task_files + root_playbook_files).each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  # task_strings over the whole parsed document rather than over flattened
+  # tasks, because a playbook's strings live in pre_tasks, vars and play
+  # keywords as well, and the escape is wrong wherever Jinja meets it.
+  task_strings(YAML.safe_load_file(path, aliases: true)).each do |value|
+    jinja_expression_regions(value).each do |region|
+      next unless region.match?(/\\[ntr]/)
+
+      check(failures, false,
+            "#{relative_path}: the Jinja expression {{#{region}}} contains a whitespace " \
+            "backslash escape, which Ansible will not process -- AnsibleLexer pre-escapes " \
+            "every backslash in an expression's string constants, so \\n stays two " \
+            "characters and a split or join on it finds no separator. The YAML quoting " \
+            "does not decide it: folded, single-quoted and double-quoted scalars all read " \
+            "one element. Hoist the separator into a double-quoted vars entry, where YAML " \
+            "resolves it before Jinja sees it, or drop the separator entirely with " \
+            "splitlines")
+    end
+  end
+end
+
 # A fetch from the public internet is the one task in a converge whose failure
 # is somebody else's outage, and #330 is what that costs: the Hebrew OCR model
 # was fetched with no retry and no timeout, raw.githubusercontent.com timed out
