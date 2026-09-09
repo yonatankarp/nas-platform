@@ -53,7 +53,7 @@
   # the run died on a from_json template error naming neither the container nor
   # the command -- and an inspection that exited nonzero while still printing a
   # parsable line would have been read as an answer.
-  failed_when: paperless_admin_identity_probe.rc | default(0) | int != 0
+  failed_when: paperless_admin_identity_probe.rc | default(1) | int != 0
   no_log: true
 
 - name: Resolve the vault Paperless administrator identity
@@ -133,7 +133,7 @@
   # received, and it exits nonzero for each. Without this line the role claimed
   # to have created an administrator that does not exist, and the first thing to
   # notice would have been authentication.yml failing to log in as it.
-  failed_when: paperless_admin_creation.rc | default(0) | int != 0
+  failed_when: paperless_admin_creation.rc | default(1) | int != 0
   no_log: true
 
 - name: Repair the vault Paperless administrator
@@ -164,5 +164,5 @@
   # DoesNotExist or MultipleObjectsReturned exited nonzero, the module reported
   # success, and the stage announced a repaired administrator whose privileges
   # were never written.
-  failed_when: paperless_admin_repair.rc | default(0) | int != 0
+  failed_when: paperless_admin_repair.rc | default(1) | int != 0
   no_log: true

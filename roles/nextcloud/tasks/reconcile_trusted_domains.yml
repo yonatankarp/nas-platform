@@ -133,7 +133,7 @@
   # wrong stream -- this task carries no no_log, its argv holds an index and a
   # domain rather than a credential, and the module returns rc, stdout and
   # stderr together.
-  failed_when: nextcloud_trusted_domains_repair.rc | default(0) | int != 0
+  failed_when: nextcloud_trusted_domains_repair.rc | default(1) | int != 0
   when:
     - nextcloud_deployment_enabled | bool
     - not ansible_check_mode

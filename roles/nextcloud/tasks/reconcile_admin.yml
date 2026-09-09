@@ -107,7 +107,7 @@
   # answered 401, so the credential is rotated and occ refused to reset it.
   # `docker compose exec --user www-data nextcloud php occ user:resetpassword
   # <admin>` by hand is what prints the sentence that says why.
-  failed_when: nextcloud_admin_repair.rc | default(0) | int != 0
+  failed_when: nextcloud_admin_repair.rc | default(1) | int != 0
   # The exec renders the container environment on failure, which is the whole
   # rendered credential set.
   no_log: true

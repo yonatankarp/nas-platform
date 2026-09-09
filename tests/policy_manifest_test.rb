@@ -1665,7 +1665,7 @@ end
 # without failed_when reports success on any exit code (#521). The reset is
 # picked as the subject because it is the one the issue was filed on and because
 # it is reached by import_tasks, so the sandbox has it -- qsv_probe.yml and
-# paperless_ngx/tasks/managed_users.yml carry seven more of these tasks between
+# paperless_ngx/tasks/managed_users.yml carry six more of these tasks between
 # them and are both reached by include_tasks, which the fixture deliberately does
 # not follow.
 expect_failure(failures, "Compose exec exit code left unchecked",

@@ -56,7 +56,7 @@
   # read fell through to the set_fact below, which parses the last stdout line
   # as JSON -- and a listing that exited nonzero while still printing a parsable
   # line would have been reconciled against as though it were the user set.
-  failed_when: paperless_managed_users_probe.rc | default(0) | int != 0
+  failed_when: paperless_managed_users_probe.rc | default(1) | int != 0
   no_log: true
 
 - name: Resolve sanitized Paperless managed-user listing
@@ -208,7 +208,7 @@
   # nonzero, the module reported success, changed_when asserted a creation that
   # rolled back, and the re-list below then failed on a user that is absent --
   # naming the listing rather than the create that never landed.
-  failed_when: paperless_managed_user_creation.rc | default(0) | int != 0
+  failed_when: paperless_managed_user_creation.rc | default(1) | int != 0
   no_log: true
 
 - name: Re-list sanitized Paperless users after managed-user creation
@@ -235,7 +235,7 @@
   # is what the created identities are re-resolved against, so a failure here
   # that reported success would send the repair below at primary keys taken from
   # a listing that was never produced.
-  failed_when: paperless_managed_users_refreshed_probe.rc | default(0) | int != 0
+  failed_when: paperless_managed_users_refreshed_probe.rc | default(1) | int != 0
   no_log: true
 
 - name: Resolve refreshed sanitized Paperless users
@@ -444,7 +444,7 @@
   # account. Until this line the refusal was inert: the AssertionError exited
   # nonzero, the module reported success, and the repair below ran against the
   # identity the binding had just rejected.
-  failed_when: paperless_managed_user_binding.rc | default(0) | int != 0
+  failed_when: paperless_managed_user_binding.rc | default(1) | int != 0
   no_log: true
 
 - name: Repair Paperless managed-user non-secret properties
@@ -494,7 +494,7 @@
   # at the bottom of this file is not the backstop it looks like: it is reached
   # through a second include and a fatal failure here stops the role before it,
   # which is the point -- the write is caught where it happens.
-  failed_when: paperless_managed_user_repair.rc | default(0) | int != 0
+  failed_when: paperless_managed_user_repair.rc | default(1) | int != 0
   no_log: true
 
 - name: Verify exact Paperless managed users

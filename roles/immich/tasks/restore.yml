@@ -73,7 +73,7 @@
       # PGPASSWORD and POSTGRES_USER, and a connection failure echoes them, so
       # the result stays censored and the stage marker is what names the
       # failure.
-      failed_when: immich_restore_database_load.rc | default(0) | int != 0
+      failed_when: immich_restore_database_load.rc | default(1) | int != 0
       no_log: true
 
     - name: Record the restored Immich database verification stage

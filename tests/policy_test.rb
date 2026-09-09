@@ -1698,6 +1698,29 @@ role_task_files.each do |path|
           "for detach, so this task reports success on any exit code. State the rc " \
           "condition it requires, or state failed_when: false and say why the failure " \
           "is tolerated")
+
+    # Presence is not the property. `failed_when` REPLACES the module's own
+    # failure verdict, so a condition naming a register the task does not set
+    # resolves to an undefined lookup, evaluates false, and disarms the module
+    # more thoroughly than omitting the line would -- the omission at least left
+    # the detach branch honest. A condition that tolerates failure says
+    # `failed_when: false` and is exempt; anything else has to be reading this
+    # task's own result, so it must name the register this task writes.
+    guard = task["failed_when"]
+    next if guard == false || !task.key?("failed_when")
+
+    registered = task["register"]
+    check(failures, registered.is_a?(String) && !registered.empty?,
+          "#{relative_path}: \"#{task['name'] || 'an unnamed task'}\" states a " \
+          "failed_when condition but registers nothing, so the condition cannot be " \
+          "reading this task's result")
+    next unless registered.is_a?(String) && !registered.empty?
+
+    check(failures, Array(guard).join(" ").include?(registered),
+          "#{relative_path}: \"#{task['name'] || 'an unnamed task'}\" states a " \
+          "failed_when condition that never names #{registered}, the register it " \
+          "writes; an undefined lookup there evaluates false and disarms the module " \
+          "rather than guarding it")
   end
 end
 # A floor, not `!empty?`: this sweep discovers its own subjects from the tree, so
