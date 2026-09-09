@@ -12,8 +12,11 @@ import io
 import json
 import os
 from pathlib import Path
+import signal
 import socket
 import stat
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -32,6 +35,20 @@ CONTAINER_ID = "a" * 64
 # port that differs from any literal the relay itself could have kept, so a
 # stale value would still select a usable one.
 DEPLOYED_PORT = 8081
+# How long the process-level signal cases below wait for the relay to begin
+# listening, and for it to exit once signalled. Both are environment inputs
+# because a hardcoded wait is how this repository's gate keeps acquiring a
+# floor it cannot parallelise away (#319, #485): a case that waits is a worker
+# slot held without CPU. The defaults are generous against what the operation
+# costs -- the relay listens in well under a second on a cold interpreter -- and
+# the exit budget is Docker's own stop grace period, because a relay that needed
+# longer than that in the container would be SIGKILLed rather than waited for.
+RELAY_START_TIMEOUT_SECONDS = float(
+    os.environ.get("PLATFORM_RELAY_START_TIMEOUT_SECONDS", "20")
+)
+RELAY_EXIT_TIMEOUT_SECONDS = float(
+    os.environ.get("PLATFORM_RELAY_EXIT_TIMEOUT_SECONDS", "10")
+)
 
 
 def reserve_local_port():
@@ -1083,6 +1100,157 @@ class DozzleAlertRelayTest(unittest.TestCase):
         combined = captured.getvalue() + response_body.decode() + wrong_body.decode()
         for secret in (RELAY_TOKEN, NTFY_TOKEN, "request-secret"):
             self.assertNotIn(secret, combined)
+
+
+class RelayProcessSignalTest(unittest.TestCase):
+    """What a deliberate stop does to the relay, run as its own process.
+
+    services/dozzle/compose.yml starts the relay in exec form, so inside the
+    container the Python process is PID 1 unless Compose is asked for an init.
+    PID 1 has no default disposition for SIGTERM: the kernel delivers the signal
+    only if the process installed a handler, and drops it otherwise. A relay
+    that handled nothing but SIGINT therefore ignored `docker stop` outright and
+    was SIGKILLed at the end of the grace period for exit 137 -- which the `die`
+    rule pages on since #493, through the relay itself, which is the delivery
+    path every alert on this platform takes. It paged on its own recreation and
+    could not deliver the page (#516).
+
+    A unit test cannot make a process PID 1; that needs a container, and the
+    gate has no Docker. What it can assert is the property that makes the PID-1
+    case safe, and it is exactly the property that was missing: the relay
+    installs its own disposition for SIGTERM and exits zero under it, instead of
+    depending on a default disposition PID 1 does not have. Without the handler
+    this process is killed by the signal and reports returncode -SIGTERM, so
+    these cases are red on the tree that had the bug.
+    """
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        state_directory = Path(self.temporary_directory.name) / "state"
+        state_directory.mkdir(mode=0o700)
+        self.state_path = state_directory / "alert-relay.json"
+
+    def start_relay(self):
+        """Run services/dozzle/alert_relay.py the way its container does."""
+        port = reserve_local_port()
+        environment = dict(os.environ)
+        environment.update(
+            {
+                "ALERT_RELAY_TOKEN": RELAY_TOKEN,
+                "ALERT_RELAY_PORT": str(port),
+                # Never dialled: these cases publish nothing. The discard
+                # address keeps a misdirected publish from reaching anything.
+                "NTFY_PUBLISH_URL": "http://127.0.0.1:9/",
+                "NTFY_TOPIC": "nas-critical",
+                "NTFY_CONTAINERS_TOPIC": "nas-containers",
+                "NTFY_TOKEN": NTFY_TOKEN,
+                "ALERT_STATE_PATH": str(self.state_path),
+                "PYTHONDONTWRITEBYTECODE": "1",
+            }
+        )
+        process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
+            [sys.executable, str(RELAY_PATH)],
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.addCleanup(self.reap, process)
+
+        deadline = time.monotonic() + RELAY_START_TIMEOUT_SECONDS
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                _out, error = process.communicate()
+                self.fail(
+                    "the relay exited before it listened, status "
+                    f"{process.returncode}: {error.decode(errors='replace')}"
+                )
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.5)
+                try:
+                    probe.connect(("127.0.0.1", port))
+                except OSError:
+                    time.sleep(0.05)
+                    continue
+            return process, port
+        self.fail(
+            f"the relay did not listen on 127.0.0.1:{port} within "
+            f"{RELAY_START_TIMEOUT_SECONDS} seconds"
+        )
+        return None, None  # unreachable; self.fail raises
+
+    @staticmethod
+    def reap(process):
+        if process.poll() is None:
+            process.kill()
+        process.communicate()
+
+    def signalled_exit(self, number, open_connections=0):
+        process, port = self.start_relay()
+        clients = []
+        for _ in range(open_connections):
+            client = socket.create_connection(("127.0.0.1", port), timeout=3)
+            self.addCleanup(client.close)
+            # A request line cut short, so the worker thread is inside the read
+            # when the signal lands. That is the window a shutdown implemented
+            # as a raising signal handler loses the signal in: socketserver
+            # catches whatever is raised while it dispatches a request and
+            # carries on, and the stop then ends in the SIGKILL it was meant to
+            # avoid.
+            client.sendall(b"POST /alerts HT")
+            clients.append(client)
+        process.send_signal(number)
+        try:
+            process.communicate(timeout=RELAY_EXIT_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired:
+            self.fail(
+                f"the relay was still running {RELAY_EXIT_TIMEOUT_SECONDS} seconds after "
+                f"{signal.Signals(number).name}; inside its container Docker would SIGKILL "
+                "it here and the `die` rule would page on exit 137, through the relay"
+            )
+        return process.returncode
+
+    def test_sigterm_shuts_the_relay_down_cleanly(self):
+        status = self.signalled_exit(signal.SIGTERM)
+
+        self.assertEqual(
+            status,
+            0,
+            "the relay must install its own SIGTERM disposition and exit zero: a status of "
+            f"{status} here is the default disposition, which PID 1 does not have, so in the "
+            "container the signal is dropped and the stop ends in a SIGKILL and exit 137",
+        )
+
+    def test_sigint_still_shuts_the_relay_down_cleanly(self):
+        """The path that already worked, so the SIGTERM handler cannot cost it.
+
+        SIGINT reached the relay before #516 as a KeyboardInterrupt out of
+        serve_forever. Installing a handler for it replaces that exception, so
+        this case is what says the replacement still ends in a clean exit.
+        """
+        status = self.signalled_exit(signal.SIGINT)
+
+        self.assertEqual(status, 0, f"SIGINT must still end in a clean exit, got {status}")
+
+    def test_sigterm_lands_cleanly_while_requests_are_in_flight(self):
+        """The window a raising signal handler loses the stop in.
+
+        socketserver reports any exception raised while it is dispatching a
+        request through handle_error and keeps serving, so a stop implemented as
+        a handler that raises is swallowed whenever the signal arrives between
+        accept and the worker thread starting -- observed once in eight attempts
+        of a raising handler, on SIGINT, with a client connecting at start-up.
+        Blocking the signals and waiting for one has no such window, and this
+        case is what says so.
+        """
+        status = self.signalled_exit(signal.SIGTERM, open_connections=3)
+
+        self.assertEqual(
+            status,
+            0,
+            "a stop arriving while requests are in flight must still exit zero, got "
+            f"{status}",
+        )
 
 
 if __name__ == "__main__":
