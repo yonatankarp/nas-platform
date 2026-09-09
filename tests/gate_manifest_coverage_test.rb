@@ -224,6 +224,8 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/media_acquisition_foundation_verifier_test.rb
   ruby tests/reader_platform_identity_test.rb
   ruby tests/capture_helper_identity_test.rb
+  ruby tests/dozzle_exit_code_exclusion_identity_test.rb
+  ruby tests/dozzle_exit_code_exclusion_identity_test.rb --self-test
   ruby tests/mac/media-acquisition-foundation-report-test.rb
   tests/policy_runner_test.sh
   ruby tests/production_auto_deploy_role_test.rb
