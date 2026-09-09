@@ -47,6 +47,28 @@ argument_specs:
           Extra hostnames Nextcloud must answer for, such as a mesh VPN name.
           Its own list rather than a second value folded into
           platform_public_host, which roles/ntfy also builds its topic from.
+      nextcloud_disabled_apps:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          The shipped Nextcloud applications this platform switches off. An
+          off-set rather than an on-set: the apps that stay on are the image's
+          decision, and restating them here would be a copy nothing bumps.
+      nextcloud_additional_disabled_apps:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          Extra applications an operator wants off, extending the role's own
+          list without editing it. Empty by default.
+      nextcloud_disabled_apps_effective:
+        type: list
+        elements: str
+        required: false
+        description: >-
+          The deduplicated union of the two lists above, which is what
+          tasks/reconcile_apps.yml intersects against the live app census.
       nextcloud_overwrite_cli_url:
         type: str
         required: false

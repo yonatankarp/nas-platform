@@ -77,6 +77,7 @@ FIXTURE_FILES = %w[
   roles/nextcloud/tasks/deploy.yml
   roles/nextcloud/tasks/reconcile_trusted_domains.yml
   roles/nextcloud/tasks/reconcile_admin.yml
+  roles/nextcloud/tasks/reconcile_apps.yml
   roles/nextcloud/tasks/report.yml
   roles/nextcloud/tasks/verify.yml
   roles/nextcloud/templates/env.j2
@@ -666,6 +667,77 @@ ROLE_STATIC_ROWS = [
       end
     },
     expects: "Nextcloud diagnostics must narrow every inspection rather than print the container environment"
+  },
+  {
+    # The one entry of the app policy #500 derives rather than chooses. Immich is
+    # this platform's photo service.
+    name: "an app policy that stopped disabling the photo app Immich replaces",
+    break: lambda { |root|
+      edit_yaml(root, "roles/nextcloud/defaults/main.yml") do |document|
+        document["nextcloud_disabled_apps"] =
+          document.fetch("nextcloud_disabled_apps").reject { |app| app == "photos" }
+      end
+    },
+    expects: "must disable the photo app Immich already serves"
+  },
+  {
+    # The off-set's other direction. `text` is collaborative editing, which #500
+    # names as one of the three features this platform adopted Nextcloud for, so
+    # it is the entry a later prune would most plausibly reach for.
+    name: "an app policy that disabled the collaborative editor it was adopted for",
+    break: lambda { |root|
+      edit_yaml(root, "roles/nextcloud/defaults/main.yml") do |document|
+        document["nextcloud_disabled_apps"] = document.fetch("nextcloud_disabled_apps") + ["text"]
+      end
+    },
+    expects: "must not disable the collaborative editor it was adopted for"
+  },
+  {
+    name: "an app policy that runs before the administrator it perturbs is probed",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "main") do |document|
+        stage = document.find { |task| task["ansible.builtin.import_tasks"] == "reconcile_apps.yml" }
+        document.delete(stage)
+        document.unshift(stage)
+      end
+    },
+    expects: "must run after the administrator probe and before the report"
+  },
+  {
+    # docker_compose_v2_exec sets check_rc only for `detach`, so a census that
+    # failed would otherwise read as an empty app set and report a converged
+    # deployment on a container it never reached.
+    name: "an application census that reads a failed exit as an empty app set",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        document.each { |task| task.delete("failed_when") if task["register"] == "nextcloud_app_census" }
+      end
+    },
+    expects: "census must refuse a nonzero exit"
+  },
+  {
+    # Without it, a name that can never be disabled -- one of the fourteen in
+    # core/shipped.json's alwaysEnabled -- exits 2 on every five-minute poller
+    # tick behind a clean recap.
+    name: "an application disable that reports success on any exit code",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        document.each { |task| task.delete("failed_when") if task["register"] == "nextcloud_app_repair" }
+      end
+    },
+    expects: "disable must refuse a nonzero exit"
+  },
+  {
+    # Looping the declared list rather than the intersection makes every converge
+    # report changed, which is what the platform's idempotence check catches.
+    name: "an application disable that loops over the declared list rather than what is enabled",
+    break: lambda { |root|
+      edit_nextcloud_tasks(root, "reconcile_apps") do |document|
+        task = document.find { |entry| entry["register"] == "nextcloud_app_repair" }
+        task["loop"] = "{{ nextcloud_disabled_apps_effective }}"
+      end
+    },
+    expects: "must loop over what is still enabled"
   }
 ].freeze
 
@@ -751,6 +823,10 @@ RUNTIME_DEFAULTS = {
   occ_error_text: "",
   occ_error_stream: "stderr",
   app_list: { "enabled" => { "files" => "2.0.0", "dav" => "1.32.0" }, "disabled" => {} }.freeze,
+  # When non-nil the stub prints this verbatim in place of the JSON document,
+  # which is the only way to model an occ that exited 0 having written something
+  # that is not a census -- a deprecation notice on its own, a PHP warning.
+  app_list_text: nil,
   status_code: 200,
   status_body: nil,
   admin_code: 200,
@@ -849,7 +925,12 @@ def docker_stub_source(options_path)
           puts default.split("=", 2).last
         end
       elsif joined.include?("app:list")
-        puts JSON.generate(options.fetch("app_list"))
+        text = options.fetch("app_list_text")
+        if text.nil?
+          puts JSON.generate(options.fetch("app_list"))
+        else
+          puts text
+        end
       else
         warn "docker stub reached an exec it does not know: \#{joined}"
         exit 127
@@ -881,7 +962,8 @@ def build_runtime_sandbox(root, options)
     "crontab" => options.fetch(:crontab),
     "occ_error_text" => options.fetch(:occ_error_text),
     "occ_error_stream" => options.fetch(:occ_error_stream),
-    "app_list" => options.fetch(:app_list)
+    "app_list" => options.fetch(:app_list),
+    "app_list_text" => options.fetch(:app_list_text)
   ))
 
   File.write(File.join(bin, "docker"), docker_stub_source(options_path))
@@ -1106,6 +1188,32 @@ RUNTIME_ROWS = [
     given: { occ_ok: false,
              occ_error_text: "Error response from daemon: No such container: #{APPLICATION_CONTAINER}" },
     expects: "stderr: Error response from daemon: No such container: #{APPLICATION_CONTAINER}"
+  },
+  {
+    # The one application policy this contract can assert without a variable
+    # context: Immich is this platform's photo service, so Nextcloud serving
+    # photos too is the overlap #500's scope rules out.
+    name: "a server that still enables the photo app Immich replaces",
+    given: { app_list: { "enabled" => { "files" => "2.0.0", "photos" => "7.0.0" },
+                         "disabled" => {} } },
+    expects: "still enables photos"
+  },
+  {
+    # A census reporting nothing enabled is a census that failed. No
+    # installation can be in that state: core/shipped.json's alwaysEnabled holds
+    # fourteen apps that cannot be turned off, so an empty `enabled` is occ
+    # having gone wrong rather than a policy having gone right.
+    name: "an application census that reports nothing enabled",
+    given: { app_list: { "enabled" => {}, "disabled" => {} } },
+    expects: "no enabled application at all"
+  },
+  {
+    # occ exiting 0 having written something that is not a document. Rescued to
+    # an empty list this reads as "no photos enabled" and passes, which is the
+    # vacuity this row exists to keep closed.
+    name: "an application census that is not JSON",
+    given: { app_list_text: "PHP Deprecated: Implicit conversion in Installer.php" },
+    expects: "not JSON"
   }
 ].freeze
 
@@ -1413,6 +1521,48 @@ PROGRAM_MUTATIONS = [
     detects: "refused for the wrong reason"
   },
   {
+    label: "the requirement that the app policy disables the photo app Immich replaces",
+    program: :static,
+    from: 'Array(defaults["nextcloud_disabled_apps"]).include?("photos")',
+    to: "true",
+    rows: ["an app policy that stopped disabling the photo app Immich replaces"]
+  },
+  {
+    label: "the protection of the collaborative editor the platform adopted Nextcloud for",
+    program: :static,
+    from: 'Array(defaults["nextcloud_disabled_apps"]).include?("text")',
+    to: "false",
+    rows: ["an app policy that disabled the collaborative editor it was adopted for"]
+  },
+  {
+    label: "the placement of the app policy after the administrator probe",
+    program: :static,
+    from: 'imports.index("reconcile_apps.yml").to_i > imports.index("reconcile_admin.yml").to_i &&',
+    to: "true ||",
+    rows: ["an app policy that runs before the administrator it perturbs is probed"]
+  },
+  {
+    label: "the requirement that the application census refuses a nonzero exit",
+    program: :static,
+    from: 'census && census["failed_when"].to_s.include?("rc")',
+    to: "true",
+    rows: ["an application census that reads a failed exit as an empty app set"]
+  },
+  {
+    label: "the requirement that the application disable refuses a nonzero exit",
+    program: :static,
+    from: 'disable && disable["failed_when"].to_s.include?("rc")',
+    to: "true",
+    rows: ["an application disable that reports success on any exit code"]
+  },
+  {
+    label: "the requirement that the disable loop reads the live census",
+    program: :static,
+    from: 'disable && disable["loop"].to_s.include?("nextcloud_apps_still_enabled")',
+    to: "true",
+    rows: ["an application disable that loops over the declared list rather than what is enabled"]
+  },
+  {
     label: "the image pin check",
     program: :static,
     from: "image.match?(IMAGE_PIN) && image.split(\":\").first == repository",
@@ -1643,6 +1793,43 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["an installation whose cron schedule has not fired yet"],
     detects: "expected success"
+  },
+  {
+    label: "the refusal of an application this platform already serves elsewhere",
+    program: :runtime,
+    from: ") unless overlapping.empty?",
+    to: ") if false",
+    rows: ["a server that still enables the photo app Immich replaces"]
+  },
+  {
+    # What stops the row above being decoration. An assertion that refused every
+    # app set would satisfy it; this one only survives if the converged fixture
+    # is still accepted, so the two together pin both directions.
+    label: "the tolerance of an app set this platform does not object to",
+    program: :runtime,
+    from: "overlapping.empty?",
+    to: "false",
+    rows: ["a converged Nextcloud stack"],
+    detects: "expected success"
+  },
+  {
+    label: "the refusal of an application census that enumerated nothing",
+    program: :runtime,
+    from: ") if enabled.empty?",
+    to: ") if false",
+    rows: ["an application census that reports nothing enabled"]
+  },
+  {
+    # Caught as a wrong reason rather than as an acceptance: with the rescue put
+    # back to an empty list the program still refuses, it just refuses with the
+    # empty-census sentence instead of the one naming the real fault. That is the
+    # #352 shape -- a diagnosis of the wrong failure is not a diagnosis.
+    label: "reading an unparseable application census as JSON rather than as an empty list",
+    program: :runtime,
+    from: "fail_contract(UNPARSEABLE_CENSUS)",
+    to: "{}",
+    rows: ["an application census that is not JSON"],
+    detects: "refused for the wrong reason"
   },
   {
     label: "the requirement that the sidecar's crontab schedules cron.php",

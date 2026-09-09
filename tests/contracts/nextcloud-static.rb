@@ -34,6 +34,7 @@ required = %w[
   roles/nextcloud/tasks/deploy.yml
   roles/nextcloud/tasks/reconcile_trusted_domains.yml
   roles/nextcloud/tasks/reconcile_admin.yml
+  roles/nextcloud/tasks/reconcile_apps.yml
   roles/nextcloud/tasks/report.yml
   roles/nextcloud/tasks/verify.yml
   roles/nextcloud/templates/env.j2
@@ -52,7 +53,7 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_supp
 include PolicySupport
 
 ROLE_TASK_FILES = %w[
-  main storage deploy reconcile_trusted_domains reconcile_admin report verify
+  main storage deploy reconcile_trusted_domains reconcile_admin reconcile_apps report verify
 ].freeze
 VAULT_CREDENTIALS = %w[
   vault_nextcloud_admin_password
@@ -290,7 +291,8 @@ if failures.empty?
 
   imports = role_tasks(root, "main").filter_map { |task| task["ansible.builtin.import_tasks"] }
   expected_stages = %w[
-    storage.yml deploy.yml reconcile_trusted_domains.yml reconcile_admin.yml report.yml verify.yml
+    storage.yml deploy.yml reconcile_trusted_domains.yml reconcile_admin.yml reconcile_apps.yml
+    report.yml verify.yml
   ]
   failures << "the Nextcloud role must import every stage it owns" unless
     expected_stages.all? { |stage| imports.include?(stage) }
@@ -314,6 +316,16 @@ if failures.empty?
   # rotated password on exactly the stack that needed it.
   failures << "the Nextcloud trusted domains must be repaired before the administrator is probed" unless
     imports.index("reconcile_admin.yml").to_i > imports.index("reconcile_trusted_domains.yml").to_i
+  # The app policy after the administrator probe and before the report. Disabling
+  # an app dispatches AppDisableEvent and clears the application cache, so it
+  # perturbs request handling -- and reconcile_admin.yml's classifier reads
+  # anything that is neither 200 nor 401 as `unavailable` rather than `rotated`,
+  # so a policy stage placed first could make a rotated password look like an
+  # unreachable server. Before the report because an app this platform switched
+  # back off is a change the deployment report has to carry.
+  failures << "the Nextcloud application policy must run after the administrator probe and before the report" unless
+    imports.index("reconcile_apps.yml").to_i > imports.index("reconcile_admin.yml").to_i &&
+    imports.index("reconcile_apps.yml").to_i < imports.index("report.yml").to_i
 
   deploy = role_tasks(root, "deploy")
   compose_tasks = deploy.select { |task| task.key?("community.docker.docker_compose_v2") }
@@ -387,6 +399,43 @@ if failures.empty?
   domains = defaults["nextcloud_trusted_domains"].to_s
   failures << "the Nextcloud trusted domains must carry the two hosts this platform itself requests" unless
     domains.include?("127.0.0.1") && domains.include?("localhost")
+
+  # --- the application policy -----------------------------------------------
+
+  apps = role_tasks(root, "reconcile_apps")
+  census = apps.find do |task|
+    Array(task.dig("community.docker.docker_compose_v2_exec", "argv"))
+      .map(&:to_s).any? { |value| value.include?("app:list") }
+  end
+  disable = apps.find do |task|
+    Array(task.dig("community.docker.docker_compose_v2_exec", "argv"))
+      .map(&:to_s).any? { |value| value.include?("app:disable") }
+  end
+  # Both exec tasks state failed_when, and neither is decoration.
+  # docker_compose_v2_exec sets check_rc only when `detach` is true, so without
+  # it the module reports success on any exit code: a census that failed would
+  # read as an empty app set and report a converged deployment, and a name in
+  # the list that can never be disabled would exit 2 on every poller tick behind
+  # a clean recap.
+  failures << "the Nextcloud application census must refuse a nonzero exit rather than read it as an empty set" unless
+    census && census["failed_when"].to_s.include?("rc")
+  failures << "the Nextcloud application disable must refuse a nonzero exit rather than report a change it did not make" unless
+    disable && disable["failed_when"].to_s.include?("rc")
+  # The loop runs over the intersection with the live census, not over the
+  # declared list, which is what makes a converged deployment skip it entirely
+  # and report no change.
+  failures << "the Nextcloud application disable must loop over what is still enabled rather than over the declared list" unless
+    disable && disable["loop"].to_s.include?("nextcloud_apps_still_enabled")
+  # The one entry #500's own scope derives rather than chooses: "Photos,
+  # documents and media are already covered by Immich, Paperless and
+  # Jellyfin/Audiobookshelf/Komga". Immich is this platform's photo service.
+  failures << "the Nextcloud application policy must disable the photo app Immich already serves" unless
+    Array(defaults["nextcloud_disabled_apps"]).include?("photos")
+  # An off-set, and `text` is the app a later prune would most plausibly reach
+  # for -- it is collaborative editing, which is one of the three features #500
+  # names as the reason to adopt Nextcloud at all.
+  failures << "the Nextcloud application policy must not disable the collaborative editor it was adopted for" if
+    Array(defaults["nextcloud_disabled_apps"]).include?("text")
 
   # --- the administrator credential -----------------------------------------
 

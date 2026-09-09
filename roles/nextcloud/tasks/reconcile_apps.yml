@@ -1,0 +1,120 @@
+---
+# The shipped application set, which is the last piece of Nextcloud's
+# configuration this repository does not otherwise own. defaults/main.yml holds
+# the list and the reasoning; this file is only how it is applied.
+#
+# Re-asserted on every converge rather than set once, and that is the whole
+# reason it is a stage. `occ upgrade` can enable an app on its own -- the
+# entrypoint runs it on every image bump and only prints what it changed -- so a
+# deployment that disabled these once and never looked again would quietly grow
+# them back at the next digest bump.
+#
+# NO RESTART IS NEEDED and none is taken. AppManager::disableApp writes
+# `enabled=no` into oc_appconfig, runs the app's uninstall repair steps and
+# clears the app cache; app state is read from AppConfig per request. Measured
+# against nextcloud:34.0.3-apache: of the 56 shipped apps exactly one declares an
+# uninstall repair step (user_ldap, which is disabled by default and not on this
+# platform's list), so disabling one of these flips a row and leaves its files
+# and their metadata alone.
+
+- name: Read the enabled Nextcloud applications
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/nextcloud"
+    project_name: "{{ nextcloud_compose_project_name }}"
+    files: "{{ platform_service_compose_files['nextcloud'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+    service: nextcloud
+    user: www-data
+    argv: [php, occ, app:list, --output=json]
+    tty: false
+  register: nextcloud_app_census
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+  # Stated rather than inherited, and this is not decoration. Measured against
+  # community.docker 5.3.0: docker_compose_v2_exec sets check_rc only when
+  # `detach` is true, so every other invocation returns whatever exit code the
+  # command produced and Ansible reports success regardless. Without this line a
+  # census that failed would read as an empty app set, the intersection below
+  # would be empty, and the stage would report a converged deployment on a
+  # container it never reached.
+  failed_when: nextcloud_app_census.rc | default(0) | int != 0
+  changed_when: false
+  check_mode: false
+
+# The intersection, not the declared list, and that is what makes the stage
+# idempotent. A converged deployment finds nothing still enabled, so the loop
+# below runs zero times and reports no change -- the same argument
+# reconcile_trusted_domains.yml makes for reading the live array before writing
+# to it. Disabling an already-disabled app exits 0 and is harmless, but it would
+# still report changed, and a converge that claims a change it did not make is
+# what the platform's idempotence check exists to catch.
+#
+# `stdout_lines | last`, not `stdout`, is the house pattern -- see
+# roles/paperless_ngx/tasks/administrator.yml. `occ` prefixes its JSON with a
+# deprecation notice often enough that parsing the whole buffer is a wager, and
+# --output=json emits its document on exactly one line (core/Command/Base.php
+# writes json_encode's compact form), so the last line is the document.
+- name: Resolve the Nextcloud applications this platform still has to disable
+  ansible.builtin.set_fact:
+    nextcloud_apps_still_enabled: >-
+      {{ nextcloud_disabled_apps_effective
+         | intersect((nextcloud_app_census.stdout_lines | last | from_json)
+                     .get('enabled', {}) | list) }}
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Disable the Nextcloud applications this platform does not run
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/nextcloud"
+    project_name: "{{ nextcloud_compose_project_name }}"
+    files: "{{ platform_service_compose_files['nextcloud'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/nextcloud/.env"]
+    service: nextcloud
+    user: www-data
+    argv: [php, occ, app:disable, "{{ item }}"]
+    tty: false
+  register: nextcloud_app_repair
+  loop: "{{ nextcloud_apps_still_enabled | default([]) }}"
+  # exit 2 is the only failure `occ app:disable` has, and it means exactly one
+  # thing: the app is in core/shipped.json's alwaysEnabled set, AppManager threw
+  # "<app> can't be disabled", and core/Command/App/Disable.php caught it, wrote
+  # the message to STDOUT and set the exit code. Fourteen apps are in that set.
+  #
+  # They are not restated here. An upstream constant copied into this repository
+  # is a value nothing bumps, so the wrong list is caught loudly on the first
+  # converge instead: without this line the module would report success, the
+  # recap would be clean, and a name that can never be disabled would be retried
+  # on every five-minute poller tick for ever.
+  #
+  # Note which stream the diagnostic has to read. Disable.php writes that
+  # sentence to stdout, so a message quoting stderr would come back empty --
+  # the shape tests/contracts/nextcloud-runtime.rb's diagnosis helper exists for.
+  failed_when: nextcloud_app_repair.rc | default(0) | int != 0
+  # Negative, and deliberately so. The success line embeds the app's version
+  # ("photos 7.0.0 disabled"), which every image bump moves, so matching it
+  # positively would be a regex over a value this repository does not control.
+  # The already-disabled line is fixed text. This is the backstop rather than the
+  # primary discriminator -- the intersection above means a converged deployment
+  # never reaches this task -- and it covers the narrow case where `occ upgrade`
+  # re-enabled something between the read and the write.
+  changed_when: "'No such app enabled' not in nextcloud_app_repair.stdout | default('')"
+  when:
+    - nextcloud_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Report the Nextcloud application reconciliation check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read Nextcloud's enabled applications with
+      `occ app:list --output=json` and disable any of
+      {{ nextcloud_disabled_apps_effective | join(', ') }} that are still on.
+      That reads a running container this run did not start, so check mode
+      reports the intent instead of acting on it. photos is the one this
+      platform serves elsewhere -- Immich is the photo service -- and the rest
+      are outbound calls, onboarding pages and a share transport this deployment
+      has no use for.
+  when:
+    - nextcloud_deployment_enabled | bool
+    - ansible_check_mode

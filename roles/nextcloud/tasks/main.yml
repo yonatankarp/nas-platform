@@ -44,11 +44,25 @@
 - name: Reconcile the vault Nextcloud administrator credential
   ansible.builtin.import_tasks: reconcile_admin.yml
 
+# After the administrator probe, not before it, and the reason is the same
+# ordering argument the probe itself rests on. Disabling an app dispatches
+# AppDisableEvent and clears the application cache, so it perturbs request
+# handling for a moment -- and reconcile_admin.yml's classifier reads anything
+# that is neither 200 nor 401 as `unavailable` rather than as `rotated`, which
+# would silently decline to repair a password that had in fact rotated. The
+# probe reads the stack the deployment left; this stage moves it afterwards.
+#
+# Unlike the two above it, this one is not here because the image reads it only
+# while installing. It is here because `occ upgrade` can re-enable an app on any
+# image bump, so the off-set has to be re-asserted rather than set once.
+- name: Reconcile the Nextcloud application policy
+  ansible.builtin.import_tasks: reconcile_apps.yml
+
 # After the reconciliations, and that placement is the whole reason it is a stage
 # rather than the last task of deploy.yml. A converge whose only change is a
-# trusted-domain repair or an administrator password reset is a change this
-# platform has to announce, and a report rendered before those ran cannot see
-# them.
+# trusted-domain repair, an administrator password reset or an application this
+# platform switched back off is a change this platform has to announce, and a
+# report rendered before those ran cannot see them.
 - name: Report whether the Nextcloud deployment moved
   ansible.builtin.import_tasks: report.yml
 
