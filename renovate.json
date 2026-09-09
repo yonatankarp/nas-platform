@@ -113,6 +113,19 @@
       "automerge": false
     },
     {
+      "description": "A Nextcloud major is a data migration the container performs on itself, not a digest swap. /entrypoint.sh rsyncs the new tree into the shared /var/www/html volume and then runs `php /var/www/html/occ upgrade` unattended at container start -- read out of nextcloud:34.0.3-apache rather than assumed. It is one-way, the same entrypoint refuses to start once the volume's version.php is newer than the image's, and this stack keeps no pre-upgrade backup at all: #500 dropped one deliberately rather than deferring it, because the server holds no data yet. So reverting the merge does not restore the service -- it keeps the stack down until the pin goes forward again -- and there is nothing to restore from. The production poller converges the newest released main every five minutes, so a major merged in a batch reaches live data before anyone reads the pull request. That is why the control here is dependencyDashboardApproval rather than the label-and-no-automerge shape the Seafile and Immich rules use, and why automerge: false is absent where those two carry it: the approval box withholds the pull request until a human ticks it, whereas automerge: false would have been a no-op, because the top-level automerge is already false and the routine automerge rule above matches no major. No needs-manual-coupling label either, and that is deliberate rather than forgotten: on the Immich, Seafile, yt-dlp and tessdata rules that label marks a diff a bot cannot finish -- a checksum to copy by hand, compose lines to re-copy, config to edit inside a volume -- whereas this diff is complete and what is withheld is permission to apply it. The database-major rule, which is the shape this one now takes, carries no label for the same reason. Two things that are NOT the reason. This is not the entrypoint's refusal to skip a major: that check is nested under installed_version != 0.0.0.0, and a volume with no version.php -- which is what a stack gated off by nextcloud_deployment_enabled has -- takes the fresh-install path instead and installs cleanly at whatever major is pinned. The skip refusal binds an installed volume only, so it is a reason to converge between majors, not a reason to withhold the pull request. And minors and patches are ordinary here, which is why the scope stops at major rather than reaching minor the way the Seafile rule above does: version_greater sends every version increase through that same unattended occ upgrade, and the entrypoint chains them itself with nothing for an operator to do. The versions it compares are the four-element $OC_Version arrays out of version.php -- 34.0.3.2 for this image -- not the image tag.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "docker.io/library/nextcloud"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "dependencyDashboardApproval": true
+    },
+    {
       "description": "The yt-dlp build Pinchflat runs is pinned by version and sha256 together, and a bot cannot compute the checksum. A version bump whose checksum was not updated by hand fails the converge at get_url, so these never automerge: the pull request is a prompt to copy the new SHA2-256SUMS entry, not a finished change.",
       "matchDatasources": [
         "github-releases"

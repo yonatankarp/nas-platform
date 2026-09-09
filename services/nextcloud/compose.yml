@@ -235,9 +235,21 @@ services:
     container_name: nextcloud-cron
     # The same image as the application, and that is a requirement rather than
     # convenience: cron.php is the code in the shared volume, so the two
-    # containers must agree about what that code is. Renovate has to move both
-    # pins together for the same reason -- a split bump would leave one
-    # container's rsync fighting the other's.
+    # containers must agree about what that code is: a split bump would leave
+    # one container's rsync fighting the other's.
+    #
+    # No `groupName` rule in renovate.json holds those two pins together, and
+    # that is a finding rather than an omission -- Renovate cannot split them.
+    # Both lines extract as the same dependency under the same name, which its
+    # dependency dashboard prints twice under this file, and the default
+    # branchTopic is that name plus the new major with nothing per-occurrence
+    # in it; upstream states Renovate does not capture Compose service names at
+    # all (renovatebot/renovate#16176), so there is no discriminator available
+    # to build a second branch from. A rule guarding an impossible case is
+    # noise. What renovate.json does carry for this image is the opposite kind
+    # of rule: majors are withheld behind dependency dashboard approval, because
+    # /entrypoint.sh migrates the shared volume itself, will not start again on
+    # anything older, and this stack keeps no pre-upgrade backup to go back to.
     image: docker.io/library/nextcloud:34.0.3-apache@sha256:b97df9e0e1ee3c8c6cc009cb3f12ddce915d624d543b3bb93882025fe323a407
     cpus: 1.0
     labels:
