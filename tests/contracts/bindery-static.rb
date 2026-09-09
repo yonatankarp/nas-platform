@@ -192,8 +192,14 @@ if failures.empty?
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/main.yml"), aliases: true)
   )
 
+  # Two `up`s now, told apart by `recreate`: the deployment, and the bounded
+  # recovery #509 added. Counted separately rather than as a total of two, so a
+  # second plain deployment is still refused.
+  compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Bindery must deploy through docker_compose_v2" unless
-    tasks.count { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" } == 1
+    compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
+  failures << "Bindery must force-recreate a stuck container exactly once per converge" unless
+    compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1
   failures << "Bindery must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "bindery" } == 1
 
@@ -206,6 +212,101 @@ if failures.empty?
   deploy_index = tasks.index { |task| task.key?("community.docker.docker_compose_v2") }
   failures << "the Bindery pre-upgrade state guard must run before the deployment" unless
     backup_include && deploy_index && backup_include < deploy_index
+
+  # #509. A converge that reports success while the container it manages is
+  # crash-looping is what let Bindery restart 144 times over three days with
+  # nothing but a five-minute "Exit code: 1" relay to show for it. The refusal
+  # is required to sit immediately after the deployment and before anything that
+  # trusts it: a container in `Restarting` still appears in
+  # `docker container ls`, so the CPU verification sails straight past one and
+  # the readiness probe then fails on a timeout that names nothing.
+  #
+  # Each property below sits inside a presence guard on purpose. Each check must
+  # name one defect: with them unguarded, deleting the includes was reported by
+  # all of them at once and the existence check became the one assertion no
+  # mutation needed, which is the shape this repository keeps closing. The
+  # self-test found it.
+  health_indexes = tasks.each_index.select do |index|
+    tasks[index].dig("vars", "container_health_service_name") == "bindery"
+  end
+  failures << "Bindery must detect and then refuse a container that runs but never serves" unless
+    health_indexes.length == 2
+
+  # The recovery `up`, told apart from the deployment by `recreate` rather than
+  # by position, because position is what the ordering property below is for.
+  recreate = tasks.find { |task| task.dig("community.docker.docker_compose_v2", "recreate") }
+  recreate_options = recreate ? recreate["community.docker.docker_compose_v2"] : {}
+  failures << "Bindery must force-recreate only the services Docker reports as stuck" unless
+    recreate_options["recreate"] == "always" &&
+    recreate_options["dependencies"] == false &&
+    recreate_options["services"] == "{{ container_health_stuck_services }}"
+  # THE idempotence property. An unconditional force-recreate would replace this
+  # stack on every five-minute converge; the list it is gated on is empty on a
+  # converged host and empty under --check.
+  failures << "the Bindery force-recreate must be conditional on a container actually being stuck" unless
+    recreate && recreate["when"].to_s.include?("container_health_stuck_services")
+  recreate_block = tasks.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? { |inner| inner.dig("community.docker.docker_compose_v2", "recreate") }
+  end
+  failures << "the Bindery force-recreate must catch its own failure" unless
+    recreate_block && flatten_tasks(recreate_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_recreate_failure_message")
+    end
+
+  if health_indexes.length == 2
+    detect_index, verdict_index = health_indexes
+    detect = tasks[detect_index]
+    verdict = tasks[verdict_index]
+    recreate_index = recreate ? tasks.index(recreate) : nil
+    cpu_index = tasks.index { |task| task.dig("vars", "container_cpu_service_name") == "bindery" }
+    # Detect, recreate, refuse, and all three before anything trusts the
+    # deployment: a container in `Restarting` still appears in
+    # `docker container ls`, so the CPU verification would sail past one.
+    failures << "the Bindery container health passes must bracket the force-recreate" unless
+      cpu_index && deploy_index && recreate_index &&
+      deploy_index < detect_index && detect_index < recreate_index &&
+      recreate_index < verdict_index && verdict_index < cpu_index
+    failures << "the Bindery container health detection must not refuse before the recreate" unless
+      detect["vars"]["container_health_refuse"] == false
+    failures << "the Bindery container health verdict must be the one that refuses" unless
+      verdict["vars"].fetch("container_health_refuse", true) == true
+    failures << "each Bindery container health pass must name the deployed Compose project" unless
+      [detect, verdict].all? do |pass|
+        pass["vars"]["container_health_project_name"] == "{{ bindery_compose_project_name }}"
+      end
+    # Compose fails a crash-looping container with "container bindery is
+    # unhealthy", which says nothing about why, and a deployment or a recreate
+    # that failed for some OTHER reason has to leave with the message that says
+    # so. Each pass carries the message of the operation before it.
+    failures << "the Bindery container health detection must be handed the deployment's own failure" unless
+      detect["vars"]["container_health_deploy_failure_message"]
+            .to_s.include?("bindery_deploy_failure_message")
+    failures << "the Bindery container health verdict must be handed the recreate's own failure" unless
+      verdict["vars"]["container_health_deploy_failure_message"]
+             .to_s.include?("bindery_recreate_failure_message")
+    # A refusal that does not say the retry was already spent reads as a service
+    # needing one more converge, which is the dishonesty the bound exists against.
+    failures << "the Bindery container health verdict must say whether a recreate was spent" unless
+      verdict["vars"]["container_health_retried"].to_s.include?("bindery_recreate_spent")
+  end
+
+  # Compose fails a crash-looping container with "container bindery is
+  # unhealthy", which says nothing about why, and a deployment that failed for
+  # some OTHER reason has to leave with the message that says so. Both need the
+  # deployment's own message, so the deploy sits in a block whose rescue records
+  # it and hands it on.
+  deploy_block = tasks.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? do |inner|
+        compose = inner["community.docker.docker_compose_v2"]
+        compose.is_a?(Hash) && !compose.key?("recreate")
+      end
+  end
+  failures << "the Bindery deployment must catch its own failure" unless
+    deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|
+      task.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
+    end
 
   backup_tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/pre_upgrade_backup.yml"),
@@ -477,19 +578,66 @@ if failures.empty?
     credential_tasks.length >= 16 && credential_tasks.all? { |task| task["no_log"] == true }
 
   # The shape guard compares the authored values themselves, so it is redacted.
-  # The recoverability guard only measures the resolved key's length, and its
-  # whole purpose is the diagnostic it prints when Bindery is holding an
-  # identity this platform did not author, so it must stay readable.
+  # The recoverability guard's whole purpose is the diagnostic it prints, so it
+  # must stay readable.
   shape_guard = role_tasks.find do |task|
     task.key?("ansible.builtin.assert") && task.to_s.include?("vault_bindery_api_key")
   end
   failures << "the Bindery credential shape guard must use no_log" unless
     shape_guard && shape_guard["no_log"] == true
+
+  # #510: the refusal has to distinguish a Bindery that is not serving from one
+  # that is refusing the platform's identity, because the two demand opposite
+  # remedies and the destructive one was previously offered for both. The
+  # classification is what makes that possible, so it is required to read every
+  # probe's status -- one that ignores the login status cannot tell a 429 from a
+  # 401 -- and it is required to stay readable, since a censored result is
+  # exactly what a redacted classification produces.
+  key_classification = role_tasks.find do |task|
+    task.dig("ansible.builtin.set_fact", "bindery_key_resolution")
+  end
+  failures << "the Bindery API-key refusal must classify what its probes saw" unless
+    key_classification
+  if key_classification
+    classification = key_classification.dig("ansible.builtin.set_fact", "bindery_key_resolution").to_s
+    %w[bindery_key_probe bindery_identity_login bindery_session_config].each do |probe|
+      failures << "the Bindery API-key classification must read #{probe}.status" unless
+        classification.include?("#{probe}.status")
+    end
+    failures << "the Bindery API-key classification must stay readable" if
+      key_classification["no_log"]
+  end
+
   recovery_guard = role_tasks.find do |task|
-    task.key?("ansible.builtin.assert") && task.to_s.include?("bindery_api_key | length")
+    task.key?("ansible.builtin.assert") &&
+      Array(task.dig("ansible.builtin.assert", "that")).any? do |condition|
+        condition.to_s.include?("bindery_key_resolution")
+      end
   end
   failures << "the Bindery recoverability guard must stay readable" unless
     recovery_guard && !recovery_guard["no_log"]
+  if recovery_guard
+    refusals = recovery_guard.dig("vars", "bindery_key_refusals")
+    refusals = {} unless refusals.is_a?(Hash)
+    %w[unreachable rate-limited rejected-identity unexpected].each do |cause|
+      failures << "the Bindery API-key refusal must carry a #{cause} message" unless
+        refusals.key?(cause)
+    end
+    # The destructive remedy is the whole point of the split. It is catastrophic
+    # advice in every state but the one where the identity fault is established,
+    # and it was printed against a container answering nothing at all.
+    destructive = refusals.select { |_cause, text| text.to_s.match?(/remove the Bindery database/i) }
+    failures << "only a refused Bindery identity may propose removing its database" unless
+      destructive.keys == ["rejected-identity"]
+    # A message that names no status is a message that asserts a cause again.
+    %w[unreachable rate-limited rejected-identity unexpected].each do |cause|
+      text = refusals.fetch(cause, "").to_s
+      next if text.empty?
+
+      failures << "the Bindery #{cause} refusal must report the statuses it saw" unless
+        text.include?("bindery_observed_statuses")
+    end
+  end
 
   environment_render = tasks.find do |task|
     task.dig("ansible.builtin.template", "src") == "env.j2"

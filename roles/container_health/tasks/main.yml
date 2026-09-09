@@ -1,0 +1,66 @@
+---
+# A container can run and never serve, and Compose will not repair it.
+#
+# Measured against a throwaway crash-looping project on Docker 29.7.2 / Compose
+# v5.5.1 rather than reasoned about: `docker compose up -d` against an UNCHANGED
+# specification reports `Running`, keeps the same container id and recreates
+# nothing, and `up -d --wait` waits, reports the container unhealthy and still
+# recreates nothing. `restart: unless-stopped` does not help either -- it acts on
+# a container that exits, so it produces the crash loop rather than ending it.
+# The only thing that replaces a container whose spec has not changed is
+# --force-recreate, and nothing in this platform issues one.
+#
+# So a stack wedged by anything other than an image bump stays wedged through
+# every five-minute converge, for ever. Bindery did exactly that for three days
+# (#509): 144 restarts, the release right, the pin right, the image pulled, and
+# the only signal a Dozzle relay saying `Exit code: 1` every five minutes and
+# naming no reason.
+#
+# This role is the part that makes that loud, and the part a repair is bracketed
+# by. It reads what the daemon says about the project's containers, prints the
+# evidence, publishes the Compose services that are stuck, and -- on the pass
+# that is the verdict -- refuses.
+#
+# The force-recreate itself belongs to the CALLING role rather than to this one.
+# tests/policy_deployment_test.rb requires the role that starts a stack out of
+# the installed release to be the role that declared those five paths and
+# rendered that .env, and a shared role structurally is neither. So a caller
+# that wants a bounded recovery calls this role twice with its own single
+# force-recreate between the two passes; roles/bindery/tasks/main.yml is the
+# worked example.
+#
+# A converge that reports success while a container it manages is crash-looping
+# is the silence that cost those three days, and a refusal costs a failed play
+# against a service that was not working anyway.
+- name: Refuse a container that runs but never serves
+  ansible.builtin.include_tasks: inspect.yml
+  when: not ansible_check_mode
+
+# Check mode starts nothing, so there is no container this run created to
+# inspect and Compose's own dry run never waits on health. A remediation nothing
+# announces is one nobody knows is armed, so the intent is stated instead --
+# roles/container_cpu defers the same way and for the same reason.
+- name: Report the container health refusal check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ container_health_project_name }} that Docker reports as restarting or
+      unhealthy, print its status, exit code, restart count and health log, and
+      fail the {{ container_health_service_name }} deployment rather than
+      continue past it. Docker's verdict belongs to containers this run did not
+      start, so check mode reports the intent instead of inspecting them.
+  when: ansible_check_mode
+
+# The one thing that still has to happen under --check. A deployment that failed
+# for a reason this role cannot classify must fail with its own message, and
+# check mode cannot classify anything, so under --check every such failure is
+# re-raised unchanged rather than swallowed by a role that inspected nothing.
+- name: Re-raise a deployment failure check mode cannot classify
+  ansible.builtin.fail:
+    msg: >-
+      {{ container_health_deploy_failure_message }} (Check mode starts no
+      container, so the {{ container_health_service_name }} deployment failure
+      was re-raised without inspecting the project's container state.)
+  when:
+    - ansible_check_mode
+    - container_health_deploy_failure_message | length > 0
