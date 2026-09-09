@@ -156,8 +156,10 @@ mac_validate_integration_callback() {
 # come back to this line.
 #
 # nextcloud_deployment_enabled is the third, and the two reasons above carry over
-# unchanged -- #500 lands Nextcloud gated off exactly as #460 landed Seafile, so
-# the lane has to ask for it, and the flip-day reasoning applies word for word.
+# unchanged -- #500 landed Nextcloud gated off exactly as #460 landed Seafile, so
+# the lane had to ask for it. Its platform default has since flipped true, which
+# is the flip-day case that paragraph anticipated: this request stays correct and
+# is now redundant, and nothing had to come back to this line to make it so.
 #
 # What does NOT carry over is the consequence of omitting it. Seafile's paragraph
 # describes a silent pass because #460 landed the gate line before Seafile had

@@ -173,12 +173,11 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all seventeen implemented service projects, except Nextcloud,
-whose stack stays absent on every host until an operator sets
-`nextcloud_deployment_enabled: true`. Seafile no longer carries that caveat --
-its gate was flipped in #499 -- and Nextcloud inherits it because #500 lands the
-stack switched off so that both file-sync services can run side by side while
-the choice between them is evaluated with real files. Repeat the
+unchanged for all seventeen implemented service projects. Neither file-sync
+service carries a gated-off caveat any more: Seafile's switch was flipped in
+#499 and Nextcloud's in #500, and both now deploy, which is the side-by-side
+state #500 required so the choice between them can be evaluated with real
+files before any teardown is opened. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
