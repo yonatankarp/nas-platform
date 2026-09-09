@@ -1,0 +1,172 @@
+---
+# Refuse to start an image older than the one that last ran against a service's
+# own store.
+#
+# #511: Bindery v1.34.0 migrated its SQLite store to schema_migrations version
+# 81, the host then went back to a release pinning v1.33.3, and v1.33.3 -- which
+# knows migrations 1..80 -- refused to open it. That refusal is correct and
+# protective, but it happens inside the container: it exited 1 every minute for
+# three days, every converge failed at that role, and the deployment poller
+# stopped advancing. Nothing in the repository said that a stored schema
+# constrains which image versions may still run.
+#
+# This guard compares image versions, not schema versions, and that substitution
+# is the design decision. Reading the schema is a chicken-and-egg problem: it
+# lives inside a store only the application can open, and the application is
+# exactly what will not start. The three routes out were weighed and all three
+# rejected. Reading Bindery's SQLite file from the host needs a sqlite3 binary,
+# and ADM ships BusyBox with none -- the controller has one, but the controller
+# is not the target. Recording the version while the service was healthy needs
+# an endpoint that reports it, and inventing one is a new way for a converge to
+# fail. A throwaway container of a known-good image needs a second image pinned
+# somewhere and pulled on a host that may not reach the registry. What is left is
+# the observable the daemon already keeps: Docker records the image reference it
+# created each container from, digest included -- which is why
+# roles/bindery/tasks/pre_upgrade_backup.yml can already tell an upgrade from a
+# converge -- and that record outlives the container's exit. Schema version is
+# monotone in image version for a service that migrates on start, so "an image
+# older than one that has already run here" is the same refusal expressed in the
+# terms this platform can read.
+#
+# What it therefore does not do: once Compose has recreated the container from
+# the older image, the record says the older image and the guard passes. It
+# prevents the incident rather than diagnosing one in progress, which is the
+# right half to hold -- the first downgrade converge is the one that still has a
+# healthy stack to protect.
+#
+# Every read below is a read: changed_when false so a converged deployment
+# reports no change, check_mode false so `--check --diff` surfaces the refusal
+# rather than skipping past it. Unlike roles/container_cpu this inspects state
+# the run did not create, so there is nothing for check mode to defer.
+
+- name: Read the deployed Compose definition of the guarded service
+  ansible.builtin.slurp:
+    path: >-
+      {{ platform_current_dir }}/services/{{ image_downgrade_guard_service_name }}/compose.yml
+  register: image_downgrade_guard_compose_source
+
+- name: Resolve the pinned image reference of the guarded container
+  ansible.builtin.set_fact:
+    image_downgrade_guard_pinned_image: >-
+      {{ (image_downgrade_guard_compose_source.content | b64decode | from_yaml)
+         .services[image_downgrade_guard_compose_service].image }}
+
+# --all, not the running set. The container this guard exists for is the one
+# that is crash-looping or already dead, and `docker container ls` without it
+# lists neither. A stopped container keeps its Config.Image, which is the record
+# being read. Every returned container is considered rather than the first,
+# because a recreation can leave more than one behind and the ordering between
+# them is not a version ordering.
+- name: List every container the guarded Compose service holds
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --all
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ image_downgrade_guard_project_name }}"
+      - --filter
+      - "label=com.docker.compose.service={{ image_downgrade_guard_compose_service }}"
+  register: image_downgrade_guard_container_ids
+  changed_when: false
+  check_mode: false
+
+# Redacted: `docker container inspect` returns each container's Env array, which
+# is the rendered .env and therefore every credential the stack holds.
+- name: Inspect the containers of the guarded Compose service
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'container', 'inspect'] + image_downgrade_guard_container_ids.stdout_lines }}"
+  register: image_downgrade_guard_inspection
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: image_downgrade_guard_container_ids.stdout_lines | length > 0
+
+# Only containers created from the same repository are comparable. A service
+# that changed registry or image name entirely has no version ordering with its
+# predecessor, and inventing one would refuse a legitimate migration.
+- name: Resolve the image references this host has run for the guarded service
+  ansible.builtin.set_fact:
+    image_downgrade_guard_pinned_repository: >-
+      {{ image_downgrade_guard_pinned_image | regex_replace('@.*$', '')
+         | regex_replace(':[^:/]*$', '') }}
+    image_downgrade_guard_deployed_images: >-
+      {{ image_downgrade_guard_inspection.stdout | default('[]', true) | from_json
+         | map(attribute='Config.Image') | select('string') | list }}
+
+# A version only where the tag is one: `v1.34.0` and `34.0.3-apache` both yield
+# a dotted numeric, `latest` and `stable` yield nothing and are dropped. The
+# repository is stripped before the tag is read and that is not cosmetic: a
+# registry host carries a port, so `registry.example:5000/x/y:v1.33.3` read from
+# the left resolves its version to 5000 and every comparison after it is between
+# two ports. Measured, not predicted -- it was this file's first defect.
+# Dropping is the fail-open half -- an unparseable tag is reported below and
+# never refused, because a version that cannot be read cannot be known to have
+# gone backwards, and a guard that turns a legitimate converge red is a worse
+# failure than the one it prevents.
+- name: Resolve the comparable image versions of the guarded service
+  ansible.builtin.set_fact:
+    image_downgrade_guard_pinned_version: >-
+      {{ image_downgrade_guard_pinned_image | regex_replace('@.*$', '')
+         | regex_replace('^.*/', '')
+         | regex_search('(?<=:)v?[0-9]+(\.[0-9]+)*') | default('', true)
+         | regex_replace('^v', '') }}
+    image_downgrade_guard_deployed_versions: >-
+      {{ image_downgrade_guard_deployed_images
+         | select('match', (image_downgrade_guard_pinned_repository | regex_escape) ~ ':')
+         | map('regex_replace', '@.*$', '') | map('regex_replace', '^.*/', '')
+         | map('regex_search', '(?<=:)v?[0-9]+(\.[0-9]+)*')
+         | select('string') | map('regex_replace', '^v', '') | unique | list }}
+
+- name: Resolve the versions the pinned image would go back past
+  ansible.builtin.set_fact:
+    image_downgrade_guard_newer_versions: >-
+      {{ image_downgrade_guard_deployed_versions
+         | select('version', image_downgrade_guard_pinned_version, '>') | list
+         if image_downgrade_guard_pinned_version | length > 0 else [] }}
+
+# The refusal. It names image versions rather than a schema version because the
+# schema version is the thing it could not read; the header says why, and the
+# message says what makes the host converge again. That remedy is a pin moved
+# forward and merged, never an edit on the NAS: the poller converges the newest
+# released main every five minutes, so a merge is what heals the host.
+- name: Refuse an image older than the store the host has already migrated
+  ansible.builtin.assert:
+    that:
+      - image_downgrade_guard_newer_versions | length == 0
+    fail_msg: >-
+      {{ image_downgrade_guard_compose_service }} has already run
+      {{ image_downgrade_guard_newer_versions | join(', ') }} against the store in
+      {{ image_downgrade_guard_store_description }}, and this release pins the
+      older {{ image_downgrade_guard_pinned_version }}. A service that migrates
+      its own store on start writes a schema the older image does not know, and
+      the older image refuses to open it rather than damage it -- inside the
+      container, which is a crash loop every converge repeats rather than a
+      failure a play reports (#511). Move the pin forward again, to a version at
+      least as new as the ones named above, and merge it: the release the host
+      converges is the one that has to go forward, because the migration the
+      store already took is one-way.
+    success_msg: >-
+      {{ image_downgrade_guard_compose_service }} pins
+      {{ image_downgrade_guard_pinned_image }} and no container on this host has
+      run a newer version of it.
+
+# The fail-open half, said out loud. A guard that quietly stops guarding is the
+# defect this repository keeps closing, so every state in which it declines to
+# judge names itself in the run's output.
+- name: Report a comparison the downgrade guard declined to make
+  ansible.builtin.debug:
+    msg: >-
+      The {{ image_downgrade_guard_compose_service }} downgrade guard compared no
+      versions.
+      {{ 'The release pins ' ~ image_downgrade_guard_pinned_image ~ ', whose tag is not a dotted numeric version.'
+         if image_downgrade_guard_pinned_version | length == 0
+         else 'No container on this host was created from ' ~ image_downgrade_guard_pinned_repository
+              ~ ' with a comparable tag, so there is no earlier version for the pin to go back past.' }}
+      A pin is refused only where both sides parse, because a version that cannot
+      be read cannot be known to have gone backwards.
+  when: >-
+    image_downgrade_guard_pinned_version | length == 0
+    or image_downgrade_guard_deployed_versions | length == 0
