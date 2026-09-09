@@ -2,9 +2,10 @@
 
 Each media-acquisition project is investigated once, against upstream source
 *and* a running container, and what the investigation found is written down here
-so the next person does not pay for it twice. Six of the seven files indexed
-below came out of that programme; the seventh is Seafile, which is not a
-media-acquisition project and is described in its own section for that reason.
+so the next person does not pay for it twice. Six of the eight files indexed
+below came out of that programme; the other two are Seafile and Nextcloud, which
+are not media-acquisition projects and are described in their own section for
+that reason.
 
 A dossier is not a design and not an approval. It records what the deployed
 version of a service actually does, which of the repository's own rules that
@@ -41,21 +42,31 @@ argument for reading them as a pair.
 
 ## Alongside an implementation
 
-One file was written neither before a promotion nor after one, but across the
-five slices that built the service. It asks a third question: **what did
-building this teach that no amount of reading upstream would have**. Its subject
-is `implemented` in the manifest and still deployment-gated off, so it is also
-the one dossier whose service has never run on the NAS.
+Two files were written neither before a promotion nor after one, but across the
+slices that built their service. They ask a third question: **what did building
+this teach that no amount of reading upstream would have**. Both subjects are
+`implemented` in the manifest, and each was deployment-gated off while its
+dossier was written.
 
 - [Seafile](dossier-seafile.md) — file sync and share, the sixteenth service and
   the first with a database engine of its own
+- [Nextcloud](dossier-nextcloud.md) — the seventeenth service, and the first
+  written about a service intended to replace one this platform already runs
 
-It is the exception to two things stated below and states both in its own
-header. Its evidence came from three sources of unequal strength — the CI
-`seafile` lane, contract programs run against stubbed Docker, and reading the
-image — where the six above drew on a container the author could restart at
-will; and it is derived from three images rather than one, so its pins are in its
-own header rather than in the block at the end of this file.
+They are the exception to two things stated below and each states it in its own
+header: both are derived from several images rather than one, so their pins are
+their own rather than in the block at the end of this file. Read as a pair they
+also answer a question neither answers alone — the Seafile dossier's evidence
+came mostly from a lane nobody can reproduce at a shell, because Docker Desktop
+ignores `chown` on bind mounts and its stack will not start there, while
+Nextcloud's stack does run on a workstation and most of its confirmations were
+taken that way. The same platform, the same marker convention, and two very
+different strengths behind the word **Confirmed**.
+
+The pairing is not incidental. #500 landed Nextcloud switched off specifically so
+both file-sync services could run side by side while the choice between them is
+evaluated with real files, so the two dossiers are the evidence that decision
+will be made on.
 
 The design the six acquisition dossiers are read against is
 [the media acquisition platform design](superpowers/specs/2026-08-21-media-acquisition-platform-design.md).
