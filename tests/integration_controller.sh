@@ -1219,8 +1219,6 @@ EOF
       run_paperless_contract assert-persistence
     fi
 
-    fi
-
     if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is nextcloud; then
       run_nextcloud_contract run
       if [ $INTEGRATION_SUITE = nextcloud ]; then
