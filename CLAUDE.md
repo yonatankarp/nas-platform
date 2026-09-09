@@ -289,12 +289,20 @@ does. The deliberate stops that exclusion was protecting stay quiet regardless:
 a stop that completes inside its grace period exits 0 or 143, both still
 excluded, and every database and cache declares a `stop_grace_period` well above
 Docker's ten-second default. Twelve containers, none of them a database or a
-cache, declare none and take that default, and one was measured and does not
-make it: `alert-relay` runs Python as PID 1 with no SIGTERM handler, so a stop
-is ignored and it exits 137 after the full ten seconds on every recreation. It
-cannot report that itself, being the delivery path every alert takes. For the
-other eleven, exiting inside ten seconds is an expectation rather than a
-measurement. These figures are an observation, not a budget, and nothing
+cache, declare none and take that default, and one was measured and did not make
+it: `alert-relay` ran Python as PID 1 with no SIGTERM handler, and PID 1 is the
+one process the kernel applies no default disposition to, so the stop was
+discarded and Docker SIGKILLed it — measured at 10.14s and exit 137, on every
+recreation, paging through the container that had just exited and so unable to
+deliver it. #516 blocks both stop signals before any thread exists and waits for
+one with `sigwait`, which is what a raising signal handler cannot do reliably:
+socketserver swallows an exception raised while it dispatches a request, and a
+raising handler was observed losing a stop there once in eight attempts. Measured again after: 0.61s and exit 0, with a
+`docker kill -s KILL` still exiting 137, which is what keeps a host-level
+out-of-memory kill reportable. What is left open is interpreter start-up, before
+the process blocks anything; `init: true` would close it and was not taken, for
+the reason `services/ntfy/compose.yml` records beside that key. For the other
+eleven, exiting inside ten seconds is an expectation rather than a measurement. These figures are an observation, not a budget, and nothing
 validates them: if a memory policy lands (#447) the RAM figure belongs beside
 `platform_container_cpu_budget` with a preflight assert against what the Docker
 daemon reports, the way the logical CPU capacity already is.

@@ -13,12 +13,18 @@ import os
 from pathlib import Path
 import re
 import secrets
+import signal
 import stat
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
 
 
+# The signals a deliberate stop arrives as: `docker stop` sends SIGTERM and
+# SIGKILLs at the end of the grace period, and SIGINT is what a foreground run
+# ends on. See serve_until_stopped for why they are blocked rather than handled.
+STOP_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
 MAX_BODY_BYTES = 16 * 1024
 MAX_STATE_BYTES = 64 * 1024
 MAX_STATE_ENTRIES = 128
@@ -836,7 +842,77 @@ def create_server(address, config):
     return server
 
 
+def stop_on_signal(server):
+    """Shut `server` down when a stop signal arrives. Runs off the main thread.
+
+    server.shutdown() blocks until the accept loop has stopped, so it can only
+    be called from a thread that is not running it. That is the whole reason
+    this waits here rather than in a signal handler, where the caller would be
+    the accept loop itself and would wait for a loop waiting for it.
+    """
+    signal.sigwait(STOP_SIGNALS)
+    server.shutdown()
+
+
+def serve_until_stopped(server):
+    """Serve until a stop signal arrives, then close the listener and return.
+
+    WHY A STOP IS WAITED FOR RATHER THAN HANDLED. Compose starts this script in
+    exec form, so in its container the Python process is the container's init.
+    PID 1 is the one process the kernel applies no default signal disposition
+    to: a signal nothing installed a handler for is discarded rather than
+    terminating it. A relay that handled nothing but SIGINT -- which is all this
+    did until #516, as the KeyboardInterrupt out of serve_forever -- therefore
+    ignored `docker stop` outright, and Docker SIGKILLed it at the end of the
+    ten second grace period for exit 137. Since #493 the `die` rule no longer
+    excludes 137 and it matches every container, so every recreation of this
+    container paged, through this container, which is the only path the
+    platform's alerts have.
+
+    A handler that raises does not fix that, and the measurement is worth
+    keeping: socketserver reports any exception raised while it is dispatching a
+    request through handle_error and carries on serving, so a stop signal
+    landing between accept and the worker thread starting is swallowed and the
+    process hangs until the SIGKILL it was meant to avoid. That was observed
+    once in eight attempts, on SIGINT, with a client connecting at start-up. The
+    same window has always made the KeyboardInterrupt path unreliable.
+
+    So the signals are blocked before any thread exists and one thread waits for
+    them with sigwait. Nothing is ever delivered asynchronously, so there is no
+    window to land in and no handler re-entering a lock the interrupted code
+    already holds; blocking is inherited, so no request thread can take a stop
+    signal either. SIGKILL cannot be blocked, which is the point: an
+    out-of-memory kill still ends this process at 137 and still pages.
+
+    What this does not cover is the interpreter's own start-up, before main()
+    blocks anything: a stop arriving there still meets PID 1 with no
+    disposition and is discarded, and the container is SIGKILLed for 137.
+    `init: true` would close it, and was not taken -- services/ntfy/compose.yml
+    records this platform's rule for that key, which is that an init shim is for
+    an application that never reaps what it forks, and this relay forks nothing.
+    The window is interpreter start-up wide and a recreation stops a container
+    that has been running for hours, so nothing this platform does can land in
+    it; a stop aimed at a relay that is itself restarting could.
+
+    The waiter is a daemon, so a caller that stops the server itself -- which is
+    how the entry point is exercised in tests -- still returns from here.
+    """
+    waiter = threading.Thread(
+        target=stop_on_signal, args=(server,), name="alert-relay-stop", daemon=True
+    )
+    waiter.start()
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
 def main():
+    # Blocked before the configuration is read and before any thread exists, so
+    # the only window in which a stop signal meets a default disposition is the
+    # interpreter's own start-up. serve_until_stopped records what that leaves
+    # open and why it was left.
+    signal.pthread_sigmask(signal.SIG_BLOCK, STOP_SIGNALS)
     try:
         config = Config.from_mapping(os.environ)
     except ConfigurationError:
@@ -848,12 +924,7 @@ def main():
     # healthcheck probes. Narrowing to loopback would break the first of those, and
     # the container address is assigned at start time rather than known here.
     server = create_server(("0.0.0.0", config.alert_relay_port), config)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
+    serve_until_stopped(server)
 
 
 if __name__ == "__main__":

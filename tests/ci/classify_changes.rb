@@ -96,6 +96,16 @@ module ClassifyChanges
   # no lane map at all and fell through to inert_path? as ordinary Markdown.
   # Editing either of those two claims merged green and turned main red on the
   # next unrelated change.
+  #
+  # The plan document is here for the opposite-looking reason, and it is not an
+  # exception to the rule above: no check reads it for its content. It is the one
+  # file in the tree still carrying the pre-#493 "137" in an exit-code exclusion
+  # list, and tests/dozzle_exit_code_exclusion_identity_test.rb's EXPECTED_OWNERS
+  # is six only because that occurrence is excluded at tests/policy_test.rb:184.
+  # So the count is correct only while this document stays a historical record;
+  # an edit turning it back into a live owner would falsify the check without
+  # touching it. That is a coupling, and it selects static because the check that
+  # depends on it runs there rather than in docs.
   STATIC_ONLY_PATHS = %w[
     .gitignore
     CLAUDE.md
@@ -108,6 +118,7 @@ module ClassifyChanges
     docs/getting-started-nas.md
     docs/getting-started.md
     docs/media-acquisition-phase1.md
+    docs/superpowers/plans/2026-08-05-mac-platform-proof.md
     generate-secrets.yml
     install-production-auto-deploy.yml
     inventory/group_vars/all/vault.yml
