@@ -35,6 +35,17 @@
 # failure this check exists to prevent. The gate manifest and
 # tests/capture_helper_identity_test.rb are declared for the same reason (#476).
 #
+# HOW SIX WAS ESTABLISHED, so the next reader can redo it rather than trust it.
+# Not from #516's list -- an issue can be stale -- but from a repository-wide
+# grep of the constructs rather than of the values: `attributes["exitCode"]`
+# finds the four that restate the rule expression, `numeric_exit` finds the
+# relay's own set, and the files carrying `exitCode` at all add only the relay
+# unit test. The one other hit is
+# docs/superpowers/plans/2026-08-05-mac-platform-proof.md, which still carries
+# the pre-#493 list including "137"; it is a plan rather than a definition and
+# tests/policy_test.rb excludes docs/superpowers/ wholesale, so it is out of
+# scope here by the same decision.
+#
 # WHY A FLOOR AND AN EXACT COUNT, both. An identity comparison over zero
 # extractions finds one distinct value and passes, and an identity comparison
 # over six empty lists passes just as happily while the rule excludes nothing
