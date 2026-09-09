@@ -2046,15 +2046,14 @@ PROGRAM_MUTATIONS = [
   {
     label: "the container health refusal ordering check",
     program: :static,
-    from: "health_index && cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index",
+    from: "cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index",
     to: "true",
     rows: ["a container health refusal that runs after the CPU verification"]
   },
   {
     label: "the container health project check",
     program: :static,
-    from: 'health_include &&
-    health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"',
+    from: 'health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"',
     to: "true",
     rows: ["a container health refusal aimed at another Compose project"]
   },
@@ -2070,9 +2069,8 @@ PROGRAM_MUTATIONS = [
   {
     label: "the handed-on deployment failure check",
     program: :static,
-    from: 'health_include &&
-    health_include.dig("vars", "container_health_deploy_failure_message")
-                 .to_s.include?("bindery_deploy_failure_message")',
+    from: 'health_include.dig("vars", "container_health_deploy_failure_message")
+                    .to_s.include?("bindery_deploy_failure_message")',
     to: "true",
     rows: ["a container health refusal handed no deployment failure"]
   },

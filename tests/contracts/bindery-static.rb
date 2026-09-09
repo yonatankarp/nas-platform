@@ -214,16 +214,26 @@ if failures.empty?
   # trusts it: a container in `Restarting` still appears in
   # `docker container ls`, so the CPU verification sails straight past one and
   # the readiness probe then fails on a timeout that names nothing.
+  #
+  # The three properties below sit inside `if health_include` on purpose. Each
+  # check must name one defect: with them unguarded, deleting the include was
+  # reported by all three at once and the existence check above became the one
+  # thing no mutation needed, which is the shape this repository keeps closing.
+  # The self-test found it.
   health_include = tasks.find { |task| task.dig("vars", "container_health_service_name") == "bindery" }
   failures << "Bindery must refuse a container that runs but never serves" unless
     tasks.count { |task| task.dig("vars", "container_health_service_name") == "bindery" } == 1
-  health_index = tasks.index { |task| task.dig("vars", "container_health_service_name") == "bindery" }
-  cpu_index = tasks.index { |task| task.dig("vars", "container_cpu_service_name") == "bindery" }
-  failures << "the Bindery container health refusal must run before anything trusts the deployment" unless
-    health_index && cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index
-  failures << "the Bindery container health refusal must name the deployed Compose project" unless
-    health_include &&
-    health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"
+  if health_include
+    health_index = tasks.index { |task| task.dig("vars", "container_health_service_name") == "bindery" }
+    cpu_index = tasks.index { |task| task.dig("vars", "container_cpu_service_name") == "bindery" }
+    failures << "the Bindery container health refusal must run before anything trusts the deployment" unless
+      cpu_index && deploy_index && deploy_index < health_index && health_index < cpu_index
+    failures << "the Bindery container health refusal must name the deployed Compose project" unless
+      health_include.dig("vars", "container_health_project_name") == "{{ bindery_compose_project_name }}"
+    failures << "the Bindery container health refusal must be handed the deployment's own failure" unless
+      health_include.dig("vars", "container_health_deploy_failure_message")
+                    .to_s.include?("bindery_deploy_failure_message")
+  end
 
   # Compose fails a crash-looping container with "container bindery is
   # unhealthy", which says nothing about why, and a deployment that failed for
@@ -238,10 +248,6 @@ if failures.empty?
     deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|
       task.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
     end
-  failures << "the Bindery container health refusal must be handed the deployment's own failure" unless
-    health_include &&
-    health_include.dig("vars", "container_health_deploy_failure_message")
-                 .to_s.include?("bindery_deploy_failure_message")
 
   backup_tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/pre_upgrade_backup.yml"),
