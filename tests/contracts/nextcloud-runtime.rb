@@ -446,6 +446,68 @@ def assert_background_jobs_belong_to_the_sidecar
     "run is still ahead of it"
 end
 
+# What this platform refuses to serve out of Nextcloud, and the service that
+# serves it instead. One entry, and #500's own scope is the derivation: "Photos,
+# documents and media are already covered by Immich, Paperless and
+# Jellyfin/Audiobookshelf/Komga".
+#
+# It is a property of THIS PLATFORM rather than of an inventory, which is the
+# whole reason it is assertable from here at all. roles/nextcloud's own list is a
+# Jinja expression over two role variables, and this program holds an HTTP port,
+# four container names and a vault -- nothing that would render it. Threading the
+# rendered list in through tests/contracts/nextcloud.sh was considered and
+# refused for the reason assert_trusted_domains records: it would make this
+# assert what the role says rather than what the platform requires, and a role
+# that dropped an entry would take the contract with it.
+OVERLAPPING_APPS = { "photos" => "Immich" }.freeze
+
+UNPARSEABLE_CENSUS =
+  "Nextcloud's application census answered with a body that is not JSON, so this run learned " \
+  "nothing about which apps are enabled. `occ app:list --output=json` writes one compact " \
+  "document and nothing else; a body that is not one is occ having failed before it got there."
+
+
+def assert_platform_app_policy
+  raw = occ("app:list", "--output=json", label: "the application census")
+  # Refused rather than rescued to an empty set, and the difference is the whole
+  # assertion. `[]` contains no photos, so a census this program could not read
+  # would satisfy every check below -- it would pass exactly when it had learned
+  # nothing, which is the vacuous shape this repository keeps closing.
+  document = begin
+    JSON.parse(raw)
+  rescue JSON::ParserError
+    fail_contract(UNPARSEABLE_CENSUS)
+  end
+  enabled = document.fetch("enabled", {}).keys.sort
+  fail_contract(
+    "Nextcloud's application census reports no enabled application at all, which no " \
+    "installation can be in: core/shipped.json holds fourteen alwaysEnabled apps that cannot " \
+    "be turned off. Read this as a census that failed rather than as a policy that succeeded."
+  ) if enabled.empty?
+
+  overlapping = OVERLAPPING_APPS.keys.select { |app| enabled.include?(app) }
+  fail_contract(
+    "Nextcloud still enables #{overlapping.join(', ')}, which this platform already serves from " \
+    "#{overlapping.map { |app| OVERLAPPING_APPS.fetch(app) }.uniq.join(', ')}. " \
+    "roles/nextcloud/tasks/reconcile_apps.yml disables it on every converge, so this is that " \
+    "stage never having run, an operator having enabled it in the admin interface since, or a " \
+    "reinstall onto an empty data volume. Not an image bump: that file records why occ upgrade " \
+    "cannot re-enable an app this platform disabled."
+  ) unless overlapping.empty?
+
+  # Kept as an observation rather than promoted. This is the ON-side drift
+  # detector the off-set policy deliberately does not cover: re-asserting what
+  # must be off says nothing about `occ upgrade` disabling something that should
+  # have stayed on, and a lane that starts reporting 43 apps where it reported 50
+  # is that. Asserting a count instead would pin a number the image owns.
+  # Nothing is returned. The count is already in the run's output one line above,
+  # and the summary line run_mode prints is a list of properties that HELD --
+  # putting an observation into it would say the same number twice and blur the
+  # difference between the two.
+  observe("the shipped app set currently enables #{enabled.length} apps: #{enabled.join(' ')}")
+  nil
+end
+
 def run_mode(credentials)
   census
   status = assert_status_endpoint
@@ -453,16 +515,11 @@ def run_mode(credentials)
   assert_trusted_domains
   assert_administrator(credentials)
   cron = assert_background_jobs_belong_to_the_sidecar
-  apps = occ("app:list", "--output=json", label: "the application census")
-  enabled = begin
-    JSON.parse(apps).fetch("enabled", {}).keys.sort
-  rescue JSON::ParserError, KeyError
-    []
-  end
-  observe("the shipped app set currently enables #{enabled.length} apps: #{enabled.join(' ')}")
+  assert_platform_app_policy
   puts "nextcloud contract: four healthy containers, an installed #{status['versionstring']} " \
        "serving its status endpoint, the vault's own database account rather than a minted " \
-       "one, the reconciled trusted domains, an administrator that authenticates and #{cron}"
+       "one, the reconciled trusted domains, an administrator that authenticates, " \
+       "no application this platform serves elsewhere, and #{cron}"
 end
 
 MODES = %w[run].freeze

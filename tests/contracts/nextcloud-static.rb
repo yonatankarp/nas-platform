@@ -34,6 +34,7 @@ required = %w[
   roles/nextcloud/tasks/deploy.yml
   roles/nextcloud/tasks/reconcile_trusted_domains.yml
   roles/nextcloud/tasks/reconcile_admin.yml
+  roles/nextcloud/tasks/reconcile_apps.yml
   roles/nextcloud/tasks/report.yml
   roles/nextcloud/tasks/verify.yml
   roles/nextcloud/templates/env.j2
@@ -52,7 +53,7 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_supp
 include PolicySupport
 
 ROLE_TASK_FILES = %w[
-  main storage deploy reconcile_trusted_domains reconcile_admin report verify
+  main storage deploy reconcile_trusted_domains reconcile_admin reconcile_apps report verify
 ].freeze
 VAULT_CREDENTIALS = %w[
   vault_nextcloud_admin_password
@@ -290,7 +291,8 @@ if failures.empty?
 
   imports = role_tasks(root, "main").filter_map { |task| task["ansible.builtin.import_tasks"] }
   expected_stages = %w[
-    storage.yml deploy.yml reconcile_trusted_domains.yml reconcile_admin.yml report.yml verify.yml
+    storage.yml deploy.yml reconcile_trusted_domains.yml reconcile_admin.yml reconcile_apps.yml
+    report.yml verify.yml
   ]
   failures << "the Nextcloud role must import every stage it owns" unless
     expected_stages.all? { |stage| imports.include?(stage) }
@@ -314,6 +316,16 @@ if failures.empty?
   # rotated password on exactly the stack that needed it.
   failures << "the Nextcloud trusted domains must be repaired before the administrator is probed" unless
     imports.index("reconcile_admin.yml").to_i > imports.index("reconcile_trusted_domains.yml").to_i
+  # The app policy after the administrator probe and before the report. Disabling
+  # an app dispatches AppDisableEvent and clears the application cache, so it
+  # perturbs request handling -- and reconcile_admin.yml's classifier reads
+  # anything that is neither 200 nor 401 as `unavailable` rather than `rotated`,
+  # so a policy stage placed first could make a rotated password look like an
+  # unreachable server. Before the report because an app this platform switched
+  # back off is a change the deployment report has to carry.
+  failures << "the Nextcloud application policy must run after the administrator probe and before the report" unless
+    imports.index("reconcile_apps.yml").to_i > imports.index("reconcile_admin.yml").to_i &&
+    imports.index("reconcile_apps.yml").to_i < imports.index("report.yml").to_i
 
   deploy = role_tasks(root, "deploy")
   compose_tasks = deploy.select { |task| task.key?("community.docker.docker_compose_v2") }
@@ -388,6 +400,96 @@ if failures.empty?
   failures << "the Nextcloud trusted domains must carry the two hosts this platform itself requests" unless
     domains.include?("127.0.0.1") && domains.include?("localhost")
 
+  # --- the application policy -----------------------------------------------
+
+  apps = role_tasks(root, "reconcile_apps")
+  census = apps.find do |task|
+    Array(task.dig("community.docker.docker_compose_v2_exec", "argv"))
+      .map(&:to_s).any? { |value| value.include?("app:list") }
+  end
+  disable = apps.find do |task|
+    Array(task.dig("community.docker.docker_compose_v2_exec", "argv"))
+      .map(&:to_s).any? { |value| value.include?("app:disable") }
+  end
+  # Both exec tasks state failed_when, and neither is decoration.
+  # docker_compose_v2_exec sets check_rc only when `detach` is true, so without
+  # it the module reports success on any exit code: a census that failed would
+  # read as an empty app set and report a converged deployment, and a name in
+  # the list that can never be disabled would exit 2 on every poller tick behind
+  # a clean recap.
+  failures << "the Nextcloud application census must refuse a nonzero exit rather than read it as an empty set" unless
+    census && census["failed_when"].to_s.include?("rc")
+  failures << "the Nextcloud application disable must refuse a nonzero exit rather than report a change it did not make" unless
+    disable && disable["failed_when"].to_s.include?("rc")
+  # The loop runs over the intersection with the live census, not over the
+  # declared list, which is what makes a converged deployment skip it entirely
+  # and report no change.
+  failures << "the Nextcloud application disable must loop over what is still enabled rather than over the declared list" unless
+    disable && disable["loop"].to_s.include?("nextcloud_apps_still_enabled")
+  # THE OTHER END OF THAT LOOP, and it was pinned by nothing until this line.
+  # The loop reads `nextcloud_apps_still_enabled | default([])`, so a stage that
+  # binds the name nowhere loops zero times for ever: eight apps stay enabled
+  # behind a clean recap, and the `| default([])` that makes the stage inert
+  # when the operator switch is off is the same expression that makes that
+  # silent. Deleting the set_fact outright was planted and every other property
+  # in this program still held.
+  binder = apps.find do |task|
+    task["ansible.builtin.set_fact"].is_a?(Hash) &&
+      task["ansible.builtin.set_fact"].key?("nextcloud_apps_still_enabled")
+  end
+  failures << "the Nextcloud application policy must bind the set its disable loop reads" unless binder
+  # What that name is bound TO, asserted separately from whether it is bound at
+  # all so that each break is caught by its own line rather than by the other.
+  # Two halves, both of them a defect that went undetected here. The list must be
+  # the EFFECTIVE one: reading `nextcloud_disabled_apps` orphans the
+  # nextcloud_additional_disabled_apps escape hatch while defaults/main.yml, the
+  # argument_specs and the check-mode debug all still describe it as live, and
+  # the plain name is a prefix of the effective one, so this has to match the
+  # longer spelling to tell them apart. And it must be intersected with the
+  # census this stage just read, which is the whole of why a converged
+  # deployment skips the loop instead of reporting a change it did not make.
+  if binder
+    bound = binder.fetch("ansible.builtin.set_fact").fetch("nextcloud_apps_still_enabled").to_s
+    intersected = bound.include?("nextcloud_disabled_apps_effective") &&
+                  bound.include?("intersect") && bound.include?("nextcloud_app_census")
+    failures << "the Nextcloud applications still to disable must be the effective list intersected with the live census" unless intersected
+  end
+  # `occ app:disable` exits 0 on an app that is already off and prints "No such
+  # app enabled", so a task without this line reports a change it did not make
+  # and the platform's idempotence check catches it a lane later rather than
+  # this contract catching it here. Negative on purpose, and the role says why:
+  # the success line embeds the app's version, which every image bump moves.
+  failures << "the Nextcloud application disable must not report a change on an app that was already off" unless
+    disable && disable["changed_when"].to_s.include?("No such app enabled")
+  # The one entry #500's own scope derives rather than chooses: "Photos,
+  # documents and media are already covered by Immich, Paperless and
+  # Jellyfin/Audiobookshelf/Komga". Immich is this platform's photo service.
+  failures << "the Nextcloud application policy must disable the photo app Immich already serves" unless
+    Array(defaults["nextcloud_disabled_apps"]).include?("photos")
+  # The other two entries defaults/main.yml marks as principle rather than as
+  # taste, pinned here because that file says the taxonomy exists so a later
+  # reader overruling taste "should not have to re-derive the three that are not
+  # taste" -- and a distinction that pins one of the three and leaves the other
+  # two droppable behind a green gate is decorative. The principle is
+  # roles/immich/defaults/main.yml's, stated there as "The NAS is not permitted
+  # to phone home for release announcements": updatenotification fetches release
+  # announcements this deployment cannot act on in band, since the digest pin is
+  # its only upgrade path, and survey_client is the stricter case because it
+  # sends rather than fetches.
+  #
+  # THE FIVE MARKED JUDGEMENT ARE DELIBERATELY LEFT UNPINNED. Taste is exactly
+  # what a later reader is entitled to overrule with an argument in the file
+  # rather than an edit in this program, and pinning it here would move the
+  # argument out of the file that makes it.
+  phoning_home = %w[updatenotification survey_client]
+  failures << "the Nextcloud application policy must disable the two applications that phone home" unless
+    (phoning_home - Array(defaults["nextcloud_disabled_apps"])).empty?
+  # An off-set, and `text` is the app a later prune would most plausibly reach
+  # for -- it is collaborative editing, which is one of the three features #500
+  # names as the reason to adopt Nextcloud at all.
+  failures << "the Nextcloud application policy must not disable the collaborative editor it was adopted for" if
+    Array(defaults["nextcloud_disabled_apps"]).include?("text")
+
   # --- the administrator credential -----------------------------------------
 
   admin = role_tasks(root, "reconcile_admin")
@@ -411,6 +513,48 @@ if failures.empty?
   # anything that is neither 200 nor 401 -- must not trigger it either.
   failures << "the Nextcloud administrator must be repaired only when the server refuses the vault" unless
     reset && Array(reset["when"]).any? { |value| value.to_s.include?("== 'rotated'") }
+
+  # --- the deployment report ------------------------------------------------
+  #
+  # DERIVED RATHER THAN LISTED, which is the whole of why this pair is here. The
+  # report's changed-expression named six results and all six were right, and
+  # deleting any one of its terms failed nothing in this program: a repair that
+  # stopped being announced would have converged silently for ever. Two of the
+  # six -- the trusted-domain repair and the administrator repair -- had been
+  # unguarded since they were written.
+  #
+  # The rule the six satisfy is stated instead of copied, so a stage added later
+  # is carried into the report by the same sentence that carries these: every
+  # result this role registers whose task does not declare `changed_when: false`.
+  # That discriminator is not a proxy for the property -- it IS the property.
+  # A task that declares `changed_when: false` is one this repository has already
+  # said cannot move anything, and there are four of them here: the app census,
+  # the administrator probe, the live trusted-domain read and the verification
+  # poll. Everything else this role registers can come back changed, and a
+  # changed result the report does not read is a converge that moved something
+  # and said nothing.
+  named = role_tasks(root, "report")
+          .filter_map { |task| task.dig("vars", "ntfy_deployment_report_changed") }
+          .join(" ").scan(/\bnextcloud_[a-z0-9_]+\b/).uniq
+  movers = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
+                          .select { |task| task["register"] && task["changed_when"].to_s != "false" }
+                          .map { |task| task["register"].to_s }.uniq
+  # Tokenised, not matched with include?, and that is not fastidiousness:
+  # `nextcloud_deploy` is a substring of `nextcloud_deployment_enabled`, which
+  # this role's every gated task spells, so a membership test over the raw
+  # expression would read the operator switch as the register and accept a
+  # report that names neither. `\b` at both ends is what tells the two apart,
+  # and it keeps `nextcloud_data_deploy` one token rather than two.
+  #
+  # Both directions, one line each, because they are two different defects and a
+  # single set comparison would report whichever fired first. A term dropped is
+  # a change that stops being announced; a term kept for a register nobody
+  # writes any more is not an error but a permanent false, since
+  # `(gone | default({})) is changed` evaluates quite happily.
+  failures << "the Nextcloud deployment report must name every result that can report a change" unless
+    (movers - named).empty?
+  failures << "the Nextcloud deployment report must not name a result this role no longer registers" unless
+    (named - movers).empty?
 
   # --- verification ---------------------------------------------------------
 

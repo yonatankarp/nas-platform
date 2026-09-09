@@ -61,6 +61,109 @@ nextcloud_trusted_domains: >-
 # nothing. Set it in inventory/group_vars/all/main.yml when the name exists.
 nextcloud_additional_trusted_domains: []
 
+# The shipped app set, which is configuration this repository would otherwise
+# not control. Nextcloud ships 56 applications and its installer enables 50 of
+# them; these eight are the ones this platform switches off, and everything else
+# is the image's decision, deliberately.
+#
+# AN OFF-SET, NOT AN ON-SET, and that asymmetry is the design. Declaring the
+# apps that must stay on would mean copying 38 names out of the image's own
+# core/shipped.json defaultEnabled -- it holds 46, and all eight below are in
+# it -- a value restated in this repository is a copy nothing bumps, which is
+# what CLAUDE.md refuses, and it would fight the image on every version bump
+# that adds or removes one. The cost is real and
+# stated rather than hidden: re-asserting the off-set does NOT notice
+# `occ upgrade` disabling something. tests/contracts/nextcloud-runtime.rb
+# reports the enabled count on every run, and that observation is the on-side
+# signal.
+#
+# VERSIONS ARE NOT PINNED, AND CANNOT BE. #500 asks whether they should be;
+# the answer is that `occ app:install` takes an app id and three flags and no
+# version at all (core/Command/App/Install.php), so it resolves whatever the
+# appstore currently calls newest. The apps here are pinned by the image digest
+# in services/nextcloud/compose.yml and by nothing else, which is exactly why
+# this platform runs the shipped set and installs nothing from the appstore.
+#
+# One of these is derived from a rule stated elsewhere, two from a principle, and
+# five are judgement -- the per-entry comments below are the authority, and this
+# sentence counts them. The distinction is kept because a later reader overruling
+# taste should not have to re-derive the three that are not taste, and
+# tests/contracts/nextcloud-static.rb pins exactly those three so the sentence is
+# not merely advice: photos by the scope it is derived from, updatenotification
+# and survey_client by the principle. The five marked judgement are deliberately
+# left unpinned, because taste is what that reader is entitled to overrule.
+nextcloud_disabled_apps:
+  # Derived, from #500's own scope: "Photos, documents and media are already
+  # covered by Immich, Paperless and Jellyfin/Audiobookshelf/Komga". Immich is
+  # this platform's photo service. The only shipped app that overlaps one.
+  - photos
+  # The principle roles/immich/defaults/main.yml states as "The NAS is not
+  # permitted to phone home for release announcements". Every notification this
+  # raises is about an upgrade an operator here cannot perform in band: the
+  # digest pin is the only upgrade path this platform has.
+  - updatenotification
+  # The same principle, stricter case -- this one sends outbound telemetry
+  # rather than merely fetching. "Sends anonymized data to Nextcloud to help us
+  # to improve Nextcloud."
+  - survey_client
+  # Judgement. Vendor news fetched from the internet into the notification bell.
+  # Nearly the principle above; filed as judgement because news is not telemetry.
+  - nextcloud_announcements
+  # Judgement. A one-time welcome overlay for a deployment with one account.
+  - firstrunwizard
+  # Judgement, with evidence: the shipped `office` app is not an editor. Its
+  # appinfo/info.xml declares no <commands>, no <repair-steps> and no
+  # <background-jobs> -- only a <navigations> entry routed at office.page.index
+  # -- and the code behind that route is three PHP files: lib/AppInfo/Application.php,
+  # a PageController whose only action returns the one template in templates/,
+  # and an ApiController whose only action answers {"message": "Hello world!"}.
+  # The rest of the tree is js/, css/, img/, l10n/, openapi.json and a
+  # package.json. It is a navigation entry pointing at onboarding for a Collabora
+  # backend this platform does not deploy, so enabling it advertises a feature
+  # that is not there.
+  - office
+  # Judgement. A dashboard widget that calls a weather API per user, from a NAS.
+  - weather_status
+  # Judgement, with evidence: no mail transport is configured anywhere in this
+  # stack -- services/nextcloud/compose.yml and roles/nextcloud/templates/env.j2
+  # name no SMTP host and no NC_mail_* override -- so this offers a share option
+  # in the interface that cannot deliver. Reconsider it if #500 ever configures
+  # mail.
+  - sharebymail
+
+# WHAT DELIBERATELY STAYS ON, because the reason is not obvious from the list
+# above and a later prune would be a regression rather than a tidy-up:
+#
+#   text -- collaborative document editing. #500 names calendar, contacts and
+#   document editing as "the features this platform has no answer for", which is
+#   its stated reason for adopting Nextcloud at all. Paperless is archival OCR
+#   and does not overlap it.
+#
+#   activity, notifications, files_sharing, files_versions, files_trashbin,
+#   systemtags, circles, federation -- no shipped app declares a dependency on
+#   another, so disabling one of these breaks nothing outright; siblings guard
+#   on them at runtime and silently drop features instead. Churn without a
+#   stated reason is worse than the app.
+#
+#   bruteforcesettings, password_policy, twofactor_totp, privacy, logreader,
+#   serverinfo, support -- security and operability.
+#
+#   contactsinteraction, and dav which cannot be disabled at all -- what a
+#   future CalDAV/CardDAV answer is built on.
+
+# The operator's escape hatch, empty by default, in the shape
+# nextcloud_additional_trusted_domains above uses: the role owns a list and the
+# inventory may extend it without editing this file. Set it in
+# inventory/group_vars/all/main.yml.
+nextcloud_additional_disabled_apps: []
+
+# What the reconciliation actually reads. Kept separate from the two lists above
+# so neither has to know about the other, and deduplicated because an operator
+# repeating a name the role already carries is not an error worth failing on.
+nextcloud_disabled_apps_effective: >-
+  {{ (nextcloud_disabled_apps + nextcloud_additional_disabled_apps)
+     | map('trim') | select | unique | list }}
+
 # What Nextcloud writes into the URLs it builds for itself when there is no
 # incoming request to infer a host from -- what cron.php and occ generate, which
 # is what lands in notification e-mails. Without it those come out as localhost.
