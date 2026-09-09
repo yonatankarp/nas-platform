@@ -53,8 +53,12 @@
 # probe reads the stack the deployment left; this stage moves it afterwards.
 #
 # Unlike the two above it, this one is not here because the image reads it only
-# while installing. It is here because `occ upgrade` can re-enable an app on any
-# image bump, so the off-set has to be re-asserted rather than set once.
+# while installing. It is re-asserted on every converge because an app this
+# platform switched off can come back on two ways: an operator enabling it in
+# the admin interface, and a reinstall onto an empty data volume, where the
+# installer enables the whole shipped default set again. Not because
+# `occ upgrade` re-enables one -- it cannot, and reconcile_apps.yml carries the
+# reading of the pinned image that says so.
 - name: Reconcile the Nextcloud application policy
   ansible.builtin.import_tasks: reconcile_apps.yml
 

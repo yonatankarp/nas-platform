@@ -489,8 +489,10 @@ def assert_platform_app_policy
   fail_contract(
     "Nextcloud still enables #{overlapping.join(', ')}, which this platform already serves from " \
     "#{overlapping.map { |app| OVERLAPPING_APPS.fetch(app) }.uniq.join(', ')}. " \
-    "roles/nextcloud/tasks/reconcile_apps.yml disables it on every converge, so this is either " \
-    "that stage never having run or occ upgrade having re-enabled it since."
+    "roles/nextcloud/tasks/reconcile_apps.yml disables it on every converge, so this is that " \
+    "stage never having run, an operator having enabled it in the admin interface since, or a " \
+    "reinstall onto an empty data volume. Not an image bump: that file records why occ upgrade " \
+    "cannot re-enable an app this platform disabled."
   ) unless overlapping.empty?
 
   # Kept as an observation rather than promoted. This is the ON-side drift

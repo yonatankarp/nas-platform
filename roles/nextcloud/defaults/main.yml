@@ -84,9 +84,14 @@ nextcloud_additional_trusted_domains: []
 # in services/nextcloud/compose.yml and by nothing else, which is exactly why
 # this platform runs the shipped set and installs nothing from the appstore.
 #
-# Two of these are derived from a rule stated elsewhere, three from a principle,
-# and three are judgement. The distinction is kept because a later reader
-# overruling taste should not have to re-derive the two that are not taste.
+# One of these is derived from a rule stated elsewhere, two from a principle, and
+# five are judgement -- the per-entry comments below are the authority, and this
+# sentence counts them. The distinction is kept because a later reader overruling
+# taste should not have to re-derive the three that are not taste, and
+# tests/contracts/nextcloud-static.rb pins exactly those three so the sentence is
+# not merely advice: photos by the scope it is derived from, updatenotification
+# and survey_client by the principle. The five marked judgement are deliberately
+# left unpinned, because taste is what that reader is entitled to overrule.
 nextcloud_disabled_apps:
   # Derived, from #500's own scope: "Photos, documents and media are already
   # covered by Immich, Paperless and Jellyfin/Audiobookshelf/Komga". Immich is

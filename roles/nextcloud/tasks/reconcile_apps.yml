@@ -4,10 +4,27 @@
 # the list and the reasoning; this file is only how it is applied.
 #
 # Re-asserted on every converge rather than set once, and that is the whole
-# reason it is a stage. `occ upgrade` can enable an app on its own -- the
-# entrypoint runs it on every image bump and only prints what it changed -- so a
-# deployment that disabled these once and never looked again would quietly grow
-# them back at the next digest bump.
+# reason it is a stage -- but NOT for the reason this comment used to give.
+# `occ upgrade` cannot re-enable an app this platform disabled, read out of
+# nextcloud:34.0.3-apache itself. There are exactly two paths that enable
+# anything during an upgrade and a disabled shipped app is reachable by neither.
+# lib/private/Installer.php's installShippedApps touches an app only when its
+# `installed_version` is empty AND its `enabled` value is not 'no'; a shipped app
+# this role disabled has a version recorded and enabled='no', so it fails both
+# conjuncts. lib/private/Updater.php re-enables getAutoDisabledApps(), which
+# returns a property populated only by `disableApp($id, true)` -- and
+# core/Command/App/Disable.php calls disableApp with one argument, so
+# $automaticDisabled is false and nothing `occ app:disable` did is ever in it.
+#
+# What re-assertion actually repairs is the two ways one of these does come back
+# on, and both are this platform's own model rather than an edge case. An
+# operator can enable an app in the admin interface, and configuration changed by
+# hand in a service's web UI being reverted by the next run is what makes this
+# repository describe reality. And a reinstall onto an empty data volume is the
+# case installShippedApps IS reached in: `installed_version` is empty for every
+# app there, so the installer enables the whole defaultEnabled set and this
+# platform's eight are in it. The first is why the stage runs every time; the
+# second is why it is not merely tidy.
 #
 # NO RESTART IS NEEDED and none is taken. AppManager::disableApp writes
 # `enabled=no` into oc_appconfig, runs the app's uninstall repair steps and
@@ -97,8 +114,13 @@
   # positively would be a regex over a value this repository does not control.
   # The already-disabled line is fixed text. This is the backstop rather than the
   # primary discriminator -- the intersection above means a converged deployment
-  # never reaches this task -- and it covers the narrow case where `occ upgrade`
-  # re-enabled something between the read and the write.
+  # never reaches this task -- and the window it covers runs the opposite way
+  # round from what this comment used to claim. An app ENABLED between the census
+  # and the write is not in the loop's list at all, so no changed_when here could
+  # ever see it; the next converge is what catches that. What this catches is an
+  # app DISABLED in that window -- by a hand in the admin interface, or by a
+  # converge already in flight -- where `occ` prints "No such app enabled",
+  # exits 0, and reporting no change is the correct answer.
   changed_when: "'No such app enabled' not in nextcloud_app_repair.stdout | default('')"
   when:
     - nextcloud_deployment_enabled | bool

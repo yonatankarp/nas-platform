@@ -466,6 +466,24 @@ if failures.empty?
   # Jellyfin/Audiobookshelf/Komga". Immich is this platform's photo service.
   failures << "the Nextcloud application policy must disable the photo app Immich already serves" unless
     Array(defaults["nextcloud_disabled_apps"]).include?("photos")
+  # The other two entries defaults/main.yml marks as principle rather than as
+  # taste, pinned here because that file says the taxonomy exists so a later
+  # reader overruling taste "should not have to re-derive the three that are not
+  # taste" -- and a distinction that pins one of the three and leaves the other
+  # two droppable behind a green gate is decorative. The principle is
+  # roles/immich/defaults/main.yml's, stated there as "The NAS is not permitted
+  # to phone home for release announcements": updatenotification fetches release
+  # announcements this deployment cannot act on in band, since the digest pin is
+  # its only upgrade path, and survey_client is the stricter case because it
+  # sends rather than fetches.
+  #
+  # THE FIVE MARKED JUDGEMENT ARE DELIBERATELY LEFT UNPINNED. Taste is exactly
+  # what a later reader is entitled to overrule with an argument in the file
+  # rather than an edit in this program, and pinning it here would move the
+  # argument out of the file that makes it.
+  phoning_home = %w[updatenotification survey_client]
+  failures << "the Nextcloud application policy must disable the two applications that phone home" unless
+    (phoning_home - Array(defaults["nextcloud_disabled_apps"])).empty?
   # An off-set, and `text` is the app a later prune would most plausibly reach
   # for -- it is collaborative editing, which is one of the three features #500
   # names as the reason to adopt Nextcloud at all.
@@ -495,6 +513,48 @@ if failures.empty?
   # anything that is neither 200 nor 401 -- must not trigger it either.
   failures << "the Nextcloud administrator must be repaired only when the server refuses the vault" unless
     reset && Array(reset["when"]).any? { |value| value.to_s.include?("== 'rotated'") }
+
+  # --- the deployment report ------------------------------------------------
+  #
+  # DERIVED RATHER THAN LISTED, which is the whole of why this pair is here. The
+  # report's changed-expression named six results and all six were right, and
+  # deleting any one of its terms failed nothing in this program: a repair that
+  # stopped being announced would have converged silently for ever. Two of the
+  # six -- the trusted-domain repair and the administrator repair -- had been
+  # unguarded since they were written.
+  #
+  # The rule the six satisfy is stated instead of copied, so a stage added later
+  # is carried into the report by the same sentence that carries these: every
+  # result this role registers whose task does not declare `changed_when: false`.
+  # That discriminator is not a proxy for the property -- it IS the property.
+  # A task that declares `changed_when: false` is one this repository has already
+  # said cannot move anything, and there are four of them here: the app census,
+  # the administrator probe, the live trusted-domain read and the verification
+  # poll. Everything else this role registers can come back changed, and a
+  # changed result the report does not read is a converge that moved something
+  # and said nothing.
+  named = role_tasks(root, "report")
+          .filter_map { |task| task.dig("vars", "ntfy_deployment_report_changed") }
+          .join(" ").scan(/\bnextcloud_[a-z0-9_]+\b/).uniq
+  movers = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
+                          .select { |task| task["register"] && task["changed_when"].to_s != "false" }
+                          .map { |task| task["register"].to_s }.uniq
+  # Tokenised, not matched with include?, and that is not fastidiousness:
+  # `nextcloud_deploy` is a substring of `nextcloud_deployment_enabled`, which
+  # this role's every gated task spells, so a membership test over the raw
+  # expression would read the operator switch as the register and accept a
+  # report that names neither. `\b` at both ends is what tells the two apart,
+  # and it keeps `nextcloud_data_deploy` one token rather than two.
+  #
+  # Both directions, one line each, because they are two different defects and a
+  # single set comparison would report whichever fired first. A term dropped is
+  # a change that stops being announced; a term kept for a register nobody
+  # writes any more is not an error but a permanent false, since
+  # `(gone | default({})) is changed` evaluates quite happily.
+  failures << "the Nextcloud deployment report must name every result that can report a change" unless
+    (movers - named).empty?
+  failures << "the Nextcloud deployment report must not name a result this role no longer registers" unless
+    (named - movers).empty?
 
   # --- verification ---------------------------------------------------------
 

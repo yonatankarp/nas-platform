@@ -794,6 +794,44 @@ ROLE_STATIC_ROWS = [
       end
     },
     expects: "must run after the administrator probe and before the report"
+  },
+  {
+    # The report's changed-expression, which until now was asserted by nothing:
+    # any one of its six terms could be deleted and every property in the static
+    # program still held. The term this row removes is one of the two that had
+    # been unguarded since they were written.
+    name: "a deployment report that drops a result which can report a change",
+    break: lambda { |root|
+      mutate_text(root, "roles/nextcloud/tasks/report.yml",
+                  "         ((nextcloud_admin_repair | default({})) is changed) or\n", "")
+    },
+    expects: "must name every result that can report a change"
+  },
+  {
+    # The other direction, which is what a hand-written list rots into rather
+    # than what a careless edit produces: a term naming a register the role
+    # stopped writing is not an error, it is `(gone | default({})) is changed`
+    # evaluating to false for ever.
+    name: "a deployment report that names a result the role no longer registers",
+    break: lambda { |root|
+      mutate_text(root, "roles/nextcloud/tasks/report.yml",
+                  "((nextcloud_app_repair | default({})) is changed) }}",
+                  "((nextcloud_app_repair | default({})) is changed) or\n" \
+                  "         ((nextcloud_app_reinstall | default({})) is changed) }}")
+    },
+    expects: "must not name a result this role no longer registers"
+  },
+  {
+    # The two entries defaults/main.yml calls principle rather than taste. Both
+    # could be dropped with a green gate while that file said the taxonomy
+    # existed so a later reader "should not have to re-derive" them.
+    name: "an application policy that stops disabling the two apps that phone home",
+    break: lambda { |root|
+      edit_yaml(root, "roles/nextcloud/defaults/main.yml") do |document|
+        document["nextcloud_disabled_apps"] -= %w[updatenotification survey_client]
+      end
+    },
+    expects: "must disable the two applications that phone home"
   }
 ].freeze
 
@@ -1649,6 +1687,31 @@ PROGRAM_MUTATIONS = [
     from: 'imports.index("reconcile_apps.yml").to_i < imports.index("report.yml").to_i',
     to: "true",
     rows: ["an app policy that runs after the report that has to carry its change"]
+  },
+  {
+    # Both halves of the report's derivation, planted separately, because they
+    # are two defects and a single set comparison would report whichever fired
+    # first. Removing either restores the state the review found: the whole
+    # expression was pinned by nothing.
+    label: "the requirement that the report names every result that can move",
+    program: :static,
+    from: "(movers - named).empty?",
+    to: "true",
+    rows: ["a deployment report that drops a result which can report a change"]
+  },
+  {
+    label: "the requirement that the report names no result the role stopped registering",
+    program: :static,
+    from: "(named - movers).empty?",
+    to: "true",
+    rows: ["a deployment report that names a result the role no longer registers"]
+  },
+  {
+    label: "the requirement that the two phone-home applications stay disabled",
+    program: :static,
+    from: '(phoning_home - Array(defaults["nextcloud_disabled_apps"])).empty?',
+    to: "true",
+    rows: ["an application policy that stops disabling the two apps that phone home"]
   },
   {
     label: "the image pin check",
