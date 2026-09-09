@@ -26,7 +26,8 @@
 # Run with --self-test to plant a regression in each program and in the wrapper.
 # It accumulates its mismatches rather than aborting on the first, and every
 # plant is built before the worker pool: `abort` inside a worker raises
-# SystemExit there, and the pool would report a KeyError in place of the message.
+# SystemExit there, which in_parallel_cases deliberately does not rescue, so the
+# run ends on it with nothing reported rather than naming the plant that failed.
 #
 # On the cost of this file, which CLAUDE.md's `static` budget section is about:
 # every invocation that must end in a refusal by the wrapper substitutes a stub
@@ -2114,9 +2115,12 @@ if ARGV.include?("--self-test")
 
   # Every plant is prepared on the main thread, before the pool. `plant` and
   # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # abort inside a worker raises SystemExit there: `run_pool_case` rescues only
+  # StandardError, so `Thread#join` re-raises it and the process exits with that
+  # sentence on stderr and no report assembled. A case that raises anything else
+  # is recorded as that case's own failure and the other cases still report --
+  # #514 -- so the reason plants belong before the pool is that an abort is the
+  # check saying it cannot continue, not that the pool mangles the message.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
     rows = mutation.fetch(:program) == :static ? STATIC_ROWS : RUNTIME_ROWS

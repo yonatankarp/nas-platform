@@ -36,7 +36,7 @@
 # is unfalsifiable -- two serial runs agree with each other perfectly.
 #
 # WHAT THE RAISING CASE OWES. Three entries, not one: the two findings it
-# recorded before it raised, and then its exception. The four contract tests
+# recorded before it raised, and then its exception. The five contract tests
 # that pool by return value rescue by *rebuilding* the case's list, which they
 # can because their block returns it; the shared helper's block appends to a
 # list it was handed, so a rescue copied from them would silently drop whatever

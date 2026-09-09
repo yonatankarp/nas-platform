@@ -48,7 +48,7 @@ CASE_POOL_WORKERS = Integer(
 #
 # A case that raises a StandardError becomes a failure of that case -- named,
 # with the exception class and message -- rather than the end of the run. A row
-# whose fixture cannot be built is a broken row, and the four contract tests
+# whose fixture cannot be built is a broken row, and the five contract tests
 # that pool by return value already record it this way.
 #
 # The message is *appended* to the case's list rather than replacing it, which
