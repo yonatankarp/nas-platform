@@ -43,8 +43,31 @@
     nextcloud_trusted_domains_missing: >-
       {{ nextcloud_trusted_domains | difference(nextcloud_trusted_domains_live_value) }}
   vars:
+    # splitlines(), and the split('\n') it replaces is what #500's second
+    # converge failed on. A backslash escape inside a `{{ }}` expression is
+    # never an escape under Ansible: AnsibleLexer pre-escapes every backslash in
+    # an expression's string constants so that YAML is the only layer that
+    # processes them, which is what makes regex_replace('^(.*)_x$', '\1') mean a
+    # backreference here rather than the byte \x01 Jinja alone would produce.
+    # The cost of that is this defect. '\n' stayed the two characters backslash
+    # and n, so the split found no separator anywhere, the live list read as a
+    # single blob holding every domain at once, difference() reported all three
+    # missing, and the loop below re-set them on every converge -- a clean
+    # PLAY RECAP and a wrong answer, the same shape as #492.
+    #
+    # Measured on ansible-core 2.21.4 against "a\nb\nc": split('\n') -> 1
+    # element, splitlines() -> 3. The YAML quoting is not what decides it, which
+    # is worth knowing before reaching for a different quote to fix it -- folded,
+    # single-quoted and double-quoted scalars all read 1 -- and `{% %}`
+    # statements are exempt from the pre-escaping, which is the reason the guard
+    # in tests/contracts/nextcloud-static.rb scopes itself to `{{ }}` regions
+    # rather than to every string this role writes.
+    #
+    # splitlines() is also the better answer where split() would have worked: it
+    # is not told a separator, so it stays right about output this role did not
+    # write whether the container ends its lines with \n, \r\n or \r.
     nextcloud_trusted_domains_live_value: >-
-      {{ (nextcloud_trusted_domains_current.stdout | default('')).split('\n')
+      {{ (nextcloud_trusted_domains_current.stdout | default('')).splitlines()
          | map('trim') | select | list }}
   when:
     - nextcloud_deployment_enabled | bool
@@ -54,6 +77,16 @@
 # than assumed. `occ config:system:set trusted_domains N` writes position N, so
 # starting anywhere inside the existing array would overwrite a domain that is
 # already trusted rather than adding one.
+#
+# `length` is the first free index while the live array is dense, and it is
+# scoped that way rather than stated flatly because the read above drops blanks
+# with `select`. Measured against Nextcloud 34.0.3: setting index N == length
+# appends and setting an N inside the array overwrites, so the arithmetic is
+# right on a dense array -- but `occ config:system:delete trusted_domains 1`
+# leaves PHP's unset behind, config:system:get prints only the survivors, and on
+# an array of four that makes `length` 3 while index 3 is still live. The next
+# converge would then write a managed domain over it. An empty-string entry
+# undercounts the same way. Nothing this role does creates either.
 #
 # The task runs only for domains that are genuinely absent, so a converged
 # deployment skips the loop entirely and reports no change. Setting the same

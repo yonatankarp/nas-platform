@@ -272,6 +272,18 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       seafile|full) integration_seafile_deployment_enabled=true ;;
     esac
 
+    # The same switch for Nextcloud, and the same three reasons: it is passed on
+    # every lane so a lane requests the state it claims to converge, the full
+    # lane is included because run_contracts.rb --execute reaches nextcloud.sh
+    # there, and this is an override rather than a default -- the day
+    # inventory/group_vars/all/main.yml turns the switch on for real, this line
+    # silently keeps Nextcloud out of smoke, idempotence-check and every other
+    # lane, so it has to be flipped or deleted in the same change.
+    integration_nextcloud_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
+    esac
+
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
     # It is passed explicitly rather than left to inventory, for the same reason
@@ -616,6 +628,9 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           if [ $converge_status -ne 0 ]; then
             if [ $integration_seafile_deployment_enabled = true ]; then
               dump_seafile_diagnostics
+            fi
+            if [ $integration_nextcloud_deployment_enabled = true ]; then
+              dump_nextcloud_diagnostics
             fi
             printf 'integration converge did not complete (status %s)\n' \
               $converge_status >&2
@@ -1266,6 +1281,21 @@ EOF
         run_play --tags seafile -e seafile_pre_upgrade_backup_force=true
         run_seafile_contract restore-rehearsal-assert
         printf 'SEAFILE_RESTORE_REHEARSED\n'
+      fi
+    fi
+
+    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is nextcloud; then
+      run_nextcloud_contract run
+      if [ $INTEGRATION_SUITE = nextcloud ]; then
+        # The second converge is what refutes a Nextcloud that rewrites its own
+        # trusted_domains on every start: the reconciliation would repair it,
+        # report changed, and fail the recap check below. That is the claim a
+        # restart-persistence mode would have bought, arriving one layer out --
+        # tests/contracts/nextcloud.sh records why it cannot be a mode here.
+        run_enabled_idempotence nextcloud
+        run_play --tags nextcloud --check --diff
+        run_nextcloud_verify_only
+        printf 'NEXTCLOUD_RUNTIME_VERIFIED\n'
       fi
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it

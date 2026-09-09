@@ -30,3 +30,5 @@ contracts:
     path: tests/contracts/seerr.sh
   - service: seafile
     path: tests/contracts/seafile.sh
+  - service: nextcloud
+    path: tests/contracts/nextcloud.sh

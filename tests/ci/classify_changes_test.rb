@@ -14,7 +14,7 @@ include TestScaffold
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
   static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence_check
+  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile nextcloud idempotence_check
 ].freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
 # The lanes the media acquisition reconciliation contract reads, and the four
@@ -73,7 +73,7 @@ RECONCILIATION_OWNED_PATHS = %w[
 # classifier's own list must fail here.
 NTFY_LANES = %w[
   static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke
-  beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence_check
+  beszel dozzle audiobookshelf komga jellyfin immich paperless seafile nextcloud idempotence_check
 ].freeze
 failures = []
 
@@ -123,6 +123,7 @@ if defined?(ClassifyChanges)
     ["docs/secrets.md"] => %w[docs],
     ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
     ["roles/seafile/tasks/main.yml"] => %w[static smoke seafile idempotence_check],
+    ["roles/nextcloud/tasks/main.yml"] => %w[static smoke nextcloud idempotence_check],
     ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
     # Plus seerr: the seerr lane is the only one that converges Jellyfin
     # alongside arr and it signs in to Jellyfin as the vault administrator, so a
@@ -232,7 +233,8 @@ if defined?(ClassifyChanges)
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless-ngx" => %w[paperless],
-    "seafile" => %w[seafile]
+    "seafile" => %w[seafile],
+    "nextcloud" => %w[nextcloud]
   }.each do |service, expected_service_lanes|
     role = service == "paperless-ngx" ? "paperless_ngx" : service
     contract = service == "paperless-ngx" ? "paperless" : service
@@ -376,7 +378,8 @@ if defined?(ClassifyChanges)
     "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr",
     "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
     "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless",
-    "roles/seafile/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,seafile"
+    "roles/seafile/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,seafile",
+    "roles/nextcloud/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,nextcloud"
   }.each do |path, expected_tags|
     service_output = StringIO.new
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
@@ -409,6 +412,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["smoke","beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
@@ -439,8 +443,9 @@ if defined?(ClassifyChanges)
     immich=true
     paperless=true
     seafile=true
+    nextcloud=true
     idempotence_check=true
-    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","seafile","idempotence-check"]
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","seafile","nextcloud","idempotence-check"]
     selected_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
@@ -485,6 +490,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=true
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["smoke","paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
@@ -522,6 +528,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["bindery","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
@@ -553,6 +560,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["kapowarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
@@ -584,6 +592,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["pinchflat","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
@@ -619,6 +628,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["trailarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
@@ -654,6 +664,7 @@ if defined?(ClassifyChanges)
     immich=false
     paperless=false
     seafile=false
+    nextcloud=false
     idempotence_check=true
     suites=["seerr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr

@@ -293,10 +293,10 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence-check full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile nextcloud idempotence-check full' \
   --list-suites
 
-for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile idempotence-check full; do
+for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless seafile nextcloud idempotence-check full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done
@@ -427,6 +427,8 @@ assert_output 'suite=paperless tags=host_prep,deployment_bundle,ntfy,paperless p
   --describe-suite paperless
 assert_output 'suite=seafile tags=host_prep,deployment_bundle,ntfy,seafile playbook=site.yml scenarios=true' \
   --describe-suite seafile
+assert_output 'suite=nextcloud tags=host_prep,deployment_bundle,ntfy,nextcloud playbook=site.yml scenarios=true' \
+  --describe-suite nextcloud
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
 
 assert_output 'suite=smoke tags=host_prep,deployment_bundle,ntfy,beszel playbook=custom.yml scenarios=true' \
@@ -723,7 +725,7 @@ assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
 assert_rejected 'invalid integration tags: ntfy,,beszel' \
   --suite smoke --tags ntfy,,beszel
-for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless seafile full; do
+for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless seafile nextcloud full; do
   assert_rejected "integration suite $suite does not accept --tags" \
     --suite "$suite" --tags ntfy
 done
@@ -1031,6 +1033,13 @@ assert_toolchain_pull_set \
 run_prepull 0 4 --suite seafile
 [ "$prepull_status" -eq 0 ] || prepull_fail "the seafile pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images ntfy; compose_images seafile; } | sort -u)"
+
+# Three unique images rather than four: the application and its cron sidecar pin
+# one identical image, which compose_images de-duplicates and
+# tests/contracts/nextcloud-static.rb requires.
+run_prepull 0 4 --suite nextcloud
+[ "$prepull_status" -eq 0 ] || prepull_fail "the nextcloud pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images nextcloud; } | sort -u)"
 
 # An untagged smoke run converges everything, so every service directory in the
 # tree must be reachable from the harness map. A directory the map forgot shows up

@@ -58,7 +58,8 @@ module ClassifyChanges
     "jellyfin" => %w[jellyfin],
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx],
-    "seafile" => %w[seafile]
+    "seafile" => %w[seafile],
+    "nextcloud" => %w[nextcloud]
   }.freeze
   # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
   # playbook and its two roles are reachable only from
