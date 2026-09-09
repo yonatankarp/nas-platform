@@ -155,11 +155,20 @@ mac_validate_integration_callback() {
 # out of every lane and has to be deleted in the same change. Nothing has to
 # come back to this line.
 #
-# nextcloud_deployment_enabled is the third, and every word above applies to it
+# nextcloud_deployment_enabled is the third, and the two reasons above carry over
 # unchanged -- #500 lands Nextcloud gated off exactly as #460 landed Seafile, so
-# without this line the lane would deploy nothing and report a full pass over
-# sixteen services while the seventeenth was never started. It is a separate
-# request rather than a shared one because the two gates are separate decisions:
+# the lane has to ask for it, and the flip-day reasoning applies word for word.
+#
+# What does NOT carry over is the consequence of omitting it. Seafile's paragraph
+# describes a silent pass because #460 landed the gate line before Seafile had
+# any hooks; #500 lands the hooks in the same change, so deleting this line now
+# is loud rather than quiet: verify/30-services.sh runs the Nextcloud contract
+# unconditionally, and its census fails on four containers that were never
+# created. The hooks are what make a missing stack visible. This line is what
+# makes the stack exist, and it is worth keeping for that alone.
+#
+# It is a separate request rather than a shared one because the two gates are
+# separate decisions:
 # the point of #500's first half is that both stacks run side by side while the
 # choice between them is evaluated, so a lane that could only ask for both at
 # once could not prove either alone.

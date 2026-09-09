@@ -30,8 +30,21 @@
 # which one appears depends on whether this image gates /status.php on
 # trusted_domains. That was measured as gating, so the readiness diagnostic is
 # the expected one; the alternation below accepts either rather than pinning a
-# behaviour of upstream's that this lane does not own. It does not accept a
-# third message, so a container that never started still fails this hook.
+# behaviour of upstream's that this lane does not own.
+#
+# What the alternation does NOT do is exclude a container that never started.
+# Refusing a third message would not: message A is exactly what an unstarted
+# container produces. The census is what excludes it -- the contract's run mode
+# opens by inspecting all four containers and refusing any that is not both
+# running and healthy, so neither of these two messages is even reachable unless
+# the whole stack was up when this hook ran.
+#
+# And message A is generic even then. "never served its status endpoint within
+# 10s" is the shape of any readiness failure at all: a host port that moved, a
+# machine loaded enough that a healthy server misses a ten-second budget, an
+# upstream regression in /status.php. It is accepted because it is the measured
+# outcome of this drift, not because seeing it proves the drift was the cause.
+# Message B is the specific one; A is the one this lane usually gets.
 #
 # The readiness budget is cut to ten seconds for that reason. This invocation
 # must end in a refusal, so the real budget buys nothing but sleep -- the same

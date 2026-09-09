@@ -29,7 +29,7 @@
 # The pre-converge group is the same accounting on a group of one. Its
 # membership rule is narrow — a service belongs there only when its converge
 # reads fixture state off disk — so its roster names Audiobookshelf and its
-# exemptions name the other fifteen. A group of one is already safe against a
+# exemptions name the other sixteen. A group of one is already safe against a
 # deletion, since mac_run_hooks refuses an empty group; the cases here are the
 # two it was blind to, a hook added outside the roster and a service registered
 # without anyone deciding whether its converge needs a fixture placed first.
@@ -316,7 +316,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
 # belongs there only when its converge reads fixture state off disk, which is
-# Audiobookshelf and nothing else. Fifteen exemptions against one delegation is
+# Audiobookshelf and nothing else. Sixteen exemptions against one delegation is
 # the honest shape of that rather than a coverage gap, and the exemptions are
 # what a newly registered service has to answer to -- the question mac_hook_count
 # could not ask.

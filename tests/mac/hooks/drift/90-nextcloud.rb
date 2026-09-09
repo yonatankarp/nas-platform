@@ -62,5 +62,19 @@ refuse("the hand edit could not be written inside #{CONTAINER}: #{error.strip}")
   status.success?
 
 confirmed = trusted_domains
-refuse("the hand edit did not reach the deployed configuration") if confirmed.include?(OWNED)
+# 127.0.0.1 still being trusted has two causes and they are not the same failure,
+# so they are not reported as one. Either the write did not take, or it took and
+# a duplicate entry elsewhere in the array still carries the domain -- occ sets
+# one index and the installer appends without de-duplicating, which is the same
+# property the index search above exists for. The second is unreachable today:
+# roles/nextcloud/defaults applies `unique` to the declared list and env.j2 omits
+# localhost, so there is no second copy to survive. It is distinguished anyway,
+# because a diagnostic that says the edit never landed when the edit landed
+# perfectly sends a reader to the wrong half of this program.
+if confirmed.include?(OWNED)
+  refuse("the hand edit landed at index #{index} but #{OWNED} survives elsewhere in the trusted " \
+         "domain list, so this lane has not removed the platform-owned entry") if
+    confirmed[index] == PLANTED
+  refuse("the hand edit did not reach the deployed configuration")
+end
 refuse("the hand edit did not land at index #{index}") unless confirmed[index] == PLANTED
