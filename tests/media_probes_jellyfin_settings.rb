@@ -792,6 +792,7 @@ def exercise_jellyfin_qsv_probe(failures)
 
   exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
   exercise_jellyfin_qsv_probe_placement(failures)
+  exercise_jellyfin_qsv_probe_selection(failures, probe_path)
 end
 
 # The probe's whole value is its exit code (#535), so the fixture drives the exit
@@ -834,6 +835,55 @@ def exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
     failures << "Jellyfin QSV probe fixture accepted #{label}" if status.success?
     failures << "Jellyfin QSV probe fixture refused #{label}: #{failure_tail(stdout + stderr)}" unless
       status.success?
+  end
+end
+
+# Whether Ansible actually selects the probe, which is the one thing the two
+# checks above cannot say: they read YAML, and a `never` that arrived through an
+# `apply:` block suppressing the included task would leave every shape assertion
+# in this file, in tests/contracts/jellyfin-static.rb and in the contract's own
+# rows green over a proof that runs nowhere. So this drives the real include task
+# out of verify.yml against a copy of the probe whose module is a command that
+# exits 1, and gives the include the jellyfin/media tags site.yml's role listing
+# gives it -- those tags are exactly what make `never` insufficient on its own.
+def exercise_jellyfin_qsv_probe_selection(failures, probe_path)
+  include_task = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "verify.yml"), aliases: false
+  ).find { |task| task.dig("ansible.builtin.include_tasks", "file") == "qsv_probe.yml" }
+  if include_task.nil?
+    failures << "Jellyfin QSV probe include is absent from verification"
+    return
+  end
+
+  tasks = YAML.safe_load_file(probe_path, aliases: false)
+  probe = tasks.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
+  probe.delete("community.docker.docker_compose_v2_exec")
+  probe["ansible.builtin.command"] = { "argv" => ["/bin/sh", "-c", "exit 1"] }
+  variables = { "platform_kind" => "nas", "platform_compose_kind" => "nas",
+                "deployment_bundle_test_mode" => false }
+  Dir.mktmpdir("nas-platform-jellyfin-qsv-selection-") do |directory|
+    copy = File.join(directory, "qsv_probe.yml")
+    File.write(copy, YAML.dump(tasks))
+    include_value = include_task["ansible.builtin.include_tasks"]
+    include_value["file"] = copy
+    include_task["tags"] = Array(include_task["tags"]) | %w[jellyfin media]
+    include_value["apply"]["tags"] = Array(include_value.dig("apply", "tags")) | %w[jellyfin media]
+    [
+      ["platform_verify_jellyfin", true, false, "its own verification tag"],
+      ["jellyfin", false, true, "the converge tag site.yml gives the role"],
+      [nil, false, true, "an untagged converge"]
+    ].each do |tag, runs, succeeds, label|
+      arguments = tag.nil? ? [] : ["--tags", tag]
+      stdout, stderr, status = run_playbook([include_task], variables, *arguments)
+      output = stdout + stderr
+      reached = output.include?("Probe the Jellyfin QSV hardware device")
+      failures << "Jellyfin QSV probe is not reached under #{label}" if runs && !reached
+      failures << "Jellyfin QSV probe is reached under #{label}" if !runs && reached
+      failures << "Jellyfin QSV probe did not fail the play under #{label}" if
+        !succeeds && status.success?
+      failures << "Jellyfin QSV probe failed the play under #{label}: #{failure_tail(output)}" if
+        succeeds && !status.success?
+    end
   end
 end
 
