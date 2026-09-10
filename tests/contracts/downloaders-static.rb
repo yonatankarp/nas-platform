@@ -120,18 +120,35 @@ if failures.empty?
   # ahead of the task it names, and a byte offset cannot tell the two apart.
   main = role_tasks(root, "roles/downloaders/tasks/main.yml")
   guard_index = main.index { |task| included_file(task) == "state_guard.yml" }
+  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
+  # bounded recovery roles/container_health brackets. The deployment is the one
+  # without it, and selecting on position alone would pick whichever came first.
   activation_index = main.index do |task|
-    task.dig("community.docker.docker_compose_v2", "state") == "present"
+    compose = task["community.docker.docker_compose_v2"]
+    compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
   end
   activation = activation_index && main[activation_index]
   failures << "downloaders role must deploy through docker_compose_v2" unless
     main.any? { |task| task["community.docker.docker_compose_v2"].is_a?(Hash) }
+  failures << "downloaders role must repair a wedged container exactly once per converge" unless
+    main.count do |task|
+      task.dig("community.docker.docker_compose_v2", "recreate") == "always"
+    end == 1
   failures << "downloaders role must include the state guard before deployment" unless
     guard_index && activation_index && guard_index < activation_index
   failures << "downloaders role must verify its effective project CPU policy" unless
     main.count { |task| task.dig("vars", "container_cpu_service_name") == "downloaders" } == 1
+  # The gate is read from whatever element carries the deployment. #537 wrapped
+  # it in a block whose rescue records the message roles/container_health is
+  # handed, and Ansible applies a block's `when` to every task inside it, so
+  # reading the task's own `when` alone would report an ungated deployment that
+  # is in fact gated.
+  activation_gate = main.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? { |inner| inner.equal?(activation) }
+  end || activation
   failures << "downloaders role must gate activation on media_usenet_enabled" unless
-    activation && Array(activation["when"]).any? do |condition|
+    activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
     end
   sabnzbd_index = main.index { |task| included_file(task) == "reconcile_sabnzbd.yml" }

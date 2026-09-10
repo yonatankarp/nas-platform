@@ -161,16 +161,120 @@
     dest: "{{ platform_runtime_dir }}/services/jellyfin/.env"
     mode: "0600"
 
-- name: Deploy Jellyfin
-  community.docker.docker_compose_v2:
-    project_src: "{{ platform_current_dir }}/services/jellyfin"
-    project_name: "{{ jellyfin_compose_project_name }}"
-    files: "{{ platform_service_compose_files['jellyfin'] }}"
-    env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
-    state: present
-    wait: true
-    wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
-  register: jellyfin_deploy
+# The block exists for one thing the rescue does with the failure: it hands the
+# deployment's own message to roles/container_health, which either explains it in
+# terms of the container state Docker reports or re-raises it unchanged.
+# Compose's `--wait` fails a crash-looping container with "container ... is
+# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
+# the long form of this argument; #509 built the mechanism and #537 wired the
+# remaining eleven single-`up` roles into it.
+- name: Deploy Jellyfin, catching a container that runs but never serves
+  block:
+    - name: Deploy Jellyfin
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/jellyfin"
+        project_name: "{{ jellyfin_compose_project_name }}"
+        files: "{{ platform_service_compose_files['jellyfin'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+        state: present
+        wait: true
+        wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
+      register: jellyfin_deploy
+  rescue:
+    # First, and before anything else can rebind it: ansible_failed_result
+    # belongs to whichever rescue is running.
+    - name: Record the failed Jellyfin deployment
+      ansible.builtin.set_fact:
+        jellyfin_deploy_failure_message: >-
+          {{ ansible_failed_result.msg
+             | default('the Jellyfin deployment failed and reported no message') }}
+
+# Immediately after the deployment and before everything that trusts it. A
+# container in `Restarting` still appears in `docker container ls --quiet`, so
+# the CPU verification below would sail straight past one and the readiness probe
+# after it would fail on a timeout that names nothing (#510).
+#
+# This pass detects, prints the evidence and publishes
+# container_health_stuck_services WITHOUT refusing, because the recreate below
+# has to happen before the verdict. It still re-raises a deployment failure that
+# no stuck container explains.
+- name: Detect a Jellyfin container that runs but never serves
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: jellyfin
+    container_health_project_name: "{{ jellyfin_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ jellyfin_deploy_failure_message | default('') }}
+    container_health_refuse: false
+
+# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
+# FORCED, because `up -d` against an unchanged specification keeps the same
+# container and recreates nothing; `dependencies: false` renders as --no-deps, so
+# a healthy sibling in the same project is not taken down to repair one container.
+# CONDITIONAL, and that condition is the whole idempotence argument: the list is
+# empty on a converged host and empty under --check, so this task is skipped on
+# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
+# task rather than a loop, with the verdict below re-checking, so a container
+# looping for a reason a recreate cannot fix never goes green and never becomes
+# an invisible retry loop.
+- name: Recreate a Jellyfin container that runs but never serves
+  block:
+    - name: Force-recreate the stuck Jellyfin services
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/jellyfin"
+        project_name: "{{ jellyfin_compose_project_name }}"
+        files: "{{ platform_service_compose_files['jellyfin'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/jellyfin/.env"]
+        services: "{{ container_health_stuck_services }}"
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ jellyfin_compose_wait_timeout }}"
+      when: container_health_stuck_services | default([]) | length > 0
+      register: jellyfin_wedged_recreate
+  rescue:
+    # Carried rather than re-raised here. `--wait` fails a container that came
+    # back unhealthy, which the re-check below diagnoses far better than Compose
+    # can; a recreate that failed for any OTHER reason left no stuck container
+    # behind, and the second pass re-raises this message unchanged for that case.
+    - name: Record the Jellyfin recreate that did not recover the service
+      ansible.builtin.set_fact:
+        jellyfin_recreate_failure_message: >-
+          The force-recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}
+
+# Whether a recreate was actually spent, recorded before the second pass
+# overwrites the list it was decided from.
+- name: Record whether a Jellyfin recreate was spent
+  ansible.builtin.set_fact:
+    jellyfin_recreate_spent: >-
+      {{ container_health_stuck_services | default([]) | length > 0 }}
+
+- name: Report the Jellyfin wedged-container recovery check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ jellyfin_compose_project_name }} that Docker reports as restarting or
+      unhealthy, print its state, force-recreate exactly those services once
+      with no dependencies, and fail naming that retry if any of them came back
+      stuck. Compose's dry run starts nothing and does not wait on container
+      health, so check mode cannot reach that path and recreates nothing.
+  when: ansible_check_mode
+
+# The verdict. Nothing stuck here means the recreate worked, or that there was
+# never anything to repair; either way the run continues. Anything still stuck
+# fails, and says the retry has already been spent.
+- name: Refuse a Jellyfin container that stayed wedged after its recreate
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: jellyfin
+    container_health_project_name: "{{ jellyfin_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ jellyfin_recreate_failure_message | default('') }}
+    container_health_retried: "{{ jellyfin_recreate_spent }}"
 
 - name: Report the Jellyfin deployment
   ansible.builtin.include_role:
@@ -178,7 +282,14 @@
     tasks_from: deployment_report
   vars:
     ntfy_deployment_report_service: Jellyfin
-    ntfy_deployment_report_changed: "{{ jellyfin_deploy is changed }}"
+    # Both Compose results, because a force-recreate that repaired a wedged
+    # container changed the deployment as surely as the deploy above did, and a
+    # report gated on the deploy alone would say nothing on the one converge an
+    # operator most wants to hear about. It is registered even when skipped, and
+    # `default({})` covers the paths that never reach it at all.
+    ntfy_deployment_report_changed: >-
+      {{ (jellyfin_deploy is changed)
+         or ((jellyfin_wedged_recreate | default({})) is changed) }}
 
 - name: Verify Jellyfin effective container CPU policy
   ansible.builtin.include_role:

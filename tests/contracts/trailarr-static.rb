@@ -209,8 +209,15 @@ if failures.empty?
 
   role_tasks = Dir[File.join(root, "roles/trailarr/tasks/*.yml")].sort
   tasks = role_tasks.flat_map { |path| flatten_tasks(YAML.safe_load_file(path, aliases: true)) }
+  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
+  # bounded recovery roles/container_health brackets. Counted separately rather
+  # than as a total of two, so a second plain deployment is still refused and a
+  # force-recreate spent twice in one converge is still refused.
+  compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Trailarr must deploy through docker_compose_v2" unless
-    tasks.count { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" } == 1
+    compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
+  failures << "Trailarr must force-recreate a stuck container exactly once per converge" unless
+    compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1
   failures << "Trailarr must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "trailarr" } == 1
 
