@@ -231,10 +231,31 @@
     env_files: ["{{ platform_runtime_dir }}/services/adguard/.env"]
     state: restarted
   register: adguard_config_restart
+  #
+  # `not ansible_check_mode` is the third condition and it is not decoration.
+  # Compose's dry run starts nothing, so under --check the template above reports
+  # the change it would make and this task would then be asked to restart a
+  # project that a review has not created. The reviewer is told what it would do
+  # instead, beside the wedged-container recovery that defers for the same
+  # reason.
   when:
     - adguard_deployment_enabled | bool
     - adguard_config is changed
     - (adguard_deploy | default({})) is not changed
+    - not ansible_check_mode
+
+- name: Report the AdGuard Home configuration revert check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would compare the rendered AdGuard Home configuration against
+      the file on disk and, where a change in the web interface had moved it,
+      write the declared document back and restart Compose project
+      {{ adguard_compose_project_name }} onto it. Compose's dry run starts
+      nothing, so check mode reports the file it would write and restarts
+      nothing.
+  when:
+    - adguard_deployment_enabled | bool
+    - ansible_check_mode
 
 - name: Verify AdGuard Home effective container CPU policy
   ansible.builtin.include_role:
