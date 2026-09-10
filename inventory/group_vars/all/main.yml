@@ -348,6 +348,14 @@ adguard_deployment_enabled: false
 # Compose project is converged to `state: absent`, which against a project that
 # has never existed is a `docker compose down` on nothing.
 #
+# Those two are measured rather than reasoned. Only two tasks in this role can
+# report a change at all -- the template above and the tear-down -- and the
+# tear-down reports `ok` against a project that has never existed, so the role's
+# whole contribution to a first review is the one rendered .env, with host_prep
+# adding the one directory. A converged host then reports nothing: three
+# consecutive live runs went changed=1, 0, 0, and `--check --diff` after them
+# reported 0.
+#
 # The directory being created ungated is deliberate rather than overlooked. It
 # is the same decision every other service's storage takes, it is what makes
 # the flip a one-line change rather than a two-phase one, and an empty 0700

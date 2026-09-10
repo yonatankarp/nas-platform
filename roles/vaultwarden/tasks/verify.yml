@@ -24,12 +24,70 @@
 # playbook resolves platform_service_compose_files in its pre_tasks and
 # platform_current_dir is a group variable, so this read works whether the role
 # runs inside site.yml or is selected by --tags from verify.yml.
+#
+# GUARDED THE SAME WAY THE SWEEP IN deploy.yml IS, AND FOR THE SAME READING.
+# `current` names the previous release under --check, because activating a new
+# one is a command task check mode skips, so a service this platform has never
+# converged is simply not in the release this reads.
+#
+# REACHABILITY IS DIFFERENT HERE, AND IT IS WORTH BEING PRECISE. This read is
+# gated on the deployment flag, and by the time that flag is true the release
+# has carried services/vaultwarden/ for as long as the stack has been dark -- so
+# the ordinary chunk-2 review does not reach it. What does reach it is an
+# operator previewing the flip with `-e vaultwarden_deployment_enabled=true`
+# against a host whose current release predates the service, which is a
+# reasonable thing to want to run and would otherwise die here. The guard is
+# cheap and the state is legible, so it is worth having rather than arguing that
+# nobody will do it.
+- name: Read whether the installed release carries the Vaultwarden Compose definition
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/vaultwarden/compose.yml"
+  register: vaultwarden_verify_compose_present
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+- name: Require a live Vaultwarden verification to have a release to read
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_verify_compose_present.stat.exists
+    fail_msg: >-
+      {{ platform_current_dir }}/services/vaultwarden/compose.yml does not
+      exist, so this run cannot read the version this release pins and the
+      assertion below would compare the running server against nothing. On a
+      run that is not a review that is an incomplete release rather than a
+      missing service.
+    success_msg: >-
+      The installed release carries the Vaultwarden Compose definition this
+      verification reads its pinned version from.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Report the Vaultwarden version check this review cannot read
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_current_dir }}/services/vaultwarden/compose.yml does not
+      exist, so this review cannot compare the running Vaultwarden against the
+      version this release pins. Check mode installs no release, so `current`
+      still names the one before this change. A live converge installs the
+      release first and the comparison runs normally.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - ansible_check_mode
+    - not vaultwarden_verify_compose_present.stat.exists
+
 - name: Read the Vaultwarden image this release pins
   tags: [platform_verify_vaultwarden]
   ansible.builtin.slurp:
     path: "{{ platform_current_dir }}/services/vaultwarden/compose.yml"
   register: vaultwarden_verify_compose
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_verify_compose_present.stat.exists
 
 - name: Resolve the Vaultwarden version this release pins
   tags: [platform_verify_vaultwarden]
@@ -39,7 +97,9 @@
             .services.vaultwarden.image
             | regex_search(':([0-9]+(\.[0-9]+)*)@sha256:', '\1')
             | default([], true)) + ['']) | first }}
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_verify_compose_present.stat.exists
 
 - name: Verify Vaultwarden is alive
   tags: [platform_verify_vaultwarden]
@@ -123,9 +183,17 @@
   ansible.builtin.assert:
     that:
       - vaultwarden_verify_alive.status | default(0) | int == 200
+      # The version comparison, and ONLY it, is conditional on having a pin to
+      # compare against: the task that resolves it is skipped when the installed
+      # release does not carry this service, and every other claim below still
+      # holds without it. Written as a short-circuiting `or` so the undefined
+      # name is never evaluated on the path where it is undefined -- which is
+      # the same class of defect as the forward reference #547 shipped, arriving
+      # through a skipped task rather than a later one.
       - >-
-        vaultwarden_verify_version.content | default('') | trim | trim('"')
-        == vaultwarden_pinned_version
+        (not vaultwarden_verify_compose_present.stat.exists)
+        or (vaultwarden_verify_version.content | default('') | trim | trim('"')
+            == vaultwarden_pinned_version)
       - >-
         vaultwarden_verify_admin.content | default('')
         is search('admin panel is disabled')
@@ -134,7 +202,8 @@
         or (vaultwarden_verify_registration.status | default(0) | int == 400)
     fail_msg: >-
       Vaultwarden did not report an alive server running
-      {{ vaultwarden_pinned_version }} with its admin panel disabled and its
+      {{ vaultwarden_pinned_version | default('the version this release pins') }}
+      with its admin panel disabled and its
       registration door where policy puts it. It answered
       {{ vaultwarden_verify_version.content | default('nothing') | trim }} for
       its version and

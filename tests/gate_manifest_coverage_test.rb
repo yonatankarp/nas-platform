@@ -237,6 +237,7 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/vaultwarden_serve_test.rb
   ruby tests/vaultwarden_serve_test.rb --self-test
   ruby tests/role_forward_reference_test.rb
+  ruby tests/release_path_read_test.rb
 CHECKS
 
 SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze

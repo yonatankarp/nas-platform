@@ -161,12 +161,94 @@
 # the second hands a whole file to the container -- so the second is refused
 # alongside the keys, since it would carry either of them where this guard would
 # never see it.
+#
+# THE SWEEP READS THE INSTALLED RELEASE, WHICH A REVIEW HAS NOT INSTALLED.
+# platform_current_dir is `current`, and activating a new release is a command
+# task that check mode skips -- roles/deployment_bundle/tasks/target.yml says so
+# where it relaxes its own release requirement for exactly this reason. So under
+# --check, `current` still names the PREVIOUS release, and for a service this
+# platform has never converged that release has no services/vaultwarden/ at all.
+# The slurp then dies on a file that is simply not there.
+#
+# That is not hypothetical: it is what `--check --diff` against the real NAS did
+# at task 1366 of an otherwise complete review, `File not found:
+# /volume1/Docker/nas-platform/current/services/vaultwarden/compose.yml`. The
+# window is narrow and it is real -- it opens when this release merges and
+# closes at its first live converge, once per new service -- and it is the one
+# review an operator is told to run before applying anything.
+#
+# WHAT THE DEFERRAL COSTS, said plainly rather than glossed. On the review path
+# the admin-panel guard below does not run, so `--check --diff` no longer proves
+# that ADMIN_TOKEN and DISABLE_ADMIN_TOKEN are absent from what would be
+# deployed. That is a real narrowing and not a free fix. Two things bound it:
+# the guard still runs on every live converge, before any container is created,
+# which is the run where it has to hold; and
+# tests/release_path_read_test.rb pins the repository-side half in CI, so the
+# keys cannot reach a release in the first place without a red check.
+#
+# Absent WITHOUT check mode is a different state and is NOT collapsed into this
+# one. A live converge whose installed release lacks its own Compose file is a
+# real fault -- deployment_bundle just installed that release -- and silently
+# skipping the guard is precisely the dangerous half, so it fails.
+- name: Read whether the installed release carries the Vaultwarden Compose definitions
+  ansible.builtin.stat:
+    path: >-
+      {{ platform_current_dir }}/services/vaultwarden/{{ item }}
+  loop: "{{ platform_service_compose_files['vaultwarden'] }}"
+  register: vaultwarden_compose_present
+  changed_when: false
+  check_mode: false
+
+- name: Resolve whether the installed release carries this service
+  ansible.builtin.set_fact:
+    vaultwarden_release_carries_service: >-
+      {{ vaultwarden_compose_present.results | map(attribute='stat.exists')
+         | select | list | length
+         == platform_service_compose_files['vaultwarden'] | length }}
+
+- name: Require a live Vaultwarden converge to have installed its own Compose files
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_release_carries_service
+    fail_msg: >-
+      {{ platform_current_dir }}/services/vaultwarden is missing at least one of
+      {{ platform_service_compose_files['vaultwarden'] | join(', ') }} on a run
+      that is not a review. deployment_bundle installs the release before this
+      role runs, so a live converge that reaches here without those files has an
+      incomplete release rather than a missing service, and the admin-panel
+      guard below cannot judge what it cannot read. Do not skip past this: the
+      guard is what keeps ADMIN_TOKEN and DISABLE_ADMIN_TOKEN out of a deployed
+      Vaultwarden, and anything saved in the panel they open writes a
+      config.json that outranks every value this role renders.
+    success_msg: >-
+      The installed release carries every Vaultwarden Compose file this run
+      deploys.
+  when: not ansible_check_mode
+
+- name: Report the Vaultwarden configuration sweep this review cannot make
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_current_dir }}/services/vaultwarden does not exist, so this
+      review cannot sweep the deployed Compose files for ADMIN_TOKEN,
+      DISABLE_ADMIN_TOKEN or a service-level env_file. That is expected rather
+      than wrong: check mode installs no release, so `current` still names the
+      one before this change, and a service this platform has never converged is
+      not in it. Nothing is being deployed by this run either. A live converge
+      installs the release first and then runs the sweep before any container is
+      created, and tests/release_path_read_test.rb refuses those keys in the
+      repository, so this is the only reading that is deferred rather than the
+      only guard there is.
+  when:
+    - ansible_check_mode
+    - not vaultwarden_release_carries_service
+
 - name: Read the deployed Vaultwarden Compose definitions
   ansible.builtin.slurp:
     path: >-
       {{ platform_current_dir }}/services/vaultwarden/{{ item }}
   loop: "{{ platform_service_compose_files['vaultwarden'] }}"
   register: vaultwarden_compose_sources
+  when: vaultwarden_release_carries_service
 
 # The two Compose tags this platform uses are stripped before parsing, and
 # NOTHING ELSE IS. ansible.builtin.from_yaml refuses an unknown tag rather than
@@ -184,6 +266,7 @@
          | map('regex_replace', ' !override', '')
          | map('regex_replace', ' !reset', '')
          | map('from_yaml') | list }}
+  when: vaultwarden_release_carries_service
 
 # EVERY SERVICE IN EVERY DEPLOYED FILE, not just the `vaultwarden` key. A second
 # service added to this project would carry the same hazard, and naming one key
@@ -195,6 +278,7 @@
          | selectattr('services', 'defined') | map(attribute='services')
          | select('mapping') | map('dict2items') | flatten
          | map(attribute='value') | select('mapping') | list }}
+  when: vaultwarden_release_carries_service
 
 # Compose accepts `environment:` as a mapping of names to values OR as a
 # sequence of `NAME=VALUE` strings, and the two are the same declaration. Both
@@ -221,6 +305,7 @@
             | map('regex_replace', '=.*$', '') | list) }}
     vaultwarden_declared_env_files: >-
       {{ vaultwarden_declared_services | select('contains', 'env_file') | list }}
+  when: vaultwarden_release_carries_service
 
 # THE TRIPWIRE, AND IT IS NOT DECORATION. Every term above is a lookup that
 # yields an empty list rather than an error when the document is not the shape
@@ -249,6 +334,7 @@
       The Vaultwarden configuration sweep read
       {{ vaultwarden_declared_env_names | length }} environment name(s) across
       {{ vaultwarden_declared_services | length }} service(s).
+  when: vaultwarden_release_carries_service
 
 - name: Refuse a Vaultwarden that could be overruled by its own admin panel
   ansible.builtin.assert:
@@ -278,6 +364,7 @@
       No deployed Vaultwarden Compose file declares ADMIN_TOKEN,
       DISABLE_ADMIN_TOKEN or a service-level env_file, so the /admin panel is
       disabled and the rendered environment is the only configuration.
+  when: vaultwarden_release_carries_service
 # THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
 # THE CAUSE. "The admin panel is the only writer of config.json" is an upstream
 # claim, not a property this platform can see, so the file's absence is asserted
