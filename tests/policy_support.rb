@@ -172,7 +172,22 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     documents.each do |name, expectation|
-      problems.concat(expectation_problems(name, expectation, service_statuses[name]))
+      problems.concat(expectation_problems(name, expectation, service_statuses[name], root))
+    end
+
+    # THE THIRD DIRECTION, and the one the list was open in. The two checks in
+    # expectation_problems below bite only for a name that IS a rostered
+    # service: a stale or invented entry here is visited by neither, so
+    # `%w[vaultwarden seafile notaservice]` reported "all properties hold".
+    # seafile is not hypothetical -- #501 removed it, and this list would have
+    # carried it forever. Same shape as `stray_roster` in
+    # tests/deployment_gate_coverage_test.rb, and for the same reason: a literal
+    # list needs something holding it to the roster in both directions.
+    stray_credential_free = CREDENTIAL_FREE_SERVICES - service_names
+    unless stray_credential_free.empty?
+      problems << "CREDENTIAL_FREE_SERVICES names #{stray_credential_free.join(', ')}, which " \
+                  "no service on the roster accounts for: an exemption that outlives its " \
+                  "subject exempts nothing and hides the next service that takes the name"
     end
 
     # A file for a service the roster does not name would pin expectations nothing
@@ -188,7 +203,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     [documents.freeze, problems]
   end
 
-  def expectation_problems(service_name, expectation, service_status)
+  def expectation_problems(service_name, expectation, service_status, root = ROOT)
     relative_path = "tests/expected/#{service_name}.yml"
     problems = []
     role = expectation.fetch("role")
@@ -235,6 +250,35 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     # defect this repository keeps closing. Adding a name here is a deliberate
     # claim that the service is credential-free, not a way past a red check.
     credential_free = CREDENTIAL_FREE_SERVICES.include?(service_name)
+    # The claim is about the ROLE, so it is checked against the role. A service's
+    # argument spec is where every vault credential it reads is declared
+    # `required: true`, so a role that reads one cannot be credential-free, and
+    # this is what stops the list being a one-line route past the rule for any
+    # service: adding `komga` to it and emptying tests/expected/komga.yml used to
+    # pass, and now fails here naming the two options roles/komga declares.
+    #
+    # WHAT REMAINS OPEN, said out loud rather than left to be discovered. A
+    # service whose role genuinely reads no vault variable can still be listed
+    # here, and that is not a hole but the declaration itself -- there is nothing
+    # left to distinguish it from Vaultwarden except intent. What cannot happen
+    # any more is listing a service that does read one, listing a name that is
+    # not a service, or listing one and leaving its keys in place.
+    if credential_free && role.is_a?(String) && !role.empty?
+      spec_path = File.join(root, "roles", role, "meta", "argument_specs.yml")
+      spec = begin
+        YAML.safe_load_file(spec_path)
+      rescue Errno::ENOENT, Psych::Exception
+        nil
+      end
+      options = spec.is_a?(Hash) ? spec.dig("argument_specs", "main", "options") : nil
+      declared = options.is_a?(Hash) ? options.keys.grep(/\Avault_/).sort : []
+      unless declared.empty?
+        problems << "#{service_name} is registered in CREDENTIAL_FREE_SERVICES but " \
+                    "roles/#{role}/meta/argument_specs.yml declares #{declared.join(', ')}: " \
+                    "a role that reads a vault credential is not credential-free, and the " \
+                    "registration would otherwise be a one-line route past the rule"
+      end
+    end
     if credential_free && vault_keys.is_a?(Array) && !vault_keys.empty?
       problems << "#{relative_path} is registered credential-free in " \
                   "CREDENTIAL_FREE_SERVICES but lists #{vault_keys.length} vault key(s): " \
