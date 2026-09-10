@@ -50,13 +50,46 @@
     success_msg: >-
       Vaultwarden publishes {{ vaultwarden_domain }}, a named https origin with
       no port.
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 - name: Render the Vaultwarden environment
   ansible.builtin.template:
     src: env.j2
     dest: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
     mode: "0600"
+
+# EVERY COMPOSE INVOCATION BELOW NEEDS THIS FILE, INCLUDING THE TEARDOWN, and
+# under --check the task above did not write it.
+#
+# services/vaultwarden/compose.yml references ${NAS_UID:?} and its siblings, and
+# the `:?` suffix makes Compose refuse rather than default -- which is the whole
+# point of that convention. So `state: absent` cannot parse the project either:
+# a tear-down still has to resolve the document to know what it is tearing down.
+# Measured, both directions: with the file absent, `state: absent` and
+# `state: present` alike fail `Return code 1 is non-zero`, and the daemon's own
+# line is `couldn't find env file: .../runtime/services/vaultwarden/.env`; with
+# it present, both succeed under --check.
+#
+# WHAT THAT BROKE IS THE ONE THING CLAUDE.md TELLS AN OPERATOR TO DO FIRST.
+# `--check --diff` against a host that has not yet converged this release died
+# at this role, on a stack that is gated off and deploys nothing. CI cannot see
+# it: tests/integration_controller.sh runs its --check --diff as phase 3, after
+# two live converges, so the file always exists by the time the review runs.
+#
+# A live run always has the file, because the template above just wrote it, so
+# this fact is transparent there. Absent, it means this platform has never
+# rendered a runtime environment for this service on this host -- so it never
+# deployed the project, and there is nothing to tear down. The one state that
+# reads wrong is a runtime directory deleted out from under running containers,
+# which the report below names rather than silently skipping.
+- name: Read whether a Vaultwarden runtime environment exists on this host
+  ansible.builtin.stat:
+    path: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
+  register: vaultwarden_runtime_env
+  changed_when: false
+  check_mode: false
 
 # NOTHING MAY OPEN THE ADMIN PANEL, AND THIS IS THE TASK THAT SAYS SO OUT LOUD.
 #
@@ -272,7 +305,27 @@
     state: absent
     remove_orphans: true
   register: vaultwarden_teardown
-  when: not vaultwarden_deployment_enabled | bool
+  when:
+    - not vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
+
+# Named rather than skipped in silence, because the two reasons to be here are
+# very different: an operator reviewing a host that has never run this release,
+# and a runtime directory that has gone missing under a stack that is still up.
+- name: Report the Vaultwarden Compose work a missing runtime environment defers
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_runtime_dir }}/services/vaultwarden/.env does not exist, so
+      every Compose invocation in this role is deferred: the deployed Compose
+      file interpolates ${NAS_UID:?} and its siblings, and Compose refuses the
+      project outright without them -- `state: absent` included, since a
+      tear-down still has to resolve the document. Under --check that is
+      expected and is the reason this task exists: the render above wrote
+      nothing, because check mode writes nothing. On a live run it means the
+      runtime directory has been removed; if containers of Compose project
+      {{ vaultwarden_compose_project_name }} are still running, converge again
+      so the environment is rendered and this role can act on them.
+  when: not vaultwarden_runtime_env.stat.exists
 
 - name: Report the disabled Vaultwarden deployment
   ansible.builtin.debug:
@@ -306,7 +359,9 @@
     image_downgrade_guard_compose_service: vaultwarden
     image_downgrade_guard_project_name: "{{ vaultwarden_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ vaultwarden_data_host_path }}"
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
@@ -316,7 +371,9 @@
 # the long form of this argument; #509 built the mechanism and #537 wired the
 # remaining single-`up` roles into it.
 - name: Deploy Vaultwarden, catching a container that runs but never serves
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
   block:
     - name: Deploy Vaultwarden
       community.docker.docker_compose_v2:
@@ -355,7 +412,9 @@
     container_health_deploy_failure_message: >-
       {{ vaultwarden_deploy_failure_message | default('') }}
     container_health_refuse: false
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 # EXACTLY ONE force-recreate, of only the services Docker says are stuck.
 # FORCED, because `up -d` against an unchanged specification keeps the same
@@ -367,7 +426,9 @@
 # looping for a reason a recreate cannot fix never goes green and never becomes
 # an invisible retry loop.
 - name: Recreate a Vaultwarden container that runs but never serves
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
   block:
     - name: Force-recreate the stuck Vaultwarden services
       community.docker.docker_compose_v2:
@@ -400,7 +461,9 @@
   ansible.builtin.set_fact:
     vaultwarden_recreate_spent: >-
       {{ container_health_stuck_services | default([]) | length > 0 }}
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 - name: Report the Vaultwarden wedged-container recovery check mode defers
   ansible.builtin.debug:
@@ -413,6 +476,7 @@
       health, so check mode cannot reach that path and recreates nothing.
   when:
     - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
     - ansible_check_mode
 
 # The verdict. Nothing stuck here means the recreate worked, or that there was
@@ -427,7 +491,9 @@
     container_health_deploy_failure_message: >-
       {{ vaultwarden_recreate_failure_message | default('') }}
     container_health_retried: "{{ vaultwarden_recreate_spent }}"
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 - name: Verify Vaultwarden effective container CPU policy
   ansible.builtin.include_role:
@@ -435,7 +501,9 @@
   vars:
     container_cpu_service_name: vaultwarden
     container_cpu_project_name: "{{ vaultwarden_compose_project_name }}"
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
 
 # /alive is unauthenticated and answers a JSON timestamp string, so readiness
 # can be polled without presenting anything. It is a readiness probe rather than
@@ -452,4 +520,6 @@
   delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
