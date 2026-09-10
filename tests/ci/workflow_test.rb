@@ -500,15 +500,24 @@ end
 # forces the explicit changes result term -- otherwise a failed classification
 # would reach the matrix as an empty selection instead of as a skip.
 toolchain_job = jobs.fetch("toolchain", {})
-check(failures, toolchain_job["needs"] == "changes",
-      "toolchain must depend only on changes")
+# It depends on nothing, and that is what the suites matrix buys from it. Every
+# lane's start is this job's finish, so a `needs` edge here is 2.6 minutes charged
+# to eighteen lanes to order a registry probe behind a classification it barely
+# read -- measured on run 34454075921, where `changes` finished at 4.8 minutes,
+# this job started at 7.4, and its publish step took 0 seconds. The `suites` term
+# went with the edge: without a dependency the classifier's outputs are not
+# addressable, and a run that dispatches no suite now probes the registry, which
+# is that same 0 seconds unless the pins changed -- and a pin change routes to the
+# suites anyway.
+check(failures, toolchain_job["needs"].nil?,
+      "toolchain must depend on nothing: the suites matrix waits for this job, so " \
+      "an edge here delays every lane by whatever this job waits for, " \
+      "found #{toolchain_job['needs'].inspect}")
 check(failures,
       expression(toolchain_job["if"]) ==
-        "${{ needs.changes.outputs.suites != '[]' && " \
-        "github.event.pull_request.head.repo.fork != true }}",
-      "toolchain must publish only for the runs that dispatch suites, and never " \
-      "from a fork whose GITHUB_TOKEN cannot write packages, found " \
-      "#{expression(toolchain_job['if']).inspect}")
+        "${{ github.event.pull_request.head.repo.fork != true }}",
+      "toolchain must publish for every run but a fork's, whose GITHUB_TOKEN " \
+      "cannot write packages, found #{expression(toolchain_job['if']).inspect}")
 check(failures,
       toolchain_job.fetch("permissions", {}) == { "contents" => "read", "packages" => "write" },
       "the toolchain job must hold exactly the scopes it publishes with")
@@ -558,9 +567,16 @@ check(failures, suites_job.dig("strategy", "matrix").to_h.keys == ["suite"],
 # while immich would be cancelled mid-converge, and nobody would learn that until
 # the next unrelated pull request. Raising it is always safe; lowering it needs a
 # measurement of the slowest leg, not a guess.
+#
+# The floor moved from 60 to 90 with the untagged-idempotence fix. Until then the
+# slowest leg was idempotence-check at an observed 19.4-20.7 minutes, and it was
+# that fast because its phases 2 and 3 were running 88 of 1495 tasks; a lane that
+# re-converges the whole play twice more projects to 35-45, and the pre-pull's
+# retry ladder can add five on a rate-limited image. The floor is the projection
+# plus that, not the observation.
 suites_budget = suites_job["timeout-minutes"]
-check(failures, suites_budget.is_a?(Integer) && suites_budget >= 60,
-      "suites must keep a timeout of at least 60 minutes, found #{suites_budget.inspect}: the " \
+check(failures, suites_budget.is_a?(Integer) && suites_budget >= 90,
+      "suites must keep a timeout of at least 90 minutes, found #{suites_budget.inspect}: the " \
       "narrowed workflow route runs the cheapest legs and cannot observe a budget the slowest " \
       "one needs")
 

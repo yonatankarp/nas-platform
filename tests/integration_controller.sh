@@ -559,8 +559,27 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
 
     fi
 
+    # Both expansions are quoted, and that is the whole of the fix here.
+    # Unquoted, `[ -n $INTEGRATION_TAGS ]` on an empty value is `[ -n ]` -- a
+    # one-argument test on the non-empty string `-n`, true either way (SC2070) --
+    # so the untagged lanes took the tagged branch and ran `--tags ""`, which
+    # selects only the `always` pre_tasks. Phases 2 and 3 of the nightly
+    # idempotence-check ran 88 of 1495 tasks and reported the harness's two other
+    # promises kept: measured on run 34454075921, `ok=1495` in phase 1 against
+    # `ok=88` in each of the two that are supposed to re-prove it. The same lane
+    # under narrow routing was correct (498/472/319), which is why nothing caught
+    # it -- the defect reaches only the untagged case, so the nightly sweep and
+    # every `--full` push to `main`.
+    #
+    # `perform_initial_converge` was accidentally right and is now redundant: its
+    # `[ -z $INTEGRATION_TAGS ]` was true on an empty value for exactly the same
+    # reason, which happened to route it to the untagged `run_play` below. It is
+    # kept rather than collapsed into its caller because it is the seam the
+    # execution test plants 'initial converge dropped' into, and because
+    # tests/policy_integration_test.rb reads that bare `run_play` line -- indented
+    # as it is -- to locate the first converge.
     run_selected_play() {
-      if [ -n $INTEGRATION_TAGS ]; then
+      if [ -n "$INTEGRATION_TAGS" ]; then
         run_play --tags "$INTEGRATION_TAGS" "$@"
       elif [ $# -eq 0 ]; then
         run_play
@@ -570,7 +589,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     }
 
     perform_initial_converge() {
-      if [ -z $INTEGRATION_TAGS ] && [ $# -eq 0 ]; then
+      if [ -z "$INTEGRATION_TAGS" ] && [ $# -eq 0 ]; then
     run_play
       else
         run_selected_play $@

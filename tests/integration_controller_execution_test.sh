@@ -31,15 +31,16 @@
 # so a plant that quietly substitutes nothing fails instead of reporting a pass
 # that proves nothing.
 #
-# ONE KNOWN BUG IS PINNED AS IT IS, NOT AS IT SHOULD BE.
-# `run_selected_play` reads `[ -n $INTEGRATION_TAGS ]`, unquoted: `[ -n ]` is a
-# one-argument test on the non-empty string `-n`, so it is true on an empty
-# value (SC2070). Extracting the controller from its `sh -c` argument is what
-# made that visible, and the gate excludes SC2068/SC2070/SC2086 while it stands.
-# The empty-tags lane below therefore asserts what the program does today -- a
-# `--tags` with an empty value in phases 2 and 3, and no `--tags` at all in
-# phase 1, whose `[ -z $INTEGRATION_TAGS ]` is accidentally right -- and says so.
-# Asserting the sane behaviour instead would fail on a correct program.
+# THE BUG THIS FILE ONCE PINNED IS FIXED, AND THE PIN IS NOW THE PROOF.
+# `run_selected_play` used to read `[ -n $INTEGRATION_TAGS ]`, unquoted: `[ -n ]`
+# is a one-argument test on the non-empty string `-n`, so it was true on an empty
+# value (SC2070). Extracting the controller from its `sh -c` argument is what made
+# that visible; this file pinned the resulting behaviour rather than the correct
+# one, and said it was waiting for the fix. The fix has landed, so `case_empty_tags`
+# below now asserts the sane behaviour -- no `--tags` reaches ansible-playbook in
+# any of the three phases -- and a plant reverts the quoting and requires the case
+# to fail. SC2070 is gone from the controller's shellcheck exclusion with it;
+# SC2068 and SC2086 are still pre-existing and still excluded.
 set -eu
 
 repo_dir=$(CDPATH= cd -P "$(dirname "$0")/.." && pwd -P)
@@ -535,20 +536,32 @@ case_extra_arguments() {
   expect_log '[site.yml][--tags][host_prep,deployment_bundle,ntfy][--limit][nas][--check][--diff]'
 }
 
-# The empty-tags shape, pinned as the program behaves rather than as it should.
-# `perform_initial_converge` reads `[ -z $INTEGRATION_TAGS ]` and takes the
-# untagged branch, while `run_selected_play` reads `[ -n $INTEGRATION_TAGS ]`
-# -- `[ -n ]`, a one-argument test on a non-empty string, so true either way --
-# and passes an empty --tags in phases 2 and 3. Both spellings are unquoted
-# expansions the extraction exposed (SC2070) and the pinned shellcheck exclusion
-# tolerates; fixing them is a change of its own, and this case is what would
-# have to be updated when it lands.
+# The untagged shape: the nightly sweep and every `--full` push to `main`. All
+# three phases must run the whole play, so no `--tags` word may reach
+# ansible-playbook at any of them. Until the quoting fix this case pinned the
+# defect instead -- `[--tags][]` twice, which is `--tags ""` and selects only the
+# `always` pre_tasks. On nightly run 34454075921 that was `ok=88` in each of
+# phases 2 and 3 against `ok=1495` in phase 1, under a phase 2 that went on to
+# print "IDEMPOTENT: second run changed nothing".
+#
+# This one case reaches all three branches of `run_selected_play`, which is why
+# no other is needed: phase 1 through `perform_initial_converge`, phase 2 with no
+# arguments at all, and phase 3 with `--check --diff` and no tags, which is the
+# `else` branch that tests/integration_suite_test.sh used to have to assert by
+# reading the source text because nothing could execute it.
+#
+# `perform_initial_converge`'s own `[ -z $INTEGRATION_TAGS ]` is quoted too, but
+# no plant can prove it: unquoted it degenerates to `[ -z ]` on the same empty
+# value, which is also true, and true is the branch that was already correct.
 case_empty_tags() {
   run_controller idempotence-check '' true true site.yml
   expect_status 0
   expect_log_count 'ansible-playbook argv=' 3
-  expect_log_count '[site.yml][--tags][]' 2
+  expect_log_count '[--tags]' 0
   expect_log_count '[--check][--diff]' 1
+  expect_log '[site.yml][--check][--diff]'
+  expect_output 'IDEMPOTENT: second run changed nothing'
+  expect_output 'CHECK MODE OK: dry run completed'
 }
 
 # The acquisition lane's own five-step proof: the registry-free collision
@@ -813,6 +826,11 @@ plant 'launcher library not sourced' idempotence_check program \
   '. /repo/tests/integration_controller_lib.sh' ':' 1
 plant 'suite tags dropped from the selected play' idempotence_check program \
   'run_play --tags "$INTEGRATION_TAGS" "$@"' 'run_play "$@"' 1
+# The whole of the empty-tags fix, reverted. Unquoted, the condition is true on
+# an empty value, so phases 2 and 3 are handed `--tags ""` and prove the harness's
+# two other promises over the `always` pre_tasks alone.
+plant 'empty tags select only the always tasks' empty_tags program \
+  'if [ -n "$INTEGRATION_TAGS" ]; then' 'if [ -n $INTEGRATION_TAGS ]; then' 1
 plant 'check mode dropped from phase 3' idempotence_check program \
   'if run_selected_play $@ --check --diff; then' \
   'if run_selected_play $@; then' 1

@@ -40,6 +40,8 @@ pull_log=$prepull_bin/pull.log
 sleep_log=$prepull_bin/sleep.log
 prepull_output=$prepull_bin/prepull.output
 interrupt_tmp=$prepull_bin/interrupt-tmp
+concurrency_dir=$prepull_bin/concurrency
+concurrency_log=$prepull_bin/concurrency.log
 truncated_repo=$prepull_bin/truncated-repo
 truncated_tmp=$prepull_bin/truncated-tmp
 immich_order_mutant=$fake_bin/immich-order-mutant.sh
@@ -65,7 +67,11 @@ cleanup() {
   rm -f "$fake_bin/hostile-validator-ran"
   rmdir "$fake_bin"
   rm -f "$prepull_bin/docker" "$prepull_bin/sleep" "$prepull_bin/od" \
-    "$pull_log" "$sleep_log" "$prepull_output"
+    "$pull_log" "$sleep_log" "$prepull_output" "$concurrency_log"
+  if [ -d "$concurrency_dir" ] && [ ! -L "$concurrency_dir" ]; then
+    find "$concurrency_dir" -depth -mindepth 1 -delete 2>/dev/null || true
+    rmdir "$concurrency_dir" 2>/dev/null || true
+  fi
   for prepull_root in "$interrupt_tmp" "$truncated_repo" "$truncated_tmp"; do
     if [ -d "$prepull_root" ] && [ ! -L "$prepull_root" ]; then
       find "$prepull_root" -depth -mindepth 1 -delete 2>/dev/null || true
@@ -461,15 +467,15 @@ grep -qF 'chmod 0700 "$sandbox"' "$integration" || {
 grep -qF -- 'sh /repo/tests/integration_controller.sh "$playbook" "$@"' \
   "$integration"
 grep -qF -- '"$playbook" "$@"' "$controller_library"
-# The tagged branch of run_selected_play is asserted by running it: the
-# execution test observes `--tags` arriving as one argv word in all three
-# phases. Its other two branches are unreachable as the program is spelled --
-# `[ -n $INTEGRATION_TAGS ]` is `[ -n ]` on an empty value, a one-argument test
-# on a non-empty string, so the condition is true either way (SC2070, one of the
-# three codes the controller's shellcheck line excludes). Nothing can execute a
-# branch no input reaches, so the fallback stays a text assertion until the
-# quoting fix lands and makes it reachable.
-grep -qF -- 'run_play "$@"' "$controller_program"
+# Every branch of run_selected_play is asserted by running it, so none of them is
+# read out of the source text here any more. The tagged branch is case_idempotence_check
+# in tests/integration_controller_execution_test.sh; the other two were unreachable
+# while `[ -n $INTEGRATION_TAGS ]` went unquoted -- `[ -n ]` on an empty value is a
+# one-argument test on a non-empty string, true either way (SC2070) -- and the
+# quoting fix made both of them reachable from case_empty_tags, whose phase 2 takes
+# the no-argument branch and whose phase 3 takes the `run_play "$@"` fallback. A
+# grep that matched and a branch nothing executed both passed on a healthy tree,
+# which is the whole reason that file exists.
 
 # The controller and every acquisition resource share one strict namespace
 # derived from the disposable directory. Exercise the production derivation so
@@ -785,6 +791,23 @@ if [ "${1:-}" = version ]; then
 fi
 if [ "${1:-}" = pull ]; then
   printf '%s\n' "$2" >> "${STUB_PULL_LOG:?}"
+  # A rendezvous rather than a clock: each pull announces itself, waits for the
+  # width the case expects to be in flight beside it, and records how many
+  # actually were. A serial pre-pull waits alone, spins its bound out and records
+  # 1, so the two width cases below separate concurrency from timing rather than
+  # from how fast the machine happens to be.
+  if [ -n "${STUB_CONCURRENCY_DIR:-}" ]; then
+    : > "$STUB_CONCURRENCY_DIR/$$"
+    concurrency_spin=0
+    while [ "$(find "$STUB_CONCURRENCY_DIR" -type f | wc -l)" \
+            -lt "${STUB_CONCURRENCY_EXPECT:-1}" ]; do
+      concurrency_spin=$((concurrency_spin + 1))
+      [ "$concurrency_spin" -lt 400 ] || break
+    done
+    printf '%s\n' "$(find "$STUB_CONCURRENCY_DIR" -type f | wc -l | tr -d ' ')" \
+      >> "${STUB_CONCURRENCY_LOG:?}"
+    rm -f "$STUB_CONCURRENCY_DIR/$$"
+  fi
   # A registry that answers "denied" rather than "toomanyrequests" is the
   # ordinary missing-package case, not pressure, and must not be retried.
   if [ -n "${STUB_DENY_PREFIX:-}" ]; then
@@ -796,7 +819,17 @@ if [ "${1:-}" = pull ]; then
     esac
   fi
   attempt=$(grep -Fxc -- "$2" "$STUB_PULL_LOG" || true)
-  if [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
+  # A refusal can be aimed at a prefix rather than at every image. The controller
+  # image is resolved serially before the loop, so a case that refuses everything
+  # never reaches the concurrent path at all; aiming lets one refuse inside it.
+  refuse_this=true
+  if [ -n "${STUB_REFUSE_PREFIX:-}" ]; then
+    case $2 in
+      "$STUB_REFUSE_PREFIX"*) ;;
+      *) refuse_this=false ;;
+    esac
+  fi
+  if [ "$refuse_this" = true ] && [ "$attempt" -le "${STUB_PULL_REFUSALS:-0}" ]; then
     if [ -n "${STUB_RETRY_AFTER_LINE:-}" ]; then
       printf 'toomanyrequests: %s, allowed: 44000/minute\n' \
         "$STUB_RETRY_AFTER_LINE" >&2
@@ -917,6 +950,11 @@ run_prepull() {
     INTEGRATION_PREPULL_ONLY=1 \
     INTEGRATION_TOOLCHAIN=${PREPULL_TOOLCHAIN:-auto} \
     STUB_DENY_PREFIX=${PREPULL_DENY_PREFIX:-} \
+    STUB_REFUSE_PREFIX=${PREPULL_REFUSE_PREFIX:-} \
+    STUB_CONCURRENCY_DIR=${PREPULL_CONCURRENCY_DIR:-} \
+    STUB_CONCURRENCY_EXPECT=${PREPULL_CONCURRENCY_EXPECT:-1} \
+    STUB_CONCURRENCY_LOG=${PREPULL_CONCURRENCY_LOG:-} \
+    INTEGRATION_IMAGE_PULL_WIDTH=${PREPULL_WIDTH:-4} \
     STUB_NO_REPO_DIGEST=${PREPULL_NO_REPO_DIGEST:-false} \
     INTEGRATION_IMAGE_PULL_ATTEMPTS=$prepull_attempts \
     INTEGRATION_IMAGE_PULL_DELAY=${PREPULL_DELAY:-1} \
@@ -972,6 +1010,117 @@ fi
 if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
 fi
+
+# The pre-pull fetches image_pull_width images at once, and the input is what
+# says how many. Serial it was 272 seconds of the smoke lane's 1151 -- 33 images,
+# one at a time -- so the property is worth an assertion of its own rather than a
+# comment claiming it. Both directions, because a peak of four proves nothing
+# unless a width of one can still be observed as one: a rendezvous that never
+# blocked would report the number in flight as one whatever the harness did.
+#
+# The beszel suite is five service images, so a width of four is one full batch
+# and one straggler, and the straggler is what makes the peak the batch rather
+# than the whole enumeration.
+run_prepull_concurrency() {
+  rm -rf "$concurrency_dir"
+  mkdir -p "$concurrency_dir"
+  : > "$concurrency_log"
+  PREPULL_WIDTH=$1 \
+    PREPULL_CONCURRENCY_DIR=$concurrency_dir \
+    PREPULL_CONCURRENCY_EXPECT=$2 \
+    PREPULL_CONCURRENCY_LOG=$concurrency_log \
+    run_prepull 0 4 --suite beszel
+  [ "$prepull_status" -eq 0 ] ||
+    prepull_fail "the width $1 pre-pull failed ($prepull_status)"
+  concurrency_peak=$(sort -rn "$concurrency_log" | head -1)
+  unset PREPULL_WIDTH PREPULL_CONCURRENCY_DIR PREPULL_CONCURRENCY_EXPECT \
+    PREPULL_CONCURRENCY_LOG
+}
+
+run_prepull_concurrency 4 4
+[ "$concurrency_peak" -eq 4 ] ||
+  prepull_fail "the pre-pull held $concurrency_peak image(s) in flight at width 4"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+
+run_prepull_concurrency 1 2
+[ "$concurrency_peak" -eq 1 ] ||
+  prepull_fail "a width of 1 still held $concurrency_peak image(s) in flight"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+
+# A malformed or oversized width is floored and capped like every other budget
+# here, rather than becoming an unbounded fan-out at a registry.
+PREPULL_WIDTH=999999999999999999999999999999999999 \
+  PREPULL_CONCURRENCY_DIR=$concurrency_dir \
+  PREPULL_CONCURRENCY_EXPECT=8 \
+  PREPULL_CONCURRENCY_LOG=$concurrency_log \
+  run_prepull 0 4 --suite smoke
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "an oversized width failed the pre-pull ($prepull_status)"
+[ "$(sort -rn "$concurrency_log" | head -1)" -eq 8 ] ||
+  prepull_fail "an oversized width escaped its ceiling: $(sort -rn "$concurrency_log" | head -1)"
+unset PREPULL_WIDTH PREPULL_CONCURRENCY_DIR PREPULL_CONCURRENCY_EXPECT \
+  PREPULL_CONCURRENCY_LOG
+
+# Everything the concurrent loop does when a pull refuses, proved inside the loop
+# rather than in the serial controller resolution above it -- which is where every
+# other refusal case here fails, and therefore where none of this had ever run.
+# The refusal is aimed at a prefix so the controller image still resolves and the
+# enumeration is actually reached.
+beszel_refuse_prefix=ghcr.io/henrygd/beszel/
+compose_images beszel | grep -q "^$beszel_refuse_prefix" ||
+  prepull_fail "no beszel image starts with $beszel_refuse_prefix any more"
+
+# A service image the registry refuses past its budget fails the suite, and the
+# diagnostic reaches the log through the per-image capture rather than being
+# swallowed with the child that produced it.
+PREPULL_REFUSE_PREFIX=$beszel_refuse_prefix run_prepull 9 2 --suite beszel
+[ "$prepull_status" -ne 0 ] ||
+  prepull_fail 'a refused service image produced a successful pre-pull'
+grep -qF 'toomanyrequests: retry-after:' "$prepull_output" ||
+  prepull_fail "the concurrent pre-pull swallowed its child's diagnostic"
+grep -qF 'could not pull ghcr.io/henrygd/beszel/' "$prepull_output" ||
+  prepull_fail "the concurrent pre-pull did not name the image it gave up on"
+# Bounded overshoot, not none: the batch carrying the refusal finishes, and no
+# later batch is launched. Five service images at a width of four is one full
+# batch and one straggler, so the straggler must never be pulled.
+if grep -q 'socket-proxy' "$pull_log"; then
+  prepull_fail 'the pre-pull launched a batch after one carrying a refusal'
+fi
+unset PREPULL_REFUSE_PREFIX
+
+# A child killed mid-backoff records no status, and no status is a refusal rather
+# than a silence. It is also the only thing that runs the subshell's own traps:
+# the pull diagnostic belongs to the child, so the parent's trap has nothing of
+# the child's to find and the file survives unless the child removes it itself.
+mkdir -p "$interrupt_tmp"
+: > "$pull_log"
+: > "$sleep_log"
+: > "$prepull_output"
+prepull_status=0
+TMPDIR=$interrupt_tmp \
+  PATH="$prepull_bin:$PATH" \
+  STUB_PULL_LOG=$pull_log \
+  STUB_SLEEP_LOG=$sleep_log \
+  STUB_PULL_REFUSALS=1 \
+  STUB_REFUSE_PREFIX=$beszel_refuse_prefix \
+  STUB_RETRY_AFTER=1s \
+  STUB_RANDOM_VALUE=0 \
+  STUB_SLEEP_INTERRUPT=1 \
+  INTEGRATION_PREPULL_ONLY=1 \
+  INTEGRATION_IMAGE_PULL_ATTEMPTS=2 \
+  INTEGRATION_IMAGE_PULL_DELAY=1 \
+  INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
+  "$integration" --suite beszel >"$prepull_output" 2>&1 || prepull_status=$?
+[ "$prepull_status" -ne 0 ] ||
+  prepull_fail 'an interrupted pre-pull child produced a successful pre-pull'
+if find "$interrupt_tmp" -name 'nas-platform-pull-error.*' -print | grep -q .; then
+  prepull_fail 'an interrupted pre-pull child leaked its pull diagnostic file'
+fi
+if find "$interrupt_tmp" -name 'nas-platform-prepull-results.*' -print | grep -q .; then
+  prepull_fail 'the interrupted pre-pull leaked its result directory'
+fi
+find "$interrupt_tmp" -depth -mindepth 1 -delete 2>/dev/null || true
+rmdir "$interrupt_tmp"
 
 # An enumeration that dies partway must fail the pre-pull rather than pre-pull a
 # truncated list. `for candidate in $(suite_pull_images | sort -u)` took its

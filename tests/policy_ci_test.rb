@@ -216,7 +216,7 @@ check(failures, integration_body.include?("toolchain_dockerfile=tests/integratio
 check(failures, ClassifyChanges::INTEGRATION_HARNESS_PATHS.include?("tests/integration.Dockerfile"),
       "the controller Dockerfile must route as a harness input, not as a policy-gate test")
 resolve_index = integration_body.index("resolve_controller_image || return 1")
-service_skip_index = integration_body.index('[ "$pull_candidate" != "$controller_image" ]')
+service_skip_index = integration_body.index('[ "$pull_candidate" = "$controller_image" ]')
 check(failures, !resolve_index.nil? && !service_skip_index.nil? && resolve_index < service_skip_index,
       "the pre-pull must resolve the controller image before it enumerates services, " \
       "and must skip whatever the controller actually runs from")

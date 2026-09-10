@@ -321,6 +321,14 @@ seerr seerr
 image_pull_attempt_limit=10
 image_pull_delay_limit=300
 image_pull_wait_limit=375
+# How many images the pre-pull fetches at once. Serial, it was 272 seconds of the
+# smoke lane's 1151 and 270 of idempotence-check's 1222 -- 33 images each, about
+# 22% of the two longest lanes -- and 18.5 runner-minutes across a full CI run,
+# measured on run 34454075921. Four rather than unbounded: the daemon already
+# fetches three layers of one image concurrently, so this is a dozen connections
+# and not a stampede against registries that answer "toomanyrequests" under far
+# less. An environment input for the same reason every other budget here is one.
+image_pull_width_limit=8
 
 bounded_integer() {
   LC_ALL=C awk -v value="$1" -v fallback="$2" -v minimum="$3" \
@@ -366,11 +374,14 @@ image_pull_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_DELAY:-5}" \
   5 1 "$image_pull_delay_limit")
 image_pull_max_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_MAX_DELAY:-60}" \
   60 1 "$image_pull_delay_limit")
+image_pull_width=$(bounded_integer "${INTEGRATION_IMAGE_PULL_WIDTH:-4}" \
+  4 1 "$image_pull_width_limit")
 [ "$image_pull_max_delay" -ge "$image_pull_delay" ] ||
   image_pull_max_delay=$image_pull_delay
 
 pull_error=
 prepull_list=
+prepull_results=
 
 cleanup_pull_error() {
   if [ -n "$pull_error" ]; then
@@ -383,6 +394,16 @@ cleanup_prepull_list() {
   if [ -n "$prepull_list" ]; then
     rm -f "$prepull_list" || true
     prepull_list=
+  fi
+}
+
+# The per-image output and status files the concurrent pre-pull writes. Removed
+# through the same EXIT trap as the two above, and for the same reason: a run
+# interrupted mid-pull must leave nothing behind under TMPDIR.
+cleanup_prepull_results() {
+  if [ -n "$prepull_results" ]; then
+    rm -rf "$prepull_results" || true
+    prepull_results=
   fi
 }
 
@@ -627,16 +648,89 @@ prepull_images() {
   prepull_targets=$(sort -u "$prepull_list")
   cleanup_prepull_list
   resolve_collision_image || return 1
+  prepull_results=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-prepull-results.XXXXXX") ||
+    prepull_results=
+  if [ -z "$prepull_results" ]; then
+    printf 'could not create a pre-pull result directory under %s\n' \
+      "${TMPDIR:-/tmp}" >&2
+    return 1
+  fi
+  prepull_launched=0
+  prepull_batch=0
+  prepull_drained=0
+  prepull_failed=0
   for pull_candidate in $prepull_targets; do
     # Whatever the controller runs from is already local, so skipping it here
     # saves a second registry round trip. On the toolchain path that is a ghcr.io
     # image no service uses, and the base python image stops being pulled at all
     # -- except by the three lanes that converge Dozzle, whose alert relay runs
     # on it as a service in its own right.
-    if [ "$pull_candidate" != "$controller_image" ]; then
-      pull_image "$pull_candidate" || return 1
+    if [ "$pull_candidate" = "$controller_image" ]; then
+      continue
+    fi
+    prepull_launched=$((prepull_launched + 1))
+    # Each image is pulled in its own subshell so pull_image's whole retry ladder
+    # -- its attempt counter, its backoff and its own diagnostic file -- is a
+    # private copy rather than four writers of one set of globals. The trap is the
+    # reason it can be: cleanup_pull_error is the parent's function, but the
+    # variable it reads is the child's, so an interrupted child removes the file it
+    # created and the parent's own trap has nothing of the child's to find.
+    #
+    # One trap, not a signal trap and an EXIT trap. A child killed during a backoff
+    # is the only way this is reached -- pull_image removes its own file on every
+    # return path it has -- and the two are redundant there under a /bin/sh that
+    # runs EXIT handlers for a signal it has no trap for. Redundant means neither
+    # is provable alone: with both in place, planting the removal of either left
+    # tests/integration_suite_test.sh green, and only removing both leaked. Under
+    # dash, which is what /bin/sh is on the runners, an untrapped SIGTERM does not
+    # run the EXIT handler at all, so this is the one that was doing the work.
+    #
+    # Output is captured per image and replayed in enumeration order below.
+    # Interleaving four `docker pull` progress streams would make the one thing
+    # this ladder exists to report -- which image the registry refused, and with
+    # what -- unreadable in a CI log.
+    (
+      trap 'cleanup_pull_error; exit 130' HUP INT TERM
+      prepull_child_status=0
+      pull_image "$pull_candidate" || prepull_child_status=$?
+      printf '%s\n' "$prepull_child_status" \
+        > "$prepull_results/status.$prepull_launched"
+    ) > "$prepull_results/out.$prepull_launched" \
+      2> "$prepull_results/err.$prepull_launched" &
+    prepull_batch=$((prepull_batch + 1))
+    [ "$prepull_batch" -ge "$image_pull_width" ] || continue
+    wait
+    prepull_batch=0
+    drain_prepull_batch || prepull_failed=1
+    # Under a rate limit the pulls still queued would only extend the outage, so
+    # a batch carrying a refusal is the last one launched. Concurrency is what
+    # costs the rest of that batch: serially this stopped at the refusing image
+    # itself, and the widest it can now overshoot is image_pull_width - 1 pulls.
+    [ "$prepull_failed" -eq 0 ] || break
+  done
+  wait
+  drain_prepull_batch || prepull_failed=1
+  cleanup_prepull_results
+  [ "$prepull_failed" -eq 0 ] || return 1
+}
+
+# Replays everything the finished children wrote, in the order the enumeration
+# launched them, and reports whether any of them refused. A child killed before
+# it could record a status wrote none, and that counts as a refusal rather than
+# as a silence.
+drain_prepull_batch() {
+  prepull_drain_status=0
+  while [ "$prepull_drained" -lt "$prepull_launched" ]; do
+    prepull_drained=$((prepull_drained + 1))
+    [ ! -f "$prepull_results/out.$prepull_drained" ] ||
+      cat "$prepull_results/out.$prepull_drained"
+    [ ! -f "$prepull_results/err.$prepull_drained" ] ||
+      cat "$prepull_results/err.$prepull_drained" >&2
+    if [ "$(cat "$prepull_results/status.$prepull_drained" 2>/dev/null)" != 0 ]; then
+      prepull_drain_status=1
     fi
   done
+  return "$prepull_drain_status"
 }
 
 # Everything the controller image is built from, as one byte stream. The tag is
@@ -819,7 +913,7 @@ publish_toolchain_image() {
 # Pull-only mode exists so tests/integration_suite_test.sh can drive the retry
 # against a stub docker without building a sandbox. It shares the code path the
 # real run uses rather than re-implementing it.
-trap 'cleanup_pull_error; cleanup_prepull_list; cleanup_toolchain_context' EXIT
+trap 'cleanup_pull_error; cleanup_prepull_list; cleanup_prepull_results; cleanup_toolchain_context' EXIT
 trap 'exit 130' HUP INT TERM
 
 # Reports the image the suites on this daemon would run from, so the workflow
@@ -880,6 +974,7 @@ cleanup_integration_on_exit() {
   trap - EXIT HUP INT TERM
   cleanup_pull_error
   cleanup_prepull_list
+  cleanup_prepull_results
   cleanup_toolchain_context
   if [ -n "$sandbox" ] && ! cleanup_sandbox "$sandbox"; then
     [ "$integration_exit_status" -ne 0 ] || integration_exit_status=1
