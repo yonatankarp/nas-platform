@@ -105,7 +105,9 @@
         | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length
         == adguard_filters | length
       - adguard_verify_blocked.json.reason | default('') == 'FilteredBlackList'
-      - adguard_verify_blocked.json.filter_id | default(0) | int in adguard_filters | map(attribute='id') | list
+      - >-
+        (adguard_verify_blocked.json.filter_id | default(0) | int)
+        in (adguard_filters | map(attribute='id') | list)
       - adguard_verify_allowed.json.reason | default('') is match('^NotFiltered')
     fail_msg: >-
       AdGuard Home did not report a running, protecting resolver whose declared

@@ -858,6 +858,10 @@ pre-upgrade backup is a copy of that database beside it), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
-user's own documents), and application
+user's own documents), AdGuard Home's `work/data/sessions.db` (bearer tokens
+for the web interface, so a copy of it is a login; its `AdGuardHome.yaml`
+beside it holds the administrator's bcrypt hash rather than a clear password,
+which is a hash and not a secret but is still what an offline guess would be
+made against), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
