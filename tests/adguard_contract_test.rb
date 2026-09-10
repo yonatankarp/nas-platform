@@ -1288,7 +1288,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the expanded-document floor",
     program: :static,
-    from: "template.lines.length > 150",
+    from: "document_lines.length > 150",
     to: "true",
     rows: ["a configuration template trimmed towards the minimal document"]
   },

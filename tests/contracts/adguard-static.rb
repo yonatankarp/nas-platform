@@ -208,10 +208,21 @@ if failures.empty?
   # back towards the minimal form is rewritten on first start and then reports a
   # change on every converge afterwards. The floor is well below the real size
   # rather than at it, because a schema migration may legitimately move it.
+  #
+  # THE COMMENTS ARE NOT PART OF THE DOCUMENT, and counting them made this a
+  # proxy for how much prose the file carries. It was `template.lines.length`,
+  # and a Jinja comment explaining one of the values -- the rate limit, #548's
+  # flip -- added enough lines to hold the count above the floor while the
+  # document underneath it was trimmed to nothing. The planted regression in
+  # tests/adguard_contract_test.rb caught it, which is the only reason it is not
+  # still true. So the count is over the rendered body: Jinja comments removed,
+  # and blank lines with them, because a document padded with either is exactly
+  # the state this floor exists to refuse.
+  document_lines = template.gsub(/\{#.*?#\}/m, "").lines.reject { |line| line.strip.empty? }
   failures << "AdGuardHome.yaml.j2 has been trimmed towards a minimal document. AdGuard expands " \
               "every default it was not given and writes the result back, so a short template " \
               "breaks idempotence on the first converge after deployment" unless
-    template.lines.length > 150
+    document_lines.length > 150
 
   # ---------------------------------------------------------------------------
   # The role.
