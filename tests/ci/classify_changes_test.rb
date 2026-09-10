@@ -16,7 +16,7 @@ LANES = %w[
   static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard
   idempotence_check
-  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5
+  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
 # "Every lane" is two lists rather than one, and which one applies is the whole
 # difference between falling open and `--full`. The five shards decompose the
@@ -29,7 +29,7 @@ LANES = %w[
 # test agree with the classifier by construction.
 IDEMPOTENCE_LANE = "idempotence_check"
 IDEMPOTENCE_SHARD_LANES = %w[
-  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5
+  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
 FULL_LANES = (LANES - IDEMPOTENCE_SHARD_LANES).freeze
 FALL_OPEN_LANES = (LANES - [IDEMPOTENCE_LANE]).freeze
@@ -446,6 +446,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["smoke","beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
@@ -482,6 +483,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","adguard","idempotence-check"]
     selected_tags=
   OUTPUT
@@ -519,7 +521,8 @@ if defined?(ClassifyChanges)
     idempotence_3=true
     idempotence_4=true
     idempotence_5=true
-    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","adguard","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5"]
+    idempotence_6=true
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","adguard","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5","idempotence-6"]
     selected_tags=
   OUTPUT
 
@@ -569,6 +572,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["smoke","paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
   OUTPUT
@@ -612,6 +616,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["bindery","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
   OUTPUT
@@ -649,6 +654,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["kapowarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
   OUTPUT
@@ -686,6 +692,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["pinchflat","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
   OUTPUT
@@ -727,6 +734,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["trailarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
   OUTPUT
@@ -768,6 +776,7 @@ if defined?(ClassifyChanges)
     idempotence_3=false
     idempotence_4=false
     idempotence_5=false
+    idempotence_6=false
     suites=["seerr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr
   OUTPUT
