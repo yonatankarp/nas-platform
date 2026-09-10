@@ -76,7 +76,7 @@ RECONCILIATION_EXTRA_INPUTS = %w[
 # The suites the matrix dispatches, in the order a full run enumerates them.
 INTEGRATION_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
-  dozzle audiobookshelf komga jellyfin immich paperless nextcloud idempotence-check
+  dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check
 ].freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
 CLASSIFIER_OUTPUTS = %w[static docs reconciliation suites selected_tags].freeze

@@ -563,6 +563,16 @@ end
 # promotion that forgets the review is a red check rather than a gap discovered
 # later.
 MAC_REVIEW_EXEMPTIONS = {
+  # #548 landed AdGuard Home dark: adguard_deployment_enabled is false in
+  # inventory and tests/mac/lib.sh does not ask the Mac lane to turn it on, so
+  # the lane converges the project to `state: absent` and there is nothing on
+  # the laptop to sign in to. A review entry here would tell an operator to
+  # exercise a service the lane deliberately did not deploy. When the gate is
+  # flipped this exemption comes out and the entry goes in --
+  # tests/deployment_gate_coverage_test.rb is what makes that mandatory rather
+  # than remembered.
+  "adguard" => "its stack is gated off in the Mac lane and proved by its " \
+               "Docker integration suite",
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \

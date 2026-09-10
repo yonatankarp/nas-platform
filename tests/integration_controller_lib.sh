@@ -26,6 +26,7 @@ integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
 integration_nextcloud_deployment_enabled=${integration_nextcloud_deployment_enabled?}
+integration_adguard_deployment_enabled=${integration_adguard_deployment_enabled?}
 
 # nas_compose_minimum is the one -e below that is not about this sandbox's
 # identity, and it is here for the same reason the rest are: the value inventory
@@ -62,6 +63,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
+    -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
@@ -257,6 +259,16 @@ run_contract() {
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
         "$@"
       ;;
+    adguard)
+      # Both ports, because services/adguard/compose.integration.yml moves
+      # them: production publishes the privileged 53, and a CI runner already
+      # resolves through systemd-resolved's stub listener on 127.0.0.53:53.
+      # These two numbers are the literals in that override.
+      set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        PLATFORM_ADGUARD_PORT=18083 \
+        PLATFORM_ADGUARD_DNS_PORT=15353 \
+        "$@"
+      ;;
     *)
       printf 'unknown integration contract: %s\n' "$contract_service" >&2
       exit 1
@@ -329,6 +341,10 @@ run_immich_contract() {
 
 run_nextcloud_contract() {
   run_contract nextcloud "$@"
+}
+
+run_adguard_contract() {
+  run_contract adguard "$@"
 }
 
 run_immich_clean_restore() {
@@ -555,6 +571,7 @@ run_verification() {
     -e platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
     -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
+    -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"
@@ -602,6 +619,10 @@ run_seerr_verify_only() {
 
 run_nextcloud_verify_only() {
   run_verification nextcloud
+}
+
+run_adguard_verify_only() {
+  run_verification adguard
 }
 
 # Audiobookshelf is the one reader the seerr lane's own suite tags leave

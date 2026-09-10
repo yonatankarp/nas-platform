@@ -268,6 +268,17 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
     esac
 
+    # The same arrangement for AdGuard Home, gated off by #548 exactly as
+    # Nextcloud was by #500, and every word of the paragraph above carries
+    # over -- including the last one: the day
+    # inventory/group_vars/all/main.yml turns this switch on for real, this
+    # line silently keeps AdGuard out of smoke, idempotence-check and every
+    # other lane, so it has to be flipped or deleted in the same change.
+    integration_adguard_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      adguard|full) integration_adguard_deployment_enabled=true ;;
+    esac
+
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
     # It is passed explicitly rather than left to inventory, for the same reason
@@ -1250,6 +1261,23 @@ EOF
         run_play --tags nextcloud --check --diff
         run_nextcloud_verify_only
         printf 'NEXTCLOUD_RUNTIME_VERIFIED\n'
+      fi
+    fi
+
+    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is adguard; then
+      run_adguard_contract run
+      if [ $INTEGRATION_SUITE = adguard ]; then
+        # The second converge is what refutes an AdGuard that rewrites its own
+        # configuration file at start. It does exactly that on a document it was
+        # not given whole, which is why the template is the daemon's own expanded
+        # form; if that ever stops matching -- a release that migrates
+        # schema_version is how -- the template task reports changed here and the
+        # recap check below fails, rather than the drift being discovered on the
+        # NAS five minutes after a merge.
+        run_enabled_idempotence adguard
+        run_play --tags adguard --check --diff
+        run_adguard_verify_only
+        printf 'ADGUARD_RUNTIME_VERIFIED\n'
       fi
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it

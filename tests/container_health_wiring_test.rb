@@ -68,10 +68,10 @@ include TestScaffold
 # alone cannot tell "Komga was removed" from "Komga stopped matching the
 # selector".
 EXPECTED_SUBJECTS = %w[
-  arr audiobookshelf bindery downloaders dozzle jellyfin
+  adguard arr audiobookshelf bindery downloaders dozzle jellyfin
   kapowarr komga ntfy pinchflat seerr trailarr
 ].freeze
-SUBJECT_FLOOR = 12 # the twelve single-`up` roles as of #537
+SUBJECT_FLOOR = 13 # the twelve single-`up` roles of #537, plus adguard (#548)
 
 # The roles that deploy Compose and are deliberately NOT subjects. Each answers
 # "which services may be force-recreated with --no-deps, and at which phase?"
