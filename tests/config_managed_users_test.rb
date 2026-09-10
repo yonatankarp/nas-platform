@@ -427,7 +427,14 @@ def task_playbook(tasks, variables)
 end
 
 def ntfy_main_order_valid?(tasks)
-  names = tasks.map { |task| task["name"] }
+  # Flattened, because #537 wrapped the deploy in a `block:` named "Deploy ntfy,
+  # catching a container that runs but never serves" -- so the task named
+  # exactly "Deploy ntfy" moved one level down and a top-level scan returned nil
+  # for it, failing this on a missing index rather than on a real ordering
+  # defect. flatten_tasks appends each task before descending, so the sequence
+  # is preserved and "preflight before provisioning before render and deploy"
+  # still means what it says.
+  names = PolicySupport.flatten_tasks(tasks).map { |task| task["name"] }
   preflight = names.index("Inspect existing ntfy declarative ownership and users")
   provision = names.index("Resolve declarative ntfy managed-user provisioning")
   render = names.index("Render the ntfy environment")

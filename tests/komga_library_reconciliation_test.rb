@@ -538,7 +538,15 @@ end
 failures = []
 self_test = ARGV.include?("--self-test")
 
-main_tasks = YAML.safe_load(ROLE_SOURCE, aliases: false)
+# Flattened, and the order is the property. #537 wrapped the deploy in a
+# `block:` named "Deploy Komga, catching a container that runs but never
+# serves", so the task literally named "Deploy Komga" moved one level down and
+# a top-level scan stopped finding it -- the gating assertion below then failed
+# on a nil index rather than on a real ordering defect. PolicySupport's
+# flatten_tasks appends each task before descending into its block/rescue/
+# always, so the sequence a reader sees is preserved and "deploy precedes
+# readiness precedes claim" still means what it says.
+main_tasks = PolicySupport.flatten_tasks(YAML.safe_load(ROLE_SOURCE, aliases: false))
 compose = YAML.safe_load_file(COMPOSE, aliases: true)
 argument_specs = YAML.safe_load_file(ARGUMENT_SPECS, aliases: false)
 validate_health_gating!(compose, main_tasks, DEFAULTS, argument_specs)
@@ -669,8 +677,14 @@ if self_test
     create_first == ROLE_SOURCE
   # A pure reordering: anything else and the failure below would be proving that
   # a malformed role fails, which it would do for any reason at all.
+  # Flattened on both sides, because main_tasks is: comparing a nested parse
+  # against a flattened one reports every block's children as missing and aborts
+  # on a fixture that is in fact a pure reordering. Flattening both also widens
+  # what this invariant covers -- a plant that moved a task INTO a block would
+  # now be caught, where a top-level-only comparison could not see it.
   abort "self-test planted a malformed task list" unless
-    YAML.safe_load(create_first, aliases: false).map { |task| task_name(task) }.sort ==
+    PolicySupport.flatten_tasks(YAML.safe_load(create_first, aliases: false))
+                 .map { |task| task_name(task) }.sort ==
       main_tasks.map { |task| task_name(task) }.sort
   abort "self-test failed: a creation ordered before its repair was accepted" if
     migration_completion_failures(create_first).empty?
