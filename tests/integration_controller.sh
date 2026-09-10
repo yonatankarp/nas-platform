@@ -1308,10 +1308,26 @@ EOF
         # whole household, and inventory/group_vars/all/main.yml calls it one
         # line. A line nothing runs is not an exit.
         #
-        # The override goes after the playbook, where Ansible's last `-e` for a
-        # key wins over run_play's own. Compose is asked directly rather than
-        # through the role, because what has to be gone is the container, not the
-        # role's opinion of it.
+        # The container has to be THERE FIRST, or every line below passes over a
+        # deployment that never happened -- a wrong container name, a lane that
+        # skipped the role, an override that took when it should not have. This
+        # is the assertion that stops ADGUARD_TEARDOWN_VERIFIED meaning nothing.
+        if ! docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-adguard$'; then
+          printf '%s\n' \
+            'the adguard container is not present, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        # The override goes after the playbook path, where Ansible's last `-e`
+        # for a key wins. Measured rather than assumed, because run_play supplies
+        # this key through `-e adguard_deployment_enabled=...` alongside two
+        # `-e @file` arguments and the merge is one left-to-right pass over all
+        # of them: `-e @vars.yml` declaring it true, then the playbook, then
+        # `-e adguard_deployment_enabled=false` resolves to false, while the same
+        # invocation without the trailing flag resolves to true.
+        #
+        # Compose is asked directly rather than through the role, because what
+        # has to be gone is the container, not the role's opinion of it.
         run_play --tags adguard -e adguard_deployment_enabled=false
         if docker ps -a --format '{{.Names}}' |
             grep -Eq '^'$integration_project_namespace'-adguard$'; then

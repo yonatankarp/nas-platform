@@ -70,7 +70,17 @@ makes the resolver reachable from outside the household. `ratelimit_whitelist`
 is the narrower alternative -- it exempts named addresses from the limit --
 and it is empty rather than populated because a limit no client is subject
 to is a limit that reads as protection and is not.
-tests/contracts/adguard-static.rb is where a claim about this would go. #}
+tests/contracts/adguard-static.rb is where a claim about this would go.
+
+THE COUPLING THIS FILE'S HEADER DESCRIBES STILL HOLDS, and it was re-measured
+rather than reasoned about, because changing a rendered value is exactly how
+that coupling would break. This whole template, rendered from the role's own
+defaults, was mounted into adguard/adguardhome:v0.107.79 and came back byte
+for byte identical -- across first start, a restart, and a stop -- with
+`ratelimit: 0` still `ratelimit: 0`. So the second converge still reports no
+change, the template task does not restart the daemon on every poller tick,
+and renovate.json's paragraph about schema drift still describes the only way
+that can happen. #}
   ratelimit: 0
   ratelimit_subnet_len_ipv4: 24
   ratelimit_subnet_len_ipv6: 56
