@@ -130,3 +130,22 @@ adguard_filters:
 # blocklist.
 adguard_blocked_probe_domain: doubleclick.net
 adguard_allowed_probe_domain: example.com
+
+# Where the role's own verification puts those two questions, and how long it
+# waits for each answer.
+#
+# The address is declared here rather than written into the task for the same
+# reason adguard_url is: a literal in a task is an address the lane cannot move,
+# and tests/contracts/adguard-static.rb refuses one. It is the loopback of the
+# host the play runs on, which is the NAS in both real inventories and the
+# sandbox in both disposable lanes, so it addresses whatever this host published
+# on adguard_dns_port.
+#
+# Ten seconds is the contract's own DNS budget, and it is patience for a single
+# exchange rather than for a service coming up: a resolver that has answered its
+# status page and loaded its rules either answers a question promptly or is
+# broken. It is not one of the three literals tests/policy_test.rb refuses in a
+# task, but it is declared here anyway, because a number in a task is a number
+# nothing can lower from a lane that has to reach the refusal it guards.
+adguard_dns_probe_host: 127.0.0.1
+adguard_dns_probe_timeout_seconds: 10

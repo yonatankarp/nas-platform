@@ -4,10 +4,10 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-sixteen implemented service projects are Audiobookshelf, Beszel, Bindery,
-Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy, Paperless-ngx,
-Pinchflat, Seerr, Trailarr, and the Arr and downloader projects, which
-this host runs because it enables Usenet. The
+seventeen implemented service projects are AdGuard Home, Audiobookshelf, Beszel,
+Bindery, Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy,
+Paperless-ngx, Pinchflat, Seerr, Trailarr, and the Arr and downloader projects,
+which this host runs because it enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
 declarations have been removed from the repository.
 
@@ -173,9 +173,10 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all sixteen implemented service projects. Nextcloud carries no
-gated-off caveat: its switch was flipped in #500, and #501 removed Seafile,
-which it replaced as this platform's file-sync service. Repeat the
+unchanged for all seventeen implemented service projects. Neither gated service
+carries a gated-off caveat any more: Nextcloud's switch was flipped in #500 —
+and #501 removed Seafile, which it replaced as this platform's file-sync
+service — and AdGuard Home's was flipped after #548 landed the stack dark. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
@@ -281,6 +282,48 @@ own `vault_managed_users.ntfy[].access` list, and the role subscribes it to
 exactly those. Adding a topic to the platform therefore does not reach a phone
 until that account's ACL names it; a topic left out is a 403, not a quiet
 omission.
+
+## Pointing devices at AdGuard, and the secondary resolver
+
+Deploying AdGuard Home changes nothing about how anything resolves. The NAS
+keeps using Tailscale MagicDNS, because `tailscaled` owns `/etc/resolv.conf` and
+rewrites it, and every LAN client keeps whatever its DHCP lease gave it. Making a
+device use AdGuard is a change on **that device**: this household's router is a
+Vodafone Station CGA4233DE, which exposes no custom-DNS field for its DHCP scope,
+so there is no one place to set it and no configuration in this repository that
+can.
+
+**Give every device you point at AdGuard a secondary resolver as well**, and
+understand what you are trading before you do. #548 called this the mitigation
+and it is the only one available here.
+
+What it buys. AdGuard is a single container on a single host, and this platform
+restarts it on purpose: `roles/adguard` restarts the project whenever it writes a
+reverted configuration back, and a Renovate image bump recreates the container
+outright. The poller converges every five minutes, so either can happen while
+nobody is watching. A device with only AdGuard configured loses **all** name
+resolution for those seconds — which presents to whoever is holding it as the
+internet being down, not as the NAS restarting.
+
+What it costs, stated plainly because the usual recommendation understates it. A
+secondary resolver is not a failover in the sense a reader expects. Resolvers are
+free to query both entries, to race them, or to stick to whichever answered last,
+and several common stacks do exactly that; a phone that has decided it prefers
+`1.1.1.1` keeps preferring it. So the honest description is that a device with a
+secondary resolver **may bypass filtering at any time of its own choosing**, not
+merely while AdGuard is down. Ads reappearing on a device that was working is the
+symptom, and it is not a bug in AdGuard.
+
+Choose per device rather than once. The television this platform was deployed
+for is the case where filtering matters and a few seconds of failed resolution
+does not, so it can hold AdGuard alone. A laptop somebody works on is the
+opposite. Nothing here enforces either choice, and nothing here can see which
+you made.
+
+Do not close the gap by pointing the NAS's own resolver at AdGuard.
+`roles/adguard/defaults/main.yml` records why: it recreates the #327 shape, where
+the deployment poller's `git fetch` resolves through the very thing that is down,
+so the repository stops being the way back in.
 
 ## Automatic deployment from the NAS
 

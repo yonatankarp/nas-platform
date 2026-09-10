@@ -48,6 +48,12 @@ argument_specs:
       adguard_allowed_probe_domain:
         type: str
         required: false
+      adguard_dns_probe_host:
+        type: str
+        required: false
+      adguard_dns_probe_timeout_seconds:
+        type: int
+        required: false
       vault_adguard_admin_username:
         type: str
         required: true

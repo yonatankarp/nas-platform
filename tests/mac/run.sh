@@ -326,7 +326,17 @@ read_integration_ports() {
 }
 
 if [ "$proof_platform" = integration ]; then
-  integration_ports=$(read_integration_ports) || mac_die 'integration ports input is invalid'
+  # read-integration-ports.rb answers every refusal with the single word `unsafe`
+  # and echoes nothing about the file, deliberately, so this message is the only
+  # place a reader is told anything -- and what it can honestly say is what THIS
+  # checkout requires, which is not information about the rejected input. The
+  # roster is named because the commonest cause is that it grew: the file must
+  # carry exactly one `<name>_port` key per entry, so a ports file written before
+  # a service was added is refused with nothing else wrong with it.
+  integration_ports=$(read_integration_ports) ||
+    mac_die "integration ports input is invalid: it must carry exactly one \
+\"<name>_port\" key per entry of $MAC_SERVICE_PORT_ORDER, and nothing else"
+
   # The validated representation contains one decimal integer per roster service,
   # in roster order, because read_integration_ports emitted it from this same
   # list. The length check keeps a short list from binding services to nothing.
@@ -388,6 +398,29 @@ else
   state_git_revision=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("git_revision")' "$state_input")
   state_vault_checksum=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("vault_checksum")' "$state_input")
   state_project_name=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch("project_name")' "$state_input")
+  # THE IDENTITY COMPARISONS COME FIRST, and the order is the diagnostic. The
+  # port read below fails whenever the roster has grown since the state file was
+  # written -- `document.fetch` raises on the key that is not there -- and it
+  # said 'resume state input does not record the service ports', which sends a
+  # reader to a file that is not wrong about anything. What is actually wrong in
+  # that case is that the checkout moved under a sandbox, which the revision
+  # comparison names exactly. So every scalar the state file already yielded is
+  # compared before the ports are read, and the port failure is left to mean
+  # what it says: a state file written by this revision that does not record
+  # them.
+  [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
+  [ "$state_proof_platform" = "$proof_platform" ] ||
+    mac_die 'resume proof platform does not match the recorded run'
+  [ "$state_platform_kind" = mac ] && [ "$state_platform_compose_kind" = "$proof_platform" ] ||
+    mac_die 'resume platform capabilities do not match the recorded run'
+  [ "$state_callback_host" = "$callback_host" ] ||
+    mac_die 'resume callback host does not match the recorded run'
+  [ "$state_project_name" = "$project_name" ] ||
+    mac_die 'resume project namespace does not match the recorded run'
+  [ "$state_git_revision" = "$git_revision" ] ||
+    mac_die 'resume Git revision does not match the recorded run'
+  [ "$state_vault_checksum" = "$vault_checksum" ] ||
+    mac_die 'resume vault checksum does not match the recorded run'
   # One interpreter start-up for every roster port, instead of one per service.
   # `set --` rather than a pipe: in POSIX sh the right side of a pipe is a
   # subshell and the assignments would evaporate with it.
@@ -407,19 +440,6 @@ RUBY
     eval "${mac_roster_service}_port=\$1"
     shift
   done
-  [ "$state_lane" = "$lane" ] || mac_die 'resume lane does not match the recorded lane'
-  [ "$state_proof_platform" = "$proof_platform" ] ||
-    mac_die 'resume proof platform does not match the recorded run'
-  [ "$state_platform_kind" = mac ] && [ "$state_platform_compose_kind" = "$proof_platform" ] ||
-    mac_die 'resume platform capabilities do not match the recorded run'
-  [ "$state_callback_host" = "$callback_host" ] ||
-    mac_die 'resume callback host does not match the recorded run'
-  [ "$state_project_name" = "$project_name" ] ||
-    mac_die 'resume project namespace does not match the recorded run'
-  [ "$state_git_revision" = "$git_revision" ] ||
-    mac_die 'resume Git revision does not match the recorded run'
-  [ "$state_vault_checksum" = "$vault_checksum" ] ||
-    mac_die 'resume vault checksum does not match the recorded run'
   if [ "$proof_platform" = integration ]; then
     for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
       eval "[ \"\$${mac_roster_service}_port\" = \"\$expected_${mac_roster_service}_port\" ]" ||

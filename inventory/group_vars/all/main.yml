@@ -317,6 +317,11 @@ nextcloud_deployment_enabled: true
 # clients is configuration on the router or on each device, and the router here
 # is a Vodafone Station CGA4233DE, which exposes no custom-DNS field for its
 # DHCP scope -- so it is per device, by hand, one device at a time.
+# docs/getting-started-nas.md carries that procedure and the one mitigation #548
+# required with it: a device pointed at AdGuard alone loses every name for the
+# seconds a restart or an image bump takes, and a device given a secondary
+# resolver may bypass filtering whenever it chooses. That is a per-device
+# decision because delivery is, and nothing here can see which was made.
 # roles/adguard/defaults/main.yml records why that is deliberately not
 # configuration in this repository, including why pointing the NAS's own
 # resolver at AdGuard would be the #327 mistake again, with the recovery path
