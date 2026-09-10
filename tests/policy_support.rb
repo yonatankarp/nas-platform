@@ -297,6 +297,29 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
   end
 
+  # Every `{{ ... }}` region of a string, as Jinja's own lexer would find them:
+  # `{{` opens a variable block and the FIRST `}}` closes it. That last part is
+  # the whole of #492 and it is why this is a scanner rather than a regexp over
+  # the source -- a Go template nested inside a Jinja expression closes that
+  # expression early, so what looks like one construct is two.
+  #
+  # Shared rather than copied: it was file-local to tests/contracts/
+  # nextcloud-static.rb until #530 promoted the escape-sequence scanner that
+  # reads it to tests/policy_test.rb, and a second copy of a scanner is the
+  # thing that promotion exists to avoid.
+  def jinja_expression_regions(value)
+    regions = []
+    index = 0
+    while (opened = value.index("{{", index))
+      closed = value.index("}}", opened + 2)
+      break if closed.nil?
+
+      regions << value[(opened + 2)...closed]
+      index = closed + 2
+    end
+    regions
+  end
+
   # An env.j2 template is not YAML, but it is not free text either: it is a list
   # of NAME=value assignments. Reading it as those pairs says which variable a
   # name is bound to, which a substring search over the file cannot — and it

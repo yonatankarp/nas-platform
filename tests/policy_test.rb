@@ -1588,6 +1588,87 @@ role_task_files.each do |path|
   end
 end
 
+# --- whitespace backslash escapes inside Jinja expressions -------------------
+#
+# A backslash escape inside a `{{ }}` expression is never an escape under
+# Ansible. AnsibleLexer pre-escapes every backslash in an expression's string
+# constants before Jinja's own lexer can run its unicode_escape pass over them,
+# so YAML is the only layer that processes a backslash and
+# regex_replace('^(.*)_x$', '\1') means a backreference here rather than the
+# byte \x01 it would mean under Jinja alone. The price is that '\n' inside an
+# expression stays two characters, and a split on it finds no separator.
+#
+# THE CLASS HAS BITTEN TWICE, in two unrelated roles, which is why it is here
+# rather than in one service contract (#530):
+#   * roles/nextcloud/tasks/reconcile_trusted_domains.yml split occ's output on
+#     '\n', so the live trusted_domains array read as one blob, every managed
+#     domain read as missing, and the repair loop re-set all three on every
+#     converge. The nextcloud lane's second converge reported changed=1; no
+#     check in this repository would have (#513).
+#   * roles/trailarr/tasks/reconcile_env.yml joined on '\n' and every following
+#     run found the environment it had just written back differing again. Fixed
+#     by hoisting the separator into a double-quoted `vars` entry, where YAML
+#     resolves it to a real newline before Jinja is handed the expression.
+# Two comments in two roles cannot enforce each other, so this file does it for
+# all of them. It lands green on the tree as it stands: the sweep that motivated
+# it found zero hits across every role task file and every root playbook.
+#
+# Scoped to `{{ }}` regions rather than to every string, because the
+# pre-escaping is scoped that way too: AnsibleLexer exempts `{% %}` statements,
+# and a folded `{% set p = raw.split('\n') %}` really does split on a newline
+# while the `{{ }}` beside it does not. Measured on ansible-core 2.21.4, along
+# with the fact that the YAML quoting does not decide it -- folded,
+# single-quoted and double-quoted scalars all read one element, which the
+# message repeats so the next reader does not reach for a different quote.
+#
+# Restricted to the whitespace escapes \n, \t and \r rather than to every
+# backslash -- which is why the message says whitespace and not backslash, since
+# Ansible processes none of them and this refuses only the three. Banning every
+# backslash would ban the backreference the pre-escaping exists to make work.
+#
+# WHAT THAT LEAVES UNCOVERED, stated rather than discovered later: an escape
+# handed to a regex filter is processed by Python's own re module, so
+# regex_replace('\t', ' ') is correct and this would refuse it. Nothing in the
+# repository does that today; the exemption belongs here when one arrives.
+#
+# The subject is every role task and handler file plus every root playbook. The
+# playbook half is the part the nextcloud-scoped original could not reach, and
+# it is floored separately: a combined floor passes while the playbook list
+# silently empties, because the role list is twenty times its size.
+root_playbook_files = Dir[File.join(ROOT, "*.yml")].sort.select do |path|
+  document = YAML.safe_load_file(path, aliases: true)
+  document.is_a?(Array) && document.all? { |play| play.is_a?(Hash) && play.key?("hosts") }
+end
+# 60 and 5 are sized against the mutation sandbox, not the tree: the harness
+# copies each role's main.yml and what it statically imports, so the role list
+# is 66 there against 117 here, while every root playbook is a stated fixture
+# path and all five are present in both.
+check_floor(failures, role_task_files.length, 60,
+            "the Jinja escape scanner found too few role task files")
+check_floor(failures, root_playbook_files.length, 5,
+            "the Jinja escape scanner found too few root playbooks")
+(role_task_files + root_playbook_files).each do |path|
+  relative_path = path.delete_prefix("#{ROOT}/")
+  # task_strings over the whole parsed document rather than over flattened
+  # tasks, because a playbook's strings live in pre_tasks, vars and play
+  # keywords as well, and the escape is wrong wherever Jinja meets it.
+  task_strings(YAML.safe_load_file(path, aliases: true)).each do |value|
+    jinja_expression_regions(value).each do |region|
+      next unless region.match?(/\\[ntr]/)
+
+      check(failures, false,
+            "#{relative_path}: the Jinja expression {{#{region}}} contains a whitespace " \
+            "backslash escape, which Ansible will not process -- AnsibleLexer pre-escapes " \
+            "every backslash in an expression's string constants, so \\n stays two " \
+            "characters and a split or join on it finds no separator. The YAML quoting " \
+            "does not decide it: folded, single-quoted and double-quoted scalars all read " \
+            "one element. Hoist the separator into a double-quoted vars entry, where YAML " \
+            "resolves it before Jinja sees it, or drop the separator entirely with " \
+            "splitlines")
+    end
+  end
+end
+
 # A fetch from the public internet is the one task in a converge whose failure
 # is somebody else's outage, and #330 is what that costs: the Hebrew OCR model
 # was fetched with no retry and no timeout, raw.githubusercontent.com timed out
@@ -2168,6 +2249,59 @@ def python_top_level_definitions(path)
   definitions
 end
 
+# One line of Python with its string literals removed, so a bracket count over
+# what is left counts code brackets. Without this,
+# MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])") is a line whose
+# brackets happen to balance inside the quoted character class and whose `#`
+# would read as a comment. Triple-quoted strings are not handled and no
+# module-level constant here uses one; one that did would be caught by the
+# per-constant line count below rather than silently mis-extracted.
+PYTHON_STRING_LITERAL = /
+  (?:[rRbBfFuU]{0,2})
+  (?: "(?:\\.|[^"\\])*" | '(?:\\.|[^'\\])*' )
+/x
+def python_bracket_delta(line)
+  code = line.gsub(PYTHON_STRING_LITERAL, "").sub(/#.*\z/, "")
+  code.count("([{") - code.count(")]}")
+end
+
+# Every top-level constant assignment in a Python file as raw source text, keyed
+# by name and collected as a list so a reassignment further down is visible
+# rather than hidden behind the first -- the same shape, and the same reasons, as
+# python_top_level_definitions above. A comment above an assignment belongs to no
+# constant, which is what lets one copy carry prose the other cannot honestly
+# repeat.
+#
+# The extent of an assignment is bracket depth rather than indentation, because a
+# dict or tuple constant closes on a column-0 `}` or `)` that an indentation rule
+# would read as the next top-level statement.
+def python_top_level_constants(path)
+  lines = File.readlines(path, chomp: true)
+  constants = Hash.new { |hash, key| hash[key] = [] }
+  index = 0
+  while index < lines.length
+    name = lines[index][/\A(_?[A-Z][A-Z_0-9]*)\s*=(?!=)/, 1]
+    if name.nil?
+      index += 1
+      next
+    end
+
+    body = [lines[index]]
+    depth = python_bracket_delta(lines[index])
+    while (depth.positive? || body.last.end_with?("\\")) && index + 1 < lines.length
+      index += 1
+      body << lines[index]
+      depth += python_bracket_delta(lines[index])
+    end
+    constants[name] << body.join("\n").rstrip
+    index += 1
+  end
+  # Same reason as python_top_level_definitions: [nil, nil].uniq.length == 1, so
+  # an absent name would read as two files agreeing rather than raising.
+  constants.default_proc = nil
+  constants
+end
+
 
 # scripts/production_auto_deploy.py and scripts/image_prune.py are two
 # self-sufficient single-file programs, and that is structural rather than an
@@ -2273,6 +2407,169 @@ check(failures, unlisted_identical.empty?,
       "scripts/*.py program but are not listed in duplicated_helper_floors, so " \
       "nothing would notice them drifting apart. A verbatim copy is identical " \
       "only until someone edits one side; name it there, with a floor")
+
+
+# --- the same rule one level down, and one file wider (#515) -----------------
+#
+# Two holes in everything above, both of them the #354 shape displaced.
+#
+# THE PINNED FUNCTION'S OWN INPUT WAS UNPINNED. markdown_escape is compared
+# byte-for-byte; MARKDOWN_PATTERN, the character class it escapes with, is
+# byte-identical in all three copies and was referenced by no test at all. Cut
+# to r"([\\`*])" in one script, both markdown_escape bodies left untouched,
+# policy_test.rb reported all properties holding and the pruner's ntfy
+# notification would have shipped unescaped _ * [ ] # | > while the deploy
+# poller's did not -- with the identity check on the consumer reporting the two
+# copies identical. NOTIFICATION_TIMEOUT_SECONDS = 10 is the same class in two
+# files and was compared by nothing either.
+#
+# THE SUBJECT COULD NOT SEE THE RELAY. Everything above globs scripts/*.py and
+# derives its reverse direction with reduce(:&), so it needs BOTH scripts to
+# define a name. services/dozzle/alert_relay.py is outside that glob by design
+# and CLAUDE.md names it as a third copy site, so a verbatim copy shared by the
+# relay and exactly one script was pinned by nothing: planted as _shared_bound in
+# image_prune.py and alert_relay.py, it left this file green.
+#
+# NOT CLOSED BY CONVERGING BODIES, and the comment above is right about why: the
+# relay's markdown_escape takes a different bound and no annotations and declines
+# to escape intra-word underscores, so it is a relative rather than a duplicate.
+# What it shares with the scripts is the DATA, and data has no such excuse.
+DUPLICATION_SITES = (duplicated_scripts + [File.join(ROOT, "services/dozzle/alert_relay.py")])
+                    .map { |path| path.delete_prefix("#{ROOT}/") }.uniq.sort
+check_floor(failures, DUPLICATION_SITES.length, 3, "single-file programs sharing copied helpers")
+
+site_definitions = DUPLICATION_SITES.to_h do |relative|
+  [relative, python_top_level_definitions(File.join(ROOT, relative))]
+end
+site_constants = DUPLICATION_SITES.to_h do |relative|
+  constants = python_top_level_constants(File.join(ROOT, relative))
+  # An extractor that matched nothing would compare empty to empty and report
+  # every property below as holding. The smallest of the three carries 14.
+  check_floor(failures, constants.length, 10, "#{relative}: top-level constants")
+  [relative, constants]
+end
+
+# Which copies of a constant must agree, and how long the extraction of each must
+# be. The site list is exact in both directions rather than a floor: a copy that
+# disappears is as much a change to this contract as one that diverges, and a
+# floor of two would let the relay drop MARKDOWN_PATTERN silently.
+#
+# `lines` is the honesty half, and it is an exact count rather than the floor the
+# function table uses, because one line is a legitimate length for a constant and
+# a floor of one is not a check. It catches both an extraction that stopped early
+# on a multi-line constant and one that ran into the next statement. A legitimate
+# reformat costs one edit here, which is the stated-number posture this file
+# takes everywhere else.
+duplicated_constant_sites = {
+  "MARKDOWN_PATTERN" => {
+    "sites" => %w[
+      scripts/image_prune.py
+      scripts/production_auto_deploy.py
+      services/dozzle/alert_relay.py
+    ],
+    "lines" => 1
+  },
+  "NOTIFICATION_TIMEOUT_SECONDS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
+    "lines" => 1
+  }
+}
+check_floor(failures, duplicated_constant_sites.length, 2,
+            "module-level constants held identical across the copy sites")
+
+duplicated_constant_sites.each do |constant, expectation|
+  sources = site_constants.select { |_relative, constants| constants.key?(constant) }
+  check(failures, sources.keys.sort == expectation.fetch("sites").sort,
+        "#{constant} is defined in #{sources.keys.sort.inspect}, and this table says " \
+        "#{expectation.fetch('sites').sort.inspect}. A copy that disappeared is as much a " \
+        "change to this contract as one that diverged; say which happened here")
+  sources.each do |relative, constants|
+    # Only the first assignment is compared, so a second one further down the
+    # file would be a value nothing reads.
+    check(failures, constants[constant].length == 1,
+          "#{relative}: assigns #{constant} #{constants[constant].length} times, " \
+          "and only the first is compared")
+    body = constants[constant].first
+    check(failures, body.lines.length == expectation.fetch("lines"),
+          "#{relative}: #{constant} extracted as #{body.lines.length} lines rather than the " \
+          "#{expectation.fetch('lines')} this table states -- the extraction stopped early or " \
+          "ran past the assignment, and either way the comparison below is not reading the " \
+          "whole value")
+    assignments = body.lines.count { |line| line.match?(/\A_?[A-Z][A-Z_0-9]*\s*=(?!=)/) }
+    check(failures, assignments == 1,
+          "#{relative}: the #{constant} extraction covers #{assignments} top-level " \
+          "assignments, so it ran past the one it is supposed to compare")
+  end
+  bodies = sources.values.map { |constants| constants[constant].first }
+  check(failures, bodies.uniq.length == 1,
+        "every copy site must spell #{constant} identically, and " \
+        "#{sources.keys.sort.inspect} do not. This is the input to a helper the check " \
+        "above already pins: markdown_escape can be byte-identical in all three files " \
+        "while one of them escapes a different character class, and that reads as the " \
+        "copies agreeing (#515)")
+end
+
+# The reverse direction, derived rather than stated, exactly as the reduce(:&)
+# stanza above derives it for functions across scripts/*.py -- and for the same
+# reason, since a stated list of what must match fails open.
+#
+# TWO DIFFERENCES FROM THAT STANZA, both of them the holes this closes. The
+# subject is the three copy sites rather than the glob, so the relay is in it.
+# And the rule is "SOME PAIR is byte-identical" rather than "every site that
+# defines it agrees": the weaker phrasing fails open on precisely the shape being
+# closed, because a name in all three where two agree and the third differs on
+# purpose would go unflagged while those two sat unpinned. markdown_escape is
+# clean here because it is excluded by name, not because its bodies disagree.
+#
+# The stanza above is this rule over a narrower subject and is left alone: its
+# glob picks up a fourth scripts/*.py program that this stated site list would
+# not, so the two cover different futures. A divergence in their overlap is
+# reported twice, which is noise rather than a defect.
+site_names = DUPLICATION_SITES.to_h do |relative|
+  [relative, site_definitions.fetch(relative).keys.to_set + site_constants.fetch(relative).keys.to_set]
+end
+shared_across_sites = site_names.values.combination(2).map { |left, right| left & right }
+                                .reduce(Set.new, :|).sort
+check_floor(failures, shared_across_sites.length, 15,
+            "top-level names shared by at least two of the copy sites")
+# And a second floor, on the relay's own participation, for the same reason the
+# Jinja escape scanner above floors its two subject lists separately. Sixteen of
+# the twenty-one names that count above come from the two scripts/*.py files
+# alone, so a subject that stopped reaching services/dozzle/alert_relay.py -- a
+# moved path, an extractor returning nothing for it -- would leave the count
+# comfortably above fifteen while the half of this check that #515 exists for
+# stopped running. DUPLICATION_SITES.length does not cover it: that proves the
+# path is in the list, not that anything was read out of it. Six today --
+# MARKDOWN_PATTERN, TIMESTAMP_PATTERN, main, markdown_escape, publish and
+# render_notification -- of which only two are byte-identical, which is exactly
+# the mix that makes the relay worth reading.
+relay_site = "services/dozzle/alert_relay.py"
+check(failures, DUPLICATION_SITES.include?(relay_site),
+      "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
+      "helpers are duplicated, and the reduce(:&) stanza above cannot see it")
+relay_shared = (site_names[relay_site] || Set.new).select do |name|
+  DUPLICATION_SITES.any? { |relative| relative != relay_site && site_names.fetch(relative).include?(name) }
+end
+check_floor(failures, relay_shared.length, 5,
+            "top-level names #{relay_site} shares with a scripts/*.py program")
+listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
+unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|
+  bodies = DUPLICATION_SITES.flat_map do |relative|
+    [site_definitions.fetch(relative), site_constants.fetch(relative)]
+      .filter_map { |table| table[name].first if table.key?(name) }
+  end
+  # Two sites spelling it the same way is what makes it a copy. Comparing
+  # lengths rather than asking whether every site agrees is the whole point:
+  # a third site differing on purpose must not excuse the pair that does not.
+  bodies.length != bodies.uniq.length
+end
+check(failures, unlisted_pairwise.empty?,
+      "#{unlisted_pairwise.inspect} are spelled byte-identically in two or more of " \
+      "#{DUPLICATION_SITES.inspect} but are listed in neither duplicated_helper_floors nor " \
+      "duplicated_constant_sites, so nothing would notice them drifting apart. These files " \
+      "cannot share a module -- each is installed as exactly one file, and the relay's copy " \
+      "lives inside a container -- so a verbatim copy is identical only until someone edits " \
+      "one side. Name it in the table that fits, with its floor or its line count")
 
 
 report(failures, "policy: all properties hold", "policy violation(s)")
