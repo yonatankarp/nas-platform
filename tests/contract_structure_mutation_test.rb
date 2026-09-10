@@ -566,9 +566,9 @@ check_accepted(
 check_accepted(
   :komga, "a mutation task name mentioned in an early comment",
   [[KOMGA_ROLE,
-    "- name: Deploy Komga\n",
+    "- name: Deploy Komga, catching a container that runs but never serves\n",
     "# - name: Create the managed Komga library\n" \
-    "- name: Deploy Komga\n"]]
+    "- name: Deploy Komga, catching a container that runs but never serves\n"]]
 )
 
 check_rejected(
@@ -1215,15 +1215,19 @@ check_rejected(
 
 check_rejected(
   :arr, "an activation downgraded while the module stays named in the file",
-  [[ARR_MAIN, "    state: present\n    wait: true\n", "    state: absent\n    wait: true\n"]],
+  [[ARR_MAIN,
+    "        env_files: [\"{{ platform_runtime_dir }}/services/arr/.env\"]\n        state: present\n",
+    "        env_files: [\"{{ platform_runtime_dir }}/services/arr/.env\"]\n        state: absent\n"]],
   "Arr role must deploy through docker_compose_v2"
 )
 
 check_rejected(
   :arr, "the activation gate demoted to a comment",
   [[ARR_MAIN,
-    "  when: media_usenet_enabled | bool\n  register: arr_deploy\n",
-    "  # when: media_usenet_enabled | bool\n  register: arr_deploy\n"]],
+    "             | default('the Arr deployment failed and reported no message') }}\n" \
+    "  when: media_usenet_enabled | bool\n",
+    "             | default('the Arr deployment failed and reported no message') }}\n" \
+    "  # when: media_usenet_enabled | bool\n"]],
   "Arr role must gate activation on media_usenet_enabled"
 )
 
@@ -1496,8 +1500,10 @@ check_rejected(
 check_rejected(
   :downloaders, "the activation gate demoted to a comment",
   [[DOWNLOADERS_MAIN,
-    "  when: media_usenet_enabled | bool\n  register: downloaders_deploy\n",
-    "  # when: media_usenet_enabled | bool\n  register: downloaders_deploy\n"]],
+    "             | default('the downloader deployment failed and reported no message') }}\n" \
+    "  when: media_usenet_enabled | bool\n",
+    "             | default('the downloader deployment failed and reported no message') }}\n" \
+    "  # when: media_usenet_enabled | bool\n"]],
   "downloaders role must gate activation on media_usenet_enabled"
 )
 
