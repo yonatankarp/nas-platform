@@ -323,6 +323,55 @@ refuse("managed plugin package identities differ") unless defaults["jellyfin_plu
 ].each do |name|
   refuse("missing #{name}") unless role_names.include?(name)
 end
+
+# Where the QSV proof runs, and that it can fail (#535).
+#
+# The probe decodes one frame through the iHD driver inside the container. It
+# proves the hardware path, which is a verification concern and not a converge
+# step: nothing the role reconciles depends on it, and jellyfin precedes seerr,
+# immich, paperless_ngx and nextcloud in site.yml, so a fatal probe in the
+# converge path would strand four stacks on a fault that harms none of them.
+#
+# Both halves of the gate are load-bearing, and neither is sufficient alone.
+# `never` keeps the include out of a bare converge; it does NOT keep it out of
+# `site.yml --tags jellyfin`, because a `never` task runs whenever any tag it
+# carries is requested explicitly and the role-level `jellyfin` tag is one of
+# them. The ansible_run_tags condition is what closes that, and it is also what
+# keeps a fatal probe out of the --check --diff review the platform requires
+# before applying. roles/paperless_ngx/tasks/mail_state.yml pins the same pair
+# for the same reason.
+qsv_include = lambda do |task|
+  value = task["ansible.builtin.include_tasks"]
+  value == "qsv_probe.yml" || (value.is_a?(Hash) && value["file"] == "qsv_probe.yml")
+end
+deploy_top = load_tasks(File.join(tasks_dir, "deploy.yml"))
+verify_top = load_tasks(File.join(tasks_dir, "verify.yml"))
+refuse("QSV proof runs during convergence") if
+  flatten_tasks(deploy_top).any?(&qsv_include)
+verify_qsv_includes = flatten_tasks(verify_top).select(&qsv_include)
+refuse("QSV proof is not included exactly once from verification") unless
+  verify_qsv_includes.length == 1
+qsv_include_task = verify_qsv_includes.first
+refuse("QSV proof is not withheld from the converge by tag") unless
+  Array(qsv_include_task["tags"]).sort == %w[never platform_verify_jellyfin] &&
+    Array(qsv_include_task.dig("ansible.builtin.include_tasks", "apply", "tags")).sort ==
+      %w[never platform_verify_jellyfin]
+refuse("QSV proof is not withheld from the converge by run tag") unless
+  Array(qsv_include_task["when"]).any? do |condition|
+    condition.to_s.include?("'platform_verify_jellyfin' in ansible_run_tags")
+  end
+# The probe's exit code is the whole proof. docker_compose_v2_exec sets check_rc
+# only when `detach` is true, so without this failed_when a render device the
+# container could not open, an iHD driver that stopped loading, or a QSV stack an
+# image bump broke all exit nonzero and report success (#521). `default(1)` and
+# not `default(0)`: failed_when replaces the module's own verdict, so a module
+# that refused before running anything registers no rc at all, and defaulting
+# that to zero would report the refusal as a passing probe.
+qsv_probe_task = role_task.call("Probe the Jellyfin QSV hardware device")
+refuse("QSV proof tolerates a nonzero exit") unless
+  Array(qsv_probe_task["failed_when"]).join(" ")
+       .include?("jellyfin_qsv_probe.rc | default(1) | int != 0")
+
 settings_strings = deep_strings(settings_top)
 refuse("encoding update does not preserve unrelated fields") unless
   settings_task.call("Resolve Jellyfin encoding repair requirement")

@@ -628,6 +628,68 @@ STATIC_ROWS = [
       end
     },
     expects: "role must not edit an opaque database"
+  },
+  # Where the QSV proof runs, and that it can fail (#535). The first row
+  # reconstructs the pre-fix tree: the probe was included from deploy.yml, which
+  # is the convergence path, and jellyfin precedes four stacks in site.yml.
+  {
+    name: "the QSV proof restored to the convergence path",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/deploy.yml",
+                "# The container health check passes as soon as /health answers",
+                "- name: Prove Jellyfin QSV during convergence\n" \
+                "  ansible.builtin.include_tasks: qsv_probe.yml\n\n" \
+                "# The container health check passes as soon as /health answers")
+    },
+    expects: "QSV proof runs during convergence"
+  },
+  {
+    name: "the QSV proof dropped from verification",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/verify.yml", "    file: qsv_probe.yml\n",
+                "    file: scheduled_tasks.yml\n")
+    },
+    expects: "QSV proof is not included exactly once from verification"
+  },
+  {
+    # `never` alone does not hold: a never task runs as soon as any tag it
+    # carries is requested, and site.yml gives the role a jellyfin tag.
+    name: "the QSV proof's converge tag gate dropped",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/verify.yml",
+                "  tags: [never, platform_verify_jellyfin]\n  ansible.builtin.include_tasks:",
+                "  tags: [platform_verify_jellyfin]\n  ansible.builtin.include_tasks:")
+    },
+    expects: "QSV proof is not withheld from the converge by tag"
+  },
+  {
+    name: "the QSV proof's run-tag gate dropped",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/verify.yml",
+                "    - \"'platform_verify_jellyfin' in ansible_run_tags\"\n", "")
+    },
+    expects: "QSV proof is not withheld from the converge by run tag"
+  },
+  {
+    name: "the QSV proof tolerating a nonzero exit",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/qsv_probe.yml",
+                "  failed_when: jellyfin_qsv_probe.rc | default(1) | int != 0",
+                "  failed_when: false")
+    },
+    expects: "QSV proof tolerates a nonzero exit"
+  },
+  {
+    # The half a reader would call a typo: failed_when replaces the module's own
+    # verdict, so a module that refused before running anything registers no rc,
+    # and default(0) reports that refusal as a passing probe.
+    name: "the QSV proof defaulting an absent exit code to success",
+    break: lambda { |root|
+      edit_text(root, "roles/jellyfin/tasks/qsv_probe.yml",
+                "  failed_when: jellyfin_qsv_probe.rc | default(1) | int != 0",
+                "  failed_when: jellyfin_qsv_probe.rc | default(0) | int != 0")
+    },
+    expects: "QSV proof tolerates a nonzero exit"
   }
 ].freeze
 

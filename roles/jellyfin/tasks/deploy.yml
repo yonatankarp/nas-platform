@@ -187,14 +187,6 @@
     container_cpu_service_name: jellyfin
     container_cpu_project_name: "{{ jellyfin_compose_project_name }}"
 
-- name: Prove Jellyfin QSV during convergence
-  ansible.builtin.include_tasks: qsv_probe.yml
-  when:
-    - platform_kind == 'nas'
-    - >-
-      not ((platform_compose_kind | default('') == 'integration') and
-           (deployment_bundle_test_mode | default(false) | bool))
-
 # The container health check passes as soon as /health answers, which happens
 # well before the application can serve its own startup API: that endpoint
 # returns 503 until the server has finished initializing. Waiting on the
