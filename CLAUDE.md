@@ -729,8 +729,9 @@ four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
 checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 53/55/61 over 169 today, and
-this sentence stood at 51/52/61 through both. Three things constrain a future
+53/53/61 over 167 when #517 drew the split and is 53/57/61 over 171 today, and
+this sentence stood at 51/52/61 through both of those and went stale again
+within one pull request of being corrected. Three things constrain a future
 rebalance, all three stated beside the
 lists: a check's recorded seconds are its wall time at that shard's load rather
 than work that can be carried elsewhere, so an arithmetic projection from that
