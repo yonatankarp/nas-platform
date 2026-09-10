@@ -198,7 +198,17 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
-  ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"]
+  ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"],
+  # The web interface, on the port Seafile held until #501 removed that stack.
+  ["adguard", "adguard", "0.0.0.0", 8083, 3000, "tcp"],
+  # The first privileged ports this platform publishes, and the reason the
+  # container side is 5353: binding 53 inside the container would need root or
+  # CAP_NET_BIND_SERVICE, and AdGuard runs as the platform identity like every
+  # other direct-numeric-user service here. The Docker daemon binds host 53.
+  # Confirmed free on the NAS from the full netstat -tulnp listener table on
+  # 2026-09-10, the nearest neighbour being 5353/mDNS.
+  ["adguard", "adguard", "0.0.0.0", 53, 5353, "tcp"],
+  ["adguard", "adguard", "0.0.0.0", 53, 5353, "udp"]
 ].freeze
 
 EXPECTED_STORAGE = {

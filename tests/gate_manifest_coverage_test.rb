@@ -261,6 +261,10 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   python3 tests/deployment_controller_input_test.py
   ruby tests/beszel_password_preservation_test.rb --self-test
   ruby tests/komga_contract_test.rb
+  ruby tests/adguard_contract_test.rb
+  ruby tests/adguard_contract_test.rb --self-test
+  ruby tests/rendered_file_ownership_test.rb
+  ruby tests/rendered_file_ownership_test.rb --self-test
   ruby tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby tests/audiobookshelf_contract_test.rb
   ruby tests/immich_configured_password_test.rb

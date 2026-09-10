@@ -84,6 +84,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/production_auto_deploy/templates/ntfy.curl.j2
   roles/beszel/tasks/alert.yml
   roles/ntfy/tasks/deployment_report.yml
+  roles/adguard/templates/AdGuardHome.yaml.j2
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
@@ -182,6 +183,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/validate-policy.sh
 ].freeze
 EXPECTED_FIXTURE_ROLES = {
+  "adguard" => "adguard",
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
   "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",

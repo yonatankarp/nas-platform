@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-sixteen implemented service projects from no planned media-acquisition
+seventeen implemented service projects from no planned media-acquisition
 projects. The media acquisition catalog is fully implemented; a project added
 to it in future stays inert, with no runtime role or Compose directory, until
 its own promotion.
@@ -284,9 +284,12 @@ installs the same toolchain inside the container the way the harness always did.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, and Nextcloud —
-every implemented service except `arr` and `downloaders`, whose Phase 1 runtime
-is default-disabled in that lane and proved by its Docker integration suite. The
-Mac lane starts Nextcloud with its own
+every implemented service except `arr`, `downloaders` and `adguard`. The first
+two have a Phase 1 runtime that is default-disabled in that lane; AdGuard Home
+landed with `adguard_deployment_enabled` false and the Mac lane does not ask for
+it, so the converge takes that project to `state: absent` and there is nothing
+on the laptop to exercise. All three are proved by their Docker integration
+suites instead. The Mac lane does start Nextcloud with its own
 `-e nextcloud_deployment_enabled=true`, so its coverage does not depend on what
 the platform default happens to be.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain

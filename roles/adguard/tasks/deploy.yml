@@ -1,0 +1,309 @@
+---
+- name: Revalidate deployment paths before AdGuard Home runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: adguard
+    deployment_target_require_current_release: true
+    # Both directories this role writes into, beyond the five paths
+    # deployment_target_service already derives. The first is where the whole
+    # configuration is rendered; the second is AdGuard's own working directory,
+    # which the container writes and this role only declares.
+    deployment_target_extra_paths:
+      - "{{ adguard_config_host_path }}"
+      - "{{ adguard_work_host_path }}"
+
+# Redacted: the conditions name both halves of the AdGuard administrator
+# identity and the hash the rendered configuration carries.
+#
+# THE HASH IS STORED, NEVER COMPUTED. `password_hash('bcrypt')` salts randomly,
+# so a hash derived at converge time would differ on every run, the rendered
+# AdGuardHome.yaml would differ with it, and idempotence -- the hard requirement
+# in CLAUDE.md -- would break outright. generate-secrets.yml is where the value
+# is produced, once, from the clear password beside it. This assertion is what
+# refuses a truncated or wrongly-shaped hash at the top of the run rather than
+# leaving AdGuard to refuse every login afterwards.
+- name: Require well-formed AdGuard Home administrator credentials
+  ansible.builtin.assert:
+    that:
+      - vault_adguard_admin_username is match('^[^\r\n]+$')
+      - vault_adguard_admin_password is match('^[^\r\n]+$')
+      - vault_adguard_admin_password_hash is match('^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$')
+    fail_msg: >-
+      The AdGuard Home administrator name and password must be nonempty
+      single-line values, and the stored password hash must be a 60-character
+      bcrypt digest.
+  no_log: true
+
+- name: Render the AdGuard Home environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/adguard/.env"
+    mode: "0600"
+
+# THE WHOLE CONFIGURATION, BEFORE THE FIRST START. AdGuard shows a setup wizard
+# until this file exists and refuses every API call while it does; rendering the
+# finished document first means the wizard never runs and nothing has to be read
+# back out of the service. It is the same shape as the Beszel hub keypair placed
+# before first start, and it is why drift made in the web interface is reverted
+# on the next converge rather than preserved -- which for this service is the
+# behaviour that was wanted.
+#
+# Redacted: the rendered document carries the administrator name and the bcrypt
+# hash of the administrator password.
+# OWNED BY THE PLATFORM IDENTITY, NOT BY WHOEVER RAN ANSIBLE, and this pair of
+# lines is not decoration. The container runs as ${NAS_UID}:${NAS_GID} and the
+# file is 0600, so a file left owned by the account that rendered it -- root
+# inside the CI controller container -- is a file the daemon cannot open. It
+# exits immediately with `failed to parse configuration file err="open
+# /opt/adguardhome/conf/AdGuardHome.yaml: permission denied"`, and because it
+# never finishes starting, the health check never runs and Docker reports an
+# unhealthy container with an EMPTY health log. That is what the adguard lane
+# hit, and it is what this line fixes.
+#
+# THE PROPERTY IS REAL ON LINUX AND ONLY ON LINUX. Docker Desktop for Mac does
+# not enforce bind-mount ownership -- every uid inside the container reads every
+# bind-mounted file -- so this defect is invisible to a Mac spike, and it was:
+# the image was run successfully here half a dozen times before the CI lane
+# refused it. Reproduced afterwards by running the same image on a real Linux
+# filesystem with the file owned by another uid.
+#
+# The mode stays 0600 and must. AdGuard's permcheck chmods this file to 0600 at
+# every start, so a wider mode would be reverted by the daemon and reported as a
+# change by the next converge -- trading a crash for broken idempotence.
+# roles/arr, roles/downloaders, roles/pinchflat and roles/trailarr all declare
+# the same pair for the same reason; roles/beszel is the counter-example that
+# proves the rule, writing a 0600 keypair with no owner because its hub
+# container runs as root.
+- name: Render the AdGuard Home configuration
+  ansible.builtin.template:
+    src: AdGuardHome.yaml.j2
+    dest: "{{ adguard_config_host_path }}/AdGuardHome.yaml"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  register: adguard_config
+  when: adguard_deployment_enabled | bool
+  no_log: true
+
+# `state: absent` rather than a skipped deployment, so switching the gate off is
+# a deployment decision in both directions rather than a converge that leaves
+# containers running that nothing in the repository claims. remove_orphans
+# reaches the ones a previous revision of the Compose file declared and this one
+# no longer does.
+- name: Stop the disabled AdGuard Home project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/adguard"
+    project_name: "{{ adguard_compose_project_name }}"
+    files: "{{ platform_service_compose_files['adguard'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/adguard/.env"]
+    state: absent
+    remove_orphans: true
+  register: adguard_teardown
+  when: not adguard_deployment_enabled | bool
+
+- name: Report the disabled AdGuard Home deployment
+  ansible.builtin.debug:
+    msg: >-
+      adguard_deployment_enabled is false, so the AdGuard Home Compose project
+      {{ adguard_compose_project_name }} is torn down rather than converged,
+      nothing is written to {{ adguard_config_host_path }}, and no listener is
+      placed on this host's port {{ adguard_dns_port }}. Set
+      adguard_deployment_enabled to true in inventory/group_vars/all/main.yml
+      and merge; the auto-deploy poller brings the stack up on its next
+      five-minute tick.
+  when: not adguard_deployment_enabled | bool
+
+# The block exists for one thing the rescue does with the failure: it hands the
+# deployment's own message to roles/container_health, which either explains it in
+# terms of the container state Docker reports or re-raises it unchanged.
+# Compose's `--wait` fails a crash-looping container with "container ... is
+# unhealthy", which says nothing about why. roles/bindery/tasks/main.yml carries
+# the long form of this argument; #509 built the mechanism and #537 wired the
+# remaining single-`up` roles into it.
+- name: Deploy AdGuard Home, catching a container that runs but never serves
+  when: adguard_deployment_enabled | bool
+  block:
+    - name: Deploy AdGuard Home
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/adguard"
+        project_name: "{{ adguard_compose_project_name }}"
+        files: "{{ platform_service_compose_files['adguard'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/adguard/.env"]
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: adguard_deploy
+  rescue:
+    # First, and before anything else can rebind it: ansible_failed_result
+    # belongs to whichever rescue is running.
+    - name: Record the failed AdGuard Home deployment
+      ansible.builtin.set_fact:
+        adguard_deploy_failure_message: >-
+          {{ ansible_failed_result.msg
+             | default('the AdGuard Home deployment failed and reported no message') }}
+
+# Immediately after the deployment and before everything that trusts it. A
+# container in `Restarting` still appears in `docker container ls --quiet`, so
+# the CPU verification below would sail straight past one and the readiness probe
+# after it would fail on a timeout that names nothing (#510).
+#
+# This pass detects, prints the evidence and publishes
+# container_health_stuck_services WITHOUT refusing, because the recreate below
+# has to happen before the verdict. It still re-raises a deployment failure that
+# no stuck container explains.
+- name: Detect an AdGuard Home container that runs but never serves
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: adguard
+    container_health_project_name: "{{ adguard_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ adguard_deploy_failure_message | default('') }}
+    container_health_refuse: false
+  when: adguard_deployment_enabled | bool
+
+# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
+# FORCED, because `up -d` against an unchanged specification keeps the same
+# container and recreates nothing; `dependencies: false` renders as --no-deps.
+# CONDITIONAL, and that condition is the whole idempotence argument: the list is
+# empty on a converged host and empty under --check, so this task is skipped on
+# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
+# task rather than a loop, with the verdict below re-checking, so a container
+# looping for a reason a recreate cannot fix never goes green and never becomes
+# an invisible retry loop.
+- name: Recreate an AdGuard Home container that runs but never serves
+  when: adguard_deployment_enabled | bool
+  block:
+    - name: Force-recreate the stuck AdGuard Home services
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/adguard"
+        project_name: "{{ adguard_compose_project_name }}"
+        files: "{{ platform_service_compose_files['adguard'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/adguard/.env"]
+        services: "{{ container_health_stuck_services }}"
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      when: container_health_stuck_services | default([]) | length > 0
+      register: adguard_wedged_recreate
+  rescue:
+    # Carried rather than re-raised here. `--wait` fails a container that came
+    # back unhealthy, which the re-check below diagnoses far better than Compose
+    # can; a recreate that failed for any OTHER reason left no stuck container
+    # behind, and the second pass re-raises this message unchanged for that case.
+    - name: Record the AdGuard Home recreate that did not recover the service
+      ansible.builtin.set_fact:
+        adguard_recreate_failure_message: >-
+          The force-recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}
+
+# Whether a recreate was actually spent, recorded before the second pass
+# overwrites the list it was decided from.
+- name: Record whether an AdGuard Home recreate was spent
+  ansible.builtin.set_fact:
+    adguard_recreate_spent: >-
+      {{ container_health_stuck_services | default([]) | length > 0 }}
+  when: adguard_deployment_enabled | bool
+
+- name: Report the AdGuard Home wedged-container recovery check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ adguard_compose_project_name }} that Docker reports as restarting or
+      unhealthy, print its state, force-recreate exactly those services once
+      with no dependencies, and fail naming that retry if any of them came back
+      stuck. Compose's dry run starts nothing and does not wait on container
+      health, so check mode cannot reach that path and recreates nothing.
+  when:
+    - adguard_deployment_enabled | bool
+    - ansible_check_mode
+
+# The verdict. Nothing stuck here means the recreate worked, or that there was
+# never anything to repair; either way the run continues. Anything still stuck
+# fails, and says the retry has already been spent.
+- name: Refuse an AdGuard Home container that stayed wedged after its recreate
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: adguard
+    container_health_project_name: "{{ adguard_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ adguard_recreate_failure_message | default('') }}
+    container_health_retried: "{{ adguard_recreate_spent }}"
+  when: adguard_deployment_enabled | bool
+
+# WHY A RESTART AND NOT A RECREATE. AdGuardHome.yaml arrives through a bind
+# mount, so rewriting it changes no container specification and `up -d` replaces
+# nothing: without this task, reverting drift made in the web interface would
+# write the file and leave the running daemon on the settings it already had
+# until something else happened to restart it. AdGuard has no configuration
+# reload signal -- `-s reload` is for its service-manager mode, which this
+# container does not use -- so a restart is the reload.
+#
+# Conditional twice over, and both halves are the idempotence argument. The
+# template above reports no change on a converged host, so this is skipped on
+# every run that reverted nothing; and a converge that has just created the
+# container skips it too, because that container started by reading the file
+# this run wrote.
+- name: Restart AdGuard Home onto a reverted configuration
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/adguard"
+    project_name: "{{ adguard_compose_project_name }}"
+    files: "{{ platform_service_compose_files['adguard'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/adguard/.env"]
+    state: restarted
+  register: adguard_config_restart
+  #
+  # `not ansible_check_mode` is the third condition and it is not decoration.
+  # Compose's dry run starts nothing, so under --check the template above reports
+  # the change it would make and this task would then be asked to restart a
+  # project that a review has not created. The reviewer is told what it would do
+  # instead, beside the wedged-container recovery that defers for the same
+  # reason.
+  when:
+    - adguard_deployment_enabled | bool
+    - adguard_config is changed
+    - (adguard_deploy | default({})) is not changed
+    - not ansible_check_mode
+
+- name: Report the AdGuard Home configuration revert check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would compare the rendered AdGuard Home configuration against
+      the file on disk and, where a change in the web interface had moved it,
+      write the declared document back and restart Compose project
+      {{ adguard_compose_project_name }} onto it. Compose's dry run starts
+      nothing, so check mode reports the file it would write and restarts
+      nothing.
+  when:
+    - adguard_deployment_enabled | bool
+    - ansible_check_mode
+
+- name: Verify AdGuard Home effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: adguard
+    container_cpu_project_name: "{{ adguard_compose_project_name }}"
+  when: adguard_deployment_enabled | bool
+
+# /login.html is the one route AdGuard serves without credentials, so this waits
+# on the web server without carrying one. It is a readiness probe rather than a
+# verification: what the service actually does is asserted in verify.yml, over
+# the API and over DNS.
+- name: Wait for AdGuard Home web readiness
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/login.html"
+    method: GET
+    status_code: [200]
+  register: adguard_ready
+  until: adguard_ready.status | default(0) | int == 200
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+  when: adguard_deployment_enabled | bool

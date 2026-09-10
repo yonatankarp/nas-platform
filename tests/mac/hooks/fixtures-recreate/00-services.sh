@@ -94,4 +94,5 @@ mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite'
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+adguard=#548 landed it with adguard_deployment_enabled false and tests/mac/lib.sh does not ask this lane to turn it on, so the converge takes the project to state: absent and there is no stack here to exercise; it is proved by its Docker integration suite'

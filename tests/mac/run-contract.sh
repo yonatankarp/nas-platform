@@ -161,6 +161,21 @@ case $mac_service in
   nextcloud)
     : "${PLATFORM_NEXTCLOUD_PORT:?PLATFORM_NEXTCLOUD_PORT is required}"
     ;;
+  # Two ports rather than one, because AdGuard publishes two things: a web
+  # interface and a resolver. Neither number can be the production one on a
+  # laptop that already resolves and already has 8083 in use by whichever copy of
+  # the platform ran last.
+  #
+  # NOTHING IN THIS LANE ALLOCATES EITHER YET. #548 landed AdGuard with its gate
+  # off, so tests/mac/run.sh has no allocation for it and every Mac hook group
+  # exempts it in writing; this arm exists because a registered service with no
+  # arm is refused rather than run with an incomplete environment, and because it
+  # is what the allocation will plug into. Until then, invoking this contract
+  # here refuses by name instead of connecting to whatever else holds the port.
+  adguard)
+    : "${PLATFORM_ADGUARD_PORT:?PLATFORM_ADGUARD_PORT is required}"
+    : "${PLATFORM_ADGUARD_DNS_PORT:?PLATFORM_ADGUARD_DNS_PORT is required}"
+    ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac
 

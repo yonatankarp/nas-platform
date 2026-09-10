@@ -1,0 +1,128 @@
+---
+# What this stage proves, and what it deliberately leaves to the contract.
+#
+# Everything under /control answers 401 without credentials -- measured against
+# v0.107.79, including /control/status itself -- so each read below carries the
+# vault administrator pair as HTTP Basic authentication. That is also the reason
+# the vault holds the clear password beside the bcrypt hash: the hash is what
+# AdGuard stores, and the clear value is the only thing that can ask AdGuard
+# anything.
+#
+# /control/filtering/check_host is AdGuard's own filtering verdict on a name, so
+# the pair of probes below is a behavioural claim rather than an HTTP 200: one
+# name the declared list blocks and one it does not, answered by the running
+# instance out of the list it actually downloaded. The resolver-level half --
+# sending a real DNS query and reading the answer -- is
+# tests/contracts/adguard-runtime.rb, because a play has no portable way to put a
+# DNS query on a particular port.
+
+# Redacted: the request carries the vault administrator pair.
+- name: Verify the AdGuard Home service status
+  tags: [platform_verify_adguard]
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/status"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_verify_status
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: adguard_deployment_enabled | bool
+
+# Redacted: the request carries the vault administrator pair.
+- name: Verify the AdGuard Home filter lists
+  tags: [platform_verify_adguard]
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/status"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_verify_filters
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: adguard_deployment_enabled | bool
+
+# Redacted: the request carries the vault administrator pair.
+- name: Verify that AdGuard Home blocks a name its declared list blocks
+  tags: [platform_verify_adguard]
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/check_host?name={{ adguard_blocked_probe_domain | urlencode }}"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_verify_blocked
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: adguard_deployment_enabled | bool
+
+# Redacted: the request carries the vault administrator pair.
+- name: Verify that AdGuard Home resolves a name no declared list blocks
+  tags: [platform_verify_adguard]
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/check_host?name={{ adguard_allowed_probe_domain | urlencode }}"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_verify_allowed
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: adguard_deployment_enabled | bool
+
+# The conditions name no credential, so this assertion is readable rather than
+# redacted, which is what lets it say which reading differed.
+- name: Require the exact AdGuard Home verification results
+  tags: [platform_verify_adguard]
+  ansible.builtin.assert:
+    that:
+      - adguard_verify_status.json.running | default(false) | bool
+      - adguard_verify_status.json.protection_enabled | default(false) | bool
+      - >-
+        adguard_verify_status.json.dns_port | default(0) | int
+        == adguard_dns_container_port | int
+      - adguard_verify_filters.json.enabled | default(false) | bool
+      - >-
+        adguard_verify_filters.json.filters | default([], true)
+        | selectattr('enabled') | map(attribute='url') | sort | list
+        == adguard_filters | map(attribute='url') | sort | list
+      - >-
+        adguard_verify_filters.json.filters | default([], true)
+        | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length
+        == adguard_filters | length
+      - adguard_verify_blocked.json.reason | default('') == 'FilteredBlackList'
+      - >-
+        (adguard_verify_blocked.json.filter_id | default(0) | int)
+        in (adguard_filters | map(attribute='id') | list)
+      - adguard_verify_allowed.json.reason | default('') is match('^NotFiltered')
+    fail_msg: >-
+      AdGuard Home did not report a running, protecting resolver whose declared
+      filter lists are the ones in force. A blocked name must answer
+      FilteredBlackList from a declared list and an unblocked name must answer
+      NotFiltered; a filter list reporting no rules has never downloaded.
+  when: adguard_deployment_enabled | bool
+
+- name: Report the AdGuard Home verification the deployment gate skips
+  tags: [platform_verify_adguard]
+  ansible.builtin.debug:
+    msg: >-
+      adguard_deployment_enabled is false, so there is no AdGuard Home instance
+      to verify on this host and nothing is listening on port
+      {{ adguard_dns_port }}. The stack converges to `state: absent` rather than
+      being skipped, so this is a host with no resolver of its own rather than a
+      host whose resolver went unchecked.
+  when: not adguard_deployment_enabled | bool

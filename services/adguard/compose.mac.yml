@@ -1,0 +1,36 @@
+---
+services:
+  adguard:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-adguard
+    # The Mac lane runs several isolated copies of the platform on a laptop that
+    # already has a resolver, so neither the production web port nor the
+    # privileged 53 is available to it. Both host sides therefore come from the
+    # rendered environment rather than from a literal.
+    #
+    # services/adguard/compose.integration.yml is now the same shape for the
+    # same reason, and it carries the measurement that says why the sandbox
+    # cannot simply publish 53.
+    #
+    # NOTHING ALLOCATES THEM YET, and this file must not be read as though
+    # something does. tests/mac/run.sh has no allocation for adguard and
+    # MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh does not name it, so
+    # roles/adguard/templates/env.j2 renders the production 8083 and the
+    # privileged 53 into ADGUARD_HOST_PORT and ADGUARD_DNS_HOST_PORT and this
+    # override republishes exactly what it was meant to replace. That is inert
+    # only because the Mac lane never turns adguard_deployment_enabled on, which
+    # is an expired guard reading as a live one -- the class of thing this
+    # repository keeps finding.
+    #
+    # What has to change before the lane can run this service: an entry in
+    # MAC_SERVICE_PORT_ORDER, the twelve-site allocation chain in
+    # tests/mac/run.sh that docs/adding-a-service.md walks through (twice over,
+    # because this is two ports), the <service>_port lines in
+    # inventory/group_vars/mac_hosts/main.yml, the exemptions every Mac hook
+    # group and tests/policy_mac_test.rb currently carry for adguard, and the
+    # `-e adguard_deployment_enabled=true` that tests/mac/lib.sh passes for
+    # Nextcloud. tests/deployment_gate_coverage_test.rb makes all of that
+    # mandatory the moment the platform default flips.
+    ports: !override
+      - "${ADGUARD_HOST_PORT:?}:3000"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/tcp"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/udp"

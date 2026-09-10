@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running sixteen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -99,7 +99,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud idempotence-check full` — the roster is `tests/ci/suites.conf`, and
+nextcloud adguard idempotence-check full` — the roster is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
 converges `ntfy` as well, because each service role reports its own deployment
@@ -727,8 +727,12 @@ Rebalancing the partition as checks change is a manual act, informed by the
 gate's own slowest-checks report. The current split was drawn by #517 against
 four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
-balances cost rather than count, which is why the shards hold 51, 52 and 61
-checks. Three things constrain a future rebalance, all three stated beside the
+balances cost rather than count, which is why the shards hold uneven numbers of
+checks. Read that count off the gate's own report rather than from here: it was
+53/53/61 over 167 when #517 drew the split and is 53/57/61 over 171 today, and
+this sentence stood at 51/52/61 through both of those and went stale again
+within one pull request of being corrected. Three things constrain a future
+rebalance, all three stated beside the
 lists: a check's recorded seconds are its wall time at that shard's load rather
 than work that can be carried elsewhere, so an arithmetic projection from that
 report overshoots; each shard's leg is a *different runner*, so the three columns
@@ -858,6 +862,10 @@ pre-upgrade backup is a copy of that database beside it), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
-user's own documents), and application
+user's own documents), AdGuard Home's `work/data/sessions.db` (bearer tokens
+for the web interface, so a copy of it is a login; its `AdGuardHome.yaml`
+beside it holds the administrator's bcrypt hash rather than a clear password,
+which is a hash and not a secret but is still what an offline guess would be
+made against), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.

@@ -96,7 +96,10 @@
 - name: Resolve portable vault credential shape violations
   ansible.builtin.set_fact:
     vault_contract_credential_errors: >-
-      {{ {'vault_audiobookshelf_admin_username': vault_audiobookshelf_admin_username,
+      {{ {'vault_adguard_admin_username': vault_adguard_admin_username,
+          'vault_adguard_admin_password': vault_adguard_admin_password,
+          'vault_adguard_admin_password_hash': vault_adguard_admin_password_hash,
+          'vault_audiobookshelf_admin_username': vault_audiobookshelf_admin_username,
           'vault_audiobookshelf_admin_password': vault_audiobookshelf_admin_password,
           'vault_dozzle_admin_username': vault_dozzle_admin_username,
           'vault_dozzle_admin_password': vault_dozzle_admin_password,

@@ -3,6 +3,10 @@
 # not a recovery tool: existing values come from the password manager and the
 # deployed configuration and must never be rotated implicitly.
 
+vault_adguard_admin_username: {{ adguard_admin_username }}
+vault_adguard_admin_password: {{ adguard_admin_password }}
+vault_adguard_admin_password_hash: "{{ adguard_admin_password_hash }}"
+
 vault_audiobookshelf_admin_username: {{ audiobookshelf_admin_username }}
 vault_audiobookshelf_admin_password: {{ audiobookshelf_admin_password }}
 

@@ -306,6 +306,7 @@ jellyfin jellyfin
 immich immich
 paperless paperless-ngx
 nextcloud nextcloud
+adguard adguard
 arr arr
 downloaders downloaders
 bindery bindery

@@ -48,5 +48,6 @@ done
 
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
+adguard=#548 landed it with adguard_deployment_enabled false and tests/mac/lib.sh does not ask this lane to turn it on, so the converge takes the project to state: absent and there is no stack here to exercise; it is proved by its Docker integration suite' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"
