@@ -249,6 +249,28 @@ the key, so the simplest override is one that omits it.
 **Compose project names are derived** from `platform_project_name` so a sandbox
 can run several isolated copies of the platform side by side.
 
+**A pin is not freely reversible where the container migrates its own store.**
+Bindery, Immich, Paperless-ngx and Nextcloud each apply their own schema
+migrations when they start, and each documents it beside its `image:`. That
+makes a version bump one-way: the newer image writes a schema the older one
+declines to open, and it declines *inside the container*, so the symptom is a
+crash loop rather than a failure a play reports. #511 is what that costs — a
+Bindery application **minor** migrated the store to `schema_migrations` 81, the
+release went back to a pin that knew 1..80, and the host sat behind it for three
+days with every converge failing at that role and the poller not advancing. Two
+controls, at opposite ends. `renovate.json` withholds `major`, `minor` and
+`patch` for those images — a digest refresh on an unchanged tag moves no version
+and stays automerged — which is a wider scope than the database-major rule
+beside it and deliberately so. And `roles/image_downgrade_guard`, included by a
+service role before its backup and its Compose deployment, reads the image
+reference Docker recorded for that service's own containers, running or not, and
+refuses a pin older than one that has already run. It compares image versions
+rather than schema versions because the schema lives in a store only the
+application can open; the role names the three routes to the real version and
+why each was rejected. Bindery is its only caller today, and the role takes the
+manifest directory, the Compose service key and the project name as arguments so
+the other three can adopt it unchanged.
+
 **Container CPU policy.** Production containers are pinned to logical CPUs `0-2`
 of four, each with a workload-specific 0.5–3.0 CPU ceiling. Ansible derives and
 validates the effective CPU set before deployment and checks Docker's applied
