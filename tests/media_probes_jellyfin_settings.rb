@@ -778,16 +778,7 @@ def exercise_jellyfin_qsv_probe(failures)
     return
   end
 
-  probe_tasks = YAML.safe_load_file(probe_path, aliases: false)
-  info_task = probe_tasks.find do |task|
-    task.key?("ansible.builtin.command") &&
-      Array(task.dig("ansible.builtin.command", "argv")) == %w[docker container inspect jellyfin]
-  end
-  unless info_task
-    failures << "Jellyfin reusable QSV probe does not inspect container existence in check mode"
-    return
-  end
-  exec_task = probe_tasks.find do |task|
+  exec_task = YAML.safe_load_file(probe_path, aliases: false).find do |task|
     task.key?("community.docker.docker_compose_v2_exec")
   end
   unless exec_task
@@ -798,62 +789,142 @@ def exercise_jellyfin_qsv_probe(failures)
   unless qsv_argv.each_cons(3).include?(["-f", "null", "-"])
     failures << "Jellyfin reusable QSV probe must pass the literal null muxer to FFmpeg"
   end
-  exec_task.delete("community.docker.docker_compose_v2_exec")
-  exec_task["ansible.builtin.uri"] = {
-    "url" => "{{ jellyfin_api }}/qsv", "method" => "POST", "status_code" => [204]
-  }
-  info_task.delete("ansible.builtin.command")
-  info_task.delete("register")
-  info_task.delete("failed_when")
-  info_task.delete("no_log")
-  info_task["ansible.builtin.set_fact"] = {
-    "jellyfin_qsv_container_info" => {
-      "rc" => "{{ 0 if fixture_container_exists else 1 }}"
-    }
-  }
-  variables = { "jellyfin_api" => nil,
-                "platform_service_compose_files" => { "jellyfin" => ["compose.yml"] },
-                "jellyfin_compose_project_name" => "fixture", "platform_current_dir" => ROOT,
-                "platform_runtime_dir" => ROOT }
+
+  exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
+  exercise_jellyfin_qsv_probe_placement(failures)
+  exercise_jellyfin_qsv_probe_selection(failures, probe_path)
+end
+
+# The probe's whole value is its exit code (#535), so the fixture drives the exit
+# code rather than counting requests, which is what the earlier version of this
+# harness could do and what left the probe unable to fail for as long as it did.
+# Only the module is swapped, for a command whose rc each case chooses; the
+# register name, the `when`, the changed_when and the real failed_when string are
+# read out of the file and left exactly as the role states them, so a weakened
+# guard there is a red case here rather than an untested edit.
+def exercise_jellyfin_qsv_probe_verdict(failures, probe_path)
   cases = [
-    ["nas", [], true, 1],
-    ["mac", [], true, 0],
-    ["nas", ["--check"], false, 0],
-    ["nas", ["--check"], true, 1],
-    ["integration", [], true, 0]
+    ["a passing QSV probe on the NAS", "nas", "0", true],
+    ["a failing QSV probe on the NAS", "nas", "1", false],
+    # A chdir that does not exist makes the command module refuse before it runs
+    # anything: it registers no rc at all. That is the state `| default(0)` would
+    # report as a passing probe and `| default(1)` refuses, and it is the only
+    # case that can tell the two spellings apart.
+    ["a QSV probe whose module refused before running", "nas", :refused, false],
+    ["a failing QSV probe off the NAS", "mac", "1", true],
+    ["a failing QSV probe in integration test mode", "integration", "1", true]
   ]
-  cases.each do |platform, arguments, container_exists, expected|
-    with_http_service(->(_request) { [204, nil] }) do |port, requests|
-      fixture_variables = variables.merge(
-        "jellyfin_api" => "http://127.0.0.1:#{port}",
-        "platform_kind" => platform == "integration" ? "nas" : platform,
-        "platform_compose_kind" => platform == "integration" ? "integration" : platform,
-        "deployment_bundle_test_mode" => platform == "integration",
-        "fixture_container_exists" => container_exists
-      )
-      stdout, stderr, status = run_playbook(probe_tasks, fixture_variables, *arguments)
-      failures << "Jellyfin #{platform} QSV probe fixture failed: #{failure_tail(stdout + stderr)}" unless
-        status.success?
-      failures << "Jellyfin #{platform} QSV probe count differs in #{arguments.join(' ')}" unless
-        requests.count { |request| request["target"] == "/qsv" } == expected
-      if platform == "nas" && arguments == ["--check"] && !container_exists
-        failures << "Jellyfin NAS check mode omits planned QSV proof" unless
-          (stdout + stderr).include?("JELLYFIN_PLAN_QSV_PROBE")
+  cases.each do |label, platform, exit_code, expected|
+    tasks = YAML.safe_load_file(probe_path, aliases: false)
+    task = tasks.find { |candidate| candidate.key?("community.docker.docker_compose_v2_exec") }
+    task.delete("community.docker.docker_compose_v2_exec")
+    task["ansible.builtin.command"] =
+      if exit_code == :refused
+        { "argv" => ["/bin/true"], "chdir" => "/nonexistent/nas-platform-qsv-probe-fixture" }
+      else
+        { "argv" => ["/bin/sh", "-c", "exit #{exit_code}"] }
       end
-    end
+    variables = {
+      "platform_kind" => platform == "integration" ? "nas" : platform,
+      "platform_compose_kind" => platform == "integration" ? "integration" : platform,
+      "deployment_bundle_test_mode" => platform == "integration"
+    }
+    stdout, stderr, status = run_playbook(tasks, variables)
+    next if status.success? == expected
+
+    failures << "Jellyfin QSV probe fixture accepted #{label}" if status.success?
+    failures << "Jellyfin QSV probe fixture refused #{label}: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+  end
+end
+
+# Whether Ansible actually selects the probe, which is the one thing the two
+# checks above cannot say: they read YAML, and a `never` that arrived through an
+# `apply:` block suppressing the included task would leave every shape assertion
+# in this file, in tests/contracts/jellyfin-static.rb and in the contract's own
+# rows green over a proof that runs nowhere. So this drives the real include task
+# out of verify.yml against a copy of the probe whose module is a command that
+# exits 1, and gives the include the jellyfin/media tags site.yml's role listing
+# gives it -- those tags are exactly what make `never` insufficient on its own.
+def exercise_jellyfin_qsv_probe_selection(failures, probe_path)
+  include_task = YAML.safe_load_file(
+    File.join(ROOT, "roles", "jellyfin", "tasks", "verify.yml"), aliases: false
+  ).find { |task| task.dig("ansible.builtin.include_tasks", "file") == "qsv_probe.yml" }
+  if include_task.nil?
+    failures << "Jellyfin QSV probe include is absent from verification"
+    return
   end
 
-  main = jellyfin_role_tasks
-  probe_includes = main.select do |task|
-    include_value = task["ansible.builtin.include_tasks"]
-    include_value == "qsv_probe.yml" ||
-      (include_value.is_a?(Hash) && include_value["file"] == "qsv_probe.yml")
+  tasks = YAML.safe_load_file(probe_path, aliases: false)
+  probe = tasks.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
+  probe.delete("community.docker.docker_compose_v2_exec")
+  probe["ansible.builtin.command"] = { "argv" => ["/bin/sh", "-c", "exit 1"] }
+  variables = { "platform_kind" => "nas", "platform_compose_kind" => "nas",
+                "deployment_bundle_test_mode" => false }
+  Dir.mktmpdir("nas-platform-jellyfin-qsv-selection-") do |directory|
+    copy = File.join(directory, "qsv_probe.yml")
+    File.write(copy, YAML.dump(tasks))
+    include_value = include_task["ansible.builtin.include_tasks"]
+    include_value["file"] = copy
+    include_task["tags"] = Array(include_task["tags"]) | %w[jellyfin media]
+    include_value["apply"]["tags"] = Array(include_value.dig("apply", "tags")) | %w[jellyfin media]
+    [
+      ["platform_verify_jellyfin", true, false, "its own verification tag"],
+      ["jellyfin", false, true, "the converge tag site.yml gives the role"],
+      [nil, false, true, "an untagged converge"]
+    ].each do |tag, runs, succeeds, label|
+      arguments = tag.nil? ? [] : ["--tags", tag]
+      stdout, stderr, status = run_playbook([include_task], variables, *arguments)
+      output = stdout + stderr
+      reached = output.include?("Probe the Jellyfin QSV hardware device")
+      failures << "Jellyfin QSV probe is not reached under #{label}" if runs && !reached
+      failures << "Jellyfin QSV probe is reached under #{label}" if !runs && reached
+      failures << "Jellyfin QSV probe did not fail the play under #{label}" if
+        !succeeds && status.success?
+      failures << "Jellyfin QSV probe failed the play under #{label}: #{failure_tail(output)}" if
+        succeeds && !status.success?
+    end
   end
-  verify_include = probe_includes.find do |task|
-    Array(task["tags"]).include?("platform_verify_jellyfin")
+end
+
+# Where the proof runs. It is fatal, so the stage it is included from decides
+# what a hardware fault takes down with it: jellyfin precedes seerr, immich,
+# paperless_ngx and nextcloud in site.yml, and roles/jellyfin/tasks/verify.yml
+# is imported by main.yml and therefore runs inside the converge like any other
+# stage -- tags are the only thing that withhold it. Both are required, and
+# `never` alone is not enough: `site.yml --tags jellyfin` requests a tag the task
+# carries, which runs a `never` task, and the run-tag condition is what stops it
+# there and in the --check --diff review. tests/contracts/jellyfin-static.rb
+# states the same placement as a contract refusal.
+def exercise_jellyfin_qsv_probe_placement(failures)
+  qsv_include = lambda do |task|
+    value = task["ansible.builtin.include_tasks"]
+    value == "qsv_probe.yml" || (value.is_a?(Hash) && value["file"] == "qsv_probe.yml")
   end
-  failures << "Jellyfin QSV probe is not invoked during convergence and tagged verification" unless
-    probe_includes.length >= 2 && verify_include && verify_include["when"].to_s.include?("platform_kind == 'nas'")
+  stage = lambda do |name|
+    YAML.safe_load_file(
+      File.join(ROOT, "roles", "jellyfin", "tasks", "#{name}.yml"), aliases: false
+    )
+  end
+  failures << "Jellyfin QSV probe is included from the convergence path" if
+    stage.call("deploy").any?(&qsv_include)
+  role_includes = jellyfin_role_tasks.select(&qsv_include)
+  verify_includes = stage.call("verify").select(&qsv_include)
+  unless role_includes.length == 1 && verify_includes.length == 1
+    failures << "Jellyfin QSV probe is not included exactly once, from verification"
+    return
+  end
+
+  include_task = verify_includes.first
+  failures << "Jellyfin QSV probe include is not withheld from the converge by tag" unless
+    Array(include_task["tags"]).sort == %w[never platform_verify_jellyfin] &&
+      Array(include_task.dig("ansible.builtin.include_tasks", "apply", "tags")).sort ==
+        %w[never platform_verify_jellyfin]
+  conditions = Array(include_task["when"]).map(&:to_s)
+  failures << "Jellyfin QSV probe include is not withheld from the converge by run tag" unless
+    conditions.any? { |condition| condition.include?("'platform_verify_jellyfin' in ansible_run_tags") }
+  failures << "Jellyfin QSV probe include is not restricted to the NAS" unless
+    conditions.any? { |condition| condition.include?("platform_kind == 'nas'") }
 end
 
 def exercise_jellyfin_opensubtitles_ordering(failures)

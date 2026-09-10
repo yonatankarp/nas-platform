@@ -281,6 +281,11 @@ def exercise_jellyfin_fresh_check_mode(failures)
       task["ansible.builtin.include_tasks"] =
         File.join(ROOT, "roles", "jellyfin", "tasks", "settings.yml")
     elsif include_value.is_a?(Hash) && include_value["file"] == "qsv_probe.yml"
+      # The QSV probe is fatal and verify-only (#535), so its `never` tag keeps
+      # it out of this untagged check-mode run and the rewrite below resolves
+      # nothing today. It stays anyway: it is what makes a dropped gate show up
+      # as the assertion further down naming the probe, instead of as an
+      # unresolvable include path that says nothing about why.
       include_value["file"] = File.join(ROOT, "roles", "jellyfin", "tasks", "qsv_probe.yml")
     end
   end
@@ -305,11 +310,10 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "vault_jellyfin_opensubtitles_password" => "subtitle-secret",
         "vault_managed_jellyfin_users" => [],
         "platform_kind" => "nas",
-        # The QSV probe this fixture includes reads the render device path into
-        # its FFmpeg arguments. Those arguments only template when a jellyfin
-        # container happens to exist on the machine running the fixture, so
-        # leaving the variable out would make the fixture pass or fail by
-        # accident of the local Docker state.
+        # Only the QSV probe reads the render device path, and it is withheld
+        # from this path. The variable stays defined so that a run which does
+        # reach the probe fails on the probe rather than on an undefined
+        # variable, which is a different message about a different defect.
         "platform_render_device_path" => "/dev/dri/renderD128",
         "platform_current_dir" => ROOT,
         "platform_runtime_dir" => directory,
@@ -334,12 +338,21 @@ def exercise_jellyfin_fresh_check_mode(failures)
         "JELLYFIN_PLAN_PLUGIN_REPOSITORIES",
         "JELLYFIN_PLAN_PLUGIN_INSTALL Intro Skipper",
         "JELLYFIN_PLAN_PLUGIN_INSTALL Open Subtitles",
-        "JELLYFIN_PLAN_OPENSUBTITLES_CONFIGURATION",
-        "JELLYFIN_PLAN_QSV_PROBE"
+        "JELLYFIN_PLAN_OPENSUBTITLES_CONFIGURATION"
       ]
       expected_plans.each do |plan|
         failures << "Jellyfin fresh check mode omits #{plan}" unless output.include?(plan)
       end
+      # JELLYFIN_PLAN_QSV_PROBE used to be in that list, and the probe reported
+      # a plan here because it ran for real under --check. #535 made the probe
+      # fatal and moved it behind the verification tags, which is a stronger
+      # property than the marker was: the check-mode review the platform
+      # requires before applying cannot fail on a hardware fault, because it no
+      # longer reaches the hardware. A skipped-by-`when` task still prints its
+      # own banner, so naming the task inside the probe file is what separates
+      # "was not included" from "was included and did nothing".
+      failures << "Jellyfin fresh check mode reached the fatal QSV hardware probe" if
+        output.include?("Probe the Jellyfin QSV hardware device")
       failures << "Jellyfin fresh check mode performed a mutation" if requests.any? do |request|
         %w[POST PUT PATCH DELETE].include?(request["method"])
       end

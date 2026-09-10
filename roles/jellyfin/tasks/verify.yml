@@ -5,13 +5,31 @@
 # administrator image back, and assert the owned state is exactly what the role
 # declares.
 
+# The one task in this file withheld from the converge, and the only one that
+# needs to be. Every other verification here reads back state this role just
+# reconciled, so failing the play is the right answer; the QSV probe reads a
+# hardware capability nothing in this repository can converge, and jellyfin
+# precedes seerr, immich, paperless_ngx and nextcloud in site.yml, so a fatal
+# probe reached from the converge would strand four stacks on a fault that harms
+# none of them (#535).
+#
+# Both gates are load-bearing. `never` withholds the include from a bare
+# converge; it does not withhold it from `site.yml --tags jellyfin`, because a
+# `never` task runs as soon as any tag it carries is requested explicitly and
+# the role-level `jellyfin` tag is one of them. The ansible_run_tags condition
+# is what closes that, and with it what keeps a fatal probe out of the
+# --check --diff review the platform requires before applying.
+# roles/paperless_ngx/tasks/mail_state.yml pins the same pair for the same
+# reason. The poller runs verify.yml with platform_verify_jellyfin immediately
+# after site.yml, so the detection latency this costs is one play, not one tick.
 - name: Prove Jellyfin QSV during exact verification
-  tags: [platform_verify_jellyfin]
+  tags: [never, platform_verify_jellyfin]
   ansible.builtin.include_tasks:
     file: qsv_probe.yml
     apply:
-      tags: [platform_verify_jellyfin]
+      tags: [never, platform_verify_jellyfin]
   when:
+    - "'platform_verify_jellyfin' in ansible_run_tags"
     - platform_kind == 'nas'
     - >-
       not ((platform_compose_kind | default('') == 'integration') and
