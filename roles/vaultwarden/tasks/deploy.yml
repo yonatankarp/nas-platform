@@ -50,9 +50,23 @@
     success_msg: >-
       Vaultwarden publishes {{ vaultwarden_domain }}, a named https origin with
       no port.
-  when:
-    - vaultwarden_deployment_enabled | bool
-    - vaultwarden_runtime_env.stat.exists
+  # THE GATE ALONE, AND DELIBERATELY NOT vaultwarden_runtime_env.stat.exists.
+  # This assertion validates a variable, not a file: it touches no Compose
+  # invocation, so a missing runtime .env cannot affect whether it holds, and it
+  # is the one task here that must still refuse a bad DOMAIN on a host that has
+  # never converged.
+  #
+  # It also cannot read that fact yet. The stat that registers it is thirty-odd
+  # lines below, after the template, and Ansible resolves a `when` at the moment
+  # the task runs -- so the term was a forward reference. It short-circuited
+  # while the gate was false and was therefore invisible: dark, this task skips
+  # on the first term and never evaluates the second. With the gate true it
+  # failed the run at the FIRST task of the enabled path, in all four
+  # combinations including a host whose .env was present, because the variable
+  # simply does not exist yet -- `A 'when' expression failed: 'vaultwarden_runtime_env'
+  # is undefined`. Under the five-minute poller that is every five minutes, on
+  # the live NAS, with the repository as the only way in.
+  when: vaultwarden_deployment_enabled | bool
 
 - name: Render the Vaultwarden environment
   ansible.builtin.template:
@@ -84,6 +98,14 @@
 # deployed the project, and there is nothing to tear down. The one state that
 # reads wrong is a runtime directory deleted out from under running containers,
 # which the report below names rather than silently skipping.
+# AFTER THE TEMPLATE, AND THAT ORDERING IS LOAD-BEARING. On a live first
+# converge of a fresh host the render above has just written the file, so this
+# reads it as present and the deployment proceeds. Moved above the template it
+# would read "absent" on exactly that run and skip the deployment entirely --
+# trading a failure that is loud for a stack that silently never deploys.
+#
+# Which is why the assertion above carries the gate term alone rather than this
+# one: no task may read this fact before this point, and nothing here needs to.
 - name: Read whether a Vaultwarden runtime environment exists on this host
   ansible.builtin.stat:
     path: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
@@ -520,6 +542,34 @@
   delay: "{{ platform_readiness_delay }}"
   changed_when: false
   check_mode: false
+  # `not ansible_check_mode` is the third term and it is not decoration, for the
+  # same reason the wedged-container recovery above defers: Compose's dry run
+  # starts nothing, so on a host where this stack is not already up there is no
+  # listener and the probe answers `Connection refused` -- a review failing on
+  # the absence of a thing the review deliberately did not create.
+  #
+  # That is not hypothetical and it is not the fresh-host case. It is exactly
+  # the chunk-2 review: the gate flips, so a runtime .env has been rendered on
+  # every dark converge and the container has never existed, and
+  # `--check --diff` is what CLAUDE.md tells the operator to run first.
+  # Measured on that state before this term: `Status code was -1 and not [200]:
+  # Connection refused`.
   when:
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
+    - not ansible_check_mode
+
+- name: Report the Vaultwarden readiness wait check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would poll {{ vaultwarden_url }}/alive until it answers 200,
+      which is how this role knows the container it just started is serving
+      rather than merely running. Compose's dry run starts nothing, so check
+      mode has no listener to poll and reports the intent instead. What the
+      service actually enforces is asserted in this role's verification tasks,
+      which are selectable with --tags platform_verify_vaultwarden against a
+      host that is really running it.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
+    - ansible_check_mode
