@@ -235,7 +235,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 12, delegated 1, exempt 4)'
+  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 13, delegated 1, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -247,11 +247,12 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-nextcloud run' 'fixtures-persistence'
+nextcloud run
+adguard run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
+  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -262,11 +263,12 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-nextcloud run' 'verify'
+nextcloud run
+adguard run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 14, delegated 0, exempt 3)'
+  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 15, delegated 0, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -280,7 +282,8 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-nextcloud run' 'fixtures-recreate'
+nextcloud run
+adguard run' 'fixtures-recreate'
 # The recreate table also carries the deployed bundle directory and the Compose
 # container set, which no other assertion here would notice going wrong.
 # Paperless is the one service whose bundle directory is not its Mac alias.
@@ -297,7 +300,8 @@ proof-kapowarr |runtime/services/kapowarr/.env |current/services/kapowarr/compos
 proof-bindery |runtime/services/bindery/.env |current/services/bindery/compose.yml |bindery
 proof-trailarr |runtime/services/trailarr/.env |current/services/trailarr/compose.yml |trailarr
 proof-seerr |runtime/services/seerr/.env |current/services/seerr/compose.yml |seerr
-proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/compose.yml |nextcloud cron db cache' \
+proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/compose.yml |nextcloud cron db cache
+proof-adguard |runtime/services/adguard/.env |current/services/adguard/compose.yml |adguard' \
   'fixtures-recreate compose'
 
 # Drift is the group that never collapsed: one file per service, because no two
@@ -307,7 +311,7 @@ proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/com
 # entirely from the sibling filenames its roster pins.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
-  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 13, exempt 4)'
+  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 14, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
@@ -368,7 +372,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
+  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook
@@ -383,7 +387,8 @@ kapowarr run
 bindery run
 trailarr run
 seerr run
-nextcloud run' 'verify wrapper'
+nextcloud run
+adguard run' 'verify wrapper'
 
 tree=$fixture/verify-wrapper-registered-surplus
 build_verify_tree "$tree"

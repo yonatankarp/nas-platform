@@ -283,15 +283,14 @@ installs the same toolchain inside the container the way the harness always did.
 `INTEGRATION_TOOLCHAIN=off` forces that last path.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
-Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, and Nextcloud —
-every implemented service except `arr`, `downloaders` and `adguard`. The first
-two have a Phase 1 runtime that is default-disabled in that lane; AdGuard Home
-landed with `adguard_deployment_enabled` false and the Mac lane does not ask for
-it, so the converge takes that project to `state: absent` and there is nothing
-on the laptop to exercise. All three are proved by their Docker integration
-suites instead. The Mac lane does start Nextcloud with its own
-`-e nextcloud_deployment_enabled=true`, so its coverage does not depend on what
-the platform default happens to be.
+Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, Nextcloud and AdGuard
+Home — every implemented service except `arr` and `downloaders`, both of which
+have a Phase 1 runtime that is default-disabled in that lane and are proved by
+their Docker integration suites instead. The Mac lane starts Nextcloud and
+AdGuard with their own `-e <role>_deployment_enabled=true`, so their coverage
+does not depend on what the platform default happens to be. Neither of AdGuard's
+two host ports is production's: the lane allocates an ephemeral pair, so the
+privileged 53 is never bound on a laptop.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 
