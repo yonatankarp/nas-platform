@@ -47,7 +47,31 @@ dns:
     - 0.0.0.0
   port: {{ adguard_dns_container_port }}
   anonymize_client_ip: false
-  ratelimit: 20
+{# THE RATE LIMIT IS OFF, and that is a decision rather than a default carried
+through. AdGuard ships 20 queries per second counted per /24 -- both of the
+lengths below are upstream's -- and this household is a single /24, so the
+whole flat shares one 20 qps budget. One page load fires dozens of lookups,
+and a television, a laptop and a phone waking at once would exceed it
+between them while every device was behaving normally. A rate limit that
+drops legitimate queries on day one is worse than no rate limit at all,
+because a dropped DNS query presents as the site being broken.
+
+What the limit is FOR is an internet-exposed resolver being conscripted into
+a DNS amplification attack: a spoofed source address, a small query, a large
+answer, and the victim receives the flood. That threat needs the resolver to
+be reachable from the internet. This one is published on the LAN interface
+of a NAS behind a Vodafone Station with no port forward to 53, and
+inventory/group_vars/all/main.yml records that the operator points devices
+at it by hand rather than the router handing it out.
+
+RESTORE IT IF ANY OF THAT STOPS BEING TRUE: a port forward to 53, a router
+that hands this address to a guest network, or a tailnet configuration that
+makes the resolver reachable from outside the household. `ratelimit_whitelist`
+is the narrower alternative -- it exempts named addresses from the limit --
+and it is empty rather than populated because a limit no client is subject
+to is a limit that reads as protection and is not.
+tests/contracts/adguard-static.rb is where a claim about this would go. #}
+  ratelimit: 0
   ratelimit_subnet_len_ipv4: 24
   ratelimit_subnet_len_ipv6: 56
   ratelimit_whitelist: []
