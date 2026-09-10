@@ -53,6 +53,7 @@ required = %w[
   services/adguard/compose.integration.yml
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
+  tests/integration_controller_lib.sh
   inventory/group_vars/all/main.yml
 ]
 required.each do |relative|
@@ -72,11 +73,10 @@ GATE = "adguard_deployment_enabled | bool"
 # repo:tag@sha256:<64 hex>. Both halves, because the tag is what a human and
 # Renovate read and the digest is what makes the deployment reproducible.
 IMAGE_PIN = %r{\A[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z}
-# The literals tests/integration_controller_lib.sh exports to the runtime half.
-# They are restated here on purpose: the override and the export are two files
-# that have to agree, and nothing derives one from the other.
-INTEGRATION_WEB_PORT = 18_083
-INTEGRATION_DNS_PORT = 15_353
+# Highest port a process needs privilege to bind. The sandbox's publications
+# have to sit above it: the whole reason the integration override exists is that
+# a CI runner already holds 53.
+PRIVILEGED_PORT_CEILING = 1024
 
 def load_yaml(root, relative)
   YAML.safe_load_file(File.join(root, relative), aliases: true)
@@ -173,17 +173,42 @@ if failures.empty?
       mac_source.include?("${#{name}:?}") && env_source.include?("#{name}=")
   end
 
-  # The integration lane's literals, which tests/integration_controller_lib.sh
-  # hands the runtime half as PLATFORM_ADGUARD_PORT and PLATFORM_ADGUARD_DNS_PORT.
-  # A contract pointed at a port nothing published times out rather than failing
-  # by name, so the disagreement is caught here instead.
-  failures << "the integration override must publish #{INTEGRATION_WEB_PORT} for the web " \
-              "interface, which is what the lane exports as PLATFORM_ADGUARD_PORT" unless
-    integration_source.include?("\"#{INTEGRATION_WEB_PORT}:3000\"")
-  %w[tcp udp].each do |protocol|
-    failures << "the integration override must publish #{INTEGRATION_DNS_PORT}/#{protocol}, " \
-                "which is what the lane exports as PLATFORM_ADGUARD_DNS_PORT" unless
-      integration_source.include?("\"#{INTEGRATION_DNS_PORT}:5353/#{protocol}\"")
+  # THE INTEGRATION LANE'S TWO PORTS, READ FROM THE FILE THAT EXPORTS THEM.
+  #
+  # tests/integration_controller_lib.sh hands the runtime half PLATFORM_ADGUARD_PORT
+  # and PLATFORM_ADGUARD_DNS_PORT, and services/adguard/compose.integration.yml is
+  # what publishes them. Nothing derives one from the other, so this reads the
+  # exporting file and asserts the override agrees with it. Restating the numbers
+  # here instead -- which is what this check did until it was reviewed -- asserted
+  # only that the override matched a third copy: changing the lane's export alone
+  # left every static check green, and the lane then ran the runtime half against
+  # a port nothing published, spending the whole READY_TIMEOUT_SECONDS budget
+  # before reporting "AdGuard never served its login page", which is the wrong
+  # cause and the #319 CI-budget shape.
+  lane_source = File.read(File.join(root, "tests/integration_controller_lib.sh"))
+  exported = %w[PLATFORM_ADGUARD_PORT PLATFORM_ADGUARD_DNS_PORT].to_h do |name|
+    [name, lane_source[/#{name}=(\d+)/, 1]&.to_i]
+  end
+  missing = exported.select { |_name, value| value.nil? }.keys
+  failures << "tests/integration_controller_lib.sh exports no #{missing.join(' or ')} for the " \
+              "adguard lane, so the runtime half would inherit the production defaults and probe " \
+              "the privileged 53 on a runner that is already resolving" unless missing.empty?
+
+  unless missing.any?
+    failures << "the integration override must publish #{exported['PLATFORM_ADGUARD_PORT']} for " \
+                "the web interface, which is what tests/integration_controller_lib.sh exports as " \
+                "PLATFORM_ADGUARD_PORT" unless
+      integration_source.include?("\"#{exported['PLATFORM_ADGUARD_PORT']}:3000\"")
+    %w[tcp udp].each do |protocol|
+      failures << "the integration override must publish " \
+                  "#{exported['PLATFORM_ADGUARD_DNS_PORT']}/#{protocol}, which is what " \
+                  "tests/integration_controller_lib.sh exports as PLATFORM_ADGUARD_DNS_PORT" unless
+        integration_source.include?("\"#{exported['PLATFORM_ADGUARD_DNS_PORT']}:5353/#{protocol}\"")
+    end
+    low = exported.select { |_name, value| value <= PRIVILEGED_PORT_CEILING }.keys
+    failures << "the adguard lane exports #{low.join(' and ')} below #{PRIVILEGED_PORT_CEILING}, " \
+                "which defeats the whole reason the integration override moves the publications" unless
+      low.empty?
   end
 
   # ---------------------------------------------------------------------------
@@ -336,6 +361,68 @@ if failures.empty?
   failures << "the AdGuard verification must prove filtering behaviourally -- a name the " \
               "declared list blocks and a name it does not -- rather than only reading a status" unless
     conditions_text.include?("FilteredBlackList") && conditions_text.include?("NotFiltered")
+
+  # ---------------------------------------------------------------------------
+  # The three files this program requires and used to do nothing with, which is a
+  # requirement that reads as a guard and is not one. Each now carries an
+  # assertion that no other check makes.
+
+  # The expectation file, against the role's own argument spec. tests/policy_support.rb
+  # pins that this file exists and is well formed; what it cannot say is that its
+  # vault_keys are the keys the role actually demands, because it never opens the
+  # role. A key added to one and not the other leaves the vault contract and the
+  # roster disagreeing about what this service costs.
+  expectations = load_yaml(root, "tests/expected/adguard.yml") || {}
+  failures << "tests/expected/adguard.yml must pin exactly the vault keys roles/adguard requires " \
+              "(#{VAULT_CREDENTIALS.join(', ')}), and pins " \
+              "#{Array(expectations['vault_keys']).sort.inspect}" unless
+    Array(expectations["vault_keys"]).sort == VAULT_CREDENTIALS.sort
+  failures << "tests/expected/adguard.yml must name the adguard role" unless
+    expectations["role"] == "adguard"
+
+  # The wrapper's production defaults, against the role's declared ports. The
+  # wrapper hardcodes both so that a production run needs no environment at all;
+  # that convenience is also how the contract would end up probing whatever now
+  # answers on a port this platform moved away from, and finding it healthy.
+  wrapper_source = File.read(File.join(root, "tests/contracts/adguard.sh"))
+  {
+    "PLATFORM_ADGUARD_PORT" => "adguard_port",
+    "PLATFORM_ADGUARD_DNS_PORT" => "adguard_dns_port"
+  }.each do |name, variable|
+    fallback = wrapper_source[/#{name}:=(\d+)/, 1]&.to_i
+    failures << "tests/contracts/adguard.sh must default #{name} to #{variable} " \
+                "(#{defaults[variable].inspect}), and defaults it to #{fallback.inspect}" unless
+      fallback == defaults[variable]
+  end
+
+  # The inventory, which is where the operator decision lives and where the two
+  # directories are created. 0700 on the working directory is not a preference:
+  # AdGuard's permcheck chmods it there at every start, so anything wider has
+  # host_prep and the daemon reverting each other on every five-minute converge.
+  inventory = load_yaml(root, "inventory/group_vars/all/main.yml") || {}
+  failures << "inventory/group_vars/all/main.yml must carry the operator's adguard_deployment_enabled " \
+              "decision, or the role's own default is the only thing deciding it" unless
+    inventory.key?("adguard_deployment_enabled")
+  storage = Array(inventory["nas_storage"]).select do |entry|
+    entry.is_a?(Hash) && entry["path"].to_s.include?("/adguard/")
+  end
+  {
+    "conf" => "0755",
+    "work" => "0700"
+  }.each do |leaf, mode|
+    entry = storage.find { |candidate| candidate["path"].to_s.end_with?("/adguard/#{leaf}") }
+    failures << "nas_storage must declare the AdGuard #{leaf} directory, which is where " \
+                "host_prep creates it" if entry.nil?
+    next if entry.nil?
+
+    failures << "the AdGuard #{leaf} directory must be declared mode #{mode}: AdGuard's permcheck " \
+                "chmods its working directory to 0700 at every start, so a wider declaration has " \
+                "host_prep and the daemon reverting each other on every converge" unless
+      entry["mode"] == mode
+    failures << "the AdGuard #{leaf} directory must be recovery: cache -- this role renders the " \
+                "whole configuration and the working directory holds only the query log and the " \
+                "statistics" unless entry["recovery"] == "cache"
+  end
 end
 
 unless failures.empty?

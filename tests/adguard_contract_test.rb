@@ -71,6 +71,7 @@ FIXTURE_FILES = %w[
   services/adguard/compose.integration.yml
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
+  tests/integration_controller_lib.sh
   inventory/group_vars/all/main.yml
   tests/policy_support.rb
 ].freeze
@@ -357,6 +358,283 @@ STATIC_ROWS = [
       end
     },
     expects: "must require vault_adguard_admin_password_hash"
+  },
+  {
+    name: "a privileged container",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["adguard"]["privileged"] = true
+      end
+    },
+    expects: "AdGuard must not be privileged"
+  },
+  {
+    name: "a container that may acquire privilege after it starts",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["adguard"].delete("security_opt")
+      end
+    },
+    expects: "must refuse privilege escalation"
+  },
+  {
+    name: "an image pinned by tag alone",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["adguard"]["image"] =
+          document["services"]["adguard"]["image"].split("@").first
+      end
+    },
+    expects: "must carry both a version tag and a manifest digest"
+  },
+  {
+    name: "a sandbox container left with its production name",
+    break: lambda { |root|
+      edit_text(root, "services/adguard/compose.mac.yml") do |source|
+        source.sub("${PLATFORM_PROJECT_NAME:?}-adguard", "adguard")
+      end
+    },
+    expects: "must give the container the sandbox's namespaced name"
+  },
+  {
+    # THE ROW THIS PROGRAM WAS REVIEWED FOR. The lane exports the ports and the
+    # override publishes them, and until this row nothing read the exporting
+    # file: moving the export alone left every static check green and sent the
+    # runtime half at a port nothing published, where it spent its whole
+    # readiness budget before blaming AdGuard.
+    name: "a lane exporting a web port the override does not publish",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller_lib.sh") do |source|
+        source.sub("PLATFORM_ADGUARD_PORT=18083", "PLATFORM_ADGUARD_PORT=18084")
+      end
+    },
+    expects: "exports as PLATFORM_ADGUARD_PORT"
+  },
+  {
+    name: "a lane that went back to the privileged port the override exists to avoid",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller_lib.sh") do |source|
+        source.sub("PLATFORM_ADGUARD_DNS_PORT=15353", "PLATFORM_ADGUARD_DNS_PORT=53")
+      end
+      edit_text(root, "services/adguard/compose.integration.yml") do |source|
+        source.gsub('"15353:5353/', '"53:5353/')
+      end
+    },
+    expects: "below 1024, which defeats the whole reason"
+  },
+  {
+    # Claim 1 of this program's own header, which had no row until it was
+    # reviewed. An undeclared variable rather than the clear password, so that
+    # only the stored-hash assertion can fire and the row can say which
+    # assertion did the work.
+    name: "a rendered configuration that stopped carrying the stored hash",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/AdGuardHome.yaml.j2") do |source|
+        source.sub("password: {{ vault_adguard_admin_password_hash }}",
+                   "password: {{ adguard_admin_digest }}")
+      end
+    },
+    expects: "must render the STORED bcrypt hash"
+  },
+  {
+    # Claim 2 of the header. The clear value is added BESIDE the hash rather
+    # than in place of it, for the same reason: swapping them fires the
+    # stored-hash assertion as well and the row could no longer name its own.
+    # What the assertion forbids is the clear password reaching the rendered
+    # file in any form, and this puts it there.
+    name: "a rendered configuration carrying the clear administrator password",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/AdGuardHome.yaml.j2") do |source|
+        source.sub("password: {{ vault_adguard_admin_password_hash }}\n",
+                   "password: {{ vault_adguard_admin_password_hash }}\n" \
+                   "    plain_password: {{ vault_adguard_admin_password }}\n")
+      end
+    },
+    expects: "must not carry the clear administrator password"
+  },
+  {
+    name: "an environment that stopped rendering the Mac host port",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/env.j2") do |source|
+        source.sub(/^ADGUARD_DNS_HOST_PORT=.*\n/, "")
+      end
+    },
+    expects: "roles/adguard/templates/env.j2 must render"
+  },
+  {
+    name: "a verification task that lost its tag",
+    break: lambda { |root|
+      mutate_tasks(root, "verify") do |task|
+        task.delete("tags") if task["ansible.builtin.assert"].is_a?(Hash)
+      end
+    },
+    expects: "must carry the platform_verify_adguard tag"
+  },
+  {
+    name: "a role that stopped reading the status endpoint",
+    break: lambda { |root|
+      mutate_tasks(root, "verify") do |task|
+        uri = task["ansible.builtin.uri"]
+        next unless uri.is_a?(Hash) && uri["url"].to_s.include?("/control/status")
+
+        uri["url"] = uri["url"].sub("/control/status", "/control/dns_info")
+      end
+    },
+    expects: "must read /control/status"
+  },
+  {
+    name: "protection on and no list to enforce",
+    break: lambda { |root|
+      edit_yaml(root, "roles/adguard/defaults/main.yml") do |document|
+        document["adguard_filters"] = []
+      end
+    },
+    expects: "at least one filter list must be declared"
+  },
+  {
+    name: "an expectation file pinning the wrong vault keys",
+    break: lambda { |root|
+      edit_yaml(root, "tests/expected/adguard.yml") do |document|
+        document["vault_keys"] = document["vault_keys"].reject { |key| key.end_with?("_hash") }
+      end
+    },
+    expects: "must pin exactly the vault keys roles/adguard requires"
+  },
+  {
+    name: "a wrapper defaulting to a port the platform moved away from",
+    break: lambda { |root|
+      edit_text(root, "tests/contracts/adguard.sh") do |source|
+        source.sub("PLATFORM_ADGUARD_PORT:=8083", "PLATFORM_ADGUARD_PORT:=8080")
+      end
+    },
+    expects: "must default PLATFORM_ADGUARD_PORT to adguard_port"
+  },
+  {
+    name: "a working directory declared wider than permcheck leaves it",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        document["nas_storage"].each do |entry|
+          entry["mode"] = "0755" if entry["path"].to_s.end_with?("/adguard/work")
+        end
+      end
+    },
+    expects: "must be declared mode 0700"
+  },
+  {
+    name: "an inventory with no operator decision in it",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        document.delete("adguard_deployment_enabled")
+      end
+    },
+    expects: "must carry the operator's adguard_deployment_enabled decision"
+  },
+  {
+    name: "a web interface published somewhere the role does not declare",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["adguard"]["ports"] = document["services"]["adguard"]["ports"]
+                                                   .map { |entry| entry.sub("8083:", "8084:") }
+      end
+    },
+    expects: "must publish its web interface on the host port the role declares"
+  },
+  {
+    name: "a fourth publication nobody declared",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["adguard"]["ports"] << "8443:443"
+      end
+    },
+    expects: "must publish DNS on exactly the web port and the two 53 entries"
+  },
+  {
+    name: "a second container in the stack",
+    break: lambda { |root|
+      edit_yaml(root, "services/adguard/compose.yml") do |document|
+        document["services"]["sidecar"] = document["services"]["adguard"]
+      end
+    },
+    expects: "must declare exactly the adguard service"
+  },
+  {
+    name: "a gate the role does not require",
+    break: lambda { |root|
+      edit_yaml(root, "roles/adguard/meta/argument_specs.yml") do |document|
+        document["argument_specs"]["main"]["options"]["adguard_deployment_enabled"]["required"] =
+          false
+      end
+    },
+    expects: "must be a required bool in the role's argument spec"
+  },
+  {
+    name: "upstreams written into the template rather than declared",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/AdGuardHome.yaml.j2") do |source|
+        source.sub(/\{% for adguard_upstream in adguard_upstream_dns %\}\n.*?\{% endfor %\}\n/m,
+                   "    - tls://dns.quad9.net\n")
+      end
+    },
+    expects: "must render the declared upstreams and bootstrap resolvers"
+  },
+  {
+    name: "filter lists written into the template rather than declared",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/AdGuardHome.yaml.j2") do |source|
+        source.sub("{% for adguard_filter in adguard_filters %}", "{% if true %}")
+      end
+    },
+    expects: "must render the declared filter lists"
+  },
+  {
+    name: "a listening port written into the template rather than declared",
+    break: lambda { |root|
+      edit_text(root, "roles/adguard/templates/AdGuardHome.yaml.j2") do |source|
+        source.sub("port: {{ adguard_dns_container_port }}", "port: 5353")
+      end
+    },
+    expects: "must take its listening port from the role"
+  },
+  {
+    name: "a storage declaration the platform lost",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        document["nas_storage"].reject! { |entry| entry["path"].to_s.end_with?("/adguard/conf") }
+      end
+    },
+    expects: "nas_storage must declare the AdGuard conf directory"
+  },
+  {
+    name: "regenerable state classed as irreplaceable",
+    break: lambda { |root|
+      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
+        document["nas_storage"].each do |entry|
+          entry["recovery"] = "critical" if entry["path"].to_s.end_with?("/adguard/work")
+        end
+      end
+    },
+    expects: "must be recovery: cache"
+  },
+  {
+    name: "an expectation file naming another role",
+    break: lambda { |root|
+      edit_yaml(root, "tests/expected/adguard.yml") do |document|
+        document["role"] = "adguard_home"
+      end
+    },
+    expects: "must name the adguard role"
+  },
+  {
+    # The other direction of the lane/override agreement: a lane that stopped
+    # exporting anything leaves the runtime half on the production defaults, so
+    # it probes the privileged 53 on a runner that is already resolving.
+    name: "a lane that exports neither port",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller_lib.sh") do |source|
+        source.gsub(/^\s*PLATFORM_ADGUARD_(DNS_)?PORT=\d+ \\\n/, "")
+      end
+    },
+    expects: "exports no PLATFORM_ADGUARD_PORT"
   }
 ].freeze
 
@@ -641,7 +919,8 @@ end
 # rather than from the tree it is inspecting, so a copy of the three files into a
 # throwaway tests/contracts/ is a whole working contract.
 
-def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT))
+def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT),
+                       runtime: File.read(RUNTIME_PROGRAM))
   Dir.mktmpdir("nas-platform-adguard-wrapper.") do |raw|
     root = File.realpath(raw)
     build_fixture_repository(root)
@@ -650,7 +929,7 @@ def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CON
     {
       "adguard.sh" => wrapper,
       "adguard-static.rb" => static,
-      "adguard-runtime.rb" => File.read(RUNTIME_PROGRAM)
+      "adguard-runtime.rb" => runtime
     }.each do |name, content|
       destination = File.join(contracts, name)
       File.write(destination, content)
@@ -690,6 +969,86 @@ def wrapper_failures
     failures << "wrapper: the runtime mode did not name the missing input: " \
                 "#{(stdout + stderr).strip.inspect}" unless
       (stdout + stderr).include?("PLATFORM_CONTRACT_VAULT_FILE is required")
+  end
+  failures
+end
+
+# --- the wrapper's runtime environment ------------------------------------
+#
+# THE BLOCK NO PASSING TEST EXECUTED until this was reviewed. The rows above
+# reach adguard-runtime.rb directly, and the one wrapper row that asks for `run`
+# blanks the vault variables so the script refuses at the first `:?` and never
+# reaches the port defaults or the container-name derivation below them. Those
+# three lines are the whole of the contract's production environment -- what a
+# converged NAS is probed on when nothing exports anything -- so they are worth
+# more than a syntax check.
+#
+# The runtime half is replaced by a program that prints what it was handed, so
+# what these rows judge is the wrapper's own arithmetic rather than a real
+# AdGuard.
+STUB_RUNTIME = <<~'RUBY'
+  #!/usr/bin/env ruby
+  %w[PLATFORM_ADGUARD_PORT PLATFORM_ADGUARD_DNS_PORT PLATFORM_ADGUARD_CONTAINER
+     PLATFORM_CONTRACT_VAULT_FILE PLATFORM_DOCKER_ROOT].each do |name|
+    puts "#{name}=#{ENV.fetch(name, '<unset>')}"
+  end
+RUBY
+
+WRAPPER_ENVIRONMENT_ROWS = [
+  {
+    name: "production, where nothing exports anything",
+    given: {},
+    expects: {
+      "PLATFORM_ADGUARD_PORT" => "8083",
+      "PLATFORM_ADGUARD_DNS_PORT" => "53",
+      "PLATFORM_ADGUARD_CONTAINER" => "adguard"
+    }
+  },
+  {
+    name: "a disposable lane, which namespaces the container and moves both ports",
+    given: {
+      "PLATFORM_PROJECT_NAME" => "nas-sandbox",
+      "PLATFORM_ADGUARD_PORT" => "18083",
+      "PLATFORM_ADGUARD_DNS_PORT" => "15353"
+    },
+    expects: {
+      "PLATFORM_ADGUARD_PORT" => "18083",
+      "PLATFORM_ADGUARD_DNS_PORT" => "15353",
+      "PLATFORM_ADGUARD_CONTAINER" => "nas-sandbox-adguard"
+    }
+  }
+].freeze
+
+def wrapper_environment_failures(wrapper_source: File.read(CONTRACT), rows: WRAPPER_ENVIRONMENT_ROWS)
+  failures = []
+  rows.each do |row|
+    with_contract_copy(runtime: STUB_RUNTIME, wrapper: wrapper_source) do |root, wrapper|
+      # Every name this block reads is set or explicitly unset, so the row cannot
+      # pass on something the developer's own shell happened to export.
+      environment = {
+        "PLATFORM_CONTRACT_REPO_DIR" => root,
+        "PLATFORM_CONTRACT_VAULT_FILE" => File.join(root, "vault.yml"),
+        "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "vault-password"),
+        "PLATFORM_DOCKER_ROOT" => File.join(root, "docker"),
+        "PLATFORM_MAC_VAULT_FILE" => nil,
+        "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
+        "PLATFORM_PROJECT_NAME" => nil,
+        "PLATFORM_ADGUARD_PORT" => nil,
+        "PLATFORM_ADGUARD_DNS_PORT" => nil
+      }.merge(row.fetch(:given))
+      stdout, stderr, status = Open3.capture3(environment, "sh", wrapper, "run")
+      unless status.success?
+        failures << "wrapper environment: #{row.fetch(:name)}: the wrapper never reached the " \
+                    "runtime half: #{(stdout + stderr).strip.inspect}"
+        next
+      end
+      row.fetch(:expects).each do |name, value|
+        next if stdout.include?("#{name}=#{value}\n")
+
+        failures << "wrapper environment: #{row.fetch(:name)}: #{name} reached the runtime half " \
+                    "as #{stdout[/^#{name}=(.*)$/, 1].inspect}, not #{value.inspect}"
+      end
+    end
   end
   failures
 end
@@ -751,10 +1110,10 @@ PROGRAM_MUTATIONS = [
     rows: ["a sandbox override that appends publications instead of replacing them"]
   },
   {
-    label: "the integration port agreement",
+    label: "the integration DNS port agreement",
     program: :static,
-    from: 'integration_source.include?("\\"#{INTEGRATION_DNS_PORT}:5353/#{protocol}\\"")',
-    to: "true",
+    from: 'PLATFORM_ADGUARD_DNS_PORT" unless',
+    to: 'PLATFORM_ADGUARD_DNS_PORT" if false &&',
     rows: ["an integration port the lane does not export"]
   },
   {
@@ -896,6 +1255,258 @@ PROGRAM_MUTATIONS = [
     from: "(File.stat(CONFIG).mode & 0o777) == 0o600",
     to: "true",
     rows: ["a configuration readable beyond its owner"]
+  },
+  # --- the rows that had no planted regression until this file was reviewed ---
+  #
+  # `judge` accepts a refusal when ANY line carries the prefix and the fragment,
+  # so a row with no mutation behind it can pass while a different assertion is
+  # doing the work. Each of the seven below now has one. The two `expects: nil`
+  # rows -- an intact repository and an intact deployment -- have none and can
+  # have none: they assert success, and there is no check to remove that would
+  # make success wrong.
+  {
+    label: "the plain-address bootstrap check",
+    program: :static,
+    from: 'Array(defaults["adguard_bootstrap_dns"]).none? { |address| address.to_s.include?("://") }',
+    to: "true",
+    rows: ["a bootstrap resolver named rather than addressed"]
+  },
+  {
+    label: "the gate-ships-off check",
+    program: :static,
+    from: 'defaults["adguard_deployment_enabled"] == false',
+    to: "true",
+    rows: ["a gate that ships on"]
+  },
+  {
+    label: "the behavioural verification check",
+    program: :static,
+    from: 'conditions_text.include?("FilteredBlackList") && conditions_text.include?("NotFiltered")',
+    to: "true",
+    rows: ["a verification that stopped proving filtering behaviourally"]
+  },
+  {
+    label: "the required-credential check",
+    program: :static,
+    from: 'options.dig(key, "required") == true && options.dig(key, "type") == "str"',
+    to: "true",
+    rows: ["a vault credential the role stopped requiring"]
+  },
+  {
+    label: "the readiness check",
+    program: :runtime,
+    from: 'return if request("/login.html").code == "200"',
+    to: "return if true",
+    rows: ["a login page that never answers"]
+  },
+  {
+    label: "the filtering-enabled check",
+    program: :runtime,
+    from: 'unless document["enabled"] == true',
+    to: "unless true",
+    rows: ["a resolver with filtering disabled"]
+  },
+  {
+    label: "the configuration-present check",
+    program: :runtime,
+    from: "File.file?(CONFIG)",
+    to: "true",
+    rows: ["a configuration that is not in the declared root"],
+    # That check is also what keeps the mode read below it from meeting an absent
+    # file, so removing it does not merely accept the deployment: it crashes on
+    # the stat. The row still refuses, and now says why in a backtrace instead of
+    # a sentence, which is the regression.
+    detects: "refused for the wrong reason"
+  },
+  # --- the assertions the new rows above reach ---
+  {
+    label: "the privileged-container check",
+    program: :static,
+    from: 'if spec["privileged"]',
+    to: "if false",
+    rows: ["a privileged container"]
+  },
+  {
+    label: "the privilege-escalation check",
+    program: :static,
+    from: 'Array(spec["security_opt"]).include?("no-new-privileges:true")',
+    to: "true",
+    rows: ["a container that may acquire privilege after it starts"]
+  },
+  {
+    label: "the image pin check",
+    program: :static,
+    from: 'spec["image"].to_s.match?(IMAGE_PIN)',
+    to: "true",
+    rows: ["an image pinned by tag alone"]
+  },
+  {
+    label: "the namespaced container check",
+    program: :static,
+    from: 'source.include?("${PLATFORM_PROJECT_NAME:?}-adguard")',
+    to: "true",
+    rows: ["a sandbox container left with its production name"]
+  },
+  {
+    label: "the lane-and-override port agreement",
+    program: :static,
+    from: '"PLATFORM_ADGUARD_PORT" unless',
+    to: '"PLATFORM_ADGUARD_PORT" if false &&',
+    rows: ["a lane exporting a web port the override does not publish"]
+  },
+  {
+    label: "the unprivileged-lane-port check",
+    program: :static,
+    from: "low.empty?",
+    to: "true",
+    rows: ["a lane that went back to the privileged port the override exists to avoid"]
+  },
+  {
+    label: "the stored-hash check",
+    program: :static,
+    from: 'template.include?("password: {{ vault_adguard_admin_password_hash }}")',
+    to: "true",
+    rows: ["a rendered configuration that stopped carrying the stored hash"]
+  },
+  {
+    label: "the clear-password check",
+    program: :static,
+    from: 'template.include?("vault_adguard_admin_password }}")',
+    to: "false",
+    rows: ["a rendered configuration carrying the clear administrator password"]
+  },
+  {
+    label: "the rendered Mac port check",
+    program: :static,
+    from: 'env_source.include?("#{name}=")',
+    to: "true",
+    rows: ["an environment that stopped rendering the Mac host port"]
+  },
+  {
+    label: "the verification tag check",
+    program: :static,
+    from: 'verify.all? { |task| Array(task["tags"]).include?("platform_verify_adguard") }',
+    to: "true",
+    rows: ["a verification task that lost its tag"]
+  },
+  {
+    label: "the status-endpoint read check",
+    program: :static,
+    from: "if status_reads.empty?",
+    to: "if false",
+    rows: ["a role that stopped reading the status endpoint"]
+  },
+  {
+    label: "the declared-filter-list check",
+    program: :static,
+    from: 'Array(defaults["adguard_filters"]).empty?',
+    to: "false",
+    rows: ["protection on and no list to enforce"]
+  },
+  {
+    label: "the pinned vault key check",
+    program: :static,
+    from: 'Array(expectations["vault_keys"]).sort == VAULT_CREDENTIALS.sort',
+    to: "true",
+    rows: ["an expectation file pinning the wrong vault keys"]
+  },
+  {
+    label: "the wrapper default port check",
+    program: :static,
+    from: "fallback == defaults[variable]",
+    to: "true",
+    rows: ["a wrapper defaulting to a port the platform moved away from"]
+  },
+  {
+    label: "the declared storage mode check",
+    program: :static,
+    from: 'entry["mode"] == mode',
+    to: "true",
+    rows: ["a working directory declared wider than permcheck leaves it"]
+  },
+  {
+    label: "the operator decision check",
+    program: :static,
+    from: 'inventory.key?("adguard_deployment_enabled")',
+    to: "true",
+    rows: ["an inventory with no operator decision in it"]
+  },
+  {
+    label: "the declared web publication check",
+    program: :static,
+    from: 'published.include?("8083:3000")',
+    to: "true",
+    rows: ["a web interface published somewhere the role does not declare"]
+  },
+  {
+    label: "the exact-publication-count check",
+    program: :static,
+    from: "published.length == 3",
+    to: "true",
+    rows: ["a fourth publication nobody declared"]
+  },
+  {
+    label: "the single-container check",
+    program: :static,
+    from: 'services.is_a?(Hash) && services.keys == %w[adguard]',
+    to: "true",
+    rows: ["a second container in the stack"]
+  },
+  {
+    label: "the required-gate argument check",
+    program: :static,
+    from: 'options.dig("adguard_deployment_enabled", "required") == true',
+    to: "true",
+    rows: ["a gate the role does not require"]
+  },
+  {
+    label: "the declared-upstream rendering check",
+    program: :static,
+    from: 'template.include?("{% for adguard_upstream in adguard_upstream_dns %}") &&',
+    to: "true ||",
+    rows: ["upstreams written into the template rather than declared"]
+  },
+  {
+    label: "the declared-filter rendering check",
+    program: :static,
+    from: 'template.include?("{% for adguard_filter in adguard_filters %}")',
+    to: "true",
+    rows: ["filter lists written into the template rather than declared"]
+  },
+  {
+    label: "the declared listening port check",
+    program: :static,
+    from: 'template.include?("port: {{ adguard_dns_container_port }}")',
+    to: "true",
+    rows: ["a listening port written into the template rather than declared"]
+  },
+  {
+    label: "the declared storage check",
+    program: :static,
+    from: "if entry.nil?\n    next if entry.nil?",
+    to: "if false\n    next if entry.nil?",
+    rows: ["a storage declaration the platform lost"]
+  },
+  {
+    label: "the recovery class check",
+    program: :static,
+    from: 'entry["recovery"] == "cache"',
+    to: "true",
+    rows: ["regenerable state classed as irreplaceable"]
+  },
+  {
+    label: "the expectation role check",
+    program: :static,
+    from: 'expectations["role"] == "adguard"',
+    to: "true",
+    rows: ["an expectation file naming another role"]
+  },
+  {
+    label: "the lane export presence check",
+    program: :static,
+    from: "unless missing.empty?",
+    to: "unless true",
+    rows: ["a lane that exports neither port"]
   }
 ].freeze
 
@@ -958,21 +1569,50 @@ if ARGV.include?("--self-test")
   self_test_failures << "a dropped stdin redirect was accepted" if
     stdin_failures(wrapper_source: unredirected).empty?
 
+  # The wrapper's own regression, and the one the new environment rows exist for.
+  # The derivation is what tells a production probe from a sandbox probe, and a
+  # wrapper that hardcodes the production name reads a container the sandbox
+  # never created -- which is a `docker inspect` failure blamed on AdGuard.
+  unnamespaced = File.read(CONTRACT).sub(
+    "PLATFORM_ADGUARD_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}adguard",
+    "PLATFORM_ADGUARD_CONTAINER=adguard"
+  )
+  self_test_failures << "self-test could not plant a dropped container namespace" if
+    unnamespaced == File.read(CONTRACT)
+  self_test_failures << "a container name that ignores the sandbox namespace was accepted" if
+    wrapper_environment_failures(wrapper_source: unnamespaced).empty?
+
+  # And the production half of the same block, which a wrapper could satisfy by
+  # requiring the ports rather than defaulting them -- green in every lane,
+  # because every lane exports them, and refusing on the NAS where nothing does.
+  undefaulted = File.read(CONTRACT).sub(
+    ': "${PLATFORM_ADGUARD_PORT:=8083}"',
+    ': "${PLATFORM_ADGUARD_PORT:?PLATFORM_ADGUARD_PORT is required}"'
+  )
+  self_test_failures << "self-test could not plant a dropped production port default" if
+    undefaulted == File.read(CONTRACT)
+  self_test_failures << "a wrapper with no production port default was accepted" if
+    wrapper_environment_failures(wrapper_source: undefaulted).empty?
+
   unless self_test_failures.empty?
     self_test_failures.each { |failure| warn "FAIL #{failure}" }
     abort "#{self_test_failures.length} AdGuard contract self-test failure(s)"
   end
 
-  puts "adguard contract: self-test detects #{PROGRAM_MUTATIONS.length + 1} planted regressions"
+  # The three beyond PROGRAM_MUTATIONS are the wrapper's own: a dropped stdin
+  # redirect, a dropped container namespace and a dropped production port default.
+  puts "adguard contract: self-test detects #{PROGRAM_MUTATIONS.length + 3} planted regressions"
   exit
 end
 
 failures = static_failures(STATIC_PROGRAM) + runtime_failures(RUNTIME_PROGRAM) +
-           wrapper_failures + stdin_failures
+           wrapper_failures + wrapper_environment_failures + stdin_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} AdGuard contract violation(s)"
 end
 
 puts "adguard contract: #{STATIC_ROWS.length} static and #{RUNTIME_ROWS.length} runtime " \
-     "properties hold, and the wrapper reaches both programs with an empty stdin"
+     "properties hold, the wrapper hands the runtime half the right environment in " \
+     "#{WRAPPER_ENVIRONMENT_ROWS.length} deployments, and it reaches both programs with an " \
+     "empty stdin"
