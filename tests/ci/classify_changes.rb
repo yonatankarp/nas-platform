@@ -36,6 +36,26 @@ module ClassifyChanges
     suite.tr("-", "_") if kind == "acquisition"
   end.freeze
   TAGGED_LANES = (ACQUISITION_LANES + SERVICE_LANES).freeze
+  # The untagged idempotence lane and the shards that decompose it. The two forms
+  # cover the same ground by different routes -- each shard converges a slice of
+  # the site three times, the unsharded lane converges all of it three times -- so
+  # a selection takes one or the other and never both. Which one is the whole
+  # difference between `--full` and falling open:
+  #
+  #   --full          the nightly and workflow_dispatch, where nothing is waiting
+  #                   on the answer. Keeps the single pass, and with it the only
+  #                   proof this repository has that the site is idempotent *as a
+  #                   whole* rather than shard by shard.
+  #   unmapped path   a pull request or the merge that lands it, where somebody
+  #                   is. Takes the shards, whose wall is the slowest one.
+  #
+  # So `--full` is no longer literally every lane, and that is the one exception
+  # to it: running both forms would converge the site six times to learn what
+  # three converges already said.
+  IDEMPOTENCE_LANE = "idempotence_check"
+  IDEMPOTENCE_SHARD_LANES = SUITES.keys.filter do |lane|
+    lane.start_with?("idempotence_") && lane != IDEMPOTENCE_LANE
+  end.freeze
   # The tags CI narrows the site to for each lane it selects by tag. Active
   # services include ntfy because each role publishes its deployment report
   # there. Planned acquisition suites instead converge only the shared inert
@@ -303,7 +323,7 @@ module ClassifyChanges
 
   def classify(paths, full: false)
     selection = LANES.to_h { |lane| [lane, false] }
-    return selection.transform_values { true } if full
+    return everything(selection, sharded: false) if full
 
     tagged_lanes = []
     reconciliation_owned = false
@@ -345,7 +365,7 @@ module ClassifyChanges
 
       lane = acquisition_lane(path) || service_lane(path)
       unless lane
-        return selection.transform_values { true } unless static_only_test?(path)
+        return everything(selection, sharded: true) unless static_only_test?(path)
 
         selection["static"] = true
         next
@@ -392,6 +412,15 @@ module ClassifyChanges
       end
     end
     paths
+  end
+
+  # Every lane on, in one of the two idempotence forms. Routing still fails open
+  # -- an unmapped path costs time rather than coverage -- it just stops paying
+  # for the slowest job in the run to re-prove, in one 32-minute pass, what five
+  # shards prove in the time of the longest of them.
+  def everything(selection, sharded:)
+    off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES
+    selection.to_h { |lane, _| [lane, !off.include?(lane)] }
   end
 
   def write_github_outputs(selection, io)

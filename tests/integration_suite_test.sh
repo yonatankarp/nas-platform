@@ -299,10 +299,10 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 full' \
   --list-suites
 
-for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check full; do
+for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done

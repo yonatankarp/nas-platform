@@ -298,6 +298,8 @@ CHECKS
 
 SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/policy_ci_test.rb
+  ruby tests/idempotence_shard_partition_test.rb
+  ruby tests/idempotence_shard_partition_test.rb --self-test
   shellcheck --shell=sh tests/integration_controller_lib.sh
   ruby tests/policy_mac_test.rb
   ruby tests/policy_audit_coverage_test.rb

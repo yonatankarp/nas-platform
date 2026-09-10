@@ -74,10 +74,22 @@ RECONCILIATION_EXTRA_INPUTS = %w[
   site.yml
 ].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
-INTEGRATION_SUITES = %w[
+FULL_RUN_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
   dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard idempotence-check
 ].freeze
+# The five shards that decompose the untagged idempotence lane. They are not in
+# the list above because a `--full` run does not dispatch them -- it keeps the
+# single unsharded pass -- so an argv sweep driven by that list alone would have
+# checked every suite except the ones just added. It did: this file was green
+# against the shards before they were named here, which is the repository's own
+# signature defect in miniature.
+IDEMPOTENCE_SHARD_SUITES = %w[
+  idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5
+].freeze
+# Every suite the matrix can ever dispatch, by either route. What the argv sweep
+# below has to cover.
+INTEGRATION_SUITES = (FULL_RUN_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
 CLASSIFIER_OUTPUTS = %w[static docs reconciliation suites selected_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
@@ -588,9 +600,18 @@ check(failures, suites_budget.is_a?(Integer) && suites_budget >= 90,
 # The classifier owns the lane-to-suite mapping, including the one hyphen that
 # separates the idempotence_check lane from the idempotence-check suite.
 check(failures,
-      ClassifyChanges.suites(ClassifyChanges.classify([], full: true)) == INTEGRATION_SUITES,
+      ClassifyChanges.suites(ClassifyChanges.classify([], full: true)) == FULL_RUN_SUITES,
       "a full run must dispatch every suite in canonical order: " \
       "#{ClassifyChanges.suites(ClassifyChanges.classify([], full: true)).inspect}")
+# The other route to the same coverage. An unmapped path takes the shards instead
+# of the single pass, so the two selections differ in exactly those six suites and
+# in nothing else -- stated as a difference rather than as a second literal list,
+# because the part worth pinning is that neither route drops a lane.
+fall_open_suites = ClassifyChanges.suites(ClassifyChanges.classify(["unexpected/new-runtime-file"]))
+check(failures,
+      fall_open_suites == FULL_RUN_SUITES - ["idempotence-check"] + IDEMPOTENCE_SHARD_SUITES,
+      "an unmapped path must dispatch every suite with the idempotence lane sharded: " \
+      "#{fall_open_suites.inspect}")
 check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) == [],
       "an inert change must dispatch no suite")
 

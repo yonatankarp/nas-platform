@@ -16,7 +16,23 @@ LANES = %w[
   static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard
   idempotence_check
+  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5
 ].freeze
+# "Every lane" is two lists rather than one, and which one applies is the whole
+# difference between falling open and `--full`. The five shards decompose the
+# untagged idempotence lane, so a selection carries one form or the other and
+# never both: an unmapped path takes the shards, because a pull request is
+# waiting on them and their wall is the slowest one; `--full` -- the nightly and
+# workflow_dispatch -- keeps the single pass and with it the only proof that the
+# site is idempotent as a whole. Restated here rather than imported for the
+# reason every other list in this file is: importing the constant would make the
+# test agree with the classifier by construction.
+IDEMPOTENCE_LANE = "idempotence_check"
+IDEMPOTENCE_SHARD_LANES = %w[
+  idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5
+].freeze
+FULL_LANES = (LANES - IDEMPOTENCE_SHARD_LANES).freeze
+FALL_OPEN_LANES = (LANES - [IDEMPOTENCE_LANE]).freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
 # The lanes the media acquisition reconciliation contract reads, and the four
 # files it owns. Both are stated here rather than imported so that widening the
@@ -141,7 +157,7 @@ if defined?(ClassifyChanges)
     ["tests/media_control_network_collision_test.sh"] => %w[static reconciliation arr idempotence_check],
     ["config/media-acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
-    ["roles/deployment_bundle/tasks/main.yml"] => LANES,
+    ["roles/deployment_bundle/tasks/main.yml"] => FALL_OPEN_LANES,
     ["tests/policy_test.rb"] => %w[static],
     ["tests/validate-policy.sh"] => %w[static],
     ["tests/ci/workflow_test.rb"] => %w[static],
@@ -172,9 +188,9 @@ if defined?(ClassifyChanges)
       %w[static docs reconciliation smoke beszel idempotence_check],
     # Only that one file is mapped. A second workflow, or anything else under
     # .github/, is a path nobody has reasoned about and keeps falling open.
-    [".github/workflows/release.yml"] => LANES,
-    [".github/dependabot.yml"] => LANES,
-    ["unexpected/new-runtime-file"] => LANES
+    [".github/workflows/release.yml"] => FALL_OPEN_LANES,
+    [".github/dependabot.yml"] => FALL_OPEN_LANES,
+    ["unexpected/new-runtime-file"] => FALL_OPEN_LANES
   }.each do |paths, expected|
     check(failures, selected_lanes(paths) == expected,
           "#{paths.join(', ')} selected #{selected_lanes(paths).inspect}, expected #{expected.inspect}")
@@ -312,18 +328,27 @@ if defined?(ClassifyChanges)
   end
   check(failures, ClassifyChanges.classify([], full: false).keys == LANES,
         "classify must return every lane in canonical order")
-  check(failures, selected_lanes([], full: true) == LANES,
-        "full events must select every lane")
-  check(failures, selected_lanes(["AGENTS.md"]) == LANES,
+  check(failures, selected_lanes([], full: true) == FULL_LANES,
+        "full events must select every lane in the unsharded idempotence form")
+  check(failures, selected_lanes(["AGENTS.md"]) == FALL_OPEN_LANES,
         "AGENTS.md must not be treated as inert Markdown")
   # The rule that exemption used to be a single name for. A document at the
   # repository root is where a check-read claim lands -- CLAUDE.md was one, and
   # was called inert for it (#346) -- so root Markdown no lane map claims falls
   # open to every lane rather than to none.
-  check(failures, selected_lanes(["NOTES.md"]) == LANES,
+  check(failures, selected_lanes(["NOTES.md"]) == FALL_OPEN_LANES,
         "unrouted repository-root Markdown must not be treated as inert")
-  check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == LANES,
+  check(failures, selected_lanes(["tests/fixtures/operator-guide.md"]) == FALL_OPEN_LANES,
         "test fixture Markdown must not be treated as inert")
+  # The two forms are disjoint in exactly one lane each, and stating that here is
+  # what stops a future edit from quietly selecting both: six converges of the
+  # site to learn what three already said.
+  check(failures, FULL_LANES.include?(IDEMPOTENCE_LANE) &&
+                  (FULL_LANES & IDEMPOTENCE_SHARD_LANES).empty?,
+        "a --full selection must carry the unsharded idempotence lane and no shard")
+  check(failures, !FALL_OPEN_LANES.include?(IDEMPOTENCE_LANE) &&
+                  (FALL_OPEN_LANES & IDEMPOTENCE_SHARD_LANES) == IDEMPOTENCE_SHARD_LANES,
+        "a fall-open selection must carry every shard and not the unsharded lane")
 
   # Routing a path under tests/ to the policy gate alone is only safe while no
   # integration suite reads it, and the harness reaches well past its own file:
@@ -416,6 +441,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["smoke","beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
   OUTPUT
@@ -447,24 +477,64 @@ if defined?(ClassifyChanges)
     nextcloud=true
     adguard=true
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","adguard","idempotence-check"]
     selected_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
         "--full output must leave selected_tags empty: #{full_output.string.inspect}")
 
+  # The same coverage by the other route. Written out rather than derived from
+  # the block above by flipping six lines, because a pin that transforms the
+  # other pin agrees with it by construction and would survive both being wrong.
+  expected_fall_open_output = <<~OUTPUT
+    static=true
+    docs=true
+    reconciliation=true
+    foundation=true
+    arr=true
+    downloaders=true
+    bindery=true
+    kapowarr=true
+    pinchflat=true
+    trailarr=true
+    seerr=true
+    smoke=true
+    beszel=true
+    dozzle=true
+    audiobookshelf=true
+    komga=true
+    jellyfin=true
+    immich=true
+    paperless=true
+    nextcloud=true
+    adguard=true
+    idempotence_check=false
+    idempotence_1=true
+    idempotence_2=true
+    idempotence_3=true
+    idempotence_4=true
+    idempotence_5=true
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","adguard","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5"]
+    selected_tags=
+  OUTPUT
+
   shared_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["roles/deployment_bundle/tasks/main.yml"]), shared_output
   )
-  check(failures, shared_output.string == expected_full_output,
+  check(failures, shared_output.string == expected_fall_open_output,
         "shared-scope output must select the full untagged site: #{shared_output.string.inspect}")
 
   unknown_output = StringIO.new
   ClassifyChanges.write_github_outputs(
     ClassifyChanges.classify(["unexpected/new-runtime-file"]), unknown_output
   )
-  check(failures, unknown_output.string == expected_full_output,
+  check(failures, unknown_output.string == expected_fall_open_output,
         "unknown-path output must select the full untagged site: #{unknown_output.string.inspect}")
 
   paperless_output = StringIO.new
@@ -494,6 +564,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["smoke","paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,paperless
   OUTPUT
@@ -532,6 +607,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["bindery","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
   OUTPUT
@@ -564,6 +644,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["kapowarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
   OUTPUT
@@ -596,6 +681,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["pinchflat","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
   OUTPUT
@@ -632,6 +722,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["trailarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
   OUTPUT
@@ -668,6 +763,11 @@ if defined?(ClassifyChanges)
     nextcloud=false
     adguard=false
     idempotence_check=true
+    idempotence_1=false
+    idempotence_2=false
+    idempotence_3=false
+    idempotence_4=false
+    idempotence_5=false
     suites=["seerr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr
   OUTPUT
