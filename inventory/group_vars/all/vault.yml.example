@@ -4,6 +4,10 @@
 # do not regenerate credentials already used by application or database state.
 # generate-secrets.yml is only for a brand-new platform with no state to adopt.
 
+vault_adguard_admin_username: example-admin
+vault_adguard_admin_password: example-password
+vault_adguard_admin_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
+
 vault_audiobookshelf_admin_username: example-admin
 vault_audiobookshelf_admin_password: example-password
 
