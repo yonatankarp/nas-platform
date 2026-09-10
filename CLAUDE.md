@@ -888,7 +888,9 @@ passes its own plants has proved nothing until the plants are shown to bite.
 **`smoke` binds the fall-open wall, and that caps what this change can buy.** A
 fall-open selection turns `foundation` on, which empties `selected_tags`, which
 sends the smoke leg down the untagged branch of the workflow's `case "$SUITE"` —
-so smoke converges the whole site and measured 16.5 minutes on `34471042365`.
+so smoke converges the whole site: 16.5 minutes on `34471042365` and **19.1 on
+`34514486089`**, where it was the longest-running job in the run and every shard
+beat it.
 The wall of a fall-open run is therefore `max(slowest shard, 16.5)`, not the
 shard wall. Smoke is a strict prefix of this lane — same workflow branch, same
 arguments, `exit 0` at the line where phase 2 begins — and its routing is a
@@ -896,13 +898,29 @@ subset, so it proves nothing this lane does not. Reclaiming that leg is the next
 move, and it costs edits to `suites.conf`, `classify_changes.rb`,
 `tests/ci/workflow_test.rb`, `tests/policy_ci_test.rb` and the roster above.
 
-**Expected shard wall is 14–16 minutes, not 13, and the floor is about 10.**
-Every shard re-pays `preflight`, `host_prep`, `deployment_bundle` and `ntfy` —
-roughly 860 of the full lane's 4280 task-results — so the asymptote as shards
-grow is about 617 seconds and no shard count reaches 10 minutes. Five is where
-the estimate crosses 15, and past five buys nothing while smoke sits at 16.5. The
-account also peaked at exactly 20 concurrent jobs on the nightly sweep, so four
-extra legs partly convert into queue rather than into wall.
+**Measured on run `34514486089`, the first that dispatched them.** The shards
+ran 14.1, 9.9, 9.7, 9.9 and 7.5 minutes, so the projected 14–16 held at the top
+and was pessimistic everywhere else. Each converged real work and then reported
+`changed=0`: phase 1 changed 43, 37, 19, 28 and 30 things against phase-1 task
+counts of 697, 547, 375, 521 and 500. The run wall fell from 32.5 minutes to
+**24.1**.
+
+Two projections in the paragraph this replaces were wrong, and the shape of the
+error is worth more than the numbers. The repeated prerequisites were estimated
+at about 860 task-results per shard from the corrupted per-role table; the five
+shards actually run 2640 phase-1 results against the unsharded lane's 1649, which
+puts the repetition nearer **250** per shard — so the asymptote is around 6
+minutes rather than the 10 claimed, and more shards would still buy something.
+(The two runs are different trees, one before AdGuard and one after, so read that
+as a magnitude and not a figure.) The estimate came from a table this file
+already documents as unreliable, which is precisely the trap: a projection built
+on data known to be corrupt reads exactly like a measurement once it is written
+down.
+
+**Queue is now a visible term.** `idempotence-1` finished last at 18:50:01
+despite running only 14.1 minutes, because it did not start until 18:35:54 — the
+matrix grew by four legs against an account that peaked at exactly 20 concurrent
+jobs, so some of the shard win converts into waiting rather than into wall.
 
 **The shards are numbered rather than named, and the split balances estimated
 cost.** The three heavyweights by the phase-1 role table — paperless at 120.5s,
