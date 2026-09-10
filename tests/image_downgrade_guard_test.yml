@@ -240,6 +240,29 @@
     - name: Refuse the downgrade while only planning
       check_mode: true
       block:
+        # First, and it is not decoration. If block-level check_mode did not
+        # reach the tasks inside the include, this whole block would be an
+        # ordinary converge refusing for ordinary reasons and reporting green --
+        # and no planted defect could tell the difference, because every plant
+        # that touches `check_mode: false` trips the structural assertion above.
+        # Keyword inheritance through an include is not uniform here: an
+        # `environment` on the include of a case file is rejected outright,
+        # which is why that one sits at play level.
+        #
+        # The probe is a write that check mode must not perform, rather than a
+        # read of `ansible_check_mode`. That variable was the first attempt and
+        # it is the wrong oracle: it reports whether the RUN carries --check, so
+        # a task-level check_mode leaves it false and the tripwire fired on a
+        # block that was working correctly. What a task-level check_mode does do
+        # is hand every module `_ansible_check_mode`, which is the whole of what
+        # the guard meets under --check, since it reads that variable nowhere --
+        # the structural assertion above is what holds that true.
+        - name: Probe whether check mode reaches the tasks inside this block
+          ansible.builtin.file:
+            path: "{{ guard_root }}/check-mode-probe"
+            state: touch
+            mode: "0644"
+
         - name: Include the downgrade guard in check mode
           ansible.builtin.include_role:
             name: image_downgrade_guard
@@ -258,18 +281,28 @@
           ansible.builtin.set_fact:
             guard_check_mode_refused: true
 
+    - name: Read whether the check-mode probe wrote anything
+      ansible.builtin.stat:
+        path: "{{ guard_root }}/check-mode-probe"
+      register: guard_check_mode_probe
+
     - name: Require the refusal to reach a check-mode run
       ansible.builtin.assert:
         that:
+          - not guard_check_mode_probe.stat.exists
           - guard_check_mode_refused | bool
           - image_downgrade_guard_newer_versions == ["1.34.0"]
         fail_msg: >-
-          Under --check the guard read
-          {{ image_downgrade_guard_deployed_versions }} against a pinned
-          {{ image_downgrade_guard_pinned_version }} and
-          {{ 'refused' if guard_check_mode_refused | bool else 'did not refuse' }}.
-          A plan that reads clean and then crash-loops on apply is #511 with an
-          extra step.
+          {{ 'The check-mode block wrote its probe file, so its tasks were not in
+              check mode and the refusal below is an ordinary converge wearing the
+              proof name.'
+             if guard_check_mode_probe.stat.exists else
+             'In check mode the guard read '
+             ~ image_downgrade_guard_deployed_versions ~ ' against a pinned '
+             ~ image_downgrade_guard_pinned_version ~ ' and '
+             ~ ('refused' if guard_check_mode_refused | bool else 'did not refuse')
+             ~ '. A plan that reads clean and then crash-loops on apply is #511
+                with an extra step.' }}
 
     - name: Remove the fixture tree
       ansible.builtin.file:
