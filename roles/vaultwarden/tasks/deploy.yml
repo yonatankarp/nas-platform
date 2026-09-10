@@ -58,19 +58,35 @@
     dest: "{{ platform_runtime_dir }}/services/vaultwarden/.env"
     mode: "0600"
 
-# ADMIN_TOKEN MUST BE ABSENT, AND THIS IS THE TASK THAT SAYS SO OUT LOUD.
+# NOTHING MAY OPEN THE ADMIN PANEL, AND THIS IS THE TASK THAT SAYS SO OUT LOUD.
 #
 # Opening /admin and saving anything writes config.json into DATA_FOLDER, and
 # that file then outranks every environment variable this role renders: the
 # converge would render .env correctly, the container would ignore it, and
-# nothing would report a difference. Omitting the token disables the panel.
+# nothing would report a difference. Omitting ADMIN_TOKEN disables the panel.
 #
-# An omission is invisible, which is the point of checking it. Nothing fails
-# today if a future edit adds the variable back, and the `${VAR:?}` convention
-# every other value here uses makes rendering it EMPTY the obvious way to make
-# it optional -- which does not disable the panel at all. Measured against this
-# pin: `ADMIN_TOKEN=` still logs `[NOTICE] You are using a plain text
-# ADMIN_TOKEN which is insecure`.
+# An omission is invisible, which is the point of checking it: nothing fails
+# today if a future edit adds the variable back.
+#
+# TWO KEYS, NOT ONE, AND THE SECOND IS THE WORSE DOOR. Measured against this
+# pin, /admin serves 85 bytes of "the admin panel is disabled" with the token
+# absent; with `ADMIN_TOKEN=<value>` it serves a 6.4 KB login page; and with
+# `DISABLE_ADMIN_TOKEN=true` it serves the 140 KB ADMIN PANEL ITSELF, with no
+# authentication of any kind. Guarding only ADMIN_TOKEN would have left the
+# variable that Vaultwarden's own warning message recommends -- "To enable the
+# admin page without a token, use DISABLE_ADMIN_TOKEN" -- wide open, which is a
+# guard reintroducing the thing it was written to prevent through the next door
+# along.
+#
+# `ADMIN_TOKEN=` is refused too, and the reason has moved rather than gone away.
+# On this pin an empty value DOES disable the panel: the body is byte-identical
+# to the absent case. What it still does is log `[NOTICE] You are using a plain
+# text ADMIN_TOKEN which is insecure` beside two warnings, so the two states are
+# distinguishable and only one of them is declared. That behaviour is a property
+# of this release rather than of the setting, which is the argument for refusing
+# the key outright rather than for trusting what an empty one happens to do --
+# and the platform's own `${VAR:?}` convention makes rendering it empty the
+# obvious way to make a value optional.
 #
 # THE COMPOSE FILES ARE THE COMPLETE SUBJECT, and that is an argument rather
 # than a shortcut. `env_files:` on the Compose module supplies values for the
@@ -106,7 +122,7 @@
     vaultwarden_forbidden_compose_keys: >-
       {{ vaultwarden_compose_sources.results
          | map(attribute='content') | map('b64decode')
-         | map('regex_findall', '(?im)^[ -]*(?:ADMIN_TOKEN|env_file)[ ]*:')
+         | map('regex_findall', '(?im)^[ -]*(?:ADMIN_TOKEN|DISABLE_ADMIN_TOKEN|env_file)[ ]*:')
          | flatten | map('trim') | list }}
 
 - name: Refuse a Vaultwarden that could be overruled by its own admin panel
@@ -115,19 +131,21 @@
       - vaultwarden_forbidden_compose_keys | length == 0
     fail_msg: >-
       A deployed Vaultwarden Compose file declares
-      {{ vaultwarden_forbidden_compose_keys | join('; ') }}. ADMIN_TOKEN makes
-      the /admin panel reachable, and anything saved there writes config.json
-      into {{ vaultwarden_data_host_path }}, which from then on outranks every
+      {{ vaultwarden_forbidden_compose_keys | join('; ') }}. ADMIN_TOKEN puts a
+      login on /admin and DISABLE_ADMIN_TOKEN opens the panel with no login at
+      all, and anything saved there writes config.json into
+      {{ vaultwarden_data_host_path }}, which from then on outranks every
       variable this role renders -- the converge would keep reporting success
-      while the container ignored it. Setting the token to an empty value is
-      NOT the same as omitting it: it still leaves the panel enabled and logs a
-      plaintext-token notice. Take the key out entirely rather than blanking
-      it. A service-level `env_file:` is refused for the same reason, since it
-      would carry a token this check never sees.
+      while the container ignored it. Take the key out entirely rather than
+      blanking it: on this pin an empty ADMIN_TOKEN happens to disable the panel
+      too, but it is still a declared value whose meaning is the release's to
+      change, and it still logs a plaintext-token notice. A service-level
+      `env_file:` is refused for the same reason, since it would carry either
+      key where this check would never see it.
     success_msg: >-
-      No deployed Vaultwarden Compose file declares ADMIN_TOKEN or a
-      service-level env_file, so the /admin panel is disabled and the rendered
-      environment is the only configuration.
+      No deployed Vaultwarden Compose file declares ADMIN_TOKEN,
+      DISABLE_ADMIN_TOKEN or a service-level env_file, so the /admin panel is
+      disabled and the rendered environment is the only configuration.
 
 # THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
 # THE CAUSE. "The admin panel is the only writer of config.json" is an upstream

@@ -1010,10 +1010,12 @@ every client out and voids every API key, and *disclosing* it lets anyone mint
 those tokens — so it is secret-bearing in the ordinary sense, which is why
 `nas_storage` gives that directory 0700 rather than the 0755 every other service
 takes. And `config.json` would be, if it existed: it is written only by the
-`/admin` panel, which this deployment disables by setting no `ADMIN_TOKEN` at
-all, and `roles/vaultwarden` asserts the file absent on every converge because
-the panel being its only writer is an upstream claim rather than something this
-platform can see. A `config.json` that appears is both a credential to treat as
+`/admin` panel, which this deployment disables by setting neither `ADMIN_TOKEN`
+nor `DISABLE_ADMIN_TOKEN` — the second is the worse door, serving the whole panel
+unauthenticated, and it is what Vaultwarden's own warning recommends when it
+finds an empty token — and `roles/vaultwarden` asserts the file absent on every
+converge because the panel being its only writer is an upstream claim rather than
+something this platform can see. A `config.json` that appears is both a credential to treat as
 secret and a configuration that has silently started outranking the rendered
 `.env`.
 

@@ -90,25 +90,42 @@ services:
       SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:?}
       INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:?}
       #
-      # ADMIN_TOKEN IS ABSENT, AND ABSENT IS NOT THE SAME AS EMPTY.
+      # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE, AND THAT IS
+      # THE WHOLE OF THIS SERVICE'S CONFIGURATION SAFETY.
       #
       # Opening /admin and saving anything writes config.json into DATA_FOLDER,
       # and from then on that file takes precedence over every environment
       # variable set here. A converge would render .env correctly, the container
       # would ignore it, and nothing would report a difference -- the exact
       # failure this repository exists to prevent, arriving through a door no
-      # policy check watched. Omitting the token disables the panel outright.
+      # policy check watched.
       #
-      # Setting it to an empty value does NOT do that. Measured against this
-      # pin: `ADMIN_TOKEN=` still logs `[NOTICE] You are using a plain text
-      # ADMIN_TOKEN which is insecure`, so the variable must not appear here or
-      # in roles/vaultwarden/templates/env.j2 at all. The platform's own
-      # `${VAR:?}` convention makes that easy to get wrong, because the obvious
-      # way to render an optional value is to render it empty.
+      # THE FOUR STATES, MEASURED AGAINST THIS PIN rather than read about, since
+      # only one of them is safe:
       #
-      # roles/vaultwarden asserts config.json absent on every converge as well,
-      # because "the panel is the only writer" is an upstream claim rather than
-      # a property this platform can see.
+      #   ADMIN_TOKEN absent          /admin serves 85 bytes, "the admin panel
+      #                               is disabled, please configure the
+      #                               'ADMIN_TOKEN' variable to enable it"
+      #   ADMIN_TOKEN=<value>         /admin serves a 6.4 KB login page
+      #   ADMIN_TOKEN=                /admin serves the same 85-byte disabled
+      #                               body, and the log carries two warnings
+      #                               plus `[NOTICE] You are using a plain text
+      #                               ADMIN_TOKEN which is insecure`
+      #   DISABLE_ADMIN_TOKEN=true    /admin serves the 140 KB ADMIN PANEL, with
+      #                               no authentication of any kind
+      #
+      # So the empty value is not the trap it would be on an older release -- it
+      # does disable the panel here -- but it is still a declared value whose
+      # meaning belongs to the release rather than to this file, and the
+      # platform's `${VAR:?}` convention makes rendering an optional value empty
+      # the obvious thing to reach for. And the last row is the one that
+      # matters: guarding only ADMIN_TOKEN would leave open the very variable
+      # Vaultwarden's own warning recommends in its place.
+      #
+      # roles/vaultwarden/tasks/deploy.yml refuses all three keys in the
+      # deployed Compose files, and asserts config.json absent on every converge
+      # as well, because "the panel is the only writer" is an upstream claim
+      # rather than a property this platform can see.
     healthcheck:
       <<: *healthcheck-defaults
       # /alive is unauthenticated and returns a JSON timestamp string. The image
