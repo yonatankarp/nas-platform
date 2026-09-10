@@ -191,13 +191,16 @@ STATIC_ROWS = [
     expects: "downloaders role must verify its effective project CPU policy"
   },
   {
+    # #537 moved this gate onto the block that now wraps the deployment -- the
+    # block whose rescue records the message roles/container_health is handed --
+    # so the `when` to remove is the block's, and the anchor is the last line of
+    # its rescue rather than the deploy's own arguments.
     name: "an activation no longer gated on the Usenet switch",
     break: lambda { |root|
       mutate_text(root, "roles/downloaders/tasks/main.yml",
-                  "    wait_timeout: \"{{ platform_compose_wait_timeout }}\"\n" \
-                  "  when: media_usenet_enabled | bool\n  register: downloaders_deploy",
-                  "    wait_timeout: \"{{ platform_compose_wait_timeout }}\"\n" \
-                  "  register: downloaders_deploy")
+                  "             | default('the downloader deployment failed and reported no message') }}\n" \
+                  "  when: media_usenet_enabled | bool\n",
+                  "             | default('the downloader deployment failed and reported no message') }}\n")
     },
     expects: "downloaders role must gate activation on media_usenet_enabled"
   },
@@ -608,7 +611,7 @@ PROGRAM_MUTATIONS = [
     # removed the block never runs and `any?` on an empty array is already
     # false, so a plant inside the block would change nothing.
     label: "the Usenet activation gate",
-    from: 'activation && Array(activation["when"]).any? do |condition|
+    from: 'activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
     end',
     to: "true",

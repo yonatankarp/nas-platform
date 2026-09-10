@@ -191,12 +191,16 @@ STATIC_ROWS = [
     expects: "Arr role must deploy through docker_compose_v2"
   },
   {
+    # #537 moved this gate onto the block that now wraps the deployment -- the
+    # block whose rescue records the message roles/container_health is handed --
+    # so the `when` to remove is the block's, and the anchor is the last line of
+    # its rescue rather than the deploy's own arguments.
     name: "an activation no longer gated on the Usenet switch",
     break: lambda { |root|
       mutate_text(root, "roles/arr/tasks/main.yml",
-                  "    wait_timeout: \"{{ arr_compose_wait_timeout }}\"\n" \
-                  "  when: media_usenet_enabled | bool\n  register: arr_deploy",
-                  "    wait_timeout: \"{{ arr_compose_wait_timeout }}\"\n  register: arr_deploy")
+                  "             | default('the Arr deployment failed and reported no message') }}\n" \
+                  "  when: media_usenet_enabled | bool\n",
+                  "             | default('the Arr deployment failed and reported no message') }}\n")
     },
     expects: "Arr role must gate activation on media_usenet_enabled"
   },
@@ -604,7 +608,7 @@ PROGRAM_MUTATIONS = [
     # and a plant inside the block changes nothing. Measured, not reasoned --
     # the self-test reported this one as "was accepted" first time round.
     label: "the Usenet activation gate",
-    from: 'activation_task && Array(activation_task["when"]).any? do |condition|
+    from: 'activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
     end',
     to: "true",
