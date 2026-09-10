@@ -95,8 +95,11 @@ failures = []
 #
 # Shard 2 was the largest of the three in all four runs and shard 3 the smallest
 # in all four. Medians: 1222 / 1462 / 711 of check time, and a worst leg of 436s
-# wall against a 59s run-to-run range, so the imbalance is several times the
-# noise and worth collecting -- which the 90s #484 declined was not.
+# wall against a 59s run-to-run range, so the imbalance is about twice that
+# range and five times its 22s standard deviation -- worth collecting, which
+# the 90s #484 declined was not. Say it in those terms rather than in an
+# adverb: 111s over a 59s range is a clear yes and "several times the noise"
+# would be a prose claim about a number that the number does not support.
 #
 # NO TWO OF THE TOP THREE SHARE A SHARD, because a shard cannot finish faster
 # than its own slowest check, so pairing them wastes a runner. That rule was
@@ -141,17 +144,25 @@ failures = []
 # machine a lower bound rather than a verdict. komga read 0.49 contaminated and
 # 0.85 clean, and only the second says anything.
 #
-# WHY SHARD 2'S FIGURES WERE THE STEADIEST, which is worth knowing because it
-# reads like the opposite of a problem. Its check time varied 1402-1574 across
-# the four runs, a 12% range, while shards 1 and 3 swung 30-35%. That is the
-# signature of a shard saturated by its own heavy work: seven checks over 80s in
-# one four-worker pool, insensitive to runner luck because it is always
-# contending with itself. It also means the gate's total check time is partly an
-# artefact of the partition -- concentrating the heavy checks inflates the wall
-# times the pool records for them -- so the growth from the 2342s/155 checks
-# baseline this file used to quote is not all new work, and a shard that sheds
-# heavy neighbours should record its remaining checks as cheaper. Do not promise
-# a number for that; let the next runs measure it.
+# THE GATE'S TOTAL CHECK TIME IS NOT A QUANTITY, which is the answer to the part
+# of #517 that asked where "+46% of check time for +3% more checks" against the
+# 2342s/155 baseline this file used to quote had gone. It had not gone anywhere.
+# The four runs above total 2987, 3157, 3415 and 3527s over essentially the same
+# manifest -- an 18% spread -- so the growth against that baseline is +27% or
+# +51% depending only on which run is picked, and the same point appears in
+# miniature within one shard: shard 3 printed 452s in one run and 697s in the
+# next, +54% for two checks added. Before explaining a total, check whether it
+# holds still.
+#
+# A second and smaller effect is real but do not promote it: shard 2's check time
+# was the STEADIEST of the three, 1402-1574 across the four runs, a 12% range,
+# while shard 1 swung 29% and shard 3 39% of their own medians. That is the
+# signature of a shard saturated by its own heavy work -- seven checks over 80s
+# in one four-worker pool, insensitive to runner luck because it is always
+# contending with itself -- which means a partition that concentrates the heavy
+# checks partly inflates the wall times the pool records for them, and a shard
+# that sheds heavy neighbours should record its remaining checks as cheaper. Do
+# not promise a number for that; let the next runs measure it.
 #
 # REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
 # manual act and it is meant to be: the gate prints its ten slowest checks on

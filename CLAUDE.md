@@ -673,10 +673,11 @@ the floor and moves on its own. #484 measured a perfect three-way split as worth
 about 90s against a worst observed shard wall of 394s and declined to collect it.
 By #517 the worst leg was a median 436s across four `main` runs, the shards were
 53/54/57 checks carrying a 2.2x spread of work, and the gate's two slowest checks
-were in the same shard — so the same split was worth about 110s, several times
-the 59s of run-to-run range, and it was collected. The lesson is that a partition
-balancing *count* drifts as checks are added and made faster, because nothing in
-it balances *cost*; expect to re-measure rather than to trust the last verdict.
+were in the same shard — so the same split was worth about 110s, twice the 59s
+of run-to-run range and five times its standard deviation, and it was collected.
+The lesson is that a partition balancing *count* drifts as checks are added and
+made faster, because nothing in it balances *cost*; expect to re-measure rather
+than to trust the last verdict.
 
 **The guard is the point, and it was written before the partition.** Sharding is
 an unusually efficient way to manufacture the defect this repository keeps
