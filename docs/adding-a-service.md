@@ -91,7 +91,14 @@ obligations added since, each named here as it lands:
   converge read fixture state off disk, or can its fixtures seed after deploy
   like everything else's?
 
-**So adding a service today changes 58 files.** Keep that arithmetic honest
+- `tests/container_health_wiring_test.rb` — the pinned roster of roles whose
+  whole-project Compose deployment must bracket itself with the container health
+  detect / repair-once / verdict sequence (#537). Closed in both directions, so a
+  new service that deploys a Compose project is either wired like `roles/bindery`
+  or exempted there in writing with the reason its deployment is multi-phase or
+  computed; it cannot be silently neither.
+
+**So adding a service today changes 59 files.** Keep that arithmetic honest
 rather than bumping the total: `tests/docs_links_test.rb` adds the ledger rows
 above to the measured 56, fails if the stated total disagrees, and fails again
 if `CLAUDE.md` quotes anything other than the total. The check cannot tell you an
@@ -102,8 +109,9 @@ total into a named cause.
 
 Only nine of Pinchflat's 56 were new files, and all nine are the service itself
 and its own proof. The other forty-seven are existing files that had to be told
-the platform is one service larger, and the ledger above makes forty-eight
-today. A handful are wiring and prose; most are
+the platform is one service larger, and the ledger above makes fifty today —
+forty-nine before #537, which is what the sentence should have read once the
+pre-converge roster landed. A handful are wiring and prose; most are
 *registries* — files that pin a list, a count or a literal string describing the
 platform as it currently is, and that fail when it grows without them. Sometimes
 loudly, sometimes with a Ruby stack trace, occasionally not at all.
