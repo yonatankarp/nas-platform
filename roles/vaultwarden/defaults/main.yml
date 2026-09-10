@@ -39,7 +39,14 @@ vaultwarden_url: "http://127.0.0.1:{{ vaultwarden_port }}"
 # client faults. platform_public_host is a LAN address in some environments
 # (inventory/mac.yml sets 127.0.0.1), which is why tasks/deploy.yml refuses one
 # by name rather than trusting this expression.
-vaultwarden_domain: "https://{{ platform_public_host }}"
+# Lowercased for the same reason tasks/serve.yml lowercases its Serve lookup:
+# platform_public_host is a raw environment lookup and a DNS name is
+# case-insensitive, while the things that compare against this value are not. A
+# browser lowercases the host when it builds an origin, and WebAuthn matches a
+# relying-party identifier against that origin exactly -- so a DOMAIN carrying
+# the operator's capitalisation is the same silent mismatch one layer up from
+# the Serve one, and this is the only place it can be normalised once.
+vaultwarden_domain: "https://{{ platform_public_host | lower }}"
 
 # Ansible owns the door, and only the door. Registration is closed: an account
 # exists because somebody was invited, not because they found the address. There

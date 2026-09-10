@@ -156,11 +156,33 @@
     # is recorded as `http://localhost:11434` -- and a comparison that failed on
     # that spelling would re-place the same front on every converge, which is
     # the idempotence failure this read exists to prevent.
+    # BOTH SIDES LOWERCASED, AND THIS IS NOT DEFENSIVENESS. tailscaled records
+    # the node's own name from Self.DNSName, which it holds lowercased;
+    # platform_public_host is a raw `lookup('env', 'PLATFORM_PUBLIC_HOST')` and
+    # is whatever the operator exported. A DNS name is case-insensitive, so the
+    # two spellings are the same host and an exact subscript says they are not.
+    #
+    # The cost of getting this wrong is not a failure, which is why it needs
+    # saying. The lookup misses, the proxy reads empty, the front is re-placed
+    # over the identical front, and `vaultwarden_serve_placed is changed` feeds
+    # ntfy_deployment_report_changed -- so the poller converges and pages every
+    # five minutes, forever, with nothing ever wrong. Measured against a stub
+    # emitting the 1.102.2 shape and varying only case: lowercase export skips
+    # the placement and mutates nothing, uppercase export places it on every
+    # run.
     - name: Resolve whether Tailscale Serve already fronts Vaultwarden
       ansible.builtin.set_fact:
+        vaultwarden_serve_web: >-
+          {{ dict((vaultwarden_serve_document.Web | default({}, true)) | dict2items
+                  | map(attribute='key') | map('lower') | list
+                  | zip((vaultwarden_serve_document.Web | default({}, true)) | dict2items
+                        | map(attribute='value') | list)) }}
+
+    - name: Resolve the Tailscale Serve proxy target for this host
+      ansible.builtin.set_fact:
         vaultwarden_serve_proxy: >-
-          {{ ((((vaultwarden_serve_document.Web | default({}, true))
-                 [platform_public_host ~ ':' ~ vaultwarden_tailscale_serve_port]
+          {{ (((vaultwarden_serve_web
+                 [(platform_public_host ~ ':' ~ vaultwarden_tailscale_serve_port) | lower]
                  | default({}, true)).Handlers | default({}, true))['/']
               | default({}, true)).Proxy | default('', true) }}
 

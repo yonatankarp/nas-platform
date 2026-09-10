@@ -55,8 +55,12 @@ policy_shard=${1:-}
 # a line from a partition removes a check from the gate and makes the gate
 # *faster*, with nothing else in the repository to notice.
 #
-# The partition balances COST, which is why the shard counts below are 51, 52
-# and 61 rather than a third each. #469 drew it round robin -- count is all a
+# The partition balances COST, which is why the shard counts below are 55, 57
+# and 61 rather than a third each. Those are today's counts, read off
+# tests/gate_manifest_coverage_test.rb's own summary line rather than
+# remembered: the sentence said 51, 52 and 61 while the file held 53, 57 and 61,
+# because nothing compares this number against the lists and two merges moved it
+# without it. #469 drew it round robin -- count is all a
 # partition without a cost table can balance -- and by #517 the three shards
 # were 53/54/57 checks carrying a 2.2x spread of work, with the gate's two
 # slowest checks in the same shard. tests/gate_manifest_coverage_test.rb carries
@@ -171,6 +175,8 @@ tests/mac/hook-coverage-test.sh
 tests/mac/cleanup.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
 ruby tests/mac/read-integration-ports-test.rb
+ruby tests/vaultwarden_serve_test.rb
+ruby tests/vaultwarden_serve_test.rb --self-test
 POLICY_CHECKS_1
 }
 
