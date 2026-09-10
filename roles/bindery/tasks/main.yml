@@ -38,6 +38,22 @@
     mode: "0600"
   no_log: true
 
+# Before the backup, because a release that must not be started is not worth
+# backing up for, and before Compose, because recreating the container from the
+# older image is the act being refused. Bindery migrates its own SQLite store on
+# start and the migration is one-way: #511 pinned this host behind one for three
+# days. The five paths this reads are the ones the containment re-include at the
+# top of this file already declared through deployment_target_service, so it
+# needs no extra_paths of its own.
+- name: Refuse a Bindery image older than the store on disk
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: bindery
+    image_downgrade_guard_compose_service: bindery
+    image_downgrade_guard_project_name: "{{ bindery_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ bindery_config_host_path }}"
+
 - name: Guard Bindery critical state before a pinned upgrade
   ansible.builtin.include_tasks: pre_upgrade_backup.yml
 

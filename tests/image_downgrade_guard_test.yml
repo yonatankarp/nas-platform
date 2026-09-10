@@ -1,0 +1,319 @@
+---
+# Behaviour of roles/image_downgrade_guard, which is the converge-time half of
+# #511: it refuses to start an image older than one that has already run against
+# the service's own store, because a service that migrates on start writes a
+# schema the older image declines to open -- inside the container, where the
+# only symptom is a crash loop.
+#
+# This runs the shipped role rather than a restatement of it. The release tree
+# and the Docker daemon are both fixtures: the pinned image comes from a
+# compose.yml written per case, and a `docker` stub on PATH answers `container
+# ls` and `container inspect` from two files the case writes beside it. So the
+# subject is the file's own expressions, and a change to them that breaks the
+# arithmetic fails here rather than on the NAS.
+#
+# The version arithmetic is where the defects are, and the port row is one that
+# happened rather than one imagined: reading the tag from the left of the whole
+# reference resolves `registry.example:5000/x/y:v1.33.3` to 5000, and every
+# comparison after that is between two registry ports.
+- name: Prove the image downgrade guard
+  hosts: localhost
+  gather_facts: false
+  # Play level, because `environment` is not a task attribute of an include and
+  # the stub has to be on PATH for the command tasks the role runs inside it.
+  environment:
+    PATH: "{{ guard_root }}/bin:{{ lookup('env', 'PATH') }}"
+  vars:
+    guard_role_tasks: >-
+      {{ lookup('file', playbook_dir ~ '/../roles/image_downgrade_guard/tasks/main.yml')
+         | from_yaml }}
+    guard_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-image-downgrade-guard"
+    # name, the image the release pins, the references Docker recorded for
+    # containers of this service, and what the guard must conclude.
+    guard_cases:
+      - name: "the #511 downgrade, one release back past a migration"
+        pinned: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.34.0@sha256:bbbb]
+        refused: true
+        newer: ["1.34.0"]
+      - name: a converged deployment, same version on both sides
+        pinned: ghcr.io/vavallee/bindery:v1.35.0@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.35.0@sha256:aaaa]
+        refused: false
+        newer: []
+      - name: a digest refresh on an unchanged tag
+        pinned: ghcr.io/vavallee/bindery:v1.35.0@sha256:cccc
+        deployed: [ghcr.io/vavallee/bindery:v1.35.0@sha256:aaaa]
+        refused: false
+        newer: []
+      - name: an ordinary upgrade, which must not be refused
+        pinned: ghcr.io/vavallee/bindery:v1.35.0@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.33.3@sha256:bbbb]
+        refused: false
+        newer: []
+      - name: several containers left behind, one of them newer
+        pinned: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        deployed:
+          - ghcr.io/vavallee/bindery:v1.9.0@sha256:x
+          - ghcr.io/vavallee/bindery:v1.34.0@sha256:y
+        refused: true
+        newer: ["1.34.0"]
+      - name: numeric rather than lexical ordering, 1.10 over 1.9
+        pinned: ghcr.io/vavallee/bindery:v1.9.0@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.10.0@sha256:y]
+        refused: true
+        newer: ["1.10.0"]
+      - name: a suffixed tag, as Nextcloud pins one
+        pinned: docker.io/library/nextcloud:34.0.3-apache@sha256:aaaa
+        deployed: [docker.io/library/nextcloud:34.0.4-apache@sha256:y]
+        refused: true
+        newer: ["34.0.4"]
+      - name: a registry host carrying a port
+        pinned: registry.example:5000/vavallee/bindery:v1.33.3@sha256:aaaa
+        deployed: [registry.example:5000/vavallee/bindery:v1.34.0@sha256:y]
+        refused: true
+        newer: ["1.34.0"]
+      - name: a fresh host, where the service has never run
+        pinned: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        deployed: []
+        refused: false
+        newer: []
+      - name: a pinned tag that is not a version, which fails open
+        pinned: ghcr.io/vavallee/bindery:latest@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.34.0@sha256:y]
+        refused: false
+        newer: []
+      - name: a deployed tag that is not a version, which fails open
+        pinned: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:edge@sha256:y]
+        refused: false
+        newer: []
+      - name: a different repository entirely, which has no version ordering
+        pinned: ghcr.io/other/bindery:v1.33.3@sha256:aaaa
+        deployed: [ghcr.io/vavallee/bindery:v1.34.0@sha256:y]
+        refused: false
+        newer: []
+
+  tasks:
+    - name: Build the fixture release tree
+      ansible.builtin.file:
+        path: "{{ guard_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - bin
+        - services/bindery
+
+    # The stub records its own argv, which is the only way to prove the guard
+    # asks for stopped containers. A guard that dropped --all would still pass
+    # every row above on this fixture, because the fixture answers whatever it
+    # is asked -- and the container the guard exists for is the one that has
+    # already exited.
+    - name: Install the Docker stub the guard reads its daemon through
+      ansible.builtin.copy:
+        dest: "{{ guard_root }}/bin/docker"
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          printf '%s\n' "$*" >>"{{ guard_root }}/docker-argv"
+          [ "$1" = container ] || exit 64
+          case "$2" in
+            ls) cat "{{ guard_root }}/docker-ids" 2>/dev/null || : ;;
+            inspect) cat "{{ guard_root }}/docker-inspect.json" ;;
+            *) exit 64 ;;
+          esac
+
+    - name: Start the argv record and the result accumulator empty
+      ansible.builtin.copy:
+        dest: "{{ guard_root }}/docker-argv"
+        content: ""
+        mode: "0644"
+
+    - name: Start the result accumulator empty
+      ansible.builtin.set_fact:
+        guard_results: []
+
+    - name: Run every case
+      ansible.builtin.include_tasks: image_downgrade_guard_case.yml
+      loop: "{{ guard_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # A floor rather than non-emptiness: a case list that silently became one
+    # row would satisfy every per-row assertion below and prove nothing. Twelve
+    # is what the list holds; both fail-open rows and both no-comparison rows
+    # are load-bearing, so a shrink is a deliberate act with a diff.
+    - name: Require the case list to have run whole
+      ansible.builtin.assert:
+        that:
+          - guard_results | length == guard_cases | length
+          - guard_results | length >= 12
+          - guard_results | selectattr('refused') | list | length >= 5
+          - guard_results | rejectattr('refused') | list | length >= 6
+        fail_msg: >-
+          The guard ran {{ guard_results | length }} of {{ guard_cases | length }}
+          cases, refusing {{ guard_results | selectattr('refused') | list | length }}
+          of them. A run that judges too few cases, or that never reaches both
+          verdicts, cannot report that the guard works.
+
+    - name: Require the guard to read stopped containers too
+      ansible.builtin.assert:
+        that:
+          - guard_listing is search('container ls --all --quiet')
+          - guard_listing is search('label=com.docker.compose.project=guard-test')
+          - guard_listing is search('label=com.docker.compose.service=bindery')
+        fail_msg: >-
+          The guard listed containers as `docker {{ guard_listing }}`. Without
+          --all it sees only running containers, and the container it exists for
+          has already exited.
+      vars:
+        guard_listing: >-
+          {{ (lookup('file', guard_root ~ '/docker-argv').split('\n')
+              | select('search', '^container ls') | list | first | default('', true)) }}
+
+    # Structure rather than behaviour, and it is the half a fixture cannot show:
+    # a read that claims a change breaks idempotence, a read that skips itself
+    # under --check turns the refusal into silence exactly when an operator is
+    # reading the plan, and a `when: ansible_check_mode` deferral -- which
+    # roles/container_cpu is right to carry and this role is not -- would gut it.
+    #
+    # Collected by loop rather than by selectattr because the module key holds
+    # dots: Jinja reads `ansible.builtin.command` as a path through three nested
+    # mappings, so selectattr on it matches nothing and reports zero reads on a
+    # file that has two.
+    - name: Collect the reads the guard performs
+      ansible.builtin.set_fact:
+        guard_reads: >-
+          {{ guard_reads | default([])
+             + ([item] if 'ansible.builtin.command' in item else []) }}
+      loop: "{{ guard_body }}"
+      loop_control:
+        label: "{{ item.name | default('-') }}"
+      vars:
+        guard_body: "{{ guard_role_tasks }}"
+
+    - name: Require every read in the guard to be a read
+      ansible.builtin.assert:
+        that:
+          - guard_reads | length == 2
+          - guard_reads | selectattr('changed_when', 'defined')
+            | selectattr('changed_when', 'equalto', false) | list | length == 2
+          - guard_reads | selectattr('check_mode', 'defined')
+            | selectattr('check_mode', 'equalto', false) | list | length == 2
+          - guard_role_tasks | map('string') | select('search', 'ansible_check_mode')
+            | list | length == 0
+        fail_msg: >-
+          roles/image_downgrade_guard/tasks/main.yml holds
+          {{ guard_reads | length }} command reads, of which
+          {{ guard_reads | selectattr('check_mode', 'defined')
+             | selectattr('check_mode', 'equalto', false) | list | length }}
+          really run under --check and
+          {{ guard_reads | selectattr('changed_when', 'defined')
+             | selectattr('changed_when', 'equalto', false) | list | length }}
+          report no change. The guard inspects state the run did not create, so
+          it has to judge in check mode rather than defer.
+
+    # The refusal has to fire under --check, because a plan that reads clean and
+    # then crash-loops on apply is the #511 failure with an extra step. The
+    # fixture is rewritten to the downgrade first: the loop above left the last
+    # case's files behind.
+    - name: Write the downgrade fixture the check-mode proof reads
+      ansible.builtin.copy:
+        dest: "{{ guard_root }}/{{ item.path }}"
+        content: "{{ item.content }}"
+        mode: "0644"
+      loop:
+        - path: services/bindery/compose.yml
+          content: |
+            ---
+            services:
+              bindery:
+                image: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        - path: docker-ids
+          content: "cafe0001\n"
+        - path: docker-inspect.json
+          content: |
+            [{"Config": {"Image": "ghcr.io/vavallee/bindery:v1.34.0@sha256:bbbb"}}]
+      loop_control:
+        label: "{{ item.path }}"
+
+    - name: Refuse the downgrade while only planning
+      check_mode: true
+      block:
+        # First, and it is not decoration. If block-level check_mode did not
+        # reach the tasks inside the include, this whole block would be an
+        # ordinary converge refusing for ordinary reasons and reporting green --
+        # and no planted defect could tell the difference, because every plant
+        # that touches `check_mode: false` trips the structural assertion above.
+        # Keyword inheritance through an include is not uniform here: an
+        # `environment` on the include of a case file is rejected outright,
+        # which is why that one sits at play level.
+        #
+        # The probe is a write that check mode must not perform, rather than a
+        # read of `ansible_check_mode`. That variable was the first attempt and
+        # it is the wrong oracle: it reports whether the RUN carries --check, so
+        # a task-level check_mode leaves it false and the tripwire fired on a
+        # block that was working correctly. What a task-level check_mode does do
+        # is hand every module `_ansible_check_mode`, which is the whole of what
+        # the guard meets under --check, since it reads that variable nowhere --
+        # the structural assertion above is what holds that true.
+        - name: Probe whether check mode reaches the tasks inside this block
+          ansible.builtin.file:
+            path: "{{ guard_root }}/check-mode-probe"
+            state: touch
+            mode: "0644"
+
+        - name: Include the downgrade guard in check mode
+          ansible.builtin.include_role:
+            name: image_downgrade_guard
+          vars:
+            image_downgrade_guard_service_name: bindery
+            image_downgrade_guard_compose_service: bindery
+            image_downgrade_guard_project_name: guard-test
+            image_downgrade_guard_store_description: /fixture/config
+            platform_current_dir: "{{ guard_root }}"
+
+        - name: Record that check mode did not refuse
+          ansible.builtin.set_fact:
+            guard_check_mode_refused: false
+      rescue:
+        - name: Record that check mode refused
+          ansible.builtin.set_fact:
+            guard_check_mode_refused: true
+
+    - name: Read whether the check-mode probe wrote anything
+      ansible.builtin.stat:
+        path: "{{ guard_root }}/check-mode-probe"
+      register: guard_check_mode_probe
+
+    - name: Require the refusal to reach a check-mode run
+      ansible.builtin.assert:
+        that:
+          - not guard_check_mode_probe.stat.exists
+          - guard_check_mode_refused | bool
+          - image_downgrade_guard_newer_versions == ["1.34.0"]
+        fail_msg: >-
+          {{ 'The check-mode block wrote its probe file, so its tasks were not in
+              check mode and the refusal below is an ordinary converge wearing the
+              proof name.'
+             if guard_check_mode_probe.stat.exists else
+             'In check mode the guard read '
+             ~ image_downgrade_guard_deployed_versions ~ ' against a pinned '
+             ~ image_downgrade_guard_pinned_version ~ ' and '
+             ~ ('refused' if guard_check_mode_refused | bool else 'did not refuse')
+             ~ '. A plan that reads clean and then crash-loops on apply is #511
+                with an extra step.' }}
+
+    - name: Remove the fixture tree
+      ansible.builtin.file:
+        path: "{{ guard_root }}"
+        state: absent
+
+    - name: Report what was proved
+      ansible.builtin.debug:
+        msg: >-
+          image downgrade guard: {{ guard_results | length }} cases hold --
+          {{ guard_results | selectattr('refused') | map(attribute='name') | list | length }}
+          refused and
+          {{ guard_results | rejectattr('refused') | map(attribute='name') | list | length }}
+          allowed, with --all asked of the daemon.

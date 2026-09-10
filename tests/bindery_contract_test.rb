@@ -76,6 +76,7 @@ FIXTURE_FILES = %w[
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
+  roles/image_downgrade_guard/tasks/main.yml
   services/bindery/compose.yml
   services/bindery/compose.mac.yml
   services/bindery/compose.integration.yml
@@ -168,6 +169,82 @@ end
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
+  {
+    name: "no guard against a pin that goes back past a migration",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! do |task|
+          task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard"
+        end
+      end
+    },
+    expects: "Bindery must refuse an image older than the store already on disk"
+  },
+  {
+    name: "a downgrade guard that runs after the deployment",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        guard = document.find do |task|
+          task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard"
+        end
+        document.delete(guard)
+        document.push(guard)
+      end
+    },
+    expects: "the Bindery downgrade guard must run before the backup and the deployment"
+  },
+  {
+    name: "a downgrade guard pointed at another Compose project",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        guard = find_task(document) do |task|
+          task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard"
+        end
+        guard["vars"]["image_downgrade_guard_project_name"] = "somebody-else"
+      end
+    },
+    expects: "the Bindery downgrade guard must judge Bindery's own containers"
+  },
+  {
+    name: "a downgrade guard whose reads claim a change",
+    break: lambda { |root|
+      role_tasks(root, "roles/image_downgrade_guard/tasks/main.yml") do |document|
+        find_task(document) { |task| task.key?("ansible.builtin.command") }
+          .delete("changed_when")
+      end
+    },
+    expects: "the downgrade guard must read the daemon without claiming a change or deferring"
+  },
+  {
+    name: "a downgrade guard that skips its reads under --check",
+    break: lambda { |root|
+      role_tasks(root, "roles/image_downgrade_guard/tasks/main.yml") do |document|
+        find_task(document) { |task| task.key?("ansible.builtin.command") }["check_mode"] = true
+      end
+    },
+    expects: "the downgrade guard must read the daemon without claiming a change or deferring"
+  },
+  {
+    name: "a downgrade guard blind to containers that have exited",
+    break: lambda { |root|
+      role_tasks(root, "roles/image_downgrade_guard/tasks/main.yml") do |document|
+        find_task(document) { |task| task.key?("ansible.builtin.command") }
+          .dig("ansible.builtin.command", "argv").delete("--all")
+      end
+    },
+    expects: "the downgrade guard must list stopped containers too"
+  },
+  {
+    name: "a downgrade guard that reports instead of refusing",
+    break: lambda { |root|
+      role_tasks(root, "roles/image_downgrade_guard/tasks/main.yml") do |document|
+        refusal = find_task(document) { |task| task.key?("ansible.builtin.assert") }
+        document[document.index(refusal)] =
+          { "name" => refusal["name"], "ansible.builtin.debug" => { "msg" => "would refuse" } }
+      end
+    },
+    expects: "the downgrade guard must refuse rather than report"
+  },
   {
     name: "a declared file that is gone",
     break: ->(root) { FileUtils.rm(File.join(root, "services/bindery/compose.mac.yml")) },

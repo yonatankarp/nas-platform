@@ -1,0 +1,81 @@
+---
+# One case of tests/image_downgrade_guard_test.yml. Separate because a block
+# cannot be looped and the refusal has to be caught: the case runs the real role
+# and records whether it failed, so what is under test is the shipped file
+# rather than a restatement of its expressions.
+#
+# The three facts are reset first. set_fact persists across loop iterations, so
+# a case whose role run failed before reaching them would otherwise be judged on
+# the previous case's values -- which is a green run reporting the wrong thing.
+- name: Reset the facts this case is judged on
+  ansible.builtin.set_fact:
+    image_downgrade_guard_pinned_version: ""
+    image_downgrade_guard_deployed_versions: []
+    image_downgrade_guard_newer_versions: []
+    guard_case_refused: false
+
+- name: Write the release compose definition this case pins
+  ansible.builtin.copy:
+    dest: "{{ guard_root }}/services/bindery/compose.yml"
+    content: |
+      ---
+      services:
+        bindery:
+          image: {{ item.pinned }}
+    mode: "0644"
+
+# Two tasks rather than one because `copy` refuses empty content, and the case
+# with no containers at all -- a fresh host -- is one the guard has to survive.
+# The stub tolerates the file's absence, so absence is how emptiness is said.
+- name: Clear the container identifiers left by the previous case
+  ansible.builtin.file:
+    path: "{{ guard_root }}/docker-ids"
+    state: absent
+
+- name: Write the container identifiers this case's daemon reports
+  ansible.builtin.copy:
+    dest: "{{ guard_root }}/docker-ids"
+    content: |
+      {% for reference in item.deployed %}
+      cafe000{{ loop.index }}
+      {% endfor %}
+    mode: "0644"
+  when: item.deployed | length > 0
+
+- name: Write the inspection this case's daemon returns
+  ansible.builtin.copy:
+    dest: "{{ guard_root }}/docker-inspect.json"
+    content: |
+      [
+      {% for reference in item.deployed %}
+        {"Config": {"Image": {{ reference | to_json }}}}{{ "," if not loop.last else "" }}
+      {% endfor %}
+      ]
+    mode: "0644"
+
+- name: Run the guard against this case
+  block:
+    - name: Include the downgrade guard
+      ansible.builtin.include_role:
+        name: image_downgrade_guard
+      vars:
+        image_downgrade_guard_service_name: bindery
+        image_downgrade_guard_compose_service: bindery
+        image_downgrade_guard_project_name: guard-test
+        image_downgrade_guard_store_description: /fixture/config
+        platform_current_dir: "{{ guard_root }}"
+  rescue:
+    - name: Record that the guard refused this case
+      ansible.builtin.set_fact:
+        guard_case_refused: true
+
+- name: Accumulate the outcome of this case
+  ansible.builtin.set_fact:
+    guard_results: >-
+      {{ guard_results + [{
+           'name': item.name,
+           'refused': guard_case_refused,
+           'newer': image_downgrade_guard_newer_versions,
+           'pinned_version': image_downgrade_guard_pinned_version,
+           'deployed_versions': image_downgrade_guard_deployed_versions
+         }] }}

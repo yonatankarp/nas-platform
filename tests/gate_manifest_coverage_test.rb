@@ -272,6 +272,7 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
   ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
+  ansible-playbook -i localhost, -c local tests/image_downgrade_guard_test.yml
   ruby tests/dozzle_quality_test.rb
   ruby tests/jellyfin_contract_test.rb
   ruby tests/pinchflat_contract_test.rb --self-test

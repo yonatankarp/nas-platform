@@ -1,0 +1,43 @@
+---
+argument_specs:
+  main:
+    short_description: >-
+      Refuse an image older than the one that has already migrated a service's store
+    description:
+      - >-
+        For a service that migrates its own store when it starts, a pin is not
+        freely reversible: the newer image writes a schema the older one refuses
+        to open, and it refuses inside the container rather than in the play.
+        This role reads the image references Docker recorded for the service's
+        own containers, running or not, and fails the converge before Compose
+        can recreate one from an older version.
+    options:
+      image_downgrade_guard_service_name:
+        type: str
+        required: true
+        description: >-
+          The manifest service directory under services/, which is where the
+          deployed compose.yml holding the pin is read from. Hyphenated, as the
+          directory is -- paperless-ngx, not paperless_ngx.
+      image_downgrade_guard_compose_service:
+        type: str
+        required: true
+        description: >-
+          The Compose service key inside that file whose image is guarded. It is
+          separate from the directory because a stack can hold several, and only
+          the one that owns the migrating store is the subject.
+      image_downgrade_guard_project_name:
+        type: str
+        required: true
+        description: >-
+          The Compose project the containers carry as a label, so a sandbox
+          running its own copy of the platform judges its own containers.
+      image_downgrade_guard_store_description:
+        type: str
+        required: true
+        description: >-
+          Where the store lives, named in the refusal. An operator reading the
+          failure needs to know which data the one-way migration was applied to.
+      platform_current_dir:
+        type: path
+        required: true
