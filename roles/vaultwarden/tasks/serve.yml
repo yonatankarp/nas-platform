@@ -1,0 +1,253 @@
+---
+# THE TLS TERMINATION, AND WHY IT IS A TASK IN THIS ROLE RATHER THAN A ROLE OF
+# ITS OWN.
+#
+# Bitwarden clients and the web vault need a secure context for the browser
+# crypto to work at all, so Vaultwarden is the only service on this platform that
+# is not happy on host:port. A reverse proxy would mean an ADM-managed listener
+# this repository does not control, so Tailscale Serve terminates TLS inside the
+# tailnet instead: no ADM port opened, no public DNS record, and the certificate
+# is the tailnet's own.
+#
+# A general `tailnet_https` role was considered and deliberately not written yet.
+# It rests on a premise #547 itself marks Unverified -- whether Serve can front
+# several ports on distinct paths cleanly -- and `tailscale serve --set-path` is
+# the flag that would answer it. This service cannot answer it, because Bitwarden
+# clients want the vault at the root and a path prefix is exactly what they will
+# not take. A role-local task is a two-way door: the second service that wants
+# HTTPS is when the shape is known. A role adopted by nothing is a committed
+# interface with no second caller to check it against.
+#
+# FOUR ENVIRONMENTS, AND ONLY ONE OF THEM HAS A TAILSCALE. The NAS has it; the
+# integration container, the Mac sandbox and a workstation running the remote
+# inventory do not. Absence is therefore a reporting skip and never a failure --
+# a failure here would turn every CI lane and the whole Mac lane red for a
+# facility they are not meant to have. The presence path only ever runs where it
+# cannot be exercised before merge, which is why the absence path is the one
+# proved by running.
+
+# DISCOVERED RATHER THAN ASSUMED, and the resolved absolute path is what every
+# task below invokes. /usr/local/bin/tailscale is on the NAS's default PATH, so
+# a bare name would very likely work; what it would depend on is the layout of
+# an App Central package (`tailscale-native`) that this repository does not own.
+# The other half is that discovery makes the absent path explicit rather than
+# accidental. roles/vaultwarden/defaults/main.yml carries the candidate list, the
+# measurement behind it and the override.
+- name: Locate the Tailscale client on this host
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop: "{{ vaultwarden_tailscale_binary_candidates }}"
+  register: vaultwarden_tailscale_candidates
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_tailscale_binary | length == 0
+
+# Appending the empty string is what makes `first` total: `first` on an empty
+# sequence raises, and the state this expression most has to survive is the one
+# where nothing matched. An explicit vaultwarden_tailscale_binary short-circuits
+# the whole discovery, including the loop above, which is why its results are
+# read through a default rather than directly.
+- name: Resolve the Tailscale client this host holds
+  ansible.builtin.set_fact:
+    vaultwarden_tailscale_path: >-
+      {{ vaultwarden_tailscale_binary
+         if vaultwarden_tailscale_binary | length > 0
+         else (((vaultwarden_tailscale_candidates.results | default([], true))
+                | selectattr('stat.exists')
+                | selectattr('stat.executable')
+                | map(attribute='stat.path') | list) + ['']) | first }}
+
+- name: Report the tailnet HTTPS front this host cannot hold
+  ansible.builtin.debug:
+    msg: >-
+      No Tailscale client was found at any of
+      {{ vaultwarden_tailscale_binary_candidates | join(', ') }}, so this host
+      places no HTTPS front in front of Vaultwarden and nothing here fails for
+      it. Only the NAS runs Tailscale; the integration container, the Mac
+      sandbox and a workstation converging over SSH all take this path. On such
+      a host Vaultwarden is reachable over plain HTTP on port
+      {{ vaultwarden_port }} only, which is enough for the checks that run there
+      and is not enough for a Bitwarden client, whose crypto requires a secure
+      context.
+  when: vaultwarden_tailscale_path | length == 0
+
+- name: Report the tailnet HTTPS front the deployment gate withholds
+  ansible.builtin.debug:
+    msg: >-
+      vaultwarden_deployment_enabled is false, so there is no Vaultwarden to
+      front and this run reads the Tailscale Serve configuration without
+      changing it. An existing Serve entry is deliberately left in place rather
+      than removed: unlike the Compose project, Serve state belongs to the
+      tailnet node rather than to this stack, and this role may not have been
+      what created it.
+  when:
+    - vaultwarden_tailscale_path | length > 0
+    - not vaultwarden_deployment_enabled | bool
+
+- name: Front Vaultwarden with Tailscale Serve
+  when:
+    - vaultwarden_tailscale_path | length > 0
+    - vaultwarden_deployment_enabled | bool
+  block:
+    # READ FIRST, AND THAT IS THE WHOLE IDEMPOTENCE ARGUMENT. tailscaled holds
+    # this state -- it is not a file on disk -- so a blind `tailscale serve`
+    # claims a change on every converge, and idempotence is a hard requirement
+    # here. --json rather than the plain form because the plain form is prose
+    # meant for a person and has changed shape across releases.
+    - name: Read the Tailscale Serve configuration this host holds
+      ansible.builtin.command:
+        argv:
+          - "{{ vaultwarden_tailscale_path }}"
+          - serve
+          - status
+          - --json
+      register: vaultwarden_serve_status
+      changed_when: false
+      check_mode: false
+      failed_when: false
+
+    # A host with no serve configuration says so rather than returning an empty
+    # document, and it says it on stderr. That is a state, not an error, so it
+    # is separated from a CLI that refused the arguments -- which is a real
+    # possibility, because `tailscale serve` has changed its command shape
+    # across releases and the NAS runs whichever build ASUSTOR's App Central
+    # ships rather than a version this repository pins.
+    - name: Resolve what Tailscale Serve reports for this host
+      ansible.builtin.set_fact:
+        vaultwarden_serve_unconfigured: >-
+          {{ 'no serve config' in
+             (((vaultwarden_serve_status.stdout | default('')) ~ ' ' ~
+               (vaultwarden_serve_status.stderr | default(''))) | lower) }}
+        # Jinja evaluates only the branch it takes, so from_json is never
+        # reached for output that is not a JSON object.
+        vaultwarden_serve_document: >-
+          {{ (vaultwarden_serve_status.stdout | from_json)
+             if (vaultwarden_serve_status.stdout | default('') | trim) is match('^\{')
+             else {} }}
+
+    # Every term in the message is defined on the passing path as well as the
+    # failing one. An assertion whose diagnostic only exists when it fails dies
+    # on the run where it holds, because Ansible finalizes a task's arguments
+    # before it decides whether the assertion did.
+    - name: Require a legible Tailscale Serve reading
+      ansible.builtin.assert:
+        that:
+          - vaultwarden_serve_status.rc == 0 or vaultwarden_serve_unconfigured
+        fail_msg: >-
+          `{{ vaultwarden_tailscale_path }} serve status --json` exited
+          {{ vaultwarden_serve_status.rc }} and did not report an absent serve
+          configuration, so this run cannot tell a host that is simply not
+          serving from a client whose command shape no longer matches these
+          arguments. It printed
+          {{ vaultwarden_serve_status.stdout | default('') | trim | default('nothing', true) }}
+          on stdout and
+          {{ vaultwarden_serve_status.stderr | default('') | trim | default('nothing', true) }}
+          on stderr. Read the client's own `serve --help` before changing the
+          argv above: guessing at it is how a front that silently stopped being
+          placed would still report success.
+        success_msg: >-
+          Tailscale Serve reported its configuration for
+          {{ platform_public_host }}.
+
+    # The converged state, keyed on the node's own name and the port Serve
+    # terminates on. The recorded proxy target is compared by pattern rather
+    # than by string equality, because the CLI records the target it resolved
+    # rather than the one it was handed -- a `tailscale serve --bg --yes 11434`
+    # is recorded as `http://localhost:11434` -- and a comparison that failed on
+    # that spelling would re-place the same front on every converge, which is
+    # the idempotence failure this read exists to prevent.
+    - name: Resolve whether Tailscale Serve already fronts Vaultwarden
+      ansible.builtin.set_fact:
+        vaultwarden_serve_proxy: >-
+          {{ ((((vaultwarden_serve_document.Web | default({}, true))
+                 [platform_public_host ~ ':' ~ vaultwarden_tailscale_serve_port]
+                 | default({}, true)).Handlers | default({}, true))['/']
+              | default({}, true)).Proxy | default('', true) }}
+
+    - name: Resolve whether the Vaultwarden front is the declared one
+      ansible.builtin.set_fact:
+        vaultwarden_serve_fronted: >-
+          {{ vaultwarden_serve_proxy
+             is match('^http://(127\.0\.0\.1|localhost):' ~ vaultwarden_port ~ '/?$') }}
+
+    # --bg because without it `tailscale serve` runs in the foreground and
+    # blocks, which would hang the converge rather than fail it. --yes because
+    # without it the command can stop on an interactive prompt, for the same
+    # outcome. --https 443 is the default mode, so the bare port is the whole
+    # target specification.
+    #
+    # changed_when: true is earned rather than assumed: this task runs only
+    # where the read above said the configuration differs, so the run that
+    # reaches it is the run that changes something.
+    - name: Place the Tailscale Serve front for Vaultwarden
+      ansible.builtin.command:
+        argv:
+          - "{{ vaultwarden_tailscale_path }}"
+          - serve
+          - --bg
+          - --yes
+          - "{{ vaultwarden_port }}"
+      register: vaultwarden_serve_placed
+      changed_when: true
+      when:
+        - not vaultwarden_serve_fronted
+        - not ansible_check_mode
+
+    # `command` is skipped under --check, which CLAUDE.md names as exactly the
+    # bug class the integration suite exists to catch. The reviewer is told what
+    # a live run would do instead of reading a green skip.
+    - name: Report the Tailscale Serve front check mode defers
+      ansible.builtin.debug:
+        msg: >-
+          A live run would
+          {{ 'leave the existing front in place, because'
+             if vaultwarden_serve_fronted
+             else 'run `' ~ vaultwarden_tailscale_path ~ ' serve --bg --yes '
+                  ~ vaultwarden_port ~ '`, because' }}
+          Tailscale Serve currently records
+          {{ vaultwarden_serve_proxy | default('', true) | default('no proxy', true) }}
+          for {{ platform_public_host }}:{{ vaultwarden_tailscale_serve_port }}
+          and this release declares http://127.0.0.1:{{ vaultwarden_port }}.
+      when: ansible_check_mode
+
+    # THE ONE THING NO CHECK IN THIS REPOSITORY CAN SEE. Serve terminates TLS
+    # only if HTTPS certificates are enabled for the tailnet, which is a setting
+    # in the Tailscale admin console and not on this host. Placing the front
+    # succeeds either way; what differs is whether anything answers. So the
+    # front is proved by using it.
+    #
+    # Any status accepted, so the assertion below is what fails and can say
+    # which outcome differed. `until` rather than a single read because the node
+    # provisions its certificate on first use, which is not instant.
+    - name: Read Vaultwarden over the tailnet HTTPS front
+      ansible.builtin.uri:
+        url: "{{ vaultwarden_domain }}/alive"
+        method: GET
+        status_code: "{{ range(100, 600) | list }}"
+      register: vaultwarden_serve_reachability
+      until: vaultwarden_serve_reachability.status | default(0) | int == 200
+      retries: "{{ platform_readiness_retries }}"
+      delay: "{{ platform_readiness_delay }}"
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      when: not ansible_check_mode
+
+    - name: Require Vaultwarden reachable over the tailnet HTTPS front
+      ansible.builtin.assert:
+        that:
+          - vaultwarden_serve_reachability.status | default(0) | int == 200
+        fail_msg: >-
+          Tailscale Serve fronts http://127.0.0.1:{{ vaultwarden_port }} on
+          {{ vaultwarden_domain }}, but {{ vaultwarden_domain }}/alive answered
+          {{ vaultwarden_serve_reachability.status | default(0) | int }} rather
+          than 200. The usual cause is the one setting nothing in this
+          repository can read: HTTPS certificates must be ENABLED FOR THE
+          TAILNET in the Tailscale admin console, under DNS. Serve accepts the
+          configuration whether or not they are, so the front is placed and
+          nothing terminates TLS on it. Until that is on, no Bitwarden client
+          will talk to this server -- the browser crypto requires a secure
+          context, which is the whole reason this task exists.
+        success_msg: >-
+          {{ vaultwarden_domain }}/alive answered 200 through Tailscale Serve.
+      when: not ansible_check_mode

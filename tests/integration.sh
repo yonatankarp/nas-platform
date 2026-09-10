@@ -314,6 +314,7 @@ kapowarr kapowarr
 pinchflat pinchflat
 trailarr trailarr
 seerr seerr
+vaultwarden vaultwarden
 '
 
 # Retry budget for a registry that refuses. These ceilings bound all shell

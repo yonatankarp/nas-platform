@@ -14,9 +14,14 @@ module PolicySupport
   EXPECTED_SERVICES = %w[
     adguard audiobookshelf beszel dozzle immich jellyfin komga nextcloud ntfy
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
+    vaultwarden
   ].freeze
   # Not every vault key belongs to a service; this one is platform-wide.
   GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
+  # The services that hold no credential at all, which is a designed property
+  # here rather than an unfinished slice. See expectation_problems below for the
+  # argument and for the fact that this list is closed in both directions.
+  CREDENTIAL_FREE_SERVICES = %w[vaultwarden].freeze
   EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
 # The manifest's status vocabulary. Shared because more than one script decides
 # what to check based on whether a service is actually deployed.
@@ -201,7 +206,31 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     vault_keys = expectation.fetch("vault_keys")
-    if vault_keys.is_a?(Array) && (!vault_keys.empty? || service_status == "planned")
+    # An implemented service holds at least one credential, and that was true of
+    # every service on this platform until #547. Vaultwarden inverts it: a
+    # password manager's master passwords are user-owned by construction, the
+    # server never learns them, and that zero-knowledge property is the entire
+    # reason to run it. Ansible owns the door -- SIGNUPS_ALLOWED,
+    # INVITATIONS_ALLOWED, DOMAIN -- and nothing behind it, and it sets no
+    # ADMIN_TOKEN either, because the /admin panel writes a config.json that
+    # would outrank every value the role renders. So the empty list here is a
+    # designed property rather than an unfinished slice, and docs/secrets.md
+    # carries the argument in full.
+    #
+    # STATED, AND CLOSED IN BOTH DIRECTIONS. A service named below whose
+    # expectations DO list keys fails just as loudly as one omitted from the
+    # list that lists none: an exemption that quietly stopped applying is the
+    # defect this repository keeps closing. Adding a name here is a deliberate
+    # claim that the service is credential-free, not a way past a red check.
+    credential_free = CREDENTIAL_FREE_SERVICES.include?(service_name)
+    if credential_free && vault_keys.is_a?(Array) && !vault_keys.empty?
+      problems << "#{relative_path} is registered credential-free in " \
+                  "CREDENTIAL_FREE_SERVICES but lists #{vault_keys.length} vault key(s): " \
+                  "either the service gained a credential and the registration must go, " \
+                  "or the keys belong to another service"
+    end
+    if vault_keys.is_a?(Array) &&
+       (!vault_keys.empty? || service_status == "planned" || credential_free)
       # contract_basename is reused for the vault prefix because paperless-ngx is the
       # one service whose keys drop the suffix, and it is the same alias. The two
       # namings are independent concepts that happen to agree, so a change to one must
@@ -213,7 +242,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
         end
       end
     else
-      problems << "#{relative_path} vault_keys must be a nonempty list unless the service is planned"
+      problems << "#{relative_path} vault_keys must be a nonempty list unless the service " \
+                  "is planned or is named in CREDENTIAL_FREE_SERVICES"
     end
     problems
   end

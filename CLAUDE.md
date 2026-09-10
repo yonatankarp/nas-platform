@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running eighteen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -997,3 +997,38 @@ which is a hash and not a secret but is still what an offline guess would be
 made against), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
+
+**Vaultwarden is the exception the list above needs, and it is a narrow one.**
+Unlike Bindery, Nextcloud, Seerr and Dozzle, whose data directories hold
+readable credentials, Vaultwarden's store holds client-side-encrypted blobs: the
+vault items are encrypted under keys derived from master passwords the server
+never learns, so `db.sqlite3`, `attachments/` and `sends/` are not
+plaintext-credential-bearing and the whole directory does not become another
+"treat this as secret". Two things inside it are, and for different reasons.
+`rsa_key.pem` signs every session and token the server issues — losing it logs
+every client out and voids every API key, and *disclosing* it lets anyone mint
+those tokens — so it is secret-bearing in the ordinary sense, which is why
+`nas_storage` gives that directory 0700 rather than the 0755 every other service
+takes. And `config.json` would be, if it existed: it is written only by the
+`/admin` panel, which this deployment disables by setting no `ADMIN_TOKEN` at
+all, and `roles/vaultwarden` asserts the file absent on every converge because
+the panel being its only writer is an upstream claim rather than something this
+platform can see. A `config.json` that appears is both a credential to treat as
+secret and a configuration that has silently started outranking the rendered
+`.env`.
+
+That store is still the most irreplaceable data on the platform, which is a
+different claim from being secret-bearing: `recovery: critical` with backup
+parked means one copy, and nothing — not even the household — can reconstruct a
+client-side-encrypted item from anywhere else.
+
+**Vaultwarden also inverts the credential direction, and there it is correct.**
+Every other service takes its identity from `vault.yml` and is pushed outward. A
+password manager must not: master passwords are user-owned by construction, and
+that zero-knowledge property is the entire reason to run it. So Ansible owns
+`SIGNUPS_ALLOWED`, `INVITATIONS_ALLOWED`, `DOMAIN` and org policy, and
+`roles/vault_contract` must never grow a key for a master password.
+`tests/expected/vaultwarden.yml` therefore carries `vault_keys: []`, which
+`CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in
+both directions — a service listed there that *gains* a key fails as loudly as
+one that lost its last. `docs/secrets.md` carries the argument in full.
