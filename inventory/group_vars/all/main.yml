@@ -292,8 +292,19 @@ trailarr_monitoring_enabled: >-
 nextcloud_deployment_enabled: true
 
 # The one operator switch that deploys AdGuard Home, and it ships false. #548
-# lands the stack dark: nothing converges on the NAS from the pull request that
-# adds it, and turning it on is a separate, deliberate act.
+# lands the stack dark, and turning it on is a separate, deliberate act.
+#
+# DARK IS NOT NOTHING, and the difference is worth stating rather than rounding
+# off. Merging #548 does reach the NAS on the poller's next tick: the release
+# gains services/adguard/, host_prep creates
+# {{ nas_docker_root }}/adguard/{conf,work} because the nas_storage loop is
+# ungated and creates every declared path, and roles/adguard renders its runtime
+# .env, which carries only paths, the platform identity and the CPU set. That is
+# two empty directories and one file. No image is pulled, no port is bound, no
+# container is created, and AdGuardHome.yaml -- the one rendered file that
+# carries a credential -- is gated and is not written. The Compose project is
+# converged to `state: absent`, which is a `docker compose down` against a
+# project that does not exist.
 #
 # Setting this true converges one container and publishes THIS HOST'S PORT 53,
 # tcp and udp -- the first privileged port this platform has ever published.

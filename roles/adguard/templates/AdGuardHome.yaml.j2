@@ -18,7 +18,9 @@
    the new image against an empty configuration directory, POST the install
    wizard, take the file it writes, restart once and confirm the file is
    unchanged, then substitute the values below back in. services/adguard/compose.yml
-   records the coupling beside the pin and renovate.json withholds the bump. #}
+   records the coupling beside the pin, and renovate.json labels the bump
+   `needs-manual-coupling` and refuses to automerge it -- which is not the same
+   as withholding it. The pull request opens; a human is what stops it. #}
 http:
   pprof:
     port: 6060

@@ -110,10 +110,18 @@ ROOT = File.expand_path("..", __dir__)
 # implemented count minus the gated services, because turning a stack dark is an
 # operation this repository performs -- #528 switched Seafile's gate off four
 # days before this was written -- and a guard that refused it would be fighting
-# the very idiom the rest of this file exists to protect.
-IMPLEMENTED_FLOOR = 16       # services/manifest.yml holds 16 implemented services
-GATE_VARIABLE_FLOOR = 1      # nextcloud_deployment_enabled is the only gate today
-SUBJECT_FLOOR = 15           # 16 implemented, of which at most the 1 gated one may be dark
+# the very idiom the rest of this file exists to protect. It therefore does not
+# move when a service lands dark: #548 took the implemented count to 17 and the
+# gate count to 2, and 17 - 2 is the 15 that was already there.
+#
+# THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY. #548 landed AdGuard
+# with all three left at their pre-AdGuard values and this file stayed green,
+# which is exactly the collapse the paragraph above says the floor exists to
+# report: today's counts are the point, and a floor comfortably below them buys
+# nothing. Re-read this block when a service is added, removed or gated.
+IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
+GATE_VARIABLE_FLOOR = 2      # nextcloud_deployment_enabled and adguard_deployment_enabled
+SUBJECT_FLOOR = 15           # 17 implemented, of which at most the 2 gated ones may be dark
 MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
 TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
 LANE_TAG_FLOOR = 16          # the distinct manifest service tags those rows converge

@@ -38,7 +38,10 @@ services:
     # change. A release that migrates the schema will rewrite the file into a
     # shape the template does not produce, and idempotence breaks until the
     # template is re-derived from what the new image writes. renovate.json
-    # withholds the bump for that reason.
+    # LABELS the bump `needs-manual-coupling` and refuses to automerge it. It
+    # does not withhold it: only the dependencyDashboardApproval shape does
+    # that, and this rule does not carry it. Renovate will open the pull
+    # request; a human is what stops it merging.
     image: docker.io/adguard/adguardhome:v0.107.79@sha256:aba9e3bf0613be3ba3755e1fc311b126e2c24bec25e18b6483894a88283074f0
     cpus: 1.0
     labels:

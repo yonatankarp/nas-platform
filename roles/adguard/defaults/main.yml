@@ -67,22 +67,30 @@ adguard_compose_project_name: >-
 # written here. Revisit only once AdGuard has a track record AND a fallback
 # nameserver is configured alongside it; none is configured today.
 #
-# 2. IT DOES NOT ENABLE ADGUARD'S DHCP SERVER. The router owns DHCP, and the
-# rejected alternative is worth stating because it looks like the tidy answer to
-# item 3 below. Disabling DHCP on the router and letting AdGuard serve leases
-# trades the DNS single point of failure for a strictly worse one: with the NAS
-# handing out leases, a NAS outage stops devices joining the network at all
-# rather than merely leaving them unfiltered.
+# 2. IT DOES NOT ENABLE ADGUARD'S DHCP SERVER, AND THAT IS A CHOICE RATHER THAN
+# A LIMITATION. The router owns DHCP. The rejected alternative is worth stating
+# precisely because it is available: the CGA4233DE named below does expose a
+# DHCP on/off switch, so turning its server off and letting AdGuard serve leases
+# -- which is also how AdGuard would hand clients a DNS server, closing item 3 --
+# is a thing somebody could do this afternoon. It is refused because it trades
+# the DNS single point of failure for a strictly worse one: with the NAS handing
+# out leases, a NAS outage stops devices joining the network at all rather than
+# merely leaving them unfiltered. Read that as a decision to revisit deliberately
+# rather than as a door that is shut.
 #
-# 3. IT DOES NOT DISTRIBUTE ITSELF TO CLIENTS, AND MAY NOT BE ABLE TO. The
-# intended delivery mechanism is the router's DHCP scope handing out this NAS as
-# the DNS server. Discovered 2026-09-10: the household router is a Vodafone
-# Station, and that class of router generally does not expose a custom DNS server
-# setting for its DHCP scope; the operator is confirming the exact model. If it
-# cannot, the accepted fallback is per-device DNS set by hand on the devices that
-# take one -- consoles, televisions, phones, laptops -- and guests stay
-# unfiltered. Either way it is configuration on the network rather than in this
-# repository, and no task here should grow to reach for it.
+# 3. IT DOES NOT DISTRIBUTE ITSELF TO CLIENTS, AND ON THIS NETWORK IT CANNOT.
+# The intended delivery mechanism is the router's DHCP scope handing out this NAS
+# as the DNS server. Confirmed 2026-09-10: the household router is a Vodafone
+# Station CGA4233DE, administered at 192.168.0.1, and its firmware exposes no
+# custom DNS field for the DHCP scope. There is nowhere to put this address.
+#
+# So the accepted delivery is per-device DNS, set by hand on the devices that
+# take one -- televisions, consoles, phones, laptops -- and guests stay
+# unfiltered. That is enough for what the service was asked for: the operator
+# wants advertising blocked on the smart TV, which is exactly the case a
+# per-device resolver setting serves, and exactly the case that cannot run a
+# blocker of its own. Either way it is configuration on the network rather than
+# in this repository, and no task here should grow to reach for it.
 
 # The upstreams, and the resolvers used to reach them.
 #
