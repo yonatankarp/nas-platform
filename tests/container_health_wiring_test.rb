@@ -398,7 +398,7 @@ MUTATIONS = [
     role: "ntfy",
     expects: "not conditional on a container actually being stuck",
     plant: lambda do |tasks|
-      recreate_block(tasks).delete("when")
+      recreate_task(tasks).delete("when")
     end
   },
   {
@@ -406,7 +406,7 @@ MUTATIONS = [
     role: "kapowarr",
     expects: "must name only the services Docker reports as stuck",
     plant: lambda do |tasks|
-      recreate_block(tasks)["community.docker.docker_compose_v2"]["dependencies"] = true
+      recreate_task(tasks)["community.docker.docker_compose_v2"]["dependencies"] = true
     end
   },
   {
@@ -475,11 +475,18 @@ def deploy_inner(task)
   PolicySupport.flatten_tasks([task]).find { |inner| plain_deploy?(inner) }
 end
 
-# The top-level element holding the force-recreate.
+# The top-level element holding the force-recreate, and the force-recreate task
+# itself. A row that breaks the block -- its rescue, its presence -- wants the
+# first; a row that breaks the `up` wants the second, and the two are not the
+# same hash.
 def recreate_block(tasks)
   tasks.find do |task|
     PolicySupport.flatten_tasks([task]).any? { |inner| force_recreate?(inner) }
   end
+end
+
+def recreate_task(tasks)
+  PolicySupport.flatten_tasks(tasks).find { |task| force_recreate?(task) }
 end
 
 def self_test_failures
