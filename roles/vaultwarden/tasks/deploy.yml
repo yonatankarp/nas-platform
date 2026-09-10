@@ -74,9 +74,7 @@
 # `DISABLE_ADMIN_TOKEN=true` it serves the 140 KB ADMIN PANEL ITSELF, with no
 # authentication of any kind. Guarding only ADMIN_TOKEN would have left the
 # variable that Vaultwarden's own warning message recommends -- "To enable the
-# admin page without a token, use DISABLE_ADMIN_TOKEN" -- wide open, which is a
-# guard reintroducing the thing it was written to prevent through the next door
-# along.
+# admin page without a token, use DISABLE_ADMIN_TOKEN" -- wide open.
 #
 # `ADMIN_TOKEN=` is refused too, and the reason has moved rather than gone away.
 # On this pin an empty value DOES disable the panel: the body is byte-identical
@@ -88,28 +86,26 @@
 # and the platform's own `${VAR:?}` convention makes rendering it empty the
 # obvious way to make a value optional.
 #
-# THE COMPOSE FILES ARE THE COMPLETE SUBJECT, and that is an argument rather
-# than a shortcut. `env_files:` on the Compose module supplies values for the
-# `${...}` interpolations these documents name; it is not `env_file:` inside a
-# service, which would hand a whole file to the container. So a variable that
-# reaches the container is a variable one of these files declares, and the
-# assertion below refuses both the key and the service-level `env_file:` that
-# would let one arrive unread.
+# THIS GUARD PARSES THE DOCUMENT RATHER THAN MATCHING ITS TEXT, AND THAT IS THE
+# SECOND CORRECTION IT HAS TAKEN. It began as a line sweep for `ADMIN_TOKEN:`;
+# that missed DISABLE_ADMIN_TOKEN, so a key was added; and the sweep then still
+# could not see `- DISABLE_ADMIN_TOKEN=true`, because Compose's list form of
+# `environment:` writes `KEY=VALUE` with no colon and puts a list marker where
+# the anchor expected indentation. Proved end to end: the assert passed and
+# printed "the /admin panel is disabled" while `docker compose config` showed
+# `DISABLE_ADMIN_TOKEN: "true"` and /admin served a live unauthenticated panel.
 #
-# A LINE SWEEP RATHER THAN A PARSE, for one reason worth recording: every
-# service here carries a `compose.<kind>.yml` override, and those use Compose's
-# own `!override` YAML tag, which ansible.builtin.from_yaml refuses as an
-# unknown tag rather than reading. The sweep is anchored at the start of a line
-# so the long comment beside the key in services/vaultwarden/compose.yml --
-# which names ADMIN_TOKEN a dozen times on purpose -- cannot make this pass or
-# fail: a comment line begins with `#`.
+# Two regex misses in the same guard is the shape saying the approach is wrong,
+# not that a third pattern is needed. A parse makes the document's shape stop
+# being something this guard has to anticipate: both forms of `environment:`
+# reduce to the same list of names, and a form nobody here has thought of is
+# still a mapping or a sequence.
 #
-# regex_findall over the whole document rather than a split into lines, and the
-# character class is `[ -]` rather than `[ \t-]`, because a whitespace backslash
-# escape inside a `{{ }}` expression is not one under Ansible -- AnsibleLexer
-# pre-escapes it, so `\t` stays two characters. tests/policy_test.rb refuses the
-# class outright. Nothing is lost: YAML forbids a tab as indentation, so space
-# and the list marker are the whole of what can precede a key.
+# `env_files:` on the Compose module is not `env_file:` inside a service -- the
+# first supplies values for the `${...}` interpolations these documents name,
+# the second hands a whole file to the container -- so the second is refused
+# alongside the keys, since it would carry either of them where this guard would
+# never see it.
 - name: Read the deployed Vaultwarden Compose definitions
   ansible.builtin.slurp:
     path: >-
@@ -117,23 +113,104 @@
   loop: "{{ platform_service_compose_files['vaultwarden'] }}"
   register: vaultwarden_compose_sources
 
-- name: Resolve the configuration keys the deployed Compose files declare
+# The two Compose tags this platform uses are stripped before parsing, and
+# NOTHING ELSE IS. ansible.builtin.from_yaml refuses an unknown tag rather than
+# ignoring it, so a document carrying any other one fails here loudly instead of
+# being parsed into a shape this guard would then under-read -- which is the
+# failure mode the text sweep had and the reason for parsing at all. Verified
+# both ways on services/vaultwarden/compose.mac.yml: unstripped it raises
+# "could not determine a constructor for the tag '!override'", stripped it
+# yields the service mapping.
+- name: Parse the deployed Vaultwarden Compose documents
   ansible.builtin.set_fact:
-    vaultwarden_forbidden_compose_keys: >-
+    vaultwarden_compose_documents: >-
       {{ vaultwarden_compose_sources.results
          | map(attribute='content') | map('b64decode')
-         | map('regex_findall', '(?im)^[ -]*(?:ADMIN_TOKEN|DISABLE_ADMIN_TOKEN|env_file)[ ]*:')
-         | flatten | map('trim') | list }}
+         | map('regex_replace', ' !override', '')
+         | map('regex_replace', ' !reset', '')
+         | map('from_yaml') | list }}
+
+# EVERY SERVICE IN EVERY DEPLOYED FILE, not just the `vaultwarden` key. A second
+# service added to this project would carry the same hazard, and naming one key
+# here would be the same class of assumption the text sweep kept making.
+- name: Resolve the environment every deployed Vaultwarden container would receive
+  ansible.builtin.set_fact:
+    vaultwarden_declared_services: >-
+      {{ vaultwarden_compose_documents
+         | selectattr('services', 'defined') | map(attribute='services')
+         | select('mapping') | map('dict2items') | flatten
+         | map(attribute='value') | select('mapping') | list }}
+
+# Compose accepts `environment:` as a mapping of names to values OR as a
+# sequence of `NAME=VALUE` strings, and the two are the same declaration. Both
+# reduce to names here so the assertion below reads one list rather than
+# branching on shape. A string is itself a Jinja `sequence`, which is why the
+# sequence arm rejects mappings rather than selecting lists: the elements are
+# mappings or lists, never bare strings.
+#
+# `selectattr('environment', 'defined')` rather than
+# `map(attribute='environment', default=None)`, because that default is not
+# applied to a mapping that simply lacks the key -- it raises
+# "object of type 'dict' has no attribute 'environment'" instead, which is what
+# services/vaultwarden/compose.mac.yml does on every run, since a platform
+# override declares a container name and ports and no environment at all.
+- name: Resolve the configuration keys the deployed Compose files declare
+  ansible.builtin.set_fact:
+    vaultwarden_declared_env_names: >-
+      {{ (vaultwarden_declared_services
+          | selectattr('environment', 'defined') | map(attribute='environment')
+          | select('mapping') | map('list') | flatten | list)
+         + (vaultwarden_declared_services
+            | selectattr('environment', 'defined') | map(attribute='environment')
+            | select('sequence') | reject('mapping') | flatten
+            | map('regex_replace', '=.*$', '') | list) }}
+    vaultwarden_declared_env_files: >-
+      {{ vaultwarden_declared_services | select('contains', 'env_file') | list }}
+
+# THE TRIPWIRE, AND IT IS NOT DECORATION. Every term above is a lookup that
+# yields an empty list rather than an error when the document is not the shape
+# it expects, so a derivation that quietly stopped reading anything would let
+# the assertion below pass on a file declaring both keys. These two names are
+# the ones services/vaultwarden/compose.yml is required to declare by the
+# canonical file itself, so finding them proves the parse reached the
+# environment it is about to judge. This is the same reason
+# roles/image_downgrade_guard reports every state in which it declines to judge.
+- name: Require the Vaultwarden configuration sweep to have read the environment
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_declared_services | length >= 1
+      - "'DOMAIN' in vaultwarden_declared_env_names"
+      - "'ROCKET_PORT' in vaultwarden_declared_env_names"
+    fail_msg: >-
+      The Vaultwarden configuration sweep read
+      {{ vaultwarden_declared_services | length }} service(s) and the
+      environment names {{ vaultwarden_declared_env_names }}, which do not
+      include the DOMAIN and ROCKET_PORT that
+      {{ platform_current_dir }}/services/vaultwarden/compose.yml declares. The
+      sweep is therefore reading something other than the deployed container's
+      environment, and the admin-panel assertion after it would pass without
+      having judged anything. Fix the derivation rather than this expectation.
+    success_msg: >-
+      The Vaultwarden configuration sweep read
+      {{ vaultwarden_declared_env_names | length }} environment name(s) across
+      {{ vaultwarden_declared_services | length }} service(s).
 
 - name: Refuse a Vaultwarden that could be overruled by its own admin panel
   ansible.builtin.assert:
     that:
-      - vaultwarden_forbidden_compose_keys | length == 0
+      - >-
+        vaultwarden_declared_env_names
+        | select('search', '(?i)^(admin_token|disable_admin_token)$')
+        | list | length == 0
+      - vaultwarden_declared_env_files | length == 0
     fail_msg: >-
       A deployed Vaultwarden Compose file declares
-      {{ vaultwarden_forbidden_compose_keys | join('; ') }}. ADMIN_TOKEN puts a
-      login on /admin and DISABLE_ADMIN_TOKEN opens the panel with no login at
-      all, and anything saved there writes config.json into
+      {{ (vaultwarden_declared_env_names
+          | select('search', '(?i)^(admin_token|disable_admin_token)$') | list)
+         + (vaultwarden_declared_env_files | length > 0)
+           | ternary(['a service-level env_file'], []) }}.
+      ADMIN_TOKEN puts a login on /admin and DISABLE_ADMIN_TOKEN opens the panel
+      with no login at all, and anything saved there writes config.json into
       {{ vaultwarden_data_host_path }}, which from then on outranks every
       variable this role renders -- the converge would keep reporting success
       while the container ignored it. Take the key out entirely rather than
@@ -141,12 +218,11 @@
       too, but it is still a declared value whose meaning is the release's to
       change, and it still logs a plaintext-token notice. A service-level
       `env_file:` is refused for the same reason, since it would carry either
-      key where this check would never see it.
+      key where this guard would never see it.
     success_msg: >-
       No deployed Vaultwarden Compose file declares ADMIN_TOKEN,
       DISABLE_ADMIN_TOKEN or a service-level env_file, so the /admin panel is
       disabled and the rendered environment is the only configuration.
-
 # THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
 # THE CAUSE. "The admin panel is the only writer of config.json" is an upstream
 # claim, not a property this platform can see, so the file's absence is asserted
