@@ -74,14 +74,32 @@ if failures.empty?
     defaults["arr_prowlarr_application_sync_level"] == "fullSync"
 
   main_tasks = role_tasks(root, "roles/arr/tasks/main.yml")
+  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
+  # bounded recovery roles/container_health brackets. Counted separately rather
+  # than as a total of two, so a second plain deployment is still refused and a
+  # force-recreate spent twice in one converge is still refused.
   compose_activations = main_tasks.select do |task|
-    task.dig("community.docker.docker_compose_v2", "state") == "present"
+    compose = task["community.docker.docker_compose_v2"]
+    compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
   end
   activation_task = compose_activations.first
   failures << "Arr role must deploy through docker_compose_v2" unless
     compose_activations.length == 1
+  failures << "Arr role must repair a wedged Arr container exactly once per converge" unless
+    main_tasks.count do |task|
+      task.dig("community.docker.docker_compose_v2", "recreate") == "always"
+    end == 1
+  # The gate is read from whatever element carries the deployment. #537 wrapped
+  # it in a block whose rescue records the message roles/container_health is
+  # handed, and Ansible applies a block's `when` to every task inside it, so the
+  # gate moved onto the block: reading the task's own `when` alone would report
+  # an ungated deployment that is in fact gated.
+  activation_gate = main_tasks.find do |task|
+    task["block"].is_a?(Array) &&
+      flatten_tasks(task["block"]).any? { |inner| inner.equal?(activation_task) }
+  end || activation_task
   failures << "Arr role must gate activation on media_usenet_enabled" unless
-    activation_task && Array(activation_task["when"]).any? do |condition|
+    activation_gate && Array(activation_gate["when"]).any? do |condition|
       condition.to_s.include?("media_usenet_enabled | bool")
     end
   failures << "Arr role must verify the complete project CPU policy once" unless

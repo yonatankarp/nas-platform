@@ -225,6 +225,8 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/bindery_contract_test.rb --self-test
   ruby tests/beszel_contract_test.rb --self-test
   ruby tests/contract_structure_mutation_test.rb
+  ruby tests/container_health_wiring_test.rb
+  ruby tests/container_health_wiring_test.rb --self-test
   tests/integration_lock_test.sh
   tests/mac/config-isolation.sh
   tests/mac/dozzle-drift-hook-test.sh

@@ -142,8 +142,15 @@ if failures.empty?
       YAML.safe_load_file(File.join(root, "roles/seerr/tasks/#{file}.yml"), aliases: true)
     )
   end
+  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
+  # bounded recovery roles/container_health brackets. Counted separately rather
+  # than as a total of two, so a second plain deployment is still refused and a
+  # force-recreate spent twice in one converge is still refused.
+  compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Seerr must deploy through docker_compose_v2" unless
-    tasks.count { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" } == 1
+    compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
+  failures << "Seerr must force-recreate a stuck container exactly once per converge" unless
+    compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1
   failures << "Seerr must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "seerr" } == 1
 
