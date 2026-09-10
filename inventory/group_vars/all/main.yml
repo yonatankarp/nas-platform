@@ -291,6 +291,34 @@ trailarr_monitoring_enabled: >-
 # than a machine fact.
 nextcloud_deployment_enabled: true
 
+# The one operator switch that deploys AdGuard Home, and it ships false. #548
+# lands the stack dark: nothing converges on the NAS from the pull request that
+# adds it, and turning it on is a separate, deliberate act.
+#
+# Setting this true converges one container and publishes THIS HOST'S PORT 53,
+# tcp and udp -- the first privileged port this platform has ever published.
+# Confirmed free on the NAS from the full `netstat -tulnp` listener table on
+# 2026-09-10, the nearest neighbour being 5353/mDNS. Setting it back to false
+# converges the project to `state: absent` rather than skipping it, so the flag
+# is a deployment decision in both directions.
+#
+# WHAT TURNING IT ON DOES NOT DO, and this is the part worth reading before the
+# flip. It does not point anything at AdGuard. The NAS keeps resolving through
+# Tailscale MagicDNS, because tailscaled owns /etc/resolv.conf and rewrites it;
+# LAN clients keep whatever their DHCP lease gives them. Delivering AdGuard to
+# clients is configuration on the router or on each device, and
+# roles/adguard/defaults/main.yml records why it is deliberately not
+# configuration in this repository -- including why pointing the NAS's own
+# resolver at AdGuard would be the #327 mistake again, with the recovery path
+# depending on the thing that is down.
+#
+# This is nonsecret policy, so it is group_vars and not the vault, and it is
+# group_vars/all rather than nas_hosts for the reason the Nextcloud switch
+# above gives: both real inventories bind to nas_hosts, the integration sandbox
+# is a nas_hosts run like any other, and this is a decision rather than a
+# machine fact.
+adguard_deployment_enabled: false
+
 # The addresses Nextcloud answers for beyond the three roles/nextcloud derives.
 # platform_public_host already contributes the Tailscale MagicDNS name, so these
 # are the two literal addresses a client may put in the Host header instead:
@@ -724,4 +752,33 @@ nas_storage:
     recovery: cache
   - path: "{{ nas_media_root }}/.beszel"
     mode: "0755"
+    recovery: cache
+
+  # AdGuard Home, and the first service on this platform whose whole storage is
+  # recovery: cache. That is a consequence of the configuration being a template
+  # rather than an application-owned store: roles/adguard renders the entire
+  # AdGuardHome.yaml from this repository and the vault on every converge, so
+  # losing the configuration directory costs one converge and nothing else.
+  #
+  # The working directory holds the downloaded filter lists, the query log, the
+  # statistics database and the web session store. Every one of those is either
+  # re-downloaded or is telemetry about traffic that has already happened, so
+  # there is nothing here to back up -- which is a first for this platform and a
+  # deliberate outcome rather than an omission.
+  #
+  # 0700 on the working directory is AdGuard's own requirement, not a choice.
+  # Measured against v0.107.79: its permcheck pass chmods that directory to 0700
+  # and its configuration file to 0600 at every start, so declaring anything
+  # wider here would have host_prep and the daemon reverting each other on every
+  # five-minute converge. The configuration directory itself is left at 0755
+  # because permcheck does not touch it.
+  - path: "{{ nas_docker_root }}/adguard/conf"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_docker_root }}/adguard/work"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0700"
     recovery: cache

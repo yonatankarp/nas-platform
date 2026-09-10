@@ -182,6 +182,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/validate-policy.sh
 ].freeze
 EXPECTED_FIXTURE_ROLES = {
+  "adguard" => "adguard",
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
   "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
   "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",

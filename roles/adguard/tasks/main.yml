@@ -1,0 +1,28 @@
+---
+# AdGuard Home, one stage per file, in the order they run. This file is the
+# index: what the role does, and nothing about how.
+#
+# The stages are imported statically, which is what makes verification
+# selectable. verify.yml lists this role with tags: [never], and a role-level tag
+# reaches a statically imported task exactly as it reaches an inline one, so each
+# task in verify.yml still carries [never, platform_verify_adguard] and
+# --tags platform_verify_adguard selects it. A dynamic include is skipped under
+# never before its file is ever read. Static imports are also expanded by
+# --list-tasks, so the transcript an operator reads before touching the NAS names
+# every task the run will consider, and they are what keeps this role's files
+# inside the fixture set tests/policy_mutation_support.rb derives rather than
+# lists.
+#
+# The gate is adguard_deployment_enabled, and it lives inside these files rather
+# than on the site.yml role entry. A when: there would also skip the
+# deployment_bundle re-include that revalidates the paths this role touches and
+# the deployment report that says whether anything moved, and no site.yml entry
+# carries one today.
+- name: Deploy the AdGuard Home stack
+  ansible.builtin.import_tasks: deploy.yml
+
+- name: Report whether the AdGuard Home deployment moved
+  ansible.builtin.import_tasks: report.yml
+
+- name: Verify AdGuard Home resolves and filters
+  ansible.builtin.import_tasks: verify.yml

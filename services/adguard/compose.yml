@@ -1,0 +1,86 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  adguard:
+    <<: *service-defaults
+    container_name: adguard
+    # THE PIN AND roles/adguard/templates/AdGuardHome.yaml.j2 ARE COUPLED, and
+    # that is the one thing to know before bumping this line. AdGuard rewrites
+    # its own configuration file at start: measured against v0.107.79, a
+    # hand-written minimal document came back expanded from 26 lines to 186 with
+    # every default spelled out, and the expanded form then survived a restart,
+    # a stop and a filter refresh byte for byte. The template is therefore
+    # written in that expanded form, `schema_version` included, so that Ansible
+    # and the daemon agree on the file and the second converge reports no
+    # change. A release that migrates the schema will rewrite the file into a
+    # shape the template does not produce, and idempotence breaks until the
+    # template is re-derived from what the new image writes. renovate.json
+    # withholds the bump for that reason.
+    image: docker.io/adguard/adguardhome:v0.107.79@sha256:aba9e3bf0613be3ba3755e1fc311b126e2c24bec25e18b6483894a88283074f0
+    cpus: 1.0
+    labels:
+      dev.dozzle.name: adguard
+    # AdGuard runs as the platform identity like every other direct-numeric-user
+    # service here, and the DNS listener inside the container is on 5353 rather
+    # than 53 to make that possible: binding 53 in-container needs either root
+    # or CAP_NET_BIND_SERVICE, and root would additionally leave every file the
+    # daemon rewrites -- AdGuardHome.yaml above all -- owned by root on the host,
+    # where the next converge's template task could no longer replace it. The
+    # privileged half of the publication is the Docker daemon's problem instead:
+    # it binds host 53 as root and forwards to 5353. Measured working end to end
+    # on v0.107.79 with no-new-privileges in force.
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    # 8083 is the web interface. It was Seafile's until #501 removed that stack,
+    # and it is the lowest free port on this platform: 8080 is Dozzle, 8081 the
+    # Dozzle alert relay, 8082 the qbittorrent web interface declared in
+    # config/media-acquisition.yml, 8084 Nextcloud, 8085 SABnzbd and 8090 Beszel.
+    #
+    # 53/tcp and 53/udp are the first privileged ports this platform publishes.
+    # Confirmed free on the NAS from the full `netstat -tulnp` listener table on
+    # 2026-09-10: no TCP or UDP listener on 53 on any interface, the nearest
+    # neighbour being 5353/mDNS, which does not conflict.
+    ports:
+      - "8083:3000"
+      - "53:5353/tcp"
+      - "53:5353/udp"
+    volumes:
+      - ${ADGUARD_CONFIG_PATH:?}:/opt/adguardhome/conf
+      - ${ADGUARD_WORK_PATH:?}:/opt/adguardhome/work
+    environment:
+      TZ: ${TZ:?}
+    healthcheck:
+      <<: *healthcheck-defaults
+      # /login.html is the one route AdGuard serves without credentials --
+      # everything under /control answers 401 -- so the probe carries no
+      # credential and `docker inspect` exposes none. wget is the only fetcher in
+      # the image; there is no curl.
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:3000/login.html || exit 1"]
+    # No stop_grace_period, and that is a decision. Both of this container's
+    # directories are recovery: cache -- Ansible owns the configuration and the
+    # work directory holds only the query log and the statistics database -- so
+    # there is nothing here whose loss an extended shutdown window would prevent.
+    # Docker's undeclared ten seconds is the right answer for a process that
+    # holds no state anyone would rebuild from.

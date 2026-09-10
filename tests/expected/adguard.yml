@@ -1,0 +1,8 @@
+---
+role: adguard
+container_cpus:
+  adguard: 1.0
+vault_keys:
+  - vault_adguard_admin_password
+  - vault_adguard_admin_password_hash
+  - vault_adguard_admin_username

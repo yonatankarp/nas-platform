@@ -1,6 +1,34 @@
 ---
 schema: 1
 services:
+  # AdGuard Home keeps its whole user list inside AdGuardHome.yaml, and
+  # roles/adguard renders that file entire on every converge from the vault. So
+  # this is the platform's first `preserves_unmanaged_users: false`, and it is a
+  # property of the service rather than an unfinished reconciliation: an account
+  # added in the web interface is not merged with the declared one, it is
+  # removed by the next converge. That is the same act that reverts every other
+  # kind of drift here, and for a service that can rewrite any DNS answer on the
+  # network it is the behaviour that was wanted.
+  #
+  # `password_rotation: refuse` and `existing_identity_password_update:
+  # forbidden` read the same as everywhere else and mean the same thing: this
+  # platform never asks the service to change a password. What it does is
+  # declare one. Rotating the AdGuard administrator means authoring a new
+  # bcrypt hash in the vault, and the next converge renders it -- there is no
+  # API call and no in-place update.
+  #
+  # The hash is stored, never computed: bcrypt salts randomly, so hashing at
+  # converge time would rewrite the file on every run.
+  adguard:
+    preserves_unmanaged_users: false
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: declarative_file
+    interfaces:
+      list: AdGuardHome.yaml users
+      create: AdGuardHome.yaml users
+      authenticate: HTTP Basic authentication
+      reconcile: AdGuardHome.yaml users
   arr:
     preserves_unmanaged_users: true
     password_rotation: refuse

@@ -1,0 +1,12 @@
+---
+services:
+  adguard:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-adguard
+    # The Mac lane runs several isolated copies of the platform on a laptop that
+    # already has a resolver, so neither the production web port nor the
+    # privileged 53 is available to it. Both host sides come from the ports
+    # tests/mac/run.sh allocated for this run.
+    ports: !override
+      - "${ADGUARD_HOST_PORT:?}:3000"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/tcp"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/udp"
