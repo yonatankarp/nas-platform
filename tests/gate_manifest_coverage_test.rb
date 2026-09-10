@@ -73,21 +73,96 @@ failures = []
 # ones in tests/validate-policy.sh so the edit is a paste and the diff is
 # readable.
 #
-# WHICH SHARD A CHECK GOES IN is a balance decision, not an arbitrary one, and
-# the balance was struck against the post-merge `main` run of bab1dc0
-# (2026-09-07): 2342s of check time across 155 checks, with the ten slowest at
-# 247, 160, 152, 125, 114, 111, 103, 102, 95 and 75 seconds. Those ten are placed
-# by hand so that no two of the top three share a shard -- a shard cannot finish
-# faster than its own slowest check, so pairing them wastes a runner -- and the
-# rest are round robin through the manifest, which balances count because count
-# is all a partition without a cost table can balance.
+# WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
+# COST, not count. The counts below are 51/52/61 and that asymmetry is the
+# result rather than a defect: #469 drew the partition round robin, which
+# balances count because count is all a partition without a cost table can
+# balance, and by #517 the three shards were 53/54/57 checks carrying a 2.2x
+# spread of work. Nothing had gone wrong; nothing had been balancing cost.
 #
-# SPREAD THE WAITS, and this outranks the rule above. A check that spends its
+# THE MEASUREMENT, four post-merge `main` runs (#517). Each shard's leg is its
+# own runner, so the three columns of one run are three different machines and a
+# cross-shard comparison inside a single run is confounded by runner luck --
+# shard 1 printed 888s of check time in one run and 1247s in another. What
+# survives that is each shard's SHARE of its run's total, and it was stable:
+#
+#   run                    shard 1        shard 2        shard 3
+#   34263365430 (474dc0c)  392s / 1216s   440s / 1467s   190s /  732s
+#   34274246779 (a9b2a18)  394s / 1228s   476s / 1574s   189s /  725s
+#   34371789489 (ba8bd10e) 401s / 1247s   433s / 1458s   120s /  452s
+#   34406723195 (c6296e2d) 286s /  888s   417s / 1402s   183s /  697s
+#   share of check time    30-40%         43-47%         14-23%
+#
+# Shard 2 was the largest of the three in all four runs and shard 3 the smallest
+# in all four. Medians: 1222 / 1462 / 711 of check time, and a worst leg of 436s
+# wall against a 59s run-to-run range, so the imbalance is about twice that
+# range and five times its 22s standard deviation -- worth collecting, which
+# the 90s #484 declined was not. Say it in those terms rather than in an
+# adverb: 111s over a 59s range is a clear yes and "several times the noise"
+# would be a prose claim about a number that the number does not support.
+#
+# NO TWO OF THE TOP THREE SHARE A SHARD, because a shard cannot finish faster
+# than its own slowest check, so pairing them wastes a runner. That rule was
+# already written here and the tree already broke it: `immich_release_helper_
+# test.rb` (~292s) and `media_managed_users_test.rb` (~226s), the two slowest
+# checks in the gate, were both in shard 2. This needs no projection to see, and
+# it is the primary reason the lines below moved.
+#
+# WHAT MOVED, all of it into shard 3: `media_managed_users_test.rb` and
+# `sandbox_cleanup_acquisition_ownership_test.sh` out of shard 2,
+# `paperless_mail_reconciliation_test.rb` and `immich_user_onboarding_test.rb`
+# out of shard 1. That leaves ~1124 / ~1112 / ~1159 of check time at the medians
+# above, with each shard's slowest check at ~158 / ~299 / ~231 -- so shard 2 is
+# floor-bound on `immich_release_helper_test.rb` and the other two are not
+# floor-bound at all.
+#
+# SPREAD THE WAITS, and this outranks the rules above. A check that spends its
 # time waiting still holds one of the four worker slots while consuming none of
 # the CPU the other three compete for, so two long waits in one shard cut its
 # effective pool from four workers to two. #484 put `beszel_contract_test.rb`
 # (86s of wait) and its `--self-test` (85s) in the same shard and that shard's
 # other checks inflated by 298s; the move was reverted. Keep them apart.
+#
+# The gate's one known wait is `sandbox_cleanup_acquisition_ownership_test.sh`,
+# and it is a wait by construction and not only by measurement: it starts a
+# container on `sleep 300`, and #517 measured 400.3s elapsed against 116.6s of
+# CPU. It is now in shard 3, which is allowed because shard 3's two heaviest
+# incumbents were checked and are work, not wait: on a 12-core Mac,
+# `komga_library_reconciliation_test.rb` ran 73.2s of CPU in 86.6s elapsed and
+# `dozzle_contract_test.rb --self-test` 54.6s in 97.7s, and neither file sleeps
+# at all. Shard 3 therefore holds exactly one wait, and shard 2 -- the shard
+# that was floor-bound and saturated -- now holds none.
+#
+# Those two were measured twice by accident and the accident is worth keeping,
+# because it is this repository's own rule tested rather than quoted. The first
+# pair was taken at load average 128-147 on that Mac, the second after 36 leaked
+# CPU spinners were reaped and the load fell to 12-28. Elapsed collapsed --
+# komga 149.8s to 86.6s -- while the CPU column barely moved, 72.9s to 73.2s and
+# 56.7s to 54.6s. So user+sys really is the load-invariant measure and the ratio
+# built from it is not: contention only pushes the ratio down, which makes a HIGH
+# ratio proof of work whatever the machine was doing, and a LOW one on a busy
+# machine a lower bound rather than a verdict. komga read 0.49 contaminated and
+# 0.85 clean, and only the second says anything.
+#
+# THE GATE'S TOTAL CHECK TIME IS NOT A QUANTITY, which is the answer to the part
+# of #517 that asked where "+46% of check time for +3% more checks" against the
+# 2342s/155 baseline this file used to quote had gone. It had not gone anywhere.
+# The four runs above total 2987, 3157, 3415 and 3527s over essentially the same
+# manifest -- an 18% spread -- so the growth against that baseline is +27% or
+# +51% depending only on which run is picked, and the same point appears in
+# miniature within one shard: shard 3 printed 452s in one run and 697s in the
+# next, +54% for two checks added. Before explaining a total, check whether it
+# holds still.
+#
+# A second and smaller effect is real but do not promote it: shard 2's check time
+# was the STEADIEST of the three, 1402-1574 across the four runs, a 12% range,
+# while shard 1 swung 29% and shard 3 39% of their own medians. That is the
+# signature of a shard saturated by its own heavy work -- seven checks over 80s
+# in one four-worker pool, insensitive to runner luck because it is always
+# contending with itself -- which means a partition that concentrates the heavy
+# checks partly inflates the wall times the pool records for them, and a shard
+# that sheds heavy neighbours should record its remaining checks as cheaper. Do
+# not promise a number for that; let the next runs measure it.
 #
 # REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
 # manual act and it is meant to be: the gate prints its ten slowest checks on
@@ -95,13 +170,15 @@ failures = []
 # measurement rather than re-derived. What that report cannot support is
 # arithmetic: a check's seconds are its wall time at that shard's load, not work
 # that can be carried to another shard, and #484 predicted 1170s for the shard
-# that measured 1453s by treating them as though it could. #484 also carries the
-# isolated per-check table -- elapsed and CPU measured separately, one check at a
-# time -- which is the load-invariant version, and the argument that a perfect
-# three-way split is worth only about 90s because the gate cannot finish faster
-# than its own longest check. Move lines between the shard blocks here and in
-# tests/validate-policy.sh together; every assertion below exists to fail when
-# only one of the two moves.
+# that measured 1453s by treating them as though it could. Nor can one run
+# confirm a rebalance, because shard-level runner variance is 30% and can swamp
+# the ~110s this one is aiming at; two or three runs, and the claim to check is
+# that the WORST leg fell, not that any single figure did. A cost guard was
+# considered here and rejected for the reason the partition is a literal list at
+# all: a pinned cost table drifts silently, and a rebalance is meant to be
+# informed by a fresh measurement rather than by a stale assertion. Move lines
+# between the shard blocks here and in tests/validate-policy.sh together; every
+# assertion below exists to fail when only one of the two moves.
 
 SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/policy_test.rb
@@ -113,7 +190,6 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/media_acquisition_phase1_test.rb
   ruby tests/media_acquisition_adoption_test.rb
   tests/mac/media-acquisition-foundation-cleanup-test.sh
-  ruby tests/paperless_mail_reconciliation_test.rb
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
   ruby tests/beszel_telemetry_timeout_test.rb
   python3 -m unittest -v tests/dozzle_alert_relay_test.py
@@ -128,7 +204,6 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/config_managed_users_test.rb --self-test
   ruby tests/komga_library_reconciliation_test.rb --self-test
   ruby tests/audiobookshelf_initial_scan_test.rb
-  ruby tests/immich_user_onboarding_test.rb
   ruby tests/database_managed_users_test.rb
   ruby tests/deployment_summary_test.rb
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
@@ -183,7 +258,6 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   python3 tests/deployment_lock_probe_test.py
   python3 tests/deployment_controller_input_test.py
   ruby tests/beszel_password_preservation_test.rb --self-test
-  ruby tests/media_managed_users_test.rb
   ruby tests/komga_contract_test.rb
   ruby tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby tests/audiobookshelf_contract_test.rb
@@ -207,7 +281,6 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/trailarr_contract_test.rb --self-test
   ruby tests/kapowarr_contract_test.rb
   tests/integration_suite_test.sh
-  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/mac/run-phase-status-test.sh
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
@@ -274,6 +347,10 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/mac/pin-protected-input-test.rb --self-test
   ruby tests/case_pool_locals_test.rb --self-test
   ruby tests/case_pool_behavior_test.rb --self-test
+  ruby tests/paperless_mail_reconciliation_test.rb
+  ruby tests/immich_user_onboarding_test.rb
+  ruby tests/media_managed_users_test.rb
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
 CHECKS
 
 SHARDS = { "1" => SHARD_1, "2" => SHARD_2, "3" => SHARD_3 }.freeze
