@@ -275,6 +275,23 @@ check(failures, !mac_report_port_fields.empty? &&
                 mac_report_port_fields.sort ==
                   mac_port_roster.map { |service| "#{service}_port" }.sort,
       "Mac report input must validate exactly the roster's service ports")
+
+# The third list in that chain, and the one nothing held until #548. run.sh
+# builds report.rb's flags from the roster rather than writing them out, and it
+# respells an underscore as a hyphen because a long option must not carry one --
+# so `adguard_dns` reaches report.rb as `--adguard-dns-port`. The field check
+# above says nothing about the option parser: a roster entry whose flag report.rb
+# does not declare is rejected by OptionParser as unrecognised, and the only
+# place that appears is a full Mac run, which no CI job performs. Held from the
+# roster through the same respelling run.sh performs, so the two cannot disagree
+# about a name and cannot disagree about the transformation either.
+mac_report_flags = mac_report.scan(/opts\.on\("(--[a-z0-9-]+-port) PORT"/).flatten
+missing_report_flags = mac_port_roster.map { |service| "--#{service.tr('_', '-')}-port" } -
+                       mac_report_flags
+check(failures, missing_report_flags.empty?,
+      "Mac report must declare one option per roster service port, missing " \
+      "#{missing_report_flags.inspect}: run.sh derives these flags from the roster, so one the " \
+      "parser does not know aborts the lane at its first report call")
 check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
                 mac_cleanup.include?('. "$mac_repo_dir/tests/integration_lock.sh"') &&
                 mac_cleanup.include?('acquire_integration_lock "$mac_cleanup_parent"') &&

@@ -88,26 +88,24 @@ end
 refuse("the deployed instance already has protection off, so this lane is not drifting anything") unless
   protection_reported == true
 
-# Two routes express this one setting and which of them a build answers is
-# upstream's business, not this lane's. /control/protection is what the web
-# interface's own switch calls; /control/dns_config carries the same field as
-# part of the DNS section. The outcome is what is asserted below, so a build that
-# has retired either route still drifts as long as the other one lands -- and a
-# build that has retired both refuses here by name rather than leaving the
-# contract to fail for a reason that has nothing to do with drift.
+# The route and its body shape were MEASURED against the pinned image rather
+# than read out of upstream's documentation, because the Mac lane has never run
+# in CI and a wrong route here would fail at the persistence poll below and
+# accuse the daemon of not writing its own configuration. Against
+# adguard/adguardhome:v0.107.79, with a minimal configuration mounted so the
+# setup wizard was already past: POST /control/protection with {"enabled":false}
+# answered 200, /control/status then reported protection_enabled false, and the
+# daemon had written filtering.protection_enabled: false into AdGuardHome.yaml
+# by the first poll. /control/dns_config carries the same field and is present in
+# the same binary; it is not used, because one route that was exercised is worth
+# more than two that were guessed at.
 post = Net::HTTP::Post.new(URI.join(BASE, "/control/protection"))
 post["Content-Type"] = "application/json"
 post.body = JSON.generate("enabled" => false)
 response = call(post)
-unless response.code.start_with?("2")
-  fallback = Net::HTTP::Post.new(URI.join(BASE, "/control/dns_config"))
-  fallback["Content-Type"] = "application/json"
-  fallback.body = JSON.generate("protection_enabled" => false)
-  response = call(fallback)
-  refuse("neither /control/protection nor /control/dns_config accepted the hand edit " \
-         "(#{response.code}); this AdGuard exposes neither route under the name this lane " \
-         "knows") unless response.code.start_with?("2")
-end
+refuse("/control/protection did not accept the hand edit (#{response.code}); this AdGuard does " \
+       "not expose the route the pinned image answered, so the pin has moved under this " \
+       "hook") unless response.code.start_with?("2")
 
 refuse("the hand edit did not reach the running daemon") unless protection_reported == false
 
@@ -120,12 +118,12 @@ loop do
   rescue StandardError
     nil
   end
-  persisted = document.is_a?(Hash) ? document.dig("filtering", "protection_enabled") : nil
-  # Older layouts carried the field under `dns:`. Either position is the same
-  # drift and the template renders whichever this image writes, so both are read.
-  persisted = document.dig("dns", "protection_enabled") if
-    persisted.nil? && document.is_a?(Hash)
-  break if persisted == false
+  # `filtering:` and not `dns:`, which is where a reader familiar with older
+  # AdGuard layouts would look. It is the position
+  # roles/adguard/templates/AdGuardHome.yaml.j2 renders and the position
+  # v0.107.79 was measured writing, and reading the wrong one would spend this
+  # poll's whole budget and then report that the daemon never persisted anything.
+  break if document.is_a?(Hash) && document.dig("filtering", "protection_enabled") == false
 
   refuse("AdGuard accepted the hand edit but never wrote it into #{CONFIG}, so the converge " \
          "would find the declared document already in place and revert nothing") if now > deadline

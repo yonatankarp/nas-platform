@@ -24,6 +24,15 @@
 # here but sleep. The two other AdGuard budgets are left alone because this
 # invocation refuses before it reaches either.
 #
+# WHAT HAS AND HAS NOT BEEN EXERCISED, because no CI job runs tests/mac/run.sh
+# and so this file is structure rather than evidence until somebody runs the Mac
+# lane by hand. The mutation beside it is not a guess: the route, the body, the
+# status the daemon then reports and the key it writes into AdGuardHome.yaml were
+# all measured against the pinned image, and 95-adguard.rb records the
+# measurement. What has never run is this hook end to end -- the contract
+# refusing, this file recognising the diagnostic, and the reconcile that follows
+# putting the setting back. Read a first Mac run's drift phase with that in mind.
+#
 # The drift is deliberately left in place: the reconcile phase converges, and the
 # verify that follows it is what proves the platform took it back.
 set -eu
