@@ -7,6 +7,10 @@ services:
     # privileged 53 is available to it. Both host sides therefore come from the
     # rendered environment rather than from a literal.
     #
+    # services/adguard/compose.integration.yml is now the same shape for the
+    # same reason, and it carries the measurement that says why the sandbox
+    # cannot simply publish 53.
+    #
     # NOTHING ALLOCATES THEM YET, and this file must not be read as though
     # something does. tests/mac/run.sh has no allocation for adguard and
     # MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh does not name it, so

@@ -2,26 +2,32 @@
 services:
   adguard:
     container_name: ${PLATFORM_PROJECT_NAME:?}-adguard
-    # The one integration override in this repository that moves a port, and the
-    # reason is the same shape as the `devices: !override []` that Immich and
-    # Jellyfin carry here: the sandbox host cannot supply what production
-    # declares. A CI runner already resolves through systemd-resolved, whose stub
-    # listener holds 127.0.0.53:53, and a publication of 0.0.0.0:53 overlaps it;
-    # whether the two binds are permitted depends on SO_REUSEADDR on both
-    # sockets, which is not a property this lane should be betting a converge on.
+    # WHY THE SANDBOX MOVES BOTH PUBLICATIONS, measured rather than assumed. A CI
+    # runner already resolves through systemd-resolved, whose stub listener holds
+    # 127.0.0.53:53. Publishing 0.0.0.0:53 beside it was tested on a Linux Docker
+    # 27.5.1 host with that stub simulated, in four configurations -- TCP and UDP,
+    # with and without SO_REUSEADDR on the stub -- and every one of them refused:
     #
-    # Literals rather than ${...} references, and deliberately: the host side of
-    # a publication in services/adguard/compose.yml has to be a literal for
-    # tests/media_acquisition_foundation_test.rb to parse it, and keeping the
-    # sandbox's ports literal here means the lane can hand the contract its port
-    # numbers without a second inventory override travelling through
-    # tests/integration_controller_lib.sh to reach the .env.
+    #   failed to bind port 0.0.0.0:53/tcp: Error starting userland proxy:
+    #   listen tcp4 0.0.0.0:53: bind: address already in use
     #
-    # 18083 and 15353 are the production numbers moved out of the privileged and
-    # already-occupied ranges; both must agree with the PLATFORM_ADGUARD_PORT and
-    # PLATFORM_ADGUARD_DNS_PORT the lane exports in
-    # tests/integration_controller_lib.sh.
+    # and the same for udp4. The control, with nothing bound on 53, published
+    # cleanly. Docker's userland proxy binds the wildcard address and the kernel
+    # refuses it against the stub's specific one whatever either socket asks for,
+    # so this is not a bet on SO_REUSEADDR: it is a bind that cannot succeed.
+    # Do not re-open it by publishing the production ports here.
+    #
+    # THE HOST SIDES COME FROM THE RENDERED ENVIRONMENT, exactly as
+    # services/adguard/compose.mac.yml takes them, and this file used to carry
+    # literals instead. That was the defect: the lane republished on 18083 while
+    # roles/adguard went on addressing 8083, so the readiness wait polled a port
+    # the sandbox never published and spent all twenty attempts before failing.
+    # A literal here is a second authority on where the service listens, and the
+    # role cannot see it. The lane overrides `adguard_port` and
+    # `adguard_dns_port` instead, env.j2 renders them, and everything that
+    # addresses the service -- the readiness wait, tasks/verify.yml, the contract
+    # -- follows the one value.
     ports: !override
-      - "18083:3000"
-      - "15353:5353/tcp"
-      - "15353:5353/udp"
+      - "${ADGUARD_HOST_PORT:?}:3000"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/tcp"
+      - "${ADGUARD_DNS_HOST_PORT:?}:5353/udp"

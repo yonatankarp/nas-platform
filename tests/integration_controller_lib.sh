@@ -28,6 +28,21 @@ integration_media_adopt_existing=${integration_media_adopt_existing?}
 integration_nextcloud_deployment_enabled=${integration_nextcloud_deployment_enabled?}
 integration_adguard_deployment_enabled=${integration_adguard_deployment_enabled?}
 
+# WHERE ADGUARD LISTENS IN THE SANDBOX, stated once and read by three consumers:
+# the converge (`-e adguard_port`, which is what roles/adguard addresses and what
+# env.j2 renders into the publications), the verification play, and the
+# contract's PLATFORM_ADGUARD_* environment. They are one shell variable rather
+# than three literals because that is the agreement that broke: the lane
+# republished on 18083 while the role went on polling 8083, and the readiness
+# wait spent twenty attempts on a port nothing had published.
+#
+# The production numbers cannot be used here at all -- a runner already holds
+# 127.0.0.53:53 through systemd-resolved and Docker cannot bind 0.0.0.0:53
+# beside it, which services/adguard/compose.integration.yml records as a
+# measurement.
+integration_adguard_port=18083
+integration_adguard_dns_port=15353
+
 # nas_compose_minimum is the one -e below that is not about this sandbox's
 # identity, and it is here for the same reason the rest are: the value inventory
 # would supply is wrong for this lane and right for the NAS.
@@ -64,6 +79,8 @@ run_play() {
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
+    -e adguard_port="$integration_adguard_port" \
+    -e adguard_dns_port="$integration_adguard_dns_port" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
@@ -260,13 +277,12 @@ run_contract() {
         "$@"
       ;;
     adguard)
-      # Both ports, because services/adguard/compose.integration.yml moves
-      # them: production publishes the privileged 53, and a CI runner already
-      # resolves through systemd-resolved's stub listener on 127.0.0.53:53.
-      # These two numbers are the literals in that override.
+      # Both ports, from the same two variables the converge above was given.
+      # The contract must look where the deployment was told to listen, and
+      # there is exactly one place that decides.
       set -- PLATFORM_PROJECT_NAME="$integration_project_namespace" \
-        PLATFORM_ADGUARD_PORT=18083 \
-        PLATFORM_ADGUARD_DNS_PORT=15353 \
+        PLATFORM_ADGUARD_PORT="$integration_adguard_port" \
+        PLATFORM_ADGUARD_DNS_PORT="$integration_adguard_dns_port" \
         "$@"
       ;;
     *)
@@ -572,6 +588,8 @@ run_verification() {
     -e platform_beszel_agent_kind=portable \
     -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
+    -e adguard_port="$integration_adguard_port" \
+    -e adguard_dns_port="$integration_adguard_dns_port" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"

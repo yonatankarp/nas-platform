@@ -73,9 +73,10 @@ GATE = "adguard_deployment_enabled | bool"
 # repo:tag@sha256:<64 hex>. Both halves, because the tag is what a human and
 # Renovate read and the digest is what makes the deployment reproducible.
 IMAGE_PIN = %r{\A[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z}
-# Highest port a process needs privilege to bind. The sandbox's publications
-# have to sit above it: the whole reason the integration override exists is that
-# a CI runner already holds 53.
+# Highest port a process needs privilege to bind. The sandbox's publications have
+# to sit above it, and that is a measurement rather than a preference: Docker on
+# Linux cannot bind 0.0.0.0:53 while systemd-resolved holds 127.0.0.53:53, in
+# either protocol and whatever either socket asks of SO_REUSEADDR.
 PRIVILEGED_PORT_CEILING = 1024
 
 def load_yaml(root, relative)
@@ -164,52 +165,9 @@ if failures.empty?
       source.include?("${PLATFORM_PROJECT_NAME:?}-adguard")
   end
 
-  # The Mac override reads the two host ports out of the rendered environment,
-  # so the environment has to render them.
+  # Read here and asserted further down, where the whole listen-address chain is
+  # held together in one place.
   env_source = File.read(File.join(root, "roles/adguard/templates/env.j2"))
-  %w[ADGUARD_HOST_PORT ADGUARD_DNS_HOST_PORT].each do |name|
-    failures << "services/adguard/compose.mac.yml reads ${#{name}:?}, which " \
-                "roles/adguard/templates/env.j2 must render" unless
-      mac_source.include?("${#{name}:?}") && env_source.include?("#{name}=")
-  end
-
-  # THE INTEGRATION LANE'S TWO PORTS, READ FROM THE FILE THAT EXPORTS THEM.
-  #
-  # tests/integration_controller_lib.sh hands the runtime half PLATFORM_ADGUARD_PORT
-  # and PLATFORM_ADGUARD_DNS_PORT, and services/adguard/compose.integration.yml is
-  # what publishes them. Nothing derives one from the other, so this reads the
-  # exporting file and asserts the override agrees with it. Restating the numbers
-  # here instead -- which is what this check did until it was reviewed -- asserted
-  # only that the override matched a third copy: changing the lane's export alone
-  # left every static check green, and the lane then ran the runtime half against
-  # a port nothing published, spending the whole READY_TIMEOUT_SECONDS budget
-  # before reporting "AdGuard never served its login page", which is the wrong
-  # cause and the #319 CI-budget shape.
-  lane_source = File.read(File.join(root, "tests/integration_controller_lib.sh"))
-  exported = %w[PLATFORM_ADGUARD_PORT PLATFORM_ADGUARD_DNS_PORT].to_h do |name|
-    [name, lane_source[/#{name}=(\d+)/, 1]&.to_i]
-  end
-  missing = exported.select { |_name, value| value.nil? }.keys
-  failures << "tests/integration_controller_lib.sh exports no #{missing.join(' or ')} for the " \
-              "adguard lane, so the runtime half would inherit the production defaults and probe " \
-              "the privileged 53 on a runner that is already resolving" unless missing.empty?
-
-  unless missing.any?
-    failures << "the integration override must publish #{exported['PLATFORM_ADGUARD_PORT']} for " \
-                "the web interface, which is what tests/integration_controller_lib.sh exports as " \
-                "PLATFORM_ADGUARD_PORT" unless
-      integration_source.include?("\"#{exported['PLATFORM_ADGUARD_PORT']}:3000\"")
-    %w[tcp udp].each do |protocol|
-      failures << "the integration override must publish " \
-                  "#{exported['PLATFORM_ADGUARD_DNS_PORT']}/#{protocol}, which is what " \
-                  "tests/integration_controller_lib.sh exports as PLATFORM_ADGUARD_DNS_PORT" unless
-        integration_source.include?("\"#{exported['PLATFORM_ADGUARD_DNS_PORT']}:5353/#{protocol}\"")
-    end
-    low = exported.select { |_name, value| value <= PRIVILEGED_PORT_CEILING }.keys
-    failures << "the adguard lane exports #{low.join(' and ')} below #{PRIVILEGED_PORT_CEILING}, " \
-                "which defeats the whole reason the integration override moves the publications" unless
-      low.empty?
-  end
 
   # ---------------------------------------------------------------------------
   # The rendered configuration.
@@ -284,6 +242,101 @@ if failures.empty?
 
   everything = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
   failures << "roles/adguard declares no tasks" if everything.empty?
+
+  # WHERE THE SERVICE LISTENS, HELD ACROSS ALL FOUR FILES THAT DECIDE IT.
+  #
+  # This is the property that broke the adguard integration lane. The override
+  # republished the web interface on 18083 as a literal, roles/adguard went on
+  # addressing `adguard_port` -- still 8083 -- and nothing read both sides. The
+  # readiness wait polled a port the sandbox had never published, spent all
+  # twenty attempts on `Connection refused`, and failed; tasks/verify.yml and
+  # every other reader would have failed the same way behind it.
+  #
+  # The chain is one value with four links, and each is asserted below:
+  #
+  #   roles/adguard/defaults      adguard_url derives from adguard_port, and no
+  #                               task addresses the service any other way
+  #   roles/adguard/templates     env.j2 renders ADGUARD_HOST_PORT from
+  #                               adguard_port, and the DNS pair likewise
+  #   services/adguard/compose.*  both disposable overrides publish those two
+  #                               names and no literal host port
+  #   tests/integration_*_lib.sh  the lane overrides adguard_port for the
+  #                               converge AND hands the contract
+  #                               PLATFORM_ADGUARD_PORT from the same shell
+  #                               variable, so the two cannot disagree
+  #
+  # A literal anywhere in that chain is a second authority on where the service
+  # listens that the role cannot see, which is exactly what this is here to
+  # refuse.
+  role_ports = {
+    "ADGUARD_HOST_PORT" => "adguard_port",
+    "ADGUARD_DNS_HOST_PORT" => "adguard_dns_port"
+  }.freeze
+
+  failures << "adguard_url must derive from adguard_port, or the lane cannot move where the " \
+              "role looks by overriding one variable" unless
+    defaults["adguard_url"].to_s.include?("{{ adguard_port }}")
+
+  # Every reader, not just the one that happened to fail first. A literal host
+  # and port anywhere in the role is a reader the lane cannot redirect.
+  literal_addresses = everything.flat_map { |task| task_strings(task) }
+                                .grep(%r{https?://(127\.0\.0\.1|localhost):\d})
+  failures << "roles/adguard addresses the service at a literal port in " \
+              "#{literal_addresses.uniq.inspect}: every reader has to go through adguard_url, " \
+              "because a disposable lane publishes it somewhere else" unless
+    literal_addresses.empty?
+
+  role_ports.each do |name, variable|
+    failures << "roles/adguard/templates/env.j2 must render #{name} from #{variable}, which is " \
+                "the value the role itself addresses" unless
+      env_source.include?("#{name}={{ #{variable} }}")
+  end
+
+  # Both disposable overrides, held to the same shape. The Mac lane has taken its
+  # host ports from the environment since this service landed; the integration
+  # lane carried literals until they desynchronised from the role.
+  {
+    "mac" => mac_source,
+    "integration" => integration_source
+  }.each do |kind, source|
+    role_ports.each_key do |name|
+      failures << "services/adguard/compose.#{kind}.yml must publish ${#{name}:?} rather than a " \
+                  "number: a literal here is a second authority on where the service listens, " \
+                  "and roles/adguard cannot see it" unless source.include?("${#{name}:?}")
+    end
+    literal_publications = source.scan(/^\s*- "(\d+):\d+/).flatten
+    failures << "services/adguard/compose.#{kind}.yml publishes literal host port(s) " \
+                "#{literal_publications.uniq.inspect}; the host side comes from the rendered " \
+                "environment in a disposable lane" unless literal_publications.empty?
+  end
+
+  # The lane, read from the file that actually runs it.
+  lane_source = File.read(File.join(root, "tests/integration_controller_lib.sh"))
+  role_ports.each_value do |variable|
+    lane_variable = "integration_#{variable}"
+    declared = lane_source[/^#{lane_variable}=(\d+)$/, 1]&.to_i
+    failures << "tests/integration_controller_lib.sh must declare #{lane_variable}, which is the " \
+                "one place the sandbox decides where AdGuard listens" if declared.nil?
+    next if declared.nil?
+
+    failures << "#{lane_variable} is #{declared}, at or below #{PRIVILEGED_PORT_CEILING}. A runner " \
+                "already holds 127.0.0.53:53 through systemd-resolved and Docker cannot bind " \
+                "0.0.0.0:53 beside it -- measured, and recorded in " \
+                "services/adguard/compose.integration.yml" unless
+      declared > PRIVILEGED_PORT_CEILING
+    failures << "the adguard lane must converge with -e #{variable}=\"$#{lane_variable}\", or the " \
+                "role addresses the production port while the sandbox publishes another" unless
+      lane_source.include?("-e #{variable}=\"$#{lane_variable}\"")
+  end
+
+  role_ports.each_key do |name|
+    platform_name = name.sub("ADGUARD_", "PLATFORM_ADGUARD_").sub("_HOST_PORT", "_PORT")
+    lane_variable = "integration_#{role_ports.fetch(name)}"
+    failures << "the adguard lane must hand the contract #{platform_name}=\"$#{lane_variable}\", " \
+                "the same variable it converged with. A literal here -- which is what this had " \
+                "before -- lets the contract probe a port the deployment was never told to use" unless
+      lane_source.include?("#{platform_name}=\"$#{lane_variable}\"")
+  end
 
   # CLAIM 1. The hash is stored, never computed.
   #

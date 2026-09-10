@@ -161,13 +161,22 @@ STATIC_ROWS = [
     expects: "must REPLACE the production publications"
   },
   {
-    name: "an integration port the lane does not export",
+    name: "an override that stopped reading the rendered host port",
     break: lambda { |root|
       edit_text(root, "services/adguard/compose.integration.yml") do |source|
-        source.sub('"15353:5353/udp"', '"15354:5353/udp"')
+        source.gsub("${ADGUARD_DNS_HOST_PORT:?}", "${ADGUARD_RESOLVER_PORT:?}")
       end
     },
-    expects: "must publish 15353/udp"
+    expects: "must publish ${ADGUARD_DNS_HOST_PORT:?} rather than a "
+  },
+  {
+    name: "an override publishing a literal host port beside the rendered ones",
+    break: lambda { |root|
+      edit_text(root, "services/adguard/compose.integration.yml") do |source|
+        "#{source}      - \"18084:3000\"\n"
+      end
+    },
+    expects: "publishes literal host port(s)"
   },
   {
     # An administrator that is not the vault's, rather than `users: []`, and the
@@ -397,30 +406,38 @@ STATIC_ROWS = [
     expects: "must give the container the sandbox's namespaced name"
   },
   {
-    # THE ROW THIS PROGRAM WAS REVIEWED FOR. The lane exports the ports and the
-    # override publishes them, and until this row nothing read the exporting
-    # file: moving the export alone left every static check green and sent the
-    # runtime half at a port nothing published, where it spent its whole
-    # readiness budget before blaming AdGuard.
-    name: "a lane exporting a web port the override does not publish",
+    # THE ROW THE LANE FAILURE WAS ABOUT. The sandbox republished the web
+    # interface somewhere else and roles/adguard was never told, so the readiness
+    # wait polled 8083, took `Connection refused` twenty times and failed. The
+    # converge has to be handed the same value the override publishes.
+    name: "a converge that keeps the production port while the sandbox moves",
     break: lambda { |root|
       edit_text(root, "tests/integration_controller_lib.sh") do |source|
-        source.sub("PLATFORM_ADGUARD_PORT=18083", "PLATFORM_ADGUARD_PORT=18084")
+        source.gsub(/^\s*-e adguard_port="\$integration_adguard_port" \\\n/, "")
       end
     },
-    expects: "exports as PLATFORM_ADGUARD_PORT"
+    expects: 'must converge with -e adguard_port="$integration_adguard_port"'
   },
   {
-    name: "a lane that went back to the privileged port the override exists to avoid",
+    # The other half of the same agreement: the contract has to look where the
+    # deployment was told to listen, and a literal is how those two drift.
+    name: "a lane handing the contract a literal port",
     break: lambda { |root|
       edit_text(root, "tests/integration_controller_lib.sh") do |source|
-        source.sub("PLATFORM_ADGUARD_DNS_PORT=15353", "PLATFORM_ADGUARD_DNS_PORT=53")
-      end
-      edit_text(root, "services/adguard/compose.integration.yml") do |source|
-        source.gsub('"15353:5353/', '"53:5353/')
+        source.sub('PLATFORM_ADGUARD_PORT="$integration_adguard_port"',
+                   "PLATFORM_ADGUARD_PORT=18084")
       end
     },
-    expects: "below 1024, which defeats the whole reason"
+    expects: 'must hand the contract PLATFORM_ADGUARD_PORT="$integration_adguard_port"'
+  },
+  {
+    name: "a lane that went back to the privileged port the resolver stub forbids",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller_lib.sh") do |source|
+        source.sub("integration_adguard_dns_port=15353", "integration_adguard_dns_port=53")
+      end
+    },
+    expects: "at or below 1024"
   },
   {
     # Claim 1 of this program's own header, which had no row until it was
@@ -453,13 +470,13 @@ STATIC_ROWS = [
     expects: "must not carry the clear administrator password"
   },
   {
-    name: "an environment that stopped rendering the Mac host port",
+    name: "an environment that renders a literal instead of the role's port",
     break: lambda { |root|
       edit_text(root, "roles/adguard/templates/env.j2") do |source|
-        source.sub(/^ADGUARD_DNS_HOST_PORT=.*\n/, "")
+        source.sub(/^ADGUARD_DNS_HOST_PORT=.*\n/, "ADGUARD_DNS_HOST_PORT=53\n")
       end
     },
-    expects: "roles/adguard/templates/env.j2 must render"
+    expects: "must render ADGUARD_DNS_HOST_PORT from adguard_dns_port"
   },
   {
     name: "a verification task that lost its tag",
@@ -625,16 +642,42 @@ STATIC_ROWS = [
     expects: "must name the adguard role"
   },
   {
-    # The other direction of the lane/override agreement: a lane that stopped
-    # exporting anything leaves the runtime half on the production defaults, so
-    # it probes the privileged 53 on a runner that is already resolving.
-    name: "a lane that exports neither port",
+    # A lane that decides nothing leaves the role on the production defaults, so
+    # the sandbox tries to publish the privileged 53 on a runner already
+    # resolving through it.
+    name: "a lane that declares neither port",
     break: lambda { |root|
       edit_text(root, "tests/integration_controller_lib.sh") do |source|
-        source.gsub(/^\s*PLATFORM_ADGUARD_(DNS_)?PORT=\d+ \\\n/, "")
+        source.gsub(/^integration_adguard_(dns_)?port=\d+\n/, "")
       end
     },
-    expects: "exports no PLATFORM_ADGUARD_PORT"
+    expects: "must declare integration_adguard_port"
+  },
+  {
+    name: "a url that hardcodes the production port",
+    break: lambda { |root|
+      edit_yaml(root, "roles/adguard/defaults/main.yml") do |document|
+        document["adguard_url"] = "http://127.0.0.1:8083"
+      end
+    },
+    expects: "adguard_url must derive from adguard_port"
+  },
+  {
+    # The class rather than the instance: the readiness wait is what failed, but
+    # tasks/verify.yml and everything after it addresses the service too, and a
+    # literal in any of them is a reader no lane can redirect.
+    name: "a task that addresses the service at a literal port",
+    break: lambda { |root|
+      path = File.join(root, "roles/adguard/tasks/verify.yml")
+      document = YAML.safe_load_file(path, aliases: true)
+      document << {
+        "name" => "Verify AdGuard Home the quick way",
+        "tags" => ["platform_verify_adguard"],
+        "ansible.builtin.uri" => { "url" => "http://127.0.0.1:8083/control/status" }
+      }
+      File.write(path, YAML.dump(document))
+    },
+    expects: "addresses the service at a literal port"
   }
 ].freeze
 
@@ -1110,11 +1153,18 @@ PROGRAM_MUTATIONS = [
     rows: ["a sandbox override that appends publications instead of replacing them"]
   },
   {
-    label: "the integration DNS port agreement",
+    label: "the rendered-publication check",
     program: :static,
-    from: 'PLATFORM_ADGUARD_DNS_PORT" unless',
-    to: 'PLATFORM_ADGUARD_DNS_PORT" if false &&',
-    rows: ["an integration port the lane does not export"]
+    from: 'source.include?("${#{name}:?}")',
+    to: "true",
+    rows: ["an override that stopped reading the rendered host port"]
+  },
+  {
+    label: "the literal-publication check",
+    program: :static,
+    from: "literal_publications.empty?",
+    to: "true",
+    rows: ["an override publishing a literal host port beside the rendered ones"]
   },
   {
     label: "the nonempty users check",
@@ -1348,18 +1398,25 @@ PROGRAM_MUTATIONS = [
     rows: ["a sandbox container left with its production name"]
   },
   {
-    label: "the lane-and-override port agreement",
+    label: "the converge-is-told check",
     program: :static,
-    from: '"PLATFORM_ADGUARD_PORT" unless',
-    to: '"PLATFORM_ADGUARD_PORT" if false &&',
-    rows: ["a lane exporting a web port the override does not publish"]
+    from: 'lane_source.include?("-e #{variable}=\"$#{lane_variable}\"")',
+    to: "true",
+    rows: ["a converge that keeps the production port while the sandbox moves"]
+  },
+  {
+    label: "the contract-is-told-the-same check",
+    program: :static,
+    from: 'lane_source.include?("#{platform_name}=\"$#{lane_variable}\"")',
+    to: "true",
+    rows: ["a lane handing the contract a literal port"]
   },
   {
     label: "the unprivileged-lane-port check",
     program: :static,
-    from: "low.empty?",
+    from: "declared > PRIVILEGED_PORT_CEILING",
     to: "true",
-    rows: ["a lane that went back to the privileged port the override exists to avoid"]
+    rows: ["a lane that went back to the privileged port the resolver stub forbids"]
   },
   {
     label: "the stored-hash check",
@@ -1376,11 +1433,11 @@ PROGRAM_MUTATIONS = [
     rows: ["a rendered configuration carrying the clear administrator password"]
   },
   {
-    label: "the rendered Mac port check",
+    label: "the rendered port check",
     program: :static,
-    from: 'env_source.include?("#{name}=")',
+    from: 'env_source.include?("#{name}={{ #{variable} }}")',
     to: "true",
-    rows: ["an environment that stopped rendering the Mac host port"]
+    rows: ["an environment that renders a literal instead of the role's port"]
   },
   {
     label: "the verification tag check",
@@ -1502,11 +1559,25 @@ PROGRAM_MUTATIONS = [
     rows: ["an expectation file naming another role"]
   },
   {
-    label: "the lane export presence check",
+    label: "the lane declaration check",
     program: :static,
-    from: "unless missing.empty?",
-    to: "unless true",
-    rows: ["a lane that exports neither port"]
+    from: "if declared.nil?\n    next if declared.nil?",
+    to: "if false\n    next if declared.nil?",
+    rows: ["a lane that declares neither port"]
+  },
+  {
+    label: "the derived-url check",
+    program: :static,
+    from: 'defaults["adguard_url"].to_s.include?("{{ adguard_port }}")',
+    to: "true",
+    rows: ["a url that hardcodes the production port"]
+  },
+  {
+    label: "the literal-address sweep",
+    program: :static,
+    from: "literal_addresses.empty?",
+    to: "true",
+    rows: ["a task that addresses the service at a literal port"]
   }
 ].freeze
 
