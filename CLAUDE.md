@@ -259,9 +259,15 @@ Bindery application **minor** migrated the store to `schema_migrations` 81, the
 release went back to a pin that knew 1..80, and the host sat behind it for three
 days with every converge failing at that role and the poller not advancing. Two
 controls, at opposite ends. `renovate.json` withholds `major`, `minor` and
-`patch` for those images — a digest refresh on an unchanged tag moves no version
-and stays automerged — which is a wider scope than the database-major rule
-beside it and deliberately so. And `roles/image_downgrade_guard`, included by a
+`patch` for those images **from automerge** — a digest refresh on an unchanged
+tag moves no version and stays automerged — which is a wider scope than the
+database-major rule beside it and deliberately so. It withholds the *merge*, not
+the pull request, and that is the one place it departs from the two major-only
+rules beside it, which carry `dependencyDashboardApproval` and suppress the pull
+request itself. Those match majors, where a checkbox nobody ticks for a month
+costs nothing; this one reaches minor and patch on services that ship them
+continuously, and there a suppressed pull request is not a decision deferred but
+an update nobody ever sees. The pull request is the notification. And `roles/image_downgrade_guard`, included by a
 service role before its backup and its Compose deployment, reads the image
 reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions

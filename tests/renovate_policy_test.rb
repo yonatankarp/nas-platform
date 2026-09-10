@@ -73,10 +73,19 @@ check(failures, immich_rule && rules.index(immich_rule) > rules.index(eligible_r
 # different hazard.
 #
 # Stated as a property over the services rather than rule by rule, and that is
-# the point: Immich is withheld by `automerge: false` on its own coupling rule
-# and the other three by `dependencyDashboardApproval`, so an assertion written
-# against either mechanism would pass while the other silently reopened. What
-# has to hold is that no automerging update type reaches any of them.
+# the point: the four are withheld by different mechanisms, so an assertion
+# written against one of them would pass while the other silently reopened.
+# What has to hold is that no automerging update type reaches any of them.
+#
+# All four are withheld by `automerge: false` today -- Immich on its own
+# coupling rule, the other three on the self-migrating rule #511 added. That
+# rule deliberately does NOT carry `dependencyDashboardApproval`, unlike the
+# database-major and Nextcloud-major rules it sits beside: those match only
+# majors, where a suppressed pull request is a rare decision deferred, while
+# this one reaches minor and patch on services that ship them continuously, and
+# there a suppressed pull request is an update nobody ever sees. Keep this
+# assertion phrased over the mechanisms rather than over one of them, because
+# which mechanism withholds which service has already changed once.
 #
 # The key is the image and the value is the services/ directory that pins it,
 # because a list of package names is exactly the kind of subject that goes
