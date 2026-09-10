@@ -19,6 +19,7 @@ required = %w[
   roles/bindery/tasks/reconcile_usenet.yml
   roles/bindery/tasks/resolve_api_key.yml
   roles/bindery/templates/env.j2
+  roles/image_downgrade_guard/tasks/main.yml
   services/bindery/compose.yml
   services/bindery/compose.mac.yml
   services/bindery/compose.integration.yml
@@ -307,6 +308,56 @@ if failures.empty?
     deploy_block && flatten_tasks(deploy_block["rescue"]).any? do |task|
       task.dig("ansible.builtin.set_fact", "bindery_deploy_failure_message")
     end
+  # #511: for a service that migrates its own store on start, a pin is not
+  # freely reversible. v1.34.0 migrated the store to schema_migrations 81, the
+  # release went back to v1.33.3, and v1.33.3 refused to open it -- correctly,
+  # and inside the container, where the only symptom was exit 1 every minute for
+  # three days. The guard has to precede the backup as well as the deployment: a
+  # release that must not be started is not worth taking a backup for, and the
+  # deployment is the act being refused.
+  guard_include = tasks.index do |task|
+    task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard"
+  end
+  failures << "Bindery must refuse an image older than the store already on disk" unless guard_include
+  failures << "the Bindery downgrade guard must run before the backup and the deployment" unless
+    guard_include && backup_include && deploy_index &&
+    guard_include < backup_include && guard_include < deploy_index
+
+  # Both halves of the name, because the role takes them separately: the
+  # manifest directory says which compose.yml the pin is read from and the
+  # Compose service key says which container in it owns the migrating store. A
+  # guard pointed at another project reads another stack's containers and passes.
+  guard_vars = guard_include ? (tasks[guard_include]["vars"] || {}) : {}
+  failures << "the Bindery downgrade guard must judge Bindery's own containers" unless
+    guard_vars["image_downgrade_guard_service_name"] == "bindery" &&
+    guard_vars["image_downgrade_guard_compose_service"] == "bindery" &&
+    guard_vars["image_downgrade_guard_project_name"] == "{{ bindery_compose_project_name }}"
+
+  guard_tasks = flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/image_downgrade_guard/tasks/main.yml"),
+                        aliases: true)
+  )
+  # A read that claims a change breaks idempotence, and one that skips itself
+  # under --check turns the refusal into silence exactly where an operator is
+  # reading the plan. The guard inspects state the run did not create, so unlike
+  # roles/container_cpu it has nothing to defer.
+  guard_reads = guard_tasks.select { |task| task.key?("ansible.builtin.command") }
+  failures << "the downgrade guard must read the daemon without claiming a change or deferring" unless
+    guard_reads.length == 2 &&
+    guard_reads.all? { |task| task["changed_when"] == false && task["check_mode"] == false }
+
+  # Without --all it sees running containers only, and the container it exists
+  # for has already exited.
+  failures << "the downgrade guard must list stopped containers too" unless
+    Array(guard_reads.first&.dig("ansible.builtin.command", "argv")).include?("--all")
+
+  # An assert, not a debug: the whole failure of #511 was that the refusal
+  # happened somewhere nobody was reading.
+  guard_refusal = guard_tasks.find { |task| task.key?("ansible.builtin.assert") }
+  failures << "the downgrade guard must refuse rather than report" unless
+    guard_refusal &&
+    Array(guard_refusal.dig("ansible.builtin.assert", "that")).join(" ")
+      .include?("image_downgrade_guard_newer_versions")
 
   backup_tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/bindery/tasks/pre_upgrade_backup.yml"),
