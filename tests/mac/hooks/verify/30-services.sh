@@ -36,8 +36,17 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # unset, that the reconciled trusted domains hold, and that the administrator
 # authenticates while a password the vault never authored is refused. It also
 # proves the cron sidecar is the thing running the background jobs, which is the
-# one claim no other service here has a shape for. It runs last, which is where
-# site.yml converges it.
+# one claim no other service here has a shape for.
+#
+# AdGuard runs last, which is where site.yml converges it, and it is the only
+# entry here whose run mode is behavioural rather than an interrogation: it puts
+# two real DNS questions on the wire over the port this lane published and
+# requires a blocklisted name to come back 0.0.0.0 while an ordinary one
+# resolves. A status page reporting `protection_enabled` is not that claim, which
+# is why the contract does not stop there. It also asserts the one thing
+# `users: []` would take away silently -- that /control answers 401 to an
+# anonymous request -- because an AdGuard with no declared administrator hands
+# the ability to rewrite any DNS answer to whoever can reach the port.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
     bindery trailarr seerr nextcloud adguard; do
