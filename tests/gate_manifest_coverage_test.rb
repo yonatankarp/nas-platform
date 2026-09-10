@@ -124,13 +124,22 @@ failures = []
 # and it is a wait by construction and not only by measurement: it starts a
 # container on `sleep 300`, and #517 measured 400.3s elapsed against 116.6s of
 # CPU. It is now in shard 3, which is allowed because shard 3's two heaviest
-# incumbents were checked and are work, not wait --
-# `komga_library_reconciliation_test.rb` 72.9s of CPU in 149.8s elapsed and
-# `dozzle_contract_test.rb --self-test` 56.7s in 77.3s, both on a 12-core Mac at
-# load average 128-147, where contention only depresses that ratio, so both are
-# lower bounds; and neither file sleeps at all. Shard 3 therefore holds exactly
-# one wait, and shard 2 -- the shard that was floor-bound and saturated -- now
-# holds none.
+# incumbents were checked and are work, not wait: on a 12-core Mac,
+# `komga_library_reconciliation_test.rb` ran 73.2s of CPU in 86.6s elapsed and
+# `dozzle_contract_test.rb --self-test` 54.6s in 97.7s, and neither file sleeps
+# at all. Shard 3 therefore holds exactly one wait, and shard 2 -- the shard
+# that was floor-bound and saturated -- now holds none.
+#
+# Those two were measured twice by accident and the accident is worth keeping,
+# because it is this repository's own rule tested rather than quoted. The first
+# pair was taken at load average 128-147 on that Mac, the second after 36 leaked
+# CPU spinners were reaped and the load fell to 12-28. Elapsed collapsed --
+# komga 149.8s to 86.6s -- while the CPU column barely moved, 72.9s to 73.2s and
+# 56.7s to 54.6s. So user+sys really is the load-invariant measure and the ratio
+# built from it is not: contention only pushes the ratio down, which makes a HIGH
+# ratio proof of work whatever the machine was doing, and a LOW one on a busy
+# machine a lower bound rather than a verdict. komga read 0.49 contaminated and
+# 0.85 clean, and only the second says anything.
 #
 # WHY SHARD 2'S FIGURES WERE THE STEADIEST, which is worth knowing because it
 # reads like the opposite of a problem. Its check time varied 1402-1574 across
