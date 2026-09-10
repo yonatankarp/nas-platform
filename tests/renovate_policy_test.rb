@@ -63,6 +63,118 @@ check(failures, immich_rule && immich_rule["automerge"] == false,
 check(failures, immich_rule && rules.index(immich_rule) > rules.index(eligible_rule),
       "The Immich override must follow the general automerge rule") if eligible_rule
 
+# #511: an application image whose container migrates its own store when it
+# starts is not a freely reversible pin. Bindery v1.34.0 migrated its SQLite
+# store to schema_migrations 81, the host went back to a release pinning
+# v1.33.3, and v1.33.3 refused to open it -- correctly, and inside the
+# container, where the only symptom was exit 1 every minute for three days.
+# The bump that got there was an application MINOR, which the routine rule
+# automerges; the existing manual set gated database MAJORS, which is a
+# different hazard.
+#
+# Stated as a property over the services rather than rule by rule, and that is
+# the point: Immich is withheld by `automerge: false` on its own coupling rule
+# and the other three by `dependencyDashboardApproval`, so an assertion written
+# against either mechanism would pass while the other silently reopened. What
+# has to hold is that no automerging update type reaches any of them.
+#
+# The key is the image and the value is the services/ directory that pins it,
+# because a list of package names is exactly the kind of subject that goes
+# stale invisibly: #501 removed Seafile, which was in this set and had a
+# Renovate carve-out of its own. A name that no longer appears as an `image:`
+# in the tree is a rule guarding nothing.
+SELF_MIGRATING_APPLICATION_IMAGES = {
+  "ghcr.io/vavallee/bindery" => "bindery",
+  "ghcr.io/immich-app/immich-server" => "immich",
+  "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
+  "docker.io/library/nextcloud" => "nextcloud"
+}.freeze
+# A stated count, not non-emptiness: a set that quietly became empty satisfies
+# every loop below and reports a pass. Four is what the tree documents --
+# roles/bindery/tasks/pre_upgrade_backup.yml, services/immich/compose.yml,
+# services/paperless-ngx/compose.yml and services/nextcloud/compose.yml each
+# say their application migrates its own store on start.
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 4,
+      "the self-migrating application set must name four images, not " \
+      "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
+
+SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|
+  compose_path = File.join(ROOT, "services", directory, "compose.yml")
+  pinned = File.file?(compose_path) ? File.read(compose_path) : ""
+  check(failures, pinned.include?("image: #{package}:"),
+        "#{package} is withheld from automerge but services/#{directory}/compose.yml " \
+        "pins no such image; a rule naming an image the tree no longer has guards nothing")
+end
+
+# The resolver below reads matchPackageNames, matchUpdateTypes, matchDatasources
+# and matchCategories and ignores matchFileNames, which is sound only while no
+# rule narrows by file without also naming its packages. Asserted rather than
+# assumed, because a rule that did would apply here when Renovate would not.
+check(failures, rules.none? do |rule|
+  rule.key?("matchFileNames") && Array(rule["matchPackageNames"]).empty?
+end, "a Renovate rule narrows by file name without naming its packages; the " \
+     "automerge resolver in this test would over-apply it")
+
+def rule_reaches?(rule, package, update_type)
+  names = Array(rule["matchPackageNames"])
+  return false unless names.empty? || names.include?(package)
+
+  types = Array(rule["matchUpdateTypes"])
+  return false unless types.empty? || types.include?(update_type)
+
+  datasources = Array(rule["matchDatasources"])
+  return false unless datasources.empty? || datasources.include?("docker")
+
+  categories = Array(rule["matchCategories"])
+  categories.empty? || categories.include?("docker")
+end
+
+# Later rules win, which is Renovate's own resolution order.
+#
+# `key?` rather than a truthiness filter, and the difference is not pedantic:
+# `filter_map { rule["automerge"] }` drops `false` along with `nil`, so the
+# Immich rule -- which withholds every update type with `automerge: false` --
+# resolved to the routine rule's `true` and this file reported that an Immich
+# minor would automerge. Measured on the first run, not imagined.
+def last_declared(rules, key)
+  rules.select { |rule| rule.key?(key) }.map { |rule| rule[key] }.last
+end
+
+def automerge_verdict(config, rules, package, update_type)
+  reaching = rules.select { |rule| rule_reaches?(rule, package, update_type) }
+  automerge = last_declared(reaching, "automerge")
+  automerge = config["automerge"] if automerge.nil?
+  [automerge, last_declared(reaching, "dependencyDashboardApproval") == true]
+end
+
+# minor and patch only. pin, pinDigest and digest move no version, so they run
+# no migration and are ordinary here -- which is the one automerged type this
+# set deliberately keeps.
+MIGRATING_UPDATE_TYPES = %w[major minor patch].freeze
+
+MIGRATING_UPDATE_TYPES.each do |update_type|
+  SELF_MIGRATING_APPLICATION_IMAGES.each_key do |package|
+    automerge, approved = automerge_verdict(config, rules, package, update_type)
+    check(failures, automerge == false || approved,
+          "a #{update_type} bump of #{package} would automerge. That image migrates its own " \
+          "store when it starts, so the bump is one-way: withhold it with " \
+          "dependencyDashboardApproval, or with automerge false, or both")
+  end
+end
+
+# The tripwire the loop above needs, and it is not decoration. Every assertion
+# there is satisfied by a resolver that reports every package as withheld --
+# a mistyped key, an inverted return, a rules list read as empty -- and such a
+# resolver would report a pass on a configuration that automerges everything.
+# Gotenberg converts documents and holds no store; its minor bumps do automerge,
+# and this row fails if the resolver has stopped being able to say so.
+open_automerge, open_approval = automerge_verdict(config, rules,
+                                                  "docker.io/gotenberg/gotenberg", "minor")
+check(failures, open_automerge == true && !open_approval,
+      "the automerge resolver reports that a minor bump of docker.io/gotenberg/gotenberg is " \
+      "withheld. It holds no migrating store and the routine rule automerges it, so the " \
+      "resolver is answering the same way for every package and the assertions above prove nothing")
+
 # Every pinned version in the integration harness must be tracked by a custom
 # manager. Without this, a pin silently stops being bumped: nothing fails until
 # the pinned value leaves its upstream index, and then every suite fails at
