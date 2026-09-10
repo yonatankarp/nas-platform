@@ -1,0 +1,348 @@
+#!/usr/bin/env ruby
+# The static half of the AdGuard Home service contract: what a gated resolver
+# owes this platform, decided from the repository alone with nothing deployed.
+#
+# usage: adguard-static.rb REPOSITORY
+#
+# PLATFORM_CONTRACT_REPO_DIR names the same repository and is read below for
+# tests/policy_support.rb, so this program carries no copy of flatten_tasks.
+#
+# THE FOUR CLAIMS THIS FILE EXISTS FOR, none of which any other check makes:
+#
+#   1. The administrator hash is STORED, never computed. bcrypt salts randomly,
+#      so a `password_hash('bcrypt')` anywhere in this role would rewrite
+#      AdGuardHome.yaml on every converge -- a broken idempotence that reports
+#      itself as an ordinary change and would survive every review that reads the
+#      diff rather than two consecutive runs.
+#
+#   2. The rendered configuration declares a NONEMPTY `users:` block. AdGuard
+#      reads `users: []` as "authentication disabled", which hands the ability to
+#      rewrite any DNS answer on the network to whoever can reach the port. That
+#      is a one-character edit away from correct and looks like an empty list.
+#
+#   3. The role does not touch host DNS and does not serve DHCP. Both are
+#      decisions, both are recorded in roles/adguard/defaults/main.yml, and both
+#      are the obvious next step for a future reader -- so a task that reached
+#      for either has to fail here rather than be noticed.
+#
+#   4. Its two disposable-lane overrides move the publications. Production takes
+#      the privileged 53, which is available on the NAS and on nothing else: a
+#      CI runner already resolves through systemd-resolved's stub listener on
+#      127.0.0.53:53, and a laptop has its own resolver too.
+#
+# Structure is read from parsed YAML rather than from source text wherever the
+# claim is structural, for the reason the Nextcloud contract records: this
+# role's comments spell out `resolv.conf` and `password_hash` at length while
+# explaining why no task uses either, so a source-text assertion for "this must
+# not name resolv.conf" fails against the correct role.
+require "yaml"
+
+root = ARGV.fetch(0)
+failures = []
+required = %w[
+  roles/adguard/defaults/main.yml
+  roles/adguard/meta/argument_specs.yml
+  roles/adguard/tasks/main.yml
+  roles/adguard/tasks/deploy.yml
+  roles/adguard/tasks/report.yml
+  roles/adguard/tasks/verify.yml
+  roles/adguard/templates/env.j2
+  roles/adguard/templates/AdGuardHome.yaml.j2
+  services/adguard/compose.yml
+  services/adguard/compose.mac.yml
+  services/adguard/compose.integration.yml
+  tests/expected/adguard.yml
+  tests/contracts/adguard.sh
+  inventory/group_vars/all/main.yml
+]
+required.each do |relative|
+  failures << "missing #{relative}" unless File.file?(File.join(root, relative))
+end
+
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
+include PolicySupport
+
+ROLE_TASK_FILES = %w[main deploy report verify].freeze
+VAULT_CREDENTIALS = %w[
+  vault_adguard_admin_password
+  vault_adguard_admin_password_hash
+  vault_adguard_admin_username
+].freeze
+GATE = "adguard_deployment_enabled | bool"
+# repo:tag@sha256:<64 hex>. Both halves, because the tag is what a human and
+# Renovate read and the digest is what makes the deployment reproducible.
+IMAGE_PIN = %r{\A[a-z0-9][a-z0-9._/-]*:[A-Za-z0-9_][A-Za-z0-9_.-]*@sha256:[0-9a-f]{64}\z}
+# The literals tests/integration_controller_lib.sh exports to the runtime half.
+# They are restated here on purpose: the override and the export are two files
+# that have to agree, and nothing derives one from the other.
+INTEGRATION_WEB_PORT = 18_083
+INTEGRATION_DNS_PORT = 15_353
+
+def load_yaml(root, relative)
+  YAML.safe_load_file(File.join(root, relative), aliases: true)
+rescue Errno::ENOENT, Psych::Exception
+  nil
+end
+
+def role_tasks(root, file)
+  document = load_yaml(root, "roles/adguard/tasks/#{file}.yml")
+  document.is_a?(Array) ? flatten_tasks(document) : []
+end
+
+def conditions(task)
+  Array(task.is_a?(Hash) ? task["when"] : nil).map { |condition| condition.to_s.strip }
+end
+
+# Every task paired with the conditions it actually runs under. Ansible applies
+# a block's `when` to every task inside it, so a deployment wrapped in a gated
+# block is gated even though its own `when` says nothing -- which is the shape
+# roles/adguard/tasks/deploy.yml uses for its bounded force-recreate.
+def tasks_with_gates(nodes, inherited = [])
+  Array(nodes).flat_map do |task|
+    next [] unless task.is_a?(Hash)
+
+    gates = inherited + conditions(task)
+    nested = %w[block rescue always].flat_map { |key| tasks_with_gates(task[key], gates) }
+    nested.empty? ? [[task, gates]] : nested
+  end
+end
+
+# Every string anywhere inside a task's values, so a claim about what the role
+# computes reads the role rather than the prose beside it.
+def task_strings(node)
+  case node
+  when Hash then node.flat_map { |key, value| [key.to_s] + task_strings(value) }
+  when Array then node.flat_map { |element| task_strings(element) }
+  when String then [node]
+  else []
+  end
+end
+
+if failures.empty?
+  compose = load_yaml(root, "services/adguard/compose.yml")
+  services = compose.is_a?(Hash) ? compose["services"] : nil
+  failures << "services/adguard/compose.yml must declare exactly the adguard service" unless
+    services.is_a?(Hash) && services.keys == %w[adguard]
+  spec = services.is_a?(Hash) ? services["adguard"] : nil
+  spec = {} unless spec.is_a?(Hash)
+
+  failures << "the AdGuard image must carry both a version tag and a manifest digest" unless
+    spec["image"].to_s.match?(IMAGE_PIN)
+  failures << "AdGuard must run as the shared platform identity rather than as root, " \
+              "or every file the daemon rewrites becomes unreplaceable by the next converge" unless
+    spec["user"] == "${NAS_UID:?}:${NAS_GID:?}"
+  failures << "AdGuard must refuse privilege escalation" unless
+    Array(spec["security_opt"]).include?("no-new-privileges:true")
+  failures << "AdGuard must not be privileged" if spec["privileged"]
+
+  # The publications, in both directions. The container side of the DNS pair is
+  # the whole reason the container can run unprivileged, so it is asserted as a
+  # value rather than merely as "some port".
+  published = Array(spec["ports"]).map(&:to_s)
+  failures << "AdGuard must publish its web interface on the host port the role declares" unless
+    published.include?("8083:3000")
+  %w[tcp udp].each do |protocol|
+    failures << "AdGuard must publish host 53/#{protocol} to the unprivileged in-container " \
+                "listener; binding 53 inside the container would need root" unless
+      published.include?("53:5353/#{protocol}")
+  end
+  failures << "AdGuard must publish DNS on exactly the web port and the two 53 entries" unless
+    published.length == 3
+
+  # Both disposable lanes move both publications. `!override` rather than a
+  # second list, because Compose concatenates `ports` across files: an override
+  # that merely adds entries leaves the sandbox still trying to bind 53.
+  mac_source = File.read(File.join(root, "services/adguard/compose.mac.yml"))
+  integration_source = File.read(File.join(root, "services/adguard/compose.integration.yml"))
+  [["mac", mac_source], ["integration", integration_source]].each do |kind, source|
+    failures << "services/adguard/compose.#{kind}.yml must REPLACE the production publications " \
+                "with `ports: !override`; Compose concatenates ports across files, so an " \
+                "override that adds entries still binds the privileged 53" unless
+      source.include?("ports: !override")
+    failures << "services/adguard/compose.#{kind}.yml must give the container the sandbox's " \
+                "namespaced name, or its containers survive the run and collide with the next" unless
+      source.include?("${PLATFORM_PROJECT_NAME:?}-adguard")
+  end
+
+  # The Mac override reads the two host ports out of the rendered environment,
+  # so the environment has to render them.
+  env_source = File.read(File.join(root, "roles/adguard/templates/env.j2"))
+  %w[ADGUARD_HOST_PORT ADGUARD_DNS_HOST_PORT].each do |name|
+    failures << "services/adguard/compose.mac.yml reads ${#{name}:?}, which " \
+                "roles/adguard/templates/env.j2 must render" unless
+      mac_source.include?("${#{name}:?}") && env_source.include?("#{name}=")
+  end
+
+  # The integration lane's literals, which tests/integration_controller_lib.sh
+  # hands the runtime half as PLATFORM_ADGUARD_PORT and PLATFORM_ADGUARD_DNS_PORT.
+  # A contract pointed at a port nothing published times out rather than failing
+  # by name, so the disagreement is caught here instead.
+  failures << "the integration override must publish #{INTEGRATION_WEB_PORT} for the web " \
+              "interface, which is what the lane exports as PLATFORM_ADGUARD_PORT" unless
+    integration_source.include?("\"#{INTEGRATION_WEB_PORT}:3000\"")
+  %w[tcp udp].each do |protocol|
+    failures << "the integration override must publish #{INTEGRATION_DNS_PORT}/#{protocol}, " \
+                "which is what the lane exports as PLATFORM_ADGUARD_DNS_PORT" unless
+      integration_source.include?("\"#{INTEGRATION_DNS_PORT}:5353/#{protocol}\"")
+  end
+
+  # ---------------------------------------------------------------------------
+  # The rendered configuration.
+  template = File.read(File.join(root, "roles/adguard/templates/AdGuardHome.yaml.j2"))
+
+  failures << "AdGuardHome.yaml.j2 must declare a nonempty users list carrying the vault " \
+              "administrator; `users: []` disables authentication completely and hands the " \
+              "ability to rewrite any DNS answer on the network to anyone who reaches the port" unless
+    template.match?(/^users:\n  - name: \{\{ vault_adguard_admin_username \}\}\n/)
+  failures << "AdGuardHome.yaml.j2 must render the STORED bcrypt hash" unless
+    template.include?("password: {{ vault_adguard_admin_password_hash }}")
+  failures << "AdGuardHome.yaml.j2 must not carry the clear administrator password: AdGuard " \
+              "stores a hash, and the clear value exists only so something can log in" if
+    template.include?("vault_adguard_admin_password }}")
+
+  failures << "AdGuardHome.yaml.j2 must declare protection and filtering on, or the resolver " \
+              "answers every question and blocks nothing" unless
+    template.include?("protection_enabled: true") && template.include?("filtering_enabled: true")
+  failures << "AdGuardHome.yaml.j2 must leave AdGuard's DHCP server off: the router owns DHCP, " \
+              "and a NAS serving leases means a NAS outage stops devices joining the network " \
+              "at all rather than merely leaving them unfiltered" unless
+    template.match?(/^dhcp:\n  enabled: false\n/)
+  failures << "AdGuardHome.yaml.j2 must take its listening port from the role, so the value " \
+              "that keeps the container unprivileged is declared in one place" unless
+    template.include?("port: {{ adguard_dns_container_port }}")
+  failures << "AdGuardHome.yaml.j2 must render the declared upstreams and bootstrap resolvers " \
+              "rather than naming any of them here" unless
+    template.include?("{% for adguard_upstream in adguard_upstream_dns %}") &&
+    template.include?("{% for adguard_bootstrap in adguard_bootstrap_dns %}")
+  failures << "AdGuardHome.yaml.j2 must render the declared filter lists" unless
+    template.include?("{% for adguard_filter in adguard_filters %}")
+
+  # THE DOCUMENT IS THE DAEMON'S OWN EXPANDED FORM, and the length is the only
+  # cheap proxy for that. AdGuard rewrites its configuration at start, expanding
+  # every default it was not given: measured against v0.107.79, a 26-line
+  # minimal document came back as 186 lines. A template that has been trimmed
+  # back towards the minimal form is rewritten on first start and then reports a
+  # change on every converge afterwards. The floor is well below the real size
+  # rather than at it, because a schema migration may legitimately move it.
+  failures << "AdGuardHome.yaml.j2 has been trimmed towards a minimal document. AdGuard expands " \
+              "every default it was not given and writes the result back, so a short template " \
+              "breaks idempotence on the first converge after deployment" unless
+    template.lines.length > 150
+
+  # ---------------------------------------------------------------------------
+  # The role.
+  defaults = load_yaml(root, "roles/adguard/defaults/main.yml") || {}
+  failures << "roles/adguard/defaults/main.yml must ship the deployment gate off, so a caller " \
+              "with no inventory does not put a resolver on the household network" unless
+    defaults["adguard_deployment_enabled"] == false
+  failures << "every declared upstream must be DNS-over-TLS, or the queries this platform " \
+              "forwards are readable by whoever carries them" unless
+    Array(defaults["adguard_upstream_dns"]).any? &&
+    Array(defaults["adguard_upstream_dns"]).all? { |upstream| upstream.to_s.start_with?("tls://") }
+  failures << "the bootstrap resolvers must be plain addresses: they are what resolves the " \
+              "DNS-over-TLS hostnames above, so a name here cannot be resolved" unless
+    Array(defaults["adguard_bootstrap_dns"]).any? &&
+    Array(defaults["adguard_bootstrap_dns"]).none? { |address| address.to_s.include?("://") }
+  failures << "at least one filter list must be declared, or protection is on and blocks nothing" if
+    Array(defaults["adguard_filters"]).empty?
+
+  specs = load_yaml(root, "roles/adguard/meta/argument_specs.yml") || {}
+  options = specs.dig("argument_specs", "main", "options") || {}
+  VAULT_CREDENTIALS.each do |key|
+    failures << "roles/adguard must require #{key} in its argument spec" unless
+      options.dig(key, "required") == true && options.dig(key, "type") == "str"
+  end
+  failures << "adguard_deployment_enabled must be a required bool in the role's argument spec, " \
+              "so a run with no gate fails before the first task rather than midway" unless
+    options.dig("adguard_deployment_enabled", "type") == "bool" &&
+    options.dig("adguard_deployment_enabled", "required") == true
+
+  everything = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
+  failures << "roles/adguard declares no tasks" if everything.empty?
+
+  # CLAIM 1. The hash is stored, never computed.
+  #
+  # Read from parsed task values and from the template with its Jinja comments
+  # removed, not from the two files' source text. That distinction is not
+  # theoretical: roles/adguard/tasks/deploy.yml explains this very rule in a
+  # comment that spells `password_hash('bcrypt')` out, so a source-text scan
+  # fails against the correct role -- which is exactly what it did the first time
+  # this check ran.
+  hashing_expressions = everything.flat_map { |task| task_strings(task) }
+  template_body = template.gsub(/\{#.*?#\}/m, "")
+  failures << "roles/adguard must not hash the administrator password at converge time: bcrypt " \
+              "salts randomly, so the rendered configuration would differ on every run and " \
+              "idempotence would break outright" if
+    hashing_expressions.any? { |value| value.include?("password_hash(") } ||
+    template_body.include?("password_hash(")
+
+  # CLAIM 3. No host DNS, no DHCP. Read from task structure rather than from the
+  # source text, because the role's comments discuss both at length.
+  writing_modules = %w[
+    ansible.builtin.template ansible.builtin.copy ansible.builtin.lineinfile
+    ansible.builtin.blockinfile ansible.builtin.file
+  ].freeze
+  writes = everything.flat_map do |task|
+    writing_modules.filter_map do |module_name|
+      destination = task.dig(module_name, "dest") || task.dig(module_name, "path")
+      destination&.to_s
+    end
+  end
+  failures << "roles/adguard must not write outside the paths it declares; it must never touch " \
+              "the host resolver. Pointing the NAS at AdGuard makes an AdGuard outage stop the " \
+              "deployment poller resolving GitHub, which is the #327 shape: the recovery path " \
+              "depending on the thing that is down" if
+    writes.any? { |destination| destination.include?("resolv.conf") || destination.start_with?("/etc") }
+
+  # CLAIM 4's other half, and the property the whole gate rests on: every
+  # deployment carries the gate, and the teardown carries its negation.
+  gated = ROLE_TASK_FILES.flat_map do |file|
+    tasks_with_gates(load_yaml(root, "roles/adguard/tasks/#{file}.yml"))
+  end
+  deployments = gated.select do |task, _gates|
+    task.dig("community.docker.docker_compose_v2", "state") == "present"
+  end
+  failures << "roles/adguard must deploy at least one Compose project" if deployments.empty?
+  failures << "every AdGuard Compose deployment must carry #{GATE.inspect}, or a host that never " \
+              "asked for a resolver gets one" unless
+    deployments.all? { |_task, gates| gates.include?(GATE) }
+
+  teardown = gated.select do |task, _gates|
+    task.dig("community.docker.docker_compose_v2", "state") == "absent"
+  end
+  failures << "roles/adguard must converge a disabled deployment to `state: absent` rather than " \
+              "skipping it, so the gate is a deployment decision in both directions" unless
+    teardown.length == 1 &&
+    teardown.first.last.include?("not adguard_deployment_enabled | bool")
+
+  # The verification the issue names as its floor, held to its tag and to the
+  # reading it must make.
+  verify = role_tasks(root, "verify")
+  status_reads = verify.select do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.include?("/control/status")
+  end
+  failures << "roles/adguard/tasks/verify.yml must read /control/status, which is where AdGuard " \
+              "reports `running` and `protection_enabled`" if status_reads.empty?
+  failures << "every AdGuard verification task must carry the platform_verify_adguard tag, or " \
+              "verify.yml cannot select it" unless
+    verify.all? { |task| Array(task["tags"]).include?("platform_verify_adguard") }
+  assertions = verify.filter_map { |task| task["ansible.builtin.assert"] }
+  conditions_text = assertions.flat_map { |assertion| Array(assertion["that"]) }.join(" ")
+  %w[running protection_enabled].each do |reading|
+    failures << "the AdGuard verification must assert #{reading}, not merely fetch the status " \
+                "page: an HTTP 200 from a resolver that is not protecting is a passing check " \
+                "on a broken deployment" unless conditions_text.include?(reading)
+  end
+  failures << "the AdGuard verification must prove filtering behaviourally -- a name the " \
+              "declared list blocks and a name it does not -- rather than only reading a status" unless
+    conditions_text.include?("FilteredBlackList") && conditions_text.include?("NotFiltered")
+end
+
+unless failures.empty?
+  # Every violation, one per line, each line naming the contract that authored
+  # it. The prefix is not decoration: tests/adguard_contract_test.rb requires a
+  # row that says "this must be refused" to see it, so a Ruby backtrace or a
+  # shell diagnostic can no longer stand in for a refusal (#352).
+  warn failures.map { |failure| "AdGuard contract failed: #{failure}" }.join("\n")
+  exit 1
+end

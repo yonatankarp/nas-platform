@@ -36,4 +36,5 @@ done
 mac_assert_service_coverage fixtures-persistence 00-services.sh "$mac_persisted" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=it has no contract suite of its own to reassert persistence with'
+ntfy=it has no contract suite of its own to reassert persistence with
+adguard=#548 landed it with adguard_deployment_enabled false and tests/mac/lib.sh does not ask this lane to turn it on, so the converge takes the project to state: absent and there is no stack here to exercise; it is proved by its Docker integration suite'
