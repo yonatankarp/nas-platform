@@ -2532,6 +2532,26 @@ shared_across_sites = site_names.values.combination(2).map { |left, right| left 
                                 .reduce(Set.new, :|).sort
 check_floor(failures, shared_across_sites.length, 15,
             "top-level names shared by at least two of the copy sites")
+# And a second floor, on the relay's own participation, for the same reason the
+# Jinja escape scanner above floors its two subject lists separately. Sixteen of
+# the twenty-one names that count above come from the two scripts/*.py files
+# alone, so a subject that stopped reaching services/dozzle/alert_relay.py -- a
+# moved path, an extractor returning nothing for it -- would leave the count
+# comfortably above fifteen while the half of this check that #515 exists for
+# stopped running. DUPLICATION_SITES.length does not cover it: that proves the
+# path is in the list, not that anything was read out of it. Six today --
+# MARKDOWN_PATTERN, TIMESTAMP_PATTERN, main, markdown_escape, publish and
+# render_notification -- of which only two are byte-identical, which is exactly
+# the mix that makes the relay worth reading.
+relay_site = "services/dozzle/alert_relay.py"
+check(failures, DUPLICATION_SITES.include?(relay_site),
+      "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
+      "helpers are duplicated, and the reduce(:&) stanza above cannot see it")
+relay_shared = (site_names[relay_site] || Set.new).select do |name|
+  DUPLICATION_SITES.any? { |relative| relative != relay_site && site_names.fetch(relative).include?(name) }
+end
+check_floor(failures, relay_shared.length, 5,
+            "top-level names #{relay_site} shares with a scripts/*.py program")
 listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
 unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|
   bodies = DUPLICATION_SITES.flat_map do |relative|
