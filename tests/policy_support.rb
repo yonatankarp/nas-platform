@@ -214,8 +214,20 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     # INVITATIONS_ALLOWED, DOMAIN -- and nothing behind it, and it sets no
     # ADMIN_TOKEN either, because the /admin panel writes a config.json that
     # would outrank every value the role renders. So the empty list here is a
-    # designed property rather than an unfinished slice, and docs/secrets.md
-    # carries the argument in full.
+    # designed property rather than an unfinished slice, and the canonical
+    # secrets guide carries the argument in full.
+    #
+    # THAT GUIDE IS NAMED IN PROSE RATHER THAN BY PATH, deliberately.
+    # tests/ci/classify_changes_test.rb derives which documents a gate check is
+    # coupled to by scanning the check's whole require closure for literal
+    # document paths, and every one of the eight policy scripts requires this
+    # module -- so a path written here couples all of them to that document and
+    # demands it be routed to `static`. tests/ci/classify_changes.rb records the
+    # opposite decision beside its own list: the guide routes to `docs` alone,
+    # because tests/secrets_docs_test.rb is its only real reader. A cross
+    # reference is not a read, and spelling one out here would have moved a
+    # Markdown-only edit from a one-minute job onto the whole policy gate --
+    # measured, not predicted: it turned this check red 64 times.
     #
     # STATED, AND CLOSED IN BOTH DIRECTIONS. A service named below whose
     # expectations DO list keys fails just as loudly as one omitted from the
