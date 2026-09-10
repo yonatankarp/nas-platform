@@ -99,7 +99,9 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud adguard idempotence-check full` — the roster is `tests/ci/suites.conf`, and
+nextcloud adguard idempotence-check idempotence-1 idempotence-2
+idempotence-3 idempotence-4 idempotence-5 full` — the roster
+is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
 converges `ntfy` as well, because each service role reports its own deployment
@@ -813,6 +815,132 @@ part worth keeping.
   `suites != '[]'` term went with the edge, which is the whole cost: a run that
   dispatches no suite now probes too, and that probe is the same 0 seconds unless
   the pins changed — and a pin change routes to the suites anyway.
+
+### The untagged idempotence lane is sharded; the tagged one never needed to be
+
+`idempotence-check` converges the whole site, re-converges it and runs it under
+`--check --diff`, so it costs three full passes and is the critical path of any
+run that dispatches it untagged. Measured on run `34471042365`, which queued for
+one second and so is nearly pure run time: **32.3 minutes**, against a
+next-longest job of 16.5 and a run wall of 32.5. The lane *was* the run.
+
+Its 1939 seconds divide as 189 setup and image pre-pull, 850 phase 1, 548 phase 2
+and 348 phase 3. Read that before proposing a target: **deleting phases 2 and 3
+outright still leaves about 17 minutes**, and a *routed* run of the same lane —
+one service, 1289 task-results against 4280 — measured 13.05 minutes on run
+`34464098157`. Both bound it from below, and 10 minutes is under both. The lane
+is task-count-bound rather than hot-spot-bound: phase 3 does no container work at
+all and still costs 324ms per task-result, which is the same slope phase 1 pays.
+There is nothing to extract.
+
+So the fix is the `static` one — more runners — with the difference that the
+partition is over *site.yml tags* rather than over a check list, and that only
+the untagged form is sharded:
+
+- **A routed run was never the problem.** It already narrows to the changed
+  service and lands at 8–14 minutes. It still dispatches the single
+  `idempotence-check` and is untouched.
+- **An unmapped path falls open to the shards.** That is the case that hurt: on
+  2026-09-10, 8 of 29 `idempotence-check` jobs ran untagged, and every one of
+  them was 32–37 minutes. Both sampled causes were legitimate rather than routing
+  misses — one pull request changed `tests/integration.sh` and
+  `tests/integration_controller.sh`, which are the harness every lane runs, and
+  the other added a service and touched `site.yml`, `services/manifest.yml` and
+  the vault schema. There was no one-line route to add. Four of the eight were
+  pushes to `main`, which classify the merge they landed and inherit the cause.
+- **`--full` keeps the single unsharded pass.** The nightly and
+  `workflow_dispatch` are where nothing is waiting on the answer, and they are
+  now the only place the site is proved idempotent *as a whole*. A role in one
+  shard interfering with a role in another is invisible to every shard. That is
+  the property the decomposition spends, and it is why it is spent where a
+  35-minute job costs nobody anything.
+
+`--full` is therefore no longer literally every lane, and that is the one
+exception to it: the two forms cover the same ground by different routes, so
+running both would converge the site six times to learn what three converges
+already said. `everything(selection, sharded:)` in `tests/ci/classify_changes.rb`
+is where the fork lives, and it is at the two `return` sites rather than threaded
+through as a mode.
+
+**The guard came before the partition, for the reason the static shards record.**
+Sharding manufactures the defect this repository keeps closing: drop a tag and
+nothing converges it, every shard passes, and the gate goes green *faster*.
+`tests/idempotence_shard_partition_test.rb` derives the tag universe from
+`site.yml`'s own roles and post_tasks and fails on any tag no shard converges, in
+both directions, with a stated shard count under it. It is **derived** rather
+than restated on purpose: adding a service already touches 59 files, and a
+sixtieth list would be the one nobody edits. What it deliberately does *not*
+assert is exclusivity — `arr` appears in more than one shard because seerr reads
+it and jellyfin, so a prerequisite converges wherever it is needed. Duplication
+costs time; omission costs coverage, and only one of those is silent. What it
+also does not check is that a rebalance keeps a service *with* its prerequisites;
+that failure is loud at runtime rather than silent, so it was left, and
+`suites.conf`'s own service rows are already the dependency declaration a future
+guard would read.
+
+That guard's own `--self-test` is worth reading before writing another one. Its
+first three plants were bare substring edits — `",immich\n"`, `",komga\n"`,
+`"ntfy,beszel"` — and every one landed on the *service* row of the same name,
+which appears earlier in `suites.conf`, so `sub` mangled a row the checker does
+not read and the self-test reported three defects undetected. A checker that
+passes its own plants has proved nothing until the plants are shown to bite.
+
+**`smoke` binds the fall-open wall, and that caps what this change can buy.** A
+fall-open selection turns `foundation` on, which empties `selected_tags`, which
+sends the smoke leg down the untagged branch of the workflow's `case "$SUITE"` —
+so smoke converges the whole site: 16.5 minutes on `34471042365` and **19.1 on
+`34514486089`**, where it was the longest-running job in the run and every shard
+beat it.
+The wall of a fall-open run is therefore `max(slowest shard, 16.5)`, not the
+shard wall. Smoke is a strict prefix of this lane — same workflow branch, same
+arguments, `exit 0` at the line where phase 2 begins — and its routing is a
+subset, so it proves nothing this lane does not. Reclaiming that leg is the next
+move, and it costs edits to `suites.conf`, `classify_changes.rb`,
+`tests/ci/workflow_test.rb`, `tests/policy_ci_test.rb` and the roster above.
+
+**Measured on run `34514486089`, the first that dispatched them.** The shards
+ran 14.1, 9.9, 9.7, 9.9 and 7.5 minutes, so the projected 14–16 held at the top
+and was pessimistic everywhere else. Each converged real work and then reported
+`changed=0`: phase 1 changed 43, 37, 19, 28 and 30 things against phase-1 task
+counts of 697, 547, 375, 521 and 500. The run wall fell from 32.5 minutes to
+**24.1**.
+
+Two projections in the paragraph this replaces were wrong, and the shape of the
+error is worth more than the numbers. The repeated prerequisites were estimated
+at about 860 task-results per shard from the corrupted per-role table; the five
+shards actually run 2640 phase-1 results against the unsharded lane's 1649, which
+puts the repetition nearer **250** per shard — so the asymptote is around 6
+minutes rather than the 10 claimed, and more shards would still buy something.
+(The two runs are different trees, one before AdGuard and one after, so read that
+as a magnitude and not a figure.) The estimate came from a table this file
+already documents as unreliable, which is precisely the trap: a projection built
+on data known to be corrupt reads exactly like a measurement once it is written
+down.
+
+**Queue is now a visible term.** `idempotence-1` finished last at 18:50:01
+despite running only 14.1 minutes, because it did not start until 18:35:54 — the
+matrix grew by four legs against an account that peaked at exactly 20 concurrent
+jobs, so some of the shard win converts into waiting rather than into wall.
+
+**The shards are numbered rather than named, and the split balances estimated
+cost.** The three heavyweights by the phase-1 role table — paperless at 120.5s,
+immich at 104.8 and jellyfin at 102.8 — have to land in three different shards,
+and no honest category groups them that way: the first split put paperless,
+nextcloud and immich together as "documents" at roughly 229s against 58 for the
+lightest, a 3.9x spread in the one direction that sets the wall. Numbering makes
+a rebalance free, which matters here because a named partition that stops
+matching its names is the same stale claim this file has had to correct twice
+already. The current spread is about 1.3x.
+
+**The split is provisional and its weights are estimates rather than measurements.** The only
+per-role timings available are corrupted: with `display_skipped_hosts = False`
+the default callback prints no banner for a fully skipped task, so every visible
+gap in the log absorbs the skips after it, and a task that reads 26 seconds can
+be a loop measured at 1.5ms an item. Rebalance from the first sharded run's own
+numbers the way #517 rebalanced the static shards, and read the caveats there
+about contended wall times first. `ANSIBLE_DISPLAY_SKIPPED_HOSTS=true` passed
+into the harness's `docker run` is the one-line way to make the log self-timing
+when somebody needs real numbers; it is not set today.
 
 ### A guard that was green while proving 6% of what it claimed
 

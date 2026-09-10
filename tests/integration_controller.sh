@@ -76,6 +76,18 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       [ $INTEGRATION_SUITE = full ] || [ $INTEGRATION_SUITE = $1 ]
     }
 
+    # Which lanes owe the second and third phases. This was `suite_is
+    # idempotence-check` until the untagged lane was decomposed into shards: a
+    # shard converges its own slice of the site and then owes exactly the same
+    # re-converge and check-mode pass against it, so the gate is the family and
+    # not the one name. `full` is here because `suite_is` carried it.
+    idempotence_phases() {
+      case $INTEGRATION_SUITE in
+        full|idempotence-*) return 0 ;;
+        *) return 1 ;;
+      esac
+    }
+
     playbook=$1
     shift
 
@@ -1307,7 +1319,7 @@ EOF
       run_audiobookshelf_contract authentication-session-cleanup
     fi
 
-    if suite_is idempotence-check; then
+    if idempotence_phases; then
     printf '\n=== phase 2: asserting idempotence ===\n'
     # Not piped into tee: the pipeline would report tee's status, and this shell
     # has no pipefail. A play that died would reach the recap check below with
