@@ -36,9 +36,31 @@ jellyfin_encoding_profiles:
     HardwareDecodingCodecs: [h264, hevc, mpeg2video, vc1, vp8, vp9]
     EnableDecodingColorDepth10Hevc: true
     EnableDecodingColorDepth10Vp9: true
-    EnableHardwareEncoding: true
-    AllowHevcEncoding: true
+    # Hardware DECODE only. This host's iGPU exposes encode solely as
+    # VAEntrypointEncSliceLP -- VDENC, whose bitrate control lives in HuC
+    # firmware -- and with that firmware absent the driver offers exactly one
+    # rate-control mode: CQP. Jellyfin only ever emits bitrate-based rate
+    # control (-b:v N -maxrate N+1 -bufsize ...) and exposes no knob to change
+    # it, so every hardware encoder fails to *open*: hevc_qsv, h264_qsv and
+    # h264_vaapi alike, each with "Selected ratecontrol mode is unsupported"
+    # (VAAPI states it outright: "supported modes: CQP"). Measured 2026-09-10.
+    #
+    # The failure is invisible from the server log and looks like a hung client:
+    # ffmpeg dies before frame 1, the browser retries every 5-6 seconds, and
+    # each attempt leaves an identical FFmpeg.Transcode-* log. Decode is
+    # unaffected and stays on, which is why HardwareAccelerationType is still
+    # qsv above.
+    EnableHardwareEncoding: false
+    # Software encode now, so this chooses libx265 over libx264 rather than
+    # choosing between hardware encoders. x265 on three pinned cores of an
+    # N5105 is far slower than x264 at the same quality, and no client here
+    # requires HEVC.
+    AllowHevcEncoding: false
     AllowAv1Encoding: false
+    # Inert while EnableHardwareEncoding is false: both only qualify a hardware
+    # encoder that is never opened. Kept true so the pinned document still
+    # records what the hardware would want, since LP is the only entrypoint the
+    # iGPU has and would be required again the moment encode becomes usable.
     EnableIntelLowPowerH264HwEncoder: true
     EnableIntelLowPowerHevcHwEncoder: true
     EnableVppTonemapping: true

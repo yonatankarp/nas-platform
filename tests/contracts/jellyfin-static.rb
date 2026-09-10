@@ -271,8 +271,14 @@ expected_nas_encoding = {
   "HardwareDecodingCodecs" => %w[h264 hevc mpeg2video vc1 vp8 vp9],
   "EnableDecodingColorDepth10Hevc" => true,
   "EnableDecodingColorDepth10Vp9" => true,
-  "EnableHardwareEncoding" => true,
-  "AllowHevcEncoding" => true,
+  # Hardware encode is off on this host and that is a hardware verdict, not a
+  # preference: the iGPU exposes encode only as VAEntrypointEncSliceLP, and with
+  # no HuC firmware the driver offers CQP as its only rate-control mode. Jellyfin
+  # emits bitrate-based rate control exclusively, so every hardware encoder fails
+  # to open. AllowHevcEncoding follows it off because it now selects libx265 over
+  # libx264 rather than selecting a hardware encoder. Measured 2026-09-10.
+  "EnableHardwareEncoding" => false,
+  "AllowHevcEncoding" => false,
   "AllowAv1Encoding" => false,
   "EnableIntelLowPowerH264HwEncoder" => true,
   "EnableIntelLowPowerHevcHwEncoder" => true,
