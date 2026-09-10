@@ -55,11 +55,17 @@ policy_shard=${1:-}
 # a line from a partition removes a check from the gate and makes the gate
 # *faster*, with nothing else in the repository to notice.
 #
-# The partition was balanced against the post-merge `main` run of bab1dc0
-# (2026-09-07): 2342s of check time across 155 checks, whose ten slowest ran from
-# 247s down to 75s. Those ten are placed by hand so that no two of the top three
-# share a shard; every other line is round robin, which balances count, because
-# count is all a partition without a cost table can balance.
+# The partition balances COST, which is why the shard counts below are 51, 52
+# and 61 rather than a third each. #469 drew it round robin -- count is all a
+# partition without a cost table can balance -- and by #517 the three shards
+# were 53/54/57 checks carrying a 2.2x spread of work, with the gate's two
+# slowest checks in the same shard. tests/gate_manifest_coverage_test.rb carries
+# the four-run measurement that redrew it and the reasoning for each line that
+# moved, beside the lists that reasoning justifies; it is not repeated here,
+# because a second copy of a table is a claim nothing bumps. The one rule to
+# know before moving a line is that no two of the gate's slowest checks may
+# share a shard: a shard cannot finish faster than its own slowest check, so
+# pairing them wastes a runner.
 #
 # SPREAD THE WAITS, and this rule outranks the one above it. A check that spends
 # its time waiting -- on a timeout, a poll, a port -- still occupies one of the
@@ -73,37 +79,30 @@ policy_shard=${1:-}
 # 111s to 185s -- while the two shards that shed work got 15% and 24% cheaper in
 # the same run. The move was reverted.
 #
-# The rule stands; its only measured subjects are gone. #485 made both beszel
-# polling budgets environment inputs, so those two checks are work-bound now and
-# no line in this manifest is currently KNOWN to be a wait -- which is not the
-# same as there being none, because only those two were ever measured that way.
-# When the next one arrives, recognise it rather than rediscovering it: run the
-# check alone and read `time`'s user+sys against its elapsed. Sleep consumes no
-# CPU and contention does not change that, so a low ratio is a wait however
-# loaded the machine was, and it costs one run instead of a width sweep. The two
-# beszel checks were 14.5s of CPU in 99.6s elapsed and 19.1s in 101.5s before the
-# fix, and 13.9s in 19.6s and 18.5s in 31.8s after it -- the same work, and the
-# 150s of sleep those four numbers bracket is the local half of the 171s of CI
-# wait the retired sentence above recorded.
+# #485 made both beszel polling budgets environment inputs, so those two checks
+# are work-bound now and are no longer the rule's subjects. Its one subject today
+# is `sandbox_cleanup_acquisition_ownership_test.sh`, which starts a container on
+# `sleep 300` and measured 400.3s elapsed against 116.6s of CPU (#517). It sits
+# alone in shard 3; no other line here is known to be a wait, which is not the
+# same as there being none, because only a handful have ever been measured that
+# way. When the next one arrives, recognise it rather than rediscovering it: run
+# the check alone and read `time`'s user+sys against its elapsed. Sleep consumes
+# no CPU, so a low ratio is a wait -- and since contention only pushes the ratio
+# down, a HIGH ratio proves work whatever the load, while a low one on a loaded
+# machine is a lower bound rather than a verdict. It costs one run instead of a
+# width sweep. The two beszel checks were 14.5s of CPU in 99.6s elapsed and 19.1s
+# in 101.5s before the fix, and 13.9s in 19.6s and 18.5s in 31.8s after it -- the
+# same work, and the 150s of sleep those four numbers bracket is the local half
+# of the 171s of CI wait #485 removed.
 #
 # Rebalancing as checks change is a manual act, and the slowest-checks report
 # below is what informs it -- but read #484 before trusting an arithmetic
 # projection from it. A check's recorded seconds are its wall time at that
-# shard's load, so they are not work you can carry to another shard: the
-# rebalance above predicted a largest shard of 1170s and measured 1453s. #484
-# carries the isolated per-check table (elapsed and CPU measured separately, one
-# check at a time) that says which checks are work and which are wait, and the
-# arithmetic showing the gate cannot beat its own longest check -- 241-305s for
-# `config_managed_users_test.rb --self-test` against a worst observed shard wall
-# of 394s, so a perfect partition is worth about 90s and the two levers that
-# actually lower the floor are elsewhere.
-#
-# That baseline predates #485 and #488, which took both of those levers. The two
-# beszel lines were 100s and 109s in it and are work-bound now, and the
-# `config_managed_users_test.rb --self-test` figure the floor argument rests on
-# was measured before its conversion, so their places among the ten slowest are
-# stale. Re-deriving the partition needs a fresh gate run rather than an
-# adjustment of these numbers.
+# shard's load, so they are not work you can carry to another shard: #484's
+# rebalance predicted a largest shard of 1170s and measured 1453s. Nor does one
+# run confirm a rebalance: shard-level runner variance is 30% and the figure a
+# rebalance is chasing is around 110s, so read two or three runs and ask whether
+# the WORST leg fell.
 #
 # One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
 # that note the manifest can carry -- a comment between the heredoc markers would
@@ -128,7 +127,6 @@ ruby tests/host_prep_integration_writer_test.rb
 ruby tests/media_acquisition_phase1_test.rb
 ruby tests/media_acquisition_adoption_test.rb
 tests/mac/media-acquisition-foundation-cleanup-test.sh
-ruby tests/paperless_mail_reconciliation_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
 ruby tests/beszel_telemetry_timeout_test.rb
 python3 -m unittest -v tests/dozzle_alert_relay_test.py
@@ -143,7 +141,6 @@ ruby tests/managed_users_vault_test.rb
 ruby tests/config_managed_users_test.rb --self-test
 ruby tests/komga_library_reconciliation_test.rb --self-test
 ruby tests/audiobookshelf_initial_scan_test.rb
-ruby tests/immich_user_onboarding_test.rb
 ruby tests/database_managed_users_test.rb
 ruby tests/deployment_summary_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
@@ -200,7 +197,6 @@ tests/mac/snapshot-paperless-recovery-test.sh
 python3 tests/deployment_lock_probe_test.py
 python3 tests/deployment_controller_input_test.py
 ruby tests/beszel_password_preservation_test.rb --self-test
-ruby tests/media_managed_users_test.rb
 ruby tests/komga_contract_test.rb
 ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/audiobookshelf_contract_test.rb
@@ -224,7 +220,6 @@ ruby tests/seerr_contract_test.rb
 ruby tests/trailarr_contract_test.rb --self-test
 ruby tests/kapowarr_contract_test.rb
 tests/integration_suite_test.sh
-tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/mac/run-phase-status-test.sh
 tests/mac/audiobookshelf-drift-hook-test.sh
 tests/contracts/audiobookshelf-audio-test.sh
@@ -293,6 +288,10 @@ tests/mac/snapshot-paperless.sh --self-test
 ruby tests/mac/pin-protected-input-test.rb --self-test
 ruby tests/case_pool_locals_test.rb --self-test
 ruby tests/case_pool_behavior_test.rb --self-test
+ruby tests/paperless_mail_reconciliation_test.rb
+ruby tests/immich_user_onboarding_test.rb
+ruby tests/media_managed_users_test.rb
+tests/sandbox_cleanup_acquisition_ownership_test.sh
 POLICY_CHECKS_3
 }
 

@@ -542,7 +542,7 @@ The occurrences, and what actually fixed each:
   users 70s → 17s. On that Mac at `POLICY_JOBS=4` the gate went from **922s wall,
   3134s of check time** to **492s wall, 1922s of check time** — both over the same
   148 checks, measured an hour apart before `deployment_lock_probe_test.py` and
-  `deployment_lock_refusal_test.sh` landed, so a run today prints 150 and is not
+  `deployment_lock_refusal_test.sh` landed, so a run today prints 164 and is not
   comparable check-for-check — and no converted check is in its slowest ten any
   more.
 - **2026-09-07** — the gate's largest wait and its hard floor, taken together
@@ -657,12 +657,26 @@ tune: 2342s of check time on four workers is a 585s floor, and it finished in
 levers were fewer checks or more cores.
 
 Fixed with more cores: `static` is a matrix of three shards, each a runner with
-its own four workers running one third of the manifest. Three is where it stops
-paying — the single slowest check was 247s when the partition was drawn and is
-305s now, so no shard finishes faster than that however finely the rest is
-divided, and four shards buy nothing. That floor is also the ceiling on
-rebalancing: against a worst observed shard wall of 394s, a perfect three-way
-split is worth about 90s, which #484 measured and did not collect.
+its own four workers running part of the manifest. Three is where it stops
+paying, and the reason is a floor rather than a name: no shard finishes faster
+than its own slowest check however finely the rest is divided, and the slowest
+check runs about 290–325s on a runner, so a fourth shard buys nothing. **Do not
+re-attach that claim to a check's name.** It was written naming
+`config_managed_users_test.rb --self-test` at 247s, then 305s, and #488 converted
+that check to 78–113s four hundred lines earlier in this file while the sentence
+went on quoting it (#517). Today's floor is `immich_release_helper_test.rb` and
+it will move again; the number is what the argument rests on, and the gate's own
+report is where to read it.
+
+That floor is also the ceiling on rebalancing, which is a different quantity from
+the floor and moves on its own. #484 measured a perfect three-way split as worth
+about 90s against a worst observed shard wall of 394s and declined to collect it.
+By #517 the worst leg was a median 436s across four `main` runs, the shards were
+53/54/57 checks carrying a 2.2x spread of work, and the gate's two slowest checks
+were in the same shard — so the same split was worth about 110s, several times
+the 59s of run-to-run range, and it was collected. The lesson is that a partition
+balancing *count* drifts as checks are added and made faster, because nothing in
+it balances *cost*; expect to re-measure rather than to trust the last verdict.
 
 **The guard is the point, and it was written before the partition.** Sharding is
 an unusually efficient way to manufacture the defect this repository keeps
@@ -681,16 +695,23 @@ argument still runs everything, which is what to run locally, and adding a check
 now means one shard of the manifest and the matching shard of the declaration.
 
 Rebalancing the partition as checks change is a manual act, informed by the
-gate's own slowest-checks report. The current split was balanced against the
-post-merge `main` run of `bab1dc0`, and those figures are recorded in
-`tests/gate_manifest_coverage_test.rb` beside the lists they justify. Two things
-constrain a future rebalance, both from #484 and both stated beside the lists: a
-check's recorded seconds are its wall time at that shard's load rather than work
-that can be carried elsewhere, so an arithmetic projection from that report
-overshoots; and **waits must be spread**, because a waiting check holds a worker
-slot without consuming the CPU the other three compete for, so two long waits in
-one shard halve its effective pool. #484 carries the isolated per-check table
-that separates the two, measured 2026-09-07.
+gate's own slowest-checks report. The current split was drawn by #517 against
+four post-merge `main` runs, and those figures are recorded in
+`tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
+balances cost rather than count, which is why the shards hold 51, 52 and 61
+checks. Three things constrain a future rebalance, all three stated beside the
+lists: a check's recorded seconds are its wall time at that shard's load rather
+than work that can be carried elsewhere, so an arithmetic projection from that
+report overshoots; each shard's leg is a *different runner*, so the three columns
+of one run are three machines and only a shard's share of its own run's total
+compares across them; and **waits must be spread**, because a waiting check holds
+a worker slot without consuming the CPU the other three compete for, so two long
+waits in one shard halve its effective pool. #484 carries the isolated per-check
+table that separates work from wait, measured 2026-09-07; #517 adds that
+contention only pushes the CPU-to-elapsed ratio down, so a high ratio proves work
+whatever the load while a low one on a busy machine is a lower bound and not a
+verdict. One run also cannot confirm a rebalance: shard-level runner variance is
+around 30%, so read two or three and ask whether the *worst* leg fell.
 
 The job wall exceeds the gate wall the report prints by 122 to 154 seconds
 (mean 139) — checkout, tooling and collection install — so budget against the
