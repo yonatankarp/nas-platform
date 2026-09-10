@@ -2196,19 +2196,22 @@ unless controller_source.nil?
   # Extracting the program out of the sh -c argument made shellcheck able to
   # read it and it immediately found defects the escaping had hidden: 53 SC2086
   # and 4 SC2068 unquoted expansions, and one SC2070 -- `[ -n $VAR ]`, which
-  # tests true on an empty value. They are pre-existing and belong to the
-  # follow-up that replaces this file's text assertions with execution, so the
-  # gate excludes exactly those three codes. Pinned here because an exclusion
-  # list that may quietly grow is a check that quietly stops running.
+  # tests true on an empty value. That SC2070 was not cosmetic: it was the whole
+  # of the bug that ran the nightly's idempotence and check-mode phases over 88
+  # of 1495 tasks, so it is fixed and its exclusion is gone. The other two codes
+  # remain pre-existing and stay excluded. Pinned here because an exclusion list
+  # that may quietly grow is a check that quietly stops running -- and dropping a
+  # code from it, as this change does, must cost an edit here rather than pass
+  # unremarked.
   manifest = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
   controller_check = manifest.lines.map(&:chomp).find do |line|
     line.end_with?(" tests/integration_controller.sh")
   end
   check(failures, controller_check ==
-        "shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 " \
+        "shellcheck --shell=sh -x --exclude=SC2068,SC2086 " \
         "tests/integration_controller.sh",
         "tests/validate-policy.sh: the integration controller must be " \
-        "shellchecked excluding exactly SC2068,SC2070,SC2086, not " \
+        "shellchecked excluding exactly SC2068,SC2086, not " \
         "#{controller_check.inspect}")
 end
 

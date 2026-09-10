@@ -183,7 +183,7 @@ failures = []
 SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/policy_test.rb
   ruby tests/policy_beszel_test.rb
-  shellcheck --shell=sh -x --exclude=SC2068,SC2070,SC2086 tests/integration_controller.sh
+  shellcheck --shell=sh -x --exclude=SC2068,SC2086 tests/integration_controller.sh
   ruby tests/policy_vault_test.rb
   "$ansible_python" tests/generate_secrets_jinja_regex_test.py
   ruby tests/host_prep_integration_writer_test.rb

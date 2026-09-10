@@ -746,6 +746,103 @@ The job wall exceeds the gate wall the report prints by 122 to 154 seconds
 (mean 139) — checkout, tooling and collection install — so budget against the
 gate's own figure rather than the job's.
 
+### The suites carry no such budget, and their clock is mostly queue
+
+Everything above is about `static`. **The `suites` matrix has never had a stated
+budget** and carries `timeout-minutes: 90`; reading the 10–15 minutes at it is a
+category error that has already been made once. What it does have is a shape
+worth knowing before optimising anything, measured on the nightly sweep
+`34454075921` of 2026-09-10 — 29 jobs, 246 runner-minutes, 45.2 minutes of run
+wall:
+
+- **A lane's elapsed time is mostly waiting to start.** Every suite leg queued
+  12–18 minutes before it ran; `smoke` was 16.5 queued against 19.4 running and
+  `idempotence-check` 12.4 against 20.6. Even `changes`, first in the run with
+  nothing ahead of it, queued 4.7 minutes, which only happens when the account is
+  already saturated — that morning the nightly was *created* at 08:14:15 and the
+  merge run for #542 at 08:14:00. Peak concurrency across the overlapping runs
+  was exactly 20. So quote a lane as queue and run separately, or the number
+  names GitHub's scheduler rather than anything in this repository.
+- **The nightly is the only unconditional sweep.** A push to `main` classifies
+  the merge it landed, so it is routed like any pull request: the #544 merge ran
+  four suite legs. `--full` comes from `schedule` and `workflow_dispatch` only.
+  Deleting the nightly would leave nothing running the whole matrix against a
+  tree no routing decision chose.
+- **A `cron` is a lower bound on when the sweep lands, not a time.** GitHub has
+  *created* this workflow's scheduled runs 4h21m to 5h22m after the cron on each
+  of the last ten days, and 12h06m once (2026-08-28). At `23 3 * * *` that was
+  07:44–08:45 UTC every day, squarely in the merge window; the cron is now
+  `47 17 * * *`, which lands it at 22:08–23:09 under those delays, at 05:47 under
+  the worst one observed, and at 17:47 if the delay ever disappears. Choosing an
+  hour whose whole plausible fire window misses 07:00–10:00 UTC is the property;
+  the hour itself is not. Check it rather than trusting it:
+  `gh run list --workflow=ci.yml --event=schedule --json createdAt`.
+
+Two costs were found inside a lane and both are fixed; the shape of each is the
+part worth keeping.
+
+- **The image pre-pull was serial.** `prepull_images` in `tests/integration.sh`
+  ran one `docker pull` at a time: 272 seconds of `smoke`'s 1151 and 270 of
+  `idempotence-check`'s 1222 — 33 images each, about 22% of the two longest
+  lanes — and 18.5 runner-minutes across the run. It now fetches
+  `image_pull_width` at once, defaulting to four and bounded like every other
+  budget beside it, through `INTEGRATION_IMAGE_PULL_WIDTH`. Concurrency costs one
+  property: under a rate limit the serial loop stopped at the refusing image, and
+  a batch can now overshoot it by `image_pull_width - 1` pulls.
+
+  **Four wide bought 26%, not 75%, and a wider one would buy less.** Measured on
+  run `34467333883`: the same fourteen lanes went from 1112 seconds of pre-pull to
+  828, and smoke's two longest-lane siblings from 272 and 270 to 200 and 192. The
+  concurrency is not the part that fell short — smoke's completion timestamps show
+  eight clean bursts of four — the arithmetic is. A runner pulls at a fixed network
+  throughput, so overlapping pulls recovers per-request latency and leaves the
+  bytes where they were. This is the shape to expect from any I/O-bound fan-out
+  here, and it is why the width is capped at eight rather than left open.
+  `tests/integration_suite_test.sh` asserts the width in both directions through a
+  rendezvous in its `docker` stub rather than a clock, because a peak of four
+  proves nothing unless a width of one is still observable as one.
+- **`toolchain` no longer waits for `changes`.** Every lane's start is that job's
+  finish, and it was spending 2.6 minutes of eighteen lanes' time to order a
+  registry probe behind a classification: `changes` finished at 4.8 minutes, the
+  toolchain job started at 7.4, and its publish step took **0 seconds** because
+  the tag is a digest over the harness's own pins and was already published. The
+  `suites != '[]'` term went with the edge, which is the whole cost: a run that
+  dispatches no suite now probes too, and that probe is the same 0 seconds unless
+  the pins changed — and a pin change routes to the suites anyway.
+
+### A guard that was green while proving 6% of what it claimed
+
+`tests/integration_controller.sh` read `[ -n $INTEGRATION_TAGS ]` unquoted. On an
+empty value that is `[ -n ]` — POSIX's one-argument `test`, true because the
+string `-n` is non-empty (SC2070) — so the *untagged* path took the *tagged*
+branch and ran `ansible-playbook --tags ""`, which selects only the `always`
+pre_tasks. On nightly run `34454075921` phase 1 reported `ok=1495 changed=115`
+and phases 2 and 3 reported `ok=88` each, then printed `IDEMPOTENT: second run
+changed nothing` and `CHECK MODE OK`. The harness's other two promises were being
+proved over 88 of 1495 tasks on every nightly and every `--full` push to `main`,
+while the same lane under narrow routing was correct.
+
+Three things about it generalise:
+
+- **The bug was known and its consequence was not.** `tests/integration_controller_execution_test.sh`
+  named the SC2070, pinned the behaviour deliberately rather than the correct one,
+  and said it was waiting for the fix; the shellcheck exclusion listed the code.
+  Nothing anywhere connected that to what the nightly was actually asserting. A
+  defect with an owner and a comment is not a defect with a measurement.
+- **Correct is slower.** A phase 2 that re-converges all 1495 tasks costs
+  550–720 seconds and phase 3 another 420–580, so `idempotence-check` on a full
+  run goes from ~20 minutes to roughly 35–45 — measured at 33.4 on run
+  `34467333883`, whose phases now report `ok=1556` and `ok=1075` against the 88
+  each of them reported before. The `suites` budget went from 60 to
+  90 for it, because a lane killed at its ceiling would read as the fix
+  regressing rather than as the guard working, and because the pre-pull's own
+  retry ladder can add another five minutes on a rate-limited image. Any future
+  reading of "the suites are slow" has to start after that, not before it.
+- **`perform_initial_converge` was accidentally right, which is not the same as
+  right.** Its `[ -z $INTEGRATION_TAGS ]` degenerated identically and happened to
+  land on the branch that was already correct, so no plant can prove its quoting;
+  the case comment says so rather than implying coverage a plant does not give.
+
 ## Security boundary
 
 Safe to commit: Compose definitions, pinned digests, roles, the **encrypted**

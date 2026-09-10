@@ -410,14 +410,24 @@ end
 # with `\$` and `\"` while the controller was an `sh -c` argument; in a file of
 # its own the escapes are gone, and where a bare `\"` used to toggle the
 # launching shell's quoting rather than emit a character, the word is plain
-# unquoted -- `[ -n $INTEGRATION_TAGS ]`, `run_selected_play $@`. These patterns
-# are built from the controller's own bytes, not from de-escaping the old ones.
+# unquoted -- `run_selected_play $@`. These patterns are built from the
+# controller's own bytes, not from de-escaping the old ones.
+#
+# The two conditions are quoted now, and reading these patterns as the record of
+# what the controller *should* say is what made this a fourth place that pinned a
+# defect. `[ -n $INTEGRATION_TAGS ]` was true on an empty value -- `[ -n ]`, a
+# one-argument test on a non-empty string -- so the untagged lanes ran
+# `--tags ""` and proved idempotence over the `always` pre_tasks alone. Three
+# other files pinned that spelling deliberately and said so; this one pinned it
+# silently, as a byte sequence it had no opinion about, and was the only one the
+# fix did not go looking for. A pattern over another file's source is a claim
+# about that file whether or not it means to be one.
 def exact_baseline_role_runs(controller)
   selector = controller.scan(
-    /^\s*run_selected_play\(\) \{\n\s*if \[ -n \$INTEGRATION_TAGS \]; then\n\s*run_play --tags "\$INTEGRATION_TAGS" "\$@"\n\s*elif \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\$@"\n\s*fi\n\s*\}$/
+    /^\s*run_selected_play\(\) \{\n\s*if \[ -n "\$INTEGRATION_TAGS" \]; then\n\s*run_play --tags "\$INTEGRATION_TAGS" "\$@"\n\s*elif \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\$@"\n\s*fi\n\s*\}$/
   ).length
   initial = controller.scan(
-    /^\s*if \[ -z \$INTEGRATION_TAGS \] && \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play \$@\n\s*fi$/
+    /^\s*if \[ -z "\$INTEGRATION_TAGS" \] && \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play \$@\n\s*fi$/
   ).length
   idempotence = controller.scan(/^\s*run_selected_play \$@ >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\$\?$/).length
   check = controller.scan(/^\s*if run_selected_play \$@ --check --diff; then$/).length
