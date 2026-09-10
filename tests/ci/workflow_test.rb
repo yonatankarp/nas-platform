@@ -222,7 +222,12 @@ if triggers.is_a?(Hash)
   check(failures, !contains_path_filter?(triggers),
         "triggers must not filter events by path: classification belongs to the changes job")
   check(failures, triggers.dig("push", "branches") == ["main"], "push must target only main")
-  check(failures, triggers.dig("schedule", 0, "cron") == "23 3 * * *", "nightly schedule is incorrect")
+  # Pinned rather than range-checked: the hour is a measurement, not a preference.
+  # GitHub creates this workflow's scheduled runs 4h21m to 5h22m after the cron
+  # (12h06m once), so 03:23 landed the sweep at 07:44-08:45 UTC -- inside the
+  # merge window it then contended with. 17:47 lands it at 22:08-23:09 under those
+  # delays, at 05:47 under the worst observed one, and at 17:47 under none.
+  check(failures, triggers.dig("schedule", 0, "cron") == "47 17 * * *", "nightly schedule is incorrect")
   check(failures, triggers.key?("workflow_dispatch"), "workflow_dispatch trigger is missing")
 end
 

@@ -740,9 +740,15 @@ wall:
   four suite legs. `--full` comes from `schedule` and `workflow_dispatch` only.
   Deleting the nightly would leave nothing running the whole matrix against a
   tree no routing decision chose.
-- **`cron` says 03:23 UTC and GitHub has fired it at 08:11–08:27 for seven
-  consecutive days.** That is a ~4h50m delay, not jitter, and it lands the sweep
-  in the morning merge window. The cron value is not its cause.
+- **A `cron` is a lower bound on when the sweep lands, not a time.** GitHub has
+  *created* this workflow's scheduled runs 4h21m to 5h22m after the cron on each
+  of the last ten days, and 12h06m once (2026-08-28). At `23 3 * * *` that was
+  07:44–08:45 UTC every day, squarely in the merge window; the cron is now
+  `47 17 * * *`, which lands it at 22:08–23:09 under those delays, at 05:47 under
+  the worst one observed, and at 17:47 if the delay ever disappears. Choosing an
+  hour whose whole plausible fire window misses 07:00–10:00 UTC is the property;
+  the hour itself is not. Check it rather than trusting it:
+  `gh run list --workflow=ci.yml --event=schedule --json createdAt`.
 
 Two costs were found inside a lane and both are fixed; the shape of each is the
 part worth keeping.
