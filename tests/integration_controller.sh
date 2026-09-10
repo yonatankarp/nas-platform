@@ -280,16 +280,23 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
     esac
 
-    # The same arrangement for AdGuard Home, gated off by #548 exactly as
-    # Nextcloud was by #500, and every word of the paragraph above carries
-    # over -- including the last one: the day
-    # inventory/group_vars/all/main.yml turns this switch on for real, this
-    # line silently keeps AdGuard out of smoke, idempotence-check and every
-    # other lane, so it has to be flipped or deleted in the same change.
-    integration_adguard_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      adguard|full) integration_adguard_deployment_enabled=true ;;
-    esac
+    # AdGuard Home was the same arrangement until the platform switch flipped,
+    # and this is the last sentence of the paragraph above being honoured rather
+    # than inherited. inventory/group_vars/all/main.yml now sets
+    # adguard_deployment_enabled true, so a per-suite `case` here would keep the
+    # service out of exactly the lanes that converge the whole of site.yml --
+    # smoke and idempotence-check when CI hands them no tags -- and every one of
+    # those would report a clean pass over a platform one stack smaller than the
+    # NAS. The variable stays, because #295's rule is that a lane requests the
+    # state it claims to converge and integration_controller_lib.sh refuses to
+    # run without it; what goes is the branch that made the request disagree
+    # with the deployment.
+    #
+    # The cost is bounded and was checked rather than assumed: a tagged lane
+    # that does not select `adguard` never enters the role whatever this says,
+    # so the lanes this newly reaches are the two untagged ones and `full`,
+    # which already asked for it.
+    integration_adguard_deployment_enabled=true
 
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.

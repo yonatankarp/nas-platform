@@ -161,8 +161,22 @@ mac_validate_integration_callback() {
 # Seafile carried the same request until #501 removed the service. The reasoning
 # above is its inheritance, and docs/dossier-seafile.md is where the rest of it
 # lives.
+#
+# adguard_deployment_enabled is the third, and it lands here for both of the
+# reasons the first two do: tests/policy_platform_test.rb would refuse it in
+# inventory/group_vars/mac_hosts/main.yml, which admits only machine facts and
+# PLATFORM_* port lookups, and it is a property of what this lane converges
+# rather than of the laptop. It is written here even though the platform default
+# is already true, exactly as the Nextcloud line above is, and for the reason
+# that line gives: #295 says a lane must request the state it claims to
+# converge, so a lane that inherited it would prove nothing the day somebody
+# turns the platform switch back off. Neither port it publishes is the
+# production one -- services/adguard/compose.mac.yml republishes both from the
+# roster ports above, because a laptop already resolves on 53 and has 8083 in
+# use by whichever copy of the platform ran last.
 mac_ansible_playbook() {
-  set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true
+  set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
+    -e adguard_deployment_enabled=true
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
@@ -220,7 +234,7 @@ mac_target_container_names() {
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
         "$mac_project-seerr" "$mac_project-nextcloud" \
         "$mac_project-nextcloud-cron" "$mac_project-nextcloud-db" \
-        "$mac_project-nextcloud-cache"
+        "$mac_project-nextcloud-cache" "$mac_project-adguard"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -241,9 +255,19 @@ mac_target_container_names() {
 # because the positional handoff is internal to read_integration_ports and its
 # single consumer, and the on-disk integration ports file is keyed by name, so
 # no caller outside that function can observe an order at all.
+# An entry is a PORT NAME rather than a service, and five of them always were:
+# radarr, sonarr, prowlarr and bazarr are containers inside the `arr` manifest
+# service and sabnzbd is one inside `downloaders`. `adguard_dns` is the first
+# entry that is a second port of a service already on the roster, and it is
+# spelled with the underscore on purpose -- the derivations below turn it into
+# `adguard_dns_port`, which is the variable roles/adguard itself reads, and
+# PLATFORM_ADGUARD_DNS_PORT, which is what tests/mac/run-contract.sh hands the
+# contract. Any other spelling would need a translation somewhere, and a
+# translation is the second authority on where the service listens that
+# tests/contracts/adguard-static.rb exists to refuse.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr nextcloud'
+trailarr seerr nextcloud adguard adguard_dns'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

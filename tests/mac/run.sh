@@ -343,12 +343,16 @@ else
 fi
 
 # report.rb names one --<service>-port option per roster service, so the flag
-# list is the roster spelled with hyphens. The caller's own arguments are
-# appended to, never replaced: OptionParser is order-insensitive across distinct
-# options, so they may sit before the port flags.
+# list is the roster spelled with hyphens -- literally so, because a roster entry
+# is a port name and `adguard_dns` carries an underscore that a long option must
+# not. The shell variable keeps the underscore (`adguard_dns_port`, which is what
+# roles/adguard reads); only the flag is respelled. The caller's own arguments
+# are appended to, never replaced: OptionParser is order-insensitive across
+# distinct options, so they may sit before the port flags.
 initialize_report_input() {
   for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
-    eval "set -- \"\$@\" --$mac_roster_service-port \"\${${mac_roster_service}_port:?${mac_roster_service}_port is required}\""
+    mac_roster_flag=$(printf '%s' "$mac_roster_service" | tr '_' '-')
+    eval "set -- \"\$@\" --$mac_roster_flag-port \"\${${mac_roster_service}_port:?${mac_roster_service}_port is required}\""
   done
   "$mac_script_dir/report.rb" --init "$state_input" --lane "$lane" \
     --proof-platform "$proof_platform" \

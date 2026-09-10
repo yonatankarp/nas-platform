@@ -291,44 +291,50 @@ trailarr_monitoring_enabled: >-
 # than a machine fact.
 nextcloud_deployment_enabled: true
 
-# The one operator switch that deploys AdGuard Home, and it ships false. #548
-# lands the stack dark, and turning it on is a separate, deliberate act.
+# The one operator switch that deploys AdGuard Home, and it is on. #548 landed
+# the stack dark and this is the separate, deliberate act that turned it on.
 #
-# DARK IS NOT NOTHING, and the difference is worth stating rather than rounding
-# off. Merging #548 does reach the NAS on the poller's next tick: the release
-# gains services/adguard/, host_prep creates
-# {{ nas_docker_root }}/adguard/{conf,work} because the nas_storage loop is
-# ungated and creates every declared path, and roles/adguard renders its runtime
-# .env, which carries only paths, the platform identity and the CPU set. That is
-# two empty directories and one file. No image is pulled, no port is bound, no
-# container is created, and AdGuardHome.yaml -- the one rendered file that
-# carries a credential -- is gated and is not written. The Compose project is
-# converged to `state: absent`, which is a `docker compose down` against a
-# project that does not exist.
+# WHAT THIS PUBLISHES, and it is the reason the flip was its own change: THIS
+# HOST'S PORT 53, tcp and udp -- the first privileged port this platform has
+# ever published. Confirmed free on the NAS from the full `netstat -tulnp`
+# listener table on 2026-09-10, the nearest neighbour being 5353/mDNS. The
+# container itself stays unprivileged and non-root: it listens on 5353 inside,
+# and binding 53 on the host is the Docker daemon's job rather than
+# AdGuard's. Alongside it, 8083 for the web interface.
 #
-# Setting this true converges one container and publishes THIS HOST'S PORT 53,
-# tcp and udp -- the first privileged port this platform has ever published.
-# Confirmed free on the NAS from the full `netstat -tulnp` listener table on
-# 2026-09-10, the nearest neighbour being 5353/mDNS. Setting it back to false
-# converges the project to `state: absent` rather than skipping it, so the flag
-# is a deployment decision in both directions.
+# Setting it back to false converges the project to `state: absent` rather than
+# skipping it, so the flag is a deployment decision in both directions and the
+# way back is one line. What a dark converge still does is create
+# {{ nas_docker_root }}/adguard/{conf,work} -- the nas_storage loop is ungated
+# -- and render the runtime .env, which carries only paths, the platform
+# identity and the CPU set. AdGuardHome.yaml, the one rendered file that carries
+# a credential, is gated and is not written.
 #
-# WHAT TURNING IT ON DOES NOT DO, and this is the part worth reading before the
-# flip. It does not point anything at AdGuard. The NAS keeps resolving through
-# Tailscale MagicDNS, because tailscaled owns /etc/resolv.conf and rewrites it;
-# LAN clients keep whatever their DHCP lease gives them. Delivering AdGuard to
-# clients is configuration on the router or on each device, and
-# roles/adguard/defaults/main.yml records why it is deliberately not
-# configuration in this repository -- including why pointing the NAS's own
+# WHAT TURNING IT ON DOES NOT DO, and this is still the part worth reading. It
+# does not point anything at AdGuard. The NAS keeps resolving through Tailscale
+# MagicDNS, because tailscaled owns /etc/resolv.conf and rewrites it; LAN
+# clients keep whatever their DHCP lease gives them. Delivering AdGuard to
+# clients is configuration on the router or on each device, and the router here
+# is a Vodafone Station CGA4233DE, which exposes no custom-DNS field for its
+# DHCP scope -- so it is per device, by hand, one device at a time.
+# roles/adguard/defaults/main.yml records why that is deliberately not
+# configuration in this repository, including why pointing the NAS's own
 # resolver at AdGuard would be the #327 mistake again, with the recovery path
 # depending on the thing that is down.
+#
+# The role default stays false, and that is not an oversight. It is a floor
+# under this decision rather than a mirror of it, exactly as
+# roles/nextcloud's is: a caller running roles/adguard with no inventory
+# converges to `state: absent` instead of putting a resolver on somebody's
+# household network on the strength of a missing variable.
+# tests/contracts/adguard-static.rb asserts that floor.
 #
 # This is nonsecret policy, so it is group_vars and not the vault, and it is
 # group_vars/all rather than nas_hosts for the reason the Nextcloud switch
 # above gives: both real inventories bind to nas_hosts, the integration sandbox
 # is a nas_hosts run like any other, and this is a decision rather than a
 # machine fact.
-adguard_deployment_enabled: false
+adguard_deployment_enabled: true
 
 # The addresses Nextcloud answers for beyond the three roles/nextcloud derives.
 # platform_public_host already contributes the Tailscale MagicDNS name, so these

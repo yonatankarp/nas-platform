@@ -166,12 +166,13 @@ case $mac_service in
   # laptop that already resolves and already has 8083 in use by whichever copy of
   # the platform ran last.
   #
-  # NOTHING IN THIS LANE ALLOCATES EITHER YET. #548 landed AdGuard with its gate
-  # off, so tests/mac/run.sh has no allocation for it and every Mac hook group
-  # exempts it in writing; this arm exists because a registered service with no
-  # arm is refused rather than run with an incomplete environment, and because it
-  # is what the allocation will plug into. Until then, invoking this contract
-  # here refuses by name instead of connecting to whatever else holds the port.
+  # Both are allocated now. MAC_SERVICE_PORT_ORDER carries `adguard` and
+  # `adguard_dns` as two roster entries, so tests/mac/run.sh asks the kernel for
+  # two free ephemeral ports like every other entry and exports them under these
+  # two names -- the privileged 53 is never published by this lane, and neither
+  # is 8083. Both are still required rather than defaulted, so a caller invoking
+  # this contract outside the runner refuses by name instead of connecting to
+  # whatever else holds the port.
   adguard)
     : "${PLATFORM_ADGUARD_PORT:?PLATFORM_ADGUARD_PORT is required}"
     : "${PLATFORM_ADGUARD_DNS_PORT:?PLATFORM_ADGUARD_DNS_PORT is required}"

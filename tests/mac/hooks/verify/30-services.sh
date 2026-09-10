@@ -40,7 +40,7 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # site.yml converges it.
 mac_verified=
 for mac_verify_service in audiobookshelf komga jellyfin immich paperless pinchflat kapowarr \
-    bindery trailarr seerr nextcloud; do
+    bindery trailarr seerr nextcloud adguard; do
   "$mac_script_dir/run-contract.sh" "$mac_verify_service" run
   mac_verified="$mac_verified$mac_verify_service
 "
@@ -48,6 +48,5 @@ done
 
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-adguard=#548 landed it with adguard_deployment_enabled false and tests/mac/lib.sh does not ask this lane to turn it on, so the converge takes the project to state: absent and there is no stack here to exercise; it is proved by its Docker integration suite' \
+downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

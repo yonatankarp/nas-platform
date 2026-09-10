@@ -111,21 +111,33 @@ ROOT = File.expand_path("..", __dir__)
 # operation this repository performs -- #528 switched Seafile's gate off four
 # days before this was written -- and a guard that refused it would be fighting
 # the very idiom the rest of this file exists to protect. It therefore does not
-# move when a service lands dark: #548 took the implemented count to 17 and the
-# gate count to 2, and 17 - 2 is the 15 that was already there.
+# move when a service lands dark, and it does not move when one is turned on
+# either: #548 took the implemented count to 17 and the gate count to 2, and
+# 17 - 2 is the 15 that was already there. Flipping AdGuard's gate on took the
+# subject count to 17 and the dark count to 0 -- both derived, both reported in
+# the summary line at the foot of this file -- and re-deriving the floor from
+# its own rule still gives 15, because the two gates could both be dark
+# tomorrow. Do not "correct" it to 17: that would be a guard against turning a
+# stack off, which is a thing this repository does on purpose.
 #
 # THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY. #548 landed AdGuard
-# with all three left at their pre-AdGuard values and this file stayed green,
-# which is exactly the collapse the paragraph above says the floor exists to
-# report: today's counts are the point, and a floor comfortably below them buys
-# nothing. Re-read this block when a service is added, removed or gated.
+# with the first three left at their pre-AdGuard values and this file stayed
+# green, which is exactly the collapse the paragraph above says the floor exists
+# to report: today's counts are the point, and a floor comfortably below them
+# buys nothing. It fixed those three and left the other four, which is the same
+# defect one line down -- the registry gained a sixteenth contract, suites.conf a
+# sixteenth tagged row and its seventeenth service tag, site.yml its thirtieth
+# and thirty-first role tag, and every one of those floors went on passing over a
+# larger tree. They are re-derived here. Re-read this whole block when a service
+# is added, removed, gated or ungated; the gate's own summary line prints the
+# live counts, so a stale floor is one run away from being visible.
 IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
 GATE_VARIABLE_FLOOR = 2      # nextcloud_deployment_enabled and adguard_deployment_enabled
 SUBJECT_FLOOR = 15           # 17 implemented, of which at most the 2 gated ones may be dark
-MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
-TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 16          # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 29          # the role tags site.yml declares
+MAC_ROSTER_FLOOR = 17        # 16 registered contracts plus ntfy
+TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 31          # the role tags site.yml declares
 
 failures = []
 

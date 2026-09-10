@@ -58,5 +58,5 @@ bindery=its only fixture would be a real Usenet download, which this lane has no
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make, so its converge has nothing to read
 seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first
 nextcloud=the installer writes config.php on first start and the converge reconciles the trusted domains inside it afterwards, so nothing has to exist on disk before run_site
-adguard=#548 landed it with adguard_deployment_enabled false and tests/mac/lib.sh does not ask this lane to turn it on, so the converge takes the project to state: absent and there is no stack here to exercise; it is proved by its Docker integration suite' \
+adguard=its converge writes AdGuardHome.yaml from the vault and restarts the daemon onto it, reading nothing off disk that it did not put there itself; there is no fixture to place first' \
   "$mac_pre_converge_hooks" ''
