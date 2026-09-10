@@ -214,6 +214,8 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_identity_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py --self-test
   ruby tests/run_contracts.rb --validate-only
   ruby tests/jellyfin_transcode_contract_test.rb
   ruby tests/pinchflat_contract_test.rb

@@ -72,6 +72,7 @@ FIXTURE_FILES = %w[
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
   tests/integration_controller_lib.sh
+  tests/integration_controller.sh
   inventory/group_vars/all/main.yml
   tests/policy_support.rb
 ].freeze
@@ -368,6 +369,18 @@ STATIC_ROWS = [
       end
     },
     expects: "must prove filtering behaviourally"
+  },
+  {
+    # The coverage the gate flip removed: with the lane request unconditional,
+    # nothing else converges `state: absent` any more.
+    name: "a lane that never converges the disabled path",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller.sh") do |source|
+        source.sub("run_play --tags adguard -e adguard_deployment_enabled=false",
+                   "run_play --tags adguard")
+      end
+    },
+    expects: "must converge with adguard_deployment_enabled=false"
   },
   {
     # The defect the role shipped with: verification that reads only the control
@@ -1400,6 +1413,15 @@ PROGRAM_MUTATIONS = [
   # have none: they assert success, and there is no check to remove that would
   # make success wrong.
   # --- the five assertions the resolver and filter-download review added ---
+  {
+    label: "the exercised-rollback check",
+    program: :static,
+    from: "controller_source.include?(\"run_play --tags adguard " \
+          "-e adguard_deployment_enabled=false\") &&\n" \
+          "    controller_source.include?(\"ADGUARD_TEARDOWN_VERIFIED\")",
+    to: "true",
+    rows: ["a lane that never converges the disabled path"]
+  },
   {
     label: "the real-DNS-question check",
     program: :static,

@@ -1296,6 +1296,36 @@ EOF
         run_enabled_idempotence adguard
         run_play --tags adguard --check --diff
         run_adguard_verify_only
+
+        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED. This lane used to prove
+        # the disabled path by accident: adguard_deployment_enabled was false on
+        # every lane but this one, so smoke and idempotence-check converged the
+        # `state: absent` branch on every run. Turning the platform switch on
+        # made that request unconditional -- CI has to converge what production
+        # converges -- and took the rollback proof with it, which matters more
+        # here than for any other service: `adguard_deployment_enabled: false` is
+        # the documented emergency exit for a resolver that is answering for a
+        # whole household, and inventory/group_vars/all/main.yml calls it one
+        # line. A line nothing runs is not an exit.
+        #
+        # The override goes after the playbook, where Ansible's last `-e` for a
+        # key wins over run_play's own. Compose is asked directly rather than
+        # through the role, because what has to be gone is the container, not the
+        # role's opinion of it.
+        run_play --tags adguard -e adguard_deployment_enabled=false
+        if docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-adguard$'; then
+          printf '%s\n' \
+            'disabling adguard_deployment_enabled left the container in place' >&2
+          exit 1
+        fi
+        printf 'ADGUARD_TEARDOWN_VERIFIED\n'
+        # And back on, because a rollback nothing reverses is a one-way door. The
+        # re-converge also proves the stack comes up a second time against a
+        # configuration root the teardown left behind, which is the state an
+        # operator who flipped the switch and changed their mind is actually in.
+        run_play --tags adguard
+        run_adguard_verify_only
         printf 'ADGUARD_RUNTIME_VERIFIED\n'
       fi
     fi

@@ -54,6 +54,7 @@ required = %w[
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
   tests/integration_controller_lib.sh
+  tests/integration_controller.sh
   inventory/group_vars/all/main.yml
 ]
 required.each do |relative|
@@ -486,6 +487,22 @@ if failures.empty?
               "lists never downloaded, or the run reports success over a resolver that is " \
               "answering every name on the network unfiltered" unless
     deploy_conditions.include?("adguard_filters_loaded")
+
+  # THE ROLLBACK HAS TO BE RUN BY SOMETHING. `adguard_deployment_enabled: false`
+  # is the documented emergency exit for a resolver answering for a whole
+  # household, and inventory/group_vars/all/main.yml calls it one line. It was
+  # exercised by accident while the lane gate was per-suite -- smoke and
+  # idempotence-check converged the `state: absent` branch on every run -- and
+  # making that request unconditional, so that CI converges what production
+  # converges, took the proof away with it. The teardown assertion above is
+  # structural: it says the role HAS an absent branch, not that anything ever
+  # takes it.
+  controller_source = File.read(File.join(root, "tests/integration_controller.sh"))
+  failures << "the adguard integration lane must converge with adguard_deployment_enabled=false " \
+              "and prove the container is gone. Nothing else runs that branch now that the lane " \
+              "gate is unconditional, and a rollback nothing exercises is not an exit" unless
+    controller_source.include?("run_play --tags adguard -e adguard_deployment_enabled=false") &&
+    controller_source.include?("ADGUARD_TEARDOWN_VERIFIED")
 
   # ---------------------------------------------------------------------------
   # The three files this program requires and used to do nothing with, which is a
