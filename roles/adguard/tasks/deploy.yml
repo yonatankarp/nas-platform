@@ -52,10 +52,36 @@
 #
 # Redacted: the rendered document carries the administrator name and the bcrypt
 # hash of the administrator password.
+# OWNED BY THE PLATFORM IDENTITY, NOT BY WHOEVER RAN ANSIBLE, and this pair of
+# lines is not decoration. The container runs as ${NAS_UID}:${NAS_GID} and the
+# file is 0600, so a file left owned by the account that rendered it -- root
+# inside the CI controller container -- is a file the daemon cannot open. It
+# exits immediately with `failed to parse configuration file err="open
+# /opt/adguardhome/conf/AdGuardHome.yaml: permission denied"`, and because it
+# never finishes starting, the health check never runs and Docker reports an
+# unhealthy container with an EMPTY health log. That is what the adguard lane
+# hit, and it is what this line fixes.
+#
+# THE PROPERTY IS REAL ON LINUX AND ONLY ON LINUX. Docker Desktop for Mac does
+# not enforce bind-mount ownership -- every uid inside the container reads every
+# bind-mounted file -- so this defect is invisible to a Mac spike, and it was:
+# the image was run successfully here half a dozen times before the CI lane
+# refused it. Reproduced afterwards by running the same image on a real Linux
+# filesystem with the file owned by another uid.
+#
+# The mode stays 0600 and must. AdGuard's permcheck chmods this file to 0600 at
+# every start, so a wider mode would be reverted by the daemon and reported as a
+# change by the next converge -- trading a crash for broken idempotence.
+# roles/arr, roles/downloaders, roles/pinchflat and roles/trailarr all declare
+# the same pair for the same reason; roles/beszel is the counter-example that
+# proves the rule, writing a 0600 keypair with no owner because its hub
+# container runs as root.
 - name: Render the AdGuard Home configuration
   ansible.builtin.template:
     src: AdGuardHome.yaml.j2
     dest: "{{ adguard_config_host_path }}/AdGuardHome.yaml"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
     mode: "0600"
   register: adguard_config
   when: adguard_deployment_enabled | bool
