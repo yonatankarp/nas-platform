@@ -41,6 +41,20 @@
 #     renders its own .env. tests/policy_deployment_test.rb owns that, and it is
 #     the reason the force-recreate lives in the service role rather than in
 #     roles/container_health.
+#
+# ONE THING THIS SEQUENCE RELIES ON THAT NOTHING STATES ELSEWHERE, and it is the
+# likeliest future bug here. roles/container_health publishes
+# container_health_stuck_services with set_fact, so it is a play-scope fact that
+# SURVIVES INTO THE NEXT ROLE rather than a value scoped to the include. What
+# makes that safe is that every consumer re-runs inspect.yml immediately before
+# reading it, so each pass reads a list its own probe just wrote. Two places lean
+# on that and neither says so at its own site: a gated-off arr or downloaders
+# skips its detect entirely, and the list it would have read belongs to whichever
+# role ran last -- harmless only because its recreate carries the same gate and is
+# skipped too; and under --check the fact is never set at all, which is exactly
+# what the `| default([])` on every recreate's `when` is carrying. A role that
+# ever reads that list without a detect pass of its own would be repairing
+# another project's diagnosis.
 require "fileutils"
 require "tmpdir"
 require "yaml"
