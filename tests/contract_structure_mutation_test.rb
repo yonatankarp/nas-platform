@@ -1224,9 +1224,9 @@ check_rejected(
 check_rejected(
   :arr, "the activation gate demoted to a comment",
   [[ARR_MAIN,
-    "             | default('the Arr deployment failed and reported no message') }}\n" \
+    "- name: Deploy the Phase 1 Arr project, catching a container that runs but never serves\n" \
     "  when: media_usenet_enabled | bool\n",
-    "             | default('the Arr deployment failed and reported no message') }}\n" \
+    "- name: Deploy the Phase 1 Arr project, catching a container that runs but never serves\n" \
     "  # when: media_usenet_enabled | bool\n"]],
   "Arr role must gate activation on media_usenet_enabled"
 )
@@ -1500,9 +1500,9 @@ check_rejected(
 check_rejected(
   :downloaders, "the activation gate demoted to a comment",
   [[DOWNLOADERS_MAIN,
-    "             | default('the downloader deployment failed and reported no message') }}\n" \
+    "- name: Deploy the Phase 1 downloader project, catching a container that runs but never serves\n" \
     "  when: media_usenet_enabled | bool\n",
-    "             | default('the downloader deployment failed and reported no message') }}\n" \
+    "- name: Deploy the Phase 1 downloader project, catching a container that runs but never serves\n" \
     "  # when: media_usenet_enabled | bool\n"]],
   "downloaders role must gate activation on media_usenet_enabled"
 )

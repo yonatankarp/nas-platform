@@ -198,9 +198,9 @@ STATIC_ROWS = [
     name: "an activation no longer gated on the Usenet switch",
     break: lambda { |root|
       mutate_text(root, "roles/arr/tasks/main.yml",
-                  "             | default('the Arr deployment failed and reported no message') }}\n" \
+                  "- name: Deploy the Phase 1 Arr project, catching a container that runs but never serves\n" \
                   "  when: media_usenet_enabled | bool\n",
-                  "             | default('the Arr deployment failed and reported no message') }}\n")
+                  "- name: Deploy the Phase 1 Arr project, catching a container that runs but never serves\n")
     },
     expects: "Arr role must gate activation on media_usenet_enabled"
   },

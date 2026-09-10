@@ -76,6 +76,7 @@
 # the long form of this argument; #509 built the mechanism and #537 wired the
 # remaining eleven single-`up` roles into it.
 - name: Deploy the Phase 1 Arr project, catching a container that runs but never serves
+  when: media_usenet_enabled | bool
   block:
     - name: Deploy the Phase 1 Arr project
       community.docker.docker_compose_v2:
@@ -95,7 +96,6 @@
         arr_deploy_failure_message: >-
           {{ ansible_failed_result.msg
              | default('the Arr deployment failed and reported no message') }}
-  when: media_usenet_enabled | bool
 
 # Immediately after the deployment and before everything that trusts it. A
 # container in `Restarting` still appears in `docker container ls --quiet`, so
@@ -128,6 +128,7 @@
 # looping for a reason a recreate cannot fix never goes green and never becomes
 # an invisible retry loop.
 - name: Recreate an Arr container that runs but never serves
+  when: media_usenet_enabled | bool
   block:
     - name: Force-recreate the stuck Arr services
       community.docker.docker_compose_v2:
@@ -153,7 +154,6 @@
         arr_recreate_failure_message: >-
           The force-recreate reported: {{ ansible_failed_result.msg
           | default('no message') }}
-  when: media_usenet_enabled | bool
 
 # Whether a recreate was actually spent, recorded before the second pass
 # overwrites the list it was decided from.
