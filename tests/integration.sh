@@ -328,6 +328,15 @@ image_pull_wait_limit=375
 # fetches three layers of one image concurrently, so this is a dozen connections
 # and not a stampede against registries that answer "toomanyrequests" under far
 # less. An environment input for the same reason every other budget here is one.
+#
+# **Four wide is not four times faster, and raising it will not help.** Measured
+# on run 34467333883, the same fourteen lanes went from 1112 seconds of pre-pull
+# to 828 -- 26%, not 75%. smoke's own completion timestamps there show eight
+# clean bursts of four, so the concurrency is real and the arithmetic is not: a
+# runner pulls at a fixed network throughput, so overlapping the pulls recovers
+# per-request latency and leaves the bytes exactly where they were. What the
+# width buys is bounded, and a wider one would buy less of it while making the
+# burst rate at three registries worse.
 image_pull_width_limit=8
 
 bounded_integer() {

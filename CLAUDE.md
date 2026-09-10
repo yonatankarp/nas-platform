@@ -761,6 +761,15 @@ part worth keeping.
   budget beside it, through `INTEGRATION_IMAGE_PULL_WIDTH`. Concurrency costs one
   property: under a rate limit the serial loop stopped at the refusing image, and
   a batch can now overshoot it by `image_pull_width - 1` pulls.
+
+  **Four wide bought 26%, not 75%, and a wider one would buy less.** Measured on
+  run `34467333883`: the same fourteen lanes went from 1112 seconds of pre-pull to
+  828, and smoke's two longest-lane siblings from 272 and 270 to 200 and 192. The
+  concurrency is not the part that fell short — smoke's completion timestamps show
+  eight clean bursts of four — the arithmetic is. A runner pulls at a fixed network
+  throughput, so overlapping pulls recovers per-request latency and leaves the
+  bytes where they were. This is the shape to expect from any I/O-bound fan-out
+  here, and it is why the width is capped at eight rather than left open.
   `tests/integration_suite_test.sh` asserts the width in both directions through a
   rendezvous in its `docker` stub rather than a clock, because a peak of four
   proves nothing unless a width of one is still observable as one.
@@ -794,7 +803,9 @@ Three things about it generalise:
   defect with an owner and a comment is not a defect with a measurement.
 - **Correct is slower.** A phase 2 that re-converges all 1495 tasks costs
   550–720 seconds and phase 3 another 420–580, so `idempotence-check` on a full
-  run goes from ~20 minutes to roughly 35–45. The `suites` budget went from 60 to
+  run goes from ~20 minutes to roughly 35–45 — measured at 33.4 on run
+  `34467333883`, whose phases now report `ok=1556` and `ok=1075` against the 88
+  each of them reported before. The `suites` budget went from 60 to
   90 for it, because a lane killed at its ceiling would read as the fix
   regressing rather than as the guard working, and because the pre-pull's own
   retry ladder can add another five minutes on a rate-limited image. Any future
