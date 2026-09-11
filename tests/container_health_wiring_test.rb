@@ -69,9 +69,10 @@ include TestScaffold
 # selector".
 EXPECTED_SUBJECTS = %w[
   adguard arr audiobookshelf bindery downloaders dozzle jellyfin
-  kapowarr komga ntfy pinchflat seerr trailarr
+  kapowarr komga ntfy pinchflat seerr trailarr vaultwarden
 ].freeze
-SUBJECT_FLOOR = 13 # the twelve single-`up` roles of #537, plus adguard (#548)
+# the twelve single-`up` roles of #537, plus adguard (#548) and vaultwarden (#547)
+SUBJECT_FLOOR = 14
 
 # The roles that deploy Compose and are deliberately NOT subjects. Each answers
 # "which services may be force-recreated with --no-deps, and at which phase?"

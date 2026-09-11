@@ -96,15 +96,24 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   "ghcr.io/vavallee/bindery" => "bindery",
   "ghcr.io/immich-app/immich-server" => "immich",
   "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
-  "docker.io/library/nextcloud" => "nextcloud"
+  "docker.io/library/nextcloud" => "nextcloud",
+  "docker.io/vaultwarden/server" => "vaultwarden"
 }.freeze
 # A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Four is what the tree documents --
+# every loop below and reports a pass. Five is what the tree documents --
 # roles/bindery/tasks/pre_upgrade_backup.yml, services/immich/compose.yml,
-# services/paperless-ngx/compose.yml and services/nextcloud/compose.yml each
-# say their application migrates its own store on start.
-check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 4,
-      "the self-migrating application set must name four images, not " \
+# services/paperless-ngx/compose.yml, services/nextcloud/compose.yml and
+# services/vaultwarden/compose.yml each say their application migrates its own
+# store on start.
+#
+# Vaultwarden joined in #547, and it is the one member with no pre-upgrade
+# backup and a pin that also carries a CVE floor, which renovate.json's own rule
+# records. It landed dark, and the deferral that suggested itself -- nothing to
+# withhold until the gate flips -- was wrong in the way safety properties
+# usually are: it expires silently at the flip, which is the worst moment for a
+# control to be absent.
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 5,
+      "the self-migrating application set must name five images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
 
 SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|

@@ -330,6 +330,57 @@ nextcloud_deployment_enabled: true
 # machine fact.
 adguard_deployment_enabled: false
 
+# VAULTWARDEN LANDS DARK, and turning it on is a separate deliberate act rather
+# than a consequence of merging the stack. False here and false in
+# roles/vaultwarden/defaults/main.yml.
+#
+# DARK IS NOT NOTHING, the same way the AdGuard switch above says it is not.
+# Merging this does reach the NAS on the poller's next tick: the release gains
+# services/vaultwarden/, host_prep creates
+# {{ nas_docker_root }}/vaultwarden/data at 0700 because the nas_storage loop
+# is ungated and creates every declared path, and roles/vaultwarden renders its
+# runtime .env, which carries only paths, the platform identity, the CPU set,
+# the published origin and the two door switches. That is one empty directory
+# and one file, and the .env holds no credential because this service has none.
+# No image is pulled, no port is bound, no container is created, and no
+# Tailscale Serve front is placed -- tasks/serve.yml reads the Serve
+# configuration and reports, but every mutating task there is gated. The
+# Compose project is converged to `state: absent`, which against a project that
+# has never existed is a `docker compose down` on nothing.
+#
+# Those two are measured rather than reasoned. Only two tasks in this role can
+# report a change at all -- the template above and the tear-down -- and the
+# tear-down reports `ok` against a project that has never existed, so the role's
+# whole contribution to a first review is the one rendered .env, with host_prep
+# adding the one directory. A converged host then reports nothing: three
+# consecutive live runs went changed=1, 0, 0, and `--check --diff` after them
+# reported 0.
+#
+# The directory being created ungated is deliberate rather than overlooked. It
+# is the same decision every other service's storage takes, it is what makes
+# the flip a one-line change rather than a two-phase one, and an empty 0700
+# directory owned by the platform identity is not a service.
+#
+# WHAT HAS TO BE TRUE BEFORE IT FLIPS, because none of it is visible from here.
+# Tailscale Serve must front the stack -- Bitwarden clients need a secure
+# context and will not talk to plain HTTP -- and Serve only terminates TLS if
+# HTTPS certificates are ENABLED FOR THE TAILNET in the Tailscale admin console,
+# which no check in this repository can read. roles/vaultwarden/tasks/serve.yml
+# places the front and then proves it by using it, so a flip with that setting
+# off fails there naming it rather than leaving a server nobody's client will
+# reach.
+#
+# Flipping it also makes tests/deployment_gate_coverage_test.rb require an
+# integration lane that converges the vaultwarden tag and Mac lifecycle
+# coverage, neither of which this revision has. That is the check working: a
+# gate-on service is one CI has deployed and watched come up.
+#
+# It lives here rather than in a host group for the reason recorded above the
+# Nextcloud switch: both real inventories bind to nas_hosts, the integration
+# sandbox is a nas_hosts run like any other, and this is nonsecret policy rather
+# than a machine fact.
+vaultwarden_deployment_enabled: false
+
 # The addresses Nextcloud answers for beyond the three roles/nextcloud derives.
 # platform_public_host already contributes the Tailscale MagicDNS name, so these
 # are the two literal addresses a client may put in the Host header instead:
@@ -730,6 +781,33 @@ nas_storage:
   # entrypoint switches from root to the postgres user.
   - path: "{{ nas_docker_root }}/nextcloud/postgres"
     mode: "0755"
+    recovery: critical
+
+  # Vaultwarden's whole DATA_FOLDER, and it is the most irreplaceable directory
+  # on this platform. It holds db.sqlite3 with its -wal and -shm siblings, which
+  # is every vault item, organization and invitation; attachments/ and sends/,
+  # which are files nothing else has a copy of; and rsa_key.pem, which signs
+  # every session and token this server issues -- lose it and every client is
+  # logged out and every API key is void, though the vault items themselves
+  # survive because they are encrypted under keys derived from master passwords
+  # this server never had.
+  #
+  # recovery: critical, and with backup parked that means one copy exists by
+  # choice. Nothing here can regenerate any of it: the items are
+  # client-side-encrypted blobs, so not even the household could reconstruct
+  # them from a running client without exporting first.
+  #
+  # Owned by the platform identity because the container runs as
+  # ${NAS_UID}:${NAS_GID} -- the image ships no PUID/PGID handling and no
+  # entrypoint that drops privileges, so it writes as whoever it is told to be
+  # and cannot repair an ownership it did not get. 0700 rather than 0755: this
+  # is the one state tree on the platform whose contents are secret-bearing in
+  # the ordinary filesystem sense (rsa_key.pem above), and no other account on
+  # the NAS has business traversing it.
+  - path: "{{ nas_docker_root }}/vaultwarden/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0700"
     recovery: critical
 
   # Dozzle authentication and notification configuration.

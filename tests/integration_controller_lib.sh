@@ -486,10 +486,17 @@ run_immich_restore_negative_matrix() {
 
     storage_before=$(tar -C "$scenario_root" -cf - docker/immich media | sha256sum)
     output=/tmp/immich-negative-$scenario.txt
+    # The expected versions are pinned here beside the fixture filenames rather
+    # than derived from the pinned image, because compatibility is checked before
+    # the gzip and ownership validation these scenarios exercise: a version the
+    # fixtures did not choose would refuse them as incompatible-newest-backup and
+    # every expected_failure below would be the wrong one.
     if run_play \
         -e nas_docker_root="$scenario_root/docker" \
         -e nas_media_root="$scenario_root/media" \
         -e platform_project_name="$integration_project_namespace-negative" \
+        -e immich_restore_expected_immich_version=3.1.0 \
+        -e immich_restore_expected_postgres_major=14 \
         --tags immich >"$output" 2>&1; then
       cat "$output" >&2
       printf 'IMMICH NEGATIVE RESTORE SCENARIO SUCCEEDED: %s\n' "$scenario" >&2

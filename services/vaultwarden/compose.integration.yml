@@ -1,0 +1,4 @@
+---
+services:
+  vaultwarden:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-vaultwarden

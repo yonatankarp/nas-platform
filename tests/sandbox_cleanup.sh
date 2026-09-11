@@ -8,7 +8,7 @@ cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f
 # therefore never a cleanup target, and is left untouched.
 cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
 cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders bindery kapowarr pinchflat trailarr"
-cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud adguard"
+cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud adguard vaultwarden"
 cleanup_sandbox_ntfy_services='ntfy'
 cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
 cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
@@ -27,6 +27,7 @@ cleanup_sandbox_trailarr_services='trailarr'
 cleanup_sandbox_seerr_services='seerr'
 cleanup_sandbox_nextcloud_services='nextcloud nextcloud-cron nextcloud-db nextcloud-cache'
 cleanup_sandbox_adguard_services='adguard'
+cleanup_sandbox_vaultwarden_services='vaultwarden'
 
 # The sandbox-clearing program is tests/sandbox_cleanup_contents.py, and the
 # container reads it on standard input exactly as it read the heredoc that used
@@ -86,6 +87,7 @@ cleanup_sandbox_project_services() {
     seerr) cleanup_project_services=$cleanup_sandbox_seerr_services ;;
     nextcloud) cleanup_project_services=$cleanup_sandbox_nextcloud_services ;;
     adguard) cleanup_project_services=$cleanup_sandbox_adguard_services ;;
+    vaultwarden) cleanup_project_services=$cleanup_sandbox_vaultwarden_services ;;
     *)
       printf 'unknown sandbox cleanup project kind: %s\n' "$1" >&2
       return 1

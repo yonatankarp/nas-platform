@@ -17,8 +17,14 @@ immich_restore_backup_gid: >-
   {{ ansible_facts.get('user_gid', 0)
      if platform_kind == 'mac' and not (platform_manage_linux_ownership | bool)
      else 0 }}
-immich_restore_expected_immich_version: "3.1.0"
-immich_restore_expected_postgres_major: 14
+# Empty and zero mean "derive from the pinned Compose images", which is the only
+# way these stay true. Immich stamps its own version into the dump filename it
+# writes, so the expected version is the version of the image about to run --
+# restating it here made every image bump refuse the backup the previous image
+# had just written, which is what happened to #560. Set either explicitly only
+# to pin both sides of the comparison, as the negative restore fixtures do.
+immich_restore_expected_immich_version: ""
+immich_restore_expected_postgres_major: 0
 immich_restore_verify_limit: 25
 immich_restore_database_wait_timeout: 300
 

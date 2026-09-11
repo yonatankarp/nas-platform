@@ -51,3 +51,6 @@ services:
   - name: nextcloud
     role: nextcloud
     status: implemented
+  - name: vaultwarden
+    role: vaultwarden
+    status: implemented
