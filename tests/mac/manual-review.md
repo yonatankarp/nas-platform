@@ -61,6 +61,13 @@ private keys, password hashes, rendered environment files, or application logs.
       whole of AdGuardHome.yaml and restarts the daemon onto the reverted file.
       Neither published port is production's: this lane republishes both on
       ephemeral ports, and the privileged 53 is never bound here.
+- [ ] Vaultwarden: no identity to sign in with — the review is the door.
+      Confirm the web vault loads on the sandbox port, that registering a
+      disposable account SUCCEEDS (registration is deliberately open; the
+      tailnet is the control on the real deployment), and that `/admin`
+      serves nothing but its own "the admin panel is disabled" body. The
+      lane's origin is `https://vaultwarden.mac.invalid` and there is no
+      Tailscale front here, so nothing origin-bound is in scope.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.

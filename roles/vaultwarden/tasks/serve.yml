@@ -60,10 +60,15 @@
 - name: Report the tailnet HTTPS front this host cannot hold
   ansible.builtin.debug:
     msg: >-
-      No Tailscale client was found at any of
-      {{ vaultwarden_tailscale_binary_candidates | join(', ') }}, so this host
+      No Tailscale client was found at
+      {{ vaultwarden_tailscale_binary_candidates | join(', ')
+         | default('any path, because this run was given no candidates at all',
+                   true) }}, so this host
       places no HTTPS front in front of Vaultwarden and nothing here fails for
-      it. Only the NAS runs Tailscale; the integration container, the Mac
+      it. An empty candidate list is a lane asking for this path on purpose:
+      tests/mac/lib.sh passes one, because the first default candidate is where
+      Homebrew installs the Tailscale CLI and a disposable sandbox must not
+      reach an operator's real tailnet. Only the NAS runs Tailscale; the integration container, the Mac
       sandbox and a workstation converging over SSH all take this path. On such
       a host Vaultwarden is reachable over plain HTTP on port
       {{ vaultwarden_port }} only, which is enough for the checks that run there

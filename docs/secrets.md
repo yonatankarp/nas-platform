@@ -742,10 +742,26 @@ the pinned release it happens to disable the panel exactly as omitting it does,
 but that is a behaviour of the release rather than a property of the setting, and
 it still logs a plaintext-token notice.
 
-**What an operator does instead of provisioning.** Accounts are created by
-invitation from inside the web vault and completed by the invitee, who chooses a
-master password this platform never sees. There is no SMTP configured, so the
-invitation link is passed by hand. Nothing about that flow appears in this guide's
+**What an operator does instead of provisioning, and why the door is open.**
+Accounts are created by whoever reaches the registration page, and the person
+registering chooses a master password this platform never sees. `SIGNUPS_ALLOWED`
+is `true` and stays true: with no admin panel and no SMTP, a closed door leaves a
+fresh database with **no route to a first account at all** — nobody to invite
+from, and no way to deliver an invitation if there were. The control is not the
+setting but the perimeter, and the perimeter is a Compose line rather than a
+hope: `services/vaultwarden/compose.yml` publishes the container on
+`127.0.0.1:8086` -- the only loopback publication on this platform besides
+Beszel's socket proxy -- so nothing off the NAS reaches the listener and
+Tailscale Serve is the only route to the registration page. It shipped as a
+wildcard in the first cut of the flip, which made this sentence false: `docker
+port` reported `0.0.0.0` and `[::]`, and an uninvited registration from a LAN
+address succeeded. With the binding in place the registration page is reachable
+only from a device already on the tailnet,
+and the cost of that — anything joining the tailnet later can register here — is
+recorded beside the switch in `inventory/group_vars/all/main.yml`. An account so
+created reads nobody else's items; it is still a user on this server.
+`INVITATIONS_ALLOWED` remains on for adding a member to an organization, and
+with no SMTP that link is passed by hand. Nothing about that flow appears in this guide's
 recovery procedures, because there is nothing to recover: a lost master password
 is lost, and the household member re-enrols against a vault they can no longer
 read. Record master passwords in the household password manager the way any other
@@ -757,6 +773,16 @@ parked that means one copy exists by choice. `rsa_key.pem` beside it signs every
 session and token the server issues, so it is the one file in that tree to treat
 as secret-bearing in the ordinary sense; `CLAUDE.md`'s security boundary carries
 the full nuance, including why the encrypted blobs beside it are not.
+
+`roles/vaultwarden/tasks/pre_upgrade_backup.yml` adds a second copy of that tree
+and **does not change the sentence above**. Before a pinned upgrade it stops the
+container, copies `db.sqlite3`, the write-ahead log beside it and `rsa_key*` into
+`pre-upgrade-backup/` under the same data root, and refuses the upgrade if the
+store is not there to copy. That is a rollback path for the one failure #511
+recorded — a version bump whose schema migration cannot be undone — and it is on
+the same disk, in the same NAS, inside the directory it is a copy of. A drive
+failure takes both. It also means `rsa_key.pem` now exists twice under that root,
+so the copy is secret-bearing exactly as the original is.
 
 ### Managed application-user fields
 

@@ -43,6 +43,32 @@ integration_adguard_deployment_enabled=${integration_adguard_deployment_enabled?
 integration_adguard_port=18083
 integration_adguard_dns_port=15353
 
+# THE ONE COORDINATE THIS SANDBOX CANNOT SUPPLY, requested by every lane rather
+# than by the one that converges the service.
+#
+# roles/vaultwarden derives DOMAIN from platform_public_host and REFUSES a bare
+# IPv4 literal, because WebAuthn's relying-party identifier has to be a domain: a
+# security key enrols against an address and then never authenticates, which
+# reads as a client fault and is configuration. tests/integration.sh sets
+# PLATFORM_PUBLIC_HOST to the address containers reach the daemon's host at, and
+# on a Linux runner that is the default bridge gateway -- 172.17.0.1, an IPv4
+# literal. Measured against the role's own assertion: 172.17.0.1 fails, the NAS's
+# MagicDNS name passes. So without this line the role fails at the FIRST task of
+# its enabled path on every lane that converges it.
+#
+# EVERY LANE, not just the vaultwarden one, and that is the half worth reading.
+# The vaultwarden tag is already in the idempotence-5 shard, and `full`,
+# `idempotence-check` and a routed `smoke` converge the whole site; a
+# `case $INTEGRATION_SUITE` here would leave all of those failing. #295's rule
+# says a lane must request the state it claims to converge, and every lane that
+# reaches this role claims it.
+#
+# `.invalid` is reserved by RFC 2606 and can never resolve, which is the same
+# reason news.usenet.invalid is the Usenet host above. Nothing in the sandbox
+# connects to this name: it is the origin the server declares to clients, and the
+# lane reaches the service on 127.0.0.1 like every other.
+integration_vaultwarden_domain=https://vaultwarden.integration.invalid
+
 # nas_compose_minimum is the one -e below that is not about this sandbox's
 # identity, and it is here for the same reason the rest are: the value inventory
 # would supply is wrong for this lane and right for the NAS.
@@ -81,6 +107,7 @@ run_play() {
     -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
     -e adguard_port="$integration_adguard_port" \
     -e adguard_dns_port="$integration_adguard_dns_port" \
+    -e vaultwarden_domain="$integration_vaultwarden_domain" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
@@ -597,6 +624,7 @@ run_verification() {
     -e adguard_deployment_enabled="$integration_adguard_deployment_enabled" \
     -e adguard_port="$integration_adguard_port" \
     -e adguard_dns_port="$integration_adguard_dns_port" \
+    -e vaultwarden_domain="$integration_vaultwarden_domain" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"
@@ -648,6 +676,16 @@ run_nextcloud_verify_only() {
 
 run_adguard_verify_only() {
   run_verification adguard
+}
+
+# The one service lane whose verification is the ROLE'S OWN rather than a
+# contract's. roles/vaultwarden carries no tests/contracts entry: it holds no
+# vault credential to sign in with -- master passwords are user-owned and the
+# server never learns them -- so what there is to prove is the door, and
+# tasks/verify.yml proves it by knocking. This wrapper is therefore the whole
+# of the lane's runtime assertion rather than a supplement to one.
+run_vaultwarden_verify_only() {
+  run_verification vaultwarden
 }
 
 # Audiobookshelf is the one reader the seerr lane's own suite tags leave

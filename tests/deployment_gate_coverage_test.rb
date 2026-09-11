@@ -57,6 +57,12 @@
 #      halves fails, and a name in either half that is not an implemented service
 #      fails too.
 #
+#   3. Its role default declares the gate OFF. Not a coverage requirement like
+#      the two above -- it holds of every gate, lit or dark -- but the same
+#      subject read from the same scan, so it lives here rather than in a
+#      per-service contract that two of the three gates do not have. The reason
+#      is at the check itself.
+#
 # NOT REQUIRED HERE, deliberately, because each is already closed elsewhere and a
 # second copy of an assertion is a second thing to keep true:
 #
@@ -139,12 +145,24 @@ ROOT = File.expand_path("..", __dir__)
 # is added, removed, gated or ungated, and re-derive rather than reason: the
 # summary line at the foot of this file prints four of the seven live counts, and
 # the other three are one instrumented run away.
+#
+# THE THIRD TIME, AND IT WAS THE SAME MERGE AGAIN. #547's second chunk rebased
+# onto the AdGuard flip above, and neither side's numbers were right for the
+# tree that came out: this file's own Mac roster, tagged lanes and lane tags
+# were AdGuard's counts, one short each, because Vaultwarden brings a lane, a
+# tag and a roster entry of its own. They were re-derived the way the paragraph
+# above prescribes rather than incremented -- each floor set to an impossible
+# value and the check run, which prints the count it found: 18 implemented, 3
+# gate variables, 18 subjects, an 18-name Mac roster, 17 tagged rows, 18 lane
+# tags, 33 site tags. SUBJECT_FLOOR is the one that did not move and the one
+# that must not: its rule is implemented minus gated, 18 - 3 is 15, and the
+# count being 18 today only means no stack is dark at the moment.
 IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, adguard and vaultwarden _deployment_enabled
 SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 17        # 16 registered contracts plus ntfy
-TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
+MAC_ROSTER_FLOOR = 18        # 16 registered contracts plus ntfy and vaultwarden
+TAGGED_LANE_FLOOR = 17       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 18          # the distinct manifest service tags those rows converge
 SITE_TAG_FLOOR = 33          # the role tags site.yml declares
 
 failures = []
@@ -265,6 +283,35 @@ gate_names.each do |name|
   check(failures, !declaration.nil? && declaration["role"] == prefix,
         "#{name} must be declared in roles/#{prefix}/defaults/main.yml: a gate that only " \
         "inventory sets has no declared off position")
+
+  # AND IT MUST BE DECLARED OFF. A role default is what a caller gets with no
+  # inventory at all, so this line is the FLOOR under the deployment decision
+  # rather than a mirror of it: the decision lives in
+  # inventory/group_vars/all/main.yml, which wins on every run any playbook here
+  # makes, and turning it back off there must not leave the stack converging on
+  # the strength of a role default nobody edited.
+  #
+  # Stated repo-wide rather than per-service because the tree already satisfies
+  # it in full -- nextcloud, adguard and vaultwarden are the three gates that
+  # exist, and all three ship false -- and because the harm is worst exactly
+  # where a per-service check is most likely to be missing. AdGuard is the only
+  # one carrying its own assertion (tests/contracts/adguard-static.rb, whose
+  # reason is that a caller with no inventory must not put a resolver on the
+  # household network); Vaultwarden has no static contract to carry one, and it
+  # is the starker case, since the same caller would stand up a password manager
+  # whose registration door is open. A rule that reaches every gate reaches the
+  # ones nobody thought to guard.
+  #
+  # If a service ever needs a true role default, this is the check to argue with
+  # rather than to route around: the argument belongs here, beside the other two
+  # things a gate must be.
+  check(failures, declaration.nil? || declaration["value"] == false,
+        "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
+        "and a role default must ship the gate OFF. It is the floor under the deployment " \
+        "decision, not a copy of it: inventory/group_vars/all/main.yml is where the decision " \
+        "is made and won, and a true default means a caller with no inventory -- or an " \
+        "inventory that turned the stack back off -- converges the stack anyway. Set it false " \
+        "here and leave inventory to say what this platform runs")
 
   overrides = inventory_gates[name]
   values = overrides.empty? ? [declaration&.fetch("value")] : overrides.map { |entry| entry["value"] }
@@ -391,6 +438,61 @@ subjects.each do |name|
         "`#{alias_name}` is in neither tests/contracts/registry.yml nor MAC_UNREGISTERED_SERVICES " \
         "in tests/mac/lib.sh, so every Mac coverage roster is built without it and a full pass " \
         "reports clean having skipped the service entirely")
+end
+
+# ---------------------------------------------------------------------------
+# Requirement 3: CI converges the service's DISABLED path too.
+#
+# A gate is a deployment decision in both directions -- every inventory comment
+# beside one says so -- and while a stack is dark the `state: absent` branch is
+# converged by every lane on every run without anybody asking for it. Turning the
+# switch on takes that proof away, because CI then requests what production runs
+# and nothing requests the other state. AdGuard hit it first and #569 closed it
+# with a lane step; #547 rebased onto that and reintroduced it for Vaultwarden,
+# which is what makes this a rule rather than a second copy of one service's fix.
+#
+# The cost of an unexercised way back is not hypothetical for this pair. The
+# switch is the documented emergency exit -- for a resolver answering a whole
+# household, and for a password manager whose door is open -- and
+# roles/vaultwarden/tasks/deploy.yml shipped with its config.json refusal ahead
+# of the tear-down, so the exit was blocked in precisely the state that motivates
+# using it. Nothing noticed, because nothing ran it.
+#
+# TWO FORMS COUNT, and both are read out of the harness rather than listed here:
+#
+#   the step   `run_play --tags <tag> -e <gate>=false` inside the lane, which
+#              converges the disabled path against a stack that exists. This is
+#              the form to write today.
+#   the narrow `integration_<role>_deployment_enabled=false` at the top of the
+#              controller, which withholds the gate from every lane but the
+#              service's own, so smoke and idempotence-check converge the
+#              disabled branch on every run. It is the older form and the
+#              controller's own comments say it has to be flipped or deleted the
+#              day the platform switch turns on -- nextcloud is its last user.
+#              It is admitted because it really does converge that branch, not
+#              because it is tidy; when it goes, that service needs the step.
+INTEGRATION_CONTROLLER = File.join(ROOT, "tests", "integration_controller.sh")
+controller_source = File.file?(INTEGRATION_CONTROLLER) ? File.read(INTEGRATION_CONTROLLER) : ""
+check(failures, !controller_source.empty?,
+      "tests/integration_controller.sh could not be read, so no service's disabled path can be " \
+      "shown to run and every requirement below would pass vacuously")
+
+subjects.each do |name|
+  role = role_of[name]
+  tag = service_tags[name]
+  next if role.nil? || tag.nil?
+
+  gate = "#{role}#{GATE_SUFFIX}"
+  next unless gate_names.include?(gate)
+
+  step = controller_source.include?("run_play --tags #{tag} -e #{gate}=false")
+  narrowed = controller_source.include?("integration_#{gate}=false")
+  check(failures, step || narrowed,
+        "#{name} deploys and nothing in tests/integration_controller.sh ever converges it with " \
+        "#{gate} false, so the way back is claimed and never run. While the stack was dark every " \
+        "lane converged that branch for free; turning the gate on took the proof with it. Add " \
+        "`run_play --tags #{tag} -e #{gate}=false` to its lane, with the container asserted " \
+        "present before and absent after, and converge it back on afterwards")
 end
 
 implemented_aliases = implemented.map { |name| PolicySupport.contract_basename(name) }

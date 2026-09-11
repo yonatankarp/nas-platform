@@ -1,0 +1,259 @@
+---
+# THE STORE IS COPIED ASIDE BEFORE A PINNED UPGRADE, AND THIS IS NOT A BACKUP.
+#
+# Say the second half first, because the first half reads like a safety it does
+# not provide. The copy this file takes lands under
+# {{ vaultwarden_data_host_path }}, on the same disk, in the same NAS, inside
+# the same directory it is a copy of. Off-site backup for this platform is
+# parked by decision, so a drive failure, a filesystem loss or a mistaken
+# `rm -rf` of the data root takes the original and the copy together. Nothing
+# here changes that, and docs/secrets.md is where the real exposure is recorded.
+#
+# WHAT IT DOES BUY IS THE FAILURE #511 ACTUALLY RECORDED, which is a different
+# failure and a much more likely one. Vaultwarden migrates its own SQLite store
+# when it starts, so a version bump is one-way: the newer image writes a schema
+# the older one declines to open, and it declines INSIDE the container, which is
+# a crash loop every five minutes rather than a failure a play reports. Bindery
+# spent three days in exactly that state. roles/image_downgrade_guard, included
+# by tasks/deploy.yml just above this, refuses to go BACK; this is what makes
+# going back possible at all -- restore these files, pin the older image,
+# converge. Without it the only way out of a bad bump is forward.
+#
+# WHY A FILE COPY AND NOT THE APPLICATION'S OWN BACKUP. Bindery's equivalent
+# POSTs /backup to the application and takes a `VACUUM INTO` the application
+# performs on its own live database. Vaultwarden's equivalent lives behind the
+# admin panel, which this platform deliberately does not open, and the image
+# ships no sqlite3 -- measured: `command -v sqlite3` finds nothing in the pinned
+# image, which carries cp and tar and no more. ADM has none either. So there is
+# no route to an application-consistent copy of a RUNNING store here.
+#
+# WHICH IS WHY THE CONTAINER IS STOPPED FIRST, and that costs nothing on the one
+# path this file runs on. SQLite in write-ahead-logging mode is not safely
+# copied file by file while it is open: a checkpoint landing between the copy of
+# db.sqlite3 and the copy of db.sqlite3-wal yields a pair that never existed.
+# The stack is about to be recreated anyway -- an upgrade is pending, that is the
+# whole gate -- so stopping it before the copy rather than after buys a
+# consistent store for a few seconds of downtime the upgrade was going to take
+# regardless. services/vaultwarden/compose.yml declares stop_grace_period: 30s
+# for exactly this: the log is committed and the database closed rather than a
+# -wal being left for the next start to recover.
+#
+# IT RUNS ONLY WHEN AN UPGRADE IS PENDING. Keyed on an actual image change, the
+# way Bindery's is: a copy on every converge would report a change on every
+# converge and idempotence is a hard requirement here.
+
+# The pinned image, READ FROM THE PARSE tasks/deploy.yml ALREADY MADE rather
+# than from the release again. That parse is guarded by a stat -- the shape
+# tests/release_path_read_test.rb exists to keep -- so reusing it means this
+# file adds no second reader of platform_current_dir to guard, and cannot drift
+# from the document the admin-panel sweep judged. The include that reaches this
+# file carries vaultwarden_release_carries_service, so the fact is set by the
+# time anything here runs.
+- name: Resolve the Vaultwarden image this release pins
+  ansible.builtin.set_fact:
+    vaultwarden_pinned_image: >-
+      {{ ((vaultwarden_compose_documents
+           | selectattr('services', 'defined') | map(attribute='services')
+           | select('mapping') | map('dict2items') | flatten
+           | selectattr('key', 'equalto', 'vaultwarden')
+           | map(attribute='value') | selectattr('image', 'defined')
+           | map(attribute='image') | list) + ['']) | first }}
+
+# Only a container this platform actually created is considered, running or not:
+# `docker container ls --all`, so a stack that is merely stopped is still read
+# as having a store this host has migrated. A host with no container has no
+# store to protect and no upgrade to be pending.
+- name: List the Vaultwarden containers this host holds
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --all
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ vaultwarden_compose_project_name }}"
+      - --filter
+      - label=com.docker.compose.service=vaultwarden
+  register: vaultwarden_backup_container_ids
+  changed_when: false
+  check_mode: false
+
+# Redacted: `docker container inspect` returns the container's whole Env array,
+# which is the rendered .env. It carries no credential for this service -- there
+# is none -- but the redaction is the platform's convention rather than a
+# judgement made per service, and a future variable would arrive unredacted
+# otherwise.
+- name: Inspect the Vaultwarden containers this host holds
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'container', 'inspect'] + vaultwarden_backup_container_ids.stdout_lines }}"
+  register: vaultwarden_backup_inspection
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: vaultwarden_backup_container_ids.stdout_lines | length > 0
+
+# Compose records the image reference it created the container from, digest
+# included, so comparing it with the pinned one names an upgrade exactly. An
+# empty deployed reference is a host with no container, which is not an upgrade.
+- name: Resolve whether a Vaultwarden upgrade is pending
+  ansible.builtin.set_fact:
+    vaultwarden_deployed_image: >-
+      {{ (vaultwarden_backup_inspection.stdout | default('[]', true) | from_json
+          | map(attribute='Config.Image') | list | first | default('', true)) }}
+
+- name: Resolve the Vaultwarden upgrade this converge would perform
+  ansible.builtin.set_fact:
+    vaultwarden_upgrade_pending: >-
+      {{ vaultwarden_deployed_image | length > 0
+         and vaultwarden_pinned_image | length > 0
+         and vaultwarden_deployed_image != vaultwarden_pinned_image }}
+
+- name: Report the planned Vaultwarden pre-upgrade copy
+  ansible.builtin.debug:
+    msg: >-
+      Vaultwarden is running {{ vaultwarden_deployed_image }} and this release
+      pins {{ vaultwarden_pinned_image }}. A live run would stop the container,
+      copy db.sqlite3, any write-ahead log beside it and rsa_key* into
+      {{ vaultwarden_pre_upgrade_backup_path }}, and only then start the new
+      image -- so that a bump whose schema migration goes wrong can be undone by
+      restoring those files and pinning the older image. The copy is on this
+      same disk and is not a backup.
+  when:
+    - ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+# STOPPED RATHER THAN REMOVED, and only the one service, so the deployment below
+# recreates it onto the new image exactly as it would have from running.
+#
+# `recreate: never` IS LOAD-BEARING AND WAS FOUND BY RUNNING IT. Without it the
+# module's `state: stopped` brings the project up to the release's own
+# definition first and only then stops it, so the container is REPLACED by one
+# created from the new pin -- measured against this file: `docker ps -a` reported
+# `Created` on the 1.37.2 image before the copy had been taken. The copy itself
+# survives that, because a created-but-never-started container migrates nothing.
+# What does not survive it is the retry: the next converge would read the new
+# image as the deployed one, find no upgrade pending, and start it against a
+# store this run never managed to copy. With `recreate: never` the module stops
+# the existing container and nothing else -- measured: one `Stopping` action, the
+# container left at `Exited (0)` still on the old image, so a failed copy is
+# still pending work on the next tick.
+- name: Stop Vaultwarden before copying the store it is about to migrate
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/vaultwarden"
+    project_name: "{{ vaultwarden_compose_project_name }}"
+    files: "{{ platform_service_compose_files['vaultwarden'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/vaultwarden/.env"]
+    services: [vaultwarden]
+    state: stopped
+    recreate: never
+  register: vaultwarden_pre_upgrade_stop
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+# THE WHOLE SUBJECT, AND WHY THE SET IS READ RATHER THAN LISTED. Measured after
+# a clean stop of this image: the write-ahead log is checkpointed and TRUNCATED
+# to zero bytes, and db.sqlite3-wal and db.sqlite3-shm are both still THERE --
+# SQLite truncates rather than unlinking. So the copy normally carries four files
+# and the two log files it carries are normally empty, which is what a consistent
+# store looks like. Reading the set rather than listing it is what makes the
+# other cases right without a branch: a stop that did not complete cleanly leaves
+# a log with content in it, and a store that has never been opened has neither
+# file.
+# rsa_key* is a glob because the pinned image writes rsa_key.pem and older and
+# newer ones have written a .pub beside it; it is the key every session token
+# this server ever issued is signed with, so a store restored without it logs
+# every client out and is the difference between a rollback and a re-enrolment.
+- name: Read the Vaultwarden store files this copy must carry
+  ansible.builtin.find:
+    paths: "{{ vaultwarden_data_host_path }}"
+    patterns:
+      - db.sqlite3
+      - db.sqlite3-wal
+      - db.sqlite3-shm
+      - rsa_key*
+    file_type: file
+  register: vaultwarden_store_files
+  changed_when: false
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+- name: Require the Vaultwarden pre-upgrade copy to have taken the store
+  ansible.builtin.assert:
+    that:
+      - >-
+        'db.sqlite3' in (vaultwarden_store_files.files | default([])
+                         | map(attribute='path') | map('basename') | list)
+    fail_msg: >-
+      No db.sqlite3 was found under {{ vaultwarden_data_host_path }} on a host
+      whose Vaultwarden container reports the image
+      {{ vaultwarden_deployed_image }}, so this run has a store it cannot copy
+      and an upgrade to {{ vaultwarden_pinned_image }} that would migrate it.
+      The upgrade is refused here rather than performed unprotected: a
+      migration that goes wrong would have nothing to restore from, and this
+      service's store is the household's passwords under recovery: critical.
+      VAULTWARDEN IS STOPPED AND STAYS STOPPED until this is resolved: the stop
+      above ran, this refusal is ahead of the deployment, and every converge
+      after it takes the same path. Find out what is in
+      {{ vaultwarden_data_host_path }} before converging again -- a store that
+      moved is restored by putting it back, and a store that is genuinely empty
+      is started by taking this container to `state: absent` so the next
+      converge builds a fresh one.
+    success_msg: >-
+      The Vaultwarden store is present and is copied into
+      {{ vaultwarden_pre_upgrade_backup_path }} before this run upgrades to
+      {{ vaultwarden_pinned_image }}.
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+- name: Create the Vaultwarden pre-upgrade copy directory
+  ansible.builtin.file:
+    path: "{{ vaultwarden_pre_upgrade_backup_path }}"
+    state: directory
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0700"
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+# ansible.builtin.copy moves each file into place atomically, so a run
+# interrupted here leaves whole files rather than truncated ones.
+- name: Copy the Vaultwarden store aside before the pinned upgrade
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ vaultwarden_pre_upgrade_backup_path }}/{{ item.path | basename }}"
+    remote_src: true
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  loop: "{{ vaultwarden_store_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  register: vaultwarden_pre_upgrade_copy
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+
+# THE HALF A COPY ALONE GETS WRONG. If the previous upgrade copied a
+# db.sqlite3-wal and this one does not have to -- which is the normal case, the
+# stop having checkpointed it -- then leaving that stale log beside a fresh
+# db.sqlite3 produces a directory that looks like a store and is two different
+# stores. Anything the copy above did not just write is therefore removed rather
+# than left, and the copy is the whole of what this directory holds.
+- name: Remove Vaultwarden pre-upgrade copies this run did not write
+  ansible.builtin.file:
+    path: "{{ vaultwarden_pre_upgrade_backup_path }}/{{ item }}"
+    state: absent
+  loop:
+    - db.sqlite3
+    - db.sqlite3-wal
+    - db.sqlite3-shm
+  when:
+    - not ansible_check_mode
+    - vaultwarden_upgrade_pending | bool
+    - item not in (vaultwarden_store_files.files | default([])
+                   | map(attribute='path') | map('basename') | list)

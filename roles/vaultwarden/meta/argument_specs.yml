@@ -61,6 +61,9 @@ argument_specs:
       vaultwarden_config_json_path:
         type: path
         required: false
+      vaultwarden_pre_upgrade_backup_path:
+        type: path
+        required: false
       vaultwarden_tailscale_binary_candidates:
         type: list
         elements: path

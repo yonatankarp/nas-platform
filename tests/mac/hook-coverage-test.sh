@@ -224,7 +224,7 @@ build_tree "$tree"
 # registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
+  'mac fixtures-seed hooks: covered 18 of 18 registered services (ran 7, delegated 0, exempt 11)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -235,7 +235,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 13, delegated 1, exempt 3)'
+  'mac fixtures-persistence hooks: covered 18 of 18 registered services (ran 13, delegated 1, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -252,7 +252,7 @@ adguard run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
+  'mac verify hooks: covered 18 of 18 registered services (ran 12, delegated 3, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -268,7 +268,7 @@ adguard run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 15, delegated 0, exempt 2)'
+  'mac fixtures-recreate hooks: covered 18 of 18 registered services (ran 15, delegated 0, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 ntfy verify-hook
 dozzle verify
@@ -311,7 +311,7 @@ proof-adguard |runtime/services/adguard/.env |current/services/adguard/compose.y
 # entirely from the sibling filenames its roster pins.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
-  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 14, exempt 3)'
+  'mac drift hooks: covered 18 of 18 registered services (ran 0, delegated 14, exempt 4)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
@@ -322,7 +322,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 # could not ask.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
-  'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
+  'mac pre-converge hooks: covered 18 of 18 registered services (ran 0, delegated 1, exempt 17)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
 # A drift hook deleted must fail the group. This is the regression the group had
@@ -372,7 +372,7 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 12, delegated 3, exempt 2)'
+  'mac verify hooks: covered 18 of 18 registered services (ran 12, delegated 3, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
 ntfy verify-hook
@@ -479,14 +479,14 @@ if run_group "$tree" fixtures-persistence 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-persistence accepted a missing delegated hook'
 fi
 
-# The exemptions are held to the same standard: with ntfy no longer named as a
-# Mac-only service, the exemptions that name it are stale and must fail.
+# The exemptions are held to the same standard: with neither Mac-only service
+# named any more, the exemptions that name them are stale and must fail.
 tree=$fixture/stale-exemption
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
 source = File.read(path)
-abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'ntfy'"'"'")
-File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'ntfy'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
+abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'")
+File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
   "$tree/tests/mac/lib.sh"
 if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a stale exemption'
