@@ -101,14 +101,34 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_verify_compose_present.stat.exists
 
+# EVERY PROBE IN THIS FILE ACCEPTS EVERY STATUS, AND THE ASSERTION BELOW IS WHAT
+# FAILS. The rule is stated above the /admin probe further down and two of the
+# four readings did not obey it: `status_code: [200]` makes the PROBE fail, with
+# a message about a status code, on a task whose job is to supply a reading to an
+# assertion that can say which of four claims differed.
+#
+# What that cost is the review an operator is told to run first. `--check --diff`
+# against a host that has not yet converged this service reaches these tasks --
+# they carry check_mode: false, deliberately, so a converged host is really read
+# -- and died on `Status code was -1 and not [200]: Connection refused`, which is
+# not a fault: it is a service that is not running yet because check mode does
+# not start anything. Measured on exactly that state. CI could not see it, since
+# the lane runs its --check phase after two live converges and so never meets a
+# host without the container.
+#
+# The other half of the fix is the `when:` on the assertion: a review that found
+# nothing listening reports instead of asserting, while a LIVE run always
+# asserts. A live converge has just started and waited for this container, so
+# nothing answering there is a real failure.
 - name: Verify Vaultwarden is alive
   tags: [platform_verify_vaultwarden]
   ansible.builtin.uri:
     url: "{{ vaultwarden_url }}/alive"
     method: GET
-    status_code: [200]
+    status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: vaultwarden_verify_alive
+  failed_when: false
   changed_when: false
   check_mode: false
   when: vaultwarden_deployment_enabled | bool
@@ -118,9 +138,10 @@
   ansible.builtin.uri:
     url: "{{ vaultwarden_url }}/api/version"
     method: GET
-    status_code: [200]
+    status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: vaultwarden_verify_version
+  failed_when: false
   changed_when: false
   check_mode: false
   when: vaultwarden_deployment_enabled | bool
@@ -285,7 +306,36 @@
       CVE-2026-27801 floor recorded beside the image is no longer known to hold.
       An admin panel that no longer says it is disabled means config.json can be
       written, and from then on it outranks everything this role renders.
-  when: vaultwarden_deployment_enabled | bool
+  when:
+    - vaultwarden_deployment_enabled | bool
+    # A LIVE RUN ALWAYS ASSERTS. The only tolerated state is a REVIEW of a host
+    # where nothing answered at all, which is check mode meeting a service the
+    # review itself did not start -- the operator previewing this flip, and the
+    # state that used to fail the whole play at the probe above. A live converge
+    # has just created and waited for this container, so silence there is a real
+    # failure and is asserted as one; and a review of a host that IS running the
+    # stack reads it normally, because the probes carry check_mode: false.
+    - not (ansible_check_mode and
+           vaultwarden_verify_alive.status | default(0) | int <= 0)
+
+# Named rather than skipped in silence, for the reason the whole file is written
+# that way: a green run that asserted nothing has to say so.
+- name: Report the Vaultwarden verification this review cannot make
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.debug:
+    msg: >-
+      Nothing answered {{ vaultwarden_url }}/alive, and this is a review rather
+      than a converge, so the four claims this file makes -- alive, the pinned
+      version, the disabled admin panel and the registration door -- are
+      deferred rather than checked. Check mode starts no container, so a host
+      that has not yet converged this service has nothing listening on port
+      {{ vaultwarden_port }}. A live converge starts the stack and waits for it,
+      and this verification then runs in full; on a host that is already running
+      it, this task does not appear at all.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - ansible_check_mode
+    - vaultwarden_verify_alive.status | default(0) | int <= 0
 
 - name: Report the Vaultwarden verification the deployment gate skips
   ansible.builtin.debug:

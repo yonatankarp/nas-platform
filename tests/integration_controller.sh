@@ -1365,6 +1365,53 @@ EOF
         run_play --tags vaultwarden --check --diff
         run_vaultwarden_verify_only
         printf 'VAULTWARDEN_RUNTIME_VERIFIED\n'
+        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED, and it is the AdGuard
+        # paragraph forty lines above this one arriving for the second service.
+        # While the stack was dark the disabled branch was converged by every
+        # lane on every run and nobody had to ask for it; turning the platform
+        # switch on took that proof away, because CI now requests what production
+        # runs and nothing anywhere requests the other state.
+        # inventory/group_vars/all/main.yml calls setting the flag back to false
+        # "a deployment decision in both directions", and a line nothing runs is
+        # not a decision.
+        #
+        # It matters here for a reason of its own. The way back is what an
+        # operator reaches for when this stack is the problem -- a config.json
+        # appeared, the door is answering something the repository did not
+        # declare -- and roles/vaultwarden/tasks/deploy.yml used to refuse
+        # exactly that state BEFORE the tear-down, so the switch could not
+        # actually switch it off. That ordering is fixed, and this is what would
+        # notice if it came back.
+        #
+        # The container has to be THERE FIRST, or the assertion below passes over
+        # a deployment that never happened and VAULTWARDEN_TEARDOWN_VERIFIED
+        # means nothing.
+        if ! docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-vaultwarden$'; then
+          printf '%s\n' \
+            'the vaultwarden container is not present, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        # The override goes after the playbook path, where Ansible's last `-e`
+        # for a key wins -- the same placement and the same reason as AdGuard's
+        # above. Compose is asked directly rather than through the role, because
+        # what has to be gone is the container, not the role's opinion of it.
+        run_play --tags vaultwarden -e vaultwarden_deployment_enabled=false
+        if docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-vaultwarden$'; then
+          printf '%s\n' \
+            'disabling vaultwarden_deployment_enabled left the container in place' >&2
+          exit 1
+        fi
+        printf 'VAULTWARDEN_TEARDOWN_VERIFIED\n'
+        # And back on, because a rollback nothing reverses is a one-way door. The
+        # re-converge also proves the stack comes up against the data root the
+        # tear-down left behind -- the store survives, which for this service is
+        # the whole of what anybody cares about -- and the verification that
+        # follows reads the door on the server that came back.
+        run_play --tags vaultwarden
+        run_vaultwarden_verify_only
+        printf 'VAULTWARDEN_RETURN_VERIFIED\n'
       fi
     fi
       # The full lane avoids the CPU-machine-learning seed contract because it

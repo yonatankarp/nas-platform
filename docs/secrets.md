@@ -748,8 +748,15 @@ registering chooses a master password this platform never sees. `SIGNUPS_ALLOWED
 is `true` and stays true: with no admin panel and no SMTP, a closed door leaves a
 fresh database with **no route to a first account at all** — nobody to invite
 from, and no way to deliver an invitation if there were. The control is not the
-setting but the perimeter: the server is published only through Tailscale Serve,
-so the registration page is reachable only from a device already on the tailnet,
+setting but the perimeter, and the perimeter is a Compose line rather than a
+hope: `services/vaultwarden/compose.yml` publishes the container on
+`127.0.0.1:8086` -- the only loopback publication on this platform besides
+Beszel's socket proxy -- so nothing off the NAS reaches the listener and
+Tailscale Serve is the only route to the registration page. It shipped as a
+wildcard in the first cut of the flip, which made this sentence false: `docker
+port` reported `0.0.0.0` and `[::]`, and an uninvited registration from a LAN
+address succeeded. With the binding in place the registration page is reachable
+only from a device already on the tailnet,
 and the cost of that — anything joining the tailnet later can register here — is
 recorded beside the switch in `inventory/group_vars/all/main.yml`. An account so
 created reads nobody else's items; it is still a user on this server.

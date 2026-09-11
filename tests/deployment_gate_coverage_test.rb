@@ -440,6 +440,61 @@ subjects.each do |name|
         "reports clean having skipped the service entirely")
 end
 
+# ---------------------------------------------------------------------------
+# Requirement 3: CI converges the service's DISABLED path too.
+#
+# A gate is a deployment decision in both directions -- every inventory comment
+# beside one says so -- and while a stack is dark the `state: absent` branch is
+# converged by every lane on every run without anybody asking for it. Turning the
+# switch on takes that proof away, because CI then requests what production runs
+# and nothing requests the other state. AdGuard hit it first and #569 closed it
+# with a lane step; #547 rebased onto that and reintroduced it for Vaultwarden,
+# which is what makes this a rule rather than a second copy of one service's fix.
+#
+# The cost of an unexercised way back is not hypothetical for this pair. The
+# switch is the documented emergency exit -- for a resolver answering a whole
+# household, and for a password manager whose door is open -- and
+# roles/vaultwarden/tasks/deploy.yml shipped with its config.json refusal ahead
+# of the tear-down, so the exit was blocked in precisely the state that motivates
+# using it. Nothing noticed, because nothing ran it.
+#
+# TWO FORMS COUNT, and both are read out of the harness rather than listed here:
+#
+#   the step   `run_play --tags <tag> -e <gate>=false` inside the lane, which
+#              converges the disabled path against a stack that exists. This is
+#              the form to write today.
+#   the narrow `integration_<role>_deployment_enabled=false` at the top of the
+#              controller, which withholds the gate from every lane but the
+#              service's own, so smoke and idempotence-check converge the
+#              disabled branch on every run. It is the older form and the
+#              controller's own comments say it has to be flipped or deleted the
+#              day the platform switch turns on -- nextcloud is its last user.
+#              It is admitted because it really does converge that branch, not
+#              because it is tidy; when it goes, that service needs the step.
+INTEGRATION_CONTROLLER = File.join(ROOT, "tests", "integration_controller.sh")
+controller_source = File.file?(INTEGRATION_CONTROLLER) ? File.read(INTEGRATION_CONTROLLER) : ""
+check(failures, !controller_source.empty?,
+      "tests/integration_controller.sh could not be read, so no service's disabled path can be " \
+      "shown to run and every requirement below would pass vacuously")
+
+subjects.each do |name|
+  role = role_of[name]
+  tag = service_tags[name]
+  next if role.nil? || tag.nil?
+
+  gate = "#{role}#{GATE_SUFFIX}"
+  next unless gate_names.include?(gate)
+
+  step = controller_source.include?("run_play --tags #{tag} -e #{gate}=false")
+  narrowed = controller_source.include?("integration_#{gate}=false")
+  check(failures, step || narrowed,
+        "#{name} deploys and nothing in tests/integration_controller.sh ever converges it with " \
+        "#{gate} false, so the way back is claimed and never run. While the stack was dark every " \
+        "lane converged that branch for free; turning the gate on took the proof with it. Add " \
+        "`run_play --tags #{tag} -e #{gate}=false` to its lane, with the container asserted " \
+        "present before and absent after, and converge it back on afterwards")
+end
+
 implemented_aliases = implemented.map { |name| PolicySupport.contract_basename(name) }
 stray_roster = mac_roster - implemented_aliases
 check(failures, stray_roster.empty?,

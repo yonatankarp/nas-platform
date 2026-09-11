@@ -23,14 +23,19 @@
 # matters here more than usual. Proved: everything the stub can answer, which is
 # every branch of the stage. Assumed: the exact bytes a real `tailscale serve
 # status --json` emits. The stub's configured shapes were taken from tailscale
-# 1.102.2's documented Web/Handlers/Proxy structure, and the unconfigured shape
-# is modelled as `No serve config` on stderr at rc 1. A reading of tailscale's
-# own runServeStatus suggests an unconfigured host under --json emits `null` at
-# rc 0 instead, which would make the stage's 'no serve config' string branch
-# dead code already covered by its rc == 0 term. THAT IS PLAUSIBLE AND
-# UNCONFIRMED -- nobody has run the real binary against this -- so the branch
-# stays, this file exercises both shapes, and `unconfigured_null` is the row
-# that will still pass if the reading is right.
+# 1.102.2's documented Web/Handlers/Proxy structure. The unconfigured shape was
+# modelled twice and guessed both times: `No serve config` on stderr at rc 1,
+# and `null` at rc 0 from a reading of tailscale's own runServeStatus.
+#
+# IT HAS NOW BEEN MEASURED AND IT IS NEITHER. `tailscale serve status --json` on
+# an unconfigured host emits `{}` at rc 0 (1.102.3), which is why
+# `unconfigured_empty` is the row that models the real client and the other two
+# are kept as what they are: shapes no observed build emits, retained because
+# the NAS runs whichever build App Central ships and the stage's own refusal
+# branch is cheap to keep exercised. The stage handles all three -- `{}` parses
+# to an empty document, so the proxy lookup finds nothing and the front is
+# placed -- and substituting the real shape changed no verdict, which is what
+# makes this a fidelity repair rather than a defect.
 
 require "fileutils"
 require "json"
@@ -69,7 +74,8 @@ STUB = <<~SH
         printf '{"TCP":{"443":{"HTTPS":true}},"Web":{"%s:443":{"Handlers":{"/":{"Proxy":"http://127.0.0.1:11434"}}}}}\\n' "$TS_KEY"
         exit 0 ;;
       unconfigured_message) printf 'No serve config\\n' >&2; exit 1 ;;
-      unconfigured_null)    printf 'null\\n'; exit 0 ;;
+      unconfigured_null)    printf 'null\n'; exit 0 ;;
+      unconfigured_empty)   printf '{}\n'; exit 0 ;;
       refuses)              printf 'flag provided but not defined: -json\\n' >&2; exit 2 ;;
     esac
   fi
@@ -197,9 +203,18 @@ CASES = [
     "run" => { state: :unconfigured_message }, "ok" => true, "mutations" => [PLACEMENT] },
   { "name" => "unconfigured_null",
     "why" => "the same host under the reading of runServeStatus that says " \
-             "--json emits null at rc 0. Unconfirmed against the real binary, " \
-             "which is why both shapes are rows here rather than one",
+             "--json emits null at rc 0. No build has been observed doing this " \
+             "-- see unconfigured_empty below for what one really does -- and " \
+             "the row stays because the stage must survive whichever build App " \
+             "Central ships to the NAS",
     "run" => { state: :unconfigured_null }, "ok" => true, "mutations" => [PLACEMENT] },
+  { "name" => "unconfigured_empty",
+    "why" => "THE SHAPE THE REAL CLIENT EMITS, measured on 1.102.3: an " \
+             "unconfigured host answers `{}` at rc 0. The two rows above were " \
+             "both guesses at this state, and the stage is right for the same " \
+             "reason on all three -- an empty document has no proxy to find, so " \
+             "the front is placed",
+    "run" => { state: :unconfigured_empty }, "ok" => true, "mutations" => [PLACEMENT] },
   { "name" => "cli_refuses",
     "why" => "a client whose command shape no longer matches these arguments is " \
              "a real fault on the one host that matters, so it fails by name " \

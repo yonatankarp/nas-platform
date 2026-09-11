@@ -365,41 +365,6 @@
       DISABLE_ADMIN_TOKEN or a service-level env_file, so the /admin panel is
       disabled and the rendered environment is the only configuration.
   when: vaultwarden_release_carries_service
-# THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
-# THE CAUSE. "The admin panel is the only writer of config.json" is an upstream
-# claim, not a property this platform can see, so the file's absence is asserted
-# on every converge rather than inferred from the token's absence. A fresh start
-# creates no config.json -- measured against this pin -- so the file existing at
-# all means something wrote a configuration that now outranks the rendered .env.
-#
-# Ungated: it runs whether or not the stack is deployed, because the state it
-# refuses is exactly a file left behind by an earlier run that WAS enabled.
-- name: Read the Vaultwarden configuration override that must not exist
-  ansible.builtin.stat:
-    path: "{{ vaultwarden_config_json_path }}"
-  register: vaultwarden_config_json
-  changed_when: false
-  check_mode: false
-
-- name: Refuse a Vaultwarden configuration that outranks the rendered environment
-  ansible.builtin.assert:
-    that:
-      - not vaultwarden_config_json.stat.exists
-    fail_msg: >-
-      {{ vaultwarden_config_json_path }} exists. Vaultwarden reads that file in
-      preference to every environment variable, so this release's DOMAIN,
-      SIGNUPS_ALLOWED and INVITATIONS_ALLOWED are no longer what the server is
-      running on, and no converge would have said so. Only the /admin panel
-      writes it and this deployment sets no ADMIN_TOKEN, so its presence means
-      either that a token was configured outside this repository or that
-      something else wrote into {{ vaultwarden_data_host_path }}. Move the file
-      aside, confirm the settings you want are the ones in
-      roles/vaultwarden/defaults/main.yml, and converge again -- the repository
-      is the only way in.
-    success_msg: >-
-      {{ vaultwarden_config_json_path }} does not exist, so the rendered
-      environment is the configuration in force.
-
 # `state: absent` rather than a skipped deployment, so switching the gate off is
 # a deployment decision in both directions rather than a converge that leaves
 # containers running that nothing in the repository claims. remove_orphans
@@ -447,6 +412,60 @@
       inventory/group_vars/all/main.yml and merge; the auto-deploy poller brings
       the stack up on its next five-minute tick.
   when: not vaultwarden_deployment_enabled | bool
+
+# THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN
+# THE CAUSE. "The admin panel is the only writer of config.json" is an upstream
+# claim, not a property this platform can see, so the file's absence is asserted
+# on every converge rather than inferred from the token's absence. A fresh start
+# creates no config.json -- measured against this pin -- so the file existing at
+# all means something wrote a configuration that now outranks the rendered .env.
+#
+# Ungated: it runs whether or not the stack is deployed, because the state it
+# refuses is exactly a file left behind by an earlier run that WAS enabled.
+#
+# AND IT SITS AFTER THE TEAR-DOWN, WHICH IS THE WHOLE OF WHY IT MOVED. It was
+# ahead of it, and that made the disabled path unreachable in exactly the state
+# that most plausibly motivates disabling: a config.json appeared, so the server
+# is running a policy this repository did not write, and an operator turns the
+# gate off to stop it. With the refusal first, the run died before
+# `state: absent` -- measured, `ok=1 failed=1` with the project still up -- and
+# the message told the operator to converge again, which refused identically on
+# every five-minute tick. A guard that cannot be switched off by the switch
+# provided for switching it off is a trap rather than a guard.
+#
+# Nothing is weakened by the move. The refusal is still ungated and still fails
+# the run; on the enabled path the tear-down above is skipped, so this is the
+# same position it always had -- ahead of the downgrade guard, the pre-upgrade
+# copy and every Compose invocation that creates anything.
+- name: Read the Vaultwarden configuration override that must not exist
+  ansible.builtin.stat:
+    path: "{{ vaultwarden_config_json_path }}"
+  register: vaultwarden_config_json
+  changed_when: false
+  check_mode: false
+
+- name: Refuse a Vaultwarden configuration that outranks the rendered environment
+  ansible.builtin.assert:
+    that:
+      - not vaultwarden_config_json.stat.exists
+    fail_msg: >-
+      {{ vaultwarden_config_json_path }} exists. Vaultwarden reads that file in
+      preference to every environment variable, so this release's DOMAIN,
+      SIGNUPS_ALLOWED and INVITATIONS_ALLOWED are no longer what the server is
+      running on, and no converge would have said so. Only the /admin panel
+      writes it and this deployment sets no ADMIN_TOKEN, so its presence means
+      either that a token was configured outside this repository or that
+      something else wrote into {{ vaultwarden_data_host_path }}. Move the file
+      aside, confirm the settings you want are the ones in
+      roles/vaultwarden/defaults/main.yml, and converge again -- the repository
+      is the only way in. If vaultwarden_deployment_enabled is false, this run
+      has ALREADY taken the Compose project to `state: absent` before reaching
+      here, so the server is down and stays down; the file is still refused,
+      because it would outrank the environment again the moment the stack came
+      back.
+    success_msg: >-
+      {{ vaultwarden_config_json_path }} does not exist, so the rendered
+      environment is the configuration in force.
 
 # BEFORE THE DEPLOYMENT, because the point is to refuse while there is still a
 # healthy stack to protect. Vaultwarden migrates its own SQLite store when it

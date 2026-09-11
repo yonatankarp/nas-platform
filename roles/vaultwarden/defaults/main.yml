@@ -77,20 +77,35 @@ vaultwarden_domain: "https://{{ platform_public_host | lower }}"
 # panel is disabled" body. The platform's decision, its cost and the alternative
 # it rejected (open once, create the account, close again) are recorded in
 # inventory/group_vars/all/main.yml, which is where a nonsecret policy value
-# belongs; this default carries the same value for the reason
-# vaultwarden_deployment_enabled above does.
+# belongs. THIS DEFAULT SHIPS THE DOOR SHUT, for the same reason
+# vaultwarden_deployment_enabled above ships the stack off: a role default is
+# what a caller with no inventory gets, and the one thing that caller must not
+# get is a password manager anyone can register on. It said `true` in the first
+# cut of the flip, justified as carrying "the same value for the reason the gate
+# does" -- which had the reason exactly backwards, since the gate's reason is
+# that a default is a floor rather than a mirror.
 #
-# What the value depends on is not in this file and cannot be read from it:
-# Vaultwarden is published only through the tailnet, so the registration page is
-# reachable only from a device that has already joined it. Any deployment whose
-# front is reachable more widely than that must set this false and arrange a
-# first account some other way -- on an open origin this line is an open
-# password manager.
+# Nothing static holds this line. The repo-wide rule the gate has -- every
+# `<role>_deployment_enabled` in a role default must be false,
+# tests/deployment_gate_coverage_test.rb -- cannot reach it, because this is not
+# a gate and generalising that rule to "switches that look dangerous" would be a
+# list rather than a property. What holds the value that actually runs is
+# tasks/verify.yml, which knocks on the door and asserts the answer matches
+# whichever declaration won; on this platform that is inventory's `true`.
 #
-# tasks/verify.yml asserts the DOOR AGAINST THIS DECLARATION in both directions
-# on every converge, so the value here is a claim the platform then proves
-# rather than a setting it merely pushes.
-vaultwarden_signups_allowed: true
+# What the value depends on is one line in another file: Vaultwarden publishes
+# on `127.0.0.1:8086`, so nothing off the host reaches the listener and
+# Tailscale Serve is the only route to the registration page. That is what makes
+# "only a device already on the tailnet" true rather than aspirational -- it was
+# a wildcard publication until it was measured, and an uninvited registration
+# from a LAN address succeeded. Any deployment that publishes this service more
+# widely must set this false and arrange a first account some other way; on a
+# reachable origin this line is an open password manager.
+#
+# tasks/verify.yml asserts the DOOR AGAINST THE DECLARATION THAT WON in both
+# directions on every converge, so the effective value is a claim the platform
+# proves rather than a setting it merely pushes.
+vaultwarden_signups_allowed: false
 
 # Invitation stays available whichever way the door above is set: it is what an
 # organization owner uses to add a member, and it is independent of whether a

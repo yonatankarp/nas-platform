@@ -58,12 +58,35 @@ services:
     # db.sqlite3, its -shm and -wal siblings, rsa_key.pem and tmp/.
     user: "${NAS_UID:?}:${NAS_GID:?}"
     ports:
+      # LOOPBACK ONLY, AND IT IS THIS PLATFORM'S SECOND SUCH BINDING RATHER THAN
+      # ITS FIRST: services/beszel/compose.yml publishes its socket proxy as
+      # 127.0.0.1:2375 for the same kind of reason. Every other service here
+      # publishes on 0.0.0.0 and is reachable from the whole LAN, and every one
+      # of them demands a credential. This one hands out ACCOUNTS to anyone who
+      # asks -- SIGNUPS_ALLOWED is true by decision -- so a wildcard publication
+      # makes "the tailnet is the perimeter" false, which is the entire argument
+      # inventory/group_vars/all/main.yml gives for leaving the door open.
+      #
+      # Measured before the prefix was added, against this pin with the rendered
+      # environment: `docker port` reported `0.0.0.0:8086` AND `[::]:8086`, and a
+      # POST to /identity/accounts/register from a non-loopback address created
+      # the account. The bare `127.0.0.1:` prefix is v4-only, which is what is
+      # wanted: the v6 wildcard was half the exposure and a prefix that reached
+      # only one family would leave the other open.
+      #
+      # NOTHING THAT SHOULD REACH THIS SERVICE LOSES IT. Tailscale Serve runs on
+      # the host and proxies to http://127.0.0.1:8086, so the tailnet path is
+      # untouched; roles/vaultwarden addresses 127.0.0.1 like every other role;
+      # and the Docker integration lane runs its controller with --network host,
+      # so its probes share this namespace. A Bitwarden client was never meant to
+      # arrive here directly -- it needs the secure context Serve terminates.
+      #
       # 8086 on both sides, and the container side is the load-bearing half.
       # The image's own ExposedPorts is 80/tcp, which a container running as uid
       # 1000 cannot bind without CAP_NET_BIND_SERVICE; ROCKET_PORT below moves
       # the listener to an unprivileged port so the platform identity above
       # stays possible. AdGuard's 5353 is the same decision for the same reason.
-      - "8086:8086"
+      - "127.0.0.1:8086:8086"
     volumes:
       # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log,
       # attachments/, sends/ and rsa_key.pem. recovery: critical in

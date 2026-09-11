@@ -1047,7 +1047,11 @@ that zero-knowledge property is the entire reason to run it. So Ansible owns
 costs something: with no admin panel and no SMTP, a closed door leaves a fresh
 database with no route to a first account at all, so registration stays open and
 the tailnet is the whole of the control — anything that joins the tailnet can
-register here. `inventory/group_vars/all/main.yml` carries that argument and its
+register here. What makes that a perimeter rather than a wish is one Compose
+line: this is the only service on the platform published on `127.0.0.1` rather
+than the wildcard, so Tailscale Serve is the only route to the door. It shipped
+as a wildcard and an uninvited registration from a LAN address succeeded, which
+is why the binding is stated wherever the perimeter is. `inventory/group_vars/all/main.yml` carries that argument and its
 cost, and `roles/vaultwarden/tasks/verify.yml` asserts the observed door against
 the declared one in *both* directions on every converge, so the value is proved
 rather than pushed.

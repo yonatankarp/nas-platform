@@ -414,12 +414,22 @@ vaultwarden_deployment_enabled: true
 # household member has to ask an operator to change. The decision is to leave it
 # open and say so.
 #
-# THE PERIMETER IS THE CONTROL, AND ITS COST IS STATED RATHER THAN DISCOUNTED.
+# THE PERIMETER IS THE CONTROL, AND IT IS A COMPOSE LINE RATHER THAN A HOPE.
 # Vaultwarden is published only through Tailscale Serve on the tailnet: no ADM
-# port is opened, no public DNS record exists, and the registration page is
-# reachable only from a device that has already joined the tailnet. So the set
-# of things that can create an account here is exactly the set of things on the
-# tailnet -- and that is the cost, in full: ANYTHING THAT JOINS THE TAILNET
+# port is opened and no public DNS record exists -- and, the part that actually
+# enforces it, services/vaultwarden/compose.yml publishes the container on
+# `127.0.0.1:8086` rather than on the wildcard every other service here uses, so
+# nothing off this host can reach the listener at all and Serve is the only way
+# in. #547's second chunk shipped that as a wildcard while this paragraph
+# already claimed otherwise, and the claim was measured FALSE: `docker port`
+# reported 0.0.0.0 and [::], and an uninvited POST to
+# /identity/accounts/register from a LAN address created the account. The
+# binding is what makes the sentence true, so it is not a detail to tidy away
+# later -- restoring the wildcard restores an open password manager on the LAN.
+#
+# With it in place the set of things that can create an account here is exactly
+# the set of things on the tailnet -- and that is the cost, in full: ANYTHING
+# THAT JOINS THE TAILNET
 # LATER CAN CREATE AN ACCOUNT ON THE PASSWORD MANAGER, without asking anyone,
 # including a device added for some unrelated reason. An account so created
 # holds no existing vault -- master passwords are user-owned and the server

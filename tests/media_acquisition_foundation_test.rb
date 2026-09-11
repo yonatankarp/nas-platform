@@ -209,14 +209,24 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # 2026-09-10, the nearest neighbour being 5353/mDNS.
   ["adguard", "adguard", "0.0.0.0", 53, 5353, "tcp"],
   ["adguard", "adguard", "0.0.0.0", 53, 5353, "udp"],
-  # The web interface, and the container side is 8086 rather than the image's
-  # own ExposedPorts 80 because the container runs as the platform identity and
-  # cannot bind a privileged port. ROCKET_PORT moves the listener;
+  # THE ONLY LOOPBACK PUBLICATION IN THIS TABLE, AND THE REVIEW THIS CHECK
+  # EXISTS FOR CAUGHT IT. Every other row here is 0.0.0.0 and every one of those
+  # services demands a credential; Vaultwarden hands out ACCOUNTS to anyone who
+  # can reach it, because SIGNUPS_ALLOWED is true by decision and the perimeter
+  # that decision rests on is the tailnet. #547's second chunk shipped it on
+  # 0.0.0.0 while three files claimed the page was reachable only from the
+  # tailnet -- measured false: `docker port` reported 0.0.0.0 and [::], and a
+  # POST to /identity/accounts/register from a LAN address created the account.
+  # The bind address is v4 loopback only; the v6 wildcard was half the exposure.
+  #
+  # The container side is 8086 rather than the image's own ExposedPorts 80
+  # because the container runs as the platform identity and cannot bind a
+  # privileged port. ROCKET_PORT moves the listener;
   # services/vaultwarden/compose.yml carries the argument. 8086 is the lowest
   # free host port on this platform: 8080 Dozzle, 8081 the Dozzle alert relay,
   # 8082 qbittorrent, 8083 claimed by the AdGuard Home stack of #548, 8084
   # Nextcloud, 8085 SABnzbd.
-  ["vaultwarden", "vaultwarden", "0.0.0.0", 8086, 8086, "tcp"]
+  ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"]
 ].freeze
 
 EXPECTED_STORAGE = {

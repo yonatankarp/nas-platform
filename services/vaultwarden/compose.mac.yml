@@ -17,5 +17,12 @@ services:
     # which roles/vaultwarden/templates/env.j2 renders here.
     # tests/deployment_gate_coverage_test.rb is what made that mandatory the
     # moment the platform default flipped.
+    #
+    # The loopback prefix is carried over from the canonical file rather than
+    # dropped with the port number. A Mac sandbox is disposable and its ports
+    # are ephemeral, but the stack it stands up is a real Vaultwarden with
+    # registration open, and an operator's laptop is usually on a network with
+    # other people on it. The lane reaches it on 127.0.0.1 like every other
+    # service, so nothing is lost by keeping it there.
     ports: !override
-      - "${VAULTWARDEN_HOST_PORT:?}:8086"
+      - "127.0.0.1:${VAULTWARDEN_HOST_PORT:?}:8086"
