@@ -233,6 +233,22 @@ active service:
   drift the role can distinguish from a deliberate addition, and removing a
   trusted domain is how an instance stops answering for somebody. Every link is
   `http://`; there is no TLS anywhere on this platform.
+- Vaultwarden: this is the one service with no deployed identity to sign in
+  with, and that is the design — master passwords are user-owned and the
+  server never learns them. So the review is the door rather than a
+  credential. Open the sandbox port and confirm the web vault loads;
+  `http://127.0.0.1:<port>` is a secure context by the browser's own rule, so
+  its crypto works here even without TLS. Register a disposable account and
+  confirm it succeeds: registration is deliberately OPEN, and the platform's
+  only control on it is that the real deployment is published solely on the
+  tailnet. Then confirm `/admin` answers with nothing but "the admin panel is
+  disabled" — anything saved in that panel writes a `config.json` that
+  outranks every value the role renders, and the converge refuses that file
+  rather than repairing it. Two things cannot be reviewed on a laptop: the
+  lane gives the server a `DOMAIN` of `https://vaultwarden.mac.invalid`, a
+  name that can never resolve, so WebAuthn and any origin-bound flow are out
+  of scope here; and the Tailscale Serve front a Bitwarden client actually
+  talks to exists only on the NAS.
 
 After the review, produce the report and clean only the validated sandbox:
 

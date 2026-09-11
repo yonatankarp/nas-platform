@@ -1,13 +1,19 @@
 ---
 # The single operator switch. Inventory sets it, and
 # inventory/group_vars/all/main.yml is where the deployment decision is made and
-# explained; this default stays false so the role converges to `state: absent`
-# for any caller that runs it without that inventory rather than standing up a
-# password manager on the strength of a missing variable. The gate lives inside
-# the role rather than on the site.yml entry, because a `when:` there would also
-# skip the deployment_bundle re-include that revalidates the paths this role
-# touches and the deployment report that says whether anything moved.
-vaultwarden_deployment_enabled: false
+# explained. The gate lives inside the role rather than on the site.yml entry,
+# because a `when:` there would also skip the deployment_bundle re-include that
+# revalidates the paths this role touches and the deployment report that says
+# whether anything moved.
+#
+# TRUE IN BOTH HOMES SINCE #547's SECOND CHUNK, and the two are not redundant.
+# A role default is what any caller gets, including one that runs this role
+# without this repository's inventory; a false default there would mean a
+# `--check` of the role alone reported a tear-down of a stack the platform
+# actually runs, which is a review that describes a host nobody has. The gated
+# services that are still dark -- adguard today -- keep false in both places for
+# the mirror-image reason.
+vaultwarden_deployment_enabled: true
 
 # 8086, the web interface, and the container listens on it too. The image's own
 # ExposedPorts is 80/tcp, which the platform identity cannot bind; the reason
@@ -48,12 +54,39 @@ vaultwarden_url: "http://127.0.0.1:{{ vaultwarden_port }}"
 # the Serve one, and this is the only place it can be normalised once.
 vaultwarden_domain: "https://{{ platform_public_host | lower }}"
 
-# Ansible owns the door, and only the door. Registration is closed: an account
-# exists because somebody was invited, not because they found the address. There
-# is no SMTP on this platform, so completing an invitation is a manual act --
-# see docs/secrets.md for why the credential direction inverts here and why that
-# is a designed property rather than a gap.
-vaultwarden_signups_allowed: false
+# Ansible owns the door, and only the door.
+#
+# REGISTRATION IS OPEN, AND THE PERIMETER IS WHAT MAKES THAT DEFENSIBLE RATHER
+# THAN THE SETTING. Closed was the value #547 landed, and on a fresh database it
+# is a server with NO ROUTE TO A FIRST ACCOUNT: the admin panel is disabled by
+# decision, so there is nobody to invite from; there is no SMTP by decision, so
+# an invitation could not be delivered anyway. Both halves were measured against
+# the pinned image -- POST /identity/accounts/register answers 400 with
+# SIGNUPS_ALLOWED=false, and /admin answers 200 serving only its own "the admin
+# panel is disabled" body. The platform's decision, its cost and the alternative
+# it rejected (open once, create the account, close again) are recorded in
+# inventory/group_vars/all/main.yml, which is where a nonsecret policy value
+# belongs; this default carries the same value for the reason
+# vaultwarden_deployment_enabled above does.
+#
+# What the value depends on is not in this file and cannot be read from it:
+# Vaultwarden is published only through the tailnet, so the registration page is
+# reachable only from a device that has already joined it. Any deployment whose
+# front is reachable more widely than that must set this false and arrange a
+# first account some other way -- on an open origin this line is an open
+# password manager.
+#
+# tasks/verify.yml asserts the DOOR AGAINST THIS DECLARATION in both directions
+# on every converge, so the value here is a claim the platform then proves
+# rather than a setting it merely pushes.
+vaultwarden_signups_allowed: true
+
+# Invitation stays available whichever way the door above is set: it is what an
+# organization owner uses to add a member, and it is independent of whether a
+# stranger may register. There is no SMTP on this platform, so completing an
+# invitation is a manual act -- see docs/secrets.md for why the credential
+# direction inverts for this service and why that is a designed property rather
+# than a gap.
 vaultwarden_invitations_allowed: true
 
 # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log, attachments/,
@@ -66,6 +99,23 @@ vaultwarden_data_host_path: "{{ nas_docker_root }}/vaultwarden/data"
 # force. Stated as a path rather than derived inline so the assertion and the
 # message that explains it read the same value.
 vaultwarden_config_json_path: "{{ vaultwarden_data_host_path }}/config.json"
+
+# WHERE tasks/pre_upgrade_backup.yml PUTS THE COPY IT TAKES, and it is inside
+# DATA_FOLDER rather than beside it. Bindery's backups land on its own config
+# bind mount for the same reason: the directory is already declared in
+# nas_storage, already created by host_prep at 0700 under the platform identity,
+# and already named by this role's deployment_target_extra_paths, so the copy
+# needs no second declaration anywhere and cannot drift from the storage
+# contract. The container can see it, which is the cost; it holds nothing the
+# container does not already hold, which is why that cost is acceptable.
+#
+# ONE GENERATION, DELIBERATELY. It is the state the last upgrade started from,
+# not an archive, and it is what makes a #511 rollback possible at all --
+# restore these files, pin the older image, converge. Nothing rotates it and
+# nothing prunes it, because a second generation would double the footprint of
+# a store under recovery: critical with no off-site copy behind it.
+vaultwarden_pre_upgrade_backup_path: >-
+  {{ vaultwarden_data_host_path }}/pre-upgrade-backup
 
 vaultwarden_compose_project_name: >-
   {{ (platform_project_name ~ '-vaultwarden')

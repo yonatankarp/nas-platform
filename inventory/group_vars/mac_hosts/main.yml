@@ -28,6 +28,7 @@ seerr_port: "{{ lookup('env', 'PLATFORM_SEERR_PORT') | int }}"
 nextcloud_port: "{{ lookup('env', 'PLATFORM_NEXTCLOUD_PORT') | int }}"
 adguard_port: "{{ lookup('env', 'PLATFORM_ADGUARD_PORT') | int }}"
 adguard_dns_port: "{{ lookup('env', 'PLATFORM_ADGUARD_DNS_PORT') | int }}"
+vaultwarden_port: "{{ lookup('env', 'PLATFORM_VAULTWARDEN_PORT') | int }}"
 nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_path }}"
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 platform_render_device_available: false

@@ -483,7 +483,7 @@ unless mac_contract_arms.empty? || mac_registered_aliases.empty?
 end
 check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("mac_registry_services()") &&
-                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy'"),
+                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy vaultwarden'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
 #
 # Drift, the fifth group, never collapsed and does not need to: no two services
@@ -591,18 +591,6 @@ end
 # promotion that forgets the review is a red check rather than a gap discovered
 # later.
 MAC_REVIEW_EXEMPTIONS = {
-  # #547 landed Vaultwarden dark: vaultwarden_deployment_enabled is false in
-  # inventory and tests/mac/lib.sh does not ask the Mac lane to turn it on, so
-  # the lane converges the project to `state: absent` and there is nothing on
-  # the laptop to sign in to. A review entry here would tell an operator to
-  # exercise a service the lane deliberately did not deploy -- and in this
-  # service's case the entry could not be honest anyway, since the manual act
-  # worth reviewing is a Bitwarden client talking to a Tailscale Serve front
-  # that exists only on the NAS. When the gate is flipped this exemption comes
-  # out and the entry goes in; tests/deployment_gate_coverage_test.rb is what
-  # makes that mandatory rather than remembered.
-  "vaultwarden" => "its stack is gated off in the Mac lane, and the tailnet " \
-                   "HTTPS front a client needs exists only on the NAS",
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \

@@ -99,7 +99,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud adguard idempotence-check idempotence-1 idempotence-2
+nextcloud adguard vaultwarden idempotence-check idempotence-1 idempotence-2
 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
@@ -1017,7 +1017,12 @@ plaintext-credential-bearing and the whole directory does not become another
 every client out and voids every API key, and *disclosing* it lets anyone mint
 those tokens — so it is secret-bearing in the ordinary sense, which is why
 `nas_storage` gives that directory 0700 rather than the 0755 every other service
-takes. And `config.json` would be, if it existed: it is written only by the
+takes. **The pre-upgrade copy inherits that exactly**, the way Bindery's does in
+the list above: `roles/vaultwarden/tasks/pre_upgrade_backup.yml` copies the store
+and `rsa_key*` into `pre-upgrade-backup/` under the same data root before a
+pinned upgrade, so that directory holds a second copy of the one file in this
+service that is a credential — at mode 0600 inside a 0700 parent, and treated as
+secret-bearing wherever it is copied to next. And `config.json` would be, if it existed: it is written only by the
 `/admin` panel, which this deployment disables by setting neither `ADMIN_TOKEN`
 nor `DISABLE_ADMIN_TOKEN` — the second is the worse door, serving the whole panel
 unauthenticated, and it is what Vaultwarden's own warning recommends when it
@@ -1037,7 +1042,15 @@ Every other service takes its identity from `vault.yml` and is pushed outward. A
 password manager must not: master passwords are user-owned by construction, and
 that zero-knowledge property is the entire reason to run it. So Ansible owns
 `SIGNUPS_ALLOWED`, `INVITATIONS_ALLOWED`, `DOMAIN` and org policy, and
-`roles/vault_contract` must never grow a key for a master password.
+`roles/vault_contract` must never grow a key for a master password. **And
+`SIGNUPS_ALLOWED` is `true`**, permanently, which is the one place that inversion
+costs something: with no admin panel and no SMTP, a closed door leaves a fresh
+database with no route to a first account at all, so registration stays open and
+the tailnet is the whole of the control — anything that joins the tailnet can
+register here. `inventory/group_vars/all/main.yml` carries that argument and its
+cost, and `roles/vaultwarden/tasks/verify.yml` asserts the observed door against
+the declared one in *both* directions on every converge, so the value is proved
+rather than pushed.
 `tests/expected/vaultwarden.yml` therefore carries `vault_keys: []`, which
 `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in
 both directions — a service listed there that *gains* a key fails as loudly as

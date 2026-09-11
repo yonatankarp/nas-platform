@@ -472,6 +472,28 @@
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
 
+# AFTER THE DOWNGRADE GUARD AND BEFORE THE DEPLOYMENT, which is the only window
+# in which either control is worth anything: the guard refuses a pin older than
+# the store this host has already migrated, and this copies the store aside so
+# that a pin NEWER than it is reversible at all. Both have to happen while there
+# is still a healthy stack to protect.
+#
+# import rather than include, so the file is expanded by --list-tasks, reached by
+# a role-level tag, and inside the fixture set tests/policy_mutation_support.rb
+# derives from this role's statically imported files. tasks/main.yml carries that
+# argument in full.
+#
+# vaultwarden_release_carries_service is a term here rather than inside the file
+# because the imported tasks read the parse deploy.yml made above, which is
+# itself conditional on it -- a review whose installed release predates this
+# service has nothing to read and nothing deployed to protect.
+- name: Guard the Vaultwarden store before a pinned upgrade
+  ansible.builtin.import_tasks: pre_upgrade_backup.yml
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_runtime_env.stat.exists
+    - vaultwarden_release_carries_service
+
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
 # terms of the container state Docker reports or re-raises it unchanged.

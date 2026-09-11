@@ -1345,6 +1345,28 @@ EOF
         printf 'ADGUARD_RUNTIME_VERIFIED\n'
       fi
     fi
+
+    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is vaultwarden; then
+      if [ $INTEGRATION_SUITE = vaultwarden ]; then
+        # No contract to run, and that is the service rather than a gap: this is
+        # the one role on the platform that reads no vault credential, so there
+        # is no identity a contract could sign in with. What the lane proves is
+        # what the role asserts -- the server is alive, it runs the version this
+        # release pins, its admin panel is disabled, and its registration door
+        # answers what the declared policy says it should, in whichever
+        # direction that policy is set.
+        #
+        # The second converge is what refutes a Vaultwarden that writes a
+        # config.json of its own at start: that file outranks every environment
+        # variable this role renders, and the role asserts it absent on every
+        # converge, so a release that started writing one fails here rather than
+        # being discovered on the NAS five minutes after a merge.
+        run_enabled_idempotence vaultwarden
+        run_play --tags vaultwarden --check --diff
+        run_vaultwarden_verify_only
+        printf 'VAULTWARDEN_RUNTIME_VERIFIED\n'
+      fi
+    fi
       # The full lane avoids the CPU-machine-learning seed contract because it
       # would add an 800 MB external model download. The Immich suite owns the
       # narrower upload/backup fixture that proves database recovery without

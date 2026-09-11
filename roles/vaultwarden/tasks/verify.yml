@@ -147,12 +147,66 @@
   check_mode: false
   when: vaultwarden_deployment_enabled | bool
 
-# THE DOOR, PROVED BY KNOCKING ON IT. SIGNUPS_ALLOWED=false makes
-# POST /identity/accounts/register answer 400 -- measured against this pin --
-# so this is a behavioural claim rather than a reading of the setting the
-# platform itself supplied. The body carries no credential: the e-mail is a
-# reserved example address and the "hash" is a literal that is never a password
-# of anyone's, which is why this task is readable rather than redacted.
+# THE DOOR, PROVED BY KNOCKING ON IT, AND IN WHICHEVER DIRECTION POLICY PUTS IT.
+#
+# #547 asserted one direction -- SIGNUPS_ALLOWED=false makes
+# POST /identity/accounts/register answer 400 -- and the flip that opened the
+# door made that assertion false rather than wrong. Deleting it would have been
+# the fastest green gate available and would have left the door unwatched in
+# both directions, so it is re-anchored instead: the observed door is asserted
+# against the DECLARED policy, so the check bites whichever way
+# vaultwarden_signups_allowed is set later.
+#
+# THE OPEN DIRECTION CANNOT BE PROVED ON THIS ENDPOINT, and that is a
+# measurement rather than a preference. Against the pinned image, with signups
+# open, POST /identity/accounts/register answers 200 AND CREATES THE ACCOUNT --
+# confirmed by reading the users table straight out of db.sqlite3. A
+# verification that did that would write into the household's password manager
+# on every converge, and it would not even be stable: the second converge gets
+# 400 with the message `Registration not allowed or user already exists`, which
+# is the same status and the same body the CLOSED door returns, so the check
+# would flip to failing on its own second run while claiming the door had shut.
+#
+# WHAT IS PROBED INSTEAD, measured in both states against the pinned image:
+#
+#   POST /identity/accounts/register/send-verification-email
+#     SIGNUPS_ALLOWED=false -> 400, including for an address that IS a user
+#     SIGNUPS_ALLOWED=true  -> 200, repeatably, including for an address that
+#                              is already a user, and creating NO row in the
+#                              users table
+#
+# So the status alone separates the two policies, the probe is idempotent, and
+# it leaves nothing behind. Its 200 depends on this platform having no SMTP: mail
+# being disabled is why Vaultwarden answers the registration-verification token
+# inline instead of mailing it. A deployment that later configures SMTP turns
+# this probe into an e-mail sent to the address below on every converge, which
+# is the one thing to re-measure before adding a mail server here.
+#
+# return_content is deliberately absent. That 200 body IS the registration-verify
+# token -- a signed JWT that would let its holder finish registering the address
+# -- and the status is the whole of what this check reads, so it is never
+# captured, never registered and never interpolated into a message.
+- name: Verify the Vaultwarden registration door answers as declared
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.uri:
+    url: "{{ vaultwarden_url }}/identity/accounts/register/send-verification-email"
+    method: POST
+    body_format: json
+    body:
+      email: platform-verify@example.com
+      name: null
+    status_code: "{{ range(100, 600) | list }}"
+  register: vaultwarden_verify_door
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+# KEPT, AND KEPT ONE-DIRECTIONAL ON PURPOSE. This is the endpoint a client
+# actually registers through, so a closed door is worth proving on the door
+# itself rather than only on the verification endpoint above. It runs only where
+# the declared policy is closed, because that is the only state in which knocking
+# on it costs nothing: with the door open the same request creates an account.
 - name: Verify Vaultwarden refuses an uninvited registration
   tags: [platform_verify_vaultwarden]
   ansible.builtin.uri:
@@ -200,17 +254,33 @@
       - >-
         vaultwarden_signups_allowed | bool
         or (vaultwarden_verify_registration.status | default(0) | int == 400)
+      # THE DIRECTION THAT KEEPS BITING EITHER WAY. 400 is the refusal a closed
+      # door gives and 200 is the acceptance an open one gives, so a server
+      # whose door disagrees with the declaration fails here whichever value
+      # this release carries -- including the case the open flip created, where
+      # the whole of the old assertion would have been satisfied by a server
+      # that had quietly stopped accepting anyone.
+      - >-
+        vaultwarden_verify_door.status | default(0) | int
+        == (200 if vaultwarden_signups_allowed | bool else 400)
     fail_msg: >-
       Vaultwarden did not report an alive server running
       {{ vaultwarden_pinned_version | default('the version this release pins') }}
       with its admin panel disabled and its
       registration door where policy puts it. It answered
       {{ vaultwarden_verify_version.content | default('nothing') | trim }} for
-      its version and
-      {{ vaultwarden_verify_registration.status | default('nothing') }} to an
-      uninvited registration, where SIGNUPS_ALLOWED is
-      {{ vaultwarden_signups_allowed }} and 400 is the refusal that value asks
-      for. A version that disagrees with the pin means the running container is
+      its version,
+      {{ vaultwarden_verify_door.status | default('nothing') }} at its
+      registration door and
+      {{ vaultwarden_verify_registration.status | default('no reading -- a
+      declared-open door is not knocked on that endpoint') }} to an uninvited
+      registration, where SIGNUPS_ALLOWED is
+      {{ vaultwarden_signups_allowed }} and the door this release declares
+      therefore answers
+      {{ 200 if vaultwarden_signups_allowed | bool else 400 }}. A door that
+      answers the other one is a server running a policy this repository did not
+      write, in whichever direction it differs.
+      A version that disagrees with the pin means the running container is
       not the one this release declares, which for this service also means the
       CVE-2026-27801 floor recorded beside the image is no longer known to hold.
       An admin panel that no longer says it is disabled means config.json can be

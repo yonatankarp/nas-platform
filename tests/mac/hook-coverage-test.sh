@@ -224,7 +224,7 @@ build_tree "$tree"
 # registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
+  'mac fixtures-seed hooks: covered 18 of 18 registered services (ran 7, delegated 0, exempt 11)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -322,7 +322,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 # could not ask.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
-  'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
+  'mac pre-converge hooks: covered 18 of 18 registered services (ran 0, delegated 1, exempt 17)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
 # A drift hook deleted must fail the group. This is the regression the group had
@@ -479,14 +479,14 @@ if run_group "$tree" fixtures-persistence 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-persistence accepted a missing delegated hook'
 fi
 
-# The exemptions are held to the same standard: with ntfy no longer named as a
-# Mac-only service, the exemptions that name it are stale and must fail.
+# The exemptions are held to the same standard: with neither Mac-only service
+# named any more, the exemptions that name them are stale and must fail.
 tree=$fixture/stale-exemption
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
 source = File.read(path)
-abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'ntfy'"'"'")
-File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'ntfy'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
+abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'")
+File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
   "$tree/tests/mac/lib.sh"
 if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a stale exemption'

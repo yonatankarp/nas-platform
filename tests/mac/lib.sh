@@ -174,9 +174,34 @@ mac_validate_integration_callback() {
 # production one -- services/adguard/compose.mac.yml republishes both from the
 # roster ports above, because a laptop already resolves on 53 and has 8083 in
 # use by whichever copy of the platform ran last.
+#
+# Vaultwarden needs two of its own, and neither is about this lane's opinion of
+# the service.
+#
+# vaultwarden_domain, because the role DERIVES it from platform_public_host and
+# refuses a bare IPv4 literal -- WebAuthn's relying-party identifier has to be a
+# domain, so a key enrols against an address and then never authenticates.
+# inventory/mac.yml sets platform_public_host to 127.0.0.1, which is exactly that
+# literal, so without this the role fails at the first task of its enabled path.
+# Measured against the role's own assertion: 127.0.0.1 fails, a name passes.
+# `.invalid` is reserved and can never resolve, which is the point -- the lane
+# reaches the service on 127.0.0.1 like every other, and this is only the origin
+# the server declares.
+#
+# An EMPTY Tailscale candidate list, because the default one starts at
+# /usr/local/bin/tailscale -- which is exactly where Homebrew installs the
+# Tailscale CLI. On an operator's laptop that would make this disposable lane run
+# `tailscale serve --bg` against their REAL tailnet, pointing a public HTTPS front
+# at a sandbox port that disappears when the lane cleans up, and then fail the run
+# when the sandbox's own `.invalid` origin did not answer through it. The sandbox
+# is disposable and the tailnet is not. An empty list takes the role's absent
+# path, which is a reporting skip it already takes on every CI lane.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
-    -e adguard_deployment_enabled=true
+    -e adguard_deployment_enabled=true \
+    -e vaultwarden_deployment_enabled=true \
+    -e vaultwarden_domain=https://vaultwarden.mac.invalid \
+    -e '{"vaultwarden_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in
@@ -267,7 +292,7 @@ mac_target_container_names() {
 # tests/contracts/adguard-static.rb exists to refuse.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr nextcloud adguard adguard_dns'
+trailarr seerr nextcloud adguard adguard_dns vaultwarden'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not
@@ -318,7 +343,15 @@ mac_container_name() {
 # the lane deploys, recreates and verifies it. Coverage accounting keyed only to
 # the registry would report a clean full pass while silently skipping the service
 # whose push-routing bug the contract suites caught, so the addition is named.
-MAC_UNREGISTERED_SERVICES='ntfy'
+# Vaultwarden is the second, and its reason is a different one: it HAS no
+# contract to register, because it holds no credential a contract could sign in
+# with. Master passwords are user-owned by construction and the server never
+# learns them, which is the entire reason to run it, so what there is to prove is
+# the door -- and roles/vaultwarden/tasks/verify.yml proves it by knocking, which
+# tests/mac/verify.sh runs here through platform_verify_vaultwarden like every
+# other tag. Naming it here is what puts it on the coverage rosters, so the four
+# collapsed hooks have to account for it rather than pass over it in silence.
+MAC_UNREGISTERED_SERVICES='ntfy vaultwarden'
 
 # Verification keeps four infrastructure-specific hooks ahead of the shared
 # contract runner. This is the one canonical roster used both by verify.sh for
