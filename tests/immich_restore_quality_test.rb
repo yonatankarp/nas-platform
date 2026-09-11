@@ -325,8 +325,8 @@ expected_defaults = {
   "immich_restore_backup_gid" =>
     "{{ ansible_facts.get('user_gid', 0) if platform_kind == 'mac' and not " \
     "(platform_manage_linux_ownership | bool) else 0 }}",
-  "immich_restore_expected_immich_version" => "3.1.0",
-  "immich_restore_expected_postgres_major" => 14,
+  "immich_restore_expected_immich_version" => "",
+  "immich_restore_expected_postgres_major" => 0,
   "immich_restore_verify_limit" => 25,
   "immich_restore_database_wait_timeout" => 300
 }

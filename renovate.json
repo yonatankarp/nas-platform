@@ -75,7 +75,7 @@
       "enabled": false
     },
     {
-      "description": "Bumping Immich also means re-copying the redis and database lines from that release's compose, and updating immich_restore_expected_immich_version plus the pinned preference schema.",
+      "description": "Bumping Immich also means re-copying the redis and database lines from that release's compose, and rechecking the pinned preference schema. The restore preflight's expected Immich and PostgreSQL versions are derived from these pins rather than restated, so they need no edit.",
       "matchDatasources": [
         "docker"
       ],

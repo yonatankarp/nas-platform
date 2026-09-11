@@ -38,6 +38,12 @@ ANSIBLE = if ANSIBLE_ON_PATH.empty?
             ANSIBLE_ON_PATH
           end
 BACKUP_NAME = "immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
+# Both sides of the compatibility comparison are read out of the fixture
+# filename rather than out of the role defaults, which now derive from the
+# pinned image. A fixture that pins the backup and takes the expected version
+# from the deployment would refuse itself on the next image bump (#560).
+BACKUP_IMMICH_VERSION = BACKUP_NAME[/-v([0-9.]+)-pg/, 1]
+BACKUP_POSTGRES_MAJOR = BACKUP_NAME[/-pg([0-9]+)\./, 1].to_i
 CLASSIFIER = File.join(ROOT, "services", "immich", "classify_restore.py")
 PREFLIGHT_TASK_NAMES = [
   "Derive the effective Immich storage roots",
@@ -211,10 +217,8 @@ def run_fixture(root, roots, initialized:, failure_stage: "none")
     "immich_restore_failure_marker" => DEFAULTS.fetch("immich_restore_failure_marker"),
     "immich_restore_backup_uid" => DEFAULTS.fetch("immich_restore_backup_uid"),
     "immich_restore_backup_gid" => DEFAULTS.fetch("immich_restore_backup_gid"),
-    "immich_restore_expected_immich_version" =>
-      DEFAULTS.fetch("immich_restore_expected_immich_version"),
-    "immich_restore_expected_postgres_major" =>
-      DEFAULTS.fetch("immich_restore_expected_postgres_major"),
+    "immich_restore_expected_immich_version" => BACKUP_IMMICH_VERSION,
+    "immich_restore_expected_postgres_major" => BACKUP_POSTGRES_MAJOR,
     "nas_uid" => Process.uid,
     "nas_gid" => Process.gid,
     "platform_current_dir" => release_root,
