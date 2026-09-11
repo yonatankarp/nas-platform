@@ -35,6 +35,59 @@
     mode: "0600"
   no_log: true
 
+# Immich writes its own version and its PostgreSQL version into the name of every
+# database dump it produces, so the versions the restore preflight must expect
+# are the versions of the images about to start. Reading them from the pinned
+# Compose definition is what keeps that true across an image bump; a restated
+# literal goes stale on the next one and refuses the backup the previous image
+# just wrote. The read is a read -- check_mode false so `--check --diff` reaches
+# the classification below rather than skipping past it with the facts unset.
+- name: Read the deployed Compose definition of Immich
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/immich/compose.yml"
+  register: immich_compose_source
+  check_mode: false
+
+- name: Resolve the pinned Immich images
+  ansible.builtin.set_fact:
+    immich_pinned_images: >-
+      {{ (immich_compose_source.content | b64decode | from_yaml).services }}
+
+# Both tags are read the same way, and the difference between them is why the
+# search stops at the first non-version character rather than reading the whole
+# tag: the server pins a bare `vX.Y.Z`, while the database pins a major followed
+# by the extension versions its schema is coupled to. Neither version is
+# restated here, so neither can go stale -- read the pins themselves.
+- name: Derive the expected Immich version from the pinned server image
+  ansible.builtin.set_fact:
+    immich_restore_expected_immich_version: >-
+      {{ immich_pinned_images['immich-server'].image
+         | regex_replace('@.*$', '') | regex_replace('^.*/', '')
+         | regex_search('(?<=:)v?[0-9]+(\.[0-9]+)*') | default('', true)
+         | regex_replace('^v', '') }}
+  when: immich_restore_expected_immich_version | length == 0
+
+- name: Derive the expected PostgreSQL major from the pinned database image
+  ansible.builtin.set_fact:
+    immich_restore_expected_postgres_major: >-
+      {{ immich_pinned_images['database'].image
+         | regex_replace('@.*$', '') | regex_replace('^.*/', '')
+         | regex_search('(?<=:)[0-9]+') | default('0', true) }}
+  when: immich_restore_expected_postgres_major | int == 0
+
+# An unreadable tag would otherwise reach the classifier as an empty expected
+# version, which refuses every backup under a category that names the backup
+# rather than the pin that could not be read.
+- name: Require the expected restore versions to have resolved
+  ansible.builtin.assert:
+    that:
+      - immich_restore_expected_immich_version | length > 0
+      - immich_restore_expected_postgres_major | int > 0
+    fail_msg: >-
+      The pinned Immich images do not carry a readable version
+      (server={{ immich_restore_expected_immich_version | default('') }},
+      postgres major={{ immich_restore_expected_postgres_major | default(0) }}).
+
 - name: Verify Immich restore classifier before storage classification
   ansible.builtin.include_tasks: verify_classifier.yml
 
