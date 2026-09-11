@@ -208,7 +208,15 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # Confirmed free on the NAS from the full netstat -tulnp listener table on
   # 2026-09-10, the nearest neighbour being 5353/mDNS.
   ["adguard", "adguard", "0.0.0.0", 53, 5353, "tcp"],
-  ["adguard", "adguard", "0.0.0.0", 53, 5353, "udp"]
+  ["adguard", "adguard", "0.0.0.0", 53, 5353, "udp"],
+  # The web interface, and the container side is 8086 rather than the image's
+  # own ExposedPorts 80 because the container runs as the platform identity and
+  # cannot bind a privileged port. ROCKET_PORT moves the listener;
+  # services/vaultwarden/compose.yml carries the argument. 8086 is the lowest
+  # free host port on this platform: 8080 Dozzle, 8081 the Dozzle alert relay,
+  # 8082 qbittorrent, 8083 claimed by the AdGuard Home stack of #548, 8084
+  # Nextcloud, 8085 SABnzbd.
+  ["vaultwarden", "vaultwarden", "0.0.0.0", 8086, 8086, "tcp"]
 ].freeze
 
 EXPECTED_STORAGE = {

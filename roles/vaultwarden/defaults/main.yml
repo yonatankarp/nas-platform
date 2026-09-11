@@ -1,0 +1,127 @@
+---
+# The single operator switch. Inventory sets it, and
+# inventory/group_vars/all/main.yml is where the deployment decision is made and
+# explained; this default stays false so the role converges to `state: absent`
+# for any caller that runs it without that inventory rather than standing up a
+# password manager on the strength of a missing variable. The gate lives inside
+# the role rather than on the site.yml entry, because a `when:` there would also
+# skip the deployment_bundle re-include that revalidates the paths this role
+# touches and the deployment report that says whether anything moved.
+vaultwarden_deployment_enabled: false
+
+# 8086, the web interface, and the container listens on it too. The image's own
+# ExposedPorts is 80/tcp, which the platform identity cannot bind; the reason
+# and the consequence are in services/vaultwarden/compose.yml, which carries the
+# production copy of this number because a Compose file cannot read a role
+# default.
+#
+# It is the lowest free port on this platform: 8080 is Dozzle, 8081 the Dozzle
+# alert relay, 8082 the qbittorrent web interface declared in
+# config/media-acquisition.yml, 8083 is claimed by the AdGuard Home stack of
+# #548, 8084 is Nextcloud, 8085 SABnzbd and 8090 Beszel.
+vaultwarden_port: 8086
+
+# Every role addresses services over 127.0.0.1, which is correct whether the
+# play runs on the NAS itself or over SSH from a workstation. This is the local
+# probe address, not the address clients use -- that is vaultwarden_domain.
+vaultwarden_url: "http://127.0.0.1:{{ vaultwarden_port }}"
+
+# THE ORIGIN CLIENTS SEE, DERIVED RATHER THAN RESTATED. Tailscale Serve
+# terminates TLS on 443 in front of vaultwarden_url above, so the origin carries
+# the https scheme and no port. platform_public_host is the one coordinate this
+# platform states per inventory for exactly this audience -- roles/ntfy,
+# roles/seerr, roles/beszel and roles/nextcloud all build their published URLs
+# from it -- so restating the name here would be a second copy nothing keeps in
+# agreement with the first.
+#
+# WebAuthn and the two-factor flows bind their credentials to this exact string,
+# so a value whose host is a bare IPv4 literal breaks them in ways that read as
+# client faults. platform_public_host is a LAN address in some environments
+# (inventory/mac.yml sets 127.0.0.1), which is why tasks/deploy.yml refuses one
+# by name rather than trusting this expression.
+# Lowercased for the same reason tasks/serve.yml lowercases its Serve lookup:
+# platform_public_host is a raw environment lookup and a DNS name is
+# case-insensitive, while the things that compare against this value are not. A
+# browser lowercases the host when it builds an origin, and WebAuthn matches a
+# relying-party identifier against that origin exactly -- so a DOMAIN carrying
+# the operator's capitalisation is the same silent mismatch one layer up from
+# the Serve one, and this is the only place it can be normalised once.
+vaultwarden_domain: "https://{{ platform_public_host | lower }}"
+
+# Ansible owns the door, and only the door. Registration is closed: an account
+# exists because somebody was invited, not because they found the address. There
+# is no SMTP on this platform, so completing an invitation is a manual act --
+# see docs/secrets.md for why the credential direction inverts here and why that
+# is a designed property rather than a gap.
+vaultwarden_signups_allowed: false
+vaultwarden_invitations_allowed: true
+
+# The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log, attachments/,
+# sends/ and rsa_key.pem. recovery: critical in
+# inventory/group_vars/all/main.yml -- see the declaration there for what is and
+# is not recoverable from it.
+vaultwarden_data_host_path: "{{ nas_docker_root }}/vaultwarden/data"
+
+# The file whose existence would mean the rendered environment is no longer in
+# force. Stated as a path rather than derived inline so the assertion and the
+# message that explains it read the same value.
+vaultwarden_config_json_path: "{{ vaultwarden_data_host_path }}/config.json"
+
+vaultwarden_compose_project_name: >-
+  {{ (platform_project_name ~ '-vaultwarden')
+     if platform_project_name | default('') | length > 0 else 'vaultwarden' }}
+
+# THE HTTPS TERMINATION, AND WHY IT LIVES IN THIS ROLE RATHER THAN IN ONE OF ITS
+# OWN. Bitwarden clients and the web vault need a secure context for the browser
+# crypto to work at all, so this is the only service on this platform that is
+# not happy on host:port. A reverse proxy is out -- it would mean an ADM-managed
+# listener this repository does not control -- so Tailscale Serve terminates
+# TLS inside the tailnet with no ADM port opened and no public DNS record.
+#
+# A general tailnet_https role was considered and refused for now. It rests on a
+# premise #547 itself marks Unverified: whether `tailscale serve` can front
+# several ports on distinct paths cleanly. A role-local task is a two-way door
+# -- the second service that wants HTTPS is when the shape is known -- whereas a
+# role adopted by nothing is a committed interface with no second caller to
+# check it against.
+#
+# The reachability the platform cannot see: HTTPS certificates must be enabled
+# for the tailnet in the Tailscale admin console. No check in this repository
+# can read that setting, so tasks/serve.yml fails naming it.
+#
+# AN ABSOLUTE PATH, DISCOVERED RATHER THAN ASSUMED. Measured on the NAS
+# 2026-09-10: `command -v tailscale` resolves /usr/local/bin/tailscale, and the
+# App Central package that owns it is `tailscale-native`, whose own copy is
+# /usr/local/AppCentral/tailscale-native/bin/tailscale, reporting version
+# 1.102.2. /usr/local/bin is on the default PATH there, so a bare name would
+# very likely work today -- the discovery is not there because Ansible cannot
+# see the binary.
+#
+# It is there because /usr/local/bin/tailscale belongs to an App Central package
+# whose layout is not this repository's to depend on: that entry is almost
+# certainly a symlink or wrapper the package installs, so it is exactly as
+# durable as the package's own layout, and the candidate below it is the one
+# that survives a re-layout. Discovery is also what makes the absent path
+# explicit rather than accidental -- the integration container, the Mac sandbox
+# and a workstation converging over SSH have no Tailscale at all.
+#
+# A stat over a stated list rather than `command -v`, because that needs a
+# shell, and a shell-out always claims a change and cannot simulate itself under
+# --check. A stat is a read in both modes.
+#
+# None matching is the absent path: a reporting skip and never a failure, since
+# a failure there would turn every CI lane and the whole Mac lane red.
+# Present-but-unusable is the opposite and tasks/serve.yml fails on it by name,
+# because that is a real fault on the one host that matters.
+vaultwarden_tailscale_binary_candidates:
+  - /usr/local/bin/tailscale
+  - /usr/local/AppCentral/tailscale-native/bin/tailscale
+  - /usr/bin/tailscale
+
+# The escape hatch: set this to an absolute path and discovery is skipped. Empty
+# means discover, which is what every inventory does today. It exists so an
+# operator whose App Central put the client somewhere else can converge without
+# editing a task file.
+vaultwarden_tailscale_binary: ""
+
+vaultwarden_tailscale_serve_port: 443

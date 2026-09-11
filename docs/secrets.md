@@ -705,7 +705,58 @@ source of values. Every key below is required.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the Gmail account from the current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. The names of the two mail objects are not credentials and are not recovered from here: `paperless_mail_account_name` and `paperless_mail_rule_name` label the account and rule this platform creates rather than authorising access to either, so they are operator policy in `inventory/group_vars/all/main.yml`, in plain sight and in version control. A recovery that restores this entry and finds them absent has restored a vault that cannot deploy Paperless, and the role's argument validation will name the missing one. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - Nextcloud: `vault_nextcloud_admin_username`, `vault_nextcloud_admin_password`, `vault_nextcloud_db_name`, `vault_nextcloud_db_username`, `vault_nextcloud_db_password`, `vault_nextcloud_cache_password`. Recover the administrator identity from the deployed instance's user list and its matching password from the password manager; recover the database name, user and that user's password together from the deployed Compose environment, checking them against the cluster that owns the existing data. Recover the cache password from the same deployed environment. Preserve these as one deployed identity set. The database name and user follow the Immich identifier rules; the remaining four are opaque strings that must simply be present. **Unlike Seafile's, none of these is fixed permanently by the first converge, and that is a deliberate property of how the stack is built rather than a difference in the software.** Nextcloud's entrypoint consumes every install-time variable only while the volume holds no `version.php`, exactly as Seafile's does; what differs is that `roles/nextcloud` pushes the three database values on every read as `NC_db*` environment overrides, which Nextcloud consults before `config.php` and never writes back, and rebuilds the cache credential from the environment at every start. So rotating any of those four in the vault and converging is enough. The administrator password is the one with no environment path -- it is a row in `oc_users`, not a system setting -- so the role presents the vault value to `ocs/v2.php/cloud/user` and runs `occ user:resetpassword` only when the server answers 401. That is a repair rather than a push, and it means a rotated value takes effect on the next converge but drops every session and app token derived from the old one. **There is one setting here that genuinely cannot be repaired, and it is not a credential.** `NC_setup_create_db_user` must be false on the very first converge: without it Nextcloud's installer sees that the account it was given can create roles -- the Postgres image always grants `POSTGRES_USER` superuser -- discards it, and mints an `oc_admin` of its own with a generated password that is written into `config.php` and exists nowhere else. Recovering from that state means reading that password out of `config.php`, resetting the two system values with `occ config:system:set` and dropping the stray role by hand. `services/nextcloud/compose.yml` carries the full reasoning beside the variable. `config.php` is why Nextcloud's data root is on the runtime plaintext list in the security boundary: it holds the database password, the instance secret and the cache password in clear at mode 0640. Like every other published service here Nextcloud is plain HTTP -- nothing on this platform terminates TLS -- so the administrator password, every session cookie and the file content itself are readable to anything that can observe the traffic on the LAN; a client arriving over the mesh VPN is already encrypted by that transport. Treat a Nextcloud login made across a network you do not trust as a disclosed password.
 - AdGuard Home: `vault_adguard_admin_username`, `vault_adguard_admin_password`, `vault_adguard_admin_password_hash`. Recover the administrator name and its matching clear password from the password manager, and the hash from the deployed `AdGuardHome.yaml` under `users[].password`. Preserve the triple unchanged, and keep the password and the hash a matching pair. **The hash is the value actually pushed**, and it is stored rather than derived at deployment time for a reason that is not about secrecy: bcrypt salts randomly, so hashing the clear password on every converge would rewrite `AdGuardHome.yaml` every time and break idempotence outright. The clear password exists so that an operator, the role's own verification and the service contract can log in; everything under `/control` answers 401 without it, `/control/status` included. The hash has the bcrypt shape described above and AdGuard accepts the `$2a$`, `$2b$` and `$2y$` prefixes alike. `generate-secrets.yml` produces it with ntfy's hasher rather than AdGuard's own, because the AdGuard image ships no hash subcommand. Rotating the password means authoring a new pair here and converging: `roles/adguard` renders the whole configuration file, so the new hash is simply in force on the next run and there is no API call and no in-place update -- which is also why an AdGuard account created in the web interface does not survive a converge. Left unmanaged, AdGuard's `users: []` disables authentication completely and hands the ability to rewrite any DNS answer on the network, for every device that resolves through it, to anyone who can reach the port.
+- Vaultwarden: **no keys at all, and that is the design rather than an omission.** Every other entry above is a credential this platform authors and pushes outward. A password manager is the one service where that must not happen: master passwords are user-owned by construction, the server never learns them, and that zero-knowledge property is the entire reason to run it. So there is nothing here to recover, nothing to preserve unchanged, and `roles/vault_contract` must never grow a key for a master password. `tests/expected/vaultwarden.yml` therefore pins an empty key list — the only one on the platform that an implemented service is allowed — which `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in both directions — a service listed there that later *gains* a key fails as loudly as one that lost its last, so the exemption cannot quietly stop applying. See [The first value this platform deliberately does not own](#the-first-value-this-platform-deliberately-does-not-own) below.
 - Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers.
+
+### The first value this platform deliberately does not own
+
+Everything above is written on the premise that a credential this platform
+cannot state is a gap. Vaultwarden is where that premise stops holding, and it is
+worth writing down rather than rediscovering.
+
+**The split is clean.** Ansible owns the door: `SIGNUPS_ALLOWED`,
+`INVITATIONS_ALLOWED`, `DOMAIN` and organization policy. Ansible must never own a
+master password. There is no route by which one could be pushed and no route by
+which one could be read back — the server holds a hash it cannot invert and vault
+items encrypted under keys derived from a password it never saw. A vault key here
+would not merely be unnecessary; it would mean the platform had broken the
+property the service exists to provide.
+
+**There is no `ADMIN_TOKEN` either**, which would otherwise be the one credential
+a Vaultwarden deployment does hold. Setting it enables the `/admin` panel, and
+anything saved there writes `config.json` into the data directory, which from
+then on outranks every environment variable the role renders: the converge would
+keep reporting success while the container ignored it. Omitting the token
+disables the panel outright, and almost everything it does is something this
+repository should own anyway.
+
+`DISABLE_ADMIN_TOKEN` is the door beside it and the more dangerous one — measured
+against the pinned image, `DISABLE_ADMIN_TOKEN=true` serves the entire admin
+panel with **no authentication at all**, and it is what Vaultwarden's own warning
+recommends when it finds an empty token. `roles/vaultwarden` therefore sweeps the
+deployed Compose files for both keys and for a service-level `env_file:` that
+could carry either, and separately asserts that `config.json` does not exist,
+because "the panel is its only writer" is an upstream claim rather than something
+this platform can observe. An empty `ADMIN_TOKEN` is refused along with them: on
+the pinned release it happens to disable the panel exactly as omitting it does,
+but that is a behaviour of the release rather than a property of the setting, and
+it still logs a plaintext-token notice.
+
+**What an operator does instead of provisioning.** Accounts are created by
+invitation from inside the web vault and completed by the invitee, who chooses a
+master password this platform never sees. There is no SMTP configured, so the
+invitation link is passed by hand. Nothing about that flow appears in this guide's
+recovery procedures, because there is nothing to recover: a lost master password
+is lost, and the household member re-enrols against a vault they can no longer
+read. Record master passwords in the household password manager the way any other
+personal credential is recorded — never here.
+
+**What is irreplaceable is data, not a credential.** The store under
+`{{ nas_docker_root }}/vaultwarden/data` is `recovery: critical`, and with backup
+parked that means one copy exists by choice. `rsa_key.pem` beside it signs every
+session and token the server issues, so it is the one file in that tree to treat
+as secret-bearing in the ordinary sense; `CLAUDE.md`'s security boundary carries
+the full nuance, including why the encrypted blobs beside it are not.
 
 ### Managed application-user fields
 

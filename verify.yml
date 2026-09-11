@@ -85,3 +85,5 @@
       tags: [never]
     - role: adguard
       tags: [never]
+    - role: vaultwarden
+      tags: [never]

@@ -1,0 +1,229 @@
+---
+# WHAT THERE IS TO VERIFY ABOUT A ZERO-KNOWLEDGE SERVICE.
+#
+# Every other role here proves that a vault-authored identity is the one the
+# service accepts. This one cannot and must not: master passwords are user-owned
+# by construction, the server never learns them, and that property is the entire
+# reason to run it. docs/secrets.md carries the argument.
+#
+# What is left is the door, which Ansible does own, and the three claims below
+# are the whole of it: the server is alive, it runs the version this release
+# pins, and registration is closed where policy says it is closed.
+#
+# THE VERSION ENDPOINT IS /api/version, NOT /api/config, and the difference is
+# not cosmetic. #547 suggests /api/config for this; measured against this pin,
+# /api/config reports `"version":"2026.6.0"`, which is the bundled WEB VAULT's
+# version and does not track the image tag at all. /api/version answers exactly
+# `"1.37.2"` -- the Vaultwarden version, and therefore the one reading that can
+# catch a silent downgrade past the CVE floor recorded beside the image.
+
+# THE PIN IS READ, NEVER RESTATED. The version this assertion compares against
+# comes out of the deployed compose.yml, so it is the same literal Renovate
+# moves and there is no second copy to fall out of step -- which is the property
+# tests/policy_test.rb enforces of every image on this platform. verify.yml the
+# playbook resolves platform_service_compose_files in its pre_tasks and
+# platform_current_dir is a group variable, so this read works whether the role
+# runs inside site.yml or is selected by --tags from verify.yml.
+#
+# GUARDED THE SAME WAY THE SWEEP IN deploy.yml IS, AND FOR THE SAME READING.
+# `current` names the previous release under --check, because activating a new
+# one is a command task check mode skips, so a service this platform has never
+# converged is simply not in the release this reads.
+#
+# REACHABILITY IS DIFFERENT HERE, AND IT IS WORTH BEING PRECISE. This read is
+# gated on the deployment flag, and by the time that flag is true the release
+# has carried services/vaultwarden/ for as long as the stack has been dark -- so
+# the ordinary chunk-2 review does not reach it. What does reach it is an
+# operator previewing the flip with `-e vaultwarden_deployment_enabled=true`
+# against a host whose current release predates the service, which is a
+# reasonable thing to want to run and would otherwise die here. The guard is
+# cheap and the state is legible, so it is worth having rather than arguing that
+# nobody will do it.
+- name: Read whether the installed release carries the Vaultwarden Compose definition
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/vaultwarden/compose.yml"
+  register: vaultwarden_verify_compose_present
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+- name: Require a live Vaultwarden verification to have a release to read
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_verify_compose_present.stat.exists
+    fail_msg: >-
+      {{ platform_current_dir }}/services/vaultwarden/compose.yml does not
+      exist, so this run cannot read the version this release pins and the
+      assertion below would compare the running server against nothing. On a
+      run that is not a review that is an incomplete release rather than a
+      missing service.
+    success_msg: >-
+      The installed release carries the Vaultwarden Compose definition this
+      verification reads its pinned version from.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Report the Vaultwarden version check this review cannot read
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_current_dir }}/services/vaultwarden/compose.yml does not
+      exist, so this review cannot compare the running Vaultwarden against the
+      version this release pins. Check mode installs no release, so `current`
+      still names the one before this change. A live converge installs the
+      release first and the comparison runs normally.
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - ansible_check_mode
+    - not vaultwarden_verify_compose_present.stat.exists
+
+- name: Read the Vaultwarden image this release pins
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/vaultwarden/compose.yml"
+  register: vaultwarden_verify_compose
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_verify_compose_present.stat.exists
+
+- name: Resolve the Vaultwarden version this release pins
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.set_fact:
+    vaultwarden_pinned_version: >-
+      {{ (((vaultwarden_verify_compose.content | b64decode | from_yaml)
+            .services.vaultwarden.image
+            | regex_search(':([0-9]+(\.[0-9]+)*)@sha256:', '\1')
+            | default([], true)) + ['']) | first }}
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - vaultwarden_verify_compose_present.stat.exists
+
+- name: Verify Vaultwarden is alive
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.uri:
+    url: "{{ vaultwarden_url }}/alive"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: vaultwarden_verify_alive
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+- name: Verify the Vaultwarden version this host runs
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.uri:
+    url: "{{ vaultwarden_url }}/api/version"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: vaultwarden_verify_version
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+# THE ADMIN PANEL ANSWERS 200 WHILE DISABLED, so a verification asserting 404
+# would be wrong and would go green for the wrong reason the day the panel came
+# back. Measured against this pin: /admin returns HTTP 200 with the body `The
+# admin panel is disabled, please configure the 'ADMIN_TOKEN' variable to enable
+# it`. The body is the only place the state exists, so the body is what is
+# asserted.
+#
+# Any status accepted so the assertion below is what fails and can say which
+# reading differed.
+- name: Verify the Vaultwarden admin panel is disabled
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.uri:
+    url: "{{ vaultwarden_url }}/admin"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: vaultwarden_verify_admin
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when: vaultwarden_deployment_enabled | bool
+
+# THE DOOR, PROVED BY KNOCKING ON IT. SIGNUPS_ALLOWED=false makes
+# POST /identity/accounts/register answer 400 -- measured against this pin --
+# so this is a behavioural claim rather than a reading of the setting the
+# platform itself supplied. The body carries no credential: the e-mail is a
+# reserved example address and the "hash" is a literal that is never a password
+# of anyone's, which is why this task is readable rather than redacted.
+- name: Verify Vaultwarden refuses an uninvited registration
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.uri:
+    url: "{{ vaultwarden_url }}/identity/accounts/register"
+    method: POST
+    body_format: json
+    body:
+      email: platform-verify@example.com
+      masterPasswordHash: platform-verify-not-a-password
+      key: platform-verify-not-a-key
+      kdf: 0
+      kdfIterations: 600000
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: vaultwarden_verify_registration
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - vaultwarden_deployment_enabled | bool
+    - not vaultwarden_signups_allowed | bool
+
+# The conditions name no credential, so this assertion is readable rather than
+# redacted, which is what lets it say which reading differed. Every term carries
+# a default, because the registration probe above is itself conditional.
+- name: Require the exact Vaultwarden verification results
+  tags: [platform_verify_vaultwarden]
+  ansible.builtin.assert:
+    that:
+      - vaultwarden_verify_alive.status | default(0) | int == 200
+      # The version comparison, and ONLY it, is conditional on having a pin to
+      # compare against: the task that resolves it is skipped when the installed
+      # release does not carry this service, and every other claim below still
+      # holds without it. Written as a short-circuiting `or` so the undefined
+      # name is never evaluated on the path where it is undefined -- which is
+      # the same class of defect as the forward reference #547 shipped, arriving
+      # through a skipped task rather than a later one.
+      - >-
+        (not vaultwarden_verify_compose_present.stat.exists)
+        or (vaultwarden_verify_version.content | default('') | trim | trim('"')
+            == vaultwarden_pinned_version)
+      - >-
+        vaultwarden_verify_admin.content | default('')
+        is search('admin panel is disabled')
+      - >-
+        vaultwarden_signups_allowed | bool
+        or (vaultwarden_verify_registration.status | default(0) | int == 400)
+    fail_msg: >-
+      Vaultwarden did not report an alive server running
+      {{ vaultwarden_pinned_version | default('the version this release pins') }}
+      with its admin panel disabled and its
+      registration door where policy puts it. It answered
+      {{ vaultwarden_verify_version.content | default('nothing') | trim }} for
+      its version and
+      {{ vaultwarden_verify_registration.status | default('nothing') }} to an
+      uninvited registration, where SIGNUPS_ALLOWED is
+      {{ vaultwarden_signups_allowed }} and 400 is the refusal that value asks
+      for. A version that disagrees with the pin means the running container is
+      not the one this release declares, which for this service also means the
+      CVE-2026-27801 floor recorded beside the image is no longer known to hold.
+      An admin panel that no longer says it is disabled means config.json can be
+      written, and from then on it outranks everything this role renders.
+  when: vaultwarden_deployment_enabled | bool
+
+- name: Report the Vaultwarden verification the deployment gate skips
+  ansible.builtin.debug:
+    msg: >-
+      vaultwarden_deployment_enabled is false, so there is no Vaultwarden on
+      this host to verify and nothing is listening on port
+      {{ vaultwarden_port }}. The stack converges to `state: absent` rather than
+      being skipped, so this is a host with no password manager rather than a
+      host whose password manager went unchecked.
+  tags: [platform_verify_vaultwarden]
+  when: not vaultwarden_deployment_enabled | bool

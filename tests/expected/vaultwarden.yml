@@ -1,0 +1,17 @@
+---
+role: vaultwarden
+container_cpus:
+  vaultwarden: 0.5
+# EMPTY, AND THAT IS THE DESIGN RATHER THAN AN UNFINISHED SLICE. Vaultwarden is
+# the one service on this platform where the credential direction inverts: a
+# master password is user-owned by construction, the server never learns it, and
+# that zero-knowledge property is the entire reason to run it. Ansible owns the
+# door -- SIGNUPS_ALLOWED, INVITATIONS_ALLOWED, DOMAIN -- and nothing behind it,
+# so roles/vault_contract must never grow a key here. docs/secrets.md carries
+# the argument in full.
+#
+# There is no ADMIN_TOKEN either, which would otherwise be the one credential a
+# Vaultwarden deployment does hold. Omitting it disables the /admin panel, whose
+# config.json would otherwise outrank every value this platform renders;
+# services/vaultwarden/compose.yml records the measurement.
+vault_keys: []

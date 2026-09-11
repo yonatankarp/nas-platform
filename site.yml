@@ -170,6 +170,18 @@
     - role: adguard
       tags: [adguard, network]
 
+    # Vaultwarden last, and the position carries no dependency either: it reads
+    # no platform service and none reads it. It is last because it is the
+    # newest, and because a password manager that fails to converge should not
+    # be able to hold up the stacks that were already running.
+    #
+    # No `when:` here, deliberately, for the reason the entries above give: the
+    # gate is `vaultwarden_deployment_enabled` and it lives inside the role, so
+    # the deployment_bundle target re-include and the ntfy deployment report
+    # still run when it is false.
+    - role: vaultwarden
+      tags: [vaultwarden, secrets]
+
   post_tasks:
     # After every service, so reaching it means the whole run converged: the
     # summary reports a deployment that actually finished. The per-service
