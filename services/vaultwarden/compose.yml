@@ -1,0 +1,145 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  # Vaultwarden, the household password manager. It calls no other platform
+  # service and none calls it, so it stays off the media-control network for the
+  # same reason Komga does.
+  vaultwarden:
+    <<: *service-defaults
+    container_name: vaultwarden
+    # THE PIN HAS A SECURITY FLOOR, NOT JUST A VALUE. CVE-2026-27801 is a
+    # two-factor bypass on protected actions through faulty rate-limit
+    # enforcement, letting an authenticated attacker reach API keys or delete
+    # vaults and organizations. It affects everything up to and INCLUDING
+    # 1.34.3 and is fixed in 1.35.0, so no pin below 1.35.0 may ever be
+    # deployed here -- a rollback is not merely a lost feature, it is that CVE
+    # back in force.
+    #
+    # VAULTWARDEN MIGRATES ITS OWN SQLITE STORE WHEN IT STARTS, which puts it in
+    # #511's hazard class alongside Bindery, Immich, Paperless-ngx and
+    # Nextcloud: the newer image writes a schema the older one declines to open,
+    # and it declines INSIDE the container, so the symptom is a crash loop every
+    # five minutes rather than a failure a play reports. The pin is therefore
+    # one-way in both senses at once. roles/image_downgrade_guard is the control
+    # that runs on the host and refuses a pin older than one that has already
+    # run against this store; it is included by roles/vaultwarden before the
+    # deployment for exactly that reason.
+    image: docker.io/vaultwarden/server:1.37.2@sha256:094b5689ed81549bd293418395c7cf495ae9d960fc2d4928cef2083ef913d912
+    cpus: 0.5
+    labels:
+      dev.dozzle.name: vaultwarden
+    # The image ships no PUID/PGID handling at all -- there is no entrypoint
+    # that drops privileges -- so the container takes the shared platform
+    # identity directly, the way services/pinchflat/compose.yml does. Verified
+    # against this pin: a full start as uid 1000 with /data writable creates
+    # db.sqlite3, its -shm and -wal siblings, rsa_key.pem and tmp/.
+    user: "${NAS_UID:?}:${NAS_GID:?}"
+    ports:
+      # 8086 on both sides, and the container side is the load-bearing half.
+      # The image's own ExposedPorts is 80/tcp, which a container running as uid
+      # 1000 cannot bind without CAP_NET_BIND_SERVICE; ROCKET_PORT below moves
+      # the listener to an unprivileged port so the platform identity above
+      # stays possible. AdGuard's 5353 is the same decision for the same reason.
+      - "8086:8086"
+    volumes:
+      # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log,
+      # attachments/, sends/ and rsa_key.pem. recovery: critical in
+      # inventory/group_vars/all/main.yml, and irreplaceable -- see the note
+      # there.
+      - ${VAULTWARDEN_DATA_PATH:?}:/data
+    environment:
+      TZ: ${TZ:?}
+      ROCKET_PORT: "8086"
+      DATA_FOLDER: /data
+      # THE FULL https:// ORIGIN, SCHEME INCLUDED AND NO PORT. Tailscale Serve
+      # terminates TLS on 443 inside the tailnet, so the origin a browser sees
+      # carries no port; WebAuthn and the two-factor flows bind their
+      # credentials to exactly this string, and a DOMAIN that disagrees with the
+      # address bar breaks them in ways that read as client faults rather than
+      # as configuration. roles/vaultwarden derives it from
+      # platform_public_host and refuses a value whose host is a bare IPv4
+      # literal, because a LAN address here produces precisely that breakage.
+      DOMAIN: ${VAULTWARDEN_DOMAIN:?}
+      # Registration is closed and invitation is the only route in. There is no
+      # SMTP configured on this platform, so an invitation is completed by hand
+      # rather than by mail; INVITATIONS_ALLOWED still governs whether an
+      # organization owner may issue one at all.
+      SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:?}
+      INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:?}
+      #
+      # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE, AND THAT IS
+      # THE WHOLE OF THIS SERVICE'S CONFIGURATION SAFETY.
+      #
+      # Opening /admin and saving anything writes config.json into DATA_FOLDER,
+      # and from then on that file takes precedence over every environment
+      # variable set here. A converge would render .env correctly, the container
+      # would ignore it, and nothing would report a difference -- the exact
+      # failure this repository exists to prevent, arriving through a door no
+      # policy check watched.
+      #
+      # THE FOUR STATES, MEASURED AGAINST THIS PIN rather than read about, since
+      # only one of them is safe:
+      #
+      #   ADMIN_TOKEN absent          /admin serves 85 bytes, "the admin panel
+      #                               is disabled, please configure the
+      #                               'ADMIN_TOKEN' variable to enable it"
+      #   ADMIN_TOKEN=<value>         /admin serves a 6.4 KB login page
+      #   ADMIN_TOKEN=                /admin serves the same 85-byte disabled
+      #                               body, and the log carries two warnings
+      #                               plus `[NOTICE] You are using a plain text
+      #                               ADMIN_TOKEN which is insecure`
+      #   DISABLE_ADMIN_TOKEN=true    /admin serves the 140 KB ADMIN PANEL, with
+      #                               no authentication of any kind
+      #
+      # So the empty value is not the trap it would be on an older release -- it
+      # does disable the panel here -- but it is still a declared value whose
+      # meaning belongs to the release rather than to this file, and the
+      # platform's `${VAR:?}` convention makes rendering an optional value empty
+      # the obvious thing to reach for. And the last row is the one that
+      # matters: guarding only ADMIN_TOKEN would leave open the very variable
+      # Vaultwarden's own warning recommends in its place.
+      #
+      # roles/vaultwarden/tasks/deploy.yml refuses all three keys in the
+      # deployed Compose files, and asserts config.json absent on every converge
+      # as well, because "the panel is the only writer" is an upstream claim
+      # rather than a property this platform can see.
+    healthcheck:
+      <<: *healthcheck-defaults
+      # /alive is unauthenticated and returns a JSON timestamp string. The image
+      # ships curl and a /healthcheck.sh of its own; this asks the port this
+      # file pins rather than the one that script derives, so a ROCKET_PORT that
+      # stopped agreeing with the publication above fails here instead of
+      # passing against itself.
+      test:
+        - CMD-SHELL
+        - >-
+          curl --fail --silent --show-error
+          http://127.0.0.1:8086/alive >/dev/null
+    # The vault is a SQLite database in write-ahead-logging mode under a
+    # recovery: critical directory with no backup behind it. 30s commits the log
+    # and closes the database rather than leaving a -wal beside it for the next
+    # start to recover.
+    stop_grace_period: 30s

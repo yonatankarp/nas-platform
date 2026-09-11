@@ -1,0 +1,78 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Vaultwarden and verify the door policy it enforces
+    description:
+      - >-
+        The only role on this platform that reads no vault credential, and the
+        omission is the design rather than unfinished work. A password manager's
+        master passwords are user-owned by construction: the server never learns
+        them, and that zero-knowledge property is the entire reason to run it.
+        Ansible owns the door -- SIGNUPS_ALLOWED, INVITATIONS_ALLOWED, DOMAIN --
+        and nothing behind it. docs/secrets.md carries the argument in full, and
+        roles/vault_contract must never grow a key for a master password.
+    options:
+      platform_compose_kind:
+        type: str
+        required: true
+      platform_project_name:
+        type: str
+        required: false
+      platform_public_host:
+        type: str
+        required: true
+        description: >-
+          The address handed to clients, from which vaultwarden_domain is
+          derived. Required rather than optional because a Vaultwarden whose
+          DOMAIN disagrees with the address bar breaks WebAuthn and the
+          two-factor flows, and it breaks them as what reads like a client
+          fault.
+        # `true` follows roles/ntfy and roles/beszel rather than roles/seerr and
+        # roles/nextcloud, which declare the same variable optional. The split
+        # is not arbitrary: those two build a URL that tolerates a default, while
+        # ntfy hashes this value into the topic it registers upstream and Beszel
+        # publishes it as its application URL, so a missing one is a wrong
+        # answer rather than a fallback. This role is the strongest case of the
+        # three. It also introduces no new failure: roles/preflight refuses an
+        # empty value before any target mutation, and ntfy converges on every
+        # lane, so a host that has not stated this coordinate has already failed
+        # twice before reaching here.
+      vaultwarden_deployment_enabled:
+        type: bool
+        required: true
+      vaultwarden_port:
+        type: int
+        required: false
+      vaultwarden_url:
+        type: str
+        required: false
+      vaultwarden_domain:
+        type: str
+        required: false
+      vaultwarden_signups_allowed:
+        type: bool
+        required: false
+      vaultwarden_invitations_allowed:
+        type: bool
+        required: false
+      vaultwarden_data_host_path:
+        type: path
+        required: false
+      vaultwarden_config_json_path:
+        type: path
+        required: false
+      vaultwarden_tailscale_binary_candidates:
+        type: list
+        elements: path
+        required: false
+      vaultwarden_tailscale_binary:
+        type: str
+        required: false
+        description: >-
+          An absolute path to the Tailscale client, or the empty string to
+          discover one from the candidates above. It is a str rather than a path
+          because the empty string is its normal value and `path` would expand
+          it.
+      vaultwarden_tailscale_serve_port:
+        type: int
+        required: false

@@ -65,11 +65,20 @@ PLATFORM_UID_ENVIRONMENT = "${NAS_UID:?}"
 # in both directions rather than only counted. A derived subject list that
 # quietly empties passes every property below vacuously, and a floor alone cannot
 # tell "Komga was removed" from "Komga stopped matching the selector".
+#
+# vaultwarden (#547) is on the list and contributes no subject, which is the
+# state this list has to be able to express. Its container takes the platform
+# identity directly, so it is in scope by the rule above; it simply renders
+# nothing into its own state tree -- the only file the role writes is the
+# runtime .env, and that is Compose's `--env-file`, read by the Docker CLI on
+# the host rather than by anything inside the container. Being listed is what
+# makes that a checked fact rather than an assumption, and what puts the role in
+# scope the moment it does render into /data.
 EXPECTED_IDENTITY_SERVICES = %w[
   adguard arr audiobookshelf bindery downloaders dozzle jellyfin kapowarr komga
-  ntfy paperless-ngx pinchflat seerr trailarr
+  ntfy paperless-ngx pinchflat seerr trailarr vaultwarden
 ].freeze
-IDENTITY_FLOOR = 14
+IDENTITY_FLOOR = 15
 # Every rendered file the rule reaches today. Held as a floor for the same reason
 # every other list here is: a selector that stops matching reports success.
 SUBJECT_FLOOR = 4

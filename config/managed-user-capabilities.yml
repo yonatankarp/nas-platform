@@ -211,3 +211,41 @@ services:
       create: NEXTCLOUD_ADMIN_USER/NEXTCLOUD_ADMIN_PASSWORD
       authenticate: ocs/v2.php/cloud/user
       reconcile: occ user:resetpassword, on an authentication failure only
+  # THE ONE SERVICE WHERE THIS PLATFORM MANAGES NO IDENTITY AT ALL, and the
+  # register has to be able to say so. Every other row here describes how Ansible
+  # declares an identity and what it will and will not do to reconcile one.
+  # Vaultwarden inverts that: a master password is user-owned by construction,
+  # the server never learns it, and that zero-knowledge property is the entire
+  # reason to run the service. There is no account for Ansible to declare, no
+  # credential in the vault, and nothing for a reconciliation to compare against.
+  #
+  # `mode: user_owned` is a new value rather than a stretch of an existing one,
+  # and the stretch was the temptation. `declarative_environment` -- Pinchflat's,
+  # Trailarr's, Nextcloud's -- would claim the identity is declared in the
+  # environment, and here the environment declares only the DOOR:
+  # SIGNUPS_ALLOWED, INVITATIONS_ALLOWED and DOMAIN. Reusing it would be a false
+  # statement about what roles/vaultwarden does, which is precisely what this
+  # register exists to prevent.
+  #
+  # The three shared verdicts are true for the ordinary reason and not by
+  # accident. preserves_unmanaged_users is true because this platform removes no
+  # account it did not create, and it created none. password_rotation is refuse
+  # and existing_identity_password_update is forbidden because Ansible cannot
+  # rotate what it cannot read -- here that is not a policy this platform chose
+  # to adopt, it is a property of the service, and adopting the opposite would
+  # mean the server learning a master password.
+  #
+  # There is no ADMIN_TOKEN either, which is what would otherwise give this row
+  # an administrative interface. Omitting it disables the /admin panel, whose
+  # config.json would outrank every value the role renders;
+  # services/vaultwarden/compose.yml carries that measurement.
+  vaultwarden:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: user_owned
+    interfaces:
+      list: none; the account list needs an admin token this deployment omits
+      create: invitation issued in the web vault, completed by the invitee
+      authenticate: master password, which the server never learns
+      reconcile: none; a master password is not readable or writable from here

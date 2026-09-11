@@ -177,6 +177,21 @@ EXPECTED_SERVICES = {
       "authenticate" => "ocs/v2.php/cloud/user",
       "reconcile" => "occ user:resetpassword, on an authentication failure only"
     }
+  ),
+  # The one row that does not take MULTI_USER_DEFAULTS' company on `mode`, and
+  # the deviation is the point: this platform declares no Vaultwarden identity,
+  # so `user_owned` is a new mode value rather than a reuse of
+  # declarative_environment, which would claim an identity is declared in the
+  # environment when only the door policy is.
+  # config/managed-user-capabilities.yml carries the argument.
+  "vaultwarden" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "user_owned",
+    "interfaces" => {
+      "list" => "none; the account list needs an admin token this deployment omits",
+      "create" => "invitation issued in the web vault, completed by the invitee",
+      "authenticate" => "master password, which the server never learns",
+      "reconcile" => "none; a master password is not readable or writable from here"
+    }
   )
 }.freeze
 

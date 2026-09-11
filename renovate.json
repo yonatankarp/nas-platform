@@ -90,12 +90,19 @@
     },
     {
       "description": "Database major versions change on-disk formats that Ansible cannot migrate.",
-      "matchDatasources": ["docker"],
-      "matchPackageNames": ["docker.io/library/postgres", "docker.io/valkey/valkey"],
-      "matchUpdateTypes": ["major"],
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "docker.io/library/postgres",
+        "docker.io/valkey/valkey"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "dependencyDashboardApproval": true
     },
-        {
+    {
       "description": "A Nextcloud major is a data migration the container performs on itself, not a digest swap. /entrypoint.sh rsyncs the new tree into the shared /var/www/html volume and then runs `php /var/www/html/occ upgrade` unattended at container start -- read out of nextcloud:34.0.3-apache rather than assumed. It is one-way, the same entrypoint refuses to start once the volume's version.php is newer than the image's, and this stack keeps no pre-upgrade backup at all: #500 dropped one deliberately rather than deferring it, because the server holds no data yet. So reverting the merge does not restore the service -- it keeps the stack down until the pin goes forward again -- and there is nothing to restore from. The production poller converges the newest released main every five minutes, so a major merged in a batch reaches live data before anyone reads the pull request. That is why the control here is dependencyDashboardApproval rather than the label-and-no-automerge shape the Immich rule uses, and why automerge: false is absent where those two carry it: the approval box withholds the pull request until a human ticks it, whereas automerge: false would have been a no-op, because the top-level automerge is already false and the routine automerge rule above matches no major. No needs-manual-coupling label either, and that is deliberate rather than forgotten: on the Immich, yt-dlp and tessdata rules that label marks a diff a bot cannot finish -- a checksum to copy by hand, compose lines to re-copy, config to edit inside a volume -- whereas this diff is complete and what is withheld is permission to apply it. The database-major rule, which is the shape this one now takes, carries no label for the same reason. Two things that are NOT the reason. This is not the entrypoint's refusal to skip a major: that check is nested under installed_version != 0.0.0.0, and a volume with no version.php -- which is what a stack gated off by nextcloud_deployment_enabled has -- takes the fresh-install path instead and installs cleanly at whatever major is pinned. The skip refusal binds an installed volume only, so it is a reason to converge between majors, not a reason to withhold the pull request. And minors and patches are ordinary here, which is why the scope stops at major rather than reaching minor: version_greater sends every version increase through that same unattended occ upgrade, and the entrypoint chains them itself with nothing for an operator to do. The versions it compares are the four-element $OC_Version arrays out of version.php -- 34.0.3.2 for this image -- not the image tag. #511 EXTENDED THAT SCOPE, and the amendment is worth stating precisely rather than rewriting the argument above, which still holds where it was made: a minor or a patch applies itself and leaves an operator nothing to do. What is ordinary to APPLY is not ordinary to REVERSE. version_greater sends every version increase through the same unattended occ upgrade, and the same entrypoint then refuses to start once the volume's version.php is newer than the image's, so a minor is one-way in exactly the sense a major is -- and #511 is the incident where a one-way application minor, on a different service, pinned the host behind a migration for three days. The self-migrating-application rule below therefore withholds minor and patch as well, and this rule stays because the reasoning it carries about Nextcloud specifically -- the rsync into the shared volume, the absent pre-upgrade backup, the skip refusal that binds an installed volume only -- is not restated there.",
       "matchDatasources": [
         "docker"
@@ -109,14 +116,15 @@
       "dependencyDashboardApproval": true
     },
     {
-      "description": "An application image whose container migrates its own store when it starts is not a freely reversible pin, and #511 is what that costs when nobody has said so. Bindery v1.34.0 migrated its SQLite store to schema_migrations 81, the host went back to a release pinning v1.33.3, and v1.33.3 -- which knows migrations 1..80 -- refused to open it. The refusal was correct and it happened inside the container: exit 1 every minute for three days, every converge failing at that role, and the deployment poller stopping. THE UPDATE TYPE IS NOT THE HAZARD, which is why the scope is major, minor and patch alike and not the major-only scope the database rule above takes. A database major changes an on-disk format; here any version increase runs the application's own migrations, so a patch is as one-way as a major. The one automerged type deliberately left out is a digest refresh on an unchanged tag, which moves no version and therefore runs no migration. automerge false, and DELIBERATELY NOT dependencyDashboardApproval, which is the one place this rule departs from the database-major and Nextcloud-major rules above. Those withhold the pull request itself; this one lets it open and only withholds the merge. The difference matters because of what these rules match: a major is rare, so a checkbox nobody ticks for a month costs nothing, whereas this rule reaches minor and patch on a service like Paperless that ships them continuously, and a suppressed pull request there is not a decision deferred but an update nobody ever sees. The pull request IS the notification. automerge false is also not the no-op it is on the database rule -- that one matches only major, which the routine automerge rule above never matches, while this one reaches minor and patch, which it does -- so it is what actually stops the merge that #511 rode in on. Immich is absent on purpose rather than forgotten: its own rule below already carries automerge false for every update type, and tests/renovate_policy_test.rb asserts the property over all four services by whichever mechanism reaches them, so a future refactor of either rule fails there rather than silently reopening this. roles/image_downgrade_guard is the other half and the one that runs on the host: this withholds the pull request, and that refuses the converge if an older image reaches the target anyway.",
+      "description": "An application image whose container migrates its own store when it starts is not a freely reversible pin, and #511 is what that costs when nobody has said so. Bindery v1.34.0 migrated its SQLite store to schema_migrations 81, the host went back to a release pinning v1.33.3, and v1.33.3 -- which knows migrations 1..80 -- refused to open it. The refusal was correct and it happened inside the container: exit 1 every minute for three days, every converge failing at that role, and the deployment poller stopping. THE UPDATE TYPE IS NOT THE HAZARD, which is why the scope is major, minor and patch alike and not the major-only scope the database rule above takes. A database major changes an on-disk format; here any version increase runs the application's own migrations, so a patch is as one-way as a major. The one automerged type deliberately left out is a digest refresh on an unchanged tag, which moves no version and therefore runs no migration. automerge false, and DELIBERATELY NOT dependencyDashboardApproval, which is the one place this rule departs from the database-major and Nextcloud-major rules above. Those withhold the pull request itself; this one lets it open and only withholds the merge. The difference matters because of what these rules match: a major is rare, so a checkbox nobody ticks for a month costs nothing, whereas this rule reaches minor and patch on a service like Paperless that ships them continuously, and a suppressed pull request there is not a decision deferred but an update nobody ever sees. The pull request IS the notification. automerge false is also not the no-op it is on the database rule -- that one matches only major, which the routine automerge rule above never matches, while this one reaches minor and patch, which it does -- so it is what actually stops the merge that #511 rode in on. Immich is absent on purpose rather than forgotten: its own rule below already carries automerge false for every update type, and tests/renovate_policy_test.rb asserts the property over all four services by whichever mechanism reaches them, so a future refactor of either rule fails there rather than silently reopening this. roles/image_downgrade_guard is the other half and the one that runs on the host: this withholds the pull request, and that refuses the converge if an older image reaches the target anyway. #547 ADDS VAULTWARDEN, AND IT IS THE STARKEST CASE ON THE LIST. It migrates its own SQLite store when it starts, exactly as Bindery does, so any version increase is one-way for the same reason. Two things make it worse than its neighbours rather than equal to them. Its pin carries a security FLOOR as well as a value -- CVE-2026-27801 is a two-factor bypass affecting everything up to and including 1.34.3 -- so a downgrade past a migration is also that CVE back in force, and no rule here can express a floor. And unlike Bindery there is no roles/vaultwarden/tasks/pre_upgrade_backup.yml: Bindery copies its SQLite database aside before a pinned upgrade, and Vaultwarden does not, so a bump that goes wrong has no local restore path at all. Nextcloud's reason for keeping no backup does not transfer -- that one is 'the server holds no data yet', and this one holds the household's passwords under recovery: critical with off-site backup parked. The withholding is therefore the only control on the pull-request end, and roles/image_downgrade_guard the only one on the host.",
       "matchDatasources": [
         "docker"
       ],
       "matchPackageNames": [
         "ghcr.io/vavallee/bindery",
         "ghcr.io/paperless-ngx/paperless-ngx",
-        "docker.io/library/nextcloud"
+        "docker.io/library/nextcloud",
+        "docker.io/vaultwarden/server"
       ],
       "matchUpdateTypes": [
         "major",
@@ -260,8 +268,12 @@
     {
       "description": "Alpine ruby pinned by the integration harness. The pin uses apk's fuzzy `~` so a distro revision bump cannot drop it out of the index. Alpine's official 3.24-stable APKBUILD is the source of truth for versions available to the runner image.",
       "customType": "regex",
-      "managerFilePatterns": ["/^tests/integration\\.sh$/"],
-      "matchStrings": ["ruby_package='ruby~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
+      "managerFilePatterns": [
+        "/^tests/integration\\.sh$/"
+      ],
+      "matchStrings": [
+        "ruby_package='ruby~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+      ],
       "depNameTemplate": "ruby",
       "datasourceTemplate": "custom.alpine-3.24-main",
       "extractVersionTemplate": "^pkgver=(?<version>.+)$",
@@ -270,8 +282,12 @@
     {
       "description": "Alpine curl pinned by the integration harness. Same fuzzy-pin and official branch-tracking reasoning as the ruby manager above.",
       "customType": "regex",
-      "managerFilePatterns": ["/^tests/integration\\.sh$/"],
-      "matchStrings": ["curl_package='curl~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"],
+      "managerFilePatterns": [
+        "/^tests/integration\\.sh$/"
+      ],
+      "matchStrings": [
+        "curl_package='curl~(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)'"
+      ],
       "depNameTemplate": "curl",
       "datasourceTemplate": "custom.alpine-3.24-main",
       "extractVersionTemplate": "^pkgver=(?<version>.+)$",

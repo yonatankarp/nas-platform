@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running eighteen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -452,7 +452,11 @@ The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
 for: `static`, `docs`, `reconciliation` and three suite legs instead of all
-seventeen (#395). One leg stands for the rest because the matrix is uniform and
+nineteen (#395). Read that off `tests/ci/classify_changes.rb --full`, whose
+`suites` array is the matrix: this sentence said sixteen, then seventeen, while
+a full run dispatched nineteen, and several comments under `tests/ci/` still
+carry a count of their own that nothing bumps either. One leg stands for the
+rest because the matrix is uniform and
 stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
 `case "$SUITE"` for every suite and asserts the argv, and
 `tests/ci/classify_changes_test.rb` reads each job's `needs.changes.outputs.*`
@@ -731,13 +735,15 @@ four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
 checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 55/57/63 over 175 today, and
-this sentence stood at 51/52/61 through both of those, then went stale twice
-more inside #548 alone -- once within one pull request of being corrected, and
-again in the pull request that corrected it. Three corrections in one issue is
-the evidence for reading the gate's own report instead of this line. Three things constrain a future
-rebalance, all three stated beside the
-lists: a check's recorded seconds are its wall time at that shard's load rather
+53/53/61 over 167 when #517 drew the split and is 59/57/63 over 179 today, and
+this sentence stood at 51/52/61 through both of those, then went stale three
+times more inside #548 alone -- once within one pull request of being corrected,
+again in the pull request that corrected it, and a third time when #547's
+Vaultwarden checks merged in beside #548's AdGuard ones without either branch
+being able to see the other's additions. Four corrections in one issue is the
+evidence for reading the gate's own report instead of this line. Three things
+constrain a future rebalance, all three stated beside the lists: a check's
+recorded seconds are its wall time at that shard's load rather
 than work that can be carried elsewhere, so an arithmetic projection from that
 report overshoots; each shard's leg is a *different runner*, so the three columns
 of one run are three machines and only a shard's share of its own run's total
@@ -999,3 +1005,40 @@ which is a hash and not a secret but is still what an offline guess would be
 made against), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
+
+**Vaultwarden is the exception the list above needs, and it is a narrow one.**
+Unlike Bindery, Nextcloud, Seerr and Dozzle, whose data directories hold
+readable credentials, Vaultwarden's store holds client-side-encrypted blobs: the
+vault items are encrypted under keys derived from master passwords the server
+never learns, so `db.sqlite3`, `attachments/` and `sends/` are not
+plaintext-credential-bearing and the whole directory does not become another
+"treat this as secret". Two things inside it are, and for different reasons.
+`rsa_key.pem` signs every session and token the server issues — losing it logs
+every client out and voids every API key, and *disclosing* it lets anyone mint
+those tokens — so it is secret-bearing in the ordinary sense, which is why
+`nas_storage` gives that directory 0700 rather than the 0755 every other service
+takes. And `config.json` would be, if it existed: it is written only by the
+`/admin` panel, which this deployment disables by setting neither `ADMIN_TOKEN`
+nor `DISABLE_ADMIN_TOKEN` — the second is the worse door, serving the whole panel
+unauthenticated, and it is what Vaultwarden's own warning recommends when it
+finds an empty token — and `roles/vaultwarden` asserts the file absent on every
+converge because the panel being its only writer is an upstream claim rather than
+something this platform can see. A `config.json` that appears is both a credential to treat as
+secret and a configuration that has silently started outranking the rendered
+`.env`.
+
+That store is still the most irreplaceable data on the platform, which is a
+different claim from being secret-bearing: `recovery: critical` with backup
+parked means one copy, and nothing — not even the household — can reconstruct a
+client-side-encrypted item from anywhere else.
+
+**Vaultwarden also inverts the credential direction, and there it is correct.**
+Every other service takes its identity from `vault.yml` and is pushed outward. A
+password manager must not: master passwords are user-owned by construction, and
+that zero-knowledge property is the entire reason to run it. So Ansible owns
+`SIGNUPS_ALLOWED`, `INVITATIONS_ALLOWED`, `DOMAIN` and org policy, and
+`roles/vault_contract` must never grow a key for a master password.
+`tests/expected/vaultwarden.yml` therefore carries `vault_keys: []`, which
+`CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in
+both directions — a service listed there that *gains* a key fails as loudly as
+one that lost its last. `docs/secrets.md` carries the argument in full.

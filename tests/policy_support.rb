@@ -14,9 +14,14 @@ module PolicySupport
   EXPECTED_SERVICES = %w[
     adguard audiobookshelf beszel dozzle immich jellyfin komga nextcloud ntfy
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
+    vaultwarden
   ].freeze
   # Not every vault key belongs to a service; this one is platform-wide.
   GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
+  # The services that hold no credential at all, which is a designed property
+  # here rather than an unfinished slice. See expectation_problems below for the
+  # argument and for the fact that this list is closed in both directions.
+  CREDENTIAL_FREE_SERVICES = %w[vaultwarden].freeze
   EXPECTATION_FIELDS = %w[container_cpus role vault_keys].freeze
 # The manifest's status vocabulary. Shared because more than one script decides
 # what to check based on whether a service is actually deployed.
@@ -167,7 +172,22 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     documents.each do |name, expectation|
-      problems.concat(expectation_problems(name, expectation, service_statuses[name]))
+      problems.concat(expectation_problems(name, expectation, service_statuses[name], root))
+    end
+
+    # THE THIRD DIRECTION, and the one the list was open in. The two checks in
+    # expectation_problems below bite only for a name that IS a rostered
+    # service: a stale or invented entry here is visited by neither, so
+    # `%w[vaultwarden seafile notaservice]` reported "all properties hold".
+    # seafile is not hypothetical -- #501 removed it, and this list would have
+    # carried it forever. Same shape as `stray_roster` in
+    # tests/deployment_gate_coverage_test.rb, and for the same reason: a literal
+    # list needs something holding it to the roster in both directions.
+    stray_credential_free = CREDENTIAL_FREE_SERVICES - service_names
+    unless stray_credential_free.empty?
+      problems << "CREDENTIAL_FREE_SERVICES names #{stray_credential_free.join(', ')}, which " \
+                  "no service on the roster accounts for: an exemption that outlives its " \
+                  "subject exempts nothing and hides the next service that takes the name"
     end
 
     # A file for a service the roster does not name would pin expectations nothing
@@ -183,7 +203,7 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     [documents.freeze, problems]
   end
 
-  def expectation_problems(service_name, expectation, service_status)
+  def expectation_problems(service_name, expectation, service_status, root = ROOT)
     relative_path = "tests/expected/#{service_name}.yml"
     problems = []
     role = expectation.fetch("role")
@@ -201,7 +221,72 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
     end
 
     vault_keys = expectation.fetch("vault_keys")
-    if vault_keys.is_a?(Array) && (!vault_keys.empty? || service_status == "planned")
+    # An implemented service holds at least one credential, and that was true of
+    # every service on this platform until #547. Vaultwarden inverts it: a
+    # password manager's master passwords are user-owned by construction, the
+    # server never learns them, and that zero-knowledge property is the entire
+    # reason to run it. Ansible owns the door -- SIGNUPS_ALLOWED,
+    # INVITATIONS_ALLOWED, DOMAIN -- and nothing behind it, and it sets no
+    # ADMIN_TOKEN either, because the /admin panel writes a config.json that
+    # would outrank every value the role renders. So the empty list here is a
+    # designed property rather than an unfinished slice, and the canonical
+    # secrets guide carries the argument in full.
+    #
+    # THAT GUIDE IS NAMED IN PROSE RATHER THAN BY PATH, deliberately.
+    # tests/ci/classify_changes_test.rb derives which documents a gate check is
+    # coupled to by scanning the check's whole require closure for literal
+    # document paths, and every one of the eight policy scripts requires this
+    # module -- so a path written here couples all of them to that document and
+    # demands it be routed to `static`. tests/ci/classify_changes.rb records the
+    # opposite decision beside its own list: the guide routes to `docs` alone,
+    # because tests/secrets_docs_test.rb is its only real reader. A cross
+    # reference is not a read, and spelling one out here would have moved a
+    # Markdown-only edit from a one-minute job onto the whole policy gate --
+    # measured, not predicted: it turned this check red 64 times.
+    #
+    # STATED, AND CLOSED IN BOTH DIRECTIONS. A service named below whose
+    # expectations DO list keys fails just as loudly as one omitted from the
+    # list that lists none: an exemption that quietly stopped applying is the
+    # defect this repository keeps closing. Adding a name here is a deliberate
+    # claim that the service is credential-free, not a way past a red check.
+    credential_free = CREDENTIAL_FREE_SERVICES.include?(service_name)
+    # The claim is about the ROLE, so it is checked against the role. A service's
+    # argument spec is where every vault credential it reads is declared
+    # `required: true`, so a role that reads one cannot be credential-free, and
+    # this is what stops the list being a one-line route past the rule for any
+    # service: adding `komga` to it and emptying tests/expected/komga.yml used to
+    # pass, and now fails here naming the two options roles/komga declares.
+    #
+    # WHAT REMAINS OPEN, said out loud rather than left to be discovered. A
+    # service whose role genuinely reads no vault variable can still be listed
+    # here, and that is not a hole but the declaration itself -- there is nothing
+    # left to distinguish it from Vaultwarden except intent. What cannot happen
+    # any more is listing a service that does read one, listing a name that is
+    # not a service, or listing one and leaving its keys in place.
+    if credential_free && role.is_a?(String) && !role.empty?
+      spec_path = File.join(root, "roles", role, "meta", "argument_specs.yml")
+      spec = begin
+        YAML.safe_load_file(spec_path)
+      rescue Errno::ENOENT, Psych::Exception
+        nil
+      end
+      options = spec.is_a?(Hash) ? spec.dig("argument_specs", "main", "options") : nil
+      declared = options.is_a?(Hash) ? options.keys.grep(/\Avault_/).sort : []
+      unless declared.empty?
+        problems << "#{service_name} is registered in CREDENTIAL_FREE_SERVICES but " \
+                    "roles/#{role}/meta/argument_specs.yml declares #{declared.join(', ')}: " \
+                    "a role that reads a vault credential is not credential-free, and the " \
+                    "registration would otherwise be a one-line route past the rule"
+      end
+    end
+    if credential_free && vault_keys.is_a?(Array) && !vault_keys.empty?
+      problems << "#{relative_path} is registered credential-free in " \
+                  "CREDENTIAL_FREE_SERVICES but lists #{vault_keys.length} vault key(s): " \
+                  "either the service gained a credential and the registration must go, " \
+                  "or the keys belong to another service"
+    end
+    if vault_keys.is_a?(Array) &&
+       (!vault_keys.empty? || service_status == "planned" || credential_free)
       # contract_basename is reused for the vault prefix because paperless-ngx is the
       # one service whose keys drop the suffix, and it is the same alias. The two
       # namings are independent concepts that happen to agree, so a change to one must
@@ -213,7 +298,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
         end
       end
     else
-      problems << "#{relative_path} vault_keys must be a nonempty list unless the service is planned"
+      problems << "#{relative_path} vault_keys must be a nonempty list unless the service " \
+                  "is planned or is named in CREDENTIAL_FREE_SERVICES"
     end
     problems
   end

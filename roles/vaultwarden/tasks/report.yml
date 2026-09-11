@@ -1,0 +1,26 @@
+---
+# The deployment report, a stage of its own rather than the last task of
+# deploy.yml so that it can see every result that stage registers -- the
+# deployment, the teardown, the bounded force-recreate -- and the Serve front
+# that tasks/serve.yml places, which is a deployment change as surely as a
+# container is. deploy.yml and serve.yml are imported statically, so they share
+# one variable scope with this file and nothing has to be passed.
+#
+# Ungated on purpose, and it says nothing when nothing moved: the report is
+# gated on the results themselves, so a converge with the flag off and a project
+# already absent is silent, and the run that first tears the project down
+# reports that it did.
+#
+# Every term carries a default, because each of the four tasks behind them is
+# conditional and a reader of an undefined name is an error rather than a false.
+- name: Report the Vaultwarden deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Vaultwarden
+    ntfy_deployment_report_changed: >-
+      {{ ((vaultwarden_deploy | default({})) is changed) or
+         ((vaultwarden_teardown | default({})) is changed) or
+         ((vaultwarden_wedged_recreate | default({})) is changed) or
+         ((vaultwarden_serve_placed | default({})) is changed) }}

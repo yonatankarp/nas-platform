@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-seventeen implemented service projects from no planned media-acquisition
+eighteen implemented service projects from no planned media-acquisition
 projects. The media acquisition catalog is fully implemented; a project added
 to it in future stays inert, with no runtime role or Compose directory, until
 its own promotion.
@@ -284,9 +284,15 @@ installs the same toolchain inside the container the way the harness always did.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, Bindery, Trailarr, Seerr,
-Nextcloud and AdGuard Home — every implemented service except `arr` and
-`downloaders`, both of which have a Phase 1 runtime that is default-disabled in
-that lane and are proved by their Docker integration suites instead. The Mac
+Nextcloud and AdGuard Home — every implemented service except `arr`,
+`downloaders` and `vaultwarden`. The first two have a Phase 1 runtime that is
+default-disabled in that lane and are proved by their Docker integration suites
+instead; Vaultwarden landed with `vaultwarden_deployment_enabled` false and the
+Mac lane does not ask for it, so the converge takes that project to
+`state: absent` and there is nothing on the laptop to exercise. What converges
+it instead is the untagged idempotence lane rather than a lane of its own:
+`idempotence-check` on a full run, and the `idempotence-5` shard on a diff that
+selects the shards. The Mac
 lane starts Nextcloud and AdGuard with their own
 `-e <role>_deployment_enabled=true`, so their coverage does not depend on what
 the platform default happens to be. Neither of AdGuard's two host ports is
