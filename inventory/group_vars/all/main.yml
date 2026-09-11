@@ -342,8 +342,12 @@ nextcloud_deployment_enabled: true
 adguard_deployment_enabled: true
 
 # VAULTWARDEN IS ON. #547 landed the stack dark and this is the separate
-# deliberate act that turns it on -- true here and true in
-# roles/vaultwarden/defaults/main.yml.
+# deliberate act that turns it on. THIS LINE IS THE WHOLE OF IT:
+# roles/vaultwarden/defaults/main.yml stays false, the way nextcloud's and
+# adguard's do, because a role default is the floor under this decision rather
+# than a copy of it -- it is what a caller with no inventory gets, and this
+# inventory wins on every run any playbook here makes. The comment beside that
+# default carries the argument.
 #
 # WHAT THE FLIP ITSELF DOES, given the dark merge already reached the NAS. Dark,
 # the poller had already installed services/vaultwarden/ into the release,

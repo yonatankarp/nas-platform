@@ -6,25 +6,25 @@
 # revalidates the paths this role touches and the deployment report that says
 # whether anything moved.
 #
-# TRUE IN BOTH HOMES SINCE #547's SECOND CHUNK, AND IT IS THE OUTLIER OF THE
-# THREE. A role default is what any caller gets, including one that runs this
-# role without this repository's inventory, and true here means such a caller
-# reads the state the platform is actually in: a `--check` of the role alone
-# reports what the NAS runs rather than a tear-down of it.
+# FALSE HERE WHILE THE PLATFORM RUNS IT, AND THE ASYMMETRY IS THE POINT. This
+# line is the FLOOR under the deployment decision rather than a copy of it. The
+# decision is `vaultwarden_deployment_enabled: true` in
+# inventory/group_vars/all/main.yml, which wins on every run any playbook in this
+# repository makes; what a role default decides is only what a caller with NO
+# inventory gets, and for this service that caller would otherwise stand up a
+# password manager whose registration door is deliberately open. nextcloud and
+# adguard ship their gates off for the same reason -- adguard's own words are
+# that a caller with no inventory must not put a resolver on the household
+# network -- and this is the starker case of the three.
 #
-# The other two gated services chose the opposite and say so: nextcloud and
-# adguard keep `false` in their role defaults as a FLOOR under the decision
-# rather than a mirror of it, and tests/contracts/adguard-static.rb asserts it of
-# that one. Their argument is the stronger one on its face -- a caller who
-# supplies no inventory should not stand up a resolver on the household network,
-# and by the same reading should not stand up a password manager whose
-# registration door is open. Nothing in this repository is affected either way:
-# inventory/group_vars/all/main.yml wins on every run any playbook here makes,
-# and tasks/verify.yml asserts the door against whichever value won. The value
-# is #547's stated shape and is left as it is rather than changed quietly; if
-# the convention is to be one convention, this is the line to change and
-# nothing else moves with it.
-vaultwarden_deployment_enabled: true
+# #547's second chunk shipped this true, on the reading that a dark stack must be
+# dark in both homes and so a lit one should be lit in both. The first half is
+# right and the second does not follow: flipping inventory is the decision,
+# flipping this removes the floor -- including the floor under turning the stack
+# back OFF, since a true default would keep converging it after inventory said
+# not to. tests/deployment_gate_coverage_test.rb now refuses any gate whose role
+# default is not false, for every gate rather than for this one.
+vaultwarden_deployment_enabled: false
 
 # 8086, the web interface, and the container listens on it too. The image's own
 # ExposedPorts is 80/tcp, which the platform identity cannot bind; the reason

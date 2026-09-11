@@ -57,6 +57,12 @@
 #      halves fails, and a name in either half that is not an implemented service
 #      fails too.
 #
+#   3. Its role default declares the gate OFF. Not a coverage requirement like
+#      the two above -- it holds of every gate, lit or dark -- but the same
+#      subject read from the same scan, so it lives here rather than in a
+#      per-service contract that two of the three gates do not have. The reason
+#      is at the check itself.
+#
 # NOT REQUIRED HERE, deliberately, because each is already closed elsewhere and a
 # second copy of an assertion is a second thing to keep true:
 #
@@ -277,6 +283,35 @@ gate_names.each do |name|
   check(failures, !declaration.nil? && declaration["role"] == prefix,
         "#{name} must be declared in roles/#{prefix}/defaults/main.yml: a gate that only " \
         "inventory sets has no declared off position")
+
+  # AND IT MUST BE DECLARED OFF. A role default is what a caller gets with no
+  # inventory at all, so this line is the FLOOR under the deployment decision
+  # rather than a mirror of it: the decision lives in
+  # inventory/group_vars/all/main.yml, which wins on every run any playbook here
+  # makes, and turning it back off there must not leave the stack converging on
+  # the strength of a role default nobody edited.
+  #
+  # Stated repo-wide rather than per-service because the tree already satisfies
+  # it in full -- nextcloud, adguard and vaultwarden are the three gates that
+  # exist, and all three ship false -- and because the harm is worst exactly
+  # where a per-service check is most likely to be missing. AdGuard is the only
+  # one carrying its own assertion (tests/contracts/adguard-static.rb, whose
+  # reason is that a caller with no inventory must not put a resolver on the
+  # household network); Vaultwarden has no static contract to carry one, and it
+  # is the starker case, since the same caller would stand up a password manager
+  # whose registration door is open. A rule that reaches every gate reaches the
+  # ones nobody thought to guard.
+  #
+  # If a service ever needs a true role default, this is the check to argue with
+  # rather than to route around: the argument belongs here, beside the other two
+  # things a gate must be.
+  check(failures, declaration.nil? || declaration["value"] == false,
+        "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
+        "and a role default must ship the gate OFF. It is the floor under the deployment " \
+        "decision, not a copy of it: inventory/group_vars/all/main.yml is where the decision " \
+        "is made and won, and a true default means a caller with no inventory -- or an " \
+        "inventory that turned the stack back off -- converges the stack anyway. Set it false " \
+        "here and leave inventory to say what this platform runs")
 
   overrides = inventory_gates[name]
   values = overrides.empty? ? [declaration&.fetch("value")] : overrides.map { |entry| entry["value"] }
