@@ -37,6 +37,7 @@
 # placed -- and substituting the real shape changed no verdict, which is what
 # makes this a fidelity repair rather than a defect.
 
+require "etc"
 require "fileutils"
 require "json"
 require "open3"
@@ -57,9 +58,22 @@ NODE_NAME = "as6704t-4043.tail4e1ae8.ts.net"
 SHOUTY_NAME = "AS6704T-4043.Tail4e1ae8.ts.net"
 SERVE_PORT = 8086
 
+# The account the run executes as, which is what the stage resolves the operator
+# remedy from. Taken from the process rather than from $USER, which a caller may
+# have exported to anything.
+ACCOUNT = Etc.getpwuid(Process.uid).name
+
 # A stub `tailscale`. It answers `serve status --json` from TS_STATE and appends
 # the argv of anything else to TS_LOG, so a placement is observable as a line
-# rather than inferred from Ansible's own changed flag.
+# rather than inferred from Ansible's own changed flag. TS_DENY then decides how
+# that mutation ends: the log line is written first either way, because "the
+# stage handed the CLI this argv and the CLI refused it" is exactly the state a
+# denial row has to observe.
+#
+# The `operator` text is the stderr a real tailscale 1.102.2 printed on the NAS
+# on 2026-09-11, transcribed from that run's failure. The `daemon` text stands
+# for every other way the command can fail and deliberately shares no word with
+# it.
 STUB = <<~SH
   #!/bin/sh
   if [ "$1" = serve ] && [ "$2" = status ]; then
@@ -80,6 +94,14 @@ STUB = <<~SH
     esac
   fi
   printf 'MUTATE %s\\n' "$*" >> "$TS_LOG"
+  case "$TS_DENY" in
+    operator)
+      printf "sending serve config: Access denied: serve config denied\\n\\nUse 'sudo tailscale serve --bg --yes #{SERVE_PORT}'.\\nTo not require root, use 'sudo tailscale set --operator=\\$USER' once.\\n" >&2
+      exit 1 ;;
+    daemon)
+      printf 'failed to connect to local tailscaled; is it running?\\n' >&2
+      exit 1 ;;
+  esac
   exit 0
 SH
 
@@ -123,7 +145,8 @@ end
 
 # One case: run the shipped stage and report what it did.
 def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
-              binary: :stub, check_mode: false, alive: true, serve_tasks: SERVE_TASKS)
+              binary: :stub, check_mode: false, alive: true, deny: "",
+              gather: false, serve_tasks: SERVE_TASKS)
   stub_server = AliveStub.new(answer: alive)
   Dir.mktmpdir("nas-platform-vaultwarden-serve-") do |directory|
     log = File.join(directory, "mutations.log")
@@ -132,8 +155,12 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
     File.write(stub, STUB, mode: "w", perm: 0o700)
     resolved = binary == :stub ? stub : ""
     playbook = File.join(directory, "driver.yml")
+    # Facts are off by default because no case but the operator denial needs
+    # one: that row's message resolves the account to grant from
+    # ansible_facts['user_id'], and gathering is what makes the resolution live
+    # rather than a literal the stage could have written down.
     File.write(playbook, YAML.dump([{
-      "hosts" => "localhost", "gather_facts" => false,
+      "hosts" => "localhost", "gather_facts" => gather,
       "vars" => {
         "platform_public_host" => public_host,
         "vaultwarden_port" => SERVE_PORT,
@@ -152,7 +179,8 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
     arguments = ["ansible-playbook", "-i", "localhost,", "-c", "local", playbook]
     arguments += ["--check"] if check_mode
     stdout, stderr, status = Open3.capture3(
-      { "ANSIBLE_NOCOLOR" => "1", "TS_STATE" => state.to_s, "TS_KEY" => node_key, "TS_LOG" => log },
+      { "ANSIBLE_NOCOLOR" => "1", "TS_STATE" => state.to_s, "TS_KEY" => node_key,
+        "TS_DENY" => deny.to_s, "TS_LOG" => log },
       *arguments, chdir: ROOT
     )
     { "ok" => status.success?, "output" => "#{stdout}\n#{stderr}",
@@ -245,6 +273,32 @@ CASES = [
              "green skip",
     "run" => { state: :unconfigured_message, check_mode: true }, "ok" => true,
     "mutations" => [], "says" => "A live run would" },
+  { "name" => "operator_denied",
+    "why" => "THE FAILURE THIS ROW WAS ADDED FOR, taken from the live NAS on " \
+             "2026-09-11. Writing serve configuration is privileged and the " \
+             "deploy account had not been granted the operator role, so the " \
+             "converge died at site.yml's last role on a raw rc=1, readable " \
+             "only because tailscale's own stderr happens to name the remedy. " \
+             "The stage now names it in platform terms, and resolves the " \
+             "account to grant from the run's own facts rather than writing a " \
+             "name down -- which is why this row gathers them and expects its " \
+             "own account in the message. The placement is still attempted, " \
+             "which is what the mutation line records",
+    "run" => { state: :unconfigured_empty, deny: :operator, gather: true },
+    "ok" => false, "mutations" => [PLACEMENT],
+    "says" => "sudo tailscale set --operator=#{ACCOUNT}" },
+  { "name" => "placement_other_failure",
+    "why" => "THE OTHER HALF, AND THE ONE THAT KEEPS THE FIRST HONEST. A " \
+             "denial has a known remedy and an arbitrary failure does not, so " \
+             "reporting every non-zero exit as `grant the operator` would send " \
+             "a reader to a host act that fixes nothing -- the guard that " \
+             "reintroduces the bug through another door. A tailscaled that is " \
+             "not running must therefore fail with its own output intact and " \
+             "must not mention the operator at all",
+    "run" => { state: :unconfigured_empty, deny: :daemon },
+    "ok" => false, "mutations" => [PLACEMENT],
+    "says" => "failed to connect to local tailscaled",
+    "says_not" => "--operator=" },
   { "name" => "unreachable_front",
     "why" => "Serve accepts the configuration whether or not the tailnet has " \
              "HTTPS certificates enabled, and that console setting is the one " \
@@ -269,6 +323,15 @@ def case_problems(row, serve_tasks: SERVE_TASKS)
   says = row["says"]
   if says && !result.fetch("output").include?(says)
     problems << "#{row.fetch('name')}: the run never said #{says.inspect}"
+  end
+  # The negative half. A row that only asserts "the run failed" cannot tell a
+  # narrow diagnosis from a maximally widened one -- both fail the run -- so the
+  # row that proves the operator is NOT blamed for an unrelated failure needs
+  # the absence stated rather than implied.
+  says_not = row["says_not"]
+  if says_not && result.fetch("output").include?(says_not)
+    problems << "#{row.fetch('name')}: the run said #{says_not.inspect}, which " \
+                "this failure is not a case of"
   end
   problems
 end
@@ -298,6 +361,24 @@ MUTATIONS = [
     "from" => "is match('^http://(127\\.0\\.0\\.1|localhost):' ~ vaultwarden_port ~ '/?$')",
     "to" => "is match('^http://127\\.0\\.0\\.1:' ~ vaultwarden_port ~ '/?$')",
     "breaks" => %w[localhost_spelling] },
+  # The denial detection is planted in both directions, because each direction
+  # is its own defect: narrowed to nothing it takes the legible refusal away,
+  # widened to everything it blames the operator for faults that have nothing to
+  # do with the grant. One plant proves only the half it breaks.
+  { "name" => "the operator denial is no longer told apart from any other failure",
+    "from" => "        - >-\n          'serve config denied'\n" \
+              "          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)\n" \
+              "          and 'access denied'\n" \
+              "          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)\n",
+    "to" => "        - true\n",
+    "breaks" => %w[operator_denied] },
+  { "name" => "every placement failure is reported as a missing operator grant",
+    "from" => "        - >-\n          'serve config denied'\n" \
+              "          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)\n" \
+              "          and 'access denied'\n" \
+              "          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)\n",
+    "to" => "        - false\n",
+    "breaks" => %w[placement_other_failure] },
   { "name" => "the unreachable front stops being refused",
     "from" => "          - vaultwarden_serve_reachability.status | default(0) | int == 200\n",
     "to" => "          - true\n",
@@ -334,8 +415,8 @@ end
 failures = []
 # A floor under the roster, because every list here is walked rather than
 # counted: a CASES that emptied would report success having run nothing.
-check_floor(failures, CASES.length, 12, "Vaultwarden Serve cases")
-check_floor(failures, MUTATIONS.length, 6, "Vaultwarden Serve plants")
+check_floor(failures, CASES.length, 15, "Vaultwarden Serve cases")
+check_floor(failures, MUTATIONS.length, 8, "Vaultwarden Serve plants")
 check(failures, File.file?(SERVE_TASKS),
       "roles/vaultwarden/tasks/serve.yml must exist for this check to have a subject")
 

@@ -99,6 +99,19 @@
     # claims a change on every converge, and idempotence is a hard requirement
     # here. --json rather than the plain form because the plain form is prose
     # meant for a person and has changed shape across releases.
+    #
+    # NO OPERATOR GUARD ON THE READ, AND THAT IS MEASURED RATHER THAN ASSUMED.
+    # Writing serve configuration is refused to an account that has not been
+    # granted the operator role, which the placement below names; reading it on
+    # the same host is not. The NAS run of 2026-09-11 is the measurement: it
+    # failed at the placement with `Access denied: serve config denied` on a host
+    # where the grant had never been made, which it could only reach by getting
+    # past `Require a legible Tailscale Serve reading`. So there is no denial to
+    # report here and no guard for one -- a check for a state that cannot occur
+    # is a check that cries wolf, and this file already carries the one that
+    # would catch a build which changed its mind: a denied read exits non-zero
+    # without saying `no serve config`, so that assertion fails with the
+    # client's own stderr printed verbatim rather than going quiet.
     - name: Read the Tailscale Serve configuration this host holds
       ansible.builtin.command:
         argv:
@@ -203,9 +216,31 @@
     # outcome. --https 443 is the default mode, so the bare port is the whole
     # target specification.
     #
-    # changed_when: true is earned rather than assumed: this task runs only
-    # where the read above said the configuration differs, so the run that
-    # reaches it is the run that changes something.
+    # A change is claimed only on a zero exit. This task runs only where the
+    # read above said the configuration differs, so the run that reaches it is
+    # the run that means to change something -- but a refused invocation changed
+    # nothing, and `vaultwarden_serve_placed is changed` feeds the deployment
+    # report.
+    #
+    # default(1) RATHER THAN default(0), on both expressions, for the reason
+    # CLAUDE.md gives for the docker_compose_v2_exec rule: a module that refuses
+    # before it runs anything -- an unreadable binary, an argv it will not take
+    # -- sets no rc at all, and defaulting that to zero reports a refusal as a
+    # successful change.
+    #
+    # ONE FAILURE IS TOLERATED HERE, AND IT IS THE ONE WITH A KNOWN REMEDY.
+    # Writing serve configuration is privileged on Linux: tailscaled takes it
+    # from root, or from the account the host has granted the operator role, and
+    # refuses every other with `Access denied: serve config denied`. That is a
+    # host prerequisite to name rather than a fault to work around, so it is let
+    # through to the assertion below, which says what to do about it in this
+    # platform's own terms. Every other non-zero exit fails right here with the
+    # client's own output intact, because this repository knows no remedy for
+    # it: reporting an arbitrary failure as "grant the operator" would send a
+    # reader to a host act that fixes nothing, which is the guard that
+    # reintroduces the bug through another door. Both wordings are matched
+    # because a build that reworded the localapi refusal is unlikely to have
+    # reworded the prefix the CLI puts on it as well.
     - name: Place the Tailscale Serve front for Vaultwarden
       ansible.builtin.command:
         argv:
@@ -215,10 +250,59 @@
           - --yes
           - "{{ vaultwarden_port }}"
       register: vaultwarden_serve_placed
-      changed_when: true
+      changed_when: vaultwarden_serve_placed.rc | default(1) == 0
+      failed_when:
+        - vaultwarden_serve_placed.rc | default(1) != 0
+        - >-
+          'serve config denied'
+          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)
+          and 'access denied'
+          not in (vaultwarden_serve_placed.stderr | default('', true) | lower)
       when:
         - not vaultwarden_serve_fronted
         - not ansible_check_mode
+
+    # THE PREREQUISITE THE PLATFORM CAN NAME BUT MAY NOT PERFORM. The condition
+    # is total and needs no second reading of the stderr: the task above fails
+    # the run on every non-zero exit except the denial, so a placement that ran,
+    # was not skipped and did not exit zero is the denial and nothing else.
+    #
+    # The remedy is resolved from the run's own facts rather than written down,
+    # because the account differs per inventory -- inventory/local.yml runs as
+    # whoever is logged into the NAS, inventory/remote.yml as PLATFORM_NAS_USER
+    # -- and a hardcoded name would be right for one of them at most. The
+    # default is a totality guard for a caller that gathered no facts, not a
+    # behaviour: it falls back to the literal $USER, which is the spelling
+    # tailscale's own hint uses and is correct to paste in an interactive shell.
+    - name: Require the Tailscale operator grant this host was deployed without
+      ansible.builtin.assert:
+        that:
+          - vaultwarden_serve_placed is skipped
+            or vaultwarden_serve_placed.rc | default(1) == 0
+        fail_msg: >-
+          tailscaled refused `{{ vaultwarden_tailscale_path }} serve --bg --yes
+          {{ vaultwarden_port }}`: THE ACCOUNT THIS PLAY RUNS AS MAY NOT WRITE
+          `tailscale serve` CONFIGURATION on this host. Reading it is not
+          privileged and writing it is, which is why this run got as far as
+          placing the front. The remedy is one command, run once on the NAS by a
+          human who can sudo:
+          `sudo tailscale set --operator={{ ansible_facts['user_id'] | default('$USER', true) }}`.
+          It is a one-time host act -- tailscaled keeps it in its own
+          preferences, so it survives reboots, image bumps and every release
+          this repository will ever deploy -- and it is a prerequisite of
+          exactly the kind the tailnet's HTTPS certificate setting is: something
+          the platform depends on, names, and does not own. THIS REPOSITORY
+          DELIBERATELY DOES NOT PERFORM IT. No role here escalates; every
+          `become` key under roles/ is `become: false` and ansible.cfg records
+          why, so a play that granted itself operator would be the first
+          privileged act this platform makes on the host. Until the grant
+          exists, this run fails at site.yml's LAST role, no service is left
+          behind it, and the poller repeats the same failure every five minutes.
+          The client said:
+          {{ vaultwarden_serve_placed.stderr | default('', true) | trim | default('nothing', true) }}
+        success_msg: >-
+          The account this play runs as may write `tailscale serve`
+          configuration on this host.
 
     # `command` is skipped under --check, which CLAUDE.md names as exactly the
     # bug class the integration suite exists to catch. The reviewer is told what

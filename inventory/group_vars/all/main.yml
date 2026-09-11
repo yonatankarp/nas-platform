@@ -382,6 +382,20 @@ adguard_deployment_enabled: true
 # is behind it, and the poller repeats that failure every five minutes until the
 # setting or the release changes.
 #
+# THE SECOND HOST PREREQUISITE, WHICH WAS NOT CHECKED BEFORE IT MERGED AND COST
+# EXACTLY WHAT THE PARAGRAPH ABOVE PRICES. Placing a Serve front is a privileged
+# write: tailscaled accepts serve configuration from root, or from an account
+# the host has granted with `sudo tailscale set --operator=<account>`, and
+# refuses everyone else with `Access denied: serve config denied`. Reading it is
+# not privileged, so nothing before the placement notices. The deploy account
+# had neither, and the first converge after this flip died at that command --
+# the last role of the last play -- on a bare rc=1, repeating on every
+# five-minute tick until the operator ran the grant by hand. The grant is a
+# one-time act that persists in tailscaled's own preferences; this repository
+# escalates nowhere and so cannot make it, which is exactly why
+# roles/vaultwarden/tasks/serve.yml now refuses in those terms and names the
+# account to grant rather than leaving the reader to Tailscale's own stderr.
+#
 # Flipping it is also what makes tests/deployment_gate_coverage_test.rb require
 # an integration lane that converges the vaultwarden tag and Mac lifecycle
 # coverage. Both land in this change, which is the check working: a gate-on
