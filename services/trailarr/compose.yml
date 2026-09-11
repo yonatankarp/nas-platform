@@ -40,7 +40,7 @@ services:
   trailarr:
     <<: *service-defaults
     container_name: trailarr
-    image: docker.io/nandyalu/trailarr:0.11.5@sha256:bbf4e94d078cacf7d244ebdc30e288875c38dfb1c301fc384be506870365c013
+    image: docker.io/nandyalu/trailarr:0.12.0@sha256:bc67dd6ffa27c15101d9e89f8b7d7828982dcfc13911286bd907d1013ebc325a
     # One trailer transcode at a time. ffmpeg is the only CPU-bound work here
     # and it runs from a single scheduled task; the arr syncs are network-bound.
     cpus: 1.0
