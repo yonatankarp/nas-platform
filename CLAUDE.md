@@ -452,7 +452,7 @@ The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
 for: `static`, `docs`, `reconciliation` and three suite legs instead of all
-sixteen (#395). One leg stands for the rest because the matrix is uniform and
+seventeen (#395). One leg stands for the rest because the matrix is uniform and
 stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
 `case "$SUITE"` for every suite and asserts the argv, and
 `tests/ci/classify_changes_test.rb` reads each job's `needs.changes.outputs.*`
