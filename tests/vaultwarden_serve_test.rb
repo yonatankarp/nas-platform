@@ -209,9 +209,14 @@ CASES = [
   { "name" => "binary_absent",
     "why" => "the path every CI lane, the Mac lane and a workstation take. It " \
              "reports and continues: failing here would turn all of them red " \
-             "for a facility they are not meant to have",
+             "for a facility they are not meant to have. It is also the Mac " \
+             "lane's exact configuration rather than an approximation of it: " \
+             "the driver above passes an EMPTY candidate list, which is what " \
+             "tests/mac/lib.sh requests, because the first default candidate is " \
+             "a path a Mac can really have and a disposable sandbox must not " \
+             "reach an operator's own tailnet through it",
     "run" => { state: :fronted, binary: :absent }, "ok" => true, "mutations" => [],
-    "says" => "No Tailscale client was found at any of" },
+    "says" => "No Tailscale client was found at any path, because this run was given no candidates" },
   { "name" => "gate_off",
     "why" => "with the stack dark the stage reads and reports but places " \
              "nothing, and leaves an existing entry alone because Serve state " \
