@@ -320,8 +320,14 @@ nextcloud_deployment_enabled: true
 # {{ nas_docker_root }}/adguard/{conf,work} -- the nas_storage loop is ungated
 # -- and render the runtime .env, which carries only paths, the platform
 # identity and the CPU set. AdGuardHome.yaml, the one rendered file that
-# carries a credential, is gated and is not rewritten; the copy written while
-# the stack was on stays on disk until those directories go with the code.
+# carries a credential, is gated and is not rewritten -- but the copy written
+# while the stack was on STAYS, and nothing in this repository will remove it.
+# host_prep creates directories and never deletes them, so neither this change
+# nor the one that removes the code takes that 0600 file, its administrator
+# bcrypt hash, or work/data/sessions.db off the NAS. Deleting
+# {{ nas_docker_root }}/adguard is a manual act, and until somebody performs it
+# the host keeps credential-bearing files for a service that no longer runs.
+# Both directories are recovery: cache, so nothing is lost by doing it.
 #
 # The role default is false as well, and that is not a mirror of this decision.
 # It is a floor under it, exactly as roles/nextcloud's is: a caller running
