@@ -60,7 +60,16 @@ UNGUARDED_RELEASE_READS = [
   "roles/arr/tasks/configarr.yml",
   "roles/bindery/tasks/pre_upgrade_backup.yml",
   "roles/container_cpu/tasks/inspect.yml",
-  "roles/image_downgrade_guard/tasks/main.yml"
+  "roles/image_downgrade_guard/tasks/main.yml",
+  # #567 added a slurp of the deployed Immich compose.yml, to derive the
+  # restore preflight's expected versions from the pins rather than from a
+  # literal that goes stale on the next image bump. It is latent for the same
+  # reason as the four above and no other: Immich is in every release this NAS
+  # has, so the read always finds its file. The window the header describes --
+  # a new service's first review before its first live converge -- closed for
+  # Immich long ago. Fixing it means the stat-and-three-states shape
+  # roles/vaultwarden/tasks/deploy.yml carries, and removing this line.
+  "roles/immich/tasks/main.yml"
 ].freeze
 
 # The reads that must STAY guarded. Stated rather than derived, because "no
