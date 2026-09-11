@@ -6,13 +6,24 @@
 # revalidates the paths this role touches and the deployment report that says
 # whether anything moved.
 #
-# TRUE IN BOTH HOMES SINCE #547's SECOND CHUNK, and the two are not redundant.
-# A role default is what any caller gets, including one that runs this role
-# without this repository's inventory; a false default there would mean a
-# `--check` of the role alone reported a tear-down of a stack the platform
-# actually runs, which is a review that describes a host nobody has. The gated
-# services that are still dark -- adguard today -- keep false in both places for
-# the mirror-image reason.
+# TRUE IN BOTH HOMES SINCE #547's SECOND CHUNK, AND IT IS THE OUTLIER OF THE
+# THREE. A role default is what any caller gets, including one that runs this
+# role without this repository's inventory, and true here means such a caller
+# reads the state the platform is actually in: a `--check` of the role alone
+# reports what the NAS runs rather than a tear-down of it.
+#
+# The other two gated services chose the opposite and say so: nextcloud and
+# adguard keep `false` in their role defaults as a FLOOR under the decision
+# rather than a mirror of it, and tests/contracts/adguard-static.rb asserts it of
+# that one. Their argument is the stronger one on its face -- a caller who
+# supplies no inventory should not stand up a resolver on the household network,
+# and by the same reading should not stand up a password manager whose
+# registration door is open. Nothing in this repository is affected either way:
+# inventory/group_vars/all/main.yml wins on every run any playbook here makes,
+# and tasks/verify.yml asserts the door against whichever value won. The value
+# is #547's stated shape and is left as it is rather than changed quietly; if
+# the convention is to be one convention, this is the line to change and
+# nothing else moves with it.
 vaultwarden_deployment_enabled: true
 
 # 8086, the web interface, and the container listens on it too. The image's own

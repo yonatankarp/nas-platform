@@ -173,14 +173,16 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all seventeen of the implemented service projects this host
-converges. Two of the three gated services carry no gated-off caveat any more:
-Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which it
-replaced as this platform's file-sync service — and AdGuard Home's was flipped
-after #548 landed the stack dark. The third, Vaultwarden, is still dark:
-`vaultwarden_deployment_enabled` is false, so a converge takes that project to
-`state: absent` and there is no deployed instance to hold credentials or to
-check. Repeat the
+unchanged for all eighteen of the implemented service projects this host
+converges. None of the three gated services carries a gated-off caveat any
+more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
+it replaced as this platform's file-sync service — AdGuard Home's was flipped
+after #548 landed the stack dark, and Vaultwarden's after #547 did. Vaultwarden
+is the one whose credential check is not a credential check: it is the only
+service here that holds no vault-authored identity, because master passwords are
+user-owned and the server never learns them, so what there is to check is the
+door — that registration answers as the declared policy says it should, and that
+`/admin` still serves nothing but its own disabled notice. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for

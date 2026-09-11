@@ -139,12 +139,24 @@ ROOT = File.expand_path("..", __dir__)
 # is added, removed, gated or ungated, and re-derive rather than reason: the
 # summary line at the foot of this file prints four of the seven live counts, and
 # the other three are one instrumented run away.
+#
+# THE THIRD TIME, AND IT WAS THE SAME MERGE AGAIN. #547's second chunk rebased
+# onto the AdGuard flip above, and neither side's numbers were right for the
+# tree that came out: this file's own Mac roster, tagged lanes and lane tags
+# were AdGuard's counts, one short each, because Vaultwarden brings a lane, a
+# tag and a roster entry of its own. They were re-derived the way the paragraph
+# above prescribes rather than incremented -- each floor set to an impossible
+# value and the check run, which prints the count it found: 18 implemented, 3
+# gate variables, 18 subjects, an 18-name Mac roster, 17 tagged rows, 18 lane
+# tags, 33 site tags. SUBJECT_FLOOR is the one that did not move and the one
+# that must not: its rule is implemented minus gated, 18 - 3 is 15, and the
+# count being 18 today only means no stack is dark at the moment.
 IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, adguard and vaultwarden _deployment_enabled
 SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 17        # 16 registered contracts plus ntfy
-TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
+MAC_ROSTER_FLOOR = 18        # 16 registered contracts plus ntfy and vaultwarden
+TAGGED_LANE_FLOOR = 17       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 18          # the distinct manifest service tags those rows converge
 SITE_TAG_FLOOR = 33          # the role tags site.yml declares
 
 failures = []

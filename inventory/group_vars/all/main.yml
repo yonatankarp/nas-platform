@@ -367,6 +367,17 @@ adguard_deployment_enabled: true
 # will reach. `tailscale serve status` on the NAS reported `No serve config` on
 # 2026-09-10, so the first converge after this merge is a genuine change.
 #
+# THAT SETTING WAS CHECKED BEFORE THIS MERGED RATHER THAN ASSUMED: on 2026-09-11
+# the operator ran `tailscale cert as6704t-4043.tail4e1ae8.ts.net` on the NAS and
+# it wrote a certificate and key, which only succeeds where the tailnet has HTTPS
+# certificates enabled. The assertion stays exactly as it is -- it is the only
+# thing that would catch the setting being turned off later, and the console is
+# not this repository's to read. What it costs if that happens is bounded and
+# worth knowing: vaultwarden is the LAST role site.yml converges, so the run
+# fails at its final role and deployment_summary does not run. No other service
+# is behind it, and the poller repeats that failure every five minutes until the
+# setting or the release changes.
+#
 # Flipping it is also what makes tests/deployment_gate_coverage_test.rb require
 # an integration lane that converges the vaultwarden tag and Mac lifecycle
 # coverage. Both land in this change, which is the check working: a gate-on
