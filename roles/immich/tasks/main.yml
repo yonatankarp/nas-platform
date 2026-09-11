@@ -40,18 +40,21 @@
 # are the versions of the images about to start. Reading them from the pinned
 # Compose definition is what keeps that true across an image bump; a restated
 # literal goes stale on the next one and refuses the backup the previous image
-# just wrote. The read is a read -- check_mode false so `--check --diff` reaches
-# the classification below rather than skipping past it with the facts unset.
-- name: Read the deployed Compose definition of Immich
-  ansible.builtin.slurp:
-    path: "{{ platform_current_dir }}/services/immich/compose.yml"
-  register: immich_compose_source
-  check_mode: false
-
+# just wrote.
+#
+# The controller's checkout rather than platform_current_dir, and not only to
+# stay off the latent read #547 describes. Activating a release is a command
+# task, so check mode skips it and `current` still names the PREVIOUS release
+# during a review -- which would derive the version being replaced and report a
+# refusal for the bump under review. The release is assembled from this checkout
+# in this same run, so the file read here is the one the target will hold;
+# roles/deployment_bundle/templates/manifest.yml.j2 reads the images the same
+# way, for the same reason.
 - name: Resolve the pinned Immich images
   ansible.builtin.set_fact:
     immich_pinned_images: >-
-      {{ (immich_compose_source.content | b64decode | from_yaml).services }}
+      {{ (lookup('file', playbook_dir ~ '/services/immich/compose.yml')
+          | from_yaml).services }}
 
 # Both tags are read the same way, and the difference between them is why the
 # search stops at the first non-version character rather than reading the whole
