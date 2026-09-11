@@ -7,9 +7,16 @@ vault-password*
 inventory/group_vars/all/vault-plain.yml
 *.decrypted.yml
 
-# Credentials and keys
+# Credentials and keys. The certificate belongs here beside its key rather
+# than only the key: `tailscale cert <host>` writes <host>.crt AND <host>.key
+# into the working directory, so ignoring one half left the other making the
+# controller checkout dirty -- and roles/deployment_bundle refuses to deploy
+# from a dirty controller, which stopped every five-minute poller tick with
+# `?? as6704t-4043.tail4e1ae8.ts.net.crt`. A certificate is public, but it is
+# host state and no more belongs in this repository than its key does.
 *.key
 *.pem
+*.crt
 **/secrets/
 
 # Runtime data never belongs here
