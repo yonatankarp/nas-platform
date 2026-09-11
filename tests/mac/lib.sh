@@ -189,8 +189,13 @@ mac_validate_integration_callback() {
 # the server declares.
 #
 # An EMPTY Tailscale candidate list, because the default one starts at
-# /usr/local/bin/tailscale -- which is exactly where Homebrew installs the
-# Tailscale CLI. On an operator's laptop that would make this disposable lane run
+# /usr/local/bin/tailscale, and on a Mac that path is not hypothetical: it is
+# where an Intel Homebrew puts its binaries, and where Tailscale's own macOS
+# instructions have the operator symlink the CLI out of the app bundle. It was
+# ABSENT on the Apple Silicon Mac this was measured on, whose Homebrew lives at
+# /opt/homebrew -- which is the reason to state the guard rather than to test it
+# here: the laptop it has to hold on is the one that does have that path. On such
+# a laptop this would make the disposable lane run
 # `tailscale serve --bg` against their REAL tailnet, pointing a public HTTPS front
 # at a sandbox port that disappears when the lane cleans up, and then fail the run
 # when the sandbox's own `.invalid` origin did not answer through it. The sandbox

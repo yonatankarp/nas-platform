@@ -194,7 +194,13 @@
       The upgrade is refused here rather than performed unprotected: a
       migration that goes wrong would have nothing to restore from, and this
       service's store is the household's passwords under recovery: critical.
-      Find out what is in that directory before converging again.
+      VAULTWARDEN IS STOPPED AND STAYS STOPPED until this is resolved: the stop
+      above ran, this refusal is ahead of the deployment, and every converge
+      after it takes the same path. Find out what is in
+      {{ vaultwarden_data_host_path }} before converging again -- a store that
+      moved is restored by putting it back, and a store that is genuinely empty
+      is started by taking this container to `state: absent` so the next
+      converge builds a fresh one.
     success_msg: >-
       The Vaultwarden store is present and is copied into
       {{ vaultwarden_pre_upgrade_backup_path }} before this run upgrades to
