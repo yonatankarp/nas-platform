@@ -85,7 +85,7 @@ FULL_RUN_SUITES = %w[
 # against the shards before they were named here, which is the repository's own
 # signature defect in miniature.
 IDEMPOTENCE_SHARD_SUITES = %w[
-  idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5
+  idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6
 ].freeze
 # Every suite the matrix can ever dispatch, by either route. What the argv sweep
 # below has to cover.

@@ -100,7 +100,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
 nextcloud adguard idempotence-check idempotence-1 idempotence-2
-idempotence-3 idempotence-4 idempotence-5 full` — the roster
+idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
