@@ -280,23 +280,33 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
     esac
 
-    # AdGuard Home was the same arrangement until the platform switch flipped,
-    # and this is the last sentence of the paragraph above being honoured rather
-    # than inherited. inventory/group_vars/all/main.yml now sets
-    # adguard_deployment_enabled true, so a per-suite `case` here would keep the
-    # service out of exactly the lanes that converge the whole of site.yml --
-    # smoke and idempotence-check when CI hands them no tags -- and every one of
-    # those would report a clean pass over a platform one stack smaller than the
-    # NAS. The variable stays, because #295's rule is that a lane requests the
-    # state it claims to converge and integration_controller_lib.sh refuses to
-    # run without it; what goes is the branch that made the request disagree
-    # with the deployment.
+    # AdGuard Home, back to the same arrangement as Nextcloud above. #548 landed
+    # it gated off; #569 stopped narrowing it per suite because the platform
+    # switch had flipped on, which is the last sentence of the paragraph above
+    # being honoured; #577 flips that switch back off, and the narrowing returns
+    # for exactly the reason it went. That sentence reads in both directions and
+    # is why it is written there: an override that disagrees with
+    # inventory/group_vars/all/main.yml is a lane proving something the NAS does
+    # not do. Left unconditional, smoke, the idempotence shards and every other
+    # untagged lane would converge a stack this host no longer runs and report a
+    # clean pass over a platform one stack LARGER than the deployment.
     #
-    # The cost is bounded and was checked rather than assumed: a tagged lane
-    # that does not select `adguard` never enters the role whatever this says,
-    # so the lanes this newly reaches are the two untagged ones and `full`,
-    # which already asked for it.
-    integration_adguard_deployment_enabled=true
+    # The variable itself stays either way, because #295's rule is that a lane
+    # requests the state it claims to converge and integration_controller_lib.sh
+    # refuses to run without it. What moves is only the branch.
+    #
+    # `adguard` keeps asking for true because it is the lane that converges the
+    # deployed stack and then tears it down again, and the teardown scenario
+    # below refuses to run unless the container was really there. `full` keeps
+    # it for the reason Nextcloud's does: run_contracts.rb --execute reaches
+    # adguard.sh there.
+    #
+    # #577's second change removes this service outright, and this block goes
+    # with it.
+    integration_adguard_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      adguard|full) integration_adguard_deployment_enabled=true ;;
+    esac
 
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
@@ -1300,13 +1310,17 @@ EOF
         # THE WAY BACK, EXERCISED RATHER THAN CLAIMED. This lane used to prove
         # the disabled path by accident: adguard_deployment_enabled was false on
         # every lane but this one, so smoke and idempotence-check converged the
-        # `state: absent` branch on every run. Turning the platform switch on
-        # made that request unconditional -- CI has to converge what production
-        # converges -- and took the rollback proof with it, which matters more
-        # here than for any other service: `adguard_deployment_enabled: false` is
-        # the documented emergency exit for a resolver that is answering for a
-        # whole household, and inventory/group_vars/all/main.yml calls it one
-        # line. A line nothing runs is not an exit.
+        # `state: absent` branch on every run. #569 turned the platform switch on
+        # and made the request unconditional, which took that accidental proof
+        # away; #577 turns the switch off and the accident is back. It is still
+        # an accident, and that is why this block was written and why it stays:
+        # the proof it gives survives a flip in either direction, and the one
+        # above has now been removed and restored by two consecutive changes.
+        # It matters more here than for any other service, because
+        # `adguard_deployment_enabled: false` is the documented emergency exit
+        # for a resolver that is answering for a whole household, and
+        # inventory/group_vars/all/main.yml calls it one line. A line nothing
+        # runs is not an exit.
         #
         # The container has to be THERE FIRST, or every line below passes over a
         # deployment that never happened -- a wrong container name, a lane that

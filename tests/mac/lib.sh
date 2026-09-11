@@ -166,11 +166,12 @@ mac_validate_integration_callback() {
 # reasons the first two do: tests/policy_platform_test.rb would refuse it in
 # inventory/group_vars/mac_hosts/main.yml, which admits only machine facts and
 # PLATFORM_* port lookups, and it is a property of what this lane converges
-# rather than of the laptop. It is written here even though the platform default
-# is already true, exactly as the Nextcloud line above is, and for the reason
-# that line gives: #295 says a lane must request the state it claims to
-# converge, so a lane that inherited it would prove nothing the day somebody
-# turns the platform switch back off. Neither port it publishes is the
+# rather than of the laptop. It is written here whatever the platform default
+# happens to be, exactly as the Nextcloud line above is, and for the reason that
+# line gives: #295 says a lane must request the state it claims to converge, so
+# a lane that inherited it would prove nothing the day somebody turns the
+# platform switch back off. #577 is that day -- the switch is false again and
+# this lane's coverage did not move, which is what writing it here bought. Neither port it publishes is the
 # production one -- services/adguard/compose.mac.yml republishes both from the
 # roster ports above, because a laptop already resolves on 53 and has 8083 in
 # use by whichever copy of the platform ran last.

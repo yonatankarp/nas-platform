@@ -291,55 +291,61 @@ trailarr_monitoring_enabled: >-
 # than a machine fact.
 nextcloud_deployment_enabled: true
 
-# The one operator switch that deploys AdGuard Home, and it is on. #548 landed
-# the stack dark and this is the separate, deliberate act that turned it on.
+# The one operator switch that deploys AdGuard Home, and it is off. #548 landed
+# the stack dark, #569 turned it on, and #577 turns it back off. Not because it
+# is broken: it worked, and `dig` against the NAS returned real addresses for
+# ordinary names and 0.0.0.0 for blocked ones. It is off because the delivery
+# mechanism the decision assumed does not exist on this network. The router is
+# a Vodafone Station CGA4233DE, which exposes no custom-DNS field for its DHCP
+# scope, so every client has to be pointed at it by hand -- no guests, no IoT
+# -- and the three things this household actually wanted are each out of DNS's
+# reach anyway: YouTube serves its ads from the same domain as the video, Prime
+# Video splices its own in server-side, and the TV is Samsung/Tizen, so no
+# on-device blocker is possible either. What is left is Samsung telemetry and
+# launcher ads, against an integration lane on every CI run, four gate checks,
+# Renovate tracking, Mac lane wiring and a share of several pinned floors.
+# #548's closing comment carries the evaluation in full.
 #
-# WHAT THIS PUBLISHES, and it is the reason the flip was its own change: THIS
-# HOST'S PORT 53, tcp and udp -- the first privileged port this platform has
-# ever published. Confirmed free on the NAS from the full `netstat -tulnp`
-# listener table on 2026-09-10, the nearest neighbour being 5353/mDNS. The
-# container itself stays unprivileged and non-root: it listens on 5353 inside,
-# and binding 53 on the host is the Docker daemon's job rather than
-# AdGuard's. Alongside it, 8083 for the web interface.
+# WHAT FLIPPING THIS OFF DOES, and it is why this line is a change of its own:
+# roles/adguard converges the Compose project to `state: absent` rather than
+# skipping it, so the container stops and THIS HOST'S PORT 53 -- tcp and udp,
+# the first privileged port this platform ever published -- is released, along
+# with 8083 for the web interface. That teardown is a task IN THE ROLE, so it
+# has to deploy and run while the role still exists. #577 removes the code in a
+# second change, once the container is confirmed gone from the NAS; deleting
+# the role first would leave AdGuard running on port 53 with nothing in this
+# repository describing it, which is the state this platform exists to prevent.
 #
-# Setting it back to false converges the project to `state: absent` rather than
-# skipping it, so the flag is a deployment decision in both directions and the
-# way back is one line. What a dark converge still does is create
+# What a dark converge still does is create
 # {{ nas_docker_root }}/adguard/{conf,work} -- the nas_storage loop is ungated
 # -- and render the runtime .env, which carries only paths, the platform
-# identity and the CPU set. AdGuardHome.yaml, the one rendered file that carries
-# a credential, is gated and is not written.
+# identity and the CPU set. AdGuardHome.yaml, the one rendered file that
+# carries a credential, is gated and is not rewritten -- but the copy written
+# while the stack was on STAYS, and nothing in this repository will remove it.
+# host_prep creates directories and never deletes them, so neither this change
+# nor the one that removes the code takes that 0600 file, its administrator
+# bcrypt hash, or work/data/sessions.db off the NAS. Deleting
+# {{ nas_docker_root }}/adguard is a manual act, and until somebody performs it
+# the host keeps credential-bearing files for a service that no longer runs.
+# Both directories are recovery: cache, so nothing is lost by doing it.
 #
-# WHAT TURNING IT ON DOES NOT DO, and this is still the part worth reading. It
-# does not point anything at AdGuard. The NAS keeps resolving through Tailscale
-# MagicDNS, because tailscaled owns /etc/resolv.conf and rewrites it; LAN
-# clients keep whatever their DHCP lease gives them. Delivering AdGuard to
-# clients is configuration on the router or on each device, and the router here
-# is a Vodafone Station CGA4233DE, which exposes no custom-DNS field for its
-# DHCP scope -- so it is per device, by hand, one device at a time.
-# docs/getting-started-nas.md carries that procedure and the one mitigation #548
-# required with it: a device pointed at AdGuard alone loses every name for the
-# seconds a restart or an image bump takes, and a device given a secondary
-# resolver may bypass filtering whenever it chooses. That is a per-device
-# decision because delivery is, and nothing here can see which was made.
-# roles/adguard/defaults/main.yml records why that is deliberately not
-# configuration in this repository, including why pointing the NAS's own
-# resolver at AdGuard would be the #327 mistake again, with the recovery path
-# depending on the thing that is down.
+# The role default is false as well, and that is not a mirror of this decision.
+# It is a floor under it, exactly as roles/nextcloud's is: a caller running
+# roles/adguard with no inventory converges to `state: absent` instead of
+# putting a resolver on somebody's household network on the strength of a
+# missing variable. tests/contracts/adguard-static.rb asserts that floor.
 #
-# The role default stays false, and that is not an oversight. It is a floor
-# under this decision rather than a mirror of it, exactly as
-# roles/nextcloud's is: a caller running roles/adguard with no inventory
-# converges to `state: absent` instead of putting a resolver on somebody's
-# household network on the strength of a missing variable.
-# tests/contracts/adguard-static.rb asserts that floor.
+# This becomes worth revisiting when the router changes -- the move to Israel
+# brings one -- because DHCP-supplied DNS is what makes a resolver cover guests
+# and IoT without per-device work. Re-run #548's two blocking checks then
+# rather than assuming they still hold.
 #
 # This is nonsecret policy, so it is group_vars and not the vault, and it is
 # group_vars/all rather than nas_hosts for the reason the Nextcloud switch
 # above gives: both real inventories bind to nas_hosts, the integration sandbox
 # is a nas_hosts run like any other, and this is a decision rather than a
 # machine fact.
-adguard_deployment_enabled: true
+adguard_deployment_enabled: false
 
 # VAULTWARDEN IS ON. #547 landed the stack dark and this is the separate
 # deliberate act that turns it on. THIS LINE IS THE WHOLE OF IT:

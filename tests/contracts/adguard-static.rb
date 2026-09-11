@@ -504,10 +504,13 @@ if failures.empty?
   # household, and inventory/group_vars/all/main.yml calls it one line. It was
   # exercised by accident while the lane gate was per-suite -- smoke and
   # idempotence-check converged the `state: absent` branch on every run -- and
-  # making that request unconditional, so that CI converges what production
-  # converges, took the proof away with it. The teardown assertion above is
-  # structural: it says the role HAS an absent branch, not that anything ever
-  # takes it.
+  # #569 made that request unconditional, so that CI converged what production
+  # converged, which took the proof away with it. #577 turned the platform
+  # switch back off and the per-suite gate returned, so the accident is back;
+  # that it has now been removed and restored by two consecutive changes is the
+  # argument for requiring the explicit scenario rather than against it. The
+  # teardown assertion above is structural: it says the role HAS an absent
+  # branch, not that anything ever takes it.
   controller_source = File.read(File.join(root, "tests/integration_controller.sh"))
   failures << "the adguard integration lane must converge with adguard_deployment_enabled=false " \
               "and prove the container is gone. Nothing else runs that branch now that the lane " \

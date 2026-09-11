@@ -213,16 +213,21 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all eighteen of the implemented service projects this host
-converges. None of the three gated services carries a gated-off caveat any
-more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
-it replaced as this platform's file-sync service — AdGuard Home's was flipped
-after #548 landed the stack dark, and Vaultwarden's after #547 did. Vaultwarden
-is the one whose credential check is not a credential check: it is the only
-service here that holds no vault-authored identity, because master passwords are
-user-owned and the server never learns them, so what there is to check is the
-door — that registration answers as the declared policy says it should, and that
-`/admin` still serves nothing but its own disabled notice. Repeat the
+unchanged for all seventeen of the implemented service projects this host
+converges. Two of the three gated services carry no gated-off caveat any more:
+Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which it
+replaced as this platform's file-sync service — and Vaultwarden's after #547
+landed the stack dark. Vaultwarden is the one whose credential check is not a
+credential check: it is the only service here that holds no vault-authored
+identity, because master passwords are user-owned and the server never learns
+them, so what there is to check is the door — that registration answers as the
+declared policy says it should, and that `/admin` still serves nothing but its
+own disabled notice. The third, AdGuard Home, is dark: its switch was flipped on
+after #548 landed the stack dark and back off in #577, because the delivery
+mechanism it assumed does not exist on this network, so a converge takes that
+project to `state: absent` and there is no deployed instance to hold credentials
+or to check. The code goes in a second change, once the container is confirmed
+gone from this host. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
@@ -330,6 +335,11 @@ until that account's ACL names it; a topic left out is a 403, not a quiet
 omission.
 
 ## Pointing devices at AdGuard, and the secondary resolver
+
+**AdGuard Home is off on this host.** `adguard_deployment_enabled` is false as of
+#577, so nothing below describes a running service; it is kept because the
+reasoning is what a future router — the move to Israel brings one — would be
+decided against. Everything here applies again only after that switch is on.
 
 Deploying AdGuard Home changes nothing about how anything resolves. The NAS
 keeps using Tailscale MagicDNS, because `tailscaled` owns `/etc/resolv.conf` and
