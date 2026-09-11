@@ -218,11 +218,22 @@ end
 # nothing else in the repository to notice (#512). Raising it costs one edit here
 # when a service that publishes a host port is added or removed, which is a
 # visible diff in a file a reviewer is already reading for that change.
-MAC_PORT_ROSTER_FLOOR = 19
+#
+# The name pattern admits an underscore, and the reason is the one the paragraph
+# above already gives for the roster not being holdable to services/manifest.yml:
+# an entry is a PORT NAME, not a service. It was `[a-z][a-z0-9]*` while every
+# entry happened to be one word, and #548's flip added `adguard_dns` -- a second
+# port of a service already on the roster, spelled so that the derivations in
+# tests/mac/lib.sh produce `adguard_dns_port` and PLATFORM_ADGUARD_DNS_PORT,
+# which are the names roles/adguard and tests/mac/run-contract.sh already carry.
+# Any other spelling would need a translation between them, and
+# tests/contracts/adguard-static.rb refuses a second authority on where that
+# service listens.
+MAC_PORT_ROSTER_FLOOR = 21
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
 check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
                 mac_port_roster.uniq.length == mac_port_roster.length &&
-                mac_port_roster.all? { |service| service.match?(/\A[a-z][a-z0-9]*\z/) },
+                mac_port_roster.all? { |service| service.match?(/\A[a-z][a-z0-9_]*\z/) },
       "Mac lifecycle must declare a distinct-service port roster of at least " \
       "#{MAC_PORT_ROSTER_FLOOR} entries, found #{mac_port_roster.length}: " \
       "#{mac_port_roster.inspect}")
@@ -264,6 +275,23 @@ check(failures, !mac_report_port_fields.empty? &&
                 mac_report_port_fields.sort ==
                   mac_port_roster.map { |service| "#{service}_port" }.sort,
       "Mac report input must validate exactly the roster's service ports")
+
+# The third list in that chain, and the one nothing held until #548. run.sh
+# builds report.rb's flags from the roster rather than writing them out, and it
+# respells an underscore as a hyphen because a long option must not carry one --
+# so `adguard_dns` reaches report.rb as `--adguard-dns-port`. The field check
+# above says nothing about the option parser: a roster entry whose flag report.rb
+# does not declare is rejected by OptionParser as unrecognised, and the only
+# place that appears is a full Mac run, which no CI job performs. Held from the
+# roster through the same respelling run.sh performs, so the two cannot disagree
+# about a name and cannot disagree about the transformation either.
+mac_report_flags = mac_report.scan(/opts\.on\("(--[a-z0-9-]+-port) PORT"/).flatten
+missing_report_flags = mac_port_roster.map { |service| "--#{service.tr('_', '-')}-port" } -
+                       mac_report_flags
+check(failures, missing_report_flags.empty?,
+      "Mac report must declare one option per roster service port, missing " \
+      "#{missing_report_flags.inspect}: run.sh derives these flags from the roster, so one the " \
+      "parser does not know aborts the lane at its first report call")
 check(failures, mac_cleanup.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
                 mac_cleanup.include?('. "$mac_repo_dir/tests/integration_lock.sh"') &&
                 mac_cleanup.include?('acquire_integration_lock "$mac_cleanup_parent"') &&
@@ -563,16 +591,6 @@ end
 # promotion that forgets the review is a red check rather than a gap discovered
 # later.
 MAC_REVIEW_EXEMPTIONS = {
-  # #548 landed AdGuard Home dark: adguard_deployment_enabled is false in
-  # inventory and tests/mac/lib.sh does not ask the Mac lane to turn it on, so
-  # the lane converges the project to `state: absent` and there is nothing on
-  # the laptop to sign in to. A review entry here would tell an operator to
-  # exercise a service the lane deliberately did not deploy. When the gate is
-  # flipped this exemption comes out and the entry goes in --
-  # tests/deployment_gate_coverage_test.rb is what makes that mandatory rather
-  # than remembered.
-  "adguard" => "its stack is gated off in the Mac lane and proved by its " \
-               "Docker integration suite",
   # #547 landed Vaultwarden dark: vaultwarden_deployment_enabled is false in
   # inventory and tests/mac/lib.sh does not ask the Mac lane to turn it on, so
   # the lane converges the project to `state: absent` and there is nothing on

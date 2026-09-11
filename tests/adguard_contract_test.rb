@@ -72,6 +72,7 @@ FIXTURE_FILES = %w[
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
   tests/integration_controller_lib.sh
+  tests/integration_controller.sh
   inventory/group_vars/all/main.yml
   tests/policy_support.rb
 ].freeze
@@ -118,6 +119,17 @@ def mutate_tasks(root, file, &block)
   document = YAML.safe_load_file(path, aliases: true)
   each_task(document, &block)
   File.write(path, YAML.dump(document))
+end
+
+# Deletes whole tasks rather than editing them, which is what a regression that
+# drops a check looks like. Top level only, deliberately: a task removed from
+# inside a block would leave the block's rescue path referring to a register that
+# no longer exists, and the mutant would then fail for a reason the row did not
+# plant.
+def remove_matching_tasks(root, file)
+  path = File.join(root, "roles/adguard/tasks/#{file}.yml")
+  document = YAML.safe_load_file(path, aliases: true)
+  File.write(path, YAML.dump(document.reject { |task| task.is_a?(Hash) && yield(task) }))
 end
 
 # --- static layer -----------------------------------------------------------
@@ -357,6 +369,92 @@ STATIC_ROWS = [
       end
     },
     expects: "must prove filtering behaviourally"
+  },
+  {
+    # The coverage the gate flip removed: with the lane request unconditional,
+    # nothing else converges `state: absent` any more.
+    name: "a lane that never converges the disabled path",
+    break: lambda { |root|
+      edit_text(root, "tests/integration_controller.sh") do |source|
+        source.sub("run_play --tags adguard -e adguard_deployment_enabled=false",
+                   "run_play --tags adguard")
+      end
+    },
+    expects: "must converge with adguard_deployment_enabled=false"
+  },
+  {
+    # The defect the role shipped with: verification that reads only the control
+    # API. Measured on v0.107.79 with the bootstrap resolver blackholed, every
+    # other reading in verify.yml is identical to a healthy host's while the
+    # resolver answers nothing at all.
+    name: "a verification that never puts a DNS question on the wire",
+    break: lambda { |root|
+      remove_matching_tasks(root, "verify") { |task| task.key?("adguard_dns_probe") }
+    },
+    expects: "must ask the deployed resolver a real DNS question"
+  },
+  {
+    # Half a probe is the subtler version, and it passes the emptiness check
+    # above. The blocked name is answered out of local rules, so asking only
+    # about it is satisfied by an instance with every upstream dead.
+    name: "a resolution probe that asks only about the blocked name",
+    break: lambda { |root|
+      mutate_tasks(root, "verify") do |task|
+        probe = task["adguard_dns_probe"]
+        next unless probe.is_a?(Hash)
+
+        probe["names"] = Array(probe["names"]).reject do |name|
+          name.to_s.include?("adguard_allowed_probe_domain")
+        end
+      end
+    },
+    expects: "must ask about both adguard_blocked_probe_domain"
+  },
+  {
+    # A probe whose answer nothing asserts is a read, and reads pass.
+    name: "a resolution probe whose answer is never asserted",
+    break: lambda { |root|
+      mutate_tasks(root, "verify") do |task|
+        assertion = task["ansible.builtin.assert"]
+        next unless assertion.is_a?(Hash)
+
+        assertion["that"] = Array(assertion["that"]).reject do |condition|
+          condition.to_s.include?("adguard_verify_resolution")
+        end
+      end
+    },
+    expects: "must assert that the unblocked name RESOLVES"
+  },
+  {
+    # Measured: a filter source answering 500 is asked exactly once and not again
+    # for filters_update_interval, which this platform renders as 24 hours. Without
+    # the forced refresh, one failed download at first start fails every
+    # five-minute poller tick and no merge can heal it.
+    name: "a deployment that never forces a filter re-download",
+    break: lambda { |root|
+      remove_matching_tasks(root, "deploy") do |task|
+        task.dig("ansible.builtin.uri", "url").to_s.include?("/control/filtering/refresh")
+      end
+    },
+    expects: "must force a filter refresh when the declared lists have not loaded"
+  },
+  {
+    # And the containment beside it: with no rules loaded AdGuard answers
+    # doubleclick.net with a real address, measured. A converge that does not
+    # refuse there reports success over a live unfiltered resolver.
+    name: "a deployment that tolerates filter lists which never downloaded",
+    break: lambda { |root|
+      mutate_tasks(root, "deploy") do |task|
+        assertion = task["ansible.builtin.assert"]
+        next unless assertion.is_a?(Hash)
+
+        assertion["that"] = Array(assertion["that"]).reject do |condition|
+          condition.to_s.include?("adguard_filters_loaded")
+        end
+        assertion["that"] = ["true | bool"] if Array(assertion["that"]).empty?
+      end
+    },
+    expects: "must refuse a deployment whose declared filter lists never downloaded"
   },
   {
     name: "a vault credential the role stopped requiring",
@@ -1190,7 +1288,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the expanded-document floor",
     program: :static,
-    from: "template.lines.length > 150",
+    from: "document_lines.length > 150",
     to: "true",
     rows: ["a configuration template trimmed towards the minimal document"]
   },
@@ -1314,6 +1412,53 @@ PROGRAM_MUTATIONS = [
   # rows -- an intact repository and an intact deployment -- have none and can
   # have none: they assert success, and there is no check to remove that would
   # make success wrong.
+  # --- the five assertions the resolver and filter-download review added ---
+  {
+    label: "the exercised-rollback check",
+    program: :static,
+    from: "controller_source.include?(\"run_play --tags adguard " \
+          "-e adguard_deployment_enabled=false\") &&\n" \
+          "    controller_source.include?(\"ADGUARD_TEARDOWN_VERIFIED\")",
+    to: "true",
+    rows: ["a lane that never converges the disabled path"]
+  },
+  {
+    label: "the real-DNS-question check",
+    program: :static,
+    from: "\"as a healthy one does while handing every device on the network SERVFAIL\" if\n    resolution_probes.empty?",
+    to: "\"unused\" if false",
+    rows: ["a verification that never puts a DNS question on the wire"]
+  },
+  {
+    label: "the both-names check on the resolution probe",
+    program: :static,
+    from: 'probe_names.include?("adguard_blocked_probe_domain") &&',
+    to: "true ||",
+    rows: ["a resolution probe that asks only about the blocked name"]
+  },
+  {
+    label: "the assert-the-answer check",
+    program: :static,
+    from: "conditions_text.include?(\"adguard_verify_resolution\") &&\n" \
+          "    conditions_text.include?(\"rcode\") &&\n" \
+          "    conditions_text.include?(\"addresses\")",
+    to: "true",
+    rows: ["a resolution probe whose answer is never asserted"]
+  },
+  {
+    label: "the forced-filter-refresh check",
+    program: :static,
+    from: "if refreshes.empty?",
+    to: "if false",
+    rows: ["a deployment that never forces a filter re-download"]
+  },
+  {
+    label: "the empty-filter-lists refusal check",
+    program: :static,
+    from: 'deploy_conditions.include?("adguard_filters_loaded")',
+    to: "true",
+    rows: ["a deployment that tolerates filter lists which never downloaded"]
+  },
   {
     label: "the plain-address bootstrap check",
     program: :static,

@@ -280,16 +280,23 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
     esac
 
-    # The same arrangement for AdGuard Home, gated off by #548 exactly as
-    # Nextcloud was by #500, and every word of the paragraph above carries
-    # over -- including the last one: the day
-    # inventory/group_vars/all/main.yml turns this switch on for real, this
-    # line silently keeps AdGuard out of smoke, idempotence-check and every
-    # other lane, so it has to be flipped or deleted in the same change.
-    integration_adguard_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      adguard|full) integration_adguard_deployment_enabled=true ;;
-    esac
+    # AdGuard Home was the same arrangement until the platform switch flipped,
+    # and this is the last sentence of the paragraph above being honoured rather
+    # than inherited. inventory/group_vars/all/main.yml now sets
+    # adguard_deployment_enabled true, so a per-suite `case` here would keep the
+    # service out of exactly the lanes that converge the whole of site.yml --
+    # smoke and idempotence-check when CI hands them no tags -- and every one of
+    # those would report a clean pass over a platform one stack smaller than the
+    # NAS. The variable stays, because #295's rule is that a lane requests the
+    # state it claims to converge and integration_controller_lib.sh refuses to
+    # run without it; what goes is the branch that made the request disagree
+    # with the deployment.
+    #
+    # The cost is bounded and was checked rather than assumed: a tagged lane
+    # that does not select `adguard` never enters the role whatever this says,
+    # so the lanes this newly reaches are the two untagged ones and `full`,
+    # which already asked for it.
+    integration_adguard_deployment_enabled=true
 
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
@@ -1288,6 +1295,52 @@ EOF
         # NAS five minutes after a merge.
         run_enabled_idempotence adguard
         run_play --tags adguard --check --diff
+        run_adguard_verify_only
+
+        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED. This lane used to prove
+        # the disabled path by accident: adguard_deployment_enabled was false on
+        # every lane but this one, so smoke and idempotence-check converged the
+        # `state: absent` branch on every run. Turning the platform switch on
+        # made that request unconditional -- CI has to converge what production
+        # converges -- and took the rollback proof with it, which matters more
+        # here than for any other service: `adguard_deployment_enabled: false` is
+        # the documented emergency exit for a resolver that is answering for a
+        # whole household, and inventory/group_vars/all/main.yml calls it one
+        # line. A line nothing runs is not an exit.
+        #
+        # The container has to be THERE FIRST, or every line below passes over a
+        # deployment that never happened -- a wrong container name, a lane that
+        # skipped the role, an override that took when it should not have. This
+        # is the assertion that stops ADGUARD_TEARDOWN_VERIFIED meaning nothing.
+        if ! docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-adguard$'; then
+          printf '%s\n' \
+            'the adguard container is not present, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        # The override goes after the playbook path, where Ansible's last `-e`
+        # for a key wins. Measured rather than assumed, because run_play supplies
+        # this key through `-e adguard_deployment_enabled=...` alongside two
+        # `-e @file` arguments and the merge is one left-to-right pass over all
+        # of them: `-e @vars.yml` declaring it true, then the playbook, then
+        # `-e adguard_deployment_enabled=false` resolves to false, while the same
+        # invocation without the trailing flag resolves to true.
+        #
+        # Compose is asked directly rather than through the role, because what
+        # has to be gone is the container, not the role's opinion of it.
+        run_play --tags adguard -e adguard_deployment_enabled=false
+        if docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-adguard$'; then
+          printf '%s\n' \
+            'disabling adguard_deployment_enabled left the container in place' >&2
+          exit 1
+        fi
+        printf 'ADGUARD_TEARDOWN_VERIFIED\n'
+        # And back on, because a rollback nothing reverses is a one-way door. The
+        # re-converge also proves the stack comes up a second time against a
+        # configuration root the teardown left behind, which is the state an
+        # operator who flipped the switch and changed their mind is actually in.
+        run_play --tags adguard
         run_adguard_verify_only
         printf 'ADGUARD_RUNTIME_VERIFIED\n'
       fi

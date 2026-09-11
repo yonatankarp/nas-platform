@@ -51,6 +51,16 @@ private keys, password hashes, rendered environment files, or application logs.
       operator's deliberate entry from drift — so an entry that vanished would
       be the bug. Every link is `http://`; there is no TLS anywhere on this
       platform.
+- [ ] AdGuard: sign in with the deployed administrator identity and confirm an
+      anonymous request to the control API is refused — `users: []` disables
+      authentication outright, and an instance in that state hands the ability
+      to rewrite any DNS answer to whoever can reach the port. Then point one
+      disposable client at the lane's DNS port and confirm a blocklisted name
+      comes back 0.0.0.0 while an ordinary one resolves. Change a setting in the
+      web interface, reconverge, and confirm it is reverted — the role owns the
+      whole of AdGuardHome.yaml and restarts the daemon onto the reverted file.
+      Neither published port is production's: this lane republishes both on
+      ephemeral ports, and the privileged 53 is never bound here.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
 - [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.

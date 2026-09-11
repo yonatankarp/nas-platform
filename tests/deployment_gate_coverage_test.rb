@@ -111,23 +111,40 @@ ROOT = File.expand_path("..", __dir__)
 # operation this repository performs -- #528 switched Seafile's gate off four
 # days before this was written -- and a guard that refused it would be fighting
 # the very idiom the rest of this file exists to protect. It therefore does not
-# move when a service lands dark: #548 and #547 took the implemented count to 18
-# and the gate count to 3, and 18 - 3 is the 15 that was already there.
+# move when a service lands dark, and it does not move when one is turned on
+# either: #547 landed Vaultwarden dark and #548 flipped AdGuard on, which took
+# the implemented count to 18 and the gate count to 3, and 18 - 3 is the 15 that
+# was already there. It is 15 by that rule and not by coincidence -- it is the
+# same arithmetic the `subjects.length >= implemented.length - gate_names.length`
+# check two hundred lines below applies -- so do not "correct" it to today's
+# subject count of 17: that would be a guard against turning a stack off, which
+# is a thing this repository does on purpose.
 #
-# THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY. #548 landed AdGuard
-# with all three left at their pre-AdGuard values and this file stayed green,
-# and #547 rebasing onto it would have done the same again: both services were
-# on the roster, both floors passed, and both were under-counting. That is
-# exactly the collapse the paragraph above says the floor exists to report --
-# today's counts are the point, and a floor comfortably below them buys nothing.
-# Re-read this block when a service is added, removed or gated, and re-derive
-# rather than reason: the numbers below were read off the merged tree.
+# THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY, and it has now
+# happened twice, the second time in a merge. #548 landed AdGuard with the first
+# three left at their pre-AdGuard values and this file stayed green -- exactly
+# the collapse the paragraph above says the floor exists to report, since today's
+# counts are the point and a floor comfortably below them buys nothing. Fixing
+# those three left the other four: the registry had gained a sixteenth contract,
+# suites.conf a sixteenth tagged row and its seventeenth service tag, site.yml
+# more role tags, and every one of those floors went on passing over a larger
+# tree. Then #547 and #548 met in a merge and NEITHER SIDE'S NUMBERS WERE RIGHT
+# FOR THE MERGED TREE -- three each. #548 had the Mac roster, the tagged lanes
+# and the lane tags right at 17/16/17 and counted 17 implemented services behind
+# 2 gates; #547 had the implemented count, the gate count and the site tags right
+# at 18/3/33 and counted a 16-name Mac roster over 15 tagged lanes. Resolving
+# that conflict by picking a side would have shipped four stale floors whichever
+# side was picked. Every number below is therefore read off the merged tree
+# rather than carried over from either. Re-read this whole block when a service
+# is added, removed, gated or ungated, and re-derive rather than reason: the
+# summary line at the foot of this file prints four of the seven live counts, and
+# the other three are one instrumented run away.
 IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, adguard and vaultwarden _deployment_enabled
 SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 16        # 15 registered contracts plus ntfy
-TAGGED_LANE_FLOOR = 15       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 16          # the distinct manifest service tags those rows converge
+MAC_ROSTER_FLOOR = 17        # 16 registered contracts plus ntfy
+TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
 SITE_TAG_FLOOR = 33          # the role tags site.yml declares
 
 failures = []

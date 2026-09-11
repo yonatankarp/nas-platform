@@ -74,7 +74,7 @@ failures = []
 # readable.
 #
 # WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
-# COST, not count. The counts below are 51/52/61 and that asymmetry is the
+# COST, not count. The counts below are 59/57/63 and that asymmetry is the
 # result rather than a defect: #469 drew the partition round robin, which
 # balances count because count is all a partition without a cost table can
 # balance, and by #517 the three shards were 53/54/57 checks carrying a 2.2x
@@ -214,6 +214,8 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_identity_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py --self-test
   ruby tests/run_contracts.rb --validate-only
   ruby tests/jellyfin_transcode_contract_test.rb
   ruby tests/pinchflat_contract_test.rb

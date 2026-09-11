@@ -11,25 +11,26 @@ services:
     # same reason, and it carries the measurement that says why the sandbox
     # cannot simply publish 53.
     #
-    # NOTHING ALLOCATES THEM YET, and this file must not be read as though
-    # something does. tests/mac/run.sh has no allocation for adguard and
-    # MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh does not name it, so
-    # roles/adguard/templates/env.j2 renders the production 8083 and the
-    # privileged 53 into ADGUARD_HOST_PORT and ADGUARD_DNS_HOST_PORT and this
-    # override republishes exactly what it was meant to replace. That is inert
-    # only because the Mac lane never turns adguard_deployment_enabled on, which
-    # is an expired guard reading as a live one -- the class of thing this
-    # repository keeps finding.
+    # BOTH ARE ALLOCATED, and this file may now be read as though something
+    # does. MAC_SERVICE_PORT_ORDER in tests/mac/lib.sh names `adguard` and
+    # `adguard_dns` -- a roster entry is a port name rather than a service, which
+    # is what lets one service claim two -- so tests/mac/run.sh asks the kernel
+    # for two free ephemeral ports, tests/mac/report.rb records them,
+    # inventory/group_vars/mac_hosts/main.yml reads them back into `adguard_port`
+    # and `adguard_dns_port`, roles/adguard/templates/env.j2 renders those into
+    # the two names below, and every Mac hook group deploys, verifies and
+    # recreates the service rather than exempting it. The lane asks for the stack
+    # explicitly with `-e adguard_deployment_enabled=true` in
+    # mac_ansible_playbook, even though the platform default is now true, for the
+    # #295 reason that line records.
     #
-    # What has to change before the lane can run this service: an entry in
-    # MAC_SERVICE_PORT_ORDER, the twelve-site allocation chain in
-    # tests/mac/run.sh that docs/adding-a-service.md walks through (twice over,
-    # because this is two ports), the <service>_port lines in
-    # inventory/group_vars/mac_hosts/main.yml, the exemptions every Mac hook
-    # group and tests/policy_mac_test.rb currently carry for adguard, and the
-    # `-e adguard_deployment_enabled=true` that tests/mac/lib.sh passes for
-    # Nextcloud. tests/deployment_gate_coverage_test.rb makes all of that
-    # mandatory the moment the platform default flips.
+    # THE PRIVILEGED PORT IS NEVER PUBLISHED HERE. The whole of the production
+    # publication -- 8083 and 53/tcp+udp -- exists only in
+    # services/adguard/compose.yml, and this override replaces the list outright.
+    # An ephemeral pair is what a laptop with its own resolver can hold, and a
+    # literal here would be a second authority on where the service listens that
+    # roles/adguard cannot see; tests/contracts/adguard-static.rb refuses one in
+    # either disposable override.
     ports: !override
       - "${ADGUARD_HOST_PORT:?}:3000"
       - "${ADGUARD_DNS_HOST_PORT:?}:5353/tcp"

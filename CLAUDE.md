@@ -452,7 +452,11 @@ The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
 for: `static`, `docs`, `reconciliation` and three suite legs instead of all
-sixteen (#395). One leg stands for the rest because the matrix is uniform and
+nineteen (#395). Read that off `tests/ci/classify_changes.rb --full`, whose
+`suites` array is the matrix: this sentence said sixteen, then seventeen, while
+a full run dispatched nineteen, and several comments under `tests/ci/` still
+carry a count of their own that nothing bumps either. One leg stands for the
+rest because the matrix is uniform and
 stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
 `case "$SUITE"` for every suite and asserts the argv, and
 `tests/ci/classify_changes_test.rb` reads each job's `needs.changes.outputs.*`
@@ -731,11 +735,15 @@ four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
 checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 53/57/61 over 171 today, and
-this sentence stood at 51/52/61 through both of those and went stale again
-within one pull request of being corrected. Three things constrain a future
-rebalance, all three stated beside the
-lists: a check's recorded seconds are its wall time at that shard's load rather
+53/53/61 over 167 when #517 drew the split and is 59/57/63 over 179 today, and
+this sentence stood at 51/52/61 through both of those, then went stale three
+times more inside #548 alone -- once within one pull request of being corrected,
+again in the pull request that corrected it, and a third time when #547's
+Vaultwarden checks merged in beside #548's AdGuard ones without either branch
+being able to see the other's additions. Four corrections in one issue is the
+evidence for reading the gate's own report instead of this line. Three things
+constrain a future rebalance, all three stated beside the lists: a check's
+recorded seconds are its wall time at that shard's load rather
 than work that can be carried elsewhere, so an arithmetic projection from that
 report overshoots; each shard's leg is a *different runner*, so the three columns
 of one run are three machines and only a shard's share of its own run's total

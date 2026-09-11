@@ -307,3 +307,172 @@
   changed_when: false
   check_mode: false
   when: adguard_deployment_enabled | bool
+
+# WHY A SECOND WAIT, AND WHY IT ENDS IN A FORCED REFRESH. The wait above says the
+# web server is up; it says nothing about whether this instance can filter. The
+# declared lists are downloaded after the daemon starts serving, so verify.yml's
+# requirement that every declared filter reports rules -- which is what separates
+# "the list is declared" from "the list is loaded" -- can be read before the
+# first fetch has finished, and a run that has deployed correctly then fails.
+#
+# Three things were measured against v0.107.79 rather than assumed, and each one
+# decided a line here:
+#
+#   * The first fetch is attempted about five seconds after start and lands a
+#     few seconds later, so platform_readiness_retries x platform_readiness_delay
+#     is generous for the ordinary case.
+#   * A fetch that FAILS is never retried. With filters_update_interval at the
+#     24 hours AdGuardHome.yaml.j2 renders, a source answering HTTP 500 was
+#     asked exactly once in 353 seconds -- past the deployment poller's own
+#     five-minute tick -- and rules_count stayed 0. Without the refresh below,
+#     one failed download at first start is permanent: every tick re-reads a
+#     resolver that will not have any rules until tomorrow, the run fails at its
+#     last role, and no merge to main can heal it because the broken thing is
+#     host runtime state rather than anything in the repository.
+#   * POST /control/filtering/refresh re-downloads immediately and reports what
+#     it managed: {"updated": 0} against the still-failing source, {"updated": 1}
+#     the moment the source recovered, with the request visible at the far end
+#     both times. That is what turns the paragraph above into a bad tick.
+#
+# And the reason this is worth a task at all rather than a longer wait: measured
+# on the same instance with rules_count at 0, AdGuard answered doubleclick.net
+# with a real address. A deployment that has not loaded its lists is not a
+# resolver that is starting up -- it is a live, completely unfiltered resolver on
+# this host's port 53.
+#
+# Redacted: the request carries the vault administrator pair.
+- name: Wait for the declared AdGuard Home filter lists to load
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/status"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_filter_wait
+  until: >-
+    (adguard_filter_wait.json.filters | default([], true)
+     | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length)
+    == (adguard_filters | length)
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  # Exhausting the retries is not the end of this sequence, it is the trigger for
+  # the repair below, so the wait reports rather than fails. The retries still
+  # happen: measured, `until` runs its full count and leaves `attempts` behind
+  # whatever failed_when says.
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: adguard_deployment_enabled | bool
+
+# A boolean, derived from a redacted read, and carrying no part of it. It is a
+# fact rather than a repeated expression because three tasks below branch on the
+# same question and a fourth copy of that filter chain is a fourth thing to keep
+# true.
+- name: Record whether the AdGuard Home filter lists loaded on their own
+  ansible.builtin.set_fact:
+    adguard_filters_loaded: >-
+      {{ (adguard_filter_wait.json.filters | default([], true)
+          | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length)
+         == (adguard_filters | length) }}
+  when: adguard_deployment_enabled | bool
+
+# Redacted: the request carries the vault administrator pair.
+- name: Force an AdGuard Home filter download the first attempt did not land
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/refresh"
+    method: POST
+    body_format: json
+    body:
+      whitelist: false
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_filter_refresh
+  # `updated` is how many lists this call actually re-downloaded, so a refresh
+  # that recovered nothing reports no change and the failure below is what says
+  # so.
+  changed_when: (adguard_filter_refresh.json.updated | default(0) | int) > 0
+  no_log: true
+  when:
+    - adguard_deployment_enabled | bool
+    - not ansible_check_mode
+    - not adguard_filters_loaded | bool
+
+# Redacted: the request carries the vault administrator pair.
+- name: Wait for the refreshed AdGuard Home filter lists
+  ansible.builtin.uri:
+    url: "{{ adguard_url }}/control/filtering/status"
+    method: GET
+    url_username: "{{ vault_adguard_admin_username }}"
+    url_password: "{{ vault_adguard_admin_password }}"
+    force_basic_auth: true
+    status_code: [200]
+    return_content: true
+  register: adguard_filter_recheck
+  until: >-
+    (adguard_filter_recheck.json.filters | default([], true)
+     | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length)
+    == (adguard_filters | length)
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - adguard_deployment_enabled | bool
+    - not ansible_check_mode
+    - not adguard_filters_loaded | bool
+
+- name: Record whether the forced AdGuard Home filter download recovered
+  ansible.builtin.set_fact:
+    adguard_filters_loaded: >-
+      {{ (adguard_filter_recheck.json.filters | default([], true)
+          | selectattr('enabled') | selectattr('rules_count', 'gt', 0) | list | length)
+         == (adguard_filters | length) }}
+  when:
+    - adguard_deployment_enabled | bool
+    - not ansible_check_mode
+    - not adguard_filters_loaded | bool
+
+# The container is deliberately left running. Stopping it would take DNS away
+# from every device pointed here -- which presents as the internet being down --
+# and `restart: unless-stopped` would bring it back on the next converge anyway,
+# so the host would flap every five minutes rather than settle. An unfiltered
+# resolver is the lesser of those two, and this failure is what stops the run
+# reporting otherwise.
+- name: Refuse an AdGuard Home deployment whose filter lists never downloaded
+  ansible.builtin.assert:
+    that:
+      - adguard_filters_loaded | bool
+    fail_msg: >-
+      AdGuard Home is running and answering DNS on port {{ adguard_dns_port }},
+      and none of its declared filter lists has any rules -- so it is resolving
+      every name on this network unfiltered. A forced refresh was already
+      attempted and recovered nothing, which points at this host's outbound
+      access to the list sources rather than at AdGuard. The next converge forces
+      another refresh, so a transient outage heals itself within a poller tick
+      and nothing has to be done by hand. If an unfiltered resolver on this
+      host's port {{ adguard_dns_port }} is not acceptable in the meantime, set
+      adguard_deployment_enabled to false, which converges the project to
+      `state: absent`.
+  when:
+    - adguard_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Report the AdGuard Home filter readiness check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would wait for every declared AdGuard Home filter list to report
+      rules, force a re-download if the first attempt had not landed, and refuse
+      the deployment if the lists were still empty -- because AdGuard answers DNS
+      whether or not it has any rules loaded. Check mode reads the current filter
+      state and forces nothing.
+  when:
+    - adguard_deployment_enabled | bool
+    - ansible_check_mode

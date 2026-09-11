@@ -8,13 +8,31 @@
 # AdGuard stores, and the clear value is the only thing that can ask AdGuard
 # anything.
 #
-# /control/filtering/check_host is AdGuard's own filtering verdict on a name, so
-# the pair of probes below is a behavioural claim rather than an HTTP 200: one
-# name the declared list blocks and one it does not, answered by the running
-# instance out of the list it actually downloaded. The resolver-level half --
-# sending a real DNS query and reading the answer -- is
-# tests/contracts/adguard-runtime.rb, because a play has no portable way to put a
-# DNS query on a particular port.
+# /control/filtering/check_host is AdGuard's own filtering verdict on a name: it
+# consults the rule engine, resolves nothing, contacts no upstream and never
+# touches the DNS publication. It answers what this instance WOULD do, and the
+# four reads over the control API together cannot tell that apart from what it
+# DOES.
+#
+# THAT DISTINCTION IS THE WHOLE REASON adguard_dns_probe EXISTS, and it was
+# measured rather than argued. On v0.107.79, with the bootstrap resolver pointed
+# at an unreachable address so that no upstream could be reached -- the shape of
+# a blocked outbound 853, an ISP change or a provider outage -- every one of the
+# four control-API readings below stayed exactly as it is on a healthy host:
+# `running: true`, `protection_enabled: true`, the right `dns_port`, filtering
+# enabled, `rules_count: 2`, `FilteredBlackList` from the declared filter for the
+# blocked name and `NotFilteredNotFound` for the unblocked one. Filter lists
+# download over 443 and the rule engine is local, so none of that needs a working
+# resolver. A deployment in that state passes every assertion here, reports green
+# to ntfy, and hands every device on the LAN a SERVFAIL for every name that is
+# not on a blocklist.
+#
+# So the last read is a real DNS query on the wire, against the port this host
+# published, and the assertion over it is what makes a dead upstream fail
+# verification. tests/contracts/adguard-runtime.rb makes the same claim for the
+# disposable lanes in Ruby; library/adguard_dns_probe.py is its counterpart for
+# a host that has only Ansible's own interpreter, and both use TCP for the reason
+# recorded in each.
 
 # Redacted: the request carries the vault administrator pair.
 - name: Verify the AdGuard Home service status
@@ -84,6 +102,23 @@
   no_log: true
   when: adguard_deployment_enabled | bool
 
+# No credential: a DNS question carries none, and the answer is two addresses.
+# So this is neither authenticated nor redacted, and its failure names the
+# endpoint it could not get an answer from.
+- name: Verify that AdGuard Home answers real DNS questions on its published port
+  tags: [platform_verify_adguard]
+  adguard_dns_probe:
+    host: "{{ adguard_dns_probe_host }}"
+    port: "{{ adguard_dns_port }}"
+    names:
+      - "{{ adguard_blocked_probe_domain }}"
+      - "{{ adguard_allowed_probe_domain }}"
+    timeout_seconds: "{{ adguard_dns_probe_timeout_seconds }}"
+  register: adguard_verify_resolution
+  changed_when: false
+  check_mode: false
+  when: adguard_deployment_enabled | bool
+
 # The conditions name no credential, so this assertion is readable rather than
 # redacted, which is what lets it say which reading differed.
 - name: Require the exact AdGuard Home verification results
@@ -109,11 +144,39 @@
         (adguard_verify_blocked.json.filter_id | default(0) | int)
         in (adguard_filters | map(attribute='id') | list)
       - adguard_verify_allowed.json.reason | default('') is match('^NotFiltered')
+      # The behavioural half. `rcode` is the DNS response code, so 0 is NOERROR:
+      # an upstream that cannot be reached comes back 2 (SERVFAIL) or with no
+      # address at all, and either one fails here. The blocked name is allowed to
+      # come back empty as well as 0.0.0.0, because that is a blocking mode
+      # AdGuard can be configured into; what it must not do is return a real
+      # address.
+      - >-
+        adguard_verify_resolution.answers[adguard_blocked_probe_domain].rcode
+        | default(-1) | int == 0
+      - >-
+        adguard_verify_resolution.answers[adguard_blocked_probe_domain].addresses
+        | default(['unanswered'], true) | reject('equalto', '0.0.0.0') | list | length == 0
+      - >-
+        adguard_verify_resolution.answers[adguard_allowed_probe_domain].rcode
+        | default(-1) | int == 0
+      - >-
+        adguard_verify_resolution.answers[adguard_allowed_probe_domain].addresses
+        | default([], true) | length > 0
+      - >-
+        '0.0.0.0' not in
+        (adguard_verify_resolution.answers[adguard_allowed_probe_domain].addresses
+         | default(['0.0.0.0'], true))
     fail_msg: >-
       AdGuard Home did not report a running, protecting resolver whose declared
-      filter lists are the ones in force. A blocked name must answer
-      FilteredBlackList from a declared list and an unblocked name must answer
-      NotFiltered; a filter list reporting no rules has never downloaded.
+      filter lists are the ones in force, or it did not answer a real DNS
+      question the way a filtering resolver must. A blocked name must answer
+      FilteredBlackList from a declared list and must not resolve to a real
+      address; an unblocked name must answer NotFiltered AND come back NOERROR
+      with at least one address that is not 0.0.0.0. A filter list reporting no
+      rules has never downloaded. An unblocked name that resolves to nothing is
+      the failure the control API cannot see: the rule engine is local and the
+      lists arrive over 443, so every reading above holds while the upstream is
+      unreachable and every device on this network gets SERVFAIL.
   when: adguard_deployment_enabled | bool
 
 - name: Report the AdGuard Home verification the deployment gate skips

@@ -54,6 +54,7 @@ required = %w[
   tests/expected/adguard.yml
   tests/contracts/adguard.sh
   tests/integration_controller_lib.sh
+  tests/integration_controller.sh
   inventory/group_vars/all/main.yml
 ]
 required.each do |relative|
@@ -207,10 +208,21 @@ if failures.empty?
   # back towards the minimal form is rewritten on first start and then reports a
   # change on every converge afterwards. The floor is well below the real size
   # rather than at it, because a schema migration may legitimately move it.
+  #
+  # THE COMMENTS ARE NOT PART OF THE DOCUMENT, and counting them made this a
+  # proxy for how much prose the file carries. It was `template.lines.length`,
+  # and a Jinja comment explaining one of the values -- the rate limit, #548's
+  # flip -- added enough lines to hold the count above the floor while the
+  # document underneath it was trimmed to nothing. The planted regression in
+  # tests/adguard_contract_test.rb caught it, which is the only reason it is not
+  # still true. So the count is over the rendered body: Jinja comments removed,
+  # and blank lines with them, because a document padded with either is exactly
+  # the state this floor exists to refuse.
+  document_lines = template.gsub(/\{#.*?#\}/m, "").lines.reject { |line| line.strip.empty? }
   failures << "AdGuardHome.yaml.j2 has been trimmed towards a minimal document. AdGuard expands " \
               "every default it was not given and writes the result back, so a short template " \
               "breaks idempotence on the first converge after deployment" unless
-    template.lines.length > 150
+    document_lines.length > 150
 
   # ---------------------------------------------------------------------------
   # The role.
@@ -414,6 +426,94 @@ if failures.empty?
   failures << "the AdGuard verification must prove filtering behaviourally -- a name the " \
               "declared list blocks and a name it does not -- rather than only reading a status" unless
     conditions_text.include?("FilteredBlackList") && conditions_text.include?("NotFiltered")
+
+  # THE NAS'S OWN VERIFICATION MUST PUT A QUESTION ON THE WIRE, and this is the
+  # check that would have caught the state the role shipped in. Every reading
+  # above is HTTP to the control API, and /control/filtering/check_host is the
+  # rule engine's verdict on a name: it resolves nothing, reaches no upstream and
+  # never touches the DNS publication. Measured on v0.107.79 with the bootstrap
+  # resolver blackholed, all four control-API readings were indistinguishable
+  # from a healthy host -- running, protecting, filtering, rules_count 2,
+  # FilteredBlackList and NotFilteredNotFound -- while the resolver answered
+  # nothing at all. The contract in tests/contracts/adguard-runtime.rb makes the
+  # behavioural claim, and it is never run against the NAS: verify.yml lists only
+  # the role, and docs/getting-started-nas.md drives it by tag.
+  #
+  # Both halves are required, because either alone is satisfiable by a
+  # deployment that cannot resolve. The blocked name comes out of local rules, so
+  # a probe that asked only about it would pass with every upstream dead.
+  resolution_probes = verify.select { |task| task.key?("adguard_dns_probe") }
+  failures << "roles/adguard/tasks/verify.yml must ask the deployed resolver a real DNS question " \
+              "through adguard_dns_probe. Every other reading here is the control API answering " \
+              "for itself, and a resolver with no reachable upstream answers all of them exactly " \
+              "as a healthy one does while handing every device on the network SERVFAIL" if
+    resolution_probes.empty?
+  probe_names = resolution_probes.flat_map { |task| Array(task.dig("adguard_dns_probe", "names")) }
+                                 .map(&:to_s).join(" ")
+  unless resolution_probes.empty?
+    failures << "the AdGuard resolution probe must ask about both adguard_blocked_probe_domain " \
+                "and adguard_allowed_probe_domain: the blocked one is answered out of local " \
+                "rules, so a probe that asks only about it passes with every upstream dead" unless
+      probe_names.include?("adguard_blocked_probe_domain") &&
+      probe_names.include?("adguard_allowed_probe_domain")
+    failures << "the AdGuard resolution probe must take its port from adguard_dns_port, so it " \
+                "asks the port this host actually published rather than production's" unless
+      resolution_probes.all? { |task| task.dig("adguard_dns_probe", "port").to_s.include?("adguard_dns_port") }
+  end
+  # The assertion over it, and specifically the half a dead upstream fails. An
+  # unblocked name must come back NOERROR with an address; asserting only the
+  # blocked half would restate what check_host already said.
+  failures << "the AdGuard verification must assert that the unblocked name RESOLVES -- a " \
+              "response code and at least one address -- or the resolution probe is a read whose " \
+              "answer nothing checks" unless
+    conditions_text.include?("adguard_verify_resolution") &&
+    conditions_text.include?("rcode") &&
+    conditions_text.include?("addresses")
+
+  # THE FILTER-DOWNLOAD RACE, and the wedge behind it. Measured on v0.107.79: a
+  # filter source answering HTTP 500 was asked exactly once, five seconds after
+  # start, and never again in 353 seconds -- past the deployment poller's own
+  # five-minute tick -- because filters_update_interval is 24 hours. On the same
+  # instance, with rules_count at 0, AdGuard resolved doubleclick.net to a real
+  # address: a deployment that has not loaded its lists is a live unfiltered
+  # resolver rather than one that is starting up. POST /control/filtering/refresh
+  # re-downloads immediately and is what makes the next converge able to heal it,
+  # so without it one failed download at first start fails every tick until
+  # somebody touches the host by hand -- and AdGuard is the last role in
+  # site.yml, so that also stops the poller reaching its own install play.
+  deploy_tasks = role_tasks(root, "deploy")
+  refreshes = deploy_tasks.select do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.include?("/control/filtering/refresh")
+  end
+  failures << "roles/adguard/tasks/deploy.yml must force a filter refresh when the declared lists " \
+              "have not loaded. AdGuard retries a failed download only after " \
+              "filters_update_interval, which this platform renders as 24 hours, so one failed " \
+              "fetch at first start otherwise fails every five-minute poller tick until a human " \
+              "intervenes on the host" if refreshes.empty?
+  failures << "the forced AdGuard filter refresh must be a POST" unless
+    refreshes.empty? || refreshes.all? { |task| task.dig("ansible.builtin.uri", "method") == "POST" }
+  deploy_conditions = deploy_tasks.filter_map { |task| task["ansible.builtin.assert"] }
+                                  .flat_map { |assertion| Array(assertion["that"]) }.join(" ")
+  failures << "roles/adguard/tasks/deploy.yml must refuse a deployment whose declared filter " \
+              "lists never downloaded, or the run reports success over a resolver that is " \
+              "answering every name on the network unfiltered" unless
+    deploy_conditions.include?("adguard_filters_loaded")
+
+  # THE ROLLBACK HAS TO BE RUN BY SOMETHING. `adguard_deployment_enabled: false`
+  # is the documented emergency exit for a resolver answering for a whole
+  # household, and inventory/group_vars/all/main.yml calls it one line. It was
+  # exercised by accident while the lane gate was per-suite -- smoke and
+  # idempotence-check converged the `state: absent` branch on every run -- and
+  # making that request unconditional, so that CI converges what production
+  # converges, took the proof away with it. The teardown assertion above is
+  # structural: it says the role HAS an absent branch, not that anything ever
+  # takes it.
+  controller_source = File.read(File.join(root, "tests/integration_controller.sh"))
+  failures << "the adguard integration lane must converge with adguard_deployment_enabled=false " \
+              "and prove the container is gone. Nothing else runs that branch now that the lane " \
+              "gate is unconditional, and a rollback nothing exercises is not an exit" unless
+    controller_source.include?("run_play --tags adguard -e adguard_deployment_enabled=false") &&
+    controller_source.include?("ADGUARD_TEARDOWN_VERIFIED")
 
   # ---------------------------------------------------------------------------
   # The three files this program requires and used to do nothing with, which is a
