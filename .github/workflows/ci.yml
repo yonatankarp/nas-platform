@@ -96,12 +96,30 @@ jobs:
         run: |
           # A pull request is classified against its own base. A push to main is
           # classified against the ref it replaced -- the merge it just landed --
-          # rather than being swept in full: the pull request already ran the routed
-          # matrix against an identical tree, because
+          # rather than being swept in full, because re-running everything cost 202
+          # runner-minutes across 23 jobs to say a second time what the pull
+          # request's own run already said. `--full` is what schedule and
+          # workflow_dispatch are for.
+          #
+          # THIS RUN IS A SAFETY NET AND NOT A DUPLICATE, and the reason used to be
+          # written here backwards. It claimed the pull request had already run the
+          # routed matrix "against an identical tree, because
           # strict_required_status_checks_policy forces it up to date before it may
-          # merge, and re-running everything cost 202 runner-minutes across 23 jobs
-          # to say so a second time. `--full` is what schedule and workflow_dispatch
-          # are for.
+          # merge". It does not: the ruleset on main requires the `validate` check
+          # and sets `strict_required_status_checks_policy: false`, so a branch may
+          # merge while behind, and its green matrix reflects whatever base it
+          # branched from. The repository-admin bypass on that ruleset is `always`,
+          # so raising the flag binds only merges that do not take it.
+          #
+          # What that costs is two pull requests, each green alone, that are red
+          # together. On 2026-09-11 #563 added tests/release_path_read_test.rb and
+          # #567 added an unguarded slurp of a platform_current_dir path in the
+          # Immich role; #567 merged twenty-five minutes later without #563 in its
+          # head, so no pull-request run ever saw the check and the read at once.
+          # The push run for b9595a00 saw both and went red, which is this run doing
+          # the only job nothing else can do. Do not "optimise" it away on the
+          # grounds that the pull request already tested this tree -- that is the
+          # sentence this block replaced.
           #
           # github.event.before is the ref's previous tip, so it covers a push of
           # several commits; HEAD^ covers only the last one and is the fallback for

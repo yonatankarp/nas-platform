@@ -40,7 +40,7 @@ SHARED_PREREQUISITE_TAGS = %w[host_prep deployment_bundle ntfy].freeze
 # A stated number, for the reason tests/gate_manifest_coverage_test.rb states one:
 # a partition that should hold five shards and holds one satisfies every
 # non-emptiness test there is.
-EXPECTED_SHARD_COUNT = 5
+EXPECTED_SHARD_COUNT = 6
 
 def site_tag_universe(site_source)
   play = YAML.safe_load(site_source, aliases: true).first
