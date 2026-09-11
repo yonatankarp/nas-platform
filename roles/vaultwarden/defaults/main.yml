@@ -161,9 +161,25 @@ vaultwarden_compose_project_name: >-
 # role adopted by nothing is a committed interface with no second caller to
 # check it against.
 #
+# TWO HOST PREREQUISITES THIS PLATFORM DEPENDS ON, NAMES AND DOES NOT OWN.
+#
 # The reachability the platform cannot see: HTTPS certificates must be enabled
 # for the tailnet in the Tailscale admin console. No check in this repository
 # can read that setting, so tasks/serve.yml fails naming it.
+#
+# The permission it cannot grant: writing `tailscale serve` configuration is
+# privileged on Linux, and tailscaled takes it from root or from an account the
+# host has granted the operator role -- `sudo tailscale set --operator=<the
+# account this platform deploys as>`, once, persisted in tailscaled's own
+# preferences. Reading it is not privileged, which is why a host without the
+# grant gets all the way to the placement before anything refuses. This
+# repository escalates nowhere -- every `become` key under roles/ is
+# `become: false`, and ansible.cfg records why -- so the grant is a one-time
+# human act and tasks/serve.yml names it rather than working around it. It was
+# missing on the NAS on 2026-09-11, the first converge that reached this
+# placement: the run died at site.yml's LAST role on a bare rc=1, and every
+# five-minute poller tick after it died the same way until the operator ran the
+# grant by hand.
 #
 # AN ABSOLUTE PATH, DISCOVERED RATHER THAN ASSUMED. Measured on the NAS
 # 2026-09-10: `command -v tailscale` resolves /usr/local/bin/tailscale, and the

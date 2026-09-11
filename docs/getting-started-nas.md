@@ -51,6 +51,46 @@ docker version
 docker compose version
 ```
 
+### Two Tailscale prerequisites this repository names but cannot grant
+
+Vaultwarden is the only service here that is not reachable on `host:port` —
+Bitwarden clients need a secure context — so `roles/vaultwarden/tasks/serve.yml`
+puts a Tailscale Serve front in front of it. Two things it depends on live on the
+host and in the tailnet rather than in this repository, and both fail the
+converge at `site.yml`'s **last** role, which the poller then repeats every five
+minutes until somebody acts:
+
+1. **HTTPS certificates must be enabled for the tailnet**, in the Tailscale admin
+   console under DNS. Serve accepts the configuration either way and simply
+   terminates nothing, so the platform proves it by fetching the front and fails
+   naming the setting. `tailscale cert <your-tailnet-name>` on the NAS writing a
+   certificate and key is the confirmation that it is on.
+2. **The account the converge runs as must be a Tailscale operator.** Writing
+   serve configuration is privileged; reading it is not, so a host without this
+   gets all the way to the placement before anything refuses, with `Access
+   denied: serve config denied`. Grant it once, on the NAS, from a shell that
+   can `sudo`:
+
+   ```sh
+   sudo tailscale set --operator=<the account the converge runs as>
+   ```
+
+   **Name that account rather than pasting `$USER`.** It is whichever account
+   executes the play, not whoever is at the keyboard: the dedicated non-root
+   deployment account described in
+   [Automatic deployment from the NAS](#automatic-deployment-from-the-nas) for
+   every poller tick, and `PLATFORM_NAS_USER` for a converge run by hand from a
+   workstation. Grant each account that converges this platform; `"$USER"` is
+   right only when you are logged in as that one. A converge that refuses names
+   the account it needs, resolved from its own facts, so the failure message is
+   the authority if the two ever disagree.
+
+   It persists in `tailscaled`'s own preferences, so it survives reboots and
+   every release deployed afterwards. Nothing in this repository performs it:
+   no role escalates — every `become` key under `roles/` is `become: false` —
+   so a play that granted itself operator would be the first privileged act this
+   platform makes on the host.
+
 On the workstation, follow the shared installation in
 [`getting-started.md`](getting-started.md). Keep the virtual environment active.
 Review [`inventory/group_vars/nas_hosts/main.yml`](../inventory/group_vars/nas_hosts/main.yml)
