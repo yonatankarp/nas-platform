@@ -526,22 +526,38 @@ end
 # this repository is that no narrowing exists at all, so a regex looking for one
 # has an empty result set on a clean tree and would go on reporting success after
 # it stopped matching anything. Looping the gates instead gives a non-empty
-# subject list -- every gate variable in the tree -- and asks a literal
-# `include?` of each, which cannot rot: the string is built from the gate's own
-# name. An empty finding set below is the pass, not the check being dead.
+# subject list -- every gate variable in the tree, floored at GATE_VARIABLE_FLOOR
+# above, so an emptied gate scan fails there rather than passing over nothing
+# here -- and asks a literal `include?` of each, which cannot rot: the string is
+# built from the gate's own name. An empty finding set below is the pass, not the
+# check being dead.
+#
+# ANY ASSIGNMENT, NOT `=false`, and that is the rule rather than a stricter
+# version of one. Whatever this variable is set to, both controller halves hand
+# it to ansible-playbook as `-e`, which outranks group_vars -- so an
+# `integration_<gate>=true` diverges CI from inventory exactly as `=false` does,
+# in the other direction, and it is precisely what the deleted line would have
+# become if #564 had been "fixed" by flipping it instead of deleting it. The
+# prefix is also what closes the spelling hole: `="false"` and `='false'` are the
+# same assignment to a shell and were invisible to a check that matched `=false`
+# literally, while direction 2 below exempts a KNOWN gate by construction, so the
+# quoted forms escaped both. `integration_<gate>=` is the one string every
+# spelling of every value begins with, and `foo = bar` is not a shell assignment
+# at all, so there is no whitespace form to allow for.
 gate_names.each do |name|
-  narrowing = "integration_#{name}=false"
-  next unless controller_source.include?(narrowing)
+  assignment = "integration_#{name}="
+  next unless controller_source.include?(assignment)
 
   check(failures, gate_states[name[GATE_KEY, 1]] == false,
-        "inventory turns #{name} ON and the integration controller still narrows it off " \
-        "with `#{narrowing}`, so every lane but the service's own converges a platform this " \
-        "one does not run -- smoke and idempotence-check included, which are the only lanes " \
-        "that converge the whole site. The narrowing is an `-e` override and outranks the " \
-        "inventory the NAS reads. Delete it and give the service " \
-        "`run_play --tags <tag> -e #{name}=false` in its own lane instead: that converges the " \
-        "disabled path the narrowing used to cover for free, without taking the enabled path " \
-        "away from every other lane")
+        "inventory turns #{name} ON and the integration controller still assigns " \
+        "`#{assignment}...`, which reaches ansible-playbook as `-e` and outranks it. Whichever " \
+        "value it holds, CI then converges something other than what the NAS runs: `false` " \
+        "keeps the stack out of every lane but the service's own -- smoke and " \
+        "idempotence-check included, the only lanes that converge the whole site -- and `true` " \
+        "keeps converging it the day the switch is turned back off. Delete the assignment and " \
+        "give the service `run_play --tags <tag> -e #{name}=false` in its own lane instead: " \
+        "that converges the disabled path without taking the enabled path away from every " \
+        "other lane, and leaves inventory the single source of which stacks exist")
 end
 
 # The other direction. A narrowing naming a variable no role and no inventory
