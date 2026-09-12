@@ -79,3 +79,38 @@
            'pinned_version': image_downgrade_guard_pinned_version,
            'deployed_versions': image_downgrade_guard_deployed_versions
          }] }}
+
+# The case's own verdict against the one it declares, which is what the case
+# list exists to say. Here rather than in a loop over `guard_results` in the
+# play for two reasons: `item` holds the declaration and the facts hold the
+# outcome, so both sides are local and nothing has to be re-derived by zipping
+# two lists by index -- the accumulated rows carry the outcome only; and a
+# mismatch fails at the case that caused it rather than after all twelve have
+# run. The aggregate floors in the play stay, because a case list that shrank
+# reaches no per-case assertion at all.
+#
+# `newer` is compared as well as the verdict, and it is not decoration: it is
+# the difference between refusing for the reason the case describes and
+# refusing because the role died before it compared anything. A role run that
+# failed at its slurp records `refused: true` with the `newer: []` the reset
+# above left, and that mismatches any case declaring a version it should have
+# named. The reset is also why both facts can be referenced plainly -- all
+# three are assigned before every iteration, so there is no path on which this
+# expression meets an undefined variable and dies on the allowed side while
+# working on the refused one (#536).
+- name: Require this case to reach the verdict it declares
+  ansible.builtin.assert:
+    that:
+      - guard_case_refused == item.refused
+      - image_downgrade_guard_newer_versions == item.newer
+    fail_msg: >-
+      The case "{{ item.name }}" declares that the guard
+      {{ 'refuses' if item.refused else 'allows' }} it, going back past
+      {{ item.newer }}. The guard
+      {{ 'refused' if guard_case_refused else 'allowed' }} it, going back past
+      {{ image_downgrade_guard_newer_versions }}: it read a pinned
+      {{ image_downgrade_guard_pinned_version | to_json }} against the deployed
+      {{ image_downgrade_guard_deployed_versions }} from
+      {{ item.deployed }}. The declared verdict is the subject of this case
+      list -- the aggregate floors in the play notice only a case list that
+      shrank, so a single verdict flipping is exactly what this compares.
