@@ -81,6 +81,27 @@ if missing.empty?
   check(failures, !fail_msg.match?(/vault_pushover_(token|user_key)\s*\}\}/),
         "#{VERIFY} fail_msg must name the credentials without printing them")
 
+  # THE HARNESS HAS TO INHERIT THE ROLE'S TAGS OR IT PROVES NOTHING, and this is
+  # not a hypothetical: without it the tag-gate rows below passed against a
+  # deliberately planted defect. A throwaway playbook has no role, so the tasks
+  # carry only their own [never, platform_verify_beszel] and `--tags beszel`
+  # selects nothing -- the rows were measuring tag selection in the harness
+  # rather than the when: gate in the role, and "zero requests" was true because
+  # nothing ran at all.
+  #
+  # Read out of site.yml rather than written here, so a rename or a retagging of
+  # the role reaches this instead of leaving it quietly testing the wrong thing.
+  site_roles = YAML.safe_load_file(File.join(ROOT, "site.yml"))
+              .flat_map { |play| Array(play["roles"]) }
+  beszel_entry = site_roles.find { |entry| entry.is_a?(Hash) && entry["role"] == "beszel" }
+  ROLE_TAGS = Array(beszel_entry && beszel_entry["tags"]).freeze
+  check(failures, ROLE_TAGS.length >= 2,
+        "site.yml must still give roles/beszel the tags this harness inherits, got #{ROLE_TAGS.inspect}")
+
+  def with_role_tags(shipped)
+    shipped.map { |task| task.merge("tags" => (Array(task["tags"]) | ROLE_TAGS)) }
+  end
+
   # Run the shipped tasks. --tags is passed rather than the tags being stripped,
   # so the gating is exercised instead of being worked around.
   def run_tasks(shipped, url, tags: "platform_verify_beszel", extra: {})
@@ -112,7 +133,7 @@ if missing.empty?
     requests = 0
     with_http_fixture(lambda { |port|
       _stdout, _stderr, status = run_tasks(
-        selected, "http://127.0.0.1:#{port}/1/users/validate.json", tags: tags
+        with_role_tags(selected), "http://127.0.0.1:#{port}/1/users/validate.json", tags: tags
       )
       check(failures, status.success?, "#{label} must not fail the converge")
     }) { |_method, _target, _headers, _body|
