@@ -145,12 +145,17 @@ mac_validate_integration_callback() {
 # inventory for the same two reasons. #500 landed Nextcloud gated off, so a lane
 # that did not ask for it would deploy nothing, verify nothing, and report a full
 # pass over the other services while this one was never started.
-# tests/integration_controller.sh asks for it per suite for exactly that reason;
+# tests/integration_controller.sh asked for it per suite for exactly that reason;
 # this lane has no suites, so it asks once, here.
 #
 # Its platform default has since flipped true, so this request stays correct and
 # is now redundant -- and nothing had to come back to this line to make it so,
 # which is the property that made requesting it here right in the first place.
+# The controller's per-suite version had the opposite property and #564 deleted
+# it: an override that says `false` where inventory says `true` is not redundant
+# but wrong, and it kept Nextcloud out of smoke and idempotence-check for three
+# days. A lane requesting the state it converges is right; a lane withholding a
+# state production runs is not.
 #
 # Deleting it now would be loud rather than quiet, because #500 landed the hooks
 # in the same change as the gate: verify/30-services.sh runs the Nextcloud
