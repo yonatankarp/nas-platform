@@ -99,7 +99,9 @@ IDENTITY_FLOOR = 14
 # does hold one subject fewer and an exact floor would fail that row for a
 # reason that has nothing to do with what it asserts. The row lowers the floor
 # by exactly the subject it removed rather than the floor being left slack for
-# everybody -- slack is what let this number sit two below the tree.
+# everybody -- slack is what let this number sit two below the tree. Derived
+# from the constant rather than restated, so adding a subject cannot leave a
+# second number behind that nothing bumps.
 SUBJECT_FLOOR = Integer(ENV.fetch("PLATFORM_RENDERED_OWNERSHIP_SUBJECT_FLOOR", "5"))
 
 WRITING_MODULES = %w[ansible.builtin.template ansible.builtin.copy].freeze
@@ -167,7 +169,7 @@ SELF_TEST_ROWS = [
       # widen the wrong task and make this row report the defect it removed.
       File.write(path, source.sub(%r{(trailarr_config_host_path \}\}/\.env"\n    mode: )"0600"}, '\\1"0644"'))
     },
-    subject_floor: "4",
+    subject_floor: (SUBJECT_FLOOR - 1).to_s,
     expects: nil
   }
 ].freeze
