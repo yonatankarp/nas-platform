@@ -3,7 +3,7 @@
 #
 # Everything else in that role compares the stored webhook to the intended
 # webhook, and Beszel stores whatever it is PATCHed, so all of it stays green
-# when the credentials inside that string stop working. These three tasks are
+# when the credentials inside that string stop working. These four tasks are
 # the only thing that can tell those states apart, and the property that makes
 # them safe is narrower than "they work": an authoritative refusal must fail the
 # run, and everything that is not an answer must not. Getting the second half
@@ -18,7 +18,10 @@
 # What the passing path proves is bounded, and the bound is stated rather than
 # implied: the "accepted" row answers from a local fixture speaking Pushover's
 # documented success shape, so it proves this task's own branch and not that any
-# particular credential is good. Only the refusal row talks to Pushover itself.
+# particular credential is good. Nothing here reaches Pushover itself -- the
+# refusal against the real endpoint was measured by hand and is recorded in the
+# pull request, because a check that calls a third party on every gate run is a
+# check that fails when that third party is down.
 
 require "json"
 require "yaml"
@@ -32,12 +35,10 @@ include HttpFixtureSupport
 CONFIGURE = File.join(ROOT, "roles", "beszel", "tasks", "configure.yml")
 ASK = "Ask Pushover whether it still accepts the managed credentials"
 SUMMARIZE = "Summarize the Pushover answer without the credentials it carried"
+NO_ANSWER = "Report that Pushover did not answer, which is not a refusal"
 VERIFY = "Verify Pushover still accepts the managed credentials"
-TASK_NAMES = [ASK, SUMMARIZE, VERIFY].freeze
+TASK_NAMES = [ASK, SUMMARIZE, NO_ANSWER, VERIFY].freeze
 REFUSAL = "Pushover refused the managed credentials."
-# Pushover's real endpoint. Only the refusal row reaches it, with a token that
-# was never valid, and validation requests are quota-exempt.
-PUSHOVER_VALIDATE = "https://api.pushover.net/1/users/validate.json"
 
 failures = []
 
@@ -48,7 +49,7 @@ check(failures, missing.empty?,
       "roles/beszel/tasks/configure.yml must still carry #{missing.join(', ')}")
 
 if missing.empty?
-  ask, summarize, verify = selected
+  ask, _summarize, _no_answer, verify = selected
 
   # The shape that makes the verdict the assert's rather than the module's.
   # failed_when: false is what stops a 5xx or a DNS failure failing the run, and
@@ -101,30 +102,40 @@ if missing.empty?
   # 200-with-no-verdict row below was found, and it would otherwise have made
   # the accepted row fail for a reason having nothing to do with the role.
   [
+    # The accepted path is asserted by what it does NOT say. no_log suppresses
+    # success_msg -- measured, not assumed -- so a valid pair is silent by
+    # design, and the thing that would be wrong is the non-verdict notice
+    # appearing when Pushover did in fact answer.
     { label: "a pair Pushover accepts", status: 200,
       body: JSON.generate({ "status" => 1, "devices" => ["phone"] }),
-      expect_failure: false, expect_text: "Pushover accepts the managed credentials" },
+      expect_failure: false, forbid_text: "This is not a refusal and is not a failure" },
     { label: "a pair Pushover authoritatively refuses", status: 400,
       body: JSON.generate({ "status" => 0, "errors" => ["user identifier is not a valid user"] }),
       expect_failure: true, expect_text: REFUSAL },
     { label: "a 5xx, which is not an answer", status: 500,
       body: JSON.generate({ "status" => 0 }),
-      expect_failure: false, expect_text: "not a refusal and is not a failure" },
+      expect_failure: false, expect_text: "This is not a refusal and is not a failure" },
     # 200 from something that is not Pushover: a captive portal or an
     # interception proxy. Authoritative code, no verdict in it. Reading this as
     # a refusal is the invention the whole design forbids, and the task did read
     # it that way until this row existed.
     { label: "a 200 carrying no Pushover verdict", status: 200,
       body: "<html><body>Sign in to continue</body></html>",
-      expect_failure: false, expect_text: "not a refusal and is not a failure" }
+      expect_failure: false, expect_text: "This is not a refusal and is not a failure" }
   ].each do |row|
     with_http_fixture(lambda { |port|
       stdout, stderr, status = run_tasks(selected, "http://127.0.0.1:#{port}/1/users/validate.json")
       output = stdout + stderr
       check(failures, status.success? != row.fetch(:expect_failure),
             "#{row.fetch(:label)} must #{row.fetch(:expect_failure) ? 'fail' : 'pass'} the verification")
-      check(failures, output.include?(row.fetch(:expect_text)),
-            "#{row.fetch(:label)} must report #{row.fetch(:expect_text).inspect}")
+      if row[:expect_text]
+        check(failures, output.include?(row.fetch(:expect_text)),
+              "#{row.fetch(:label)} must report #{row.fetch(:expect_text).inspect}")
+      end
+      if row[:forbid_text]
+        check(failures, !output.include?(row.fetch(:forbid_text)),
+              "#{row.fetch(:label)} must not report #{row.fetch(:forbid_text).inspect}")
+      end
       # Neither credential may reach the transcript on any path.
       %w[probe-token-never-valid probe-user-key-never-valid].each do |secret|
         check(failures, !output.include?(secret),
@@ -156,7 +167,7 @@ if missing.empty?
     check(failures, status.success?,
           "#{label} must not fail the verification; that would put this NAS's deployment "\
           "behind a third party's uptime")
-    check(failures, output.include?("not a refusal and is not a failure"),
+    check(failures, output.include?("This is not a refusal and is not a failure"),
           "#{label} must report a non-verdict rather than claiming a pass")
     check(failures, !output.include?(REFUSAL),
           "#{label} must never be reported as a credential refusal")
