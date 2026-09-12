@@ -1324,7 +1324,7 @@ existing credential merely because the schema is new.
 Run the redacted contract validation and policy suite after the edit:
 
 ```sh
-ansible-playbook validate-vault.yml \
+ansible-playbook -i inventory/local.yml validate-vault.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 tests/validate-policy.sh
 ```

@@ -225,9 +225,23 @@ add_secret_shell_blocks = shell_code_fences(add_secret_section)
 check(failures,
       add_secret_shell_blocks.any? { |block| shell_block?(block, "ansible-vault edit") },
       "## Add a new secret must include ansible-vault edit in a sh code fence")
+# THE HOLE THIS CLOSES. This asserted only that the section *mentions*
+# validate-vault.yml, and the command it was satisfied by could not validate
+# anything: `hosts: localhost` runs on the implicit localhost, which -- as
+# ansible-playbook's own warning says -- "does not match 'all'", so
+# inventory/group_vars/all/vault.yml never reaches the play and every one of the
+# 81 credentials reports as a missing required argument. The failure reads
+# exactly like a wiped vault, which is the expensive part: the operator has just
+# hand-edited the encrypted file, and the tool that is supposed to confirm the
+# edit instead accuses it. Two forms in this guide do load the vault -- `-i`,
+# and the `-e @"$PLATFORM_VAULT_FILE"` of "Validate without disclosure" -- and
+# this section edits the repository vault in place, so `-i` is its form.
 check(failures,
-      add_secret_shell_blocks.any? { |block| shell_block?(block, "validate-vault.yml") },
-      "## Add a new secret must include validate-vault.yml in a sh code fence")
+      add_secret_shell_blocks.any? do |block|
+        shell_block?(block, "ansible-playbook -i inventory/local.yml validate-vault.yml")
+      end,
+      "## Add a new secret must validate through an inventory that loads the vault, " \
+      "not a bare validate-vault.yml the implicit localhost cannot bind group_vars to")
 check(failures,
       add_secret_shell_blocks.any? { |block| shell_block?(block, "tests/validate-policy.sh") },
       "## Add a new secret must include tests/validate-policy.sh in a sh code fence")
