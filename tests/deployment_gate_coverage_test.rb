@@ -487,10 +487,20 @@ end
 # the broadest lanes converged a platform the NAS does not have -- passing, and
 # faster than they would otherwise. The check below is what would have refused
 # that commit, and it is why the step above is now the only admitted form.
-INTEGRATION_CONTROLLER = File.join(ROOT, "tests", "integration_controller.sh")
-controller_source = File.file?(INTEGRATION_CONTROLLER) ? File.read(INTEGRATION_CONTROLLER) : ""
-check(failures, !controller_source.empty?,
-      "tests/integration_controller.sh could not be read, so no service's disabled path can be " \
+#
+# BOTH HALVES OF THE CONTROLLER ARE READ, not just the program. `run_play` itself
+# lives in tests/integration_controller_lib.sh, so that is where a narrowing
+# would most naturally be written next -- and one written there would escape a
+# scan of the program alone while working perfectly, which is this check's own
+# failure mode rather than a hypothetical.
+INTEGRATION_CONTROLLER = [File.join(ROOT, "tests", "integration_controller.sh"),
+                          File.join(ROOT, "tests", "integration_controller_lib.sh")].freeze
+controller_source = INTEGRATION_CONTROLLER
+                    .map { |path| File.file?(path) ? File.read(path) : "" }.join("\n")
+unreadable_controller = INTEGRATION_CONTROLLER.reject { |path| File.file?(path) }
+                                              .map { |path| path.delete_prefix("#{ROOT}/") }
+check(failures, unreadable_controller.empty?,
+      "#{unreadable_controller.inspect} could not be read, so no service's disabled path can be " \
       "shown to run and every requirement below would pass vacuously")
 
 subjects.each do |name|
@@ -502,7 +512,7 @@ subjects.each do |name|
   next unless gate_names.include?(gate)
 
   check(failures, controller_source.include?("run_play --tags #{tag} -e #{gate}=false"),
-        "#{name} deploys and nothing in tests/integration_controller.sh ever converges it with " \
+        "#{name} deploys and nothing in the integration controller ever converges it with " \
         "#{gate} false, so the way back is claimed and never run. While the stack was dark every " \
         "lane converged that branch for free; turning the gate on took the proof with it. Add " \
         "`run_play --tags #{tag} -e #{gate}=false` to its lane, with the container asserted " \
@@ -524,7 +534,7 @@ gate_names.each do |name|
   next unless controller_source.include?(narrowing)
 
   check(failures, gate_states[name[GATE_KEY, 1]] == false,
-        "inventory turns #{name} ON and tests/integration_controller.sh still narrows it off " \
+        "inventory turns #{name} ON and the integration controller still narrows it off " \
         "with `#{narrowing}`, so every lane but the service's own converges a platform this " \
         "one does not run -- smoke and idempotence-check included, which are the only lanes " \
         "that converge the whole site. The narrowing is an `-e` override and outranks the " \
@@ -545,7 +555,7 @@ narrowed_gates = controller_source
                  .flatten.uniq
 stray_narrowings = narrowed_gates - gate_names
 check(failures, stray_narrowings.empty?,
-      "tests/integration_controller.sh narrows #{stray_narrowings.inspect}, which no role " \
+      "the integration controller narrows #{stray_narrowings.inspect}, which no role " \
       "default and no inventory file declares as a #{GATE_SUFFIX} variable. The controller is " \
       "setting a switch nothing reads, so the lane converges whatever inventory says and the " \
       "narrowing reports nothing")
