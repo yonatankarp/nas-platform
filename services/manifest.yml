@@ -1,8 +1,5 @@
 ---
 services:
-  - name: adguard
-    role: adguard
-    status: implemented
   - name: audiobookshelf
     role: audiobookshelf
     status: implemented

@@ -158,24 +158,12 @@
     - role: nextcloud
       tags: [nextcloud, documents]
 
-    # AdGuard Home after Nextcloud, and the position carries no dependency
-    # either: it reads no platform service and none reads it. It is last because
-    # it is the newest, and because a resolver that fails to converge should not
-    # be able to hold up the stacks that were already running.
-    #
-    # No `when:` here, deliberately, for the reason the entry above gives: the
-    # gate is `adguard_deployment_enabled` and it lives inside the role, so the
-    # deployment_bundle target re-include and the ntfy deployment report still
-    # run when it is false.
-    - role: adguard
-      tags: [adguard, network]
-
     # Vaultwarden last, and the position carries no dependency either: it reads
     # no platform service and none reads it. It is last because it is the
     # newest, and because a password manager that fails to converge should not
     # be able to hold up the stacks that were already running.
     #
-    # No `when:` here, deliberately, for the reason the entries above give: the
+    # No `when:` here, deliberately, for the reason the entry above gives: the
     # gate is `vaultwarden_deployment_enabled` and it lives inside the role, so
     # the deployment_bundle target re-include and the ntfy deployment report
     # still run when it is false.

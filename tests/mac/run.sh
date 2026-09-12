@@ -354,11 +354,13 @@ fi
 
 # report.rb names one --<service>-port option per roster service, so the flag
 # list is the roster spelled with hyphens -- literally so, because a roster entry
-# is a port name and `adguard_dns` carries an underscore that a long option must
-# not. The shell variable keeps the underscore (`adguard_dns_port`, which is what
-# roles/adguard reads); only the flag is respelled. The caller's own arguments
-# are appended to, never replaced: OptionParser is order-insensitive across
-# distinct options, so they may sit before the port flags.
+# is a port name and such a name may carry an underscore that a long option must
+# not. The shell variable keeps the underscore (`<name>_port`, which is what the
+# role reads); only the flag is respelled. `adguard_dns` was the only entry that
+# ever exercised this and #577 removed it with the service, so the transformation
+# is held by tests/policy_mac_test.rb rather than by an instance. The caller's own
+# arguments are appended to, never replaced: OptionParser is order-insensitive
+# across distinct options, so they may sit before the port flags.
 initialize_report_input() {
   for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
     mac_roster_flag=$(printf '%s' "$mac_roster_service" | tr '_' '-')

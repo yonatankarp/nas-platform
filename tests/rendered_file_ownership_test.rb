@@ -10,6 +10,15 @@
 # denied"`. Docker reported `restarting exit=1` with an EMPTY health log,
 # because a process that dies before it serves never reaches its health check.
 #
+# #577 REMOVED THAT SERVICE AND THIS FILE STAYS, which is the whole reason it was
+# written as a sweep over every role rather than as a line in the adguard
+# contract. AdGuard turned out to be the only role missing a convention arr,
+# downloaders, pinchflat and trailarr already followed, so what this guards is
+# the next service added and not the one that exposed it. Its self-test rows
+# moved with the removal -- they are planted into roles/trailarr and
+# services/vaultwarden now -- because a self-test whose plants no longer apply
+# is a clean report that means nothing.
+#
 # THE REASON NOTHING LOCAL SAW IT, and the reason this is a sweep rather than a
 # line in a contract: **Docker Desktop for Mac does not enforce bind-mount
 # ownership.** Every uid inside a container reads every bind-mounted file there,
@@ -75,13 +84,25 @@ PLATFORM_UID_ENVIRONMENT = "${NAS_UID:?}"
 # makes that a checked fact rather than an assumption, and what puts the role in
 # scope the moment it does render into /data.
 EXPECTED_IDENTITY_SERVICES = %w[
-  adguard arr audiobookshelf bindery downloaders dozzle jellyfin kapowarr komga
+  arr audiobookshelf bindery downloaders dozzle jellyfin kapowarr komga
   ntfy paperless-ngx pinchflat seerr trailarr vaultwarden
 ].freeze
-IDENTITY_FLOOR = 15
-# Every rendered file the rule reaches today. Held as a floor for the same reason
-# every other list here is: a selector that stops matching reports success.
-SUBJECT_FLOOR = 4
+IDENTITY_FLOOR = 14
+# Every rendered file the rule reaches today, counted off this sweep's own
+# summary line rather than reasoned about. Held as a floor for the same reason
+# every other list here is: a selector that stops matching reports success. It
+# stood at 4 against a live 6 until #577 re-derived it, which is exactly the
+# staleness a `>=` floor cannot report.
+#
+# Overridable for the same reason ROOT above is, and only by the self-test: the
+# negative-control row widens one subject's mode, so the planted tree really
+# does hold one subject fewer and an exact floor would fail that row for a
+# reason that has nothing to do with what it asserts. The row lowers the floor
+# by exactly the subject it removed rather than the floor being left slack for
+# everybody -- slack is what let this number sit two below the tree. Derived
+# from the constant rather than restated, so adding a subject cannot leave a
+# second number behind that nothing bumps.
+SUBJECT_FLOOR = Integer(ENV.fetch("PLATFORM_RENDERED_OWNERSHIP_SUBJECT_FLOOR", "5"))
 
 WRITING_MODULES = %w[ansible.builtin.template ansible.builtin.copy].freeze
 
@@ -89,15 +110,26 @@ WRITING_MODULES = %w[ansible.builtin.template ansible.builtin.copy].freeze
 #
 # Each row plants exactly one thing in a throwaway copy of the tree and requires
 # this sweep to name it -- or, for the negative control, to stay silent. The
-# first row is the defect that actually broke the adguard integration lane, so
+# first row is the defect that actually broke the adguard integration lane,
+# replanted into roles/trailarr once #577 removed the role it was found in, so
 # this file's clean report means something rather than being asserted.
+#
+# WHY TWO SUBJECTS RATHER THAN ONE. Rows 1, 2 and 4 need a role that renders a
+# restricted-mode file into a path one of its own identity containers mounts,
+# and roles/trailarr is the cleanest: its reconcile_env.yml writes exactly one
+# such file, so each substitution below is unambiguous. Row 3 needs a stack
+# whose whole identity is one `user:` key, so that removing that key really does
+# drop the service out of the selector -- services/trailarr takes the identity
+# through PUID/PGID and services/dozzle declares `user:` on two containers, so
+# neither would; services/vaultwarden is one container with one key and is the
+# stack the pinned list above already explains carries no subject of its own.
 SELF_TEST_TREES = %w[services roles].freeze
 
 SELF_TEST_ROWS = [
   {
     name: "the defect this file exists for: a rendered configuration with no owner",
     plant: lambda { |root|
-      path = File.join(root, "roles/adguard/tasks/deploy.yml")
+      path = File.join(root, "roles/trailarr/tasks/reconcile_env.yml")
       source = File.read(path)
       File.write(path, source.sub(/^    owner: "\{\{ nas_uid \}\}"\n    group: "\{\{ nas_gid \}\}"\n/, ""))
     },
@@ -106,7 +138,7 @@ SELF_TEST_ROWS = [
   {
     name: "an owner declared without a group",
     plant: lambda { |root|
-      path = File.join(root, "roles/adguard/tasks/deploy.yml")
+      path = File.join(root, "roles/trailarr/tasks/reconcile_env.yml")
       source = File.read(path)
       File.write(path, source.sub(/^    group: "\{\{ nas_gid \}\}"\n/, ""))
     },
@@ -115,7 +147,7 @@ SELF_TEST_ROWS = [
   {
     name: "a stack that stopped running under the platform identity",
     plant: lambda { |root|
-      path = File.join(root, "services/adguard/compose.yml")
+      path = File.join(root, "services/vaultwarden/compose.yml")
       source = File.read(path)
       File.write(path, source.sub(/^    user: .*\n/, ""))
     },
@@ -128,14 +160,16 @@ SELF_TEST_ROWS = [
     # passing rows would say nothing about the condition it claims to apply.
     name: "a world-readable file, which needs no owner and must not be reported",
     plant: lambda { |root|
-      path = File.join(root, "roles/adguard/tasks/deploy.yml")
+      path = File.join(root, "roles/trailarr/tasks/reconcile_env.yml")
       source = File.read(path)
       source = source.sub(/^    owner: "\{\{ nas_uid \}\}"\n    group: "\{\{ nas_gid \}\}"\n/, "")
-      # Anchored on the destination, not on the mode alone: this file renders two
-      # things at 0600 and the .env comes first, so a bare substitution widens
-      # the wrong task and the row reports the defect it meant to remove.
-      File.write(path, source.sub(%r{(AdGuardHome\.yaml"\n    mode: )"0600"}, '\\1"0644"'))
+      # Anchored on the destination rather than on the mode alone. The role
+      # renders one restricted file today, so a bare substitution would be
+      # correct by luck; anchoring means a second one arriving does not silently
+      # widen the wrong task and make this row report the defect it removed.
+      File.write(path, source.sub(%r{(trailarr_config_host_path \}\}/\.env"\n    mode: )"0600"}, '\\1"0644"'))
     },
+    subject_floor: (SUBJECT_FLOOR - 1).to_s,
     expects: nil
   }
 ].freeze
@@ -149,9 +183,10 @@ if ARGV.include?("--self-test")
       sandbox = File.realpath(raw)
       SELF_TEST_TREES.each { |tree| FileUtils.cp_r(File.join(repository, tree), sandbox) }
       row.fetch(:plant).call(sandbox)
-      stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_RENDERED_OWNERSHIP_ROOT" => sandbox }, RbConfig.ruby, program
-      )
+      environment = { "PLATFORM_RENDERED_OWNERSHIP_ROOT" => sandbox }
+      floor = row[:subject_floor]
+      environment["PLATFORM_RENDERED_OWNERSHIP_SUBJECT_FLOOR"] = floor if floor
+      stdout, stderr, status = Open3.capture3(environment, RbConfig.ruby, program)
       output = stdout + stderr
       if row.fetch(:expects).nil?
         self_test_failures << "#{row.fetch(:name)}: was reported anyway: #{output.strip}" unless

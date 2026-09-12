@@ -53,10 +53,11 @@ services:
         condition: service_healthy
       cache:
         condition: service_healthy
-    # 8084. The next free host port on this platform: 8080 is Dozzle, 8081 the
-    # Dozzle alert relay, 8082 the qbittorrent web interface declared in
-    # config/media-acquisition.yml, 8083 AdGuard Home -- Seafile's until #501
-# removed that stack and #548 took it -- 8085 SABnzbd and 8090 Beszel.
+    # 8084. The next free host port on this platform when #500 chose it: 8080
+    # is Dozzle, 8081 the Dozzle alert relay, 8082 the qbittorrent web interface
+    # declared in config/media-acquisition.yml, 8083 Seafile's until #501
+    # removed that stack and AdGuard Home's until #577 removed that one, 8085
+    # SABnzbd and 8090 Beszel.
     #
     # Plain HTTP, as every published port here is: nothing on this platform
     # terminates TLS and no reverse proxy is deployed. Nextcloud is the second

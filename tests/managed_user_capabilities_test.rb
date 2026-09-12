@@ -15,20 +15,6 @@ MULTI_USER_DEFAULTS = {
 }.freeze
 
 EXPECTED_SERVICES = {
-  # The one service that does not take MULTI_USER_DEFAULTS, and the deviation is
-  # the point: roles/adguard renders the whole of AdGuardHome.yaml, users
-  # included, so an account created in the web interface does not survive a
-  # converge. config/managed-user-capabilities.yml carries the argument.
-  "adguard" => MULTI_USER_DEFAULTS.merge(
-    "preserves_unmanaged_users" => false,
-    "mode" => "declarative_file",
-    "interfaces" => {
-      "list" => "AdGuardHome.yaml users",
-      "create" => "AdGuardHome.yaml users",
-      "authenticate" => "HTTP Basic authentication",
-      "reconcile" => "AdGuardHome.yaml users"
-    }
-  ),
   "arr" => MULTI_USER_DEFAULTS.merge(
     "mode" => "api",
     "interfaces" => {

@@ -20,16 +20,13 @@ mac_script_dir=$(CDPATH= cd -- "$mac_hook_dir/../.." && pwd -P)
 # must survive is the PostgreSQL cluster its run phase authenticates against and
 # the installation tree under /var/www/html that the application and its cron
 # sidecar share, because a cron container that came back onto an empty volume
-# would run cron.php against an installation that is not there. AdGuard is the
-# plainest of them: its persisted state is the configuration file the role wrote
-# and the daemon rewrote, and its run phase reads that file's mode off the host
-# as well as authenticating against the administrator it declares.
+# would run cron.php against an installation that is not there.
 mac_persisted=
 for mac_persistence_entry in beszel:verify dozzle:verify \
     audiobookshelf:assert-persistence komga:assert-persistence \
     jellyfin:assert-persistence \
     immich:assert-persistence pinchflat:run kapowarr:run bindery:run trailarr:run \
-    seerr:run nextcloud:run adguard:run; do
+    seerr:run nextcloud:run; do
   mac_persistence_service=${mac_persistence_entry%%:*}
   "$mac_script_dir/run-contract.sh" "$mac_persistence_service" "${mac_persistence_entry#*:}"
   mac_persisted="$mac_persisted$mac_persistence_service

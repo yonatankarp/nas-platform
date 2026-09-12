@@ -204,19 +204,6 @@ active service:
   mutation into its own `/config/.env`, which it sources over the container
   environment at every start, so the change would otherwise survive forever;
   the role owns that file, and the reconcile is what reverts it.
-- AdGuard: sign in with the deployed administrator identity, then confirm that
-  an anonymous request to the control API is refused. That refusal is the whole
-  of the access control: AdGuard with no declared user serves `/control` to
-  anyone who can reach the port, and whoever reaches it can rewrite any DNS
-  answer the household receives. Then ask the lane's DNS port for a blocklisted
-  name and an ordinary one, and confirm the first comes back 0.0.0.0 and the
-  second resolves — a status page reporting `protection_enabled` is not the same
-  claim as a resolver that filters. The interesting check is the inversion:
-  change a setting in the web interface and reconverge. AdGuard rewrites its own
-  configuration file from what the interface changed, and roles/adguard writes
-  the declared document back and restarts the daemon onto it, so the change
-  should be gone. Both host ports here are ephemeral; this lane never publishes
-  the privileged 53.
 - Nextcloud: sign in with the vault administrator identity, then upload a
   disposable file and confirm it survives recreation byte for byte. The round
   trip checks that the file is a plain file on disk that `ls` and `cp` can read

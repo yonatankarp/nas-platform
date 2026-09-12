@@ -85,7 +85,8 @@ services:
       # The image's own ExposedPorts is 80/tcp, which a container running as uid
       # 1000 cannot bind without CAP_NET_BIND_SERVICE; ROCKET_PORT below moves
       # the listener to an unprivileged port so the platform identity above
-      # stays possible. AdGuard's 5353 is the same decision for the same reason.
+      # stays possible. AdGuard's container-side 5353 was the same decision for
+      # the same reason, until #577 removed that stack.
       - "127.0.0.1:8086:8086"
     volumes:
       # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log,

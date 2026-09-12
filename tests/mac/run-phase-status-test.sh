@@ -96,7 +96,6 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --trailarr-port 37889 \
   --seerr-port 35055 \
   --nextcloud-port 38084 \
-  --adguard-port 38083 --adguard-dns-port 35353 \
   --vaultwarden-port 38086
 ruby -rjson -e '
   input = JSON.parse(File.read(ARGV.fetch(0)))

@@ -83,7 +83,5 @@
       tags: [never]
     - role: nextcloud
       tags: [never]
-    - role: adguard
-      tags: [never]
     - role: vaultwarden
       tags: [never]

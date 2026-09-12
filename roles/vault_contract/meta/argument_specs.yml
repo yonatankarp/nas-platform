@@ -3,9 +3,6 @@ argument_specs:
   main:
     short_description: Validate the portable credential contract without disclosure
     options:
-      vault_adguard_admin_username: {type: str, required: true}
-      vault_adguard_admin_password: {type: str, required: true}
-      vault_adguard_admin_password_hash: {type: str, required: true}
       vault_audiobookshelf_admin_username: {type: str, required: true}
       vault_audiobookshelf_admin_password: {type: str, required: true}
       vault_beszel_superuser_email: {type: str, required: true}
