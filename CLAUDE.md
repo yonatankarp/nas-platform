@@ -332,7 +332,17 @@ raising handler was observed losing a stop there once in eight attempts. Measure
 out-of-memory kill reportable. What is left open is interpreter start-up, before
 the process blocks anything; `init: true` would close it and was not taken, for
 the reason `services/ntfy/compose.yml` records beside that key. For the other
-eleven, exiting inside ten seconds is an expectation rather than a measurement. These figures are an observation, not a budget, and nothing
+eleven, exiting inside ten seconds is an expectation rather than a measurement.
+**Declaring a grace period is not evidence of stopping inside one either**, which
+is the half `alert-relay` did not show: `nextcloud-cron` declared 30s and still
+exited 137 on every recreate, measured 2026-09-12, because its image is the
+application's and so carries php:apache's `STOPSIGNAL SIGWINCH` -- a signal whose
+default disposition is to be ignored -- while `/cron.sh` execs busybox crond as
+PID 1, which installs no handler and is the one process the kernel gives no
+default disposition to. Two independent swallows of the same stop, either
+sufficient. `init: true` with `stop_signal: SIGTERM` is what answers both, and it
+is the second reason to reach for an init shim rather than the reaping one that
+key was reserved for. These figures are an observation, not a budget, and nothing
 validates them: if a memory policy lands (#447) the RAM figure belongs beside
 `platform_container_cpu_budget` with a preflight assert against what the Docker
 daemon reports, the way the logical CPU capacity already is.
