@@ -190,6 +190,33 @@ EXPECTED_FIXTURE_ROLES = {
   "vaultwarden" => "vaultwarden"
 }.freeze
 
+# Which roles a sandbox therefore holds, and which it does not. Measured rather
+# than reasoned, because #556 was filed on a guess about this and the guess was
+# wrong in the direction that matters: 22 of the tree's 26 role directories are
+# present, so the roles/* globs in policy_test.rb, policy_deployment_test.rb and
+# policy_vault_test.rb iterate 22 subjects inside a sandbox and are not vacuous.
+# The four absent are container_cpu, container_health, image_downgrade_guard and
+# image_prune. One reason covers all four: none is a manifest service role, so
+# the derivation below reaches none of them, and BASE_FIXTURE_PATHS names none.
+# The first three are reached by include_role from the roles that use them,
+# which static_task_files deliberately does not follow, and image_prune is
+# excluded on purpose -- policy_deployment_test.rb's poller sweep depends on its
+# absence and says so beside the floor it sizes.
+#
+# What follows from that is narrower than "those roles are untested", and the
+# distinction is the whole point. The policy scripts run against the working
+# tree in CI's `static` job, where all 26 are present: a defect planted in
+# roles/image_downgrade_guard is caught there by policy_test.rb, measured on
+# three separate plants (a deleted argument_specs.yml, an emptied options map,
+# and a shell-out to Compose). The sandbox exists to prove a check *can* fail,
+# and every one of these globs is role-agnostic, so a mutation planted in any
+# present role proves the same check bites. Adding an absent role to the fixture
+# would enlarge 150-plus sandboxes and buy no detection that bindery does not
+# already buy -- so what guards these globs is a cardinality floor at each one,
+# not an entry here. tests/bindery_contract_test.rb is the one harness that
+# reads roles/image_downgrade_guard from a sandbox of its own, and it already
+# carries the path in its own FIXTURE_FILES.
+
 # The task files a role reaches through static import_tasks, main.yml included.
 # This follows exactly what PolicySupport.static_role_tasks follows, because that
 # is what assembles a role for the readers this fixture has to be able to satisfy,
