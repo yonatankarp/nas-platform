@@ -938,12 +938,14 @@ site_reachable_files = (Dir[File.join(ROOT, "roles", "**", "*")] +
                        .select { |path| File.file?(path) }
                        .map { |path| path.delete_prefix("#{ROOT}/") }
                        .reject { |path| path.start_with?("roles/production_auto_deploy/", "roles/image_prune/") }
-# Both floors are sized against the mutation sandbox rather than the working tree,
-# which carries 183 swept files and three fragments: BASE_FIXTURE_PATHS names 24
-# non-poller role files plus site.yml, verify.yml and the fifteen fixture roles'
-# statically imported stage files, and it omits roles/image_prune entirely, so
-# every fragment there is derived from the poller role alone. A tree-sized floor
-# would fail every mutation for a reason unrelated to the mutation.
+# Both floors are sized against the mutation sandbox rather than the working
+# tree: the sandbox carries 137 swept files and three fragments against the
+# tree's 211 and four. BASE_FIXTURE_PATHS names 24 non-poller role files plus
+# site.yml, verify.yml and the seventeen fixture roles' statically imported
+# stage files, and it omits roles/image_prune entirely, so every fragment there
+# is derived from the poller role alone -- which is why the sandbox sits exactly
+# on the fragment floor rather than above it. A tree-sized floor would fail
+# every mutation for a reason unrelated to the mutation.
 check_floor(failures, site_reachable_files.length, 30, "files a site.yml run can reach")
 # Intersected with what is present for the same reason: the recorded set is there
 # to make a *new* coupling fail, and a sandbox that carries fewer files than the

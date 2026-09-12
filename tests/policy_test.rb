@@ -1413,7 +1413,21 @@ STORAGE_ROOT_ANCESTOR_ALLOWED = {
   "nas_media_root" => true,
   "nas_docker_root" => false
 }.freeze
-Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort.each do |template_path|
+#
+# Floored, because the declaration property below is asserted once per template
+# and so goes quiet with the glob rather than failing with it: a renamed
+# templates/ directory or a suffix the pattern stops recognising leaves zero
+# subjects, which iterates zero times and reports success. 30 templates in the
+# working tree and 21 in the mutation sandbox, whose smaller figure is what the
+# floor is sized against -- fixture_paths copies each implemented service's
+# env.j2 plus the templates BASE_FIXTURE_PATHS names, not every template a role
+# holds. Fifteen sits six under the sandbox and clear of both bands a collapse
+# leaves: zero for a glob that stopped matching, a handful for a roles/ layout
+# change, while attrition is a retired service or two.
+storage_root_templates = Dir[File.join(ROOT, "roles", "*", "templates", "*.j2")].sort
+check_floor(failures, storage_root_templates.length, 15,
+            "role templates swept for undeclared storage roots")
+storage_root_templates.each do |template_path|
   relative_template = template_path.delete_prefix("#{ROOT}/")
   contents = File.read(template_path)
   STORAGE_ROOT_ANCESTOR_ALLOWED.each do |root_variable, ancestor_allowed|
@@ -1505,7 +1519,19 @@ end
 
 # Every role declares its interface, so a missing variable fails before the first
 # task naming the variable rather than midway with a trace.
-Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
+#
+# Floored for the reason #556 was filed on. This is the other half of the rule
+# BASE_FIXTURE_PATHS states: a check reading a *named* file that the sandbox
+# lacks crashes, loudly, but a check whose subjects come from a glob does not --
+# it iterates zero times and reports success, and a vacuous pass is
+# indistinguishable from compliance. 26 role directories in the working tree
+# against 22 in the mutation sandbox, and the floor is sized against the
+# sandbox. Fifteen sits seven under it, clear of what a collapse leaves (zero
+# for a glob that stopped matching, a handful for a roles/ layout change) and
+# clear of attrition at a retired service or two.
+interface_roles = Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }
+check_floor(failures, interface_roles.length, 15, "roles declaring an interface")
+interface_roles.each do |role|
   name = File.basename(role)
   spec_path = File.join(role, "meta", "argument_specs.yml")
   check(failures, File.file?(spec_path), "role #{name}: missing meta/argument_specs.yml")
@@ -2092,7 +2118,7 @@ end
 # tasks and handlers together, so a tree whose handlers alone carried
 # docker_compose_v2 would satisfy it while every phase gate went unchecked.
 #
-# 25 is sized against the mutation fixture's 58, not the tree's 107: the harness
+# 25 is sized against the mutation fixture's 72, not the tree's 126: the harness
 # copies each role's main.yml and what it statically imports, so this list is
 # roughly half its real size inside every sandbox this script runs in.
 check_floor(failures, phase_task_files.length, 25,

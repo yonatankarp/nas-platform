@@ -1659,7 +1659,7 @@ end
 
 # vault detects this one too, and for a reason worth stating rather than
 # leaving to the audit to rediscover: replacing roles/ntfy with a symlink to
-# beszel keeps the env.j2 glob at sixteen -- ntfy's slot resolves through the
+# beszel keeps the env.j2 glob at seventeen -- ntfy's slot resolves through the
 # link -- while the file it now yields carries no bcrypt material. So ntfy drops
 # out of policy_vault_test.rb's Compose-escaping sweep and that property starts
 # passing vacuously for it, which is exactly what the sweep's named-roles floor
