@@ -32,7 +32,18 @@ beszel_alerts:
     value: 85
     min: 10
 
-# Shoutrrr URL. Built from the ntfy token in vault so the alerting chain has one
-# source rather than a value copied between two web interfaces.
+# Shoutrrr URL. Built from the Pushover application token and user key in vault,
+# so the value Beszel stores is authored in one place rather than copied between
+# two web interfaces -- the same property the ntfy form had, over a transport
+# that reaches a phone without the NAS being reachable from it. `shoutrrr` is
+# shoutrrr's own required placeholder for the URL's user component; Pushover
+# itself takes the application token and the user key, which are what the two
+# vault values are.
+#
+# Priority is deliberately not set here, and -1..1 is the whole range available
+# if it ever is: shoutrrr's Pushover service carries no retry or expire
+# parameter, and Pushover rejects priority 2 without them, so
+# retry-until-acknowledged cannot be reached through this transport at all.
+# Nothing should be designed around it.
 beszel_notification_url: >-
-  ntfy://:{{ vault_ntfy_beszel_token }}@{{ platform_callback_host }}:{{ ntfy_port }}/{{ ntfy_topic }}?scheme=http
+  pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/

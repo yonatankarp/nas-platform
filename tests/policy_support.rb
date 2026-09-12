@@ -16,8 +16,17 @@ module PolicySupport
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
     vaultwarden
   ].freeze
-  # Not every vault key belongs to a service; this one is platform-wide.
-  GLOBAL_VAULT_KEYS = %w[vault_managed_users].freeze
+  # Not every vault key belongs to a service; these are platform-wide.
+  # expectation_problems below requires every key in a tests/expected/<service>.yml
+  # to carry that service's own `vault_<name>_` prefix, so a credential no single
+  # service owns has nowhere else to be pinned. vault_managed_users is the
+  # original: one mapping covering eight services' user lists. The Pushover pair
+  # is the second kind -- an account at a third party that the platform pushes
+  # into whichever services publish alerts, Beszel being the first, so it is
+  # named here rather than under any one of them.
+  GLOBAL_VAULT_KEYS = %w[
+    vault_managed_users vault_pushover_token vault_pushover_user_key
+  ].freeze
   # The services that hold no credential at all, which is a designed property
   # here rather than an unfinished slice. See expectation_problems below for the
   # argument and for the fact that this list is closed in both directions.

@@ -1,6 +1,6 @@
 ---
 # What the resolved application user owns: the universal token the agent
-# authenticates with, the ntfy notification webhook, the registered system, the
+# authenticates with, the Pushover notification webhook, the registered system, the
 # telemetry that system persists, and each managed alert. One block gated on
 # beszel_user_id, because a dry run resolves no id and every read below has
 # nothing to key on without one.
@@ -188,7 +188,7 @@
       check_mode: false
       no_log: true
 
-    - name: Point Beszel notifications at ntfy
+    - name: Point Beszel notifications at Pushover
       ansible.builtin.uri:
         url: "{{ beszel_api }}/api/collections/user_settings/records/{{ (beszel_matching_settings | first).id }}"
         method: PATCH
@@ -209,7 +209,7 @@
 
     - name: Report planned notification webhook reconciliation
       ansible.builtin.debug:
-        msg: Managed ntfy notification webhook would be created or reconciled.
+        msg: Managed Pushover notification webhook would be created or reconciled.
       when:
         - ansible_check_mode
         - beszel_matching_settings | length == 0
@@ -231,7 +231,7 @@
       check_mode: false
       no_log: true
 
-    - name: Summarize the managed ntfy webhook without URL bodies
+    - name: Summarize the managed Pushover webhook without URL bodies
       tags: [platform_verify_beszel]
       ansible.builtin.set_fact:
         beszel_webhook_record_count: "{{ beszel_matching_settings | length }}"
@@ -240,22 +240,22 @@
              (beszel_current_notification_settings.webhooks | default([]))
              == [beszel_notification_url | trim] }}
         beszel_webhook_scheme: >-
-          {{ 'ntfy'
+          {{ 'pushover'
              if (beszel_current_notification_settings.webhooks | default([])
-                 | select('match', '^ntfy://') | list | length)
+                 | select('match', '^pushover://') | list | length)
                 == (beszel_current_notification_settings.webhooks | default([]) | length)
                 and (beszel_current_notification_settings.webhooks | default([]) | length) > 0
              else '[REDACTED]' }}
       no_log: true
 
-    - name: Verify the managed ntfy webhook
+    - name: Verify the managed Pushover webhook
       tags: [platform_verify_beszel]
       ansible.builtin.assert:
         that:
           - beszel_webhook_record_count | int == 1
           - beszel_webhook_exact | bool
         fail_msg: >-
-          Managed ntfy webhook differs (records={{ beszel_webhook_record_count }},
+          Managed Pushover webhook differs (records={{ beszel_webhook_record_count }},
           exact={{ beszel_webhook_exact }},
           scheme={{ beszel_webhook_scheme | default('[REDACTED]') }}).
       no_log: false
