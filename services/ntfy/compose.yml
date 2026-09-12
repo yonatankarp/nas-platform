@@ -65,13 +65,21 @@ services:
       # readiness window gets renegotiated.
       retries: 4
       start_period: 40s
-    # Carried from ntfy's own reference Compose, and deliberately not copied
-    # outward. An init shim is only ever the answer where PID 1 would be an
-    # application that never reaps what it forks; every other image here either
-    # ships its own init — s6-overlay in the linuxserver.io images, which
-    # refuses to run as anything but PID 1 — or runs a single process that forks
-    # nothing. Adding this key elsewhere would be cargo, and in the s6 case it
+    # Carried from ntfy's own reference Compose. The reason here is reaping:
+    # an init shim answers a PID 1 that never collects what it forks, and every
+    # other image on this platform either ships its own init — s6-overlay in the
+    # linuxserver.io images, which refuses to run as anything but PID 1 — or
+    # runs a single process that forks nothing. In the s6 case adding this key
     # would break the container outright.
+    #
+    # This used to say the key was never the answer for any other reason, and
+    # services/nextcloud/compose.yml falsified that: its cron container reaps
+    # its own php processes perfectly well and still could not be stopped,
+    # because a PID 1 the kernel gives no default disposition to and a handler
+    # it never installed leave nothing to act on the stop signal. So there are
+    # two reasons to reach for an init shim, reaping and signalling, and this
+    # container is the first of them. Neither makes the key general: it is still
+    # cargo anywhere a stated reason does not apply.
     init: true
     # The auth database and the message cache are SQLite files, and /var/lib/ntfy
     # is recovery: critical — it is where the credentials this platform pushes

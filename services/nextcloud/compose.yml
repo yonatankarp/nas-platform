@@ -292,8 +292,35 @@ services:
       # volume is mounted -- the inherited 60s is the right budget and the long
       # start_period the application declares would only delay Compose's verdict.
       start_period: 30s
-    # busybox crond answers SIGTERM by exiting; a job already running is a php
-    # process the platform would rather let finish than truncate mid-write.
+    # This container could not be stopped at all until both keys below existed,
+    # and it took an exit 137 on the NAS to find that out. Two independent
+    # reasons, and either one alone is enough to swallow the stop.
+    #
+    # The image is the application's, so it carries php:apache's
+    # `STOPSIGNAL SIGWINCH` -- Apache's graceful-stop signal, correct for the
+    # container above and meaningless here, because SIGWINCH's default
+    # disposition is to be ignored. And /cron.sh execs busybox crond as PID 1,
+    # which is the one process the kernel applies no default disposition to, so
+    # crond -- which installs no handler for anything -- would discard SIGTERM
+    # just as completely. Docker waited out the whole window and SIGKILLed:
+    # measured 2026-09-12, exit 137, on every recreate, paging through the Dozzle
+    # `die` rule that stopped excluding 137 in #493.
+    #
+    # So `stop_signal` alone would still be discarded by PID 1, and `init: true`
+    # alone would forward SIGWINCH to a process that ignores it. Together tini
+    # takes PID 1, crond becomes an ordinary child, and the kernel's own default
+    # disposition terminates it. services/ntfy/compose.yml records the *other*
+    # reason to reach for an init shim -- a PID 1 that never reaps what it forks
+    # -- and it does not reach this container, because crond reaps the php
+    # processes it starts. Two reasons, neither subsuming the other.
+    init: true
+    stop_signal: SIGTERM
+    # Not a window for a running job to finish in: crond exits the moment it is
+    # signalled, and the php process it forked dies with the container either
+    # way. The comment here used to claim that protection and the platform never
+    # had it -- what looked like a grace period was the delay before the kill.
+    # It stays at 30s as a ceiling rather than a promise, so a stop that somehow
+    # does take time is not cut short.
     stop_grace_period: 30s
 
   db:
