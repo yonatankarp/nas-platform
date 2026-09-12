@@ -161,22 +161,6 @@ case $mac_service in
   nextcloud)
     : "${PLATFORM_NEXTCLOUD_PORT:?PLATFORM_NEXTCLOUD_PORT is required}"
     ;;
-  # Two ports rather than one, because AdGuard publishes two things: a web
-  # interface and a resolver. Neither number can be the production one on a
-  # laptop that already resolves and already has 8083 in use by whichever copy of
-  # the platform ran last.
-  #
-  # Both are allocated now. MAC_SERVICE_PORT_ORDER carries `adguard` and
-  # `adguard_dns` as two roster entries, so tests/mac/run.sh asks the kernel for
-  # two free ephemeral ports like every other entry and exports them under these
-  # two names -- the privileged 53 is never published by this lane, and neither
-  # is 8083. Both are still required rather than defaulted, so a caller invoking
-  # this contract outside the runner refuses by name instead of connecting to
-  # whatever else holds the port.
-  adguard)
-    : "${PLATFORM_ADGUARD_PORT:?PLATFORM_ADGUARD_PORT is required}"
-    : "${PLATFORM_ADGUARD_DNS_PORT:?PLATFORM_ADGUARD_DNS_PORT is required}"
-    ;;
   *) mac_die "registered service has no Mac contract environment: $mac_service" ;;
 esac
 

@@ -79,7 +79,6 @@ module ClassifyChanges
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx],
     "nextcloud" => %w[nextcloud],
-    "adguard" => %w[adguard],
     "vaultwarden" => %w[vaultwarden]
   }.freeze
   # Paths the policy gate checks and nothing else in CI reads. The auto-deploy

@@ -324,7 +324,6 @@ generate_vault() (
   ntfy_dozzle_password=$(random_password)
   ntfy_beszel_password=$(random_password)
   ntfy_deploy_password=$(random_password)
-  adguard_admin_password=$(random_password)
   dozzle_admin_password=$(random_password)
   trailarr_admin_password=$(random_password)
   ntfy_seerr_password=$(random_password)
@@ -363,9 +362,6 @@ generate_vault() (
 
   cat > "$plain" <<EOF
 ---
-vault_adguard_admin_username: ephemeral-admin
-vault_adguard_admin_password: '$adguard_admin_password'
-vault_adguard_admin_password_hash: '$(bcrypt_password "$adguard_admin_password")'
 vault_audiobookshelf_admin_username: ephemeral-admin
 vault_audiobookshelf_admin_password: '$(random_password)'
 vault_beszel_superuser_email: ephemeral-admin@example.invalid

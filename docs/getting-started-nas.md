@@ -4,10 +4,10 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-eighteen implemented service projects are AdGuard Home, Audiobookshelf, Beszel,
-Bindery, Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy,
-Paperless-ngx, Pinchflat, Seerr, Trailarr, Vaultwarden, and the Arr and
-downloader projects, which this host runs because it enables Usenet. The
+seventeen implemented service projects are Audiobookshelf, Beszel, Bindery,
+Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy, Paperless-ngx,
+Pinchflat, Seerr, Trailarr, Vaultwarden, and the Arr and downloader projects,
+which this host runs because it enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
 declarations have been removed from the repository.
 
@@ -214,20 +214,18 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
 unchanged for all seventeen of the implemented service projects this host
-converges. Two of the three gated services carry no gated-off caveat any more:
-Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which it
-replaced as this platform's file-sync service — and Vaultwarden's after #547
+converges. Neither of the two gated services carries a gated-off caveat any
+more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
+it replaced as this platform's file-sync service — and Vaultwarden's after #547
 landed the stack dark. Vaultwarden is the one whose credential check is not a
 credential check: it is the only service here that holds no vault-authored
 identity, because master passwords are user-owned and the server never learns
 them, so what there is to check is the door — that registration answers as the
 declared policy says it should, and that `/admin` still serves nothing but its
-own disabled notice. The third, AdGuard Home, is dark: its switch was flipped on
-after #548 landed the stack dark and back off in #577, because the delivery
-mechanism it assumed does not exist on this network, so a converge takes that
-project to `state: absent` and there is no deployed instance to hold credentials
-or to check. The code goes in a second change, once the container is confirmed
-gone from this host. Repeat the
+own disabled notice. There was a third, AdGuard Home: #548 landed it dark, #569
+turned it on and #577 turned it off again and removed the code, because the
+delivery mechanism it assumed — a router that can hand its address to the DHCP
+scope — does not exist on this network. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
@@ -334,53 +332,6 @@ exactly those. Adding a topic to the platform therefore does not reach a phone
 until that account's ACL names it; a topic left out is a 403, not a quiet
 omission.
 
-## Pointing devices at AdGuard, and the secondary resolver
-
-**AdGuard Home is off on this host.** `adguard_deployment_enabled` is false as of
-#577, so nothing below describes a running service; it is kept because the
-reasoning is what a future router — the move to Israel brings one — would be
-decided against. Everything here applies again only after that switch is on.
-
-Deploying AdGuard Home changes nothing about how anything resolves. The NAS
-keeps using Tailscale MagicDNS, because `tailscaled` owns `/etc/resolv.conf` and
-rewrites it, and every LAN client keeps whatever its DHCP lease gave it. Making a
-device use AdGuard is a change on **that device**: this household's router is a
-Vodafone Station CGA4233DE, which exposes no custom-DNS field for its DHCP scope,
-so there is no one place to set it and no configuration in this repository that
-can.
-
-**Give every device you point at AdGuard a secondary resolver as well**, and
-understand what you are trading before you do. #548 called this the mitigation
-and it is the only one available here.
-
-What it buys. AdGuard is a single container on a single host, and this platform
-restarts it on purpose: `roles/adguard` restarts the project whenever it writes a
-reverted configuration back, and a Renovate image bump recreates the container
-outright. The poller converges every five minutes, so either can happen while
-nobody is watching. A device with only AdGuard configured loses **all** name
-resolution for those seconds — which presents to whoever is holding it as the
-internet being down, not as the NAS restarting.
-
-What it costs, stated plainly because the usual recommendation understates it. A
-secondary resolver is not a failover in the sense a reader expects. Resolvers are
-free to query both entries, to race them, or to stick to whichever answered last,
-and several common stacks do exactly that; a phone that has decided it prefers
-`1.1.1.1` keeps preferring it. So the honest description is that a device with a
-secondary resolver **may bypass filtering at any time of its own choosing**, not
-merely while AdGuard is down. Ads reappearing on a device that was working is the
-symptom, and it is not a bug in AdGuard.
-
-Choose per device rather than once. The television this platform was deployed
-for is the case where filtering matters and a few seconds of failed resolution
-does not, so it can hold AdGuard alone. A laptop somebody works on is the
-opposite. Nothing here enforces either choice, and nothing here can see which
-you made.
-
-Do not close the gap by pointing the NAS's own resolver at AdGuard.
-`roles/adguard/defaults/main.yml` records why: it recreates the #327 shape, where
-the deployment poller's `git fetch` resolves through the very thing that is down,
-so the repository stops being the way back in.
-
 ## Automatic deployment from the NAS
 
 Automatic deployment is a second step after the first manual deployment and
@@ -465,7 +416,7 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_adguard,platform_verify_vaultwarden \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 

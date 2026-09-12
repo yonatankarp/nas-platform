@@ -162,19 +162,10 @@ mac_validate_integration_callback() {
 # above is its inheritance, and docs/dossier-seafile.md is where the rest of it
 # lives.
 #
-# adguard_deployment_enabled is the third, and it lands here for both of the
-# reasons the first two do: tests/policy_platform_test.rb would refuse it in
-# inventory/group_vars/mac_hosts/main.yml, which admits only machine facts and
-# PLATFORM_* port lookups, and it is a property of what this lane converges
-# rather than of the laptop. It is written here whatever the platform default
-# happens to be, exactly as the Nextcloud line above is, and for the reason that
-# line gives: #295 says a lane must request the state it claims to converge, so
-# a lane that inherited it would prove nothing the day somebody turns the
-# platform switch back off. #577 is that day -- the switch is false again and
-# this lane's coverage did not move, which is what writing it here bought. Neither port it publishes is the
-# production one -- services/adguard/compose.mac.yml republishes both from the
-# roster ports above, because a laptop already resolves on 53 and has 8083 in
-# use by whichever copy of the platform ran last.
+# adguard_deployment_enabled was the third of these until #577 removed the
+# service. What it bought is worth keeping in mind for the next gated stack:
+# written here rather than inherited, the lane went on converging what it
+# claimed to converge on the day the platform switch was flipped back off.
 #
 # Vaultwarden needs two of its own, and neither is about this lane's opinion of
 # the service.
@@ -204,7 +195,6 @@ mac_validate_integration_callback() {
 # path, which is a reporting skip it already takes on every CI lane.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
-    -e adguard_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e '{"vaultwarden_tailscale_binary_candidates": []}'
@@ -265,7 +255,7 @@ mac_target_container_names() {
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
         "$mac_project-seerr" "$mac_project-nextcloud" \
         "$mac_project-nextcloud-cron" "$mac_project-nextcloud-db" \
-        "$mac_project-nextcloud-cache" "$mac_project-adguard"
+        "$mac_project-nextcloud-cache"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -286,19 +276,23 @@ mac_target_container_names() {
 # because the positional handoff is internal to read_integration_ports and its
 # single consumer, and the on-disk integration ports file is keyed by name, so
 # no caller outside that function can observe an order at all.
-# An entry is a PORT NAME rather than a service, and five of them always were:
-# radarr, sonarr, prowlarr and bazarr are containers inside the `arr` manifest
-# service and sabnzbd is one inside `downloaders`. `adguard_dns` is the first
-# entry that is a second port of a service already on the roster, and it is
-# spelled with the underscore on purpose -- the derivations below turn it into
-# `adguard_dns_port`, which is the variable roles/adguard itself reads, and
-# PLATFORM_ADGUARD_DNS_PORT, which is what tests/mac/run-contract.sh hands the
-# contract. Any other spelling would need a translation somewhere, and a
-# translation is the second authority on where the service listens that
-# tests/contracts/adguard-static.rb exists to refuse.
+# An entry is a PORT NAME rather than a service, and five of them are: radarr,
+# sonarr, prowlarr and bazarr are containers inside the `arr` manifest service
+# and sabnzbd is one inside `downloaders`.
+#
+# A SECOND PORT OF A SERVICE ALREADY ON THE ROSTER takes a second entry, spelled
+# with an underscore -- `adguard_dns` was the only one the platform has had, and
+# #577 removed it with the service. The derivations below still support it and
+# the rule is kept rather than narrowed back: they turn such an entry into
+# `<name>_port`, the variable the role itself reads, and PLATFORM_<NAME>_PORT,
+# which is what tests/mac/run-contract.sh hands the contract, so any other
+# spelling would need a translation somewhere and a translation is a second
+# authority on where the service listens. tests/policy_mac_test.rb holds the
+# roster, report.rb's validated field list and report.rb's option parser to that
+# one transformation, and holds it whether or not an entry currently uses it.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr nextcloud adguard adguard_dns vaultwarden'
+trailarr seerr nextcloud vaultwarden'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not

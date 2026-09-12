@@ -225,14 +225,18 @@ error-prone edit in the repository, and it gets its own section below.
 A service that publishes **two** ports takes two entries in
 `MAC_SERVICE_PORT_ORDER`, not one: a roster entry is a *port name* rather than a
 service, which the `arr` and `downloaders` containers already demonstrate. The
-second entry may carry an underscore (`adguard_dns`), and that spelling is load
-bearing — the derivations turn it into the `<name>_port` inventory variable and
-the `PLATFORM_<NAME>_PORT` export that the role and `run-contract.sh` already
+second entry is spelled `<service>_<what>` and that underscore is load bearing —
+the derivations turn it into the `<name>_port` inventory variable and the
+`PLATFORM_<NAME>_PORT` export that the role and `run-contract.sh` already
 address, so any other spelling would need a translation between them.
 `initialize_report_input` respells the underscore as a hyphen for the long
-option (`--adguard-dns-port`), and `tests/policy_mac_test.rb` holds the roster,
+option (`--<name>-port`), and `tests/policy_mac_test.rb` holds the roster,
 `report.rb`'s validated field list and `report.rb`'s option parser to that one
-transformation.
+transformation. **No entry uses it today.** `adguard_dns` was the only one the
+platform has ever had and #577 removed it with the service, so the rule is held
+by that check rather than demonstrated by an instance — which means the first
+two-port service to arrive after this is the one that finds out whether it still
+works end to end.
 
 Along with `run.sh`, a published port lands in:
 

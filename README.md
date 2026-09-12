@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-eighteen implemented service projects from no planned media-acquisition
+seventeen implemented service projects from no planned media-acquisition
 projects. The media acquisition catalog is fully implemented; a project added
 to it in future stays inert, with no runtime role or Compose directory, until
 its own promotion.
@@ -284,7 +284,7 @@ installs the same toolchain inside the container the way the harness always did.
 
 The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, Bindery, Trailarr, Seerr,
-Nextcloud, AdGuard Home and Vaultwarden — every implemented service except `arr`
+Nextcloud and Vaultwarden — every implemented service except `arr`
 and `downloaders`, which have a Phase 1 runtime that is default-disabled in that
 lane and are proved by their Docker integration suites instead. Vaultwarden is
 covered differently from the rest and the difference is the service rather than
@@ -293,11 +293,9 @@ a contract could sign in with, so the lane deploys it, recreates it and verifies
 it through the role's own `platform_verify_vaultwarden` tasks, and the four
 collapsed hook groups account for it by a named exemption rather than by a
 fixture. The Mac
-lane starts Nextcloud, AdGuard and Vaultwarden with their own
+lane starts Nextcloud and Vaultwarden with their own
 `-e <role>_deployment_enabled=true`, so their coverage does not depend on what
-the platform default happens to be. Neither of AdGuard's two host ports is
-production's: the lane allocates an ephemeral pair, so the privileged 53 is
-never bound on a laptop.
+the platform default happens to be.
 NAS-only GPU, host-networking, native-mount and production-scale behavior remain
 outside the Mac proof.
 

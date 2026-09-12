@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running eighteen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -99,7 +99,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud adguard vaultwarden idempotence-check idempotence-1 idempotence-2
+nextcloud vaultwarden idempotence-check idempotence-1 idempotence-2
 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
@@ -735,7 +735,7 @@ four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
 checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 59/57/63 over 179 today, and
+53/53/61 over 167 when #517 drew the split and is 57/55/63 over 175 today, and
 this sentence stood at 51/52/61 through both of those, then went stale three
 times more inside #548 alone -- once within one pull request of being corrected,
 again in the pull request that corrected it, and a third time when #547's
@@ -998,11 +998,7 @@ pre-upgrade backup is a copy of that database beside it), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
-user's own documents), AdGuard Home's `work/data/sessions.db` (bearer tokens
-for the web interface, so a copy of it is a login; its `AdGuardHome.yaml`
-beside it holds the administrator's bcrypt hash rather than a clear password,
-which is a hash and not a secret but is still what an offline guess would be
-made against), and application
+user's own documents), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 

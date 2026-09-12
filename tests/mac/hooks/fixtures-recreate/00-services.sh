@@ -91,14 +91,6 @@ mac_recreate_and_reassert seerr seerr seerr seerr run
 # oc_appconfig, which is Postgres, and Postgres is a separate volume that this
 # recreate leaves alone. It would still read `cron` over an empty installation.
 mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache' run
-# One container and one bind-mounted configuration root, which is the simplest
-# row here and still not a redundant one: what must survive a force-recreate is
-# AdGuardHome.yaml itself, and the contract's run phase reads it off the host as
-# well as asking the daemon about it. A recreate that came back onto an empty
-# conf directory would start a daemon with no administrator at all -- AdGuard's
-# `users: []` state serves the control API anonymously -- so the contract's
-# first assertion after readiness, the anonymous 401, is what refuses it.
-mac_recreate_and_reassert adguard adguard adguard adguard run
 
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite

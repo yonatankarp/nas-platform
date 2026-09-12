@@ -42,8 +42,7 @@ mac_drift_hooks='10-beszel.sh
 60-jellyfin.sh
 70-immich.sh
 80-paperless.sh
-90-nextcloud.sh
-95-adguard.sh'
+90-nextcloud.sh'
 mac_drift_coverage_neutral_hooks='15-media-acquisition-foundation.sh'
 
 mac_assert_service_coverage drift 00-coverage.sh '' \

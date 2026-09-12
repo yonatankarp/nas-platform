@@ -59,8 +59,6 @@ def report_input
     "trailarr_port" => 37_889,
     "seerr_port" => 35_055,
     "nextcloud_port" => 38_084,
-    "adguard_port" => 38_083,
-    "adguard_dns_port" => 35_353,
     "vaultwarden_port" => 38_086,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,

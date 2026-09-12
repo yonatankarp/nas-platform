@@ -120,11 +120,14 @@ ROOT = File.expand_path("..", __dir__)
 # move when a service lands dark, and it does not move when one is turned on
 # either: #547 landed Vaultwarden dark and #548 flipped AdGuard on, which took
 # the implemented count to 18 and the gate count to 3, and 18 - 3 is the 15 that
-# was already there. It is 15 by that rule and not by coincidence -- it is the
-# same arithmetic the `subjects.length >= implemented.length - gate_names.length`
-# check two hundred lines below applies -- so do not "correct" it to today's
-# subject count of 17: that would be a guard against turning a stack off, which
-# is a thing this repository does on purpose.
+# was already there. #577 removed AdGuard again, taking those to 17 and 2, and
+# 17 - 2 is the same 15 -- so the rule has now survived a service arriving, a
+# gate flipping both ways and a service leaving without the number moving once.
+# It is 15 by that rule and not by coincidence -- it is the same arithmetic the
+# `subjects.length >= implemented.length - gate_names.length` check two hundred
+# lines below applies -- so do not "correct" it to today's subject count: that
+# would be a guard against turning a stack off, which is a thing this repository
+# does on purpose.
 #
 # THE FLOORS ARE `>=`, WHICH IS WHY THEY GO STALE QUIETLY, and it has now
 # happened twice, the second time in a merge. #548 landed AdGuard with the first
@@ -157,13 +160,23 @@ ROOT = File.expand_path("..", __dir__)
 # tags, 33 site tags. SUBJECT_FLOOR is the one that did not move and the one
 # that must not: its rule is implemented minus gated, 18 - 3 is 15, and the
 # count being 18 today only means no stack is dark at the moment.
-IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
-GATE_VARIABLE_FLOOR = 3      # nextcloud, adguard and vaultwarden _deployment_enabled
-SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 18        # 16 registered contracts plus ntfy and vaultwarden
-TAGGED_LANE_FLOOR = 17       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 18          # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 33          # the role tags site.yml declares
+#
+# THE FOURTH TIME WAS A REMOVAL, and it moved six of the seven. #577 deleted
+# AdGuard: the six below were each set to an impossible value and the check run,
+# which prints the count it found -- 17 implemented, 2 gate variables, a 17-name
+# Mac roster, 16 tagged rows, 17 lane tags, 31 site tags. Two of those are not
+# the decrement a reader would guess: the site tags fell by TWO, because
+# `network` was AdGuard's tag alone and went with it, and the Mac roster fell by
+# one rather than two because AdGuard held one registry entry and no
+# MAC_UNREGISTERED_SERVICES name. SUBJECT_FLOOR is again the one that did not
+# move, by the rule above.
+IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
+GATE_VARIABLE_FLOOR = 2      # nextcloud and vaultwarden _deployment_enabled
+SUBJECT_FLOOR = 15           # 17 implemented, of which at most the 2 gated ones may be dark
+MAC_ROSTER_FLOOR = 17        # 15 registered contracts plus ntfy and vaultwarden
+TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 31          # the role tags site.yml declares
 
 failures = []
 
@@ -292,15 +305,15 @@ gate_names.each do |name|
   # the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
-  # it in full -- nextcloud, adguard and vaultwarden are the three gates that
-  # exist, and all three ship false -- and because the harm is worst exactly
-  # where a per-service check is most likely to be missing. AdGuard is the only
-  # one carrying its own assertion (tests/contracts/adguard-static.rb, whose
-  # reason is that a caller with no inventory must not put a resolver on the
-  # household network); Vaultwarden has no static contract to carry one, and it
-  # is the starker case, since the same caller would stand up a password manager
-  # whose registration door is open. A rule that reaches every gate reaches the
-  # ones nobody thought to guard.
+  # it in full -- nextcloud and vaultwarden are the two gates that exist, and
+  # both ship false -- and because the harm is worst exactly where a per-service
+  # check is most likely to be missing. AdGuard used to be the only one carrying
+  # its own assertion, in tests/contracts/adguard-static.rb, and #577 removed
+  # that contract with the service; neither survivor has a static contract to
+  # carry one, and Vaultwarden is the starker case, since a caller with no
+  # inventory would stand up a password manager whose registration door is open.
+  # A rule that reaches every gate reaches the ones nobody thought to guard, and
+  # after #577 it is the only thing reaching any of them.
   #
   # If a service ever needs a true role default, this is the check to argue with
   # rather than to route around: the argument belongs here, beside the other two

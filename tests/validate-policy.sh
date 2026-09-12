@@ -55,7 +55,7 @@ policy_shard=${1:-}
 # a line from a partition removes a check from the gate and makes the gate
 # *faster*, with nothing else in the repository to notice.
 #
-# The partition balances COST, which is why the shard counts below are 59, 57
+# The partition balances COST, which is why the shard counts below are 57, 55
 # and 63 rather than a third each. Those are today's counts, read off
 # tests/gate_manifest_coverage_test.rb's own summary line rather than
 # remembered: the sentence said 51, 52 and 61 while the file held 53, 57 and 61,
@@ -156,8 +156,6 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/media_usenet_provider_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_identity_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_plugin_repositories_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/safe_slurp_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py
-PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/adguard_dns_probe_test.py --self-test
 ruby tests/run_contracts.rb --validate-only
 ruby tests/jellyfin_transcode_contract_test.rb
 ruby tests/pinchflat_contract_test.rb
@@ -211,8 +209,6 @@ python3 tests/deployment_lock_probe_test.py
 python3 tests/deployment_controller_input_test.py
 ruby tests/beszel_password_preservation_test.rb --self-test
 ruby tests/komga_contract_test.rb
-ruby tests/adguard_contract_test.rb
-ruby tests/adguard_contract_test.rb --self-test
 ruby tests/rendered_file_ownership_test.rb
 ruby tests/rendered_file_ownership_test.rb --self-test
 ruby tests/audiobookshelf_initial_scan_behavior_test.rb

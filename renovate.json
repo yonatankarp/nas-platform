@@ -158,19 +158,6 @@
         "needs-manual-coupling"
       ],
       "automerge": false
-    },
-    {
-      "description": "AdGuard Home rewrites its own configuration file at start, expanding every default it was not given, and roles/adguard/templates/AdGuardHome.yaml.j2 is written in that expanded form so that Ansible and the daemon agree on the file byte for byte -- measured against v0.107.79, where a 26-line minimal document came back as 186 lines and the expanded form then survived a restart, a stop and a filter refresh unchanged. The template therefore carries `schema_version` as a literal, and the pin and the template are one change rather than two: a release that migrates the schema rewrites the file into a shape the template does not produce, so the template task reports a change on every converge afterwards and idempotence -- a hard requirement in CLAUDE.md -- stays broken until somebody re-derives the template from what the new image writes. That is not a diff a bot can finish, which is why this takes the label-and-no-automerge shape the yt-dlp and tessdata rules take rather than the dependencyDashboardApproval the database and Nextcloud majors take: what is missing is work, not permission. The pull request is a prompt to re-derive the template. NO matchUpdateTypes, and that is deliberate rather than forgotten: AdGuard's entire stable history is the 0.107 line, so every bump this pin will ever see is a patch by Renovate's reckoning and a rule scoped to major or minor would match nothing. The version number is not what says whether the schema moved. The adguard integration lane would catch it -- it converges the role twice and requires the second run to change nothing -- but the production poller converges the newest released main within five minutes, so a bump that reached main unread would be on the NAS before anyone read the failure.",
-      "matchDatasources": [
-        "docker"
-      ],
-      "matchPackageNames": [
-        "docker.io/adguard/adguardhome"
-      ],
-      "addLabels": [
-        "needs-manual-coupling"
-      ],
-      "automerge": false
     }
   ],
   "customDatasources": {

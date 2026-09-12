@@ -12,10 +12,10 @@
 # inventory/group_vars/all/main.yml, which wins on every run any playbook in this
 # repository makes; what a role default decides is only what a caller with NO
 # inventory gets, and for this service that caller would otherwise stand up a
-# password manager whose registration door is deliberately open. nextcloud and
-# adguard ship their gates off for the same reason -- adguard's own words are
-# that a caller with no inventory must not put a resolver on the household
-# network -- and this is the starker case of the three.
+# password manager whose registration door is deliberately open. nextcloud ships
+# its gate off for the same reason, and adguard did too until #577 removed the
+# service -- its own words were that a caller with no inventory must not put a
+# resolver on the household network. This is the starker case of the two.
 #
 # #547's second chunk shipped this true, on the reading that a dark stack must be
 # dark in both homes and so a lit one should be lit in both. The first half is
@@ -32,10 +32,12 @@ vaultwarden_deployment_enabled: false
 # production copy of this number because a Compose file cannot read a role
 # default.
 #
-# It is the lowest free port on this platform: 8080 is Dozzle, 8081 the Dozzle
-# alert relay, 8082 the qbittorrent web interface declared in
-# config/media-acquisition.yml, 8083 is claimed by the AdGuard Home stack of
-# #548, 8084 is Nextcloud, 8085 SABnzbd and 8090 Beszel.
+# It was the lowest free port on this platform when #547 chose it: 8080 is
+# Dozzle, 8081 the Dozzle alert relay, 8082 the qbittorrent web interface
+# declared in config/media-acquisition.yml, 8083 was claimed by the AdGuard Home
+# stack of #548 and is free again since #577 removed it, 8084 is Nextcloud, 8085
+# SABnzbd and 8090 Beszel. The number does not move with that: republishing a
+# deployed service on a different port is a redeployment, not a tidy-up.
 vaultwarden_port: 8086
 
 # Every role addresses services over 127.0.0.1, which is correct whether the

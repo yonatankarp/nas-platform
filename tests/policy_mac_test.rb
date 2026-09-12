@@ -219,17 +219,23 @@ end
 # when a service that publishes a host port is added or removed, which is a
 # visible diff in a file a reviewer is already reading for that change.
 #
+# The floor has been wrong on main twice, which is the other half of "the real
+# count": #512 found it at 15 against a roster of nineteen, and #575 added
+# `vaultwarden` and left it at 21 against a live 22, so #577 re-derived it from
+# the tree rather than decrementing what was there.
+#
 # The name pattern admits an underscore, and the reason is the one the paragraph
 # above already gives for the roster not being holdable to services/manifest.yml:
 # an entry is a PORT NAME, not a service. It was `[a-z][a-z0-9]*` while every
 # entry happened to be one word, and #548's flip added `adguard_dns` -- a second
 # port of a service already on the roster, spelled so that the derivations in
-# tests/mac/lib.sh produce `adguard_dns_port` and PLATFORM_ADGUARD_DNS_PORT,
-# which are the names roles/adguard and tests/mac/run-contract.sh already carry.
-# Any other spelling would need a translation between them, and
-# tests/contracts/adguard-static.rb refuses a second authority on where that
-# service listens.
-MAC_PORT_ROSTER_FLOOR = 21
+# tests/mac/lib.sh produced `adguard_dns_port` and PLATFORM_ADGUARD_DNS_PORT, the
+# names the role and tests/mac/run-contract.sh already carried. #577 removed that
+# service and with it the only entry that has ever used the spelling; the pattern
+# and the respelling check below stay, because the rule is what a second port of
+# an existing service will need again and an unexercised rule is cheaper to keep
+# than to rediscover.
+MAC_PORT_ROSTER_FLOOR = 20
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
 check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
                 mac_port_roster.uniq.length == mac_port_roster.length &&
@@ -279,7 +285,8 @@ check(failures, !mac_report_port_fields.empty? &&
 # The third list in that chain, and the one nothing held until #548. run.sh
 # builds report.rb's flags from the roster rather than writing them out, and it
 # respells an underscore as a hyphen because a long option must not carry one --
-# so `adguard_dns` reaches report.rb as `--adguard-dns-port`. The field check
+# so `adguard_dns` reached report.rb as `--adguard-dns-port` while that entry
+# existed, and any future two-port entry will do the same. The field check
 # above says nothing about the option parser: a roster entry whose flag report.rb
 # does not declare is rejected by OptionParser as unrecognised, and the only
 # place that appears is a full Mac run, which no CI job performs. Held from the

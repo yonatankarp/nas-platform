@@ -131,13 +131,6 @@ SEARCH = "search"
 # candidate whose keys differ, which is what stops a credential from losing its
 # rule by being dropped from the role's call.
 CREDENTIAL_RULES = {
-    "vault_adguard_admin_username": ((NONEMPTY, None),),
-    "vault_adguard_admin_password": ((NONEMPTY, None),),
-    # The hash is what AdGuard stores and the clear password beside it is
-    # what can ask AdGuard anything, so both are authored. Pinned to the
-    # bcrypt shape rather than left NONEMPTY because a truncated digest is
-    # syntactically fine and silently refuses every login afterwards.
-    "vault_adguard_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
     "vault_audiobookshelf_admin_username": ((NONEMPTY, None),),
     "vault_audiobookshelf_admin_password": ((NONEMPTY, None),),
     "vault_dozzle_admin_username": ((NONEMPTY, None),),

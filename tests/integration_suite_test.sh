@@ -299,10 +299,10 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
   --list-suites
 
-for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full; do
+for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done
@@ -433,8 +433,6 @@ assert_output 'suite=paperless tags=host_prep,deployment_bundle,ntfy,paperless p
   --describe-suite paperless
 assert_output 'suite=nextcloud tags=host_prep,deployment_bundle,ntfy,nextcloud playbook=site.yml scenarios=true' \
   --describe-suite nextcloud
-assert_output 'suite=adguard tags=host_prep,deployment_bundle,ntfy,adguard playbook=site.yml scenarios=true' \
-  --describe-suite adguard
 assert_output 'suite=vaultwarden tags=host_prep,deployment_bundle,ntfy,vaultwarden playbook=site.yml scenarios=true' \
   --describe-suite vaultwarden
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
@@ -733,7 +731,7 @@ assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
 assert_rejected 'invalid integration tags: ntfy,,beszel' \
   --suite smoke --tags ntfy,,beszel
-for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud adguard vaultwarden full; do
+for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden full; do
   assert_rejected "integration suite $suite does not accept --tags" \
     --suite "$suite" --tags ntfy
 done
@@ -1187,11 +1185,6 @@ assert_toolchain_pull_set \
 run_prepull 0 4 --suite nextcloud
 [ "$prepull_status" -eq 0 ] || prepull_fail "the nextcloud pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images ntfy; compose_images nextcloud; } | sort -u)"
-
-# Two images: the sink and the resolver. AdGuard Home is a single container.
-run_prepull 0 4 --suite adguard
-[ "$prepull_status" -eq 0 ] || prepull_fail "the adguard pre-pull failed ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images adguard; } | sort -u)"
 
 # Two images: the sink and the password manager, which is a single container.
 run_prepull 0 4 --suite vaultwarden

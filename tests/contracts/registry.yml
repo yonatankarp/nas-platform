@@ -30,5 +30,3 @@ contracts:
     path: tests/contracts/seerr.sh
   - service: nextcloud
     path: tests/contracts/nextcloud.sh
-  - service: adguard
-    path: tests/contracts/adguard.sh

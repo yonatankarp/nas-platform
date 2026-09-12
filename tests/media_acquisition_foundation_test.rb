@@ -199,16 +199,6 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
   ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"],
-  # The web interface, on the port Seafile held until #501 removed that stack.
-  ["adguard", "adguard", "0.0.0.0", 8083, 3000, "tcp"],
-  # The first privileged ports this platform publishes, and the reason the
-  # container side is 5353: binding 53 inside the container would need root or
-  # CAP_NET_BIND_SERVICE, and AdGuard runs as the platform identity like every
-  # other direct-numeric-user service here. The Docker daemon binds host 53.
-  # Confirmed free on the NAS from the full netstat -tulnp listener table on
-  # 2026-09-10, the nearest neighbour being 5353/mDNS.
-  ["adguard", "adguard", "0.0.0.0", 53, 5353, "tcp"],
-  ["adguard", "adguard", "0.0.0.0", 53, 5353, "udp"],
   # THE ONLY LOOPBACK PUBLICATION IN THIS TABLE, AND THE REVIEW THIS CHECK
   # EXISTS FOR CAUGHT IT. Every other row here is 0.0.0.0 and every one of those
   # services demands a credential; Vaultwarden hands out ACCOUNTS to anyone who
@@ -223,9 +213,9 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # because the container runs as the platform identity and cannot bind a
   # privileged port. ROCKET_PORT moves the listener;
   # services/vaultwarden/compose.yml carries the argument. 8086 is the lowest
-  # free host port on this platform: 8080 Dozzle, 8081 the Dozzle alert relay,
-  # 8082 qbittorrent, 8083 claimed by the AdGuard Home stack of #548, 8084
-  # Nextcloud, 8085 SABnzbd.
+  # free host port on this platform when #547 chose it: 8080 Dozzle, 8081 the
+  # Dozzle alert relay, 8082 qbittorrent, 8083 claimed by the AdGuard Home stack
+  # of #548 and free again since #577 removed it, 8084 Nextcloud, 8085 SABnzbd.
   ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"]
 ].freeze
 

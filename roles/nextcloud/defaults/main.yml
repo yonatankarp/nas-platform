@@ -9,10 +9,12 @@
 # the deployment report that says whether anything moved.
 nextcloud_deployment_enabled: false
 
-# 8084. The next free host port on this platform: 8080 is Dozzle, 8081 the
-# Dozzle alert relay, 8082 the qbittorrent web interface declared in
-# config/media-acquisition.yml, 8083 AdGuard Home -- Seafile's until #501
-# removed that stack and #548 took it -- 8085 SABnzbd and 8090 Beszel.
+# 8084. The next free host port on this platform when #500 chose it: 8080 is
+# Dozzle, 8081 the Dozzle alert relay, 8082 the qbittorrent web interface
+# declared in config/media-acquisition.yml, 8083 Seafile's until #501 removed
+# that stack and AdGuard Home's until #577 removed that one, 8085 SABnzbd and
+# 8090 Beszel. 8083 is free again and stays unclaimed: moving a published port
+# is a redeployment rather than a tidy-up.
 nextcloud_port: 8084
 
 # Every role addresses services over 127.0.0.1, which is correct whether the

@@ -291,66 +291,10 @@ trailarr_monitoring_enabled: >-
 # than a machine fact.
 nextcloud_deployment_enabled: true
 
-# The one operator switch that deploys AdGuard Home, and it is off. #548 landed
-# the stack dark, #569 turned it on, and #577 turns it back off. Not because it
-# is broken: it worked, and `dig` against the NAS returned real addresses for
-# ordinary names and 0.0.0.0 for blocked ones. It is off because the delivery
-# mechanism the decision assumed does not exist on this network. The router is
-# a Vodafone Station CGA4233DE, which exposes no custom-DNS field for its DHCP
-# scope, so every client has to be pointed at it by hand -- no guests, no IoT
-# -- and the three things this household actually wanted are each out of DNS's
-# reach anyway: YouTube serves its ads from the same domain as the video, Prime
-# Video splices its own in server-side, and the TV is Samsung/Tizen, so no
-# on-device blocker is possible either. What is left is Samsung telemetry and
-# launcher ads, against an integration lane on every CI run, four gate checks,
-# Renovate tracking, Mac lane wiring and a share of several pinned floors.
-# #548's closing comment carries the evaluation in full.
-#
-# WHAT FLIPPING THIS OFF DOES, and it is why this line is a change of its own:
-# roles/adguard converges the Compose project to `state: absent` rather than
-# skipping it, so the container stops and THIS HOST'S PORT 53 -- tcp and udp,
-# the first privileged port this platform ever published -- is released, along
-# with 8083 for the web interface. That teardown is a task IN THE ROLE, so it
-# has to deploy and run while the role still exists. #577 removes the code in a
-# second change, once the container is confirmed gone from the NAS; deleting
-# the role first would leave AdGuard running on port 53 with nothing in this
-# repository describing it, which is the state this platform exists to prevent.
-#
-# What a dark converge still does is create
-# {{ nas_docker_root }}/adguard/{conf,work} -- the nas_storage loop is ungated
-# -- and render the runtime .env, which carries only paths, the platform
-# identity and the CPU set. AdGuardHome.yaml, the one rendered file that
-# carries a credential, is gated and is not rewritten -- but the copy written
-# while the stack was on STAYS, and nothing in this repository will remove it.
-# host_prep creates directories and never deletes them, so neither this change
-# nor the one that removes the code takes that 0600 file, its administrator
-# bcrypt hash, or work/data/sessions.db off the NAS. Deleting
-# {{ nas_docker_root }}/adguard is a manual act, and until somebody performs it
-# the host keeps credential-bearing files for a service that no longer runs.
-# Both directories are recovery: cache, so nothing is lost by doing it.
-#
-# The role default is false as well, and that is not a mirror of this decision.
-# It is a floor under it, exactly as roles/nextcloud's is: a caller running
-# roles/adguard with no inventory converges to `state: absent` instead of
-# putting a resolver on somebody's household network on the strength of a
-# missing variable. tests/contracts/adguard-static.rb asserts that floor.
-#
-# This becomes worth revisiting when the router changes -- the move to Israel
-# brings one -- because DHCP-supplied DNS is what makes a resolver cover guests
-# and IoT without per-device work. Re-run #548's two blocking checks then
-# rather than assuming they still hold.
-#
-# This is nonsecret policy, so it is group_vars and not the vault, and it is
-# group_vars/all rather than nas_hosts for the reason the Nextcloud switch
-# above gives: both real inventories bind to nas_hosts, the integration sandbox
-# is a nas_hosts run like any other, and this is a decision rather than a
-# machine fact.
-adguard_deployment_enabled: false
-
 # VAULTWARDEN IS ON. #547 landed the stack dark and this is the separate
 # deliberate act that turns it on. THIS LINE IS THE WHOLE OF IT:
-# roles/vaultwarden/defaults/main.yml stays false, the way nextcloud's and
-# adguard's do, because a role default is the floor under this decision rather
+# roles/vaultwarden/defaults/main.yml stays false, the way nextcloud's does,
+# because a role default is the floor under this decision rather
 # than a copy of it -- it is what a caller with no inventory gets, and this
 # inventory wins on every run any playbook here makes. The comment beside that
 # default carries the argument.
@@ -923,33 +867,4 @@ nas_storage:
     recovery: cache
   - path: "{{ nas_media_root }}/.beszel"
     mode: "0755"
-    recovery: cache
-
-  # AdGuard Home, and the first service on this platform whose whole storage is
-  # recovery: cache. That is a consequence of the configuration being a template
-  # rather than an application-owned store: roles/adguard renders the entire
-  # AdGuardHome.yaml from this repository and the vault on every converge, so
-  # losing the configuration directory costs one converge and nothing else.
-  #
-  # The working directory holds the downloaded filter lists, the query log, the
-  # statistics database and the web session store. Every one of those is either
-  # re-downloaded or is telemetry about traffic that has already happened, so
-  # there is nothing here to back up -- which is a first for this platform and a
-  # deliberate outcome rather than an omission.
-  #
-  # 0700 on the working directory is AdGuard's own requirement, not a choice.
-  # Measured against v0.107.79: its permcheck pass chmods that directory to 0700
-  # and its configuration file to 0600 at every start, so declaring anything
-  # wider here would have host_prep and the daemon reverting each other on every
-  # five-minute converge. The configuration directory itself is left at 0755
-  # because permcheck does not touch it.
-  - path: "{{ nas_docker_root }}/adguard/conf"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
-    mode: "0755"
-    recovery: cache
-  - path: "{{ nas_docker_root }}/adguard/work"
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
-    mode: "0700"
     recovery: cache
