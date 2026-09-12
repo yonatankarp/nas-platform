@@ -269,6 +269,19 @@ PLANTS = [
     "to" => "  ansible.builtin.stat:\n    path: >-\n" \
             "      {{ platform_current_dir }}/services/vaultwarden/elsewhere\n",
     "expect" => "no longer stats the release path" },
+  # THE DEFECT #596 CLOSED, planted in a file that reads the installed release
+  # NOWHERE. Corrupting one of the six files the two ledgers name would drop a
+  # read they require and fail on the ledger comparison instead, proving nothing
+  # about this refusal; reconcile_connections.yml contributes no read at all, so
+  # every ledger comparison and the expected_reads floor stay satisfied and the
+  # old `rescue Psych::Exception; nil` reported success. That is the whole shape
+  # of the defect: a floor over the reads the ledgers NAME cannot see an
+  # unparseable file acquiring an unguarded one.
+  { "name" => "a role task file that could not be parsed at all",
+    "file" => "roles/trailarr/tasks/reconcile_connections.yml",
+    "from" => "---\n# A connection is the only part",
+    "to" => "---\n- bad: \"unclosed\n# A connection is the only part",
+    "expect" => "roles/trailarr/tasks/reconcile_connections.yml could not be parsed" },
   { "name" => "a forbidden key reaches the canonical compose file",
     "file" => "services/vaultwarden/compose.yml",
     "from" => "      DATA_FOLDER: /data\n",

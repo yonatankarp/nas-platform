@@ -161,6 +161,22 @@ SELF_TEST_ROWS = [
     expects: "no longer reads as running a container under the shared numeric identity"
   },
   {
+    # THE DEFECT #596 CLOSED, and the file it is planted in was chosen for what
+    # it does NOT contribute. Corrupting reconcile_env.yml would drop a counted
+    # subject too, take the count to four and breach SUBJECT_FLOOR -- so the row
+    # would pass on the floor and prove nothing about the refusal it is written
+    # for. reconcile_connections.yml renders no restricted-mode file today, so
+    # the count stays at five and the floor stays satisfied, which is exactly
+    # the state the old `rescue Psych::Exception; nil` was silent in: a file
+    # whose contribution was zero is free to acquire a violation unseen.
+    name: "a task file that could not be parsed, whose contribution was zero",
+    plant: lambda { |root|
+      path = File.join(root, "roles/trailarr/tasks/reconcile_connections.yml")
+      File.write(path, "#{File.read(path)}\n- bad: \"unclosed\n")
+    },
+    expects: '["roles/trailarr/tasks/reconcile_connections.yml"] could not be parsed'
+  },
+  {
     # The negative control, and the reason the mode test is not decoration: a
     # world-readable file needs no owner, because any uid can open it. Without
     # this row the sweep could be demanding ownership of everything and its
