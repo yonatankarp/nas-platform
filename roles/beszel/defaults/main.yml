@@ -42,21 +42,21 @@ beszel_alerts:
 # is accepted just the same, measured against this pin. It is kept because an
 # empty user component reads as a typo, not because anything requires it.
 #
-# Priority is deliberately not set, and the reason is NOT that the library caps
-# it. Beszel 0.19.0 vendors nicholas-fedor/shoutrrr, whose priority is an int8
-# with no clamp: `?priority=2` is accepted and sent, and only a value like
-# `?priority=200` is refused -- by integer range, not by anything Pushover means.
-# What is genuinely unreachable here is retry-until-acknowledged, because
-# Pushover requires a retry and an expire alongside priority 2 and this service
-# has nowhere to put them: asked for one, it names its own key set and refuses,
-# `not a valid config key: expire (valid keys: [devices encryptionkey key
-# priority title])`. A priority 2 set here would therefore pass shoutrrr and be
-# refused at the far end, which is worse than not setting it. Do not design
-# around priority 2.
+# Priority is deliberately not set, and nothing here says what Pushover does
+# with one: the measurement below routed the API host to loopback, so only the
+# library's own verdict was ever visible.
 #
-# Every sentence above is measured against the pinned hub image rather than read
-# from shoutrrr's documentation. The widely cited -1..1 cap belongs to
-# containrrr's shoutrrr, a different fork from the one Beszel vendors, and it is
-# what an earlier revision of this comment wrongly asserted.
+# Beszel 0.19.0 vendors github.com/nicholas-fedor/shoutrrr, NOT
+# containrrr/shoutrrr. Measured against this pin: priority omitted, `?priority=1`
+# and `?priority=2` are all accepted and carried through to the API call, and
+# only `?priority=200` is refused, by int8 parsing. The vendored fork imposes no
+# range. containrrr's -1..1 cap is the widely cited one, applies to the other
+# fork, and is what an earlier revision of this comment wrongly asserted.
+#
+# That fork's Pushover config also carries no retry or expire key -- asked for
+# one it answers `not a valid config key: expire (valid keys: [devices
+# encryptionkey key priority title])` -- so a priority set here cannot be paired
+# with the parameters Pushover's own documentation attaches to priority 2. What
+# Pushover then does with such a message is unmeasured here.
 beszel_notification_url: >-
   pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/
