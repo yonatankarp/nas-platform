@@ -264,21 +264,28 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
-    # The operator switch Nextcloud is gated on, requested by the lane that
-    # claims to converge it. The sandbox runs -i inventory/local.yml, which binds
-    # to nas_hosts -- the same group as the real NAS -- so there is no group_vars
-    # in which "false on the NAS, true in CI" can be written. Passed on every
-    # lane and not only this one, for the reason #295 gives: a lane handed the
-    # other state passes identically and proves nothing. The full lane is
-    # included because run_contracts.rb --execute reaches nextcloud.sh
-    # there, and this is an override rather than a default -- the day
-    # inventory/group_vars/all/main.yml turns the switch on for real, this line
-    # silently keeps Nextcloud out of smoke, idempotence-check and every other
-    # lane, so it has to be flipped or deleted in the same change.
-    integration_nextcloud_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      nextcloud|full) integration_nextcloud_deployment_enabled=true ;;
-    esac
+    # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
+    # #500 landed the stack dark, so this block set the gate per suite and turned
+    # it on for `nextcloud` and `full` alone -- correct while
+    # inventory/group_vars/all/main.yml said false, and it carried the obligation
+    # to be flipped or deleted the day that changed. `3a7f75af` changed it on
+    # 2026-09-09 and nothing came back here, so for three days smoke and
+    # idempotence-check -- the two lanes that converge the platform as a whole --
+    # converged a platform WITHOUT Nextcloud while the NAS ran it. #564.
+    #
+    # There is nothing to replace it with. The sandbox runs
+    # -i inventory/local.yml, which binds to nas_hosts -- the same group as the
+    # real NAS -- so inventory's `true` is already in force on every lane, and an
+    # `-e` here would be the highest-precedence override there is: the day the
+    # switch is turned back off, CI would go on converging a stack production had
+    # stopped running, which is #564 again with the sign reversed. Inventory is
+    # the single source and every lane inherits it.
+    #
+    # What the narrowing quietly bought was the DISABLED path: every lane that
+    # was handed false converged the tear-down branch for free. That proof is now
+    # requested by name in the nextcloud lane below, the way vaultwarden's is,
+    # and tests/deployment_gate_coverage_test.rb requires it of every gate-on
+    # service and refuses a narrowing of a gate inventory turns on.
 
     # The operator-owned half of the provider, which stopped being vault
     # material in #298 and so can no longer arrive through the ephemeral vault.
@@ -628,10 +635,14 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # #501: `container <ns>-... is unhealthy`, then silence after the PLAY
           # RECAP, and no way to tell a slow boot from a wedged one.
           #
-          # Gated on the deployment switch rather than on `suite_is`, because the
-          # switch is the thing that actually says the stack exists to be read.
-          # `suite_is` also matches lanes the switch leaves off, and a dump of
-          # containers that were never created explains nothing.
+          # Gated on the containers existing rather than on `suite_is`, because
+          # what has to be true is that the stack exists to be read: `suite_is`
+          # also matches lanes whose tags never select the role, and a dump of
+          # containers that were never created explains nothing. It asked the
+          # deployment switch until #564 deleted the per-suite narrowing above,
+          # which left the switch with one value and this guard with nothing to
+          # decide. Docker is asked instead -- unanchored, so any of the four
+          # containers is enough to make the dump worth printing.
           #
           # The call is spelled once. tests/integration_controller_execution_test.sh
           # plants "initial converge dropped" on this exact text as a single
@@ -641,7 +652,8 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           converge_status=0
           perform_initial_converge $@ || converge_status=$?
           if [ $converge_status -ne 0 ]; then
-            if [ $integration_nextcloud_deployment_enabled = true ]; then
+            if docker ps --all --format '{{.Names}}' |
+                grep -q '^'$integration_project_namespace'-nextcloud'; then
               dump_nextcloud_diagnostics
             fi
             printf 'integration converge did not complete (status %s)\n' \
@@ -1262,6 +1274,49 @@ EOF
         run_play --tags nextcloud --check --diff
         run_nextcloud_verify_only
         printf 'NEXTCLOUD_RUNTIME_VERIFIED\n'
+        # THE WAY BACK, EXERCISED RATHER THAN CLAIMED, and this lane is where it
+        # lives now. Until #564 the controller narrowed this gate off for every
+        # lane but this one, so the tear-down branch was converged for free on
+        # smoke, idempotence-check and every service lane -- and the price of
+        # that was the enabled branch never running there either. Deleting the
+        # narrowing takes the free proof away: CI now requests what production
+        # runs, and nothing anywhere requests the other state.
+        # inventory/group_vars/all/main.yml calls setting the flag back to false
+        # "a deployment decision in both directions", and a line nothing runs is
+        # not a decision. Vaultwarden's lane carries the same block.
+        #
+        # ANCHORED BEFORE, UNANCHORED AFTER, and the asymmetry is the point.
+        # Nextcloud is four containers where vaultwarden is one: the app has to
+        # be there specifically, or the assertion below passes over a deployment
+        # that never happened, while afterwards ANY surviving `-nextcloud*`
+        # container is a failure -- roles/nextcloud tears the project down with
+        # remove_orphans, and an anchored check on the app alone would report
+        # success with the database, the cache and the cron sidecar still up.
+        if ! docker ps --all --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-nextcloud$'; then
+          printf '%s\n' \
+            'the nextcloud container is not present, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        run_play --tags nextcloud -e nextcloud_deployment_enabled=false
+        if docker ps --all --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-nextcloud'; then
+          printf '%s\n' \
+            'disabling nextcloud_deployment_enabled left a nextcloud container in place' >&2
+          exit 1
+        fi
+        printf 'NEXTCLOUD_TEARDOWN_VERIFIED\n'
+        # And back on, because a rollback nothing reverses is a one-way door.
+        # The re-converge is also the only thing on the platform that proves this
+        # stack comes up against a data root a previous deployment left behind:
+        # the bind mounts survive `state: absent`, so version.php is present and
+        # the image's entrypoint takes its existing-install path rather than the
+        # installer -- which is what keeps NC_setup_create_db_user out of the
+        # question here, the one setting services/nextcloud/compose.yml records
+        # as unrecoverable if it is wrong on a FIRST converge.
+        run_play --tags nextcloud
+        run_nextcloud_verify_only
+        printf 'NEXTCLOUD_RETURN_VERIFIED\n'
       fi
     fi
 

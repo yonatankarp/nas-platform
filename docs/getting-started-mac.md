@@ -11,8 +11,11 @@ flag—Audiobookshelf, Beszel, Bindery, Dozzle, Immich, Jellyfin, Kapowarr,
 Komga, Nextcloud, ntfy, Paperless-ngx, Pinchflat, Seerr, and Trailarr—and
 verifies the Arr and downloader projects in their inert, transport-disabled
 state alongside them. This lane requests
-`nextcloud_deployment_enabled` on for itself, exactly as the CI suites do, so
-its coverage does not depend on the platform default. The production
+`nextcloud_deployment_enabled` on for itself, so its coverage does not depend on
+the platform default. The CI suites used to do the same and no longer do: #564
+deleted that override, because inventory has said `true` since 2026-09-09 and a
+per-lane override of it kept Nextcloud out of the lanes that converge the whole
+platform. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
 harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
