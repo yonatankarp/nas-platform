@@ -27,7 +27,17 @@
     guard_role_tasks: >-
       {{ lookup('file', playbook_dir ~ '/../roles/image_downgrade_guard/tasks/main.yml')
          | from_yaml }}
-    guard_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-image-downgrade-guard"
+    guard_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-image-downgrade-guard-{{ guard_worktree_id }}"
+    # Per worktree rather than one fixed path, because this repository routinely
+    # has several worktrees live at once and a shared fixture makes two
+    # concurrent runs read and delete each other's files. It identifies the
+    # worktree rather than the run for a reason the play cannot work around: the
+    # `environment` above is templated for every task including the first, so
+    # `guard_root` has to resolve before anything has run. A run id from a
+    # set_fact fails the play at task one with `'guard_run_id' is undefined`,
+    # and so does one from ansible.builtin.tempfile; a `lookup` evaluated here
+    # would re-run on every reference and hand different tasks different paths.
+    guard_worktree_id: "{{ (playbook_dir | hash('sha1'))[:12] }}"
     # name, the image the release pins, the references Docker recorded for
     # containers of this service, and what the guard must conclude.
     guard_cases:
@@ -95,6 +105,37 @@
         newer: []
 
   tasks:
+    # At the start as well as at the end, because the end is not reached by a
+    # run that failed, and this play's failure sustains itself: the tripwire
+    # near the end reads a leftover `check-mode-probe` as proof that the
+    # check-mode block wrote it, and the run failing there never reaches the
+    # removal below -- so it fails identically forever after, accusing the
+    # guard long after whatever produced the file is gone (#557).
+    #
+    # #557 blames an interrupt for the leftover probe, and that is measurably
+    # not where it comes from. No correct run writes the probe at all, because
+    # the block-level check_mode is what stops it, so an interrupt or a peer
+    # session's kill leaves only a tree that the next run overwrites: a stale
+    # tree holding a bogus docker stub, stale argv and a v0.0.1 compose, with
+    # no probe, passes all twelve cases even before this task existed. The
+    # probe comes only from a run in which check mode did not reach that task
+    # -- a defect this tripwire caught, or an uncommitted edit being iterated
+    # on -- and it then outlives its cause.
+    #
+    # So wrapping the play in block/always would break the loop too, and is
+    # rejected on cost rather than on correctness: it re-indents three hundred
+    # lines to delete one file, and still does nothing for a kill or for a
+    # concurrent peer. This task is four lines and heals a tree left by any
+    # cause.
+    #
+    # Safe only because the suffix above is per worktree -- on a shared path it
+    # would delete a concurrent run's live fixture, so the two halves are one
+    # fix and not two.
+    - name: Remove a fixture tree an interrupted earlier run left behind
+      ansible.builtin.file:
+        path: "{{ guard_root }}"
+        state: absent
+
     - name: Build the fixture release tree
       ansible.builtin.file:
         path: "{{ guard_root }}/{{ item }}"
