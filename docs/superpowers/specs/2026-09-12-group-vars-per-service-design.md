@@ -43,31 +43,53 @@ Taken 2026-09-12 against `35c199b`.
   implemented roles (`arr` owns radarr, sonarr, prowlarr and bazarr;
   `downloaders` owns sabnzbd and qbittorrent). Every one of the 17 roles owns at
   least one, so no service is storage-free today.
-- The remaining 25 sit under `nas_media_root` and belong to no single service:
-  the library roots (`Media/Movies`, `Media/Series`, `Media/YouTube`, `Books`,
-  `Books/Ebooks`, `Books/Comics`), the `.acquisition` staging tree under both
-  `Media` and `Books`, and `Documents/{archive,inbox,export}`. 30 entries carry
-  `media_acquisition_foundation: true`, so the flag spans both groups.
+- 25 sit under `nas_media_root`, but only 19 of those are genuinely shared. The
+  other six are single-owner and go into their owner's file like any docker-root
+  entry: `Immich` and `Immich-backups/database` (immich), `.beszel` (beszel), and
+  `Documents/{archive,inbox,export}`, which `roles/paperless_ngx/tasks/storage.yml`
+  and that role's defaults are the only references to anywhere in the tree.
+- The shared 19 are exactly the `nas_media_root` entries carrying
+  `media_acquisition_foundation: true`, and they divide cleanly along their own
+  recovery class: 7 are `recovery: user` library roots (`Media/Movies`,
+  `Media/Series`, `Media/YouTube`, `Media/Audiobooks`, `Books`, `Books/Ebooks`,
+  `Books/Comics`) and 12 are `recovery: cache` staging under
+  `Media/.acquisition` and `Books/.acquisition`.
+- So 43 of the 62 entries are single-owner and 19 are shared.
 
 ## Layout
 
 ```
 inventory/group_vars/all/
-  main.yml               # cross-cutting only, plus the two composition lines
-  media_foundation.yml   # nas_storage_media_foundation: the 25 shared media paths
-  service_<role>.yml     # one per service: its settings and its storage entries
-  vault.yml              # unchanged by this spec
-  vault.yml.example      # unchanged by this spec
+  main.yml                  # cross-cutting only, plus the two composition lines
+  media_libraries.yml       # nas_storage_media_libraries:   7 user library roots
+  media_acquisition.yml     # nas_storage_media_acquisition: 12 staging paths
+  service_<role>.yml        # one per service: its settings and its storage entries
+  vault.yml                 # unchanged by this spec
+  vault.yml.example         # unchanged by this spec
 ```
 
-The shared media paths are a contributor like any other. They are not owned by a
-service, so assigning them to one would be an arbitrary choice that the next
-reader has to reverse-engineer: `Media/Movies` is written by `arr` and read by
-`jellyfin` and `seerr`, and the `.acquisition` tree is written by `downloaders`
-and read by `arr`. They go in `nas_storage_media_foundation`, which the prefix
-glob picks up with no special case in the composition and no special case in the
-Ruby helper. `media_acquisition_foundation_test.rb` already treats this group as
-a unit, so the file matches a boundary the tests already recognise.
+Only 19 entries are genuinely shared, and they take two files rather than one.
+The split is along a boundary the data already carries rather than one invented
+here: the 7 library roots are `recovery: user` and hold irreplaceable household
+media, while the 12 staging paths are `recovery: cache` and are disposable
+transit. `CLAUDE.md` records that the recovery class drives the disaster-recovery
+documentation, so a file that mixes the two mixes what can be rebuilt with what
+cannot.
+
+Those 19 are shared by construction and cannot be pushed down to an owner:
+`arr` mounts the whole media root and `jellyfin` mounts all of `Media`, `komga`
+mounts all of `Books`, and `downloaders` writes the `.acquisition` trees that
+`arr` then reads. Assigning them to any one service would be an arbitrary choice
+the next reader has to undo.
+
+The six single-owner `nas_media_root` entries are not in either file. They sit
+with their owners, in `service_immich.yml`, `service_beszel.yml` and
+`service_paperless_ngx.yml`.
+
+Both shared contributors are picked up by the prefix glob with no special case in
+the composition and none in the Ruby helper. `media_acquisition_foundation_test.rb`
+selects on the `media_acquisition_foundation` flag rather than on position, so
+splitting the group across two variables does not disturb it.
 
 The file is named for the **role**, not the manifest service directory, because
 Ansible variable names cannot contain hyphens and the storage variable inside
@@ -137,8 +159,11 @@ because a count goes stale the moment a service is added:
 
 - `tests/nas_storage_support.rb` asserts that every implemented and accepted role
   in `services/manifest.yml` contributes a `nas_storage_<role>` variable, and that
-  every contributor other than `nas_storage_media_foundation` names such a role.
-  Both directions. A service legitimately owning no storage is admitted by name
+  every contributor names such a role unless it appears in a declared
+  `SHARED_STORAGE_CONTRIBUTORS` list, which holds exactly
+  `nas_storage_media_libraries` and `nas_storage_media_acquisition` and is
+  asserted in both directions so a third shared file cannot appear unnoticed.
+  Both directions on the roles too. A service legitimately owning no storage is admitted by name
   through a declared `STORAGE_FREE_SERVICES` list, which is empty today and is
   asserted in both directions so it cannot fill up or empty quietly. This mirrors
   `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` exactly, including the
