@@ -25,7 +25,6 @@ fixture_vars_file=${fixture_vars_file?}
 integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
-integration_nextcloud_deployment_enabled=${integration_nextcloud_deployment_enabled?}
 
 # THE ONE COORDINATE THIS SANDBOX CANNOT SUPPLY, requested by every lane rather
 # than by the one that converges the service.
@@ -87,7 +86,6 @@ run_play() {
     -e media_usenet_enabled="$integration_media_usenet_enabled" \
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
-    -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
@@ -588,7 +586,6 @@ run_verification() {
     -e platform_compose_kind=integration \
     -e platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
-    -e nextcloud_deployment_enabled="$integration_nextcloud_deployment_enabled" \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \

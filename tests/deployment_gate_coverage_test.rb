@@ -471,19 +471,22 @@ end
 # of the tear-down, so the exit was blocked in precisely the state that motivates
 # using it. Nothing noticed, because nothing ran it.
 #
-# TWO FORMS COUNT, and both are read out of the harness rather than listed here:
+# ONE FORM COUNTS: the step `run_play --tags <tag> -e <gate>=false` inside the
+# lane, which converges the disabled path against a stack that exists. It is read
+# out of the harness rather than listed here.
 #
-#   the step   `run_play --tags <tag> -e <gate>=false` inside the lane, which
-#              converges the disabled path against a stack that exists. This is
-#              the form to write today.
-#   the narrow `integration_<role>_deployment_enabled=false` at the top of the
-#              controller, which withholds the gate from every lane but the
-#              service's own, so smoke and idempotence-check converge the
-#              disabled branch on every run. It is the older form and the
-#              controller's own comments say it has to be flipped or deleted the
-#              day the platform switch turns on -- nextcloud is its last user.
-#              It is admitted because it really does converge that branch, not
-#              because it is tidy; when it goes, that service needs the step.
+# A SECOND FORM USED TO COUNT and no longer may, which is the other half of #564.
+# `integration_<role>_deployment_enabled=false` at the top of the controller
+# withholds the gate from every lane but the service's own, and while a stack is
+# dark that really does converge the disabled branch on every run -- so it was
+# admitted here. What it ALSO does is keep the stack out of smoke and
+# idempotence-check, the two lanes that converge the platform as a whole, and
+# the controller's own comment said in prose that it therefore had to go the day
+# inventory turned the switch on. PROSE DOES NOT FAIL. `3a7f75af` turned
+# nextcloud's switch on on 2026-09-09, the narrowing stayed, and for three days
+# the broadest lanes converged a platform the NAS does not have -- passing, and
+# faster than they would otherwise. The check below is what would have refused
+# that commit, and it is why the step above is now the only admitted form.
 INTEGRATION_CONTROLLER = File.join(ROOT, "tests", "integration_controller.sh")
 controller_source = File.file?(INTEGRATION_CONTROLLER) ? File.read(INTEGRATION_CONTROLLER) : ""
 check(failures, !controller_source.empty?,
@@ -498,15 +501,54 @@ subjects.each do |name|
   gate = "#{role}#{GATE_SUFFIX}"
   next unless gate_names.include?(gate)
 
-  step = controller_source.include?("run_play --tags #{tag} -e #{gate}=false")
-  narrowed = controller_source.include?("integration_#{gate}=false")
-  check(failures, step || narrowed,
+  check(failures, controller_source.include?("run_play --tags #{tag} -e #{gate}=false"),
         "#{name} deploys and nothing in tests/integration_controller.sh ever converges it with " \
         "#{gate} false, so the way back is claimed and never run. While the stack was dark every " \
         "lane converged that branch for free; turning the gate on took the proof with it. Add " \
         "`run_play --tags #{tag} -e #{gate}=false` to its lane, with the container asserted " \
         "present before and absent after, and converge it back on afterwards")
 end
+
+# THE NARROWING IS FORBIDDEN TO A GATE INVENTORY TURNS ON. #564's first half.
+#
+# THE SUBJECT LIST IS `gate_names`, NOT THE NARROWINGS FOUND, and that is what
+# keeps this from passing vacuously the way a scan would. The correct state of
+# this repository is that no narrowing exists at all, so a regex looking for one
+# has an empty result set on a clean tree and would go on reporting success after
+# it stopped matching anything. Looping the gates instead gives a non-empty
+# subject list -- every gate variable in the tree -- and asks a literal
+# `include?` of each, which cannot rot: the string is built from the gate's own
+# name. An empty finding set below is the pass, not the check being dead.
+gate_names.each do |name|
+  narrowing = "integration_#{name}=false"
+  next unless controller_source.include?(narrowing)
+
+  check(failures, gate_states[name[GATE_KEY, 1]] == false,
+        "inventory turns #{name} ON and tests/integration_controller.sh still narrows it off " \
+        "with `#{narrowing}`, so every lane but the service's own converges a platform this " \
+        "one does not run -- smoke and idempotence-check included, which are the only lanes " \
+        "that converge the whole site. The narrowing is an `-e` override and outranks the " \
+        "inventory the NAS reads. Delete it and give the service " \
+        "`run_play --tags <tag> -e #{name}=false` in its own lane instead: that converges the " \
+        "disabled path the narrowing used to cover for free, without taking the enabled path " \
+        "away from every other lane")
+end
+
+# The other direction. A narrowing naming a variable no role and no inventory
+# declares is a switch the controller believes it is setting and nothing reads:
+# the lane converges the stack it meant to withhold, or withholds one that no
+# longer exists, and reports success either way. Scanned rather than looped,
+# because the whole point is to find a name the gate scan does not know -- so
+# this one CAN go quiet if the regex rots, and the loop above is what does not.
+narrowed_gates = controller_source
+                 .scan(/\bintegration_([a-z][a-z0-9_]*#{GATE_SUFFIX})\s*=/)
+                 .flatten.uniq
+stray_narrowings = narrowed_gates - gate_names
+check(failures, stray_narrowings.empty?,
+      "tests/integration_controller.sh narrows #{stray_narrowings.inspect}, which no role " \
+      "default and no inventory file declares as a #{GATE_SUFFIX} variable. The controller is " \
+      "setting a switch nothing reads, so the lane converges whatever inventory says and the " \
+      "narrowing reports nothing")
 
 implemented_aliases = implemented.map { |name| PolicySupport.contract_basename(name) }
 stray_roster = mac_roster - implemented_aliases
