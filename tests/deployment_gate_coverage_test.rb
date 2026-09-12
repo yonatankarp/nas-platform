@@ -248,48 +248,73 @@ def gate_keys(node, found = {})
   found
 end
 
-# A FILE THAT COULD NOT BE READ IS NOT A FILE THAT SAYS NOTHING (#593). This
+# A FILE THAT COULD NOT BE PARSED IS NOT A FILE THAT SAYS NOTHING (#593). This
 # rescued to nil, and the caller could not tell that apart from a document with
 # no gate keys in it -- so an unparseable inventory emptied the inventory scan,
 # both gates fell back to their role defaults, which every check below insists
 # ship `false`, and the run printed `15 of 17 ... 2 dark` and exited 0 over a
-# platform whose obligations it had not examined. +unreadable+ is what makes the
+# platform whose obligations it had not examined. +unparsed+ is what makes the
 # nil at every call site mean "absent" rather than "unknown"; the refusal is
 # asserted on the parse, before any gate resolves, because what went wrong is
 # upstream of what the gates then read.
-def load_plain_yaml(path, unreadable)
+#
+# THE RESCUE STAYS ON Psych::Exception rather than narrowing to
+# Psych::SyntaxError: a document that cannot be loaded is a document no gate can
+# be resolved from, whatever the reason. What that breadth costs is a permitted
+# class list, because Psych::DisallowedClass is a Psych::Exception too -- an
+# unquoted `2026-09-08` is valid YAML, valid Ansible and forbidden nowhere in
+# this repository, and CLAUDE.md's own dated memory measurement points at
+# inventory/group_vars/nas_hosts/main.yml as where such a value would land. Left
+# out, it turned a legitimate edit into a gate failure blaming the wrong thing:
+# measured on this tree, `arr_measured_on: 2026-09-08` in a role default refused
+# the whole run. Errno::EACCES and Errno::EISDIR are deliberately not rescued --
+# a file that cannot be opened at all fails louder than this, not quieter.
+def load_plain_yaml(path, unparsed)
   source = File.read(path)
   # An encrypted vault is not YAML and is not where a nonsecret policy switch
   # belongs; tests/policy_vault_test.rb is what says it stays encrypted.
   return nil if source.start_with?("$ANSIBLE_VAULT")
 
-  YAML.safe_load(source, aliases: true)
+  YAML.safe_load(source, aliases: true, permitted_classes: [Date, Time])
 rescue Errno::ENOENT, Psych::Exception
-  unreadable << path.delete_prefix("#{ROOT}/")
+  unparsed << path.delete_prefix("#{ROOT}/")
   nil
 end
 
-unreadable_yaml = []
+unparsed_yaml = []
 
 role_gates = {}
 Dir[File.join(ROOT, "roles", "*", "defaults", "main.yml")].sort.each do |path|
   role = File.basename(File.dirname(File.dirname(path)))
-  gate_keys(load_plain_yaml(path, unreadable_yaml)).each do |key, value|
+  gate_keys(load_plain_yaml(path, unparsed_yaml)).each do |key, value|
     role_gates[key] = { "role" => role, "value" => value, "path" => path }
   end
 end
 
 inventory_gates = Hash.new { |hash, key| hash[key] = [] }
 Dir[File.join(ROOT, "inventory", "**", "*.yml")].sort.each do |path|
-  gate_keys(load_plain_yaml(path, unreadable_yaml)).each do |key, value|
+  gate_keys(load_plain_yaml(path, unparsed_yaml)).each do |key, value|
     inventory_gates[key] << { "value" => value, "path" => path.delete_prefix("#{ROOT}/") }
   end
 end
-check(failures, unreadable_yaml.empty?,
-      "#{unreadable_yaml.uniq.inspect} could not be read, so no gate can be resolved from the " \
+# EITHER OF THE TWO REFUSALS BELOW INVALIDATES THE REST OF THIS REPORT, and that
+# is stated rather than structured away. `check` accumulates -- it does not raise
+# and does not return -- because reporting every violation in one run is this
+# gate's design, so once a gate's file is unusable every property after this
+# point still resolves, against the `false` a role default fell back to. Some of
+# those then INVERT TO A PASS rather than merely passing vacuously: #564's
+# narrowing refusal 250 lines below asks `gate_states[prefix] == false`, so a
+# live narrowing violation disappears from the report while the decision file is
+# corrupt. Measured: the narrowing plant alone fails by name; the same plant with
+# an unparseable decision file prints these refusals and not the narrowing. The
+# run still exits nonzero, so nothing ships on it -- but when either of these
+# fires it is THE finding, and the absence of any other is not evidence.
+check(failures, unparsed_yaml.empty?,
+      "#{unparsed_yaml.uniq.inspect} could not be parsed, so no gate can be resolved from the " \
       "file that sets it and every requirement below would pass vacuously. A gate that is dark " \
-      "because inventory says so and a gate that is dark because nothing could be read are " \
-      "different states, and only the first is a reason to assert nothing")
+      "because inventory says so and a gate that is dark because its file could not be parsed " \
+      "are different states, and only the first is a reason to assert nothing. Fix the file and " \
+      "re-run: nothing else this run reports about a gate can be trusted")
 
 # AND THE FILE THE DECISION LIVES IN HAS TO HAVE SURVIVED, which the refusal
 # above cannot say on its own: `Dir[]` yields no entry for a file that is not
@@ -311,7 +336,7 @@ check(failures, unreadable_yaml.empty?,
 # so the count stays at 2 while every value has silently become `false`. It
 # guards the subject list's size and not its truth.
 #
-# WHAT THIS PROVES IS NARROW, deliberately: that the file was read and is not
+# WHAT THIS PROVES IS NARROW, deliberately: that the file parsed and is not
 # gutted. It does not prove the file declares the gates, because that is the
 # floor rejected in the paragraph above.
 DECISION_FILE = File.join("inventory", "group_vars", "all", "main.yml")
@@ -320,9 +345,10 @@ DECISION_FILE = File.join("inventory", "group_vars", "all", "main.yml")
 decision_document = load_plain_yaml(File.join(ROOT, DECISION_FILE), [])
 check(failures, decision_document.is_a?(Hash) && !decision_document.empty?,
       "#{DECISION_FILE} is where every deployment decision on this platform is made and won, " \
-      "and it read as an empty #{decision_document.class} -- missing, empty or holding nothing. " \
-      "Every gate then resolves from its role default, which this check requires to ship OFF, " \
-      "so every stack reads as dark and every requirement below holds for nobody")
+      "and it parsed to an empty #{decision_document.class} -- missing, empty or holding " \
+      "nothing. Every gate then resolves from its role default, which this check requires to " \
+      "ship OFF, so every stack reads as dark and every requirement below holds for nobody. " \
+      "Fix the file and re-run: nothing else this run reports about a gate can be trusted")
 
 gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
 check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
