@@ -1002,6 +1002,22 @@ user's own documents), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 
+**A removed service does not take its files with it, and AdGuard Home is the
+worked example.** #577 deleted that stack -- role, Compose, contract, lane and
+the `nas_storage` entries -- but `host_prep` creates directories and never
+deletes them, so `{{ nas_docker_root }}/adguard` is still on the NAS and so are
+the two secret-bearing files inside it: `work/data/sessions.db`, whose bearer
+tokens for the web interface make a copy of it a login, and the 0600
+`AdGuardHome.yaml` beside it, which holds the administrator's bcrypt hash --
+a hash rather than a secret, but still what an offline guess would be made
+against. Nothing in this repository will remove either, and the service they
+belonged to is no longer described here at all, so the usual route of reading
+the role is gone too. `rm -rf {{ nas_docker_root }}/adguard` on the host is the
+whole tidy-up; both directories are `recovery: cache`, so nothing is lost by
+it. The general rule this records is that removing a service is a repository
+change and leaving its data is a host one, and only the first of them happens
+on merge.
+
 **Vaultwarden is the exception the list above needs, and it is a narrow one.**
 Unlike Bindery, Nextcloud, Seerr and Dozzle, whose data directories hold
 readable credentials, Vaultwarden's store holds client-side-encrypted blobs: the

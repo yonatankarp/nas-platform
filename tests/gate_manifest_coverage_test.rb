@@ -74,7 +74,7 @@ failures = []
 # readable.
 #
 # WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
-# COST, not count. The counts below are 59/57/63 and that asymmetry is the
+# COST, not count. The counts below are 57/55/63 and that asymmetry is the
 # result rather than a defect: #469 drew the partition round robin, which
 # balances count because count is all a partition without a cost table can
 # balance, and by #517 the three shards were 53/54/57 checks carrying a 2.2x
