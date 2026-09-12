@@ -82,15 +82,58 @@ if missing.empty?
         "#{VERIFY} fail_msg must name the credentials without printing them")
 
   # Run the shipped tasks. --tags is passed rather than the tags being stripped,
-  # so the `never` above is exercised instead of being worked around.
-  def run_tasks(shipped, url, extra = {})
+  # so the gating is exercised instead of being worked around.
+  def run_tasks(shipped, url, tags: "platform_verify_beszel", extra: {})
     run_playbook(shipped,
                  { "beszel_pushover_validation_url" => url,
                    "platform_download_timeout" => 10,
                    "vault_pushover_token" => "probe-token-never-valid",
                    "vault_pushover_user_key" => "probe-user-key-never-valid" }.merge(extra),
-                 "--tags", "platform_verify_beszel")
+                 "--tags", tags)
   end
+
+  # THE TAG IS NOT THE GATE, AND THAT IS THE POINT OF THIS SECTION.
+  # Ansible inherits the role's own tags onto every task in it, so these also
+  # carry beszel and monitoring, and naming ANY inherited tag counts as
+  # explicitly requesting a `never` task. The beszel CI lane converges with
+  # exactly the first tag string below, against an ephemeral vault, so before the
+  # ansible_run_tags gate it asked Pushover about credentials that were never
+  # real and failed the lane. A --list-tasks check cannot see any of this: it
+  # does not evaluate when:, and it still lists these tasks under those tags.
+  #
+  # The fixture counts requests, because "the run passed" is also true of a gate
+  # that let the task through to an endpoint that happened to answer. Zero
+  # requests is the property, not zero failures.
+  {
+    "the beszel CI lane's own tag string" => "host_prep,deployment_bundle,ntfy,beszel",
+    "the role tag alone" => "beszel",
+    "the group tag the role also carries" => "monitoring"
+  }.each do |label, tags|
+    requests = 0
+    with_http_fixture(lambda { |port|
+      _stdout, _stderr, status = run_tasks(
+        selected, "http://127.0.0.1:#{port}/1/users/validate.json", tags: tags
+      )
+      check(failures, status.success?, "#{label} must not fail the converge")
+    }) { |_method, _target, _headers, _body|
+      requests += 1
+      [200, JSON.generate({ "status" => 0 })]
+    }
+    check(failures, requests.zero?,
+          "#{label} must not reach Pushover at all; it made #{requests} request(s)")
+  end
+
+  # The converse, so the gate is shown open as well as closed: the tag the
+  # poller actually asks for does let the request through, exactly once.
+  verify_requests = 0
+  with_http_fixture(lambda { |port|
+    run_tasks(selected, "http://127.0.0.1:#{port}/1/users/validate.json")
+  }) { |_method, _target, _headers, _body|
+    verify_requests += 1
+    [200, JSON.generate({ "status" => 1 })]
+  }
+  check(failures, verify_requests == 1,
+        "--tags platform_verify_beszel must reach Pushover exactly once, made #{verify_requests}")
 
   # A fixture speaking Pushover's documented shapes, so the two branches that
   # cannot be reached from the real endpoint without a real account are still
@@ -153,14 +196,25 @@ if missing.empty?
     probe.close
     port
   end
-  # Two shapes, not one: a refused connection and a name that does not resolve
-  # reach uri through different failure paths, and an outage can present as
-  # either. Neither may become a verdict.
+  # Five shapes, not one. The first two are an outage: a refused connection and a
+  # name that does not resolve reach uri through different failure paths, and
+  # either is how Pushover being down presents.
+  #
+  # The last three are the #521 shape, and they are the reason this list is not
+  # two rows long. A module that refuses BEFORE it makes any request registers no
+  # status at all -- not a zero, not a failure code, nothing -- which is exactly
+  # why the summarize task defaults to -1 rather than 0. That default was
+  # reasoned about in a comment and proved by nothing until these rows existed,
+  # and a comment is what this repository has watched fail twelve times over.
+  # None of them may become a verdict either.
   {
     "a Pushover that refuses the connection" =>
       "http://127.0.0.1:#{closed_port}/1/users/validate.json",
     "a Pushover whose name does not resolve" =>
-      "https://api.pushover.net.invalid/1/users/validate.json"
+      "https://api.pushover.net.invalid/1/users/validate.json",
+    "a url the module refuses to parse" => "not-a-url-at-all",
+    "an empty url" => "",
+    "a scheme the module does not speak" => "gopher://example.invalid/validate"
   }.each do |label, url|
     stdout, stderr, status = run_tasks(selected, url)
     output = stdout + stderr

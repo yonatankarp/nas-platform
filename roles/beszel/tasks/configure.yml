@@ -269,17 +269,36 @@
     # report. These three tasks are the only thing on this platform that can tell
     # those two states apart, so they ask Pushover rather than the hub.
     #
-    # They carry `never` and so are the one part of this role the site.yml
-    # converge does not run. That is deliberate and it is not what the other
-    # thirty-seven verification tasks do -- those carry only the verify tag, and
-    # `--list-tasks` on site.yml shows them running there as
-    # [beszel, monitoring, platform_verify_beszel]. site.yml is every service's
-    # deployment path, and nothing else in this repository puts a third party on
-    # it. verify.yml reaches these through --tags platform_verify_beszel, which
-    # is how the poller runs them: once per deployed revision, not once per tick,
-    # because a revision already attempted is never re-converged.
+    # KEEPING THEM OFF THE CONVERGE TAKES A `when`, NOT A TAG, and the first
+    # revision of this block got that wrong in a way worth stating so nobody
+    # re-derives it. `never` alone is not enough: Ansible inherits the role's own
+    # tags onto every task in it, so these carry [beszel, monitoring, never,
+    # platform_verify_beszel], and naming ANY inherited tag counts as explicitly
+    # requesting the task. `--tags beszel` selects them. So does `--tags
+    # monitoring`. So does the beszel CI lane, whose tag string is
+    # `host_prep,deployment_bundle,ntfy,beszel` in tests/ci/suites.conf -- which
+    # would have converged with the ephemeral vault, asked Pushover about
+    # credentials that were never real, and turned that lane red.
+    #
+    # ansible_run_tags is what the tags cannot say: which tag somebody actually
+    # asked for. It is a magic variable rather than a fact, so
+    # `inject_facts_as_vars = False` does not touch it -- measured, not assumed:
+    # it reads ['all'] for a bare run, ['beszel', 'host_prep', ...] for the CI
+    # lane, and ['platform_verify_beszel'] for the poller's verification.
+    #
+    # `never` stays alongside it for the untagged case, where it keeps these out
+    # of --list-tasks as well as out of the run. The `when` is the load-bearing
+    # half; that a `when` is invisible to --list-tasks is exactly why the tag
+    # alone read as sufficient.
+    #
+    # site.yml is every service's deployment path, and nothing else in this
+    # repository puts a third party on it. verify.yml reaches these through
+    # --tags platform_verify_beszel, which is how the poller runs them: once per
+    # deployed revision, not once per tick, because a revision already attempted
+    # is never re-converged.
     - name: Ask Pushover whether it still accepts the managed credentials
       tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
       ansible.builtin.uri:
         url: "{{ beszel_pushover_validation_url }}"
         method: POST
@@ -308,6 +327,7 @@
 
     - name: Summarize the Pushover answer without the credentials it carried
       tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
       ansible.builtin.set_fact:
         # -1 rather than 0, for the reason CLAUDE.md gives for rc under
         # failed_when: the line above replaces the module's own verdict, so a
@@ -352,7 +372,9 @@
           Pushover did not answer, so credential validity is unverified this run.
           This is not a refusal and is not a failure; the managed webhook was
           still reconciled.
-      when: not (beszel_pushover_answered | bool)
+      when:
+        - "'platform_verify_beszel' in ansible_run_tags"
+        - not (beszel_pushover_answered | bool)
 
     # Only the two derived booleans are named below. Ansible finalizes a task's
     # arguments before it decides whether the assert holds, so a fail_msg
@@ -366,6 +388,7 @@
     # a converge. A --check --diff that surfaces a revoked token is the point.
     - name: Verify Pushover still accepts the managed credentials
       tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
       ansible.builtin.assert:
         that:
           - not (beszel_pushover_answered | bool) or (beszel_pushover_accepted | bool)
