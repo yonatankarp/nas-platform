@@ -1538,7 +1538,15 @@ interface_roles.each do |role|
   next unless File.file?(spec_path)
 
   spec = YAML.safe_load_file(spec_path)
-  check(failures, spec.dig("argument_specs", "main", "options").is_a?(Hash),
+  # Non-empty, not merely a Hash. `options: {}` is a Hash, so the shape test
+  # alone accepted a role that declares an interface of nothing -- measured on
+  # roles/bindery, whose 34 options were erased in a sandbox and passed all
+  # eight policy scripts. That is a vacuous pass of the same class as the glob
+  # this loop is floored against: the role reads as having declared its
+  # interface while every argument it takes is unchecked, so a missing variable
+  # is back to failing midway through the run with a trace.
+  declared_options = spec.dig("argument_specs", "main", "options")
+  check(failures, declared_options.is_a?(Hash) && !declared_options.empty?,
         "role #{name}: argument_specs declares no options")
 end
 

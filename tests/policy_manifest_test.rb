@@ -1686,6 +1686,140 @@ expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a r
   File.symlink("../../beszel/tasks/main.yml", path)
 end
 
+# Five properties over the roles/* globs, in six rows -- "declares no options"
+# takes two, for the reason stated at that pair. Every one of them is asserted
+# per role or per task file, so none fails when its subject list goes quiet: the
+# loop iterates zero times and reports success, which is indistinguishable from
+# compliance. #556 read that silence as roles/image_downgrade_guard being absent
+# from the fixture, which is true but buys nothing -- the globs are role-agnostic
+# and iterate 22 roles inside a sandbox, so a plant in any present role proves
+# the same check bites. policy_test.rb now floors the two subject lists that
+# carried no floor at all; these rows are the other half, proving the properties
+# still bite rather than merely still having subjects.
+#
+# Four of the five were planted by nothing. The fifth -- missing
+# meta/argument_specs.yml -- already had coverage, and the first draft of this
+# comment claimed otherwise on an unmeasured count. "recreated retired role"
+# above writes roles/<retired>/tasks/main.yml into a directory with no meta/ at
+# all, so it emits two diagnostics and the second is
+# "role <retired>: missing meta/argument_specs.yml".
+#
+# Its row is kept anyway, and the reason is the shape rather than the count.
+# That coverage is incidental: it is a side effect of a plant aimed at the
+# retired-role property, on a role that exists in order to be absent. Anyone
+# narrowing that row, or retiring the token it is built on, would take this
+# property's only coverage with it and nothing would say so -- which is the
+# silent-loss shape this repository keeps closing. A row that names the property
+# it proves costs one sandbox and makes that impossible.
+#
+# kapowarr hosts all six. Two criteria had to hold and they narrow seventeen
+# service roles to three. It has to be a role every sandbox carries *complete*
+# -- defaults, argument_specs, tasks/main.yml and templates/env.j2 all derived
+# from services/manifest.yml, so no row reads a file the fixture left behind --
+# which admits only kapowarr, nextcloud, pinchflat and vaultwarden; and it has
+# to be mutated by no other row, so no plant here can collide with one, which
+# drops nextcloud and leaves three. ntfy, beszel, deployment_bundle, host_prep,
+# komga, vault_contract and preflight are all already subjects above, several
+# repeatedly.
+#
+# Among those three the choice is arbitrary, and saying so is more honest than
+# inventing a discriminator: kapowarr, pinchflat and vaultwarden each declare
+# two registered Compose deployments and one deployment_report include, measured,
+# so the structure the last two rows need does not separate them. The only mild
+# preference is that kapowarr and pinchflat carry a single task file, so the
+# shell-out row appends to the only file the role has, where vaultwarden has six.
+#
+# None of the six can breach the two floors policy_test.rb gained in #556.
+# Those count role *directories* and role *templates*, and no plant here removes
+# either; the phase row adds a task file, which moves a floor's subject count up
+# rather than down. Measured rather than reasoned: each plant below was run
+# against all eight scripts, and the only diagnostics reported are its own.
+
+expect_failure(failures, "role interface absent", "role kapowarr: missing meta/argument_specs.yml",
+               detected_by: %i[policy]) do |root|
+  File.delete(File.join(root, "roles", "kapowarr", "meta", "argument_specs.yml"))
+end
+
+# Two rows, because "declares no options" has two routes and only one of them
+# used to be refused. Removing the key leaves dig returning nil, which fails the
+# shape test; emptying the map leaves `{}`, which *is* a Hash and passed all
+# eight scripts until the non-empty term landed beside this loop's floor. The
+# second row is what makes that term hold: without it the tightening is
+# unproven, and without the tightening the row cannot be detected. Measured on
+# roles/bindery first -- 34 options erased, every script green -- so the defect
+# was a live vacuous pass rather than a hypothetical one.
+expect_failure(failures, "role interface options key removed",
+               "role kapowarr: argument_specs declares no options",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/kapowarr/meta/argument_specs.yml") do |spec|
+    spec.fetch("argument_specs").fetch("main").delete("options")
+  end
+end
+
+expect_failure(failures, "role interface options emptied",
+               "role kapowarr: argument_specs declares no options",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/kapowarr/meta/argument_specs.yml") do |spec|
+    spec.fetch("argument_specs").fetch("main")["options"] = {}
+  end
+end
+
+# Appended rather than grown out of an existing task on purpose: rewriting one of
+# kapowarr's two docker_compose_v2 deployments into a shell-out would remove a
+# registered deployment at the same time and trip the deployment-report rows
+# below, so the row would plant two defects and prove neither cleanly.
+expect_failure(failures, "role shells out to Compose",
+               "roles/kapowarr/tasks/main.yml: shells out to Compose; " \
+               "use community.docker.docker_compose_v2",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "roles", "kapowarr", "tasks", "main.yml")
+  File.write(path, "#{File.read(path)}\n- name: Restart the stack the quick way\n" \
+                   "  ansible.builtin.command: docker compose restart\n" \
+                   "  changed_when: false\n")
+end
+
+# The phase gate is the one of the five whose subject no sandbox holds at all,
+# so this row writes the subject instead of breaking one. All ten phase-gated
+# files in the tree -- eight managed_users.yml, immich's configured_password.yml
+# and user_onboarding.yml, jellyfin's settings.yml -- are reached by
+# include_tasks, which fixture_paths deliberately does not follow, so the gate
+# loop runs over 72 task files and every one of them falls out at
+# `next if gated_variables.empty?`. Writing the file is what exercises the
+# property at all.
+#
+# Leaving the opening assert off plants two diagnostics, not one, and an earlier
+# draft of this comment said one without having counted. Both come from this
+# same block: the row's own "does not open with an unconditional assert", and
+# "opening assert does not name the phases kapowarr_reconcile_phase implements",
+# because declarations is empty so the gated variable is not among them. The row
+# asserts the first, which is the defect it means to plant.
+#
+# What the empty declarations map does buy is silence from the *caller* half --
+# "declares X phases ... but its callers pass none" -- because declared_phases
+# records nothing for a file that declared nothing. That half is what broke four
+# expect_success rows when managed_users.yml was once added to the fixture, and
+# it is measurably quiet here: give this same file a correct opening assert and
+# it becomes the only diagnostic the file produces.
+expect_failure(failures, "role phase gate opens without an assert",
+               "roles/kapowarr/tasks/reconcile_stage.yml: gates tasks on " \
+               "kapowarr_reconcile_phase but does not open with an unconditional assert",
+               detected_by: %i[policy]) do |root|
+  File.write(File.join(root, "roles", "kapowarr", "tasks", "reconcile_stage.yml"),
+             "---\n- name: Reconcile one stage\n  ansible.builtin.debug:\n" \
+             "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
+end
+
+expect_failure(failures, "role deploys without reporting it",
+               "role kapowarr: deploys Compose services but declares 0 deployment reports, not one",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/kapowarr/tasks/main.yml") do |tasks|
+    tasks.reject! do |task|
+      task.is_a?(Hash) &&
+        task.dig("ansible.builtin.include_role", "tasks_from") == "deployment_report"
+    end
+  end
+end
+
 # docker_compose_v2_exec sets check_rc only when `detach` is true, so a task
 # without failed_when reports success on any exit code (#521). The reset is
 # picked as the subject because it is the one the issue was filed on and because
