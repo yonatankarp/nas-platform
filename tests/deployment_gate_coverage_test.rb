@@ -87,6 +87,11 @@
 # them, it cannot happen. The cost is one line in tests/validate-policy.sh and
 # the matching entry in tests/gate_manifest_coverage_test.rb's shard list.
 
+# Explicitly, not transitively. permitted_classes below names Date, and on this
+# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
+# on the CI runner's psych it does not, so the check died there with
+# `uninitialized constant Date (NameError)` on a tree that was green locally.
+require "date"
 require "yaml"
 
 require_relative "policy_support"
