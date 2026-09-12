@@ -180,10 +180,17 @@
       loop_control:
         label: "{{ item.name }}"
 
-    # A floor rather than non-emptiness: a case list that silently became one
-    # row would satisfy every per-row assertion below and prove nothing. Twelve
-    # is what the list holds; both fail-open rows and both no-comparison rows
-    # are load-bearing, so a shrink is a deliberate act with a diff.
+    # A floor rather than non-emptiness, and it is what survives of this
+    # assertion's original job. Each case now compares its own verdict and its
+    # own `newer` list against the ones it declares, in
+    # image_downgrade_guard_case.yml -- so a flipped verdict is caught there
+    # and no longer has to be inferred from a total. What a per-case assertion
+    # cannot catch is a case list that silently became one row: every row it
+    # still holds would pass, and the run would prove nothing. Twelve is what
+    # the list holds; both fail-open rows and both no-comparison rows are
+    # load-bearing, so a shrink is a deliberate act with a diff. The two
+    # verdict counts stay for the same reason -- a list that shrank to twelve
+    # copies of one row satisfies the length floors and reaches one verdict.
     - name: Require the case list to have run whole
       ansible.builtin.assert:
         that:
