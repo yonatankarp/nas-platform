@@ -1896,6 +1896,38 @@ expect_failure(failures, "dirty refusal made run once",
   File.write(path, tasks)
 end
 
+# The poller sweep's own subject going quiet (#596). policy_deployment_test.rb
+# derives the distinctive path fragments install-production-auto-deploy.yml
+# creates from the two poller roles' defaults, and skipping a role it could not
+# read left the sweep blind to every path that role installs while
+# check_floor(..., 3) stayed satisfied on the other role's three.
+#
+# EMPTIED RATHER THAN DELETED, and that is the pin: both states take the same
+# `unless document.is_a?(Hash)` branch, so one row proves the refusal -- but a
+# later narrowing back to the `File.file?` test the fix replaced would still
+# pass a deleted file and fail here. production_auto_deploy rather than
+# image_prune because the sandbox carries no roles/image_prune at all, by the
+# decision policy_mutation_support.rb states, and the refusal deliberately
+# exempts a role directory this tree does not have.
+#
+# WHICH MAKES THE MESSAGE THE BINDING ASSERTION HERE, not the exit status, and
+# the row would be a vacuous pass if it were read the other way. Emptying THIS
+# role's defaults is loud by a second and accidental route: `nas-platform-deploy`
+# is named by all three POLLER_PATH_REFERENCE_REASONS files, so losing the
+# fragment also breaks the pinned reference set one check further down, and
+# policy_deployment_test.rb exits nonzero either way. `nas-platform-prune` is
+# named by none of them, which is why image_prune was silent and is the site the
+# issue was filed on. Measured: with the refusal, the manifest holds; with only
+# the refusal reverted, this row fails with `missing failure message` while the
+# mutation is still detected -- so what the row pins is the refusal's own
+# sentence, which nothing else in the suite emits.
+expect_failure(failures, "poller role defaults emptied",
+               "is missing, empty or not a mapping, so the poller paths that role installs " \
+               "were derived from nothing",
+               detected_by: %i[deployment]) do |root|
+  File.write(File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml"), "")
+end
+
 expect_failure(failures, "fresh-root probe regressed to deployment root",
                "fresh-install preflight must probe the existing validated nas_docker_root",
                detected_by: %i[platform]) do |root|

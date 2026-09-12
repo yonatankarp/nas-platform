@@ -905,11 +905,35 @@ check(failures, real_output.include?("does not resolve to"),
 # renamed share root moves the subject with it. Every file a site.yml run can
 # reach is then swept for them, and the result is pinned: a new reference is a new
 # coupling and has to be justified by editing this list, not by editing a role.
-POLLER_INSTALLED_FRAGMENTS = %w[production_auto_deploy image_prune].flat_map do |role|
+#
+# A DEFAULTS FILE THAT COULD NOT BE READ IS NOT A ROLE THAT INSTALLS NOTHING
+# (#596). This skipped such a file and the role's fragments silently became
+# none, which the floor below cannot see: production_auto_deploy supplies three
+# on its own, so `mv roles/image_prune/defaults/main.yml /tmp/` left the sweep
+# blind to every nas-platform-prune path and the run printed "all properties
+# hold" over a planted reference to one. The unparseable route is deliberately
+# left to crash on the unrescued safe_load_file -- that is already loud -- so
+# what is recorded here is the file that is absent, empty or not a mapping,
+# which are the three ways this derivation goes quiet without raising.
+#
+# ABSENT ROLE DIRECTORY IS THE ONE STATE THAT IS NOT A FAULT, and it is the
+# distinction the refusal rests on rather than an escape hatch: the mutation
+# sandbox carries no roles/image_prune at all -- BASE_FIXTURE_PATHS names none
+# of it, on purpose, and the floor below is sized at 3 against exactly that --
+# so a role this tree does not have contributes nothing and is entitled to. A
+# role directory that IS here and whose defaults cannot be read is the state
+# nothing else reports.
+POLLER_ROLES = %w[production_auto_deploy image_prune].freeze
+unusable_poller_defaults = []
+POLLER_INSTALLED_FRAGMENTS = POLLER_ROLES.flat_map do |role|
   defaults_path = File.join(ROOT, "roles", role, "defaults", "main.yml")
-  next [] unless File.file?(defaults_path)
+  document = File.file?(defaults_path) ? YAML.safe_load_file(defaults_path) : nil
+  unless document.is_a?(Hash)
+    unusable_poller_defaults << defaults_path.delete_prefix("#{ROOT}/") if Dir.exist?(File.join(ROOT, "roles", role))
+    next []
+  end
 
-  YAML.safe_load_file(defaults_path).filter_map do |key, value|
+  document.filter_map do |key, value|
     next unless key.end_with?("_root", "_path") && value.is_a?(String)
 
     value.gsub(/\{\{.*?\}\}/m, " ").scan(%r{[A-Za-z0-9/._-]+})
@@ -917,6 +941,13 @@ POLLER_INSTALLED_FRAGMENTS = %w[production_auto_deploy image_prune].flat_map do 
          .map { |fragment| fragment.sub(%r{\A/}, "").sub(%r{/\z}, "") }
   end.flatten
 end.uniq.sort.freeze
+check(failures, unusable_poller_defaults.empty?,
+      "#{unusable_poller_defaults.inspect} is missing, empty or not a mapping, so the poller " \
+      "paths that role installs were derived from nothing and the sweep below cannot find a " \
+      "reference to any of them. A role that installs nothing and a role whose defaults could " \
+      "not be read are different states, and only the first is a reason to assert nothing. The " \
+      "floor beside this does not reach it: the other poller role supplies three fragments " \
+      "alone, so the count stays satisfied while half the subject is gone")
 check_floor(failures, POLLER_INSTALLED_FRAGMENTS.length, 3,
             "distinctive path fragments install-production-auto-deploy.yml creates")
 
