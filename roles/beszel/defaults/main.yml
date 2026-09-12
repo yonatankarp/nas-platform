@@ -60,3 +60,14 @@ beszel_alerts:
 # Pushover then does with such a message is unmeasured here.
 beszel_notification_url: >-
   pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/
+
+# Pushover's own credential check, which is the only thing on this platform that
+# can tell a working notification chain from a stored string. Pushover documents
+# validation requests as exempt from the message quota, so running one on every
+# verification costs nothing and sends nothing to anybody's phone.
+#
+# A variable rather than a literal for the reason
+# production_auto_deploy_github_api_base is one: the endpoint has to be
+# redirectable to prove the task's own branches without involving the real
+# service.
+beszel_pushover_validation_url: https://api.pushover.net/1/users/validate.json
