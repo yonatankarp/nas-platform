@@ -112,5 +112,6 @@
       {{ image_downgrade_guard_pinned_version | to_json }} against the deployed
       {{ image_downgrade_guard_deployed_versions }} from
       {{ item.deployed }}. The declared verdict is the subject of this case
-      list -- the aggregate floors in the play notice only a case list that
-      shrank, so a single verdict flipping is exactly what this compares.
+      list -- the aggregate floors in the play catch a case list that shrank
+      and a wholesale swing in the totals, but a single verdict flipping lands
+      inside them, which is exactly what this compares.
