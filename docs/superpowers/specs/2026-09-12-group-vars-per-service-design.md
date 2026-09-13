@@ -261,3 +261,68 @@ equal both directions. Rejected as the sixtieth list.
 `lookup('vars', 'nas_storage_' ~ name) | default([])`.** Rejected because
 `default([])` makes a missing contributor contribute silently nothing, which is
 the failure this design spends a floor to prevent.
+
+## As built, 2026-09-13
+
+Five things the design did not anticipate. Each is a decision the implementation
+had to make, recorded here rather than left for the next reader to reverse-engineer.
+
+**The composition sorts by path, which the design did not call for.** The
+hand-written inventory kept the two `.acquisition` roots ahead of their leaves on
+purpose, and its own comment says why: `ansible.builtin.file` applies a declared
+mode to an intermediate parent only at the moment it creates it. Ordering
+contributors by variable name broke that for `/Books`, whose `.acquisition`
+children sort ahead of it. `| sort(attribute='path')` makes the invariant
+structural instead, because a parent path is a prefix of its children. The
+composed list has zero parent-after-child pairs, against zero in the original.
+
+**"The shared inventory" had to become the directory in more than one place.**
+`tests/policy_vault_test.rb` sweeps the non-secret inventory for `vault_`-prefixed
+names and requires each to be a credential the contract validates. Reading
+`main.yml` alone would have left nineteen files free to reintroduce exactly the
+lie #298 and #353 removed, so `NasStorage.shared_inventory` merges the directory
+and the sweep covers all of it. It raises on a duplicate key, which Ansible would
+resolve silently by load order.
+
+**Not every reader wanted the composed list.** A contract that only asserts its
+own service's paths now reads that service's file and its own
+`nas_storage_<role>`: `paperless-static.rb`, `audiobookshelf-static.rb` and the
+Komga and Kapowarr migration flags. That is a narrower claim than scanning a
+shared list for a path, and it made those wrappers pass one file rather than
+gaining an argument. `kapowarr-static.rb` and `nextcloud-static.rb` kept the
+composed view because the paths they check are shared media groups.
+
+**`tests/nas_storage_support.rb` is in `BASE_FIXTURE_PATHS`, not derived.** The
+derivation covers the per-service files; the helper itself is a global file every
+policy script requires. Omitting it produced the documented symptom exactly: all
+465 mutation rows failed at once with a `LoadError` naming the sandbox path.
+
+**One mutation row had to widen.** "media library leaves removed from storage"
+empties every `{{ nas_media_root }}/Media/` entry to prove Jellyfin's mount goes
+undeclared. Split across two contributors, emptying `media_libraries.yml` alone
+left the staging paths still sitting under `/Media` and covering the mount, so
+the plant stopped biting. It now reaches every contributor. This is the failure
+mode the repository's own rule warns about: a plant that no longer reproduces its
+defect reports a pass.
+
+### Verified
+
+- 62 entries before and after, set-identical, nothing lost or gained; every other
+  key and value unchanged and no key defined twice across the directory.
+- The Ruby helper produces byte-identical content and ordering to what Ansible
+  composes, checked against a live `ansible-playbook` dump.
+- Five planted defects detected with the right message: a contributor removed
+  while its file remains, a contributor renamed to a non-role name, a shared
+  contributor renamed out from under `SHARED_CONTRIBUTORS`, and the prefix taken
+  by a role default.
+- `tests/policy_manifest_test.rb`: 282 mutations at 196 call sites, all detected.
+- `ansible-lint --strict`: 0 failures, production profile.
+- `ansible-playbook -i inventory/local.yml site.yml --syntax-check`.
+
+### Not done here
+
+The integration suites need Docker and have not been run from this machine;
+`tests/integration.sh --suite smoke site.yml` is the one that converges
+`host_prep` against a real `/proc/mounts` and real uid/gid, and it is the check
+that would catch an ordering or ownership regression the static gate cannot see.
+CI runs it on the pull request.
