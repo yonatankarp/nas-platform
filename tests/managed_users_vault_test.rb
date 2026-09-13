@@ -6,6 +6,7 @@ require "tmpdir"
 require "yaml"
 require "fileutils"
 
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -18,7 +19,8 @@ DOCS_PATH = File.join(ROOT, "docs", "secrets.md")
 POLICY_SUPPORT_PATH = File.join(ROOT, "tests", "policy_support.rb")
 VALIDATE_POLICY_PATH = File.join(ROOT, "tests", "validate-policy.sh")
 PLAIN_TEMPLATE_PATH = File.join(ROOT, "templates", "vault-plain.yml.j2")
-SHARED_VARS_PATH = File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
+# The non-secret inventory is a directory now, and the Immich preference keys
+# this reads live in service_immich.yml with the rest of that service.
 
 IMMICH_PREFERENCE_KEYS = %w[
   immich_managed_user_preference_profile_default
@@ -131,7 +133,7 @@ def validate_with_role(document, preference_overrides = {})
   Dir.mktmpdir("nas-platform-managed-users-vault-") do |directory|
     path = File.join(directory, "vault.yml")
     playbook = File.join(directory, "validate-vault.yml")
-    shared_vars = YAML.safe_load_file(SHARED_VARS_PATH, aliases: false)
+    shared_vars = NasStorage.shared_inventory(ROOT)
     preferences = IMMICH_PREFERENCE_KEYS.to_h { |key| [key, shared_vars[key]] }
     variables = preferences.merge(document).merge(preference_overrides)
     File.write(path, YAML.dump(variables), mode: "w", perm: 0o600)

@@ -145,7 +145,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       "$vault_file" > "$fixture_vault_view"
     install -m 0600 /dev/null "$fixture_vars_file"
     ruby /repo/tests/mac/generate-immich-fixture-vars.rb \
-      "$fixture_vars_file" /repo/inventory/group_vars/all/main.yml \
+      "$fixture_vars_file" /repo/inventory/group_vars/all/service_immich.yml \
       < "$fixture_vault_view"
     chmod 0600 "$fixture_vars_file"
     rm -f "$fixture_vault_view"

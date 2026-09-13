@@ -587,17 +587,30 @@ install_validation_inventory() {
   validation_stripped_key=$3
   mkdir -p "$validation_inventory_directory/group_vars/all"
   cp -- "$repo_dir/inventory/local.yml" "$validation_inventory_directory/local.yml"
+  # Every non-secret group_vars file, because the shared inventory is a
+  # directory now: nas_storage is composed from whatever nas_storage_*
+  # contributors are present, and the empty operator-supplied credentials the
+  # contract reads live beside the services that own them.
+  for validation_inventory_source in "$repo_dir"/inventory/group_vars/all/*.yml; do
+    case ${validation_inventory_source##*/} in
+      vault.yml | vault.yml.example) continue ;;
+    esac
+    cp -- "$validation_inventory_source" \
+      "$validation_inventory_directory/group_vars/all/${validation_inventory_source##*/}" ||
+      die 'failed to copy the shared inventory'
+  done
   if [ -n "$validation_stripped_key" ]; then
-    [ "$(grep -c "^$validation_stripped_key:" \
-      "$repo_dir/inventory/group_vars/all/main.yml" || true)" = 1 ] ||
+    # Exactly once across the whole directory, not once per file: the key is a
+    # derived default and two of them would mean the split duplicated it.
+    [ "$(grep -h -- "^$validation_stripped_key:" \
+      "$repo_dir"/inventory/group_vars/all/*.yml 2>/dev/null |
+      wc -l | tr -d ' ')" = 1 ] ||
       die 'the shared inventory does not derive the omitted credential exactly once'
-    grep -v "^$validation_stripped_key:" \
-      "$repo_dir/inventory/group_vars/all/main.yml" \
-      > "$validation_inventory_directory/group_vars/all/main.yml" ||
+    validation_stripped_file=$(grep -l "^$validation_stripped_key:" \
+      "$repo_dir"/inventory/group_vars/all/*.yml)
+    grep -v "^$validation_stripped_key:" "$validation_stripped_file" \
+      > "$validation_inventory_directory/group_vars/all/${validation_stripped_file##*/}" ||
       die 'failed to strip the derived default from the shared inventory'
-  else
-    cp -- "$repo_dir/inventory/group_vars/all/main.yml" \
-      "$validation_inventory_directory/group_vars/all/main.yml"
   fi
   cp -- "$validation_vault_file" \
     "$validation_inventory_directory/group_vars/all/vault.yml"

@@ -1,0 +1,48 @@
+---
+# Media library roots. These are shared by construction: arr mounts the whole
+# media root, jellyfin mounts all of Media and komga all of Books, so no single
+# service owns them. They are recovery: user -- NAS-managed household files this
+# repository creates but does not own -- which is why they are separated from the
+# disposable staging tree in media_acquisition.yml rather than filed beside it.
+
+nas_storage_media_libraries:
+  - path: "{{ nas_media_root }}/Media/Audiobooks"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+
+  # Shared movie and series libraries remain NAS-owned user media.
+  - path: "{{ nas_media_root }}/Media/Movies"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/Series"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+
+  # Inert media acquisition foundation. Transport activation remains explicitly
+  # disabled per host class; these paths and service state are prepared so a
+  # later role can start without changing the storage or recovery contract.
+  - path: "{{ nas_media_root }}/Media/YouTube"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/Ebooks"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/Comics"
+    mode: "0755"
+    recovery: user
+    media_acquisition_foundation: true
+    media_acquisition_writer: true

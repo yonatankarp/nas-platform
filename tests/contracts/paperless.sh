@@ -28,7 +28,7 @@ integration_compose=$repo_dir/services/paperless-ngx/compose.integration.yml
 role=$repo_dir/roles/paperless_ngx/tasks/main.yml
 defaults=$repo_dir/roles/paperless_ngx/defaults/main.yml
 argument_specs=$repo_dir/roles/paperless_ngx/meta/argument_specs.yml
-storage_inventory=$repo_dir/inventory/group_vars/all/main.yml
+storage_inventory=$repo_dir/inventory/group_vars/all/service_paperless_ngx.yml
 host_prep=$repo_dir/roles/host_prep/tasks/main.yml
 generator=$repo_dir/generate-secrets.yml
 snapshot=$repo_dir/tests/mac/snapshot-paperless.sh
@@ -53,7 +53,7 @@ fail_contract() {
 [ -f "$role" ] || fail_contract 'roles/paperless_ngx/tasks/main.yml is absent'
 [ -f "$defaults" ] || fail_contract 'roles/paperless_ngx/defaults/main.yml is absent'
 [ -f "$argument_specs" ] || fail_contract 'roles/paperless_ngx/meta/argument_specs.yml is absent'
-[ -f "$storage_inventory" ] || fail_contract 'inventory/group_vars/all/main.yml is absent'
+[ -f "$storage_inventory" ] || fail_contract 'inventory/group_vars/all/service_paperless_ngx.yml is absent'
 [ -f "$host_prep" ] || fail_contract 'roles/host_prep/tasks/main.yml is absent'
 [ -x "$snapshot" ] || fail_contract 'tests/mac/snapshot-paperless.sh is absent or not executable'
 [ -x "$snapshot_program" ] ||

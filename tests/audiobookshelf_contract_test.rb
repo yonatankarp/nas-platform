@@ -83,7 +83,7 @@ FIXTURE_FILES = %w[
   roles/audiobookshelf/templates/env.j2
   services/audiobookshelf/compose.yml
   services/audiobookshelf/compose.mac.yml
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_audiobookshelf.yml
   tests/integration.sh
   tests/integration_controller.sh
   tests/generate-ephemeral-vault.sh
@@ -109,7 +109,7 @@ STATIC_ARGUMENTS = %w[
   roles/audiobookshelf/meta/argument_specs.yml
   roles/audiobookshelf/templates/env.j2
   tests/integration_controller.sh
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_audiobookshelf.yml
   tests/contracts/audiobookshelf-runtime.rb
 ].freeze
 
@@ -322,8 +322,8 @@ STATIC_ROWS = [
   {
     name: "the backup directory declared with the wrong recovery class",
     break: lambda { |root|
-      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
-        entry = document.fetch("nas_storage").find do |candidate|
+      edit_yaml(root, "inventory/group_vars/all/service_audiobookshelf.yml") do |document|
+        entry = document.fetch("nas_storage_audiobookshelf").find do |candidate|
           candidate["path"] == "{{ nas_docker_root }}/audiobookshelf/backups"
         end
         entry["recovery"] = "cache"

@@ -10,6 +10,7 @@ require "open3"
 require "rbconfig"
 require "set"
 require "yaml"
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include PolicySupport
@@ -614,7 +615,10 @@ immich_preference_keys = %w[
   immich_managed_user_preference_profiles
 ]
 immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
-shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+# Immich's preference policy moved to its own group_vars file with the rest of
+# the service's settings. It is still the layer that outranks role defaults, which
+# is what the comparison below is about.
+shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "service_immich.yml"))
 [shared_vars, immich_defaults].each_with_index do |variables, index|
   source = index.zero? ? "normal inventory" : "Immich role defaults"
   check(failures, variables["immich_managed_user_preference_profile_default"] == "standard",
@@ -1093,8 +1097,65 @@ PLATFORM_SERVICE_DEFAULTS = {
   "logging" => PLATFORM_LOGGING
 }.freeze
 
-declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-                     .fetch("nas_storage").map { |entry| entry.fetch("path") }
+# The storage inventory is composed from every nas_storage_* contributor in
+# group_vars/all rather than written in one place, so two properties that used to
+# be free have to be bought.
+#
+# Membership, because a derived composition cannot notice what it lost. Deleting
+# every contributor leaves nas_storage as [] and the play reports ok, measured
+# 2026-09-12, so contributors are held against the manifest in both directions.
+implemented_roles = Array(manifest["services"]).filter_map do |entry|
+  entry["role"] if entry.is_a?(Hash) && IMPLEMENTED_STATUSES.include?(entry["status"])
+end.uniq
+NasStorage.problems(ROOT, implemented_roles).each { |problem| check(failures, false, problem) }
+
+# And the prefix, because q('varnames') reads whatever is in scope at the moment
+# it evaluates. A role default named nas_storage_* would join the composition
+# partway through a run, which would make nas_storage evaluate to different
+# things depending on where it is read -- and host_prep reads it early. Nothing
+# outside group_vars/all may claim the prefix; the namespace is clean today and
+# this is what keeps it so.
+#
+# Read as YAML rather than by matching column zero. A root mapping may be
+# indented -- `  nas_storage_x:` with nothing above it parses to the top-level
+# key `nas_storage_x`, verified -- and a line-anchored pattern sees nothing
+# there, so the one definition this refuses is the one spelled to slip past it.
+# An unreadable subject is reported rather than skipped, the way #599 requires
+# at its three sites: a scan that cannot read a file has not cleared it.
+storage_prefix_offenders = []
+storage_prefix_unreadable = []
+Find.find(ROOT) do |path|
+  Find.prune if File.basename(path) == ".git"
+  next unless File.file?(path) && path.end_with?(".yml")
+
+  relative = path.delete_prefix("#{ROOT}/")
+  next if relative.start_with?("inventory/group_vars/all/")
+
+  document = begin
+    YAML.safe_load_file(path, aliases: true)
+  rescue StandardError => error
+    storage_prefix_unreadable << "#{relative} (#{error.class})"
+    next
+  end
+  next unless document.is_a?(Hash)
+
+  document.each_key do |key|
+    next unless key.is_a?(String) && key.start_with?(NasStorage::CONTRIBUTOR_PREFIX)
+
+    storage_prefix_offenders << "#{relative}: #{key}"
+  end
+end
+check(failures, storage_prefix_unreadable.empty?,
+      "#{storage_prefix_unreadable.join(', ')} could not be read as YAML, so the " \
+      "#{NasStorage::CONTRIBUTOR_PREFIX}* namespace sweep did not clear them: a subject a scan " \
+      "cannot read is not a subject it checked")
+check(failures, storage_prefix_offenders.empty?,
+      "#{storage_prefix_offenders.join(', ')} define a #{NasStorage::CONTRIBUTOR_PREFIX}* variable " \
+      "outside inventory/group_vars/all: the composition reads every such name in scope, so a " \
+      "definition elsewhere joins the storage inventory where it is visible and leaves it where " \
+      "it is not")
+
+declared_paths = NasStorage.entries(ROOT).map { |entry| entry.fetch("path") }
 
 # A mounted path is accounted for when nas_storage declares it, or declares an
 # entry it sits under: host_prep creates that entry with the right ownership and

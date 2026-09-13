@@ -97,6 +97,10 @@ services:
 YAML
 cp "$repo_dir/inventory/group_vars/all/main.yml" \
   "$fixture_repo/inventory/group_vars/all/main.yml"
+# The Immich preference profiles the fixture generator reads live with the
+# rest of that service now, so the fixture repository needs that file too.
+cp "$repo_dir/inventory/group_vars/all/service_immich.yml" \
+  "$fixture_repo/inventory/group_vars/all/service_immich.yml"
 chmod 0755 "$fixture_mac/run.sh" "$fixture_mac/report.rb" \
   "$fixture_mac/generate-immich-fixture-vars.rb" \
   "$fixture_mac/manual-validation-handoff.rb" \

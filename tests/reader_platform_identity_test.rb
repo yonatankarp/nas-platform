@@ -19,6 +19,7 @@ require "json"
 require "open3"
 require "yaml"
 
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -129,8 +130,7 @@ def effective(files, environment)
   JSON.parse(stdout)
 end
 
-storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-                .fetch("nas_storage")
+storage = NasStorage.entries(ROOT)
 
 READERS.each do |name, reader|
   compose_path = File.join(ROOT, "services", name, "compose.yml")

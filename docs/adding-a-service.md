@@ -140,14 +140,19 @@ roles/<role>/tasks/main.yml
 
 ### 2. Wiring it into the platform
 
-Four existing files, always:
+Three existing files and one new one, always:
 
 ```
-services/manifest.yml              the service, its role and its status
-inventory/group_vars/all/main.yml  its directories, under nas_storage
-site.yml                           the role, with tags
-verify.yml                         the role, with tags: [never]
+services/manifest.yml                          the service, its role and its status
+inventory/group_vars/all/service_<role>.yml    NEW: its settings and its directories
+site.yml                                       the role, with tags
+verify.yml                                     the role, with tags: [never]
 ```
+
+The group_vars entry used to be an edit to `inventory/group_vars/all/main.yml`
+and is now a new file, so the count is unchanged. `main.yml` holds only
+cross-cutting facts and the composition; a service that puts its settings there
+still works, and is wrong, because nothing else will look for them there.
 
 ### 3. The roster and its expectations
 
@@ -943,17 +948,34 @@ propagation.
 
 ### 6. Declare the storage
 
-The remaining failure is `implemented service has no storage declaration`. Add
-the directories to `nas_storage` in `inventory/group_vars/all/main.yml`:
+The remaining failure is `implemented service has no storage declaration`. Declare
+the directories the service owns as `nas_storage_<role>` in its own
+`inventory/group_vars/all/service_<role>.yml`:
 
 ```yaml
-  # Navidrome. Its database and cache are critical service state; the music
-  # files remain NAS-owned user media mounted read-only by the service.
+# Navidrome. Its database and cache are critical service state.
+nas_storage_navidrome:
   - path: "{{ nas_docker_root }}/navidrome/data"
     owner: "{{ nas_uid }}"
     group: "{{ nas_gid }}"
     mode: "0755"
     recovery: critical
+```
+
+Nothing lists the contributors, so there is no second place to register this.
+`main.yml` composes every `nas_storage_*` variable it can see, and
+`tests/nas_storage_support.rb` applies the same rule on the Ruby side. It does
+check membership against `services/manifest.yml` in both directions, so a service
+on the roster with no `nas_storage_<role>` fails by name rather than contributing
+nothing — that is the check whose message you are reading.
+
+A path **no single service owns** does not go here. The shared media tree lives in
+`media_libraries.yml` (`recovery: user` library roots) and `media_acquisition.yml`
+(`recovery: cache` staging), and adding a third shared file means adding it to
+`SHARED_CONTRIBUTORS`, which is closed in both directions. A music library that
+Navidrome reads and an acquisition role writes is a library root:
+
+```yaml
   - path: "{{ nas_media_root }}/Media/Music"
     mode: "0755"
     recovery: user

@@ -290,7 +290,9 @@ vault_error.replace("\0" * vault_error.bytesize)
 # The two mail object names are not credentials and are not in the vault: they
 # are operator policy in the shared inventory, read here from the tree under
 # inspection rather than from the checkout this program lives in (#353).
-shared_inventory = YAML.safe_load_file(REPO_ROOT.join("inventory", "group_vars", "all", "main.yml"))
+shared_inventory = YAML.safe_load_file(
+  REPO_ROOT.join("inventory", "group_vars", "all", "service_paperless_ngx.yml")
+)
 mail_account_name = shared_inventory["paperless_mail_account_name"]
 mail_rule_name = shared_inventory["paperless_mail_rule_name"]
 fail_contract("shared inventory does not declare both Paperless mail object names") unless

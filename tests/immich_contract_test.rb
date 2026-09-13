@@ -625,7 +625,7 @@ end
 def build_runtime_policy(root, options)
   inventory = File.join(root, "repo", "inventory", "group_vars", "all")
   FileUtils.mkdir_p(inventory)
-  File.write(File.join(inventory, "main.yml"), YAML.dump(
+  File.write(File.join(inventory, "service_immich.yml"), YAML.dump(
                                                  "immich_managed_user_preference_profile_default" => "standard",
                                                  "immich_managed_user_preference_profile_by_email" => {},
                                                  "immich_managed_user_preference_overrides" => {},

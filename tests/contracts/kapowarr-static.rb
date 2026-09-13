@@ -18,7 +18,9 @@ required = %w[
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
   services/kapowarr/compose.integration.yml
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_kapowarr.yml
+  inventory/group_vars/all/media_libraries.yml
+  inventory/group_vars/all/media_acquisition.yml
 ]
 required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
@@ -26,6 +28,7 @@ end
 
 # Task files are flattened so a task on a block's rescue or always path is still
 # a task the role executes.
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "nas_storage_support")
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
@@ -108,9 +111,10 @@ if failures.empty?
   # naming a directory host_prep does not create is a mount that resolves to
   # nothing, and Kapowarr answers a download folder that is not a directory with
   # FolderNotFound rather than by creating it.
-  declared_paths = YAML.safe_load_file(
-    File.join(root, "inventory/group_vars/all/main.yml")
-  ).fetch("nas_storage").map { |entry| entry.fetch("path") }
+  # The composed inventory, not one file: the two paths checked below are the
+  # comics library and its staging root, which are shared media groups rather
+  # than anything kapowarr declares for itself.
+  declared_paths = NasStorage.entries(root).map { |entry| entry.fetch("path") }
   {
     "kapowarr_library_root" => ["/Comics", "the comics library"],
     "kapowarr_staging_root" => ["/.acquisition/usenet/comics", "the download staging root"]
@@ -295,7 +299,7 @@ if failures.empty?
   # `-e kapowarr_volume_folder_migration_allowed=true`, which outranks both
   # layers and leaves nothing committed to forget.
   failures << "the Kapowarr volume folder migration must be pinned closed in the inventory" unless
-    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
+    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/service_kapowarr.yml"))
         .fetch("kapowarr_volume_folder_migration_allowed", false) == false
   migration_option = YAML.safe_load_file(
     File.join(root, "roles/kapowarr/meta/argument_specs.yml")

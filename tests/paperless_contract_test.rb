@@ -98,7 +98,7 @@ FIXTURE_FILES = %w[
   roles/paperless_ngx/meta/argument_specs.yml
   roles/paperless_ngx/templates/env.j2
   roles/host_prep/tasks/main.yml
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_paperless_ngx.yml
   generate-secrets.yml
   tests/mac/snapshot-paperless.sh
   tests/mac/snapshot-paperless.rb
@@ -127,7 +127,7 @@ STATIC_ARGUMENT_VARIABLES = {
   "roles/paperless_ngx/tasks/main.yml" => "role",
   "roles/paperless_ngx/defaults/main.yml" => "defaults",
   "roles/paperless_ngx/meta/argument_specs.yml" => "argument_specs",
-  "inventory/group_vars/all/main.yml" => "storage_inventory",
+  "inventory/group_vars/all/service_paperless_ngx.yml" => "storage_inventory",
   "roles/host_prep/tasks/main.yml" => "host_prep",
   "generate-secrets.yml" => "generator",
   "roles/paperless_ngx/templates/env.j2" => "environment_template",
@@ -475,10 +475,10 @@ STATIC_ROWS = [
   },
   {
     name: "a central storage directory declared with the wrong recovery class",
-    argument: "inventory/group_vars/all/main.yml",
+    argument: "inventory/group_vars/all/service_paperless_ngx.yml",
     break: lambda { |root|
-      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
-        entry = document.fetch("nas_storage").find do |candidate|
+      edit_yaml(root, "inventory/group_vars/all/service_paperless_ngx.yml") do |document|
+        entry = document.fetch("nas_storage_paperless_ngx").find do |candidate|
           candidate["path"] == "{{ nas_docker_root }}/paperless-ngx/data"
         end
         entry["recovery"] = "cache"

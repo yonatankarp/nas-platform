@@ -46,6 +46,8 @@ BASE_FIXTURE_PATHS = %w[
   generate-secrets.yml
   install-production-auto-deploy.yml
   inventory/group_vars/all/main.yml
+  inventory/group_vars/all/media_libraries.yml
+  inventory/group_vars/all/media_acquisition.yml
   inventory/group_vars/all/vault.yml.example
   inventory/group_vars/mac_hosts/main.yml
   inventory/group_vars/nas_hosts/main.yml
@@ -169,6 +171,7 @@ BASE_FIXTURE_PATHS = %w[
   tests/mac/verify.sh
   tests/policy_test.rb
   tests/policy_support.rb
+  tests/nas_storage_support.rb
   tests/http_fixture_support.rb
   tests/policy_platform_test.rb
   tests/policy_ci_test.rb
@@ -317,6 +320,10 @@ def fixture_paths(root = ROOT)
     raise "unsafe manifest fixture identity" unless EXPECTED_FIXTURE_ROLES[name] == role
 
     paths << File.join("services", name, "compose.yml")
+    # The service's own group_vars file, derived here rather than listed in
+    # BASE_FIXTURE_PATHS: it is a per-service obligation, and adding a service
+    # already touches 59 files without a sixtieth list nobody edits.
+    paths << File.join("inventory", "group_vars", "all", "service_#{role}.yml")
     role_root = File.join("roles", role)
     paths << File.join(role_root, "meta", "argument_specs.yml")
     # main.yml and everything it statically imports, because that whole set is
@@ -1092,9 +1099,11 @@ def implement_paperless(root)
         url: http://127.0.0.1/paperless/
   YAML
 
-  storage_path = File.join(root, "inventory", "group_vars", "all", "main.yml")
-  storage = YAML.safe_load_file(storage_path)
-  storage.fetch("nas_storage") << {
+  # A service declares the storage it owns in its own file now, so the synthetic
+  # entry goes where paperless_ngx's real ones do rather than into a shared list.
+  storage_path = File.join(root, "inventory", "group_vars", "all", "service_paperless_ngx.yml")
+  storage = File.exist?(storage_path) ? YAML.safe_load_file(storage_path) : {}
+  (storage["nas_storage_paperless_ngx"] ||= []) << {
     "path" => "{{ nas_docker_root }}/paperless-ngx/data",
     "mode" => "0755",
     "recovery" => "critical"

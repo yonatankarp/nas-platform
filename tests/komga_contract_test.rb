@@ -71,7 +71,7 @@ FIXTURE_FILES = %w[
   roles/komga/defaults/main.yml
   roles/komga/meta/argument_specs.yml
   roles/komga/templates/env.j2
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_komga.yml
   tests/policy_support.rb
 ].freeze
 
@@ -295,7 +295,7 @@ STATIC_ROWS = [
   {
     name: "a root migration input left true in the inventory that outranks the defaults",
     break: lambda { |root|
-      mutate_text(root, "inventory/group_vars/all/main.yml",
+      mutate_text(root, "inventory/group_vars/all/service_komga.yml",
                   "komga_library_root_migration_allowed: false",
                   "komga_library_root_migration_allowed: true")
     },
@@ -470,7 +470,7 @@ def static_argv(root)
     roles/komga/defaults/main.yml
     roles/komga/meta/argument_specs.yml
     roles/komga/templates/env.j2
-    inventory/group_vars/all/main.yml
+    inventory/group_vars/all/service_komga.yml
   ].map { |relative| File.join(root, relative) }
 end
 
