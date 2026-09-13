@@ -51,8 +51,13 @@ Refuse these rather than weighing them.
 
 ## Procedure
 
-1. **Read the issue.** `gh issue view <n> --comments`. An issue can be stale, so
-   check its claims against the tree before designing around them.
+1. **Read the issue.** `gh issue view <n> --comments`, then
+   `gh issue view <n> --json assignees` — `gh` refuses the two flags together. An
+   issue can be stale, so check its claims against the tree before designing around
+   them. **Assigned to somebody else: stop and report it** — somebody is already
+   on it, and two branches for one issue is the collision this avoids. Otherwise
+   claim it before the first edit, so a peer session reads the same signal:
+   `gh issue edit <n> --add-assignee @me`.
 
 2. **Isolate.** Own worktree, own branch off `origin/main`. Echo the working
    directory and pin its absolute path before the first edit, because a
@@ -185,6 +190,7 @@ Report, do not merge, do not start the next chunk.
   diff.
 - CI red for a reason outside the diff.
 - The issue asks for something the repository rules out.
+- The issue is already assigned to somebody else.
 
 **The test: would two reasonable people pick differently?** If yes, stop.
 
