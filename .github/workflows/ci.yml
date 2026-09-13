@@ -316,7 +316,7 @@ jobs:
           # secret and reds here.
           if [ -z "$VAULT_PASSWORD" ]; then
             echo "ANSIBLE_VAULT_PASSWORD is unset or empty." >&2
-            echo "This job decrypts inventory/group_vars/all/vault.yml and cannot run" >&2
+            echo "This job decrypts the vault in inventory/group_vars/all/ and cannot run" >&2
             echo "without it: gh secret set ANSIBLE_VAULT_PASSWORD." >&2
             exit 1
           fi
