@@ -602,9 +602,9 @@ install_validation_inventory() {
   if [ -n "$validation_stripped_key" ]; then
     # Exactly once across the whole directory, not once per file: the key is a
     # derived default and two of them would mean the split duplicated it.
-    [ "$(grep -h -c "^$validation_stripped_key:" \
+    [ "$(grep -h -- "^$validation_stripped_key:" \
       "$repo_dir"/inventory/group_vars/all/*.yml 2>/dev/null |
-      grep -v '^0$' | wc -l | tr -d ' ')" = 1 ] ||
+      wc -l | tr -d ' ')" = 1 ] ||
       die 'the shared inventory does not derive the omitted credential exactly once'
     validation_stripped_file=$(grep -l "^$validation_stripped_key:" \
       "$repo_dir"/inventory/group_vars/all/*.yml)

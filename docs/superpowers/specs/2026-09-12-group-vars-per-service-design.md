@@ -11,9 +11,13 @@ file per service, storage entries included. It changes no service behaviour, no
 credential, no deployment path and no compose definition. Every variable keeps
 its name and its value; only the file it is written in changes. `nas_storage` is
 the one exception and only in how it is assembled: its entries are unchanged, but
-they arrive concatenated in contributor-name order rather than in the order they
-were hand-written. `host_prep` creates directories from this list and is order
-independent, which the verification step below proves rather than assumes.
+they arrive sorted by path rather than in the order they were hand-written.
+`host_prep` is **not** order independent: it loops over this list, and
+`ansible.builtin.file` applies a declared mode to an intermediate parent only at
+the moment it creates it, so a leaf reached before its root leaves that root
+holding the umask until its own entry repairs it. The hand-written order carried
+that invariant by hand. A lexicographic path sort makes it structural, because a
+parent path is a prefix of its children.
 
 It does not touch the vault, `docs/secrets.md`, or the `platform_vault_file`
 contract. It does not restructure `nas_storage` entries themselves.
@@ -107,7 +111,8 @@ is configured to do and where Immich writes gets one file rather than two.
 
 ```yaml
 platform_storage_names: "{{ q('varnames', '^nas_storage_') | sort }}"
-nas_storage: "{{ q('vars', *platform_storage_names) | flatten(levels=1) }}"
+nas_storage: >-
+  {{ q('vars', *platform_storage_names) | flatten(levels=1) | sort(attribute='path') }}
 ```
 
 No list of services appears anywhere, in Ansible or in Ruby. Adding a service
@@ -160,7 +165,7 @@ because a count goes stale the moment a service is added:
 - `tests/nas_storage_support.rb` asserts that every implemented and accepted role
   in `services/manifest.yml` contributes a `nas_storage_<role>` variable, and that
   every contributor names such a role unless it appears in a declared
-  `SHARED_STORAGE_CONTRIBUTORS` list, which holds exactly
+  `SHARED_CONTRIBUTORS` list, which holds exactly
   `nas_storage_media_libraries` and `nas_storage_media_acquisition` and is
   asserted in both directions so a third shared file cannot appear unnoticed.
   Both directions on the roles too. A service legitimately owning no storage is admitted by name
@@ -221,10 +226,10 @@ this repository goes stale.
 - `ansible-lint --strict`.
 - A rendered-equality proof: dump `nas_storage` before and after the whole
   migration and assert the two are identical as sets and as ordered lists. The
-  ordering is `sort` by variable name, which is not the current hand-written
+  ordering is a lexicographic sort on `path`, which is not the hand-written
   order, so the ordered comparison is expected to differ and must be reviewed
-  rather than asserted equal. `host_prep` creates directories from this list and
-  ordering does not affect that, but the check is what proves it.
+  rather than asserted equal. What must hold instead is that no entry precedes an
+  ancestor of itself, because `host_prep` creates directories in this order.
 - `tests/validate-policy.sh` in full.
 - `tests/integration.sh --suite smoke site.yml`, which converges `host_prep`
   against a real `/proc/mounts` and real uid/gid.
