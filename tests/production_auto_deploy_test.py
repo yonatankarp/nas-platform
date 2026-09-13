@@ -3315,6 +3315,13 @@ class VerifyTest(PollerTestCase):
         fail_msg = assertion["ansible.builtin.assert"]["fail_msg"]
         self.assertTrue(fail_msg.startswith(marker + ":"), fail_msg)
         self.assertNotIn(marker, assertion["ansible.builtin.assert"]["success_msg"])
+        # Ansible's error excerpt prints the lines above the failing position, so
+        # a success_msg that failed to template within three lines of the marker
+        # would put the marker in the log of a check that never compared anything.
+        lines = text.splitlines()
+        (marker_line,) = [n for n, line in enumerate(lines) if marker in line]
+        (success_line,) = [n for n, line in enumerate(lines) if "success_msg:" in line]
+        self.assertGreater(abs(success_line - marker_line), 3)
 
     def test_the_array_failing_alone_fails_the_run(self):
         self.mark_deployed()
@@ -3343,7 +3350,7 @@ class NotificationBudgetTest(unittest.TestCase):
     def test_the_budget_is_ten_seconds_unless_raised_within_bounds(self):
         name = production_auto_deploy.NOTIFICATION_TIMEOUT_ENVIRONMENT
         for raw, expected in (
-            (None, 10), ("", 10), ("abc", 10), ("0", 10), ("-5", 10), ("1.5", 10),
+            (None, 10), ("", 10), ("abc", 10), ("0", 10), ("-5", 10), ("1.5", 10), ("\u00b2", 10), ("\u0663", 10),
             ("1", 1), ("120", 120), ("99999", 300),
         ):
             environment = {} if raw is None else {name: raw}

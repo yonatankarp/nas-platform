@@ -1281,7 +1281,8 @@ def notify(
 
 def _notification_timeout() -> int:
     raw = os.environ.get(NOTIFICATION_TIMEOUT_ENVIRONMENT, "")
-    if not raw.isdigit() or int(raw) < 1:
+    # isdecimal rather than isdigit: "²" is a digit that int() refuses.
+    if not raw.isascii() or not raw.isdecimal() or int(raw) < 1:
         return NOTIFICATION_TIMEOUT_SECONDS
     return min(int(raw), NOTIFICATION_TIMEOUT_CEILING_SECONDS)
 
