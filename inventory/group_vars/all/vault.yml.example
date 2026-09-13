@@ -131,6 +131,16 @@ vault_ntfy_deploy_token: tk_01010101010101010101010101010
 vault_ntfy_seerr_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 vault_ntfy_seerr_token: tk_10101010101010101010101010101
 
+# The Pushover application token and user key belong to a third-party account at
+# pushover.net and are never generated here. Both are 30-character opaque
+# strings Pushover issues -- the application token from the application's own
+# page, the user key from the account's dashboard -- and the credential contract
+# checks only that they are present and are not the stand-ins below, because a
+# shape rule this repository cannot vouch for would refuse a real pair on every
+# poller tick. Beszel's notification webhook is built from the two.
+vault_pushover_token: example-pushover-token
+vault_pushover_user_key: example-pushover-user-key
+
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.
 vault_beszel_superuser_email: admin@example.invalid

@@ -1287,7 +1287,7 @@ expect_failure(failures, "unredacted Beszel webhook summary",
                detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
-      entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
+      entry["name"] == "Summarize the managed Pushover webhook without URL bodies"
     end
     task["no_log"] = false
   end

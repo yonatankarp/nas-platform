@@ -32,7 +32,42 @@ beszel_alerts:
     value: 85
     min: 10
 
-# Shoutrrr URL. Built from the ntfy token in vault so the alerting chain has one
-# source rather than a value copied between two web interfaces.
+# Shoutrrr URL. Built from the Pushover application token and user key in vault,
+# so the value Beszel stores is authored in one place rather than copied between
+# two web interfaces -- the same property the ntfy form had, over a transport
+# that reaches a phone without the NAS being reachable from it. Pushover itself
+# takes only the application token and the user key, which are this URL's
+# password and host and are what the two vault values are. The `shoutrrr` user
+# component is a filler the library reads and discards: `pushover://:token@userkey/`
+# is accepted just the same, measured against this pin. It is kept because an
+# empty user component reads as a typo, not because anything requires it.
+#
+# Priority is deliberately not set, and nothing here says what Pushover does
+# with one: the measurement below routed the API host to loopback, so only the
+# library's own verdict was ever visible.
+#
+# Beszel 0.19.0 vendors github.com/nicholas-fedor/shoutrrr, NOT
+# containrrr/shoutrrr. Measured against this pin: priority omitted, `?priority=1`
+# and `?priority=2` are all accepted and carried through to the API call, and
+# only `?priority=200` is refused, by int8 parsing. The vendored fork imposes no
+# range. containrrr's -1..1 cap is the widely cited one, applies to the other
+# fork, and is what an earlier revision of this comment wrongly asserted.
+#
+# That fork's Pushover config also carries no retry or expire key -- asked for
+# one it answers `not a valid config key: expire (valid keys: [devices
+# encryptionkey key priority title])` -- so a priority set here cannot be paired
+# with the parameters Pushover's own documentation attaches to priority 2. What
+# Pushover then does with such a message is unmeasured here.
 beszel_notification_url: >-
-  ntfy://:{{ vault_ntfy_beszel_token }}@{{ platform_callback_host }}:{{ ntfy_port }}/{{ ntfy_topic }}?scheme=http
+  pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/
+
+# Pushover's own credential check, which is the only thing on this platform that
+# can tell a working notification chain from a stored string. Pushover documents
+# validation requests as exempt from the message quota, so running one on every
+# verification costs nothing and sends nothing to anybody's phone.
+#
+# A variable rather than a literal for the reason
+# production_auto_deploy_github_api_base is one: the endpoint has to be
+# redirectable to prove the task's own branches without involving the real
+# service.
+beszel_pushover_validation_url: https://api.pushover.net/1/users/validate.json

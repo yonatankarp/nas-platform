@@ -154,6 +154,8 @@
           'vault_ntfy_deploy_token': vault_ntfy_deploy_token,
           'vault_ntfy_seerr_password_hash': vault_ntfy_seerr_password_hash,
           'vault_ntfy_seerr_token': vault_ntfy_seerr_token,
+          'vault_pushover_token': vault_pushover_token,
+          'vault_pushover_user_key': vault_pushover_user_key,
           'vault_beszel_superuser_email': vault_beszel_superuser_email,
           'vault_beszel_superuser_password': vault_beszel_superuser_password,
           'vault_beszel_app_user_email': vault_beszel_app_user_email,

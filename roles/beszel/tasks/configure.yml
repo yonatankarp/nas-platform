@@ -1,6 +1,6 @@
 ---
 # What the resolved application user owns: the universal token the agent
-# authenticates with, the ntfy notification webhook, the registered system, the
+# authenticates with, the Pushover notification webhook, the registered system, the
 # telemetry that system persists, and each managed alert. One block gated on
 # beszel_user_id, because a dry run resolves no id and every read below has
 # nothing to key on without one.
@@ -188,7 +188,7 @@
       check_mode: false
       no_log: true
 
-    - name: Point Beszel notifications at ntfy
+    - name: Point Beszel notifications at Pushover
       ansible.builtin.uri:
         url: "{{ beszel_api }}/api/collections/user_settings/records/{{ (beszel_matching_settings | first).id }}"
         method: PATCH
@@ -209,7 +209,7 @@
 
     - name: Report planned notification webhook reconciliation
       ansible.builtin.debug:
-        msg: Managed ntfy notification webhook would be created or reconciled.
+        msg: Managed Pushover notification webhook would be created or reconciled.
       when:
         - ansible_check_mode
         - beszel_matching_settings | length == 0
@@ -231,7 +231,7 @@
       check_mode: false
       no_log: true
 
-    - name: Summarize the managed ntfy webhook without URL bodies
+    - name: Summarize the managed Pushover webhook without URL bodies
       tags: [platform_verify_beszel]
       ansible.builtin.set_fact:
         beszel_webhook_record_count: "{{ beszel_matching_settings | length }}"
@@ -240,26 +240,177 @@
              (beszel_current_notification_settings.webhooks | default([]))
              == [beszel_notification_url | trim] }}
         beszel_webhook_scheme: >-
-          {{ 'ntfy'
+          {{ 'pushover'
              if (beszel_current_notification_settings.webhooks | default([])
-                 | select('match', '^ntfy://') | list | length)
+                 | select('match', '^pushover://') | list | length)
                 == (beszel_current_notification_settings.webhooks | default([]) | length)
                 and (beszel_current_notification_settings.webhooks | default([]) | length) > 0
              else '[REDACTED]' }}
       no_log: true
 
-    - name: Verify the managed ntfy webhook
+    - name: Verify the managed Pushover webhook
       tags: [platform_verify_beszel]
       ansible.builtin.assert:
         that:
           - beszel_webhook_record_count | int == 1
           - beszel_webhook_exact | bool
         fail_msg: >-
-          Managed ntfy webhook differs (records={{ beszel_webhook_record_count }},
+          Managed Pushover webhook differs (records={{ beszel_webhook_record_count }},
           exact={{ beszel_webhook_exact }},
           scheme={{ beszel_webhook_scheme | default('[REDACTED]') }}).
       no_log: false
       when: not ansible_check_mode
+
+    # Everything above compares the stored string to the intended string, and
+    # Beszel stores whatever it is PATCHed -- so all of it passes just as well
+    # when the credentials inside that string no longer work. A token revoked or
+    # regenerated in the Pushover console leaves every check in this role green,
+    # and the first symptom is silence during exactly the event Beszel exists to
+    # report. These three tasks are the only thing on this platform that can tell
+    # those two states apart, so they ask Pushover rather than the hub.
+    #
+    # KEEPING THEM OFF THE CONVERGE TAKES A `when`, NOT A TAG, and the first
+    # revision of this block got that wrong in a way worth stating so nobody
+    # re-derives it. `never` alone is not enough: Ansible inherits the role's own
+    # tags onto every task in it, so these carry [beszel, monitoring, never,
+    # platform_verify_beszel], and naming ANY inherited tag counts as explicitly
+    # requesting the task. `--tags beszel` selects them. So does `--tags
+    # monitoring`. So does the beszel CI lane, whose tag string is
+    # `host_prep,deployment_bundle,ntfy,beszel` in tests/ci/suites.conf -- which
+    # would have converged with the ephemeral vault, asked Pushover about
+    # credentials that were never real, and turned that lane red.
+    #
+    # ansible_run_tags is what the tags cannot say: which tag somebody actually
+    # asked for. It is a magic variable rather than a fact, so
+    # `inject_facts_as_vars = False` does not touch it -- measured, not assumed:
+    # it reads ['all'] for a bare run, ['beszel', 'host_prep', ...] for the CI
+    # lane, and ['platform_verify_beszel'] for the poller's verification.
+    #
+    # `never` stays alongside it for the untagged case, where it keeps these out
+    # of --list-tasks as well as out of the run. The `when` is the load-bearing
+    # half; that a `when` is invisible to --list-tasks is exactly why the tag
+    # alone read as sufficient.
+    #
+    # site.yml is every service's deployment path, and nothing else in this
+    # repository puts a third party on it. verify.yml reaches these through
+    # --tags platform_verify_beszel, which is how the poller runs them: once per
+    # deployed revision, not once per tick, because a revision already attempted
+    # is never re-converged.
+    - name: Ask Pushover whether it still accepts the managed credentials
+      tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
+      ansible.builtin.uri:
+        url: "{{ beszel_pushover_validation_url }}"
+        method: POST
+        body_format: form-urlencoded
+        body:
+          token: "{{ vault_pushover_token }}"
+          user: "{{ vault_pushover_user_key }}"
+        # Both halves of a real answer are data here rather than a module
+        # failure: 200 is Pushover accepting the pair, 400 is Pushover refusing
+        # it. Anything else is not an answer at all and is handled below.
+        status_code: [200, 400]
+        # The third-party fetch budget, not the readiness one -- this waits on a
+        # host somewhere else. No retry ladder beside it on purpose: a retry
+        # would spend up to 170 seconds of the poller's critical path to make a
+        # verdict marginally likelier, and the verdict it fails to get is
+        # harmless and is announced by the debug task below rather than swallowed.
+        timeout: "{{ platform_download_timeout }}"
+      register: beszel_pushover_validation
+      # The verdict is the assert's, not the module's. Without this line a DNS
+      # failure, a timeout or a 5xx fails the run, which would make this NAS's
+      # deployment succeed or fail on Pushover's uptime.
+      failed_when: false
+      changed_when: false
+      check_mode: false
+      no_log: true
+
+    - name: Summarize the Pushover answer without the credentials it carried
+      tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
+      ansible.builtin.set_fact:
+        # -1 rather than 0, for the reason CLAUDE.md gives for rc under
+        # failed_when: the line above replaces the module's own verdict, so a
+        # module that refused before it made a request registers no status at
+        # all. A default that fell inside the authoritative set would turn
+        # "Pushover is unreachable" into "Pushover refused these credentials",
+        # which is the one verdict this must never invent.
+        # An HTTP code alone is not an answer, and assuming it was is a defect
+        # this task shipped with until the fixture caught it: anything between
+        # here and Pushover -- a captive portal, a proxy, a provider's block page
+        # -- can return 200 with a body that carries no verdict at all, and
+        # reading that as "Pushover refused these credentials" is the exact
+        # invention this must not make. So a verdict requires BOTH an
+        # authoritative code and a parseable status field of Pushover's own.
+        beszel_pushover_answered: >-
+          {{ (beszel_pushover_validation.status | default(-1) | int) in [200, 400]
+             and ((beszel_pushover_validation.json | default({}, true)).get('status', -1)
+                  | int) in [0, 1] }}
+        # .get() rather than a chained attribute, the idiom this file already
+        # uses for beszel_tokens.json: a 5xx can register a body that is not a
+        # mapping, or no json key at all, and both have to read as "no verdict"
+        # rather than raise.
+        beszel_pushover_accepted: >-
+          {{ (beszel_pushover_validation.json | default({}, true)).get('status', -1) | int == 1 }}
+      no_log: true
+
+    # The non-verdict, said out loud, and a separate task because of a property
+    # worth knowing before relying on the assert to say it: no_log suppresses
+    # success_msg. It does NOT suppress fail_msg -- that asymmetry is measured in
+    # tests/beszel_pushover_validation_test.rb -- so a redacted assert can still
+    # name what broke and cannot report that nothing did. This task therefore
+    # carries the "we did not find out" half, and it names no vault key, which is
+    # what lets it stay unredacted and visible.
+    #
+    # It is also why there is no retry ladder on the read above: a silent skip
+    # would be worth retrying for, and this line is what keeps it from being
+    # silent.
+    - name: Report that Pushover did not answer, which is not a refusal
+      tags: [never, platform_verify_beszel]
+      ansible.builtin.debug:
+        msg: >-
+          Pushover did not answer, so credential validity is unverified this run.
+          This is not a refusal and is not a failure; the managed webhook was
+          still reconciled.
+      when:
+        - "'platform_verify_beszel' in ansible_run_tags"
+        - not (beszel_pushover_answered | bool)
+
+    # Only the two derived booleans are named below. Ansible finalizes a task's
+    # arguments before it decides whether the assert holds, so a fail_msg
+    # reaching into the response would be evaluated on the passing path too --
+    # which is how this repository shipped a verification that died exactly when
+    # it should have stayed quiet.
+    #
+    # No `not ansible_check_mode` gate, unlike the webhook assert above: that one
+    # is gated because under --check its PATCH never ran, while this read really
+    # did (check_mode: false), so the answer is as true under review as it is on
+    # a converge. A --check --diff that surfaces a revoked token is the point.
+    - name: Verify Pushover still accepts the managed credentials
+      tags: [never, platform_verify_beszel]
+      when: "'platform_verify_beszel' in ansible_run_tags"
+      ansible.builtin.assert:
+        that:
+          - not (beszel_pushover_answered | bool) or (beszel_pushover_accepted | bool)
+        fail_msg: >-
+          Pushover refused the managed credentials. Check vault_pushover_token
+          against the application's own page at pushover.net and
+          vault_pushover_user_key against the account dashboard; a token
+          regenerated in the console has to be re-authored in vault. Until it is,
+          Beszel keeps storing this webhook and delivering nothing. Values are
+          not shown.
+      # Redacted although it renders only two booleans, because the fail_msg names
+      # the two vault keys an operator has to go and fix, and
+      # tests/policy_vault_test.rb requires redaction of any message that does.
+      # no_log does not suppress fail_msg -- that is the property
+      # roles/vault_contract depends on to name a bad credential without printing
+      # one, and tests/beszel_pushover_validation_test.rb proves it here by
+      # requiring this refusal in the output of a redacted run.
+      #
+      # There is deliberately no success_msg: no_log DOES suppress that one,
+      # measured rather than assumed, so a success_msg here would be a message
+      # nobody can ever read. The debug above carries what there is to say.
+      no_log: true
 
     # Alerts relate to a system, which exists once the agent has registered.
     - name: Wait for the agent to register its system
