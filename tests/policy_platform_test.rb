@@ -33,7 +33,8 @@ PLATFORM_INVENTORIES = {
   "mac.yml" => ["mac_hosts", "mac", "local", "mac"]
 }.freeze
 HOST_SCOPED_VARS = (
-  %w[platform_kind nas_docker_root nas_media_root media_usenet_enabled media_torrent_enabled] + PLATFORM_CAPABILITIES +
+  %w[platform_kind nas_docker_root nas_media_root media_usenet_enabled media_torrent_enabled
+     host_prep_mdraid_arrays] + PLATFORM_CAPABILITIES +
     PLATFORM_TELEMETRY_POLICY
 ).freeze
 
@@ -84,6 +85,18 @@ PLATFORM_INVENTORIES.values.map { |values| [values[0], values[3]] }.uniq.each do
   check(failures, host_vars["platform_render_device_path"].is_a?(String) &&
                   !host_vars["platform_render_device_path"].empty?,
         "#{relative_path} platform_render_device_path must be a nonempty path")
+  # The mdraid verification skips on an empty baseline, so an emptied or deleted
+  # NAS declaration would turn it into a green no-op there (#609). The NAS must
+  # declare its arrays; no other host has them.
+  mdraid_arrays = host_vars["host_prep_mdraid_arrays"]
+  if platform_kind == "nas"
+    check(failures, mdraid_arrays.is_a?(Hash) && !mdraid_arrays.empty? &&
+                    mdraid_arrays.all? { |name, degraded| name.to_s.match?(/\Amd[0-9]+\z/) && degraded.is_a?(Integer) && degraded >= 0 },
+          "#{relative_path} host_prep_mdraid_arrays must map each md array to its healthy degraded count")
+  else
+    check(failures, mdraid_arrays.nil?,
+          "#{relative_path} must not declare host_prep_mdraid_arrays; only the NAS has these arrays")
+  end
   # The Mac lane's remaining host vars are facts the lifecycle harness injects, and
   # they are recognised by that binding rather than by a list of their names. The
   # check below is about portable *configuration* leaking into a host group, and a
