@@ -18,8 +18,9 @@ per-lane override of it kept Nextcloud out of the lanes that converge the whole
 platform. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
-harness sends test alerts to the sandbox's own ntfy instance, and the container
-alerts that now go to Pushover to a recorder the harness itself runs, never to
+harness sends test alerts to the sandbox's own ntfy instance, the container
+alerts that now go to Pushover to a recorder the harness itself runs, and the
+deployment reports to a loopback port nothing listens on — never to
 pushover.net. Mobile delivery is outside scope.
 
 For the default-disabled acquisition foundation, the report contains exactly four labeled,

@@ -153,7 +153,7 @@
     #
     # No `when:` here, deliberately: the gate is
     # `nextcloud_deployment_enabled` and it lives inside the role, so the
-    # deployment_bundle target re-include and the ntfy deployment report still
+    # deployment_bundle target re-include and the deployment report still
     # run when it is false.
     - role: nextcloud
       tags: [nextcloud, documents]
@@ -165,7 +165,7 @@
     #
     # No `when:` here, deliberately, for the reason the entry above gives: the
     # gate is `vaultwarden_deployment_enabled` and it lives inside the role, so
-    # the deployment_bundle target re-include and the ntfy deployment report
+    # the deployment_bundle target re-include and the deployment report
     # still run when it is false.
     - role: vaultwarden
       tags: [vaultwarden, secrets]

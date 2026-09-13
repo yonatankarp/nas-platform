@@ -79,31 +79,18 @@
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
 
-# Addresses the server root so the topic travels in the body: posting this
-# document to /<topic> would deliver it as literal JSON text rather than as a
-# rendered notification.
-#
-# A refused publish fails the converge on purpose, exactly as the per-service
-# report does. It is also what proves the deploy publisher's token still writes,
-# now that the provisioning proof no longer touches a topic anyone reads.
+# Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
+# 2b. A refused publish fails the converge on purpose, exactly as the
+# per-service report does; an unreachable Pushover does not. Normal priority,
+# above the quiet per-service detail.
 - name: Publish the deployment summary
-  ansible.builtin.uri:
-    url: "http://127.0.0.1:{{ ntfy_port }}/"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ vault_ntfy_deploy_token }}"
-    body_format: json
-    body:
-      topic: "{{ ntfy_deployment_topic }}"
-      title: >-
-        {{ ntfy_deployment_summary_changes
-           | deployment_report_headline(ntfy_deployment_summary_commits) }}
-      message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
-      priority: 3
-      tags: [rocket]
-    status_code: [200]
-  changed_when: false
-  no_log: true
+  ansible.builtin.include_tasks: pushover_publish.yml
+  vars:
+    ntfy_pushover_title: >-
+      {{ ntfy_deployment_summary_changes
+         | deployment_report_headline(ntfy_deployment_summary_commits) }}
+    ntfy_pushover_message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
+    ntfy_pushover_priority: 0
   when:
     - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
@@ -113,5 +100,5 @@
   ansible.builtin.debug:
     msg: >-
       Check mode publishes no deployment summary; a real run that moves the
-      release publishes one message to {{ ntfy_deployment_topic }}.
+      release sends one Pushover message.
   when: ansible_check_mode

@@ -690,6 +690,10 @@ def audiobookshelf_playbook_command(playbook, tags)
     "-e", "platform_beszel_agent_kind=portable",
     "-e", "deployment_bundle_test_mode=true",
     "-e", "deployment_bundle_allow_dirty_controller=true",
+    # The site.yml run recreates Audiobookshelf under the ephemeral vault, which
+    # sends a deployment report; the lane value keeps it off pushover.net.
+    # tests/deployment_summary_test.rb refuses this command losing it.
+    "-e", "ntfy_deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json",
     repo_root.join(playbook).to_s, "--tags", tags
   ]
   Open3.capture3(

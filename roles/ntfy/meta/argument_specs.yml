@@ -105,12 +105,27 @@ argument_specs:
         type: str
         required: true
         description: Bcrypt hash from the pinned ntfy image's own hasher.
+      ntfy_deployment_pushover_api_url:
+        type: str
+        required: false
+        description: >-
+          Pushover message API the deployment notifications are POSTed to.
+          Read by the ntfy deployment report this entry point includes.
+      vault_pushover_token:
+        type: str
+        required: true
+        description: Pushover application token the notifications are sent with.
+      vault_pushover_user_key:
+        type: str
+        required: true
+        description: Pushover user key the notifications are delivered to.
 
   deployment_report:
     short_description: Publish one deployment report for one service
     description:
       - Called by every service role after its Compose deployment, so the caller
-        needs no ntfy port, topic or token of its own.
+        needs no notification endpoint or credential of its own. Delivered
+        through Pushover; the ntfy role name is a leftover until stage 3 of issue 558.
       - Publishes only when Compose recreated the service. What the whole run
         deployed is deployment_summary's one message, so an unchanged service
         has nothing left to add.
@@ -129,24 +144,20 @@ argument_specs:
         type: str
         required: true
         description: Git SHA of the release the service was deployed from.
-      ntfy_port:
-        type: int
-        required: true
+      ntfy_deployment_pushover_api_url:
+        type: str
+        required: false
         description: >-
-          Port the ntfy container publishes and every publisher connects on.
-          Required rather than defaulted in this role for the reason the topics
-          are: it is declared in inventory/group_vars/all/main.yml because plays
-          that never run this role address the same listener (#402).
-      ntfy_deployment_topic:
+          Pushover message API the deployment notifications are POSTed to.
+          Every test lane overrides it so nothing reaches real devices.
+      vault_pushover_token:
         type: str
         required: true
-        description: >-
-          Topic for the routine deployment record; declared in
-          inventory/group_vars/all/main.yml.
-      vault_ntfy_deploy_token:
+        description: Pushover application token the notifications are sent with.
+      vault_pushover_user_key:
         type: str
         required: true
-        description: Write-only token of the deploy publisher.
+        description: Pushover user key the notifications are delivered to.
 
   deployment_summary:
     short_description: Publish one summary of what the whole run deployed
@@ -191,21 +202,17 @@ argument_specs:
         elements: str
         required: false
         description: Commit subjects this deployment carries.
-      ntfy_port:
-        type: int
-        required: true
+      ntfy_deployment_pushover_api_url:
+        type: str
+        required: false
         description: >-
-          Port the ntfy container publishes and every publisher connects on.
-          Required rather than defaulted in this role for the reason the topics
-          are: it is declared in inventory/group_vars/all/main.yml because plays
-          that never run this role address the same listener (#402).
-      ntfy_deployment_topic:
+          Pushover message API the deployment notifications are POSTed to.
+          Every test lane overrides it so nothing reaches real devices.
+      vault_pushover_token:
         type: str
         required: true
-        description: >-
-          Topic for the routine deployment record; declared in
-          inventory/group_vars/all/main.yml.
-      vault_ntfy_deploy_token:
+        description: Pushover application token the notifications are sent with.
+      vault_pushover_user_key:
         type: str
         required: true
-        description: Write-only token of the deploy publisher.
+        description: Pushover user key the notifications are delivered to.

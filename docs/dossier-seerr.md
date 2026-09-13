@@ -365,7 +365,7 @@ reconverge; 10 through 18 are all read-compare-then-write.
  2 assert the vault credentials are single-line                       no_log
  3 render env.j2 → runtime .env, mode 0600
  4 docker_compose_v2 state: present, wait: true
- 5 ntfy deployment report
+ 5 deployment report (Pushover)
  6 container_cpu verify
  7 wait: GET /api/v1/status until 200      changed_when: false, check_mode: false
  8 probe: GET /api/v1/settings/main with X-API-Key   403 → 9, 200 → 10

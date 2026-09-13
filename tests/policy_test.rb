@@ -1951,29 +1951,52 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "role #{name}: deployment report ignores a registered Compose deployment")
 end
 
-# The report itself must stay a report: it publishes with the deploy publisher's
-# write-only token to the deployment topic, and claims no host change.
+# The report itself must stay a report. Both the per-service report and the run
+# summary deliver through roles/ntfy/tasks/pushover_publish.yml (#558), so the
+# two callers must reach it only outside --check, and the delivery itself must
+# be a redacted, changeless form POST of the vault's Pushover pair to the
+# redirectable endpoint every test lane overrides.
 report_path = File.join(ROOT, "roles/ntfy/tasks/deployment_report.yml")
+summary_path = File.join(ROOT, "roles/ntfy/tasks/deployment_summary.yml")
+publish_path = File.join(ROOT, "roles/ntfy/tasks/pushover_publish.yml")
 if deployment_reports_declared
   check(failures, File.file?(report_path),
         "roles/ntfy/tasks/deployment_report.yml is missing but roles report deployments")
 end
-report_tasks = File.file?(report_path) ? YAML.safe_load_file(report_path, aliases: true) : []
-report_task = Array(report_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.uri") }
-check(failures, report_task || !deployment_reports_declared,
-      "roles/ntfy/tasks/deployment_report.yml: no uri task publishes the report")
-if report_task
-  request = report_task.fetch("ansible.builtin.uri")
-  check(failures, request["body"].is_a?(Hash) && request["body"]["topic"] == "{{ ntfy_deployment_topic }}",
-        "deployment report must publish to the deployment topic")
-  check(failures, request["url"].to_s.end_with?("/"),
-        "deployment report must POST JSON to the ntfy root, not to a topic path")
-  check(failures, request.dig("headers", "Authorization").to_s.include?("vault_ntfy_deploy_token"),
-        "deployment report must publish with the deploy publisher token")
-  check(failures, report_task["changed_when"] == false && report_task["no_log"] == true,
-        "deployment report must claim no change and must not log its token")
-  check(failures, Array(report_task["when"]).any? { |c| c.to_s.include?("not ansible_check_mode") },
-        "deployment report must not publish under --check")
+{ report_path => "deployment report", summary_path => "deployment summary" }.each do |path, label|
+  next unless File.file?(path)
+
+  publish = Array(YAML.safe_load_file(path, aliases: true)).find do |task|
+    task.is_a?(Hash) && task["ansible.builtin.include_tasks"] == "pushover_publish.yml"
+  end
+  check(failures, publish,
+        "#{label}: no task includes pushover_publish.yml to deliver it")
+  next unless publish
+
+  check(failures, Array(publish["when"]).any? { |c| c.to_s.include?("not ansible_check_mode") },
+        "#{label} must not publish under --check")
+end
+publish_tasks = File.file?(publish_path) ? YAML.safe_load_file(publish_path, aliases: true) : []
+publish_task = Array(publish_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.uri") }
+check(failures, publish_task || !deployment_reports_declared,
+      "roles/ntfy/tasks/pushover_publish.yml: no uri task publishes the report")
+if publish_task
+  request = publish_task.fetch("ansible.builtin.uri")
+  body = request["body"].is_a?(Hash) ? request["body"] : {}
+  check(failures, request["url"] == "{{ ntfy_deployment_pushover_api_url }}",
+        "deployment report must POST to ntfy_deployment_pushover_api_url, which the lanes redirect")
+  check(failures, request["body_format"] == "form-urlencoded",
+        "deployment report must be a form POST, which is what Pushover's API reads")
+  check(failures, body["token"].to_s.include?("vault_pushover_token") &&
+                  body["user"].to_s.include?("vault_pushover_user_key"),
+        "deployment report must publish with the vault's Pushover pair")
+  check(failures, body["title"].to_s.include?("truncate(250") &&
+                  body["message"].to_s.include?("truncate(1024"),
+        "deployment report must bound title and message to Pushover's 250/1024 limits")
+  check(failures, publish_task["changed_when"] == false && publish_task["no_log"] == true,
+        "deployment report must claim no change and must not log its credentials")
+  check(failures, publish_task["failed_when"] == false,
+        "deployment report must leave the verdict to its assert, or an unreachable Pushover fails the converge")
 end
 
 # Compose interpolation runs against the newly published bundle while the
