@@ -18,8 +18,9 @@ per-lane override of it kept Nextcloud out of the lanes that converge the whole
 platform. The production
 retirement checkpoint has passed and its repository declarations have been
 removed without deleting the former metadata manager's preserved state. The
-harness sends test alerts to the sandbox's own ntfy instance. Mobile delivery
-is outside scope.
+harness sends test alerts to the sandbox's own ntfy instance, and the container
+alerts that now go to Pushover to a recorder the harness itself runs, never to
+pushover.net. Mobile delivery is outside scope.
 
 For the default-disabled acquisition foundation, the report contains exactly four labeled,
 bounded summary lines: `MEDIA_ACQUISITION_FOUNDATION`,
@@ -167,8 +168,11 @@ active service:
   ephemeral vault holds stand-ins for the account it names, so testing it would
   prove a refusal rather than a delivery.
 - Dozzle: sign in with the deployed administrator password represented by the
-  installed hash, inspect its managed event rules, and send only a disposable
-  ntfy event.
+  installed hash and inspect its managed event rules. Do not test its alert
+  delivery by hand: the alert relay publishes to Pushover, the lane redirects it
+  at the contract's own recorder, and the ephemeral vault holds stand-ins for
+  the Pushover account it names. The lane's `notify` contract already proves the
+  chain end to end against that recorder.
 - Immich: sign in with the deployed administrator identity and confirm the
   existing database identity retains the disposable assets after recreation.
 - ntfy: confirm the deployed administrator login, anonymous denial, and the
