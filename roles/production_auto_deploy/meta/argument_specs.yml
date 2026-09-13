@@ -4,7 +4,8 @@ argument_specs:
     short_description: Install the NAS production deployment poller
     description:
       - Installs the poller, its non-secret configuration, the protected ntfy
-        publisher configuration, and one polling cron entry.
+        publisher configuration, a five-minute polling cron entry and an
+        hourly verification cron entry.
     options:
       platform_kind:
         description: Platform discriminator; the role accepts only nas.
@@ -72,7 +73,13 @@ argument_specs:
         description: Days of attempt logs to retain.
         type: int
       production_auto_deploy_cron_name:
-        description: Comment identifying the managed cron entry.
+        description: Comment identifying the managed polling cron entry.
+        type: str
+      production_auto_deploy_verify_cron_name:
+        description: Comment identifying the managed hourly verification cron entry.
+        type: str
+      production_auto_deploy_verify_cron_minute:
+        description: Minute of each hour the verification cron entry runs.
         type: str
       production_auto_deploy_external_scheduler:
         description: Poll is scheduled outside cron; the role installs no entry.

@@ -2725,6 +2725,301 @@ class ConvergeTest(PollerTestCase):
         self.assertIn("could not run ansible-playbook", buffer.getvalue())
 
 
+class VerifyTest(PollerTestCase):
+    """--verify: verify.yml on the hour against what is deployed (#610).
+
+    Driven through main() with a real Git checkout, an ansible-playbook stub at
+    the virtualenv path the poller really runs, and a curl stub at curl_path, so
+    the lock, the argv, the environment and the publish document are the ones
+    production produces rather than ones a mock agreed with.
+    """
+
+    def setUp(self):
+        super().setUp()
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is required")
+        self.checkout = self.root / ".local/share/nas-platform/controller"
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+
+        def commit(message):
+            subprocess.run(
+                [git, "-c", "user.name=t", "-c", "user.email=t@t", "commit",
+                 "--allow-empty", "--quiet", "-m", message],
+                cwd=self.checkout, env=environment, check=True,
+            )
+            return subprocess.run(
+                [git, "rev-parse", "HEAD"], cwd=self.checkout, env=environment,
+                check=True, capture_output=True, text=True,
+            ).stdout.strip()
+
+        subprocess.run([git, "init", "--quiet"], cwd=self.checkout, env=environment,
+                       check=True)
+        self.deployed = commit("deployed")
+        self.candidate = commit("candidate")
+        subprocess.run([git, "checkout", "--quiet", "--detach", self.deployed],
+                       cwd=self.checkout, env=environment, check=True)
+        self.git_environment = environment
+        self.git = git
+
+        binary = self.root / "bin"
+        binary.mkdir()
+        self.published_path = self.root / "published.jsonl"
+        self.curl = binary / "curl"
+        self.curl_exit = self.root / "curl-exit"
+        self.curl.write_text(
+            "#!/bin/sh\n"
+            'while [ "$#" -gt 0 ]; do\n'
+            '  if [ "$1" = --data-binary ]; then\n'
+            f"    printf '%s\\n' \"$2\" >> {str(self.published_path)!r}\n"
+            "  fi\n"
+            "  shift\n"
+            "done\n"
+            f"exit \"$(cat {str(self.curl_exit)!r} 2>/dev/null || echo 0)\"\n",
+            encoding="utf-8",
+        )
+        self.curl.chmod(0o700)
+
+        venv = self.checkout / ".venv/bin"
+        venv.mkdir(parents=True)
+        self.invocations = self.root / "playbook-invocations.jsonl"
+        self.playbook_exit = self.root / "playbook-exit"
+        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
+        playbook = venv / "ansible-playbook"
+        playbook.write_text(
+            f"#!{sys.executable}\n"
+            "import fcntl, json, os, sys\n"
+            f"lock = {str(lock)!r}\n"
+            "descriptor = os.open(lock, os.O_RDONLY)\n"
+            "try:\n"
+            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    held = False\n"
+            "except OSError:\n"
+            "    held = True\n"
+            "print('PLAY RECAP')\n"
+            f"with open({str(self.invocations)!r}, 'a') as sink:\n"
+            "    sink.write(json.dumps({\n"
+            "        'argv': sys.argv[1:], 'cwd': os.getcwd(), 'held': held,\n"
+            "        'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
+            "        'lock_record': open(lock).read(),\n"
+            "    }) + '\\n')\n"
+            "try:\n"
+            f"    sys.exit(int(open({str(self.playbook_exit)!r}).read()))\n"
+            "except FileNotFoundError:\n"
+            "    sys.exit(0)\n",
+            encoding="utf-8",
+        )
+        playbook.chmod(0o700)
+        self.config = self.loaded_config(git_path=git, curl_path=str(self.curl))
+
+    def mark_deployed(self, sha=None):
+        production_auto_deploy.record_success(
+            self.config, sha or self.deployed, "2026-09-13T10:00:00Z"
+        )
+
+    def run_verify(self, playbook_exit=0, curl_exit=0):
+        self.playbook_exit.write_text(str(playbook_exit), encoding="ascii")
+        self.curl_exit.write_text(str(curl_exit), encoding="ascii")
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = production_auto_deploy.main(
+                ["--config", str(self.config_path), "--verify"]
+            )
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def playbook_runs(self):
+        if not self.invocations.exists():
+            return []
+        return [json.loads(line) for line in self.invocations.read_text().splitlines()]
+
+    def pages(self):
+        if not self.published_path.exists():
+            return []
+        pages = [json.loads(line) for line in self.published_path.read_text().splitlines()]
+        self.published_path.unlink()
+        return pages
+
+    def test_verify_runs_the_deployments_own_verify_play_under_the_lock(self):
+        self.mark_deployed()
+        code, _output = self.run_verify()
+
+        self.assertEqual(code, 0)
+        (run,) = self.playbook_runs()
+        self.assertEqual(
+            ["ansible-playbook", *run["argv"]],
+            production_auto_deploy._deploy_invocations(self.config)[2],
+        )
+        self.assertEqual(Path(run["cwd"]).resolve(), self.checkout.resolve())
+        self.assertTrue(run["held"], "verify.yml must run under the deployment lock")
+        self.assertEqual(run["owner"], str(os.getpid()))
+        self.assertEqual(json.loads(run["lock_record"])["holder"], "verify")
+        log = self.config.log_root / "verify.log"
+        self.assertIn("PLAY RECAP", log.read_text())
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_a_first_ever_pass_and_a_repeated_pass_page_nobody(self):
+        self.mark_deployed()
+        for _ in range(2):
+            self.assertEqual(self.run_verify()[0], 0)
+            self.assertEqual(self.pages(), [])
+        self.assertEqual(len(self.playbook_runs()), 2)
+
+    def test_pass_to_fail_pages_once_and_a_repeated_fail_stays_quiet(self):
+        self.mark_deployed()
+        self.run_verify()
+        code, _output = self.run_verify(playbook_exit=2)
+        self.assertEqual(code, 1)
+        (page,) = self.pages()
+        self.assertEqual(page["topic"], "nas-critical")
+        self.assertIn(self.deployed[:9], page["title"])
+        self.assertIn("verify\\.log", page["message"])
+
+        self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
+        self.assertEqual(self.pages(), [])
+
+    def test_a_first_ever_fail_pages(self):
+        self.mark_deployed()
+        self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
+        self.assertEqual(len(self.pages()), 1)
+
+    def test_fail_to_pass_announces_the_recovery_once(self):
+        self.mark_deployed()
+        self.run_verify(playbook_exit=2)
+        self.pages()
+        self.assertEqual(self.run_verify()[0], 0)
+        (page,) = self.pages()
+        self.assertEqual(page["topic"], "nas-deployment")
+        self.assertIn("recovered", page["title"].lower())
+        self.run_verify()
+        self.assertEqual(self.pages(), [])
+
+    def test_an_undelivered_alarm_is_retried_on_the_next_run(self):
+        """Recorded only once delivered, as note_ci_refusal is: a record of a
+        failure nobody received would make every later failure a quiet repeat."""
+
+        self.mark_deployed()
+        self.run_verify()
+        code, output = self.run_verify(playbook_exit=2, curl_exit=7)
+        self.assertEqual(code, 1)
+        self.assertIn("notification failed", output)
+        self.pages()
+        self.run_verify(playbook_exit=2)
+        self.assertEqual(len(self.pages()), 1)
+
+    def test_an_undelivered_recovery_is_retried_on_the_next_run(self):
+        self.mark_deployed()
+        self.run_verify(playbook_exit=2)
+        self.run_verify(curl_exit=7)
+        self.pages()
+        self.run_verify()
+        (page,) = self.pages()
+        self.assertEqual(page["topic"], "nas-deployment")
+
+    def test_a_corrupt_verdict_record_reads_as_no_record(self):
+        self.mark_deployed()
+        (self.config.state_root / "verify-verdict").write_bytes(b"\xff garbage\n")
+        self.assertEqual(self.run_verify()[0], 0)
+        self.assertEqual(self.pages(), [])
+        self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
+        self.assertEqual(len(self.pages()), 1)
+
+    def test_nothing_ever_deployed_verifies_nothing(self):
+        code, output = self.run_verify(playbook_exit=2)
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has deployed", output)
+        self.assertEqual(self.playbook_runs(), [])
+        self.assertEqual(self.pages(), [])
+
+    def test_an_undeployed_candidate_in_the_checkout_is_never_verified(self):
+        """A failed deployment leaves the checkout on its candidate, whose
+        verify.yml can name services that were never activated."""
+
+        self.mark_deployed()
+        subprocess.run(
+            [self.git, "checkout", "--quiet", "--detach", self.candidate],
+            cwd=self.checkout, env=self.git_environment, check=True,
+        )
+        code, output = self.run_verify(playbook_exit=2)
+        self.assertEqual(code, 0)
+        self.assertIn(self.candidate[:9], output)
+        self.assertEqual(self.playbook_runs(), [])
+        self.assertEqual(self.pages(), [])
+
+    def test_a_held_lock_is_skipped_at_once_without_a_page(self):
+        self.mark_deployed()
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys\n"
+             f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+             "import production_auto_deploy as p\n"
+             f"config = p.load_config({str(self.config_path)!r})\n"
+             "with p.deployment_lock(config) as acquired:\n"
+             "    print(acquired, flush=True)\n"
+             "    sys.stdin.read()\n"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.addCleanup(holder.stdout.close)
+        self.assertEqual(holder.stdout.readline().strip(), "True")
+        started = datetime.now()
+        code, output = self.run_verify(playbook_exit=2)
+        elapsed = (datetime.now() - started).total_seconds()
+
+        self.assertEqual(code, 0)
+        self.assertIn("poll", output)
+        self.assertIn(f"pid {holder.pid}", output)
+        self.assertLess(elapsed, 2)
+        self.assertEqual(self.playbook_runs(), [])
+        self.assertEqual(self.pages(), [])
+
+    def test_a_missing_ansible_playbook_is_an_error_rather_than_a_verdict(self):
+        self.mark_deployed()
+        (self.checkout / ".venv/bin/ansible-playbook").unlink()
+        # Nothing on the tool path either, so a real ansible-playbook on this
+        # machine cannot stand in for the one that went missing.
+        self.config = self.loaded_config(
+            git_path=self.git, curl_path=str(self.curl), tool_path=str(self.root / "empty")
+        )
+        code, output = self.run_verify()
+        self.assertEqual(code, 1)
+        self.assertIn("could not verify", output)
+        self.assertEqual(self.pages(), [])
+        self.assertFalse((self.config.state_root / "verify-verdict").exists())
+
+    def test_a_verify_that_outlives_its_budget_is_a_failure(self):
+        self.mark_deployed()
+        real_run = production_auto_deploy._run
+
+        def run(arguments, **kwargs):
+            if "verify.yml" in [str(a) for a in arguments]:
+                self.assertLessEqual(kwargs["timeout"], 30 * 60)
+                raise subprocess.TimeoutExpired(arguments, kwargs["timeout"])
+            return real_run(arguments, **kwargs)
+
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
+            code, _output = self.run_verify()
+        self.assertEqual(code, 1)
+        self.assertEqual(len(self.pages()), 1)
+
+    def test_a_failed_verify_leaves_deployment_state_and_the_lock_alone(self):
+        self.mark_deployed()
+        production_auto_deploy.record_attempt(self.config, self.deployed)
+        before = production_auto_deploy.read_state(self.config)
+        self.run_verify(playbook_exit=2)
+        self.assertEqual(production_auto_deploy.read_state(self.config), before)
+        with production_auto_deploy.deployment_lock(self.config) as acquired:
+            self.assertTrue(acquired, "the next poll must find the lock free")
+
+    def test_an_unusable_configuration_exits_one(self):
+        self.config_path.write_text("{}", encoding="utf-8")
+        self.assertEqual(self.run_verify()[0], 1)
+
+
 class CliTest(PollerTestCase):
     def test_status_prints_recorded_state_and_exits_zero(self):
         production_auto_deploy.record_success(
@@ -2821,6 +3116,9 @@ class CliTest(PollerTestCase):
             ["--config", str(self.config_path), "--retry-failed", "nope"],
             ["--config", str(self.config_path), "--retry-failed"],
             ["--config", str(self.config_path), "--poll", "extra"],
+            ["--verify"],
+            ["--config", str(self.config_path), "--verify", "extra"],
+            ["--config", str(self.config_path), "--verify", "--poll"],
         ):
             with self.subTest(argv=argv):
                 self.assertEqual(production_auto_deploy.main(argv), 2)
