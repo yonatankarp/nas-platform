@@ -418,9 +418,9 @@ MUTATIONS = [
     "breaks" => %w[unreachable_front] },
   # The verify.yml selection, planted in all three ways it can be lost.
   { "name" => "the tailnet assertion is no longer selected by verification",
-    "from" => "    - name: Require Vaultwarden verified over the tailnet HTTPS front\n" \
+    "from" => "    - name: Require Vaultwarden reachable over the tailnet HTTPS front\n" \
               "      tags: [platform_verify_vaultwarden]\n",
-    "to" => "    - name: Require Vaultwarden verified over the tailnet HTTPS front\n",
+    "to" => "    - name: Require Vaultwarden reachable over the tailnet HTTPS front\n",
     "breaks" => %w[verify_unreachable_front] },
   { "name" => "the client discovery is no longer selected by verification",
     "from" => "- name: Resolve the Tailscale client this host holds\n" \
