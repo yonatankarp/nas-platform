@@ -93,3 +93,23 @@ beszel_compose_cli_argv: >-
         | product(platform_service_compose_files['beszel'])
         | map('join') | list)
      + ['--env-file', platform_runtime_dir ~ '/services/beszel/.env'] }}
+
+# S.M.A.R.T. slots as [Compose variable, declared path], in Compose order. zip
+# stops at the shorter side; deploy.yml's count assertion makes that the list.
+beszel_smart_device_slots: >-
+  {{ (['NAS_SMART_SATA_DEVICE_1', 'NAS_SMART_SATA_DEVICE_2', 'NAS_SMART_SATA_DEVICE_3']
+      | zip(platform_smart_sata_devices) | list)
+     + (['NAS_SMART_NVME_NAMESPACE_1', 'NAS_SMART_NVME_NAMESPACE_2']
+      | zip(platform_smart_nvme_namespaces) | list) }}
+# Declared paths deploy.yml found as a device node. Docker refuses a regular file
+# or a directory in devices: as firmly as an absent path, so existence is not enough.
+beszel_smart_present_devices: >-
+  {{ (beszel_smart_device_stats.results | selectattr('stat.exists')
+      | selectattr('stat.isblk') | map(attribute='item.1') | list)
+     + (beszel_smart_device_stats.results | selectattr('stat.exists')
+      | selectattr('stat.ischr') | map(attribute='item.1') | list) }}
+beszel_smart_missing_slots: >-
+  {{ beszel_smart_device_slots | rejectattr('1', 'in', beszel_smart_present_devices) | list }}
+# What env.j2 renders: present devices by slot. A slot not in here is /dev/null.
+beszel_smart_rendered_slots: >-
+  {{ dict(beszel_smart_device_slots | selectattr('1', 'in', beszel_smart_present_devices) | list) }}

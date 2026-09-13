@@ -83,6 +83,9 @@ render_group_contract() {
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT=/tmp/dozzle-contract/docker/dozzle/data \
     NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     NAS_MEDIA_ROOT=/tmp/dozzle-contract/media NAS_RENDER_DEVICE=/dev/null \
+    NAS_SMART_SATA_DEVICE_1=/dev/null NAS_SMART_SATA_DEVICE_2=/dev/null \
+    NAS_SMART_SATA_DEVICE_3=/dev/null NAS_SMART_NVME_NAMESPACE_1=/dev/null \
+    NAS_SMART_NVME_NAMESPACE_2=/dev/null \
     NAS_UID=1000 NAS_GID=100 \
     BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
     BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \

@@ -105,8 +105,31 @@ services:
     network_mode: host
     cap_add:
       - CAP_PERFMON
+      # S.M.A.R.T.: smartctl's SG_IO passthrough to the SATA disks needs RAWIO.
+      - CAP_SYS_RAWIO
+      # NVMe admin passthrough needs SYS_ADMIN, and nothing else here does. It is a
+      # broad capability, accepted because the NVMe pair is md1, /volume1 -- every
+      # service's data, Vaultwarden's store included -- and a dying member would
+      # otherwise never be reported. Drop it with the NVMe slots, never alone.
+      - CAP_SYS_ADMIN
+    # Devices are host facts: inventory/group_vars/nas_hosts/main.yml lists them
+    # and roles/beszel asserts one slot per disk, so a disk added there without a
+    # slot here fails the run instead of going unmonitored, while a declared disk
+    # missing from the host renders /dev/null and warns. `:r` refuses a write-open
+    # and nothing more. It does not contain these disks: CAP_SYS_RAWIO lets SG_IO
+    # send any SCSI/ATA command, WRITE included, through a read-only handle, and
+    # CAP_SYS_ADMIN lets NVMe admin passthrough send Format and Sanitize.
     devices:
       - ${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}
+      # SATA bays: base devices, never partitions (beszel-docs guide/smart-data).
+      - ${NAS_SMART_SATA_DEVICE_1:?}:${NAS_SMART_SATA_DEVICE_1:?}:r
+      - ${NAS_SMART_SATA_DEVICE_2:?}:${NAS_SMART_SATA_DEVICE_2:?}:r
+      - ${NAS_SMART_SATA_DEVICE_3:?}:${NAS_SMART_SATA_DEVICE_3:?}:r
+      # NVMe: the host namespace mapped onto the controller name, upstream's
+      # documented Docker form (henrygd/beszel#1637). The namespace is the path
+      # read off this host; the controller name is what the agent expects.
+      - ${NAS_SMART_NVME_NAMESPACE_1:?}:/dev/nvme0:r
+      - ${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1:r
     depends_on:
       hub:
         condition: service_healthy
@@ -119,6 +142,10 @@ services:
     environment:
       DISABLE_SSH: "true"
       DOCKER_HOST: tcp://127.0.0.1:2375
+      # The agent finds md arrays by walking /sys/block (agent/mdraid_linux.go at
+      # v0.19.0), not through the devices above, so scoping those does not hide
+      # ADM's firmware-owned system arrays. md1 and md2 -- /volume1 and /volume2 --
+      # are left in on purpose: their sysfs health is how a degraded array pages.
       EXCLUDE_SMART: /dev/md0,/dev/md126
       FILESYSTEM: /extra-filesystems/volume1
       HUB_URL: http://127.0.0.1:8090

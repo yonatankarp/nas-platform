@@ -43,6 +43,16 @@ argument_specs:
         type: path
         required: true
         description: Host render-device path to validate when available.
+      platform_smart_sata_devices:
+        type: list
+        elements: path
+        required: true
+        description: SATA base devices the Beszel Intel agent reads S.M.A.R.T. from; empty off the NAS.
+      platform_smart_nvme_namespaces:
+        type: list
+        elements: path
+        required: true
+        description: NVMe namespaces the Beszel Intel agent reads S.M.A.R.T. through; empty off the NAS.
       platform_beszel_agent_available:
         type: bool
         required: true

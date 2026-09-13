@@ -1150,3 +1150,16 @@ rather than pushed.
 `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in
 both directions — a service listed there that *gains* a key fails as loudly as
 one that lost its last. `docs/secrets.md` carries the argument in full.
+
+**`beszel_agent` is effectively root on the host, and that was chosen (#607).**
+It runs as root with host networking, `CAP_SYS_RAWIO` and `CAP_SYS_ADMIN` — the
+platform's first `SYS_ADMIN` — and raw access to the three SATA bays and the
+NVMe pair. The `:r` on those devices refuses a write-open and contains nothing
+else: SG_IO can send WRITE through a read-only handle, and NVMe admin
+passthrough reaches Format and Sanitize. It was accepted because the NVMe pair is
+`/volume1`, whose `recovery: critical` data has exactly one copy, and pre-failure
+S.M.A.R.T. on it was judged worth that. The containment is on the image rather
+than the host: `renovate.json` withholds automerge from every Beszel image for
+every update type, digest refreshes included, because a re-pushed tag arrives as
+a digest and the poller would deploy it within five minutes of a merge.
+`tests/renovate_policy_test.rb` holds that property.

@@ -31,7 +31,10 @@ render() {
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
-    NAS_RENDER_DEVICE=/dev/null BESZEL_APP_URL="http://127.0.0.1:$beszel_port" \
+    NAS_RENDER_DEVICE=/dev/null \
+    NAS_SMART_SATA_DEVICE_1=/dev/null NAS_SMART_SATA_DEVICE_2=/dev/null \
+    NAS_SMART_SATA_DEVICE_3=/dev/null NAS_SMART_NVME_NAMESPACE_1=/dev/null \
+    NAS_SMART_NVME_NAMESPACE_2=/dev/null BESZEL_APP_URL="http://127.0.0.1:$beszel_port" \
     BESZEL_SYSTEM_NAME=test BESZEL_AGENT_KEY=test BESZEL_AGENT_TOKEN=test TZ=UTC \
     docker compose --project-name "$base_name-beszel" \
       -f "$repo_dir/services/beszel/compose.yml" \

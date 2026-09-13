@@ -24,7 +24,7 @@ abort "Beszel Ansible telemetry test requires ansible-core #{REQUIRED_ANSIBLE_CO
   version_status.success? &&
   version_output.start_with?("ansible-playbook [core #{REQUIRED_ANSIBLE_CORE}]")
 
-def run_play(tasks, vars, vars_files: [])
+def run_play(tasks, vars, vars_files: [], check: false)
   play = [{
     "hosts" => "localhost",
     "gather_facts" => false,
@@ -37,7 +37,7 @@ def run_play(tasks, vars, vars_files: [])
     File.write(path, YAML.dump(play), mode: "w", perm: 0o600)
     Open3.capture3(
       { "ANSIBLE_NOCOLOR" => "1" }, "ansible-playbook", "-i", "localhost,",
-      "-c", "local", path
+      "-c", "local", *(check ? ["--check"] : []), path
     )
   end
 end
@@ -129,6 +129,64 @@ if capability
     _stdout, _stderr, status = run_play([capability], vars)
     timing = "freshness=#{freshness} timeout=#{timeout} delay=#{delay} request=#{request_timeout}"
     failures << "invalid timing policy #{timing} was accepted" if status.success?
+  end
+end
+
+# A declared S.M.A.R.T. device that is not a device node on the host renders
+# /dev/null in its slot and warns, and the run does not fail: a devices: entry
+# naming an absent node stops the agent starting, so failing or passing it
+# through would block every deploy. Run through the role's own stat and warning
+# tasks and its own env.j2, against one present character device per list, a
+# regular file (which Docker refuses as firmly as an absent path) and two
+# absent paths. Under --check the stat must still run, or the warning is lost.
+smart_stat = tasks.find { |task| task["name"] == "Look for each declared S.M.A.R.T. device node on this host" }
+smart_warn = tasks.find { |task| task["name"] == "Warn about declared S.M.A.R.T. devices absent from this host" }
+failures << "Beszel S.M.A.R.T. device presence tasks are absent" unless smart_stat && smart_warn
+if smart_stat && smart_warn
+  Dir.mktmpdir("beszel-smart-slots") do |dir|
+    env_path = File.join(dir, "beszel.env")
+    render = { "name" => "Render the Beszel environment",
+               "ansible.builtin.template" => {
+                 "src" => File.join(ROOT, "roles/beszel/templates/env.j2"), "dest" => env_path, "mode" => "0600"
+               } }
+    smart_vars = {
+      "platform_smart_sata_devices" => ["/dev/zero", ROLE_VARS, "/dev/beszel-contract-absent-sata"],
+      "platform_smart_nvme_namespaces" => ["/dev/beszel-contract-absent-nvme", "/dev/random"],
+      "nas_timezone" => "UTC", "platform_effective_container_cpuset" => "0-2",
+      "nas_docker_root" => dir, "nas_media_root" => dir,
+      "platform_render_device_path" => "/dev/dri/renderD128", "beszel_app_url" => "http://127.0.0.1:8090",
+      "beszel_port" => 8090, "beszel_system_name" => "contract", "platform_project_name" => "",
+      "vault_beszel_agent_key" => "contract-key", "vault_beszel_universal_token" => "contract-token"
+    }
+    expected_slots = {
+      "NAS_SMART_SATA_DEVICE_1" => "/dev/zero",
+      "NAS_SMART_SATA_DEVICE_2" => "/dev/null",
+      "NAS_SMART_SATA_DEVICE_3" => "/dev/null",
+      "NAS_SMART_NVME_NAMESPACE_1" => "/dev/null",
+      "NAS_SMART_NVME_NAMESPACE_2" => "/dev/random"
+    }
+    expected_warnings = [
+      "#{ROLE_VARS} is declared in inventory for NAS_SMART_SATA_DEVICE_2",
+      "/dev/beszel-contract-absent-sata is declared in inventory for NAS_SMART_SATA_DEVICE_3",
+      "/dev/beszel-contract-absent-nvme is declared in inventory for NAS_SMART_NVME_NAMESPACE_1"
+    ]
+    [false, true].each do |check|
+      mode = check ? "under --check" : "on a converge"
+      stdout, stderr, status = run_play([smart_stat, smart_warn, render], smart_vars,
+                                        vars_files: [ROLE_VARS], check: check)
+      failures << "an absent S.M.A.R.T. device failed the run #{mode}: #{stderr.lines.last(3).join}" unless status.success?
+      expected_warnings.each do |warning|
+        failures << "no warning #{mode} that #{warning}" unless stdout.include?("WARNING: #{warning}")
+      end
+      failures << "a present S.M.A.R.T. device was warned about #{mode}" if
+        stdout.match?(%r{WARNING: /dev/(zero|random) })
+      next if check
+
+      rendered = File.file?(env_path) ? PolicySupport.environment_assignments(env_path).to_h : {}
+      expected_slots.each do |name, value|
+        failures << "#{name} rendered #{rendered[name].inspect}, not #{value}" unless rendered[name] == value
+      end
+    end
   end
 end
 

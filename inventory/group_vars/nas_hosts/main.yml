@@ -19,6 +19,16 @@ platform_container_cpu_budget: 3
 
 platform_render_device_available: true
 platform_render_device_path: /dev/dri/renderD128
+# S.M.A.R.T. devices, read off the host 2026-09-13. SATA bays are md2 (/volume2);
+# the NVMe namespaces are md1 (/volume1). Each needs a slot in
+# services/beszel/compose.yml, and roles/beszel refuses a list that does not match.
+platform_smart_sata_devices:
+  - /dev/sda
+  - /dev/sdb
+  - /dev/sdc
+platform_smart_nvme_namespaces:
+  - /dev/nvme0n1
+  - /dev/nvme1n1
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: intel
 beszel_required_telemetry_categories:

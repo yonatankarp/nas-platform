@@ -94,12 +94,66 @@
       Beszel telemetry capability does not match platform {{ platform_kind }}.
       Required categories: {{ beszel_effective_required_telemetry_categories | join(',') }}.
 
+# Compose cannot take a list from one variable, so the agent has a fixed number of
+# device slots and env.j2 fills the unused ones with /dev/null. This is what stops
+# a disk added to inventory without a slot -- or a slot left over after a disk was
+# removed -- from being dropped silently instead of monitored.
+- name: Require one Compose S.M.A.R.T. slot for every declared disk
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_kind != 'nas' or
+        (platform_smart_sata_devices | length == 3 and
+         platform_smart_nvme_namespaces | length == 2)
+      - >-
+        platform_kind != 'mac' or
+        (platform_smart_sata_devices | length == 0 and
+         platform_smart_nvme_namespaces | length == 0)
+    fail_msg: >-
+      services/beszel/compose.yml has 3 SATA and 2 NVMe S.M.A.R.T. slots, but
+      inventory declares {{ platform_smart_sata_devices | length }} SATA and
+      {{ platform_smart_nvme_namespaces | length }} NVMe devices for
+      {{ platform_kind }}. Change the slots and the assertion with the list.
+
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
     content: "{{ vault_beszel_hub_private_key }}"
     dest: "{{ beszel_state_root }}/id_ed25519"
     mode: "0600"
   no_log: true
+
+# A declared disk can leave the host -- a bay emptied, a disk dead or renamed --
+# and a devices: entry naming an absent node stops the agent container starting.
+# Failing here would block every deploy and take the agent dark, so an absent
+# node gets /dev/null in its slot and a warning instead, and the run goes on.
+# The count assertion above is about the lists' shape and stays strict.
+#
+# The gap this leaves: a reboot that loses a node without a deploy leaves the
+# rendered .env naming it, and the agent will not start until the next converge
+# re-renders the slot. Beszel's Status alert pages on the agent going down, so
+# that window is reported rather than silent.
+- name: Look for each declared S.M.A.R.T. device node on this host
+  ansible.builtin.stat:
+    path: "{{ item.1 }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ beszel_smart_device_slots }}"
+  loop_control:
+    label: "{{ item.0 }}={{ item.1 }}"
+  register: beszel_smart_device_stats
+  changed_when: false
+  check_mode: false
+
+- name: Warn about declared S.M.A.R.T. devices absent from this host
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ item.1 }} is declared in inventory for {{ item.0 }} but is not a
+      device node on this host, so {{ item.0 }} renders /dev/null and that disk
+      is not monitored until it returns.
+  loop: "{{ beszel_smart_missing_slots }}"
+  loop_control:
+    label: "{{ item.0 }}={{ item.1 }}"
 
 - name: Render the Beszel environment
   ansible.builtin.template:

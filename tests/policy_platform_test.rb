@@ -21,6 +21,7 @@ failures = []
 PLATFORM_CAPABILITIES = %w[
   platform_container_cpu_budget
   platform_render_device_available platform_render_device_path
+  platform_smart_sata_devices platform_smart_nvme_namespaces
   platform_beszel_agent_available platform_beszel_agent_kind
 ].freeze
 PLATFORM_TELEMETRY_POLICY = %w[

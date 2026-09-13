@@ -31,6 +31,8 @@ nas_docker_root: "{{ lookup('env', 'PLATFORM_DOCKER_ROOT') | platform_physical_p
 nas_media_root: "{{ lookup('env', 'PLATFORM_MEDIA_ROOT') | platform_physical_path }}"
 platform_render_device_available: false
 platform_render_device_path: /dev/dri/card0
+platform_smart_sata_devices: []
+platform_smart_nvme_namespaces: []
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: portable
 beszel_required_telemetry_categories:

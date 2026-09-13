@@ -111,6 +111,7 @@ FIXTURE_FILES = %w[
   roles/beszel/tasks/configure.yml
   roles/beszel/tasks/alert.yml
   roles/beszel/meta/argument_specs.yml
+  roles/beszel/templates/env.j2
   services/beszel/compose.yml
   inventory/group_vars/nas_hosts/main.yml
   inventory/group_vars/mac_hosts/main.yml
@@ -430,8 +431,10 @@ STATIC_ROWS = [
     name: "an Intel agent bound to some other render device",
     break: lambda { |root|
       mutate_yaml(root, "services/beszel/compose.yml") do |document|
-        document.fetch("services").fetch("agent-intel")["devices"] =
-          ["${NAS_RENDER_DEVICE:?}:/dev/dri/card0"]
+        # Only the render entry moves: replacing the whole list would also drop
+        # the S.M.A.R.T. slots, which is a different refusal.
+        document.fetch("services").fetch("agent-intel").fetch("devices")[0] =
+          "${NAS_RENDER_DEVICE:?}:/dev/dri/card0"
       end
     },
     expects: "NAS Intel render device differs"
@@ -444,6 +447,81 @@ STATIC_ROWS = [
                   "platform_render_device_path: /dev/dri/renderD129")
     },
     expects: "NAS Intel render device differs"
+  },
+  {
+    # A disk declared on the host with no Compose slot is the silent drop the
+    # slot design exists to refuse. Deleted from Compose rather than added to
+    # inventory: a longer inventory list also trips the slot guard check below,
+    # which would leave this row unable to prove the slot check on its own.
+    name: "an inventory SATA disk with no Compose slot",
+    break: lambda { |root|
+      mutate_yaml(root, "services/beszel/compose.yml") do |document|
+        document.fetch("services").fetch("agent-intel").fetch("devices")
+                .reject! { |device| device.include?("NAS_SMART_SATA_DEVICE_3") }
+      end
+    },
+    expects: "NAS Intel S.M.A.R.T. device slots differ from inventory"
+  },
+  {
+    name: "an NVMe slot mapped read-write",
+    break: lambda { |root|
+      mutate_text(root, "services/beszel/compose.yml",
+                  "${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1:r",
+                  "${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1")
+    },
+    expects: "NAS Intel S.M.A.R.T. device slots differ from inventory"
+  },
+  {
+    name: "an Intel agent without the NVMe passthrough capability",
+    break: lambda { |root|
+      mutate_yaml(root, "services/beszel/compose.yml") do |document|
+        document.fetch("services").fetch("agent-intel").fetch("cap_add").delete("CAP_SYS_ADMIN")
+      end
+    },
+    expects: "NAS Intel agent lacks the S.M.A.R.T. capabilities"
+  },
+  {
+    name: "a role slot guard that no longer counts the NVMe disks",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/deploy.yml",
+                  "platform_smart_nvme_namespaces | length == 2)",
+                  "platform_smart_nvme_namespaces | length >= 0)")
+    },
+    expects: "role does not pin the S.M.A.R.T. slot count to Compose"
+  },
+  {
+    # Under --check a stat that does not really run reports every device absent,
+    # so the diff an operator reads would show every slot going to /dev/null.
+    name: "a device presence stat that is skipped under --check",
+    break: lambda { |root|
+      mutate_yaml(root, "roles/beszel/tasks/deploy.yml") do |document|
+        find_task(document, "Look for each declared S.M.A.R.T. device node on this host").delete("check_mode")
+      end
+    },
+    expects: "role does not tolerate an absent S.M.A.R.T. device"
+  },
+  {
+    # The failure the tolerance exists to remove: one pulled disk failing every
+    # five-minute tick and blocking every deploy behind it.
+    name: "an absent S.M.A.R.T. device that fails the deploy",
+    break: lambda { |root|
+      mutate_yaml(root, "roles/beszel/tasks/deploy.yml") do |document|
+        task = find_task(document, "Warn about declared S.M.A.R.T. devices absent from this host")
+        task["ansible.builtin.fail"] = task.delete("ansible.builtin.debug")
+      end
+    },
+    expects: "role does not tolerate an absent S.M.A.R.T. device"
+  },
+  {
+    # The other way to lose the tolerance: the slot bypasses the presence check
+    # and renders the declared path whether or not the node is there.
+    name: "an env slot that renders the declared path unchecked",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/templates/env.j2",
+                  "{{ beszel_smart_rendered_slots['NAS_SMART_NVME_NAMESPACE_1'] | default('/dev/null') }}",
+                  "{{ platform_smart_nvme_namespaces[0] | default('/dev/null') }}")
+    },
+    expects: "env template renders a S.M.A.R.T. slot without the presence check"
   },
   {
     name: "a portable agent that lost a capacity mount",
@@ -1996,6 +2074,28 @@ STATIC_MUTATIONS = [
     to: "nil unless",
     rows: ["an Intel agent bound to some other render device",
            "an inventory render device path the compose definition cannot use"] },
+  { label: "the S.M.A.R.T. slot check",
+    from: 'refuse("NAS Intel S.M.A.R.T. device slots differ from inventory") unless',
+    to: "nil unless",
+    rows: ["an inventory SATA disk with no Compose slot",
+           "an NVMe slot mapped read-write"] },
+  { label: "the S.M.A.R.T. capability check",
+    from: 'refuse("NAS Intel agent lacks the S.M.A.R.T. capabilities") unless',
+    to: "nil unless",
+    rows: ["an Intel agent without the NVMe passthrough capability"] },
+  { label: "the S.M.A.R.T. slot guard check",
+    from: 'refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless',
+    to: "nil unless",
+    rows: ["a role slot guard that no longer counts the NVMe disks"] },
+{ label: "the absent S.M.A.R.T. device check",
+  from: 'refuse("role does not tolerate an absent S.M.A.R.T. device") unless',
+  to: "nil unless",
+  rows: ["a device presence stat that is skipped under --check",
+         "an absent S.M.A.R.T. device that fails the deploy"] },
+{ label: "the S.M.A.R.T. env presence check",
+  from: 'refuse("env template renders a S.M.A.R.T. slot without the presence check") unless',
+  to: "nil unless",
+  rows: ["an env slot that renders the declared path unchecked"] },
   { label: "the agent capacity mount check",
     from: 'refuse("agent capacity mounts differ") unless expected_mounts.all?',
     to: "nil unless expected_mounts.all?",
