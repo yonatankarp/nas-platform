@@ -204,7 +204,7 @@ expected_storage_inventory = {
   "{{ nas_docker_root }}/paperless-ngx/cache" => "cache",
   "{{ nas_docker_root }}/paperless-ngx/tessdata" => "cache"
 }
-storage_entries = storage_inventory.fetch("nas_storage")
+storage_entries = storage_inventory.fetch("nas_storage_paperless_ngx")
 expected_storage_inventory.each do |path, recovery|
   matches = storage_entries.select { |entry| entry["path"] == path }
   refuse("central storage declaration differs for #{path}") unless

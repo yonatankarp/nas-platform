@@ -121,7 +121,7 @@ abort "Audiobookshelf contract failed: backup environment is absent" unless
 abort "Audiobookshelf contract failed: media network environment is absent" unless
   environment_assignments.select { |name, _value| name == "PLATFORM_MEDIA_NETWORK" } ==
     [["PLATFORM_MEDIA_NETWORK", "{{ platform_media_control_network }}"]]
-backup_storage = storage.fetch("nas_storage").find do |entry|
+backup_storage = storage.fetch("nas_storage_audiobookshelf").find do |entry|
   entry["path"] == "{{ nas_docker_root }}/audiobookshelf/backups"
 end
 abort "Audiobookshelf contract failed: backup storage inventory differs" unless

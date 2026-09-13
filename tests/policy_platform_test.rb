@@ -10,6 +10,7 @@ require "open3"
 require "rbconfig"
 require "set"
 require "yaml"
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include PolicySupport
@@ -225,9 +226,9 @@ mac_vars = YAML.safe_load_file(
         "Mac #{variable} must canonicalize #{environment_variable} before export")
 end
 
-storage = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-declared_paths = storage.fetch("nas_storage").map { |entry| entry.fetch("path") }
-paperless_postgres_storage = storage.fetch("nas_storage").find do |entry|
+storage_entries = NasStorage.entries(ROOT)
+declared_paths = storage_entries.map { |entry| entry.fetch("path") }
+paperless_postgres_storage = storage_entries.find do |entry|
   entry["path"] == "{{ nas_docker_root }}/paperless-ngx/postgres"
 end
 check(failures,

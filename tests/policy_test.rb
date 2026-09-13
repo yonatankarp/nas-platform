@@ -10,6 +10,7 @@ require "open3"
 require "rbconfig"
 require "set"
 require "yaml"
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include PolicySupport
@@ -614,7 +615,10 @@ immich_preference_keys = %w[
   immich_managed_user_preference_profiles
 ]
 immich_defaults = YAML.safe_load_file(File.join(ROOT, "roles", "immich", "defaults", "main.yml"))
-shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+# Immich's preference policy moved to its own group_vars file with the rest of
+# the service's settings. It is still the layer that outranks role defaults, which
+# is what the comparison below is about.
+shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "service_immich.yml"))
 [shared_vars, immich_defaults].each_with_index do |variables, index|
   source = index.zero? ? "normal inventory" : "Immich role defaults"
   check(failures, variables["immich_managed_user_preference_profile_default"] == "standard",
@@ -1093,8 +1097,7 @@ PLATFORM_SERVICE_DEFAULTS = {
   "logging" => PLATFORM_LOGGING
 }.freeze
 
-declared_paths = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-                     .fetch("nas_storage").map { |entry| entry.fetch("path") }
+declared_paths = NasStorage.entries(ROOT).map { |entry| entry.fetch("path") }
 
 # A mounted path is accounted for when nas_storage declares it, or declares an
 # entry it sits under: host_prep creates that entry with the right ownership and

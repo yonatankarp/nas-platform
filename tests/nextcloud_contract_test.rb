@@ -87,8 +87,9 @@ FIXTURE_FILES = %w[
   services/nextcloud/compose.integration.yml
   tests/expected/nextcloud.yml
   tests/contracts/nextcloud.sh
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_nextcloud.yml
   tests/policy_support.rb
+  tests/nas_storage_support.rb
 ].freeze
 
 def build_fixture_repository(root)
@@ -607,8 +608,8 @@ ROLE_STATIC_ROWS = [
   {
     name: "a storage root declared replaceable",
     break: lambda { |root|
-      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
-        document["nas_storage"].each do |entry|
+      edit_yaml(root, "inventory/group_vars/all/service_nextcloud.yml") do |document|
+        document["nas_storage_nextcloud"].each do |entry|
           entry["recovery"] = "cache" if entry["path"].to_s.include?("/nextcloud/")
         end
       end

@@ -75,8 +75,11 @@ FIXTURE_FILES = %w[
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
   services/kapowarr/compose.integration.yml
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_kapowarr.yml
+  inventory/group_vars/all/media_libraries.yml
+  inventory/group_vars/all/media_acquisition.yml
   tests/policy_support.rb
+  tests/nas_storage_support.rb
 ].freeze
 
 # Never more workers than cores. tests/validate-policy.sh already runs its checks
@@ -313,8 +316,8 @@ STATIC_ROWS = [
     # in a redacted request rather than here.
     name: "a staging offset resolving to a directory nas_storage does not declare",
     break: lambda { |root|
-      edit_yaml(root, "inventory/group_vars/all/main.yml") do |document|
-        document["nas_storage"].reject! do |entry|
+      edit_yaml(root, "inventory/group_vars/all/media_acquisition.yml") do |document|
+        document["nas_storage_media_acquisition"].reject! do |entry|
           entry["path"] == "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
         end
       end
@@ -570,7 +573,7 @@ STATIC_ROWS = [
     # here would move directories on every converge (#343).
     name: "a volume folder migration pinned open in the inventory",
     break: lambda { |root|
-      mutate_text(root, "inventory/group_vars/all/main.yml",
+      mutate_text(root, "inventory/group_vars/all/service_kapowarr.yml",
                   "kapowarr_volume_folder_migration_allowed: false",
                   "kapowarr_volume_folder_migration_allowed: true")
     },
@@ -1645,7 +1648,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the pinned-closed migration inventory check",
     program: :static,
-    from: '    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
+    from: '    YAML.safe_load_file(File.join(root, "inventory/group_vars/all/service_kapowarr.yml"))
         .fetch("kapowarr_volume_folder_migration_allowed", false) == false',
     to: "    true",
     rows: ["a volume folder migration pinned open in the inventory"]

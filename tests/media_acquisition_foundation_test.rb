@@ -4,6 +4,7 @@ require "open3"
 require "set"
 require "yaml"
 
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -578,8 +579,8 @@ failures << "unbracketed IPv6 wildcard must normalize" unless
 end
 
 shared_vars = YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
-all_storage = shared_vars.fetch("nas_storage")
-acquisition_storage = shared_vars.fetch("nas_storage").select do |entry|
+all_storage = NasStorage.entries(ROOT)
+acquisition_storage = all_storage.select do |entry|
   entry["media_acquisition_foundation"] == true
 end
 failures.concat(integration_writer_contract_problems(all_storage))
@@ -630,7 +631,7 @@ media_root_storage.each do |entry|
 end
 %w[configarr unpackerr gluetun].each do |stateless_service|
   failures << "#{stateless_service} must not gain critical host state" if
-    shared_vars.fetch("nas_storage").any? do |entry|
+    all_storage.any? do |entry|
       entry.fetch("path").start_with?("{{ nas_docker_root }}/#{stateless_service}/")
     end
 end

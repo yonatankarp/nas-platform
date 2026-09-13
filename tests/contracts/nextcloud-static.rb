@@ -48,12 +48,13 @@ required = %w[
   services/nextcloud/compose.integration.yml
   tests/expected/nextcloud.yml
   tests/contracts/nextcloud.sh
-  inventory/group_vars/all/main.yml
+  inventory/group_vars/all/service_nextcloud.yml
 ]
 required.each do |relative|
   failures << "missing #{relative}" unless File.file?(File.join(root, relative))
 end
 
+require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "nas_storage_support")
 require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests", "policy_support")
 include PolicySupport
 
@@ -621,8 +622,7 @@ if failures.empty?
   # is the user's documents and the cluster is the account, sharing and
   # versioning state that says what those documents mean -- but neither depends
   # on the other to be readable, which is what Seafile's block store cannot say.
-  inventory = YAML.safe_load_file(File.join(root, "inventory/group_vars/all/main.yml"))
-  declarations = Array(inventory["nas_storage"]).select do |entry|
+  declarations = NasStorage.entries(root).select do |entry|
     entry.is_a?(Hash) && entry["path"].to_s.include?("/nextcloud/")
   end
   failures << "every Nextcloud storage root must be declared irreplaceable" unless
