@@ -1,0 +1,68 @@
+---
+# Behaviour of roles/host_prep/tasks/verify_mdraid.yml (#609), run as shipped
+# against a fixture sysfs tree rather than restated. Each case writes the
+# md/degraded files a host would expose, runs the real task file, and records
+# whether its assert refused and what the refusal said -- so the pass, fail and
+# skip paths all finalize the assert's messages, which is where a reference to a
+# key absent on one path would crash.
+- name: Prove the mdraid baseline verification
+  hosts: localhost
+  gather_facts: false
+  vars:
+    # Per worktree, for the reason tests/image_downgrade_guard_test.yml gives.
+    mdraid_root: >-
+      {{ lookup('env', 'TMPDIR') | default('/tmp', true) | regex_replace('/$', '') }}/nas-platform-mdraid-verify-{{ (playbook_dir | hash('sha1'))[:12] }}
+    mdraid_nas:
+      md0: 2
+      md126: 2
+      md1: 0
+      md2: 0
+    mdraid_cases:
+      - name: the NAS as read on 2026-09-13
+        present: "{{ mdraid_nas }}"
+        refused: false
+      - name: md2 lost a SATA member
+        present: {md0: 2, md126: 2, md1: 0, md2: 1}
+        refused: true
+        says: [md2=0, md2=1]
+      - name: md0 lost one of its two NVMe members, which only equality catches
+        present: {md0: 3, md126: 2, md1: 0, md2: 0}
+        refused: true
+        says: [md0=2, md0=3]
+      - name: md1 is not assembled at all
+        present: {md0: 2, md126: 2, md2: 0}
+        refused: true
+        says: [md1=0, md1=absent]
+      - name: an undeclared array is reported, not refused
+        present: {md0: 2, md126: 2, md1: 0, md2: 0, md3: 1}
+        refused: false
+        undeclared: [md3]
+      - name: a declared failure is refused under --check as well
+        present: {md0: 2, md126: 2, md1: 0, md2: 1}
+        refused: true
+        check: true
+        says: [md2=0, md2=1]
+      - name: no baseline declared, as on the Mac lane
+        baseline: {}
+        refused: false
+        skipped: true
+      - name: a baseline inherited by the integration sandbox
+        compose_kind: integration
+        refused: false
+        skipped: true
+
+  tasks:
+    - name: Run every case
+      ansible.builtin.include_tasks: host_prep_mdraid_verify_case.yml
+      loop: "{{ mdraid_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    - name: Remove the fixture tree
+      ansible.builtin.file:
+        path: "{{ mdraid_root }}"
+        state: absent
+
+    - name: Report what was proved
+      ansible.builtin.debug:
+        msg: "mdraid baseline verification: {{ mdraid_cases | length }} cases hold."

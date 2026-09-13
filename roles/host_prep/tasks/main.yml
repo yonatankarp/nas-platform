@@ -236,3 +236,6 @@
     label: "{{ item.item.path }}"
   changed_when: false
   when: host_prep_integration_writer_enabled | bool
+
+- name: Verify mdraid arrays against the declared healthy baseline
+  ansible.builtin.import_tasks: verify_mdraid.yml

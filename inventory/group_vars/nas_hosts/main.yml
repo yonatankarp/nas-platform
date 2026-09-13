@@ -29,6 +29,25 @@ platform_smart_sata_devices:
 platform_smart_nvme_namespaces:
   - /dev/nvme0n1
   - /dev/nvme1n1
+
+# Every mdraid array and its /sys/block/<md>/md/degraded on a HEALTHY host,
+# which roles/host_prep/tasks/verify_mdraid.yml requires by equality. Read off
+# the NAS on 2026-09-13 with `cat /proc/mdstat`:
+#   md2   raid5 sdc4 sda4 sdb4           [3/3] [UUU]   SATA bays, /volume2
+#   md1   raid1 nvme1n1p4 nvme0n1p4      [2/2] [UU]    NVMe, /volume1 (all service data)
+#   md126 raid1 nvme1n1p3 nvme0n1p3      [4/2] [UU__]  ADM system/swap
+#   md0   raid1 nvme1n1p2 nvme0n1p2      [4/2] [UU__]  ADM system
+# md0 and md126 are ADM's 4-slot RAID1 with only the two NVMe members, so 2 is
+# their healthy count, not a fault. Change a count only after reading the host.
+#
+# ADM's own firmware also notifies the operator when an array degrades. That is
+# a parallel channel outside this repository's control and not described here,
+# so it does not replace this check.
+host_prep_mdraid_arrays:
+  md0: 2
+  md126: 2
+  md1: 0
+  md2: 0
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: intel
 beszel_required_telemetry_categories:
