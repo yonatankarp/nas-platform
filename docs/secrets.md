@@ -1474,10 +1474,16 @@ runs the poller's own command against the committed encrypted vault.
 gh secret set ANSIBLE_VAULT_PASSWORD < "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 
-The password file is one line with no trailing blank, which is what the
-["Use the vault"](#use-the-vault) checks above already require; `gh secret set`
-sends the file's bytes unchanged and `ansible-vault` strips the trailing
-newline.
+`gh secret set` sends the file's bytes unchanged, and `ansible-vault` strips
+surrounding whitespace from a password file, so the one-line file created above
+transfers as-is and a trailing blank line changes nothing. Nothing in this guide
+requires that shape: the checks around `PLATFORM_VAULT_PASSWORD_FILE` test only
+that it exists, is a regular file and is non-empty, and
+["Use the vault"](#use-the-vault) shows how to pass it rather than checking it.
+What a *second* line of content would do is change the password — the whole
+stripped file is the secret, not its first line — which is measured: the same
+vault that opens under `secretpw\n` and `secretpw\n\n` is refused under
+`secretpw\nsecond\n`.
 
 What the job buys is that the artifact is *parsed* before a deployment meets it.
 Nothing else in this repository opens the vault: `tests/policy_vault_test.rb`
@@ -1499,8 +1505,20 @@ the NAS controls end to end. Three properties bound it, and each is asserted by
   committed by a later step or uploaded as an artifact.
 - An absent or empty secret **fails** the job by name. It does not skip: a
   skipped job is a green run that decrypted nothing, which is the state this job
-  exists to end. A pull request from a fork carries no secret and therefore reds
-  this job — the cost of that rule, accepted deliberately.
+  exists to end.
+
+A pull request from a fork carries no secret and therefore reds this job, and
+that cost is wider than "a fork pull request that edits the vault". Routing
+selects `vault` for the committed vault file *and* for every path no lane
+claims, because an unmapped path falls open to every job. Measured with
+`ruby tests/ci/classify_changes.rb --files <path>`: `site.yml`, `ansible.cfg`,
+`inventory/group_vars/all/main.yml`, `tests/integration.sh`, `validate-vault.yml`,
+`roles/vault_contract/`, `roles/host_prep/` and any unmapped file under
+`.github/` all set `vault=true`. So a fork pull request that edits `site.yml`
+reds `vault` and, because `validate` needs it, reds the run. A path a lane does
+claim leaves the job off — `roles/jellyfin/`, `services/*/compose.yml`,
+`tests/policy_test.rb`, `docs/secrets.md`, `README.md`. Accepted deliberately:
+the alternative is the skip this rule exists to refuse.
 
 Anyone who can dispatch a workflow in this repository can reach what the secret
 decrypts, so treat a suspected disclosure exactly as a lost password: re-key.
