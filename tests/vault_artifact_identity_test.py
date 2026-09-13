@@ -28,11 +28,22 @@ def artifact(path, checksum):
 
 class VaultArtifactIdentityTest(unittest.TestCase):
     def test_single_artifact_folds_name_and_digest(self):
-        expected = hashlib.sha256(f"vault.yml:{DIGEST_A}".encode("utf-8")).hexdigest()
+        expected = hashlib.sha256(f"vault.yml\0{DIGEST_A}\0".encode("utf-8")).hexdigest()
         self.assertEqual(
             vault_artifact_identity([artifact("/x/inventory/vault.yml", DIGEST_A)]),
             expected,
         )
+
+    def test_delimiter_characters_in_a_basename_cannot_collide(self):
+        # A basename may contain ":" or a newline. With a ":"-and-newline join,
+        # one artifact named "a.yml:<digest>\nb.yml" produced the same input as
+        # two artifacts "a.yml" and "b.yml". NUL cannot appear in a basename.
+        smuggled = f"a.yml:{DIGEST_A}\nb.yml"
+        one = vault_artifact_identity([artifact(f"/x/{smuggled}", DIGEST_B)])
+        two = vault_artifact_identity(
+            [artifact("/x/a.yml", DIGEST_A), artifact("/x/b.yml", DIGEST_B)]
+        )
+        self.assertNotEqual(one, two)
 
     def test_identity_is_64_hex_characters(self):
         value = vault_artifact_identity([artifact("/x/vault.yml", DIGEST_A)])

@@ -71,8 +71,19 @@ def vault_artifact_identity(files):
     # Sorted by basename, stated rather than incidental: the identifier has to
     # be the same on the NAS, in CI and on a Mac, and find's order is the
     # directory's.
-    joined = "\n".join(f"{name}:{checksum}" for name, checksum in sorted(entries))
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+    #
+    # NUL-delimited rather than ":" and newline, because a basename may contain
+    # either of those and the join would then be ambiguous -- "a.yml:<digest>\n
+    # b.yml" as one name reads the same as two records. NUL cannot occur in a
+    # basename on any filesystem this runs on, and a checksum is exactly 64 hex
+    # characters, so a NUL after each field makes every record self-delimiting.
+    digest = hashlib.sha256()
+    for name, checksum in sorted(entries):
+        digest.update(name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(checksum.encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 class FilterModule:

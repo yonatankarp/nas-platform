@@ -2457,6 +2457,40 @@ expect_failure(failures, "vault checksum moved before the selection floor",
   tasks.insert(floor_index, checksum_task)
   File.write(path, YAML.dump(tasks))
 end
+expect_failure(failures, "vault header matched at any line, not at file start",
+               VAULT_CONTRACT_SELECTION_MESSAGE,
+               detected_by: %i[vault]) do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  selection = tasks.find { |task| task["name"] == "Select the encrypted vault artifacts" }
+  raise "vault contract selection task not found for the plant" if selection.nil?
+
+  find = selection.fetch("ansible.builtin.find")
+  find["read_whole_file"] = false
+  find["contains"] = find.fetch("contains").sub(/\A\\A/, "^")
+  File.write(path, YAML.dump(tasks))
+end
+expect_failure(failures, "vault selection narrowed to one extension",
+               VAULT_CONTRACT_SELECTION_MESSAGE,
+               detected_by: %i[vault]) do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  selection = tasks.find { |task| task["name"] == "Select the encrypted vault artifacts" }
+  raise "vault contract selection task not found for the plant" if selection.nil?
+
+  selection.fetch("ansible.builtin.find")["patterns"] = "*.yml"
+  File.write(path, YAML.dump(tasks))
+end
+expect_failure(failures, "vault location default regressed to one file",
+               "site.yml must default platform_vault_file to the inventory/group_vars/all directory",
+               detected_by: %i[platform]) do |root|
+  path = File.join(root, "site.yml")
+  source = File.read(path)
+  mutated = source.sub("'/inventory/group_vars/all', true)", "'/inventory/group_vars/all/vault.yml', true)")
+  raise "site.yml default not found for the plant" if mutated == source
+
+  File.write(path, mutated)
+end
 expect_failure(failures, "vault selection no longer tests the encryption header",
                VAULT_CONTRACT_SELECTION_MESSAGE,
                detected_by: %i[vault]) do |root|

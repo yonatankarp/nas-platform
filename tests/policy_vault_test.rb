@@ -615,6 +615,16 @@ vault_order_indexes = [
 check(failures,
       vault_metadata_task&.dig("ansible.builtin.stat", "get_checksum") == false &&
         vault_find["contains"].to_s.include?("ANSIBLE_VAULT") &&
+        # \A with the whole file read anchors the header at the start of the
+        # file; ^ alone matches the start of any line, so a plaintext file
+        # quoting the header on line two would be identified as encrypted.
+        vault_find["contains"].to_s.start_with?("\\A") &&
+        vault_find["read_whole_file"] == true &&
+        # No extension glob: group_vars loads .yaml, .json and extensionless
+        # files too, and a '*.yml' pattern omitted a vault.yaml Ansible had
+        # decrypted from the identity it reported.
+        !vault_find["patterns"].to_s.include?("*.") &&
+        vault_find["hidden"] == false &&
         vault_find["get_checksum"] == true &&
         vault_find["checksum_algorithm"] == "sha256" &&
         vault_find["recurse"] == false &&

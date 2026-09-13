@@ -204,25 +204,33 @@
   when: platform_vault_file is defined
   no_log: true
 
-# Selection is the header test, which is what keeps the plaintext
-# vault.yml.example out of the identifier without naming it. A path that is a
-# regular file is selected through its own parent so one task covers both
-# shapes: the mac lane and the integration harness pass a single file and must
-# not have to move for this.
+# Selection is the header test and nothing else, which is what keeps the
+# plaintext vault.yml.example out of the identifier without naming it, and what
+# keeps the identifier honest about what Ansible loads: group_vars takes .yml,
+# .yaml, .json and extensionless files, skips dotfiles and `~` backups, so an
+# extension filter here would omit a vault.yaml Ansible decrypted and a hidden
+# file would identify one it did not. A path that is a regular file is selected
+# through its own parent so one task covers both shapes: the mac lane and the
+# integration harness pass a single file and must not have to move for this.
 #
-# `contains` reads the file to match the header and reports only paths, never
-# content, and every task here carries no_log regardless.
+# `read_whole_file` with a `\A` anchor matches the header at the start of the
+# file, not at the start of any line; a plaintext file quoting the header on
+# line two is not an encrypted artifact. It reads the file to match and reports
+# only paths, never content, and every task here carries no_log regardless.
 - name: Select the encrypted vault artifacts
   ansible.builtin.find:
     paths: >-
       {{ platform_vault_file if vault_contract_candidate_file.stat.isdir | default(false)
          else (platform_vault_file | dirname) }}
     patterns: >-
-      {{ '*.yml' if vault_contract_candidate_file.stat.isdir | default(false)
+      {{ omit if vault_contract_candidate_file.stat.isdir | default(false)
          else (platform_vault_file | basename) }}
+    excludes: "{{ ['*~'] if vault_contract_candidate_file.stat.isdir | default(false) else [] }}"
     file_type: file
     recurse: false
-    contains: '^\$ANSIBLE_VAULT;'
+    hidden: false
+    read_whole_file: true
+    contains: '\A\$ANSIBLE_VAULT;'
     get_checksum: true
     checksum_algorithm: sha256
   delegate_to: localhost

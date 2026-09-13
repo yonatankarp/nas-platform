@@ -41,13 +41,19 @@ fact. Its whole job is to say *which* encrypted artifact a run was made against.
 `platform_vault_file` accepts a **directory** as well as a file, and the default
 becomes `inventory/group_vars/all/`.
 
-- Selection: every regular file directly in the directory whose first 15 bytes
-  are `$ANSIBLE_VAULT;`. That rule excludes `vault.yml.example`, which is
-  plaintext and sits in the same directory, without naming it.
+- Selection: every regular file directly in the directory whose content
+  **starts** with `$ANSIBLE_VAULT;`, skipping dotfiles and `~` backups. No
+  extension filter: `group_vars` loads `.yml`, `.yaml`, `.json` and extensionless
+  files and skips dotfiles and backups, so this is the set Ansible actually
+  decrypted, no more and no less. The header rule excludes `vault.yml.example`,
+  which is plaintext and sits in the same directory, without naming it; the
+  file-start anchor excludes a plaintext file quoting the header on a later line.
 - Identity: for each selected file, sorted by basename, compute its SHA-256;
-  then the run identifier is the SHA-256 over the joined `"<basename>:<digest>"`
-  lines. One 64-character value, as before, so the recorded fact keeps its shape
-  and its consumers keep working.
+  then the run identifier is the SHA-256 over NUL-delimited
+  `<basename>\0<digest>\0` records. NUL rather than `:` and newline because a
+  basename may contain either, and the join would then be ambiguous. One
+  64-character value, as before, so the recorded fact keeps its shape and its
+  consumers keep working.
 - A path that is a regular file keeps working exactly as today. That is not
   kindness to callers; the mac lane and the integration harness pass
   `-e platform_vault_file="$vault_file"` pointing at one file, and this change

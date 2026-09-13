@@ -157,9 +157,10 @@ check(failures, site_play["hosts"] == "platform_hosts",
 # The location, not one file: the identifier folds every encrypted artifact
 # directly inside it, which is what lets the vault split add files without the
 # reported identity silently narrowing to whichever one this named.
-check(failures, site_play.dig("vars", "platform_vault_file").to_s.include?(
-  "inventory/group_vars/all"
-), "site.yml must identify the encrypted deployment vault location for SHA-256 reporting")
+check(failures, site_play.dig("vars", "platform_vault_file").to_s.match?(
+  %r{default\(playbook_dir ~ '/inventory/group_vars/all', true\)}
+), "site.yml must default platform_vault_file to the inventory/group_vars/all directory, " \
+   "not to a file beneath it, for SHA-256 reporting")
 
 preflight_options = YAML.safe_load_file(
   File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
