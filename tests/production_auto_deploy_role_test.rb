@@ -190,18 +190,20 @@ end
 verify_tag_problems(declared_tags, periodic_extra, existing_tags).each { |problem| check(failures, false, problem) }
 # The rule has to bite on the two failures it exists for, proved on planted lists
 # rather than trusted: the hourly-only tag moved into the deploy list, and a tag
-# in neither list.
+# in neither list. Built from the deploy list without the hourly-only tags, so a
+# broken real list cannot also make a plant misreport.
+deploy_without_hourly = declared_tags - HOURLY_ONLY_VERIFY_TAGS
 check(failures,
-      verify_tag_problems(declared_tags + HOURLY_ONLY_VERIFY_TAGS, [], existing_tags)
+      verify_tag_problems(deploy_without_hourly + HOURLY_ONLY_VERIFY_TAGS, [], existing_tags)
         .any? { |problem| problem.include?("must stay out of production_auto_deploy_verify_tags") },
       "planted: platform_verify_mdraid in the deploy list must be refused")
 check(failures,
-      verify_tag_problems(declared_tags, [], existing_tags).any? { |problem| problem.include?("missing=") },
+      verify_tag_problems(deploy_without_hourly, [], existing_tags).any? { |problem| problem.include?("missing=") },
       "planted: a verify tag in neither list must be refused")
 
 doc_tags = File.read(File.join(ROOT, "docs/getting-started-nas.md"))
               .scan(/platform_verify_[a-z_]+/).uniq
-periodic_tags = declared_tags + periodic_extra
+periodic_tags = (declared_tags + periodic_extra).uniq
 check(failures, doc_tags.sort == periodic_tags.sort,
       "the operator guide's verify tags must match the poller's deploy and hourly lists; " \
       "difference=#{((doc_tags | periodic_tags) - (doc_tags & periodic_tags)).inspect}")
