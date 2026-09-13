@@ -378,8 +378,8 @@ says.
 - **Service data under the Docker root**, `/volume1/Docker` in production:
   Dozzle's data directory as a whole, Beszel's hub private key, Seerr's
   `settings.json` and the `settings.old.json` beside it — both mode 0644,
-  holding the Seerr API key, the Jellyfin token Seerr minted for itself and the
-  session secret — and the first-run configuration Ansible seeds and then
+  holding the Seerr API key, the Jellyfin token Seerr minted for itself, the
+  session secret and the Pushover pair every notifying service shares — and the first-run configuration Ansible seeds and then
   leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and

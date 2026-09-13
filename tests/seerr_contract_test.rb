@@ -187,6 +187,22 @@ STATIC_ROWS = [
                   "PLATFORM_CONTAINER_CPUSET=0-3")
     },
     expects: "Seerr env must render the CPU set exactly once"
+  },
+  {
+    name: "a Pushover agent sending with the wrong half of the pair",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seerr/defaults/main.yml") do |d|
+        d["seerr_pushover_user_key"] = "{{ vault_pushover_token }}"
+      end
+    },
+    expects: "Seerr's Pushover agent must send with the vault's Pushover pair"
+  },
+  {
+    name: "an ntfy agent declared on",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seerr/defaults/main.yml") { |d| d["seerr_ntfy_declaration"]["enabled"] = true }
+    },
+    expects: "Seerr's ntfy agent must be declared off"
   }
 ].freeze
 
@@ -216,6 +232,10 @@ end
 API_KEY = "seerr-contract-api-key-0000000000"
 RADARR_KEY = "radarr-contract-api-key-000000000"
 SONARR_KEY = "sonarr-contract-api-key-000000000"
+PUSHOVER_TOKEN = "seerr-contract-pushover-token-never-valid"
+PUSHOVER_USER_KEY = "seerr-contract-pushover-user-key-never-valid"
+# Only what a Seerr converged before #558 still stores; the vault no longer
+# hands it to the role.
 NTFY_TOKEN = "tk_seerr_contract_token"
 HOUSEHOLD = %w[viewer].freeze
 OWNER_ID = 1
@@ -245,9 +265,12 @@ RUNTIME_DEFAULTS = {
   takeover_body: '{"message":"Jellyfin server already configured"}',
   arrs: false,
   arr_rows: nil,
-  ntfy_enabled: true,
-  ntfy_auth_token: true,
-  ntfy_token: NTFY_TOKEN,
+  pushover_blanked: false,
+  pushover_enabled: true,
+  pushover_types: 152,
+  pushover_access_token: PUSHOVER_TOKEN,
+  pushover_user_key: PUSHOVER_USER_KEY,
+  ntfy_enabled: false,
   database: true
 }.freeze
 
@@ -256,7 +279,8 @@ def vault_document
     "vault_seerr_api_key" => API_KEY,
     "vault_arr_radarr_api_key" => RADARR_KEY,
     "vault_arr_sonarr_api_key" => SONARR_KEY,
-    "vault_ntfy_seerr_token" => NTFY_TOKEN,
+    "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_pushover_user_key" => PUSHOVER_USER_KEY,
     "vault_managed_users" => { "jellyfin" => HOUSEHOLD.map { |name| { "username" => name } } }
   }
 end
@@ -344,12 +368,16 @@ def runtime_responder(options)
                           "port" => options.fetch(:jellyfin_port))]
     when "/api/v1/settings/radarr" then [200, JSON.generate(arr_rows("radarr", options))]
     when "/api/v1/settings/sonarr" then [200, JSON.generate(arr_rows("sonarr", options))]
-    when "/api/v1/settings/notifications/ntfy"
+    when "/api/v1/settings/notifications/pushover"
       [200, JSON.generate(
-        "enabled" => options.fetch(:ntfy_enabled),
-        "options" => { "authMethodToken" => options.fetch(:ntfy_auth_token),
-                       "token" => options.fetch(:ntfy_token) }
+        "enabled" => options.fetch(:pushover_enabled), "embedPoster" => true,
+        "types" => options.fetch(:pushover_types),
+        "options" => { "accessToken" => options.fetch(:pushover_access_token),
+                       "userToken" => options.fetch(:pushover_user_key), "sound" => "" }
       )]
+    when "/api/v1/settings/notifications/ntfy"
+      [200, JSON.generate("enabled" => options.fetch(:ntfy_enabled), "embedPoster" => true, "types" => 0,
+                          "options" => { "url" => "", "topic" => "", "priority" => 3, "locale" => "en" })]
     else [404, "{}"]
     end
   end
@@ -468,14 +496,34 @@ RUNTIME_ROWS = [
     expects: "is not addressed by service alias"
   },
   {
-    name: "an ntfy agent that is disabled",
-    given: { ntfy_enabled: false },
-    expects: "Seerr's ntfy agent is disabled"
+    name: "a Pushover agent that is disabled",
+    given: { pushover_enabled: false },
+    expects: "Seerr's Pushover agent is disabled"
   },
   {
-    name: "an ntfy agent publishing without authenticating",
-    given: { ntfy_auth_token: false },
-    expects: "Seerr's ntfy agent publishes without authenticating"
+    name: "a Pushover agent sending other events",
+    given: { pushover_types: 24 },
+    expects: "Seerr's Pushover agent does not send request events"
+  },
+  {
+    name: "a Pushover agent carrying a user key the vault never authored",
+    given: { pushover_user_key: "someone-elses-user-key" },
+    expects: "Seerr's Pushover agent does not carry the declared Pushover pair"
+  },
+  {
+    name: "a lane that blanked the pair",
+    given: { pushover_blanked: true, pushover_access_token: "", pushover_user_key: "" },
+    expects: nil
+  },
+  {
+    name: "a lane that blanked the pair holding the vault's anyway",
+    given: { pushover_blanked: true },
+    expects: "Seerr's Pushover agent does not carry the declared Pushover pair"
+  },
+  {
+    name: "an ntfy agent still publishing",
+    given: { ntfy_enabled: true },
+    expects: "Seerr's ntfy agent still publishes beside Pushover"
   },
   {
     name: "state that did not land in the declared config root",
@@ -499,6 +547,7 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
               "PLATFORM_SEERR_PORT" => port.to_s,
               "PLATFORM_SEERR_CONTAINER" => "fixture-seerr",
               "PLATFORM_SEERR_ARRS" => options.fetch(:arrs).to_s,
+              "PLATFORM_SEERR_PUSHOVER_BLANKED" => options.fetch(:pushover_blanked).to_s,
               "PLATFORM_DOCKER_ROOT" => docker_root,
               "PLATFORM_CONTRACT_VAULT_FILE" => File.join(root, "vault.yml"),
               "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "vault-password")
@@ -513,6 +562,174 @@ def runtime_failures(program, rows = RUNTIME_ROWS)
     end
   end
   failures
+end
+
+# --- reconciliation layer --------------------------------------------------
+#
+# The runtime rows read a Seerr somebody converged; these run the role's own
+# reconcile_settings.yml against a fixture that answers the way Seerr's
+# notification routes do (server/routes/settings/notifications.ts at the pinned
+# tag): GET returns the stored agent, and POST assigns the body to it verbatim
+# and echoes it. Each run states exactly which agents it may POST, and with what.
+
+PUSHOVER_DEFAULT = { "enabled" => false, "embedPoster" => true, "types" => 0,
+                     "options" => { "accessToken" => "", "userToken" => "", "sound" => "" } }.freeze
+NTFY_DEFAULT = { "enabled" => false, "embedPoster" => true, "types" => 0,
+                 "options" => { "url" => "", "topic" => "", "priority" => 3, "locale" => "en" } }.freeze
+PUSHOVER_DECLARED = PUSHOVER_DEFAULT.merge(
+  "enabled" => true, "types" => 152,
+  "options" => { "accessToken" => PUSHOVER_TOKEN, "userToken" => PUSHOVER_USER_KEY, "sound" => "" }
+).freeze
+PUSHOVER_BLANKED = PUSHOVER_DECLARED.merge("options" => PUSHOVER_DEFAULT.fetch("options")).freeze
+# What a Seerr converged before #558 stores.
+NTFY_BY_HAND = NTFY_DEFAULT.merge(
+  "enabled" => true, "types" => 152,
+  "options" => { "url" => "http://ntfy.invalid:2586", "topic" => "nas-requests", "priority" => 3,
+                 "locale" => "en", "authMethodUsernamePassword" => false, "authMethodToken" => true,
+                 "token" => NTFY_TOKEN }
+).freeze
+MAC_BLANKING = ["-e", '{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""}'].freeze
+RECONCILE_MAIN = { "apiKey" => API_KEY, "defaultPermissions" => 0, "newPlexLogin" => false,
+                   "localLogin" => false, "applicationUrl" => "http://seerr.invalid:5055" }.freeze
+CREDENTIALS = [API_KEY, PUSHOVER_TOKEN, PUSHOVER_USER_KEY, NTFY_TOKEN].freeze
+PLANNED_PUSHOVER = "A live run would declare Seerr's Pushover agent enabled"
+PLANNED_NTFY = "A live run would turn Seerr's ntfy agent off"
+
+def pushover_drift(top = {}, options = {})
+  PUSHOVER_DECLARED.merge(top).merge("options" => PUSHOVER_DECLARED.fetch("options").merge(options))
+end
+
+RECONCILE_ROWS = [
+  {
+    name: "a fresh Seerr, converged twice",
+    agents: { "pushover" => PUSHOVER_DEFAULT, "ntfy" => NTFY_DEFAULT },
+    runs: [{ posts: [["pushover", PUSHOVER_DECLARED]] }, { posts: [] }]
+  },
+  {
+    name: "a Pushover agent turned off by hand",
+    agents: { "pushover" => pushover_drift("enabled" => false), "ntfy" => NTFY_DEFAULT },
+    runs: [{ posts: [["pushover", PUSHOVER_DECLARED]] }, { posts: [] }]
+  },
+  {
+    name: "a Pushover agent holding another user key",
+    agents: { "pushover" => pushover_drift({}, "userToken" => "someone-elses-user-key"), "ntfy" => NTFY_DEFAULT },
+    runs: [{ posts: [["pushover", PUSHOVER_DECLARED]] }, { posts: [] }]
+  },
+  {
+    name: "a Pushover agent sending other events",
+    agents: { "pushover" => pushover_drift("types" => 24), "ntfy" => NTFY_DEFAULT },
+    runs: [{ posts: [["pushover", PUSHOVER_DECLARED]] }, { posts: [] }]
+  },
+  {
+    name: "an ntfy agent left on from before #558",
+    agents: { "pushover" => PUSHOVER_DECLARED, "ntfy" => NTFY_BY_HAND },
+    runs: [{ posts: [["ntfy", NTFY_DEFAULT]] }, { posts: [] }]
+  },
+  {
+    name: "a review of a Seerr with both agents wrong",
+    agents: { "pushover" => PUSHOVER_DEFAULT, "ntfy" => NTFY_BY_HAND },
+    runs: [{ args: ["--check"], posts: [], says: [PLANNED_PUSHOVER, PLANNED_NTFY] }]
+  },
+  {
+    name: "the Mac lane's blanked pair, converged twice",
+    agents: { "pushover" => PUSHOVER_DEFAULT, "ntfy" => NTFY_DEFAULT },
+    runs: [{ args: MAC_BLANKING, posts: [["pushover", PUSHOVER_BLANKED]] }, { args: MAC_BLANKING, posts: [] }]
+  }
+].freeze
+
+def reconcile_variables(port)
+  { "seerr_api" => "http://127.0.0.1:#{port}/api/v1", "platform_public_host" => "seerr.invalid",
+    "vault_seerr_api_key" => API_KEY, "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_pushover_user_key" => PUSHOVER_USER_KEY }
+end
+
+def reconcile_run_failures(label, run, output, status, posts)
+  failures = []
+  failures << "#{label}: the converge failed: #{output.lines.last(6).join.strip}" unless status.success?
+  wanted = run.fetch(:posts)
+  failures << "#{label}: POSTed #{posts.map { |post| post[:agent] }.inspect}, " \
+              "wanted #{wanted.map(&:first).inspect}" unless posts.map { |post| post[:agent] } == wanted.map(&:first)
+  posts.zip(wanted).each do |post, (agent, body)|
+    # Named, never printed: the bodies carry the fixture credentials.
+    failures << "#{label}: the #{agent} POST did not carry the declared object" unless post[:body] == body
+    failures << "#{label}: the #{post[:agent]} POST did not carry the vault API key" unless post[:key] == API_KEY
+  end
+  Array(run[:says]).each do |text|
+    failures << "#{label}: did not report #{text.inspect}" unless output.include?(text)
+  end
+  CREDENTIALS.each_with_index do |credential, index|
+    failures << "#{label}: printed fixture credential #{index}" if output.include?(credential)
+  end
+  failures
+end
+
+def reconcile_failures(rows = RECONCILE_ROWS)
+  failures = []
+  in_parallel_cases(failures, rows) do |row, collected|
+    state = JSON.parse(JSON.generate(row.fetch(:agents)))
+    posts = []
+    tasks = [{ "name" => "Reconcile the Seerr settings",
+               "ansible.builtin.include_role" => { "name" => "seerr", "tasks_from" => "reconcile_settings" } }]
+    client = lambda do |port|
+      row.fetch(:runs).each_with_index do |run, index|
+        posts.clear
+        stdout, stderr, status = run_playbook(tasks, reconcile_variables(port), "-v", *run.fetch(:args, []),
+                                              prefix: "nas-platform-seerr-reconcile-")
+        collected.concat(reconcile_run_failures("reconcile: #{row.fetch(:name)}, run #{index + 1}",
+                                                run, stdout + stderr, status, posts.dup))
+      end
+    end
+    with_http_fixture(client) do |method, target, headers, body|
+      path = target.split("?").first
+      agent = path[%r{\A/api/v1/settings/notifications/(pushover|ntfy)\z}, 1]
+      if agent && method == "GET"
+        [200, JSON.generate(state.fetch(agent))]
+      elsif agent && method == "POST"
+        state[agent] = JSON.parse(body)
+        posts << { agent: agent, body: state[agent], key: headers["x-api-key"] }
+        [200, JSON.generate(state[agent])]
+      elsif method == "GET" && path == "/api/v1/settings/main"
+        [200, JSON.generate(RECONCILE_MAIN)]
+      elsif method == "GET" && path == "/api/v1/settings/public"
+        [200, JSON.generate("initialized" => true)]
+      else
+        [404, "{}"]
+      end
+    end
+  end
+  failures
+end
+
+# --- lane layer ------------------------------------------------------------
+#
+# Seerr's Pushover agent posts to an address hardcoded in the application, and
+# the Mac lane converges with the operator's real vault while its manual review
+# raises a request. So that lane blanks the pair, and its contract must expect
+# the blank pair rather than the vault's. Read out of the block each line has to
+# sit in, so a line moved outside it does not satisfy the check.
+MAC_PUSHOVER_BLANKING = {
+  "tests/mac/lib.sh" => [
+    /^mac_ansible_playbook\(\) \{\n(.*?)^\}/m,
+    /^    -e '\{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""\}' \\$/,
+    "the Mac lane converges Seerr with the real Pushover pair, and Seerr's Pushover address cannot be redirected"
+  ],
+  "tests/mac/run-contract.sh" => [
+    /^  seerr\)\n(.*?)^    ;;$/m,
+    /^    PLATFORM_SEERR_PUSHOVER_BLANKED=true\n    export PLATFORM_SEERR_PUSHOVER_BLANKED$/,
+    "the Mac lane's Seerr contract expects the vault's Pushover pair its converge blanked"
+  ]
+}.freeze
+
+def lane_sources
+  MAC_PUSHOVER_BLANKING.keys.to_h { |relative| [relative, File.read(File.join(ROOT, relative))] }
+end
+
+def lane_failures(sources = lane_sources)
+  MAC_PUSHOVER_BLANKING.flat_map do |relative, (block, line, harm)|
+    body = sources.fetch(relative)[block, 1]
+    next ["lane: #{relative} no longer has the block this check reads"] unless body
+    body.match?(line) ? [] : ["lane: #{relative}: #{harm}"]
+  end
 end
 
 # --- wrapper layer ---------------------------------------------------------
@@ -781,6 +998,20 @@ end
 
 PROGRAM_MUTATIONS = [
   {
+    label: "the Pushover pair declaration check",
+    program: :static,
+    from: 'defaults["seerr_pushover_user_key"] == "{{ vault_pushover_user_key }}"',
+    to: "true",
+    rows: ["a Pushover agent sending with the wrong half of the pair"]
+  },
+  {
+    label: "the ntfy agent declared-off check",
+    program: :static,
+    from: 'defaults.dig("seerr_ntfy_declaration", "enabled") == false',
+    to: "true",
+    rows: ["an ntfy agent declared on"]
+  },
+  {
     label: "a declared file no longer having to exist",
     program: :static,
     from: 'failures << "missing #{relative}" unless File.file?(File.join(root, relative))',
@@ -951,18 +1182,41 @@ PROGRAM_MUTATIONS = [
     rows: ["an arr server not addressed by service alias"]
   },
   {
-    label: "the ntfy agent enabled check",
+    label: "the Pushover agent enabled check",
     program: :runtime,
-    from: 'ntfy["enabled"] == true',
+    from: 'pushover["enabled"] == true',
     to: "true",
-    rows: ["an ntfy agent that is disabled"]
+    rows: ["a Pushover agent that is disabled"]
   },
   {
-    label: "the ntfy authentication check",
+    label: "the Pushover event types check",
     program: :runtime,
-    from: 'ntfy.dig("options", "authMethodToken") == true &&',
-    to: "true ||",
-    rows: ["an ntfy agent publishing without authenticating"]
+    from: 'pushover["types"] == 152',
+    to: "true",
+    rows: ["a Pushover agent sending other events"]
+  },
+  {
+    label: "the Pushover pair check",
+    program: :runtime,
+    from: '] == expected_pair',
+    to: '] == expected_pair || true',
+    rows: ["a Pushover agent carrying a user key the vault never authored",
+           "a lane that blanked the pair holding the vault's anyway"]
+  },
+  {
+    label: "the blanked-lane branch of the Pushover pair check",
+    program: :runtime,
+    from: "expected_pair = if PUSHOVER_BLANKED",
+    to: "expected_pair = if false",
+    rows: ["a lane that blanked the pair"],
+    detects: "expected success"
+  },
+  {
+    label: "the ntfy agent off check",
+    program: :runtime,
+    from: 'ntfy["enabled"] == false',
+    to: "true",
+    rows: ["an ntfy agent still publishing"]
   },
   {
     label: "the persisted database check",
@@ -1085,7 +1339,16 @@ if ARGV.include?("--self-test")
     collected << "removing #{mutation.fetch(:label)} was accepted" if caught.empty?
   end
 
-  planted = PROGRAM_MUTATIONS.length + WRAPPER_MUTATIONS.length
+  MAC_PUSHOVER_BLANKING.each do |relative, (_block, line, harm)|
+    sources = lane_sources
+    mutant = sources.merge(relative => sources.fetch(relative).sub(line, ""))
+    abort "self-test planted nothing for #{relative}'s Pushover blanking" if mutant == sources
+    caught = lane_failures(mutant)
+    mismatches << "removing #{relative}'s Pushover blanking was not caught by its own assertion: " \
+                  "#{caught.inspect}" unless caught == ["lane: #{relative}: #{harm}"]
+  end
+
+  planted = PROGRAM_MUTATIONS.length + WRAPPER_MUTATIONS.length + MAC_PUSHOVER_BLANKING.length
   unless mismatches.empty?
     mismatches.each { |mismatch| warn "FAIL self-test: #{mismatch}" }
     abort "#{mismatches.length} self-test mismatch(es) of #{planted} planted regressions"
@@ -1097,12 +1360,12 @@ end
 
 failures = static_failures(STATIC_PROGRAM) + runtime_failures(RUNTIME_PROGRAM) +
            wrapper_failures + run_env_failures + stdin_failures + runtime_stdin_failures +
-           two_roots_failures
+           two_roots_failures + reconcile_failures + lane_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Seerr contract violation(s)"
 end
 
-puts "seerr contract: #{STATIC_ROWS.length} static and #{RUNTIME_ROWS.length} runtime properties " \
-     "hold, the run-mode environment contract refuses each name with the wrapper's own message, " \
+puts "seerr contract: #{STATIC_ROWS.length} static, #{RUNTIME_ROWS.length} runtime and " \
+     "#{RECONCILE_ROWS.length} reconciliation properties hold, the Mac lane blanks Seerr's Pushover pair, the run-mode environment contract refuses each name with the wrapper's own message, " \
      "and both programs come from the checkout with an empty stdin"
