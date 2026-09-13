@@ -593,7 +593,9 @@ install_validation_inventory() {
   # contract reads live beside the services that own them.
   for validation_inventory_source in "$repo_dir"/inventory/group_vars/all/*.yml; do
     case ${validation_inventory_source##*/} in
-      vault.yml | vault.yml.example) continue ;;
+      # The committed per-service vaults are encrypted under the operator's
+      # password, not this fixture's; the fixture vault carries every key.
+      vault.yml | vault_*.yml | vault.yml.example) continue ;;
     esac
     cp -- "$validation_inventory_source" \
       "$validation_inventory_directory/group_vars/all/${validation_inventory_source##*/}" ||
