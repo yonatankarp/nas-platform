@@ -105,9 +105,12 @@ class ConfigTest(PollerTestCase):
         self.assertTrue(config.state_root.is_absolute())
 
     def test_load_config_requires_every_field(self):
-        # hourly_only_verify_tags alone is optional, and has its own test below.
+        # hourly_only_verify_tags and the two ping URLs are optional, and have
+        # their own tests below.
+        optional = {"hourly_only_verify_tags", "healthchecks_poller_ping_url",
+                    "healthchecks_verify_ping_url"}
         for field in [f.name for f in production_auto_deploy.fields(
-                production_auto_deploy.Config) if f.name != "hourly_only_verify_tags"]:
+                production_auto_deploy.Config) if f.name not in optional]:
             payload = self.config_payload()
             payload.pop(field)
             self.config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -157,6 +160,36 @@ class ConfigTest(PollerTestCase):
 
                 self.assertEqual(config.hourly_only_verify_tags, "")
                 self.assertEqual(config.verify_tags, "platform_verify_ntfy,platform_verify_beszel")
+
+    def test_a_configuration_without_ping_urls_loads_with_no_ping(self):
+        # Every configuration an installer before #606 wrote, and the one this
+        # poller meets for a run when the install play copies it and then fails
+        # to render deployer.json (#327).
+        config = self.loaded_config()
+
+        self.assertEqual(config.healthchecks_poller_ping_url, "")
+        self.assertEqual(config.healthchecks_verify_ping_url, "")
+
+    def test_a_ping_url_is_read_when_present(self):
+        config = self.loaded_config(
+            healthchecks_poller_ping_url="https://hc-ping.com/poller",
+            healthchecks_verify_ping_url="https://ping.example.invalid/slug/verify",
+        )
+
+        self.assertEqual(config.healthchecks_poller_ping_url, "https://hc-ping.com/poller")
+        self.assertEqual(config.healthchecks_verify_ping_url,
+                         "https://ping.example.invalid/slug/verify")
+
+    def test_an_unusable_ping_url_disables_the_ping_rather_than_the_poller(self):
+        # A refusal here would stop every deployment over a monitoring value.
+        # Silence is already what the external check alerts on.
+        for raw in ("", "http://hc-ping.com/x", "https://", "hc-ping.com/x",
+                    "https://hc-ping.com/a b", 'https://hc-ping.com/a"b',
+                    "https://hc-ping.com/a\\b", "https://hc-ping.com/a\nurl = x",
+                    42, None, ["https://hc-ping.com/x"]):
+            with self.subTest(raw=raw):
+                config = self.loaded_config(healthchecks_poller_ping_url=raw)
+                self.assertEqual(config.healthchecks_poller_ping_url, "")
 
     def test_load_config_rejects_unreadable_or_non_object_payloads(self):
         for payload in ("[]", "null", "not json", '"text"'):
@@ -3496,6 +3529,278 @@ class CliTest(PollerTestCase):
             production_auto_deploy.main(["--config", str(self.config_path), "--poll"]),
             1,
         )
+
+
+class HealthchecksPingTest(PollHarness, PollerTestCase):
+    """The dead-man's-switch pings (#606, #610 part 2).
+
+    Driven through main() with a curl stub at curl_path that records its argv,
+    the config it read from stdin and whether the deployment lock was free, so
+    the ping is the command production runs rather than one a mock agreed with.
+    """
+
+    POLLER_URL = "https://hc-ping.com/poller-sentinel-0f3c"
+    VERIFY_URL = "https://hc-ping.com/verify-sentinel-7a1d"
+
+    def setUp(self):
+        super().setUp()
+        self.calls = self.root / "curl-calls.jsonl"
+        self.curl_exit = self.root / "curl-exit"
+        self.curl_sleep = self.root / "curl-sleep"
+        self.curl_echo = self.root / "curl-echo"
+        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
+        self.curl = self.root / "bin/curl"
+        self.curl.parent.mkdir()
+        self.curl.write_text(
+            f"#!{sys.executable}\n"
+            "import fcntl, json, os, sys, time\n"
+            "held = None\n"
+            f"if os.path.exists({str(lock)!r}):\n"
+            f"    descriptor = os.open({str(lock)!r}, os.O_RDONLY)\n"
+            "    try:\n"
+            "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "        held = False\n"
+            "    except OSError:\n"
+            "        held = True\n"
+            "    os.close(descriptor)\n"
+            "stdin = sys.stdin.read()\n"
+            f"with open({str(self.calls)!r}, 'a') as sink:\n"
+            "    sink.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin,\n"
+            "                           'held': held}) + '\\n')\n"
+            # What real curl does on an error: name what it was asked for.
+            f"if os.path.exists({str(self.curl_echo)!r}):\n"
+            "    print('curl: (22) ' + stdin, file=sys.stderr)\n"
+            "    print(stdin)\n"
+            "def number(path):\n"
+            "    try:\n"
+            "        return float(open(path).read())\n"
+            "    except FileNotFoundError:\n"
+            "        return 0\n"
+            f"time.sleep(number({str(self.curl_sleep)!r}))\n"
+            f"sys.exit(int(number({str(self.curl_exit)!r})))\n",
+            encoding="utf-8",
+        )
+        self.curl.chmod(0o700)
+        self.configure()
+
+    def configure(self, **overrides):
+        values = {
+            "curl_path": str(self.curl),
+            "healthchecks_poller_ping_url": self.POLLER_URL,
+            "healthchecks_verify_ping_url": self.VERIFY_URL,
+            **overrides,
+        }
+        payload = self.config_payload(**values)
+        for key in [key for key, value in payload.items() if value is None]:
+            payload.pop(key)
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    def main(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = production_auto_deploy.main(["--config", str(self.config_path), *argv])
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def pings(self):
+        """Every curl call that fed its URL on stdin, which only the ping does."""
+
+        if not self.calls.exists():
+            return []
+        calls = [json.loads(line) for line in self.calls.read_text().splitlines()]
+        self.calls.unlink()
+        return [call for call in calls if call["stdin"]]
+
+    def pinged(self):
+        return [call["stdin"].split('"')[1] for call in self.pings()]
+
+    def test_a_poll_tick_pings_plain_unless_its_deployment_failed(self):
+        for outcome, code, url in (
+            (None, 0, self.POLLER_URL),  # nothing to deploy, or the lock is held
+            (True, 0, self.POLLER_URL),
+            (False, 1, self.POLLER_URL + "/fail"),
+        ):
+            with self.subTest(outcome=outcome):
+                with mock.patch.object(production_auto_deploy, "poll", return_value=outcome):
+                    self.assertEqual(self.main("--poll")[0], code)
+                self.assertEqual(self.pinged(), [url])
+
+    def test_an_ineligible_tick_pings_fail_and_still_exits_zero(self):
+        with mock.patch.object(production_auto_deploy, "poll",
+                               side_effect=production_auto_deploy.EligibilityError("x")):
+            code, output = self.main("--poll")
+
+        self.assertEqual(code, 0)
+        self.assertIn("could not determine a candidate", output)
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+
+    def test_an_unhandled_exception_pings_fail_and_still_propagates(self):
+        error = RuntimeError("boom")
+        with mock.patch.object(production_auto_deploy, "poll", side_effect=error):
+            with self.assertRaises(RuntimeError) as raised:
+                self.main("--poll")
+
+        self.assertIs(raised.exception, error)
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+
+    def test_an_unusable_configuration_cannot_ping_and_is_left_to_the_grace_period(self):
+        # The URL lives in the file that could not be trusted, so there is
+        # nothing to ping; the silence is what the check alerts on.
+        self.configure(branch=None)
+        with mock.patch.object(production_auto_deploy, "poll") as polled:
+            code, output = self.main("--poll")
+
+        polled.assert_not_called()
+        self.assertEqual(code, 1)
+        self.assertIn("unusable configuration", output)
+        self.assertEqual(self.pings(), [])
+
+    def test_a_configuration_without_urls_runs_every_mode_and_pings_nothing(self):
+        self.configure(healthchecks_poller_ping_url=None,
+                       healthchecks_verify_ping_url=None)
+        for mode, target, outcome, code in (
+            ("--poll", "poll", False, 1),
+            ("--poll", "poll", None, 0),
+            ("--verify", "verify", False, 1),
+            ("--verify", "verify", True, 0),
+        ):
+            with self.subTest(mode=mode, outcome=outcome):
+                with mock.patch.object(production_auto_deploy, target, return_value=outcome):
+                    self.assertEqual(self.main(mode)[0], code)
+                self.assertEqual(self.pings(), [])
+
+    def test_only_the_scheduled_modes_ping(self):
+        # A retry that succeeds while cron is dead must not report the tick alive.
+        with mock.patch.object(production_auto_deploy, "poll", return_value=True):
+            self.assertEqual(self.main("--retry-failed", MAIN_SHA)[0], 0)
+        with mock.patch.object(production_auto_deploy, "print_status"):
+            self.assertEqual(self.main("--status")[0], 0)
+
+        self.assertEqual(self.pings(), [])
+
+    def test_verify_pings_its_own_check_on_a_verdict_and_never_on_a_skip(self):
+        for outcome, code, pinged in (
+            (True, 0, [self.VERIFY_URL]),
+            (False, 1, [self.VERIFY_URL + "/fail"]),
+            (None, 0, []),
+        ):
+            with self.subTest(outcome=outcome):
+                with mock.patch.object(production_auto_deploy, "verify", return_value=outcome):
+                    self.assertEqual(self.main("--verify")[0], code)
+                self.assertEqual(self.pinged(), pinged)
+
+    def test_verify_that_could_not_run_pings_fail(self):
+        with mock.patch.object(production_auto_deploy, "verify",
+                               side_effect=OSError("no ansible-playbook")):
+            code, output = self.main("--verify")
+
+        self.assertEqual(code, 1)
+        self.assertIn("could not verify", output)
+        self.assertEqual(self.pinged(), [self.VERIFY_URL + "/fail"])
+
+    def test_a_real_skipped_verify_pings_nothing(self):
+        code, output = self.main("--verify")
+
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has deployed yet", output)
+        self.assertEqual(self.pings(), [])
+
+    def test_the_verify_ping_does_not_wait_for_the_paging_record(self):
+        # Two passes in a row page nobody, and both still ping: the heartbeat is
+        # the absence of a ping, not a change of verdict.
+        with mock.patch.object(production_auto_deploy, "verify", return_value=True):
+            self.main("--verify")
+            self.main("--verify")
+
+        self.assertEqual(self.pinged(), [self.VERIFY_URL, self.VERIFY_URL])
+
+    def test_the_url_travels_on_stdin_and_never_on_the_command_line(self):
+        with mock.patch.object(production_auto_deploy, "poll", return_value=None):
+            self.main("--poll")
+
+        (call,) = self.pings()
+        self.assertEqual(call["argv"][0], "--disable")
+        self.assertEqual(call["argv"][call["argv"].index("--config") + 1], "-")
+        self.assertEqual(call["argv"][call["argv"].index("--max-time") + 1], "10")
+        self.assertTrue(all("hc-ping" not in argument for argument in call["argv"]))
+        self.assertEqual(call["stdin"], f'url = "{self.POLLER_URL}"\n')
+
+    def test_a_trailing_slash_is_not_doubled_before_fail(self):
+        self.configure(healthchecks_poller_ping_url=self.POLLER_URL + "/")
+        with mock.patch.object(production_auto_deploy, "poll", return_value=False):
+            self.main("--poll")
+
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+
+    def test_the_ping_runs_after_the_deployment_lock_is_released(self):
+        config = self.loaded_config()
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=False
+        ):
+            code, _output = self.main("--poll")
+
+        self.assertEqual(code, 1)
+        (call,) = self.pings()
+        self.assertIs(call["held"], False)
+        self.assertEqual(call["stdin"], f'url = "{self.POLLER_URL}/fail"\n')
+        # And the attempt it reports is recorded exactly as before.
+        self.assertIn(MAIN_SHA, production_auto_deploy.attempted_shas(config))
+
+    def test_a_failed_ping_is_one_line_and_changes_no_exit_code(self):
+        self.curl_echo.write_text("1", encoding="ascii")
+        for curl_exit in (6, 7, 22, 28):
+            for outcome, code in ((None, 0), (False, 1)):
+                with self.subTest(curl_exit=curl_exit, outcome=outcome):
+                    self.curl_exit.write_text(str(curl_exit), encoding="ascii")
+                    with mock.patch.object(production_auto_deploy, "poll",
+                                           return_value=outcome):
+                        actual, output = self.main("--poll")
+                    self.assertEqual(actual, code)
+                    self.assertEqual(
+                        output.count("production auto-deploy: healthchecks ping failed"), 1)
+                    self.assertNotIn("hc-ping", output)
+                    self.pings()
+
+    def test_a_missing_curl_is_swallowed(self):
+        self.configure(curl_path=str(self.root / "absent/curl"))
+        with mock.patch.object(production_auto_deploy, "poll", return_value=None):
+            code, output = self.main("--poll")
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output.strip(), "production auto-deploy: healthchecks ping failed")
+
+    def test_a_hung_ping_is_abandoned_at_its_deadline(self):
+        self.curl_sleep.write_text("60", encoding="ascii")
+        started = datetime.now()
+        with mock.patch.object(production_auto_deploy, "HEALTHCHECKS_TIMEOUT_SECONDS", 1), \
+                mock.patch.object(production_auto_deploy, "poll", return_value=None):
+            code, output = self.main("--poll")
+        elapsed = (datetime.now() - started).total_seconds()
+
+        self.assertEqual(code, 0)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(output.strip(), "production auto-deploy: healthchecks ping failed")
+        self.assertNotIn("hc-ping", output)
+
+    def test_curl_output_never_reaches_the_process_output(self):
+        # redirect_stdout cannot see a child writing to the inherited descriptor,
+        # so this runs the poller as its own process and reads its real fds.
+        self.curl_echo.write_text("1", encoding="ascii")
+        self.curl_exit.write_text("22", encoding="ascii")
+        program = (
+            "import sys\n"
+            "from unittest import mock\n"
+            f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+            "import production_auto_deploy as p\n"
+            "with mock.patch.object(p, 'poll', return_value=False):\n"
+            f"    sys.exit(p.main(['--config', {str(self.config_path)!r}, '--poll']))\n"
+        )
+        completed = subprocess.run([sys.executable, "-c", program],
+                                   capture_output=True, text=True, check=False)
+
+        self.assertEqual(completed.returncode, 1)
+        self.assertNotIn("hc-ping", completed.stdout + completed.stderr)
+        self.assertIn("healthchecks ping failed", completed.stderr)
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
 
 if __name__ == "__main__":

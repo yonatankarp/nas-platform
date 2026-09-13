@@ -59,6 +59,16 @@ NOTIFICATION_TIMEOUT_SECONDS = 10
 # NOTIFICATION_TIMEOUT_SECONDS; it never exceeds five minutes of a held lock.
 NOTIFICATION_TIMEOUT_ENVIRONMENT = "PLATFORM_AUTO_DEPLOY_NOTIFICATION_TIMEOUT_SECONDS"
 NOTIFICATION_TIMEOUT_CEILING_SECONDS = 5 * 60
+# curl's own total budget for one healthchecks.io ping (#606). The ping runs
+# after the deployment lock is released, so this bounds a tick's wall time and
+# never the lock; the process deadline is a backstop for a curl that ignores it.
+HEALTHCHECKS_TIMEOUT_SECONDS = 10
+# https, and nothing a curl config line would read as more than one URL: no
+# whitespace, which ends the value or starts a directive, and no quote or
+# backslash, which end or escape it. The same text is the vault contract's rule
+# in filter_plugins/vault_credential_schema.py, so a value the contract accepts
+# is never one this poller ignores.
+HEALTHCHECKS_URL_PATTERN = re.compile(r'https://[^\s"\\]+')
 # Consecutive polls that fail before eligibility is even decided. At the
 # five-minute cron cadence this is a quarter hour of being unable to see
 # main, which no transient network blip should reach.
@@ -179,6 +189,12 @@ class Config:
     # The fourth play reinstalls this poller, so the installer's own choices
     # have to be replayed or the role rejects its own invocation.
     external_scheduler: bool
+    # Dead-man's-switch check URLs at healthchecks.io, one per signal: the tick
+    # heartbeat and the hourly verify verdict (#606, #610). Secret: the token in
+    # the path is the check's whole authentication. Empty means no ping, which
+    # is what an older configuration reads as; see load_config.
+    healthchecks_poller_ping_url: str = ""
+    healthchecks_verify_ping_url: str = ""
 
 
 _PATH_FIELDS = frozenset(
@@ -191,6 +207,9 @@ _PATH_FIELDS = frozenset(
         "git_path",
         "curl_path",
     }
+)
+_PING_URL_FIELDS = frozenset(
+    {"healthchecks_poller_ping_url", "healthchecks_verify_ping_url"}
 )
 
 
@@ -205,6 +224,16 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         raise ConfigurationError("configuration is not an object")
     values: dict[str, object] = {}
     for field in fields(Config):
+        if field.name in _PING_URL_FIELDS:
+            # Never a refusal, in either direction. Absent is every configuration
+            # written before #606 and the one this poller meets when the install
+            # play copies it and then fails to render (#327). Unusable is a
+            # monitoring value that must not stop deployments. Both read as "no
+            # ping", and the external check alerts on exactly that silence.
+            raw = payload.get(field.name, "")
+            usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.fullmatch(raw)
+            values[field.name] = raw if usable else ""
+            continue
         if field.name not in payload:
             # The install play copies this script before it renders the file, so
             # for one run -- or for good, if the render fails -- this poller reads
@@ -1314,6 +1343,49 @@ def publish(config: Config, notification: dict) -> bool:
     return result.returncode == 0
 
 
+def ping_healthchecks(config: Config, url: str, failed: bool) -> None:
+    """Report one run to an external dead-man's switch. Never raises (#606).
+
+    Every alert this platform raises comes from the host it would be reporting
+    about, so a stopped host, daemon or cron says nothing. healthchecks.io
+    alerts when these pings stop, from outside, and marks a check down at once
+    on `/fail`.
+
+    The URL goes to curl on stdin, never on the command line: argv is readable
+    by every account on the host, and a TimeoutExpired carries argv in its repr.
+    curl's own output is captured and dropped because its errors name the URL;
+    the one line printed here names nothing. And no failure here can change an
+    exit code or a recorded state -- a monitor that fails a deployment is worse
+    than the silence it replaces, and the silence is reported anyway.
+    """
+
+    if not url:
+        return
+    target = f"{url.rstrip('/')}/fail" if failed else url
+    try:
+        delivered = subprocess.run(
+            [
+                str(config.curl_path),
+                "--disable",
+                "--fail",
+                "--silent",
+                "--max-time",
+                str(HEALTHCHECKS_TIMEOUT_SECONDS),
+                "--config",
+                "-",
+            ],
+            input=f'url = "{target}"\n'.encode("utf-8"),
+            capture_output=True,
+            timeout=2 * HEALTHCHECKS_TIMEOUT_SECONDS,
+            env={"PATH": config.tool_path, "LC_ALL": "C"},
+            check=False,
+        ).returncode == 0
+    except Exception:  # noqa: BLE001 -- see the docstring: nothing may escape.
+        delivered = False
+    if not delivered:
+        print("production auto-deploy: healthchecks ping failed", file=sys.stderr)
+
+
 def _blind_path(config: Config) -> Path:
     return config.state_root / "blind-polls"
 
@@ -2043,20 +2115,45 @@ def main(argv=None) -> int:
         if mode == "converge":
             return converge(config, playbook_arguments)
         if mode == "verify":
+            # The verify check's pings (#610). A verdict pings every run, pass
+            # or fail, whatever note_verify_verdict decided to page: the check
+            # needs the heartbeat, not the change. A skip -- lock held, nothing
+            # deployed, the checkout not at the deployed revision -- pings
+            # nothing, so a verify that keeps skipping goes silent and alerts
+            # after the grace period, which is the state that must not hide.
             try:
                 passed = verify(config)
             except OSError as error:
                 # Not a verdict: nothing was verified, so nothing is paged and
-                # the recorded verdict stands.
+                # the recorded verdict stands. It is still a run that could not
+                # verify, which the external check hears as a failure.
                 print(f"production auto-deploy: could not verify: {error}",
                       file=sys.stderr)
+                ping_healthchecks(config, config.healthchecks_verify_ping_url, True)
                 return 1
+            except Exception:
+                ping_healthchecks(config, config.healthchecks_verify_ping_url, True)
+                raise
+            if passed is not None:
+                ping_healthchecks(config, config.healthchecks_verify_ping_url,
+                                  passed is False)
             if passed is False:
                 print("production auto-deploy: verification failed", file=sys.stderr)
                 return 1
             return 0
-        outcome = poll(config, retry_sha=retry_sha)
+        try:
+            outcome = poll(config, retry_sha=retry_sha)
+        except Exception:
+            # EligibilityError included: a tick that cannot see main or CI can
+            # deploy nothing, and #559's shape is a tick failing identically
+            # forever. Re-raised unchanged, so every exit code and message
+            # below is exactly what it was.
+            if mode == "poll":
+                ping_healthchecks(config, config.healthchecks_poller_ping_url, True)
+            raise
     except ConfigurationError:
+        # No ping: the URL is in the file that could not be trusted. The tick
+        # check hears silence and alerts once its grace period runs out.
         print("production auto-deploy: unusable configuration", file=sys.stderr)
         return 1
     except EligibilityError:
@@ -2065,6 +2162,18 @@ def main(argv=None) -> int:
         print("production auto-deploy: could not determine a candidate",
               file=sys.stderr)
         return 0
+    if mode == "poll":
+        # The tick heartbeat (#606), sent after poll() has released the lock.
+        # None is healthy: nothing to deploy, a quarantined revision waiting for
+        # an operator, or the lock held by a deployment or a verify. True is a
+        # deployment. False is a failed one -- #327 and #559 failed inside
+        # deploy() on every tick, so every tick pings /fail and the check stays
+        # down. The tick after a quarantined failure pings plain on purpose:
+        # this check says the poller is alive and deciding, the failure itself
+        # already paged through ntfy, and --status names the revision. A manual
+        # --retry-failed pings nothing, so it cannot vouch for a dead cron.
+        ping_healthchecks(config, config.healthchecks_poller_ping_url,
+                          outcome is False)
     if outcome is False:
         print("production auto-deploy: attempt failed", file=sys.stderr)
         return 1
