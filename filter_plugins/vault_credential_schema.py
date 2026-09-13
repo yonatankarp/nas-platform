@@ -315,6 +315,13 @@ DISTINCT_KEY_GROUPS = (
     ("vault_arr_radarr_admin_password", "vault_arr_sonarr_admin_password",
      "vault_arr_prowlarr_admin_password", "vault_arr_bazarr_admin_password",
      "vault_downloaders_sabnzbd_admin_password"),
+    # The four Pushover application tokens are four separate channels on the
+    # phone. A token pasted into a second key sends that publisher's messages
+    # through the wrong application -- container churn under host alerts, or
+    # request events under deployments -- and every check here would pass,
+    # because Pushover accepts the token either way.
+    ("vault_pushover_alerts_token", "vault_pushover_containers_token",
+     "vault_pushover_deployments_token", "vault_pushover_media_token"),
 )
 
 

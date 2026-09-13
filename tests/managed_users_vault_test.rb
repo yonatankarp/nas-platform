@@ -626,8 +626,8 @@ end
 policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
 # The eight lists stay in the policy source rather than in
 # tests/expected/<service>.yml, for the reason GLOBAL_VAULT_KEYS states: their names
-# invert the per-service prefix that file's entries must carry. The Pushover pair
-# shares the list, so this pin asserts membership rather than the list's whole
+# invert the per-service prefix that file's entries must carry. The Pushover keys
+# share the list, so this pin asserts membership rather than the list's whole
 # contents; GLOBAL_VAULT_KEYS is concatenated into EXPECTED_VAULT_KEYS, so pinning
 # it here still pins the full expected set.
 global_vault_keys = policy[/GLOBAL_VAULT_KEYS = %w\[([^\]]*)\]\.freeze/m, 1].to_s.split

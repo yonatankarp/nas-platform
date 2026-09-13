@@ -154,6 +154,12 @@ FOUNDATION_API_KEYS = FOUNDATION_KEYS[0::3]
 FOUNDATION_USERNAMES = FOUNDATION_KEYS[1::3]
 FOUNDATION_PASSWORDS = FOUNDATION_KEYS[2::3]
 NTFY_DISTINCT_KEYS = DISTINCT_KEY_GROUPS[0]
+PUSHOVER_DISTINCT_KEYS = (
+    "vault_pushover_alerts_token",
+    "vault_pushover_containers_token",
+    "vault_pushover_deployments_token",
+    "vault_pushover_media_token",
+)
 
 # Bazarr's settings form is the only place a vault API key is cast with `int()`,
 # and `acquisition_bazarr_connection_body` submits exactly these two. The other
@@ -177,6 +183,9 @@ def _valid_value(key, rules):
         # keyed off their position rather than off the shared pattern sample.
         return "tk_" + "abcdefghijklmnopqrstuvwxyz012"[:28] + str(
             NTFY_DISTINCT_KEYS.index(key))
+    if key in PUSHOVER_DISTINCT_KEYS:
+        # The same reason: four applications, four different tokens.
+        return f"operator-supplied-pushover-token-{PUSHOVER_DISTINCT_KEYS.index(key)}"
     for kind, argument in rules:
         if kind == PATTERN:
             return PATTERN_SAMPLES[argument.pattern][0]
@@ -245,7 +254,8 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_distinct_credential_groups_are_exact(self):
         self.assertEqual(
             DISTINCT_KEY_GROUPS,
-            (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS),
+            (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS,
+             PUSHOVER_DISTINCT_KEYS),
         )
 
     def test_foundation_api_keys_are_exactly_lowercase_hex_32(self):
@@ -535,6 +545,15 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_the_publisher_tokens_must_all_differ(self):
         shared = VALID["vault_ntfy_dozzle_token"]
         for key in NTFY_DISTINCT_KEYS[1:]:
+            with self.subTest(key):
+                errors = errors_for(**{key: shared})
+                self.assertTrue(any("must all differ" in error
+                                    for error in errors),
+                                f"{key} was allowed to duplicate a token")
+
+    def test_the_pushover_application_tokens_must_all_differ(self):
+        shared = VALID["vault_pushover_alerts_token"]
+        for key in PUSHOVER_DISTINCT_KEYS[1:]:
             with self.subTest(key):
                 errors = errors_for(**{key: shared})
                 self.assertTrue(any("must all differ" in error

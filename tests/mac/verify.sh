@@ -16,10 +16,10 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 # The Pushover endpoint is pointed at a port nothing listens on, and this is the
 # only lane that needs saying so. roles/beszel gates its credential check on
 # --tags platform_verify_beszel, which is exactly what this wrapper passes, so
-# the check does run here -- against a vault holding ephemeral-pushover-alerts-token,
-# which was never a Pushover credential. Every such call would be a 4xx against
-# the household's own application, and Pushover temporarily blocks an IP that
-# sends enough of them. The integration lanes need no equivalent: they converge
+# the check does run here -- against a vault holding the ephemeral Pushover
+# stand-ins, none of which was ever a Pushover credential. Every such call would
+# be a 4xx against the household's own applications, and Pushover temporarily
+# blocks an IP that sends enough of them. The integration lanes need no equivalent: they converge
 # site.yml with lane tags and never run verify.yml, so the tag gate excludes
 # them by itself.
 #
