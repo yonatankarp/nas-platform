@@ -2815,10 +2815,21 @@ end
 expect_failure(failures, "media library leaves removed from storage",
                "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage",
                detected_by: %i[policy]) do |root|
-  # Every Media/ leaf is a library root, so this is one contributor's whole list.
-  mutate_yaml_file(root, "inventory/group_vars/all/media_libraries.yml") do |inventory|
-    inventory.fetch("nas_storage_media_libraries").reject! do |entry|
-      entry.fetch("path").start_with?("{{ nas_media_root }}/Media/")
+  # Every contributor, not one file. The Media/ subtree is split between the
+  # library roots and the acquisition staging tree, and jellyfin's mount of
+  # {{ nas_media_root }}/Media is accounted for by anything sitting under it --
+  # so emptying only media_libraries.yml leaves the staging paths covering the
+  # mount and the plant stops biting.
+  Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
+    next if File.basename(file) == "vault.yml"
+
+    relative = File.join("inventory", "group_vars", "all", File.basename(file))
+    mutate_yaml_file(root, relative) do |inventory|
+      inventory.each do |key, value|
+        next unless key.start_with?("nas_storage_") && value.is_a?(Array)
+
+        value.reject! { |entry| entry.fetch("path").start_with?("{{ nas_media_root }}/Media/") }
+      end
     end
   end
 end

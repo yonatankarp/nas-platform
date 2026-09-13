@@ -155,11 +155,11 @@ jellyfin_default_networks=$(network_keys "$jellyfin")
 require_leaf
 ruby -ryaml -e '
   inventory = YAML.safe_load_file(ARGV.fetch(0))
-  entry = inventory.fetch("nas_storage").find do |item|
+  entry = inventory.fetch("nas_storage_media_acquisition").find do |item|
     item["path"] == "{{ nas_media_root }}/Media/.acquisition/usenet/movies"
   end
   abort unless entry && !entry.key?("owner") && !entry.key?("group")
-' "$mac_repo_dir/inventory/group_vars/all/main.yml"
+' "$mac_repo_dir/inventory/group_vars/all/media_acquisition.yml"
 
 trap media_acquisition_recover EXIT
 trap media_acquisition_handle_hup HUP
