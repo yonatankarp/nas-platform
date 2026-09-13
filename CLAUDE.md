@@ -129,6 +129,7 @@ everything after `--` to `ansible-playbook` unchanged:
 nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass
 nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
 nas-platform-deploy --status                 # what the poller last did, and what it would do next
+nas-platform-deploy --verify                 # verify.yml against the deployed revision; cron runs it hourly
 ```
 
 From a workstation the plays still run over SSH, and these two cannot hold a lock

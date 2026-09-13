@@ -436,8 +436,8 @@ Run this manual verification for the first foundation deployment: the installed
 poller cannot select a verification tag that exists only in the candidate until
 that candidate has been activated.
 
-Only after those three commands pass, install the poller and its single
-five-minute cron entry:
+Only after those three commands pass, install the poller with its five-minute
+polling cron entry and its hourly verification entry:
 
 ```sh
 ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
@@ -577,8 +577,27 @@ verified, you may optionally disable SSH for this account if the NAS has an
 independent, tested break-glass administration path. Outbound HTTPS to GitHub
 and local Docker/cron access must remain available.
 
+### Hourly verification
+
+A deployment runs `verify.yml`, but a quiet week deploys nothing, so cron also
+runs `nas-platform-deploy --verify` at minute 37 of every hour. It runs the same
+`verify.yml` invocation a deployment does, from the poller's checkout, and only
+while that checkout holds the last successful revision: a failed deployment
+leaves it on the candidate, whose probes may name services that never activated,
+so verification pauses until the next successful deployment. It takes the
+deployment lock without waiting, and a deployment already holding it is skipped
+rather than waited for, since that deployment verifies itself. Output goes to
+`logs/verify.log`, overwritten each run.
+
+A failure publishes once to `nas-critical` and a recovery once to
+`nas-deployment`; an unchanged result publishes nothing. The last result lives
+in `state/verify-verdict`, written only once its notice was delivered, so an
+undelivered one is retried on the next run. A failing verification never touches
+the deployment record and never holds back a poll.
+
 To disable automation, first save `crontab -l`, then use `crontab -e` to remove
-only the `NAS platform production auto-deploy` entry and its command. Do not use
+only the `NAS platform production auto-deploy` and
+`NAS platform periodic verification` entries and their commands. Do not use
 broad recursive deletion as an uninstall procedure. Disabling or removing the
 poller does not delete running services, application data, or attempt logs;
 retaining the logs and the recorded deployment state preserves audit evidence.
@@ -634,8 +653,9 @@ ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
 ```
 
 On a host where this account manages its own crontab, that installs the weekly
-entry as well, and there is nothing further to schedule. Both entries should be
-present, and the installed prune should read its own configuration:
+entry as well, and there is nothing further to schedule. All three entries --
+poll, hourly verification and prune -- should be present, and the installed
+prune should read its own configuration:
 
 ```sh
 crontab -l

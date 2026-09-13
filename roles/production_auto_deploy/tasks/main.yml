@@ -178,8 +178,9 @@
       This account cannot manage its own crontab:
       {{ production_auto_deploy_crontab_probe.stderr | default('crontab failed') | trim }}.
       Schedule {{ production_auto_deploy_launcher_path }} --poll every five
-      minutes with the firmware's own scheduler, running as this account, then
-      re-run with -e production_auto_deploy_external_scheduler=true.
+      minutes and --verify hourly with the firmware's own scheduler, running as
+      this account, then re-run with
+      -e production_auto_deploy_external_scheduler=true.
   when: not production_auto_deploy_external_scheduler | bool
 
 - name: Report the external polling schedule this installation relies on
@@ -187,6 +188,7 @@
     msg: >-
       Cron is managed externally. Ensure
       {{ production_auto_deploy_launcher_path }} --poll runs every five minutes
+      and {{ production_auto_deploy_launcher_path }} --verify runs hourly, both
       as this account.
   when: production_auto_deploy_external_scheduler | bool
 
@@ -235,6 +237,18 @@
     name: "{{ production_auto_deploy_cron_name }}"
     minute: "*/5"
     job: "{{ production_auto_deploy_launcher_path }} --poll"
+    state: present
+  tags:
+    - production_auto_deploy_cron
+
+# After the poller copy above, so a failed copy cannot leave this entry calling
+# an older poller that rejects --verify as an invalid argument every hour.
+- name: Install one hourly verification cron entry
+  when: not production_auto_deploy_external_scheduler | bool
+  ansible.builtin.cron:
+    name: "{{ production_auto_deploy_verify_cron_name }}"
+    minute: "{{ production_auto_deploy_verify_cron_minute }}"
+    job: "{{ production_auto_deploy_launcher_path }} --verify"
     state: present
   tags:
     - production_auto_deploy_cron

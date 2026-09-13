@@ -68,12 +68,34 @@ check(failures, notifier_tasks.all? { |task| task["no_log"] == true },
       "the ntfy.curl task must set no_log so the token never reaches a log")
 
 cron_tasks = tasks.select { |task| task.key?("ansible.builtin.cron") }
-check(failures, cron_tasks.length == 1, "the role must install exactly one cron entry")
-cron = cron_tasks.fetch(0, {}).fetch("ansible.builtin.cron", {})
+check(failures, cron_tasks.length == 2,
+      "the role must install exactly two cron entries, a poll and a verify")
+cron_for = lambda do |mode|
+  cron_tasks.map { |task| task["ansible.builtin.cron"] }
+            .find { |entry| entry.fetch("job", "").end_with?(" #{mode}") } || {}
+end
+cron = cron_for.call("--poll")
 check(failures, cron["minute"] == "*/5", "the cron entry must poll every five minutes")
-check(failures, cron.fetch("job", "").end_with?("--poll"),
-      "the cron entry must invoke the launcher with --poll")
 check(failures, cron["state"] == "present", "the cron entry must be declared present")
+verify_cron = cron_for.call("--verify")
+defaults = YAML.safe_load_file(File.join(ROOT, "roles/production_auto_deploy/defaults/main.yml"))
+check(failures, verify_cron["minute"] == "{{ production_auto_deploy_verify_cron_minute }}" &&
+        defaults["production_auto_deploy_verify_cron_minute"].to_s.match?(/\A[0-5]?\d\z/) &&
+        !verify_cron.key?("hour"),
+      "the verify cron entry must run once an hour, at a minute the defaults pin")
+check(failures, verify_cron["state"] == "present" &&
+        verify_cron["name"] != cron["name"],
+      "the verify cron entry must be present under a name of its own")
+# The poller runs this role from the revision it just deployed, so the copy of
+# the new script lands first; a cron entry installed ahead of it would call an
+# older poller that rejects --verify, every hour, if the copy failed.
+poller_copy = tasks.index { |task| task.dig("ansible.builtin.copy", "dest").to_s.include?("poller_path") }
+verify_cron_index = tasks.index { |task| task.dig("ansible.builtin.cron", "job").to_s.end_with?(" --verify") }
+check(failures, !poller_copy.nil? && !verify_cron_index.nil? && poller_copy < verify_cron_index,
+      "the verify cron entry must be installed after the poller it calls")
+external_notice = tasks.find { |task| task["name"].to_s.include?("external polling schedule") }
+check(failures, external_notice.to_h.dig("ansible.builtin.debug", "msg").to_s.include?("--verify"),
+      "an external scheduler must be told about the hourly --verify entry too")
 
 python_floor = tasks.any? do |task|
   Array(task.dig("ansible.builtin.assert", "that")).any? do |clause|
@@ -476,6 +498,14 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     check(failures, status_output.include?("could not resolve"),
           "--status must degrade gracefully when the branch cannot be reached: " \
           "#{status_output}")
+
+    # The hourly entry calls the installed poller, so the installed poller has
+    # to accept the mode -- and verify nothing before anything has deployed.
+    verify_output, verify_result = Open3.capture2e(
+      { "PATH" => ENV.fetch("PATH", "") }, launcher, "--verify"
+    )
+    check(failures, verify_result.success? && verify_output.include?("nothing has deployed"),
+          "a fresh installation's --verify must skip and exit 0: #{verify_output}")
   end
 
   # And the refusal, which is what a fallback removed: with no topic declared the

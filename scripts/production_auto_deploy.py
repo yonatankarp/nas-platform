@@ -61,6 +61,10 @@ BLIND_POLL_THRESHOLD = 3
 # Mirrors services/dozzle/alert_relay.py so both publishers escape alike.
 MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
 COMMAND_TIMEOUT_SECONDS = 60 * 60
+# --verify holds the deployment lock for as long as verify.yml runs, and #351 is
+# what an hour of a held lock costs. Half the hourly cadence, so a stuck run is a
+# failure before the next one is due rather than a lock the next poll waits out.
+VERIFY_TIMEOUT_SECONDS = 30 * 60
 TOOLING_TIMEOUT_SECONDS = 15 * 60
 # The ladder for the three commands in a deployment that reach a third party:
 # the checkout fetch, the pip install and the collection install. Few attempts,
@@ -1006,6 +1010,18 @@ def sync_tooling(config: Config, log=None) -> None:
     )
 
 
+def _verify_invocation(config: Config) -> list[str]:
+    """verify.yml as a deployment runs it, and as --verify runs it hourly."""
+
+    return [
+        "ansible-playbook",
+        *_vault_arguments(config),
+        "verify.yml",
+        "--tags",
+        config.verify_tags,
+    ]
+
+
 def _deploy_invocations(config: Config):
     """Every play runs through ansible-playbook from the candidate checkout.
 
@@ -1017,7 +1033,7 @@ def _deploy_invocations(config: Config):
     return (
         ["ansible-playbook", *vault, "validate-vault.yml"],
         ["ansible-playbook", *vault, "site.yml"],
-        ["ansible-playbook", *vault, "verify.yml", "--tags", config.verify_tags],
+        _verify_invocation(config),
         # The installer's own choices must be replayed: the role requires the
         # public host, and would otherwise try to install a cron entry on a host
         # where scheduling is external.
@@ -1659,6 +1675,142 @@ def converge(config: Config, arguments: list[str]) -> int:
         return completed.returncode
 
 
+def _verify_verdict_path(config: Config) -> Path:
+    return config.state_root / "verify-verdict"
+
+
+def read_verify_verdict(config: Config) -> str | None:
+    """The last verdict --verify recorded: "pass", "fail", or None for no record.
+
+    A file of its own, like every other fact in the state directory, so poll()
+    never rewrites it and a state directory from an older poller simply lacks it.
+    """
+
+    try:
+        parts = _verify_verdict_path(config).read_text(encoding="ascii").split()
+    except (OSError, UnicodeError):
+        return None
+    return parts[0] if parts and parts[0] in ("pass", "fail") else None
+
+
+def _checkout_revision(config: Config) -> str | None:
+    try:
+        result = _run(
+            [config.git_path, "rev-parse", "--verify", "HEAD"],
+            timeout=GIT_LOCAL_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env={"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = result.stdout.decode("ascii", "replace").strip()
+    return sha if result.returncode == 0 and SHA_PATTERN.fullmatch(sha) else None
+
+
+def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) -> None:
+    """Page on a change of verdict only, and record it once the page landed.
+
+    No record reads as a pass: a first failure pages and a first pass does not.
+    The record moves only after delivery, as note_ci_refusal's does, because a
+    recorded failure nobody received would make every later one a quiet repeat.
+    """
+
+    verdict = "pass" if passed else "fail"
+    previous = read_verify_verdict(config)
+    if verdict == previous:
+        return
+    if verdict == "fail" or previous == "fail":
+        failed = verdict == "fail"
+        published = publish(
+            config,
+            {
+                "topic": config.ntfy_topic_critical if failed
+                else config.ntfy_topic_deployment,
+                "title": f"{'Verify failed' if failed else 'Verify recovered'} "
+                f"· {sha[:9]}",
+                "message": "\n".join(
+                    (
+                        f"**Commit:** `{sha}`",
+                        f"**Log:** `{markdown_escape(str(log_path))}`",
+                    )
+                ),
+                "priority": 5 if failed else 3,
+                "tags": ["warning"] if failed else ["white_check_mark"],
+                "markdown": True,
+            },
+        )
+        if not published:
+            print("production auto-deploy: verify notification failed", file=sys.stderr)
+            return
+    # Caught rather than raised: verify.yml did run, so "could not verify" would
+    # be false. The cost of an unwritable state root is a page every run, which
+    # is the loudest way to report it.
+    try:
+        _write_private(
+            _verify_verdict_path(config),
+            f"{verdict} {sha} {_timestamp()}\n".encode("ascii"),
+        )
+    except OSError as error:
+        print(f"production auto-deploy: verify verdict not recorded: {error}",
+              file=sys.stderr)
+
+
+def verify(config: Config) -> bool | None:
+    """Run the deployment's verify play against the deployed revision. None: skipped.
+
+    It runs from the controller checkout, which is the only tree carrying the
+    playbooks, and only while that checkout holds the last successful revision.
+    A deployment detaches it to the candidate before any play runs, so after a
+    failed one it holds a revision whose verify.yml may name services that never
+    activated -- and that failure has already paged. Verification resumes with
+    the next successful deployment.
+
+    Under the deployment lock, taken without waiting (#326): a deployment in
+    progress runs verify.yml itself, and the next hour tries again. Nothing here
+    writes the attempted record or the last success, so a failed verify cannot
+    hold back the next poll.
+    """
+
+    with deployment_lock(config, holder="verify") as acquired:
+        if not acquired:
+            print(
+                "production auto-deploy: verify skipped, "
+                f"{_holder_description(read_lock_holder(config))} holds "
+                f"{lock_path(config)}"
+            )
+            return None
+        deployed = read_state(config)["last_successful"]
+        if deployed is None:
+            print("production auto-deploy: verify skipped, nothing has deployed yet")
+            return None
+        head = _checkout_revision(config)
+        if head != deployed["sha"]:
+            print(
+                "production auto-deploy: verify skipped, the checkout holds "
+                f"{head or 'an unreadable revision'}, not the deployed {deployed['sha']}"
+            )
+            return None
+        log_path = config.log_root / "verify.log"
+        descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "wb") as log:
+            os.fchmod(log.fileno(), 0o600)
+            try:
+                passed = (
+                    _run(
+                        _verify_invocation(config),
+                        timeout=VERIFY_TIMEOUT_SECONDS,
+                        cwd=config.checkout,
+                        env=_ansible_environment(config),
+                        log=log,
+                    ).returncode
+                    == 0
+                )
+            except subprocess.TimeoutExpired:
+                passed = False
+        note_verify_verdict(config, passed, head, log_path)
+        return passed
+
+
 def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
     """Explain what the next poll would do, without doing any of it.
 
@@ -1750,6 +1902,8 @@ def _parse_arguments(argv):
             mode = "poll"
         elif argument == "--status" and mode is None:
             mode = "status"
+        elif argument == "--verify" and mode is None:
+            mode = "verify"
         elif argument == "--retry-failed" and remaining and mode is None:
             mode = "retry"
             retry_sha = remaining.pop(0)
@@ -1792,6 +1946,19 @@ def main(argv=None) -> int:
             return 0
         if mode == "converge":
             return converge(config, playbook_arguments)
+        if mode == "verify":
+            try:
+                passed = verify(config)
+            except OSError as error:
+                # Not a verdict: nothing was verified, so nothing is paged and
+                # the recorded verdict stands.
+                print(f"production auto-deploy: could not verify: {error}",
+                      file=sys.stderr)
+                return 1
+            if passed is False:
+                print("production auto-deploy: verification failed", file=sys.stderr)
+                return 1
+            return 0
         outcome = poll(config, retry_sha=retry_sha)
     except ConfigurationError:
         print("production auto-deploy: unusable configuration", file=sys.stderr)

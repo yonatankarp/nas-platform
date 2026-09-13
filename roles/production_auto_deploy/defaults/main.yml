@@ -26,6 +26,11 @@ production_auto_deploy_callback_host: >-
   {{ platform_callback_host | default(production_auto_deploy_nas_address, true) }}
 production_auto_deploy_log_retention_days: 30
 production_auto_deploy_cron_name: NAS platform production auto-deploy
+# Hourly rather than with every poll: each run pays preflight and vault_contract
+# before eighteen roles of probes. Minute 37 is off the five-minute poll grid and
+# the prune's minute 0; the deployment lock serialises any overlap regardless.
+production_auto_deploy_verify_cron_name: NAS platform periodic verification
+production_auto_deploy_verify_cron_minute: "37"
 # Some NAS firmwares ship BusyBox crontab without the setuid bit and keep the
 # spool root-owned, so an unprivileged account cannot schedule anything. Set
 # this when the poll is driven by an external scheduler instead, which the role

@@ -195,6 +195,27 @@ Sunday.
 What each pass removes, and why the age filter is not what makes it safe, is in
 the [physical NAS walkthrough](getting-started-nas.md#the-weekly-image-prune).
 
+### The hourly verification
+
+The installer's own cron path also installs an hourly `--verify` entry, so on
+ADM it needs a third root crontab line. It writes to a file of its own, because
+sharing `cron.out` would let each entry overwrite the other's warnings:
+
+```sh
+printf '%s\n' "37 * * * * su - <account> -c '/home/<account>/.local/bin/nas-platform-deploy --verify' > /home/<account>/.local/share/nas-platform/logs/verify-cron.out 2>&1" > /tmp/nas-verify.line
+```
+
+```sh
+cat /tmp/nas-verify.line
+```
+
+```sh
+sudo sh -c 'cat /tmp/nas-verify.line >> /usr/builtin/etc/crontabs/root'
+```
+
+Restart crond as above. What the run does is in the
+[physical NAS walkthrough](getting-started-nas.md#hourly-verification).
+
 ## Verifying a real cycle
 
 The poller records an attempt before deploying, so the attempt count rising is
@@ -238,15 +259,16 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed <sha>
 ## After an ADM firmware update
 
 Firmware updates are reported to overwrite `/usr/builtin/etc/crontabs/root`. The
-loss is silent: deployments simply stop, the prune simply stops, and neither has
-any way to know it is no longer being called. Check both after every update:
+loss is silent: deployments, verification and the prune simply stop, and none
+has any way to know it is no longer being called. Check all three after every
+update:
 
 ```sh
 grep nas-platform- /usr/builtin/etc/crontabs/root
 ```
 
-Two lines must come back, the five-minute `nas-platform-deploy --poll` and the
-weekly `nas-platform-prune --prune`.
+Three lines must come back: the five-minute `nas-platform-deploy --poll`, the
+hourly `nas-platform-deploy --verify` and the weekly `nas-platform-prune --prune`.
 
 ## Troubleshooting
 
