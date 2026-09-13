@@ -13,7 +13,7 @@ include TestScaffold
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 LANES = %w[
-  static docs reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
+  static docs vault reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud
   vaultwarden idempotence_check
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
@@ -170,9 +170,13 @@ if defined?(ClassifyChanges)
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
     # tests/integration.sh installs the sandbox vault over this path, so no suite
-    # reads the committed one; tests/policy_vault_test.rb is the only check that
-    # opens it, and the policy gate is where that runs.
-    ["inventory/group_vars/all/vault.yml"] => %w[static],
+    # reads the committed one. Two jobs do: the policy gate asserts it is still
+    # encrypted, which needs no password, and the vault job decrypts it with the
+    # repository secret and runs validate-vault.yml against it -- the play the
+    # poller runs first, and the one #559 failed on every five-minute tick.
+    # Both, not either: a route that dropped `static` here would take the
+    # encryption check off the file it is about.
+    ["inventory/group_vars/all/vault.yml"] => %w[static vault],
     ["install-production-auto-deploy.yml"] => %w[static],
     ["roles/production_auto_deploy/tasks/main.yml"] => %w[static],
     ["roles/image_prune/templates/config.json.j2"] => %w[static],
@@ -185,7 +189,7 @@ if defined?(ClassifyChanges)
     # the end of this file is what keeps that claim true as the workflow grows;
     # this row is what makes a quiet widening or narrowing of it visible.
     [".github/workflows/ci.yml"] =>
-      %w[static docs reconciliation smoke beszel idempotence_check],
+      %w[static docs vault reconciliation smoke beszel idempotence_check],
     # Only that one file is mapped. A second workflow, or anything else under
     # .github/, is a path nobody has reasoned about and keeps falling open.
     [".github/workflows/release.yml"] => FALL_OPEN_LANES,
@@ -421,6 +425,7 @@ if defined?(ClassifyChanges)
   expected_output = <<~OUTPUT
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -458,6 +463,7 @@ if defined?(ClassifyChanges)
   expected_full_output = <<~OUTPUT
     static=true
     docs=true
+    vault=true
     reconciliation=true
     foundation=true
     arr=true
@@ -496,6 +502,7 @@ if defined?(ClassifyChanges)
   expected_fall_open_output = <<~OUTPUT
     static=true
     docs=true
+    vault=true
     reconciliation=true
     foundation=true
     arr=true
@@ -547,6 +554,7 @@ if defined?(ClassifyChanges)
   check(failures, paperless_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -591,6 +599,7 @@ if defined?(ClassifyChanges)
   check(failures, bindery_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -629,6 +638,7 @@ if defined?(ClassifyChanges)
   check(failures, kapowarr_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -667,6 +677,7 @@ if defined?(ClassifyChanges)
   check(failures, pinchflat_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -709,6 +720,7 @@ if defined?(ClassifyChanges)
   check(failures, trailarr_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -751,6 +763,7 @@ if defined?(ClassifyChanges)
   check(failures, seerr_output.string == <<~OUTPUT,
     static=true
     docs=false
+    vault=false
     reconciliation=false
     foundation=false
     arr=false
@@ -794,8 +807,8 @@ if defined?(ClassifyChanges)
 
   check(failures, ClassifyChanges::SUITES.keys == ClassifyChanges::LANES - ClassifyChanges::JOB_LANES,
         "every lane but the job lanes must map to exactly one integration suite")
-  check(failures, ClassifyChanges::JOB_LANES == %w[static docs reconciliation],
-        "static, docs and reconciliation are the only lanes that gate a job instead of a suite")
+  check(failures, ClassifyChanges::JOB_LANES == %w[static docs vault reconciliation],
+        "static, docs, vault and reconciliation are the only lanes that gate a job instead of a suite")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
           %w[smoke beszel idempotence-check],
