@@ -1,9 +1,34 @@
 ---
-# Storage comes from the single nas_storage inventory, which also drives the
-# policy test's cross-check against Compose volume sources and the recovery
+# Storage comes from the nas_storage inventory, which also drives the policy
+# test's cross-check against Compose volume sources and the recovery
 # classification. Previously this was a directory list, a set of chown
 # instructions in prose, and a hand-maintained recovery table: three places to
 # forget.
+#
+# It is composed in inventory/group_vars/all/main.yml from every nas_storage_*
+# contributor rather than written in one place, and the composition is silent
+# when it matches nothing: with every contributor removed, nas_storage evaluates
+# to [] and every task below becomes a no-op loop that reports success. Measured
+# 2026-09-12. tests/nas_storage_support.rb checks contributor membership against
+# services/manifest.yml in both directions, but Ansible cannot read that manifest
+# here, so this is the collapse floor and nothing finer. It is deliberately well
+# below the real count so that adding or removing a service never touches it.
+- name: Require a composed storage inventory
+  ansible.builtin.assert:
+    that:
+      - nas_storage | length >= 40
+      - platform_storage_names | length >= 12
+    fail_msg: >-
+      The storage inventory composed to {{ nas_storage | length }} entries from
+      {{ platform_storage_names | length }} contributors, which is below the
+      floor. inventory/group_vars/all/main.yml builds nas_storage from every
+      nas_storage_* variable in group_vars/all, so a composition this small means
+      those files are absent or were renamed rather than that storage shrank.
+    success_msg: >-
+      {{ nas_storage | length }} storage entries from
+      {{ platform_storage_names | length }} contributors.
+  run_once: true
+
 - name: Validate central storage targets before directory creation
   ansible.builtin.include_role:
     name: deployment_bundle

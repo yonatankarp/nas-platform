@@ -127,8 +127,38 @@ expect_acquisition_failure = lambda do |label, diagnostic, &mutation|
   failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
 end
 
-storage_path = lambda do |inventory, path|
-  inventory.fetch("nas_storage").find { |entry| entry.fetch("path") == path }
+# The storage inventory is composed from one nas_storage_<contributor> variable
+# per file, so planting a defect in it means finding the file that owns the path
+# rather than editing one list. Routing by path keeps each row below stating the
+# path it is about and nothing else; a row that named a file would have to be
+# re-read every time a path moved between contributors.
+storage_file_for = lambda do |root, path|
+  Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
+    next if File.basename(file) == "vault.yml"
+
+    document = YAML.safe_load_file(file)
+    next unless document.is_a?(Hash)
+
+    document.each do |key, value|
+      next unless key.start_with?("nas_storage_") && value.is_a?(Array)
+      next unless value.any? { |entry| entry.is_a?(Hash) && entry["path"] == path }
+
+      return [File.join("inventory", "group_vars", "all", File.basename(file)), key]
+    end
+  end
+  raise "no storage contributor declares #{path}"
+end
+mutate_storage_entry = lambda do |root, path, &mutation|
+  relative, key = storage_file_for.call(root, path)
+  mutate_yaml_file(root, relative) do |document|
+    mutation.call(document.fetch(key).find { |entry| entry.fetch("path") == path })
+  end
+end
+remove_storage_entry = lambda do |root, path|
+  relative, key = storage_file_for.call(root, path)
+  mutate_yaml_file(root, relative) do |document|
+    document.fetch(key).reject! { |entry| entry.fetch("path") == path }
+  end
 end
 mutate_compose = lambda do |root, relative_path, &mutation|
   path = File.join(root, relative_path)
@@ -162,45 +192,36 @@ expect_acquisition_failure.call(
   "media acquisition recovery changed",
   "media acquisition storage differs from the exact classified foundation"
 ) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    storage_path.call(inventory, "{{ nas_docker_root }}/radarr/config")["recovery"] = "cache"
+  mutate_storage_entry.call(root, "{{ nas_docker_root }}/radarr/config") do |entry|
+    entry["recovery"] = "cache"
   end
 end
 expect_acquisition_failure.call(
   "media acquisition ownership claimed",
   "media root path {{ nas_media_root }}/Media/Movies must not claim ownership"
 ) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    storage_path.call(inventory, "{{ nas_media_root }}/Media/Movies")["owner"] = "{{ nas_uid }}"
+  mutate_storage_entry.call(root, "{{ nas_media_root }}/Media/Movies") do |entry|
+    entry["owner"] = "{{ nas_uid }}"
   end
 end
 expect_acquisition_failure.call(
   "media acquisition leaf removed",
   "media acquisition storage differs from the exact classified foundation"
 ) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    inventory.fetch("nas_storage").reject! do |entry|
-      entry.fetch("path") == "{{ nas_media_root }}/Media/YouTube"
-    end
-  end
+  remove_storage_entry.call(root, "{{ nas_media_root }}/Media/YouTube")
 end
 expect_acquisition_failure.call(
   "Komga Books parent removed",
   "media acquisition storage differs from the exact classified foundation"
 ) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    inventory.fetch("nas_storage").reject! do |entry|
-      entry.fetch("path") == "{{ nas_media_root }}/Books"
-    end
-  end
+  remove_storage_entry.call(root, "{{ nas_media_root }}/Books")
 end
 expect_acquisition_failure.call(
   "media acquisition marker removed",
   "media acquisition storage differs from the exact classified foundation"
 ) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    storage_path.call(inventory, "{{ nas_docker_root }}/seerr/config")
-                .delete("media_acquisition_foundation")
+  mutate_storage_entry.call(root, "{{ nas_docker_root }}/seerr/config") do |entry|
+    entry.delete("media_acquisition_foundation")
   end
 end
 
@@ -2794,8 +2815,9 @@ end
 expect_failure(failures, "media library leaves removed from storage",
                "roles/jellyfin/templates/env.j2: {{ nas_media_root }}/Media is not declared in nas_storage",
                detected_by: %i[policy]) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    inventory.fetch("nas_storage").reject! do |entry|
+  # Every Media/ leaf is a library root, so this is one contributor's whole list.
+  mutate_yaml_file(root, "inventory/group_vars/all/media_libraries.yml") do |inventory|
+    inventory.fetch("nas_storage_media_libraries").reject! do |entry|
       entry.fetch("path").start_with?("{{ nas_media_root }}/Media/")
     end
   end
@@ -2804,8 +2826,7 @@ end
 expect_failure(failures, "media Compose bind source undeclared",
                "immich/immich-server: ${NAS_MEDIA_ROOT:?}/Immich is not declared in nas_storage",
                detected_by: %i[policy]) do |root|
-  mutate_yaml_file(root, "inventory/group_vars/all/main.yml") do |inventory|
-    entry = inventory.fetch("nas_storage").find { |item| item.fetch("path") == "{{ nas_media_root }}/Immich" }
+  mutate_storage_entry.call(root, "{{ nas_media_root }}/Immich") do |entry|
     entry["path"] = "{{ nas_media_root }}/Immich-renamed"
   end
 end
