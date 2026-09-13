@@ -2433,19 +2433,39 @@ expect_failure(failures, "vault shape validation omitted",
                    ))
 end
 
-expect_failure(failures, "vault checksum moved before encryption guard",
-               "vault contract must verify encryption header before computing SHA-256",
+# Selection is the header test now: find takes only files whose first line is the
+# vault header, so nothing is ever a candidate to hash before it is known to be
+# encrypted. The ordering that still matters is select -> floor -> hash, and the
+# two rows here plant the two ways of losing the property: hashing before the
+# floor has run, and selecting without the header at all.
+VAULT_CONTRACT_SELECTION_MESSAGE =
+  "vault contract must select on the encryption header, floor the selection, then compute SHA-256"
+expect_failure(failures, "vault checksum moved before the selection floor",
+               VAULT_CONTRACT_SELECTION_MESSAGE,
                detected_by: %i[vault]) do |root|
   path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
   tasks = YAML.safe_load_file(path)
   checksum_index = tasks.index do |task|
     task["name"] == "Compute the encrypted vault artifact SHA-256"
   end
-  guard_index = tasks.index do |task|
-    task["name"] == "Require the reported vault artifact to be encrypted"
+  floor_index = tasks.index do |task|
+    task["name"] == "Require at least one encrypted vault artifact"
   end
+  raise "vault contract tasks not found for the plant" if checksum_index.nil? || floor_index.nil?
+
   checksum_task = tasks.delete_at(checksum_index)
-  tasks.insert(guard_index, checksum_task)
+  tasks.insert(floor_index, checksum_task)
+  File.write(path, YAML.dump(tasks))
+end
+expect_failure(failures, "vault selection no longer tests the encryption header",
+               VAULT_CONTRACT_SELECTION_MESSAGE,
+               detected_by: %i[vault]) do |root|
+  path = File.join(root, "roles", "vault_contract", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  selection = tasks.find { |task| task["name"] == "Select the encrypted vault artifacts" }
+  raise "vault contract selection task not found for the plant" if selection.nil?
+
+  selection.fetch("ansible.builtin.find").delete("contains")
   File.write(path, YAML.dump(tasks))
 end
 
