@@ -47,6 +47,7 @@ from vault_credential_schema import (  # noqa: E402
     HEX_32,
     DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS,
     HEX_64,
+    HTTPS_URL,
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
     NOT_PLACEHOLDER,
@@ -83,6 +84,10 @@ PATTERN_SAMPLES = {
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
     HEX_64.pattern: ("a" * 64, "a" * 64 + "x"),
+    # Appending "x" extends a URL rather than breaking it, so the anchoring guard
+    # appends a second curl directive, which is what the end anchor refuses.
+    HTTPS_URL.pattern: ("https://hc-ping.com/token",
+                        'https://hc-ping.com/token\nurl = "https://elsewhere"'),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -131,7 +136,11 @@ MALFORMED = {
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
     HEX_64.pattern: "A" * 64,
+    HTTPS_URL.pattern: "http://hc-ping.com/token",
 }
+# The two ping URLs must differ, so each valid value is keyed off its own name.
+HEALTHCHECKS_PING_URL_KEYS = ("vault_healthchecks_poller_ping_url",
+                              "vault_healthchecks_verify_ping_url")
 
 FOUNDATION_KEYS = (
     "vault_arr_radarr_api_key",
@@ -165,6 +174,8 @@ ALL_DIGIT_KEY = "1" * 32
 
 def _valid_value(key, rules):
     """Build the accepted value for one credential from its own rules."""
+    if key in HEALTHCHECKS_PING_URL_KEYS:
+        return f"https://hc-ping.com/{key}"
     if key in FOUNDATION_API_KEYS:
         # Leading "a" rather than a bare index: the two keys this platform
         # submits to Bazarr must carry at least one a-f character, and an index
@@ -247,6 +258,23 @@ class VaultCredentialSchemaTest(unittest.TestCase):
             DISTINCT_KEY_GROUPS,
             (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS),
         )
+
+    def test_the_two_ping_urls_must_name_different_checks(self):
+        # Compared as checks rather than strings (#606): case in the scheme and
+        # host, a trailing slash and a fragment all leave one check.
+        refusal = ("vault credentials: vault_healthchecks_poller_ping_url, "
+                   "vault_healthchecks_verify_ping_url must address different checks")
+        base = "https://hc-ping.com/0b8f4a9e"
+        for verify in (base, base + "/", base + "//", "https://HC-PING.com/0b8f4a9e",
+                       base + "#note", "HTTPS://hc-ping.com/0b8f4a9e/"):
+            with self.subTest(verify=verify):
+                self.assertIn(refusal, errors_for(vault_healthchecks_poller_ping_url=base,
+                                                  vault_healthchecks_verify_ping_url=verify))
+        for verify in ("https://hc-ping.com/1c9e5b0f", "https://hc-ping.com/0B8F4A9E",
+                       "https://ping.example.org/0b8f4a9e"):
+            with self.subTest(verify=verify):
+                self.assertEqual(errors_for(vault_healthchecks_poller_ping_url=base,
+                                            vault_healthchecks_verify_ping_url=verify), [])
 
     def test_foundation_api_keys_are_exactly_lowercase_hex_32(self):
         if not all(key in CREDENTIAL_RULES for key in FOUNDATION_API_KEYS):

@@ -180,6 +180,8 @@
           'vault_ntfy_seerr_token': vault_ntfy_seerr_token,
           'vault_pushover_token': vault_pushover_token,
           'vault_pushover_user_key': vault_pushover_user_key,
+          'vault_healthchecks_poller_ping_url': vault_healthchecks_poller_ping_url,
+          'vault_healthchecks_verify_ping_url': vault_healthchecks_verify_ping_url,
           'vault_beszel_superuser_email': vault_beszel_superuser_email,
           'vault_beszel_superuser_password': vault_beszel_superuser_password,
           'vault_beszel_app_user_email': vault_beszel_app_user_email,

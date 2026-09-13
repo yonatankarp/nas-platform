@@ -672,6 +672,8 @@ runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-
 runtime_vault["vault_kapowarr_comicvine_api_key"] = "runtime-comicvine-api-key"
 runtime_vault["vault_pushover_token"] = "runtime-pushover-token"
 runtime_vault["vault_pushover_user_key"] = "runtime-pushover-user-key"
+runtime_vault["vault_healthchecks_poller_ping_url"] = "https://hc-ping.invalid/runtime-poller"
+runtime_vault["vault_healthchecks_verify_ping_url"] = "https://hc-ping.invalid/runtime-verify"
 # The relay token is documented as a stand-in the contract refuses, for the same
 # reason those five are: it is a value that would otherwise deploy. So the
 # runtime vault has to replace it too, or this whole block would be measuring
@@ -698,6 +700,19 @@ expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_pl
   pushover_placeholder[key] = vault[key]
   expect_role_rejection(failures, label, pushover_placeholder, "runtime-opensubtitles-password")
 end
+# The healthchecks.io ping URLs the same way, one at a time and through the role,
+# plus the one refusal their pair adds: a single URL in both places.
+%w[vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url].each do |key|
+  healthchecks_placeholder = duplicate(runtime_vault)
+  healthchecks_placeholder[key] = vault[key]
+  expect_role_rejection(failures, "documented #{key} placeholder", healthchecks_placeholder,
+                        "runtime-poller")
+end
+shared_ping_url = duplicate(runtime_vault)
+shared_ping_url["vault_healthchecks_verify_ping_url"] =
+  shared_ping_url["vault_healthchecks_poller_ping_url"]
+expect_role_rejection(failures, "one healthchecks.io ping URL for both checks", shared_ping_url,
+                      "runtime-poller")
 
 empty_immich = duplicate(runtime_vault)
 empty_immich.dig("vault_managed_immich_users").clear

@@ -218,11 +218,16 @@
     dest: "{{ production_auto_deploy_launcher_path }}"
     mode: "0700"
 
-- name: Write the non-secret poller configuration
+# Secret-bearing since #606: the two healthchecks.io ping URLs carry their
+# checks' tokens. Rendered after the poller copy above, and the poller reads a
+# configuration without them as "no ping", so neither half-installed state
+# stops a deployment.
+- name: Write the protected poller configuration
   ansible.builtin.template:
     src: config.json.j2
     dest: "{{ production_auto_deploy_config_path }}"
     mode: "0600"
+  no_log: true
 
 - name: Render the protected ntfy publisher configuration
   ansible.builtin.template:

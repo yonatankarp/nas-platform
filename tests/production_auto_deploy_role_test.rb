@@ -31,10 +31,16 @@ SENTINEL_DEPLOYMENT = "sentinel-deployment"
 # stopped reading the variable at all (#402).
 SENTINEL_PORT = 28_517
 TIMEOUT_SECONDS = 300
+# Sentinels again, on a domain that never resolves: rendering them proves the
+# configuration reads the vault variables, and the installed poller the suite
+# runs below could not reach a real check even if it pinged.
+POLLER_PING_URL = "https://hc-ping.invalid/role-sentinel-poller"
+VERIFY_PING_URL = "https://hc-ping.invalid/role-sentinel-verify"
 
 CONFIG_KEYS = %w[
   ansible_locale branch checkout curl_path external_scheduler git_path
-  github_api_base hourly_only_verify_tags
+  github_api_base
+  healthchecks_poller_ping_url healthchecks_verify_ping_url hourly_only_verify_tags
   log_retention_days log_root
   ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
   platform_callback_host platform_nas_address
@@ -66,6 +72,13 @@ check(failures, notifier_tasks.length == 1,
       "the role must render ntfy.curl exactly once")
 check(failures, notifier_tasks.all? { |task| task["no_log"] == true },
       "the ntfy.curl task must set no_log so the token never reaches a log")
+# deployer.json carries the healthchecks.io ping URLs since #606, and a template
+# task without no_log prints its diff under --check --diff.
+config_tasks = tasks.select do |task|
+  task.dig("ansible.builtin.template", "src") == "config.json.j2"
+end
+check(failures, config_tasks.length == 1 && config_tasks.all? { |task| task["no_log"] == true },
+      "the role must render deployer.json exactly once, with no_log, because it carries the ping URLs")
 
 cron_tasks = tasks.select { |task| task.key?("ansible.builtin.cron") }
 check(failures, cron_tasks.length == 2,
@@ -594,6 +607,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
+    "-e", "vault_healthchecks_poller_ping_url=#{POLLER_PING_URL}",
+    "-e", "vault_healthchecks_verify_ping_url=#{VERIFY_PING_URL}",
     # The topics are supplied the way the platform supplies them -- as inventory
     # variables the role declares required -- rather than defaulted inside the
     # role. This synthetic inventory is not inventory/local.yml, so nothing here
@@ -679,7 +694,14 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "hourly_only_verify_tags must render as #{HOURLY_ONLY_VERIFY_TAGS.join(',')} with no " \
           "periodic_verify_tags beside it, got #{config.slice('hourly_only_verify_tags', 'periodic_verify_tags').inspect}")
     check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
-          "the non-secret configuration must never contain the ntfy token")
+          "the poller configuration must never contain the ntfy token")
+    check(failures, config["healthchecks_poller_ping_url"] == POLLER_PING_URL &&
+                    config["healthchecks_verify_ping_url"] == VERIFY_PING_URL,
+          "the configuration must render the vault's ping URLs, got " \
+          "#{config['healthchecks_poller_ping_url'].inspect} and " \
+          "#{config['healthchecks_verify_ping_url'].inspect}")
+    check(failures, !output.include?(POLLER_PING_URL) && !output.include?(VERIFY_PING_URL),
+          "the role's own output must never print a ping URL")
     # ntfy hashes the public host into the mobile push topic, so collapsing it
     # onto the LAN address silently publishes where nothing is subscribed.
     check(failures, config["platform_public_host"] == PUBLIC_HOST,

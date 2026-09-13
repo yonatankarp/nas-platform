@@ -1135,12 +1135,35 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
+# The vault contract and the deployment poller each decide whether a
+# healthchecks.io ping URL is usable (#606). If the two rules drift, the contract
+# accepts a URL the poller silently ignores, and the external check alerts on a
+# healthy poller with nothing anywhere saying why. So the two literals must match.
+url_rule = lambda do |relative, name|
+  File.read(File.join(ROOT, relative))[/^#{name} = re\.compile\((r'[^\n]*')\)$/, 1]
+end
+contract_url_rule = url_rule.call("filter_plugins/vault_credential_schema.py", "HTTPS_URL")
+poller_url_rule = url_rule.call("scripts/production_auto_deploy.py", "HEALTHCHECKS_URL_PATTERN")
+check(failures, !contract_url_rule.nil? && contract_url_rule == poller_url_rule,
+      "the poller's HEALTHCHECKS_URL_PATTERN must be the vault contract's HTTPS_URL literal, " \
+      "found #{contract_url_rule.inspect} and #{poller_url_rule.inspect}")
+# The same holds for when two ping URLs are one check: the contract refuses such a
+# pair and the poller pings neither, and those two verdicts only line up while
+# the function deciding it is the same text in both files.
+identity_function = lambda do |relative|
+  File.read(File.join(ROOT, relative))[/^def healthchecks_check_identity\(url\):\n.*?(?=^\S)/m]
+end
+contract_identity = identity_function.call("filter_plugins/vault_credential_schema.py")
+poller_identity = identity_function.call("scripts/production_auto_deploy.py")
+check(failures, !contract_identity.nil? && contract_identity == poller_identity,
+      "healthchecks_check_identity must be byte-identical in the vault contract and the poller")
+
 # Each service's own keys live in vault_<role>.yml, its managed-user list
 # included since #612 split the one mapping that could not span files into eight
 # variables. Where a key sits cannot be checked without the password, so the gate
 # holds what it can read: every one is encrypted and names a real role. Pushover
-# is the one exception: an external account both Beszel and Dozzle read, with no
-# role.
+# and healthchecks are the exceptions: external accounts with no service role,
+# read by Beszel and Dozzle, and by the deployment poller's installer.
 #
 # vault.yml itself is still globbed, because an operator's single-file vault
 # installed there as the secrets guide describes must be encrypted too. What is
@@ -1155,8 +1178,9 @@ tracked_root_vault, _tracked_root_vault_error, _tracked_root_vault_status = Open
 )
 check(failures, tracked_root_vault.strip.empty?,
       "inventory/group_vars/all/vault.yml is committed; every vault key belongs in " \
-      "its service's vault_<role>.yml (or vault_pushover.yml)")
-manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } + ["pushover"]
+      "its service's vault_<role>.yml (or vault_pushover.yml or vault_healthchecks.yml)")
+manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } +
+                 %w[pushover healthchecks]
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip

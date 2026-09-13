@@ -469,6 +469,18 @@ Because the virtualenv is synchronised before Ansible runs, a dependency bump
 merged to `main` reaches the NAS on the next successful deployment.
 GitHub access remains read-only and uses no PAT.
 
+Every alert above is raised on this NAS, so a stopped NAS, Docker daemon or cron
+raises none. Two healthchecks.io checks report that from outside: create one for
+the poll tick (period 5 minutes, grace 15) and one for the hourly verification
+(period 1 hour, grace 2), and put their ping URLs in the vault as the
+[secrets guide](secrets.md) describes. Each `--poll` pings its check, or its
+`/fail` URL when the tick failed. Each `--verify` that runs pings the other:
+plain when verification passed, and `/fail` when it failed or could not run at
+all, because from outside a verification that could not run is a failure. A
+skipped one pings nothing, so a verification that keeps skipping alerts once the
+grace runs out. A ping that cannot be delivered never
+changes what the poller does.
+
 Each revision is attempted once for any failure that reached the NAS, and a
 newer successful SHA can proceed normally. The one exception is a failure that
 never reached it. The checkout fetch, the tooling install and the collection
