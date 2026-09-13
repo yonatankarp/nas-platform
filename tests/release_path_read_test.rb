@@ -34,6 +34,12 @@
 # than a clean bill of health, and it is what a future change that decides to
 # fix them will edit.
 
+# Explicitly, not transitively. permitted_classes below names Date, and on this
+# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
+# on the CI runner's psych it does not, so 5f7c1155 had to add this line after a
+# check died there with `uninitialized constant Date (NameError)` on a tree that
+# was green locally.
+require "date"
 require "yaml"
 
 require_relative "policy_support"
@@ -90,13 +96,28 @@ GUARDED_RELEASE_READS = [
 FORBIDDEN_COMPOSE_KEYS = %w[ADMIN_TOKEN DISABLE_ADMIN_TOKEN].freeze
 VAULTWARDEN_COMPOSE_GLOB = File.join("services", "vaultwarden", "compose*.yml")
 
-def release_reads(root)
+# A TASK FILE THAT COULD NOT BE PARSED IS NOT A TASK FILE WITH NO RELEASE READ
+# IN IT (#596). This rescued to nil and the file dropped out of the sweep, and
+# nothing in this program could see that: the only cardinality assertion here is
+# `expected_reads`, which is a floor over the reads the two ledgers NAME, so it
+# catches an existing read going missing and says nothing at all about an
+# unparseable file that has just acquired a new one. Measured on this tree: an
+# unguarded slurp of {{ platform_current_dir }} planted into a role task file
+# failed by name, and appending one unclosed quote to that same file printed "2
+# guarded and 4 known-latent reads" and exited 0. +unreadable+ is what makes the
+# skip mean "unknown" rather than "nothing to report"; the problems it produces
+# are reported through the same list every other finding here uses, so a run
+# still names every violation it can see rather than stopping at the first.
+def release_reads(root, unreadable)
   Dir[File.join(root, "roles", "*", "tasks", "**", "*.yml")].sort.flat_map do |path|
     document = begin
-      YAML.safe_load_file(path, aliases: true)
+      YAML.safe_load_file(path, aliases: true, permitted_classes: [Date, Time])
     rescue Psych::Exception
+      unreadable << path.delete_prefix("#{root}/")
       nil
     end
+    # Something other than a list of tasks is a file with nothing here to read,
+    # not a file that could not be read: an empty stage file loads as nil.
     next [] unless document.is_a?(Array)
 
     relative = path.delete_prefix("#{root}/")
@@ -172,8 +193,17 @@ def forbidden_key_problems(root)
 end
 
 def sweep_problems(root = ROOT)
-  reads = release_reads(root)
+  unreadable = []
+  reads = release_reads(root, unreadable)
   problems = []
+  unreadable.uniq.sort.each do |file|
+    problems << "#{file} could not be parsed, so it was swept for nothing and every statement " \
+                "below about which files read the installed release excludes it. A role task " \
+                "file with no release read in it and a role task file nothing could be read " \
+                "from are different states, and only the first is a reason to assert nothing. " \
+                "The two ledgers cannot report this: they name the reads that must be there, " \
+                "not the arrival of an unguarded one in a file this sweep could not open"
+  end
   unguarded = reads.reject { |read| read.fetch("guarded") }.map { |read| read.fetch("file") }.uniq.sort
   guarded = reads.select { |read| read.fetch("guarded") }.map { |read| read.fetch("file") }.uniq.sort
 
@@ -239,6 +269,19 @@ PLANTS = [
     "to" => "  ansible.builtin.stat:\n    path: >-\n" \
             "      {{ platform_current_dir }}/services/vaultwarden/elsewhere\n",
     "expect" => "no longer stats the release path" },
+  # THE DEFECT #596 CLOSED, planted in a file that reads the installed release
+  # NOWHERE. Corrupting one of the six files the two ledgers name would drop a
+  # read they require and fail on the ledger comparison instead, proving nothing
+  # about this refusal; reconcile_connections.yml contributes no read at all, so
+  # every ledger comparison and the expected_reads floor stay satisfied and the
+  # old `rescue Psych::Exception; nil` reported success. That is the whole shape
+  # of the defect: a floor over the reads the ledgers NAME cannot see an
+  # unparseable file acquiring an unguarded one.
+  { "name" => "a role task file that could not be parsed at all",
+    "file" => "roles/trailarr/tasks/reconcile_connections.yml",
+    "from" => "---\n# A connection is the only part",
+    "to" => "---\n- bad: \"unclosed\n# A connection is the only part",
+    "expect" => "roles/trailarr/tasks/reconcile_connections.yml could not be parsed" },
   { "name" => "a forbidden key reaches the canonical compose file",
     "file" => "services/vaultwarden/compose.yml",
     "from" => "      DATA_FOLDER: /data\n",

@@ -229,8 +229,11 @@ scope — does not exist on this network. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations; for
-ntfy, use only an agreed disposable topic when verifying alerts from Beszel and
-Dozzle.
+ntfy, use only an agreed disposable topic when verifying alerts from Dozzle.
+Beszel is no longer one of them: its notification webhook is Pushover, built
+from `vault_pushover_token` and `vault_pushover_user_key`, and Pushover has no
+disposable equivalent of a topic — a test notification sent from the hub
+reaches the household's real devices. Send one only when you mean to.
 
 Media acquisition also requires a NAS-only ADM share check that the platform
 cannot make for you. Be precise about which half is which.

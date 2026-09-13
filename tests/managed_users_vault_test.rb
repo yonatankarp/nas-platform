@@ -164,6 +164,7 @@ check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
 %w[
   vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
   vault_kapowarr_comicvine_api_key
+  vault_pushover_token vault_pushover_user_key
 ].each do |key|
   check(failures, vault[key].is_a?(String) && !vault[key].empty?,
         "vault example must declare #{key}")
@@ -382,6 +383,7 @@ vault_options = spec.dig("argument_specs", "main", "options") || {}
 %w[
   vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
   vault_kapowarr_comicvine_api_key
+  vault_pushover_token vault_pushover_user_key
 ].each do |key|
   check(failures,
         vault_options[key] == { "type" => "str", "required" => true },
@@ -571,6 +573,24 @@ check(failures,
           "(NOT_PLACEHOLDER, COMICVINE_API_KEY_PLACEHOLDERS)"
         ),
       "vault contract must reject the documented ComicVine placeholder")
+# Pushover issues both halves to a human account as well, and they are the pair
+# roles/beszel builds its notification webhook from. A stand-in that reached a
+# deployment would leave Beszel sending alerts Pushover rejects, with nothing on
+# this platform observing the rejection -- the OpenSubtitles failure mode
+# exactly. Each name is checked in both its places, the rule and the literal, so
+# a rule that loses its NOT_PLACEHOLDER clause fails here rather than quietly
+# admitting the example file.
+{ "vault_pushover_token" => %w[PUSHOVER_TOKEN_PLACEHOLDERS example-pushover-token],
+  "vault_pushover_user_key" =>
+    %w[PUSHOVER_USER_KEY_PLACEHOLDERS example-pushover-user-key] }.each do |key, (constant, literal)|
+  check(failures,
+        credential_filter_source.match?(
+          /"#{Regexp.escape(key)}": \(\n\s*\(NONEMPTY, None\),/
+        ) &&
+          credential_filter_source.include?("\"#{literal}\"") &&
+          credential_filter_source.include?("(NOT_PLACEHOLDER, #{constant})"),
+        "vault contract must reject the documented #{key} placeholder")
+end
 
 generator = File.file?(GENERATOR_PATH) ? File.read(GENERATOR_PATH) : ""
 check(failures, generator.include?("vault_managed_users:"),
@@ -581,9 +601,12 @@ ENTRY_FIELDS.each_key do |service|
 end
 
 policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
-# vault_managed_users is platform-wide rather than owned by one service, so it is the
-# one pinned key that stayed in the policy source when the per-service keys moved out
-# to tests/expected/<service>.yml. GLOBAL_VAULT_KEYS is concatenated into
+# vault_managed_users is platform-wide rather than owned by one service, so it stayed
+# in the policy source when the per-service keys moved out to
+# tests/expected/<service>.yml. It is no longer the only such key -- the Pushover pair
+# joined it, for the reason GLOBAL_VAULT_KEYS states -- so this pin asserts its
+# membership rather than the list's whole contents; the other names are pinned by the
+# credential contract's own parity checks. GLOBAL_VAULT_KEYS is concatenated into
 # EXPECTED_VAULT_KEYS, so pinning it here still pins the full expected set.
 check(failures, policy.match?(/GLOBAL_VAULT_KEYS = %w\[[^\]]*vault_managed_users[^\]]*\]\.freeze/m),
       "policy expected vault keys must include vault_managed_users")
@@ -640,8 +663,10 @@ runtime_vault = duplicate(vault)
 runtime_vault["vault_jellyfin_opensubtitles_username"] = "runtime-opensubtitles-user"
 runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-password"
 runtime_vault["vault_kapowarr_comicvine_api_key"] = "runtime-comicvine-api-key"
+runtime_vault["vault_pushover_token"] = "runtime-pushover-token"
+runtime_vault["vault_pushover_user_key"] = "runtime-pushover-user-key"
 # The relay token is documented as a stand-in the contract refuses, for the same
-# reason those three are: it is a value that would otherwise deploy. So the
+# reason those five are: it is a value that would otherwise deploy. So the
 # runtime vault has to replace it too, or this whole block would be measuring
 # that refusal rather than what it means to measure.
 runtime_vault["vault_dozzle_alert_relay_token"] = "b" * 64
@@ -656,6 +681,16 @@ comicvine_placeholder["vault_kapowarr_comicvine_api_key"] =
   vault["vault_kapowarr_comicvine_api_key"]
 expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_placeholder,
                       "runtime-opensubtitles-password")
+# One Pushover half at a time, for the same attribution reason: with the other
+# half runtime-valued, a refusal can only be this one. Both are exercised because
+# the two rules are separate entries carrying separate placeholder tuples, and a
+# pair checked only through one of them would let the other lose its clause.
+{ "vault_pushover_token" => "documented Pushover application token placeholder",
+  "vault_pushover_user_key" => "documented Pushover user key placeholder" }.each do |key, label|
+  pushover_placeholder = duplicate(runtime_vault)
+  pushover_placeholder[key] = vault[key]
+  expect_role_rejection(failures, label, pushover_placeholder, "runtime-opensubtitles-password")
+end
 
 empty_immich = duplicate(runtime_vault)
 empty_immich.dig("vault_managed_users", "immich").clear

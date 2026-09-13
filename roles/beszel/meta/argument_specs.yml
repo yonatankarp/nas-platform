@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Deploy Beszel and wire it to ntfy with no value read back
+    short_description: Deploy Beszel and wire it to Pushover with no value read back
     description:
       - Installs the hub keypair from vault before first start, so the agent key
         and universal token are known in advance and the run converges in one pass.
@@ -87,7 +87,11 @@ argument_specs:
       beszel_notification_url:
         type: str
         required: false
-        description: Shoutrrr URL, built from the ntfy token in vault.
+        description: Shoutrrr URL, built from the Pushover pair in vault.
+      beszel_pushover_validation_url:
+        type: str
+        required: false
+        description: Pushover endpoint answering whether the managed pair is still valid.
       vault_beszel_hub_private_key:
         type: str
         required: true
@@ -111,6 +115,11 @@ argument_specs:
       vault_beszel_app_user_password:
         type: str
         required: true
-      vault_ntfy_beszel_token:
+      vault_pushover_token:
         type: str
         required: true
+        description: Pushover application token; the URL's password component.
+      vault_pushover_user_key:
+        type: str
+        required: true
+        description: Pushover user key; the URL's host component.

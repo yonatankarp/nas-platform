@@ -787,7 +787,16 @@ end
 # Beszel's own PocketBase API and a disposable ntfy, modelled closely enough
 # that every mode the runtime program dispatches reaches its own sentence. Two
 # HTTP fixtures, nested, because the program talks to two services on two ports
-# and the ntfy port is part of the webhook URL it compares against.
+# and the ntfy port is part of the URL the notification proof sends.
+#
+# Two webhook shapes, and they are no longer the same value. The *managed*
+# webhook -- the one roles/beszel converges and the verify and drift modes
+# compare against -- is Pushover, built from the vault pair and never delivered
+# through here. The *notification proof* still sends an ntfy URL of its own,
+# because a proof that ended at a real Pushover account cannot run in a test
+# lane; what it demonstrates is the hub's shoutrrr dispatch working end to end,
+# not that the stored Pushover URL is deliverable. The runtime program says the
+# same thing beside each of the two.
 
 SUPER_EMAIL = "beszel-super@example.invalid"
 SUPER_PASSWORD = "beszel-contract-superuser-password"
@@ -795,6 +804,8 @@ APP_EMAIL = "beszel-app@example.invalid"
 APP_PASSWORD = "beszel-contract-app-password"
 UNIVERSAL_TOKEN = "33333333-3333-4333-a333-333333333333"
 NTFY_TOKEN = "beszel-contract-ntfy-token"
+PUSHOVER_TOKEN = "beszel-contract-pushover-token"
+PUSHOVER_USER_KEY = "beszel-contract-pushover-user-key"
 NTFY_ADMIN = %w[ntfy-admin ntfy-contract-admin-password].freeze
 ADMIN_TOKEN = "beszel-contract-admin-token"
 APP_TOKEN = "beszel-contract-app-session-token"
@@ -816,11 +827,22 @@ VAULT = {
   "vault_beszel_app_user_password" => APP_PASSWORD,
   "vault_beszel_universal_token" => UNIVERSAL_TOKEN,
   "vault_ntfy_beszel_token" => NTFY_TOKEN,
+  "vault_pushover_token" => PUSHOVER_TOKEN,
+  "vault_pushover_user_key" => PUSHOVER_USER_KEY,
   "vault_ntfy_admin_user" => NTFY_ADMIN.fetch(0),
   "vault_ntfy_admin_password" => NTFY_ADMIN.fetch(1)
 }.freeze
 
-def expected_webhook(state)
+# What roles/beszel stores, and what the verify and drift modes compare the
+# stored value against. No port: the Pushover form carries neither a host of this
+# platform's nor one of the fixture's.
+def expected_webhook
+  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"
+end
+
+# What the notification proof sends instead, which is a different question --
+# see the two-shapes paragraph above.
+def expected_notification_url(state)
   "ntfy://:#{NTFY_TOKEN}@#{CALLBACK_HOST}:#{state.fetch(:ntfy_port)}/nas-critical?scheme=http"
 end
 
@@ -1079,9 +1101,13 @@ RUNTIME_ROWS = [
   { name: "no universal token for the managed user", mode: "verify",
     state: { universal_tokens: [] },
     expects: "managed universal token is absent" },
-  { name: "a webhook pointing somewhere other than the managed ntfy topic",
-    mode: "verify", state: { webhooks: ["ntfy://:token@elsewhere.invalid/nas-critical"] },
-    expects: "managed ntfy webhook differs" },
+  # A second Pushover account rather than a second scheme: the stored value that
+  # actually threatens this platform is one that delivers somewhere nobody reads,
+  # and only a well-formed URL of the managed shape can do that.
+  { name: "a webhook pointing at a Pushover account other than the managed one",
+    mode: "verify",
+    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/"] },
+    expects: "managed Pushover webhook differs" },
   {
     # PocketBase returns a relation's JSON column as a string on some routes and
     # as an object on others. The program handles both; this row is the string
@@ -1262,7 +1288,7 @@ RUNTIME_ROWS = [
     expects: nil,
     after: lambda { |_paths, collected, state|
       collected << "runtime: notify did not send the vault-derived webhook URL" unless
-        state[:notification_url] == expected_webhook(state)
+        state[:notification_url] == expected_notification_url(state)
     } },
   { name: "an application identity the vault does not hold", mode: "notify",
     state: { vault: VAULT.merge("vault_beszel_app_user_password" => "wrong") },
@@ -1307,7 +1333,7 @@ end
 # responder reads.
 def finalize_state(state)
   row = state.fetch(:row)
-  webhooks = state.fetch(:webhooks, nil) || [expected_webhook(state)]
+  webhooks = state.fetch(:webhooks, nil) || [expected_webhook]
   settings = { "webhooks" => webhooks }
   state.fetch(:user_settings).each do |record|
     record["settings"] = row.fetch(:settings_as_string, false) ? JSON.generate(settings) : settings
@@ -1352,6 +1378,7 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
           # is what keeps that from happening.
           output = stdout + stderr
           [SUPER_PASSWORD, APP_PASSWORD, UNIVERSAL_TOKEN, NTFY_TOKEN,
+           PUSHOVER_TOKEN, PUSHOVER_USER_KEY,
            NTFY_ADMIN.fetch(1)].each do |secret|
             collected << "#{label}: the diagnostic echoed a credential" if output.include?(secret)
           end
@@ -2122,9 +2149,9 @@ RUNTIME_MUTATIONS = [
     to: "nil unless",
     rows: ["a universal token that is not the vault's"] },
   { label: "the managed webhook comparison",
-    from: 'fail_contract("managed ntfy webhook differs") unless',
+    from: 'fail_contract("managed Pushover webhook differs") unless',
     to: "nil unless",
-    rows: ["a webhook pointing somewhere other than the managed ntfy topic"] },
+    rows: ["a webhook pointing at a Pushover account other than the managed one"] },
   { label: "the managed alert comparison",
     from: 'fail_contract("managed #{name} alert differs") unless',
     to: "nil unless",

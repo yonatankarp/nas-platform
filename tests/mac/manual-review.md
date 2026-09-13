@@ -59,7 +59,10 @@ private keys, password hashes, rendered environment files, or application logs.
       lane's origin is `https://vaultwarden.mac.invalid` and there is no
       Tailscale front here, so nothing origin-bound is in scope.
 - [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
-- [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event.
+- [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event by
+      typing that ntfy URL into the test-notification field. Do not test the
+      stored webhook: it is Pushover, and this lane's vault holds stand-ins for
+      the account it names, so it can only refuse.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.
 
 ## NAS-only limitations

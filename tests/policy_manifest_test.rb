@@ -1308,7 +1308,7 @@ expect_failure(failures, "unredacted Beszel webhook summary",
                detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
-      entry["name"] == "Summarize the managed ntfy webhook without URL bodies"
+      entry["name"] == "Summarize the managed Pushover webhook without URL bodies"
     end
     task["no_log"] = false
   end
@@ -1915,6 +1915,72 @@ expect_failure(failures, "dirty refusal made run once",
     "- name: Require committed controller bundle sources\n  run_once: true\n"
   )
   File.write(path, tasks)
+end
+
+# The poller sweep's own subject going quiet (#596). policy_deployment_test.rb
+# derives the distinctive path fragments install-production-auto-deploy.yml
+# creates from the two poller roles' defaults, and skipping a role it could not
+# read left the sweep blind to every path that role installs while
+# check_floor(..., 3) stayed satisfied on the other role's three.
+#
+# EMPTIED RATHER THAN DELETED, and that is the pin: both states take the same
+# `unless document.is_a?(Hash)` branch, so one row proves the refusal -- but a
+# later narrowing back to the `File.file?` test the fix replaced would still
+# pass a deleted file and fail here. production_auto_deploy rather than
+# image_prune because the sandbox carries no roles/image_prune at all, by the
+# decision policy_mutation_support.rb states, and the refusal deliberately
+# exempts a role directory this tree does not have.
+#
+# WHICH MAKES THE MESSAGE THE BINDING ASSERTION HERE, not the exit status, and
+# the row would be a vacuous pass if it were read the other way. Emptying THIS
+# role's defaults is loud by a second and accidental route: `nas-platform-deploy`
+# is named by all three POLLER_PATH_REFERENCE_REASONS files, so losing the
+# fragment also breaks the pinned reference set one check further down, and
+# policy_deployment_test.rb exits nonzero either way. `nas-platform-prune` is
+# named by none of them, which is why image_prune was silent and is the site the
+# issue was filed on. Measured: with the refusal, the manifest holds; with only
+# the refusal reverted, this row fails with `missing failure message` while the
+# mutation is still detected -- so what the row pins is the refusal's own
+# sentence, which nothing else in the suite emits.
+expect_failure(failures, "poller role defaults emptied",
+               "is missing, empty or not a mapping, so the poller paths that role installs " \
+               "were derived from nothing",
+               detected_by: %i[deployment]) do |root|
+  File.write(File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml"), "")
+end
+
+# The half of the same subject that a readable, valid, plausible defaults file
+# still empties (#597). #599's refusal reaches only `document.is_a?(Hash)`; here
+# the file parses to a complete mapping and one key's suffix simply stops
+# matching, so `production_auto_deploy_launcher_path` contributes nothing and
+# the role derives two fragments where it declares three.
+#
+# THE RENAMED KEY RATHER THAN `--- {}`, and only one row for both. The per-role
+# floor is a count, so the state that leaves 2 of 3 is strictly harder than the
+# state that leaves 0 of 3: a floor that catches this one catches the empty
+# mapping by construction, and a second row would buy a mutation's worth of
+# gate time to re-prove the same comparison. The empty mapping is measured in
+# the commit that added the floor rather than pinned here.
+#
+# THE MESSAGE IS THE BINDING ASSERTION, for the reason the row above records and
+# for one more of its own. Losing `nas-platform-deploy` also shrinks
+# `referencing_files`, so the pinned-reference equality check further down fails
+# too and the exit status alone would be satisfied by a neighbour. Measured,
+# because that is the difference between this row and a vacuous one: with only
+# the floor reverted and this plant applied, policy_deployment_test.rb exits 1
+# and prints `site.yml must not depend on ...` while `derived fewer than 3`
+# appears zero times -- so the row fails with `missing failure message` rather
+# than passing on the neighbour's refusal. With the floor restored the sentence
+# is back and the exit is unchanged. It is pinned on the prose and not
+# on the interpolated `{"production_auto_deploy" => 2}`, because Hash#inspect
+# gained spaces around `=>` in Ruby 3.4 and the row must not depend on which
+# interpreter the sandbox got.
+expect_failure(failures, "poller role defaults renamed a contributing key",
+               "derived fewer than 3 distinctive path fragments from defaults that parsed",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml")
+  File.write(path, File.read(path).sub("production_auto_deploy_launcher_path:",
+                                       "production_auto_deploy_launcher_file:"))
 end
 
 expect_failure(failures, "fresh-root probe regressed to deployment root",

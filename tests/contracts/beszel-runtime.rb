@@ -265,6 +265,16 @@ when "notify"
     body: { identity: vault.fetch("vault_beszel_app_user_email"),
             password: vault.fetch("vault_beszel_app_user_password") }
   )
+  # NOT the URL the role converged, and that is the whole of what this mode can
+  # still prove. Beszel's production webhook is Pushover, and no proof that ends
+  # at a real Pushover account can run here: it would leave the platform's
+  # notification budget at the mercy of a test loop and would need an account
+  # this harness has no way to hold. So this mode sends an ntfy URL of its own
+  # and asserts it arrives, which demonstrates that the hub's shoutrrr dispatch
+  # works end to end -- authentication, the test-notification route, delivery to
+  # a real listener. It says nothing about whether the stored Pushover URL is
+  # deliverable. The verify mode below is what compares the stored value against
+  # the vault; nothing anywhere delivers through it.
   expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
   ntfy_auth = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
   # The anti-replay poll below anchors on an existing message. It used to get one by
@@ -316,10 +326,14 @@ else
 
   settings = exact_record(records("user_settings", admin_token, equality("user", user_id)),
                           "managed user settings")
-  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
+  # The shoutrrr URL roles/beszel converges, rebuilt here from the same two vault
+  # values rather than read back from anywhere -- the credential direction the
+  # whole platform holds to. `shoutrrr` is the URL's required user component;
+  # Pushover itself takes the application token and the user key.
+  expected_url = "pushover://shoutrrr:#{vault.fetch('vault_pushover_token')}@#{vault.fetch('vault_pushover_user_key')}/"
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)
-  fail_contract("managed ntfy webhook differs") unless notification_settings["webhooks"] == [expected_url]
+  fail_contract("managed Pushover webhook differs") unless notification_settings["webhooks"] == [expected_url]
 
   managed_system = exact_record(managed_systems, "managed system")
   persisted_telemetry(ENV.fetch("PLATFORM_KIND"), managed_system, admin_token)

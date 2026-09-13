@@ -106,6 +106,21 @@ OPENSUBTITLES_PASSWORD_PLACEHOLDERS = ("example-opensubtitles-password",
 COMICVINE_API_KEY_PLACEHOLDERS = ("example-comicvine-api-key",
                                   "replace-with-comicvine-api-key")
 
+# The Pushover application token and user key belong to a third-party account at
+# pushover.net, so the platform cannot generate either. They are the pair Beszel's
+# shoutrrr URL is built from, and neither has a shape this repository can vouch
+# for: Pushover documents both as 30-character opaque strings, and a pattern rule
+# guessed from that would be evaluated before every converge -- on a five-minute
+# poller tick, with the fix locked inside an encrypted file -- so the rules stay
+# NONEMPTY plus the stand-in refusal, the way the OpenSubtitles and ComicVine
+# credentials are. A stand-in reaching a deployment means the operator never
+# supplied the real pair, and Pushover then refuses every alert Beszel sends with
+# nothing on this platform observing that it did.
+PUSHOVER_TOKEN_PLACEHOLDERS = ("example-pushover-token",
+                               "replace-with-pushover-token")
+PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
+                                  "replace-with-pushover-user-key")
+
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
 # vault.yml.example that has to be rejected here rather than by the service that
 # receives it. The others fail somewhere: `tk_` and 29 zeros is not a token ntfy
@@ -168,6 +183,14 @@ CREDENTIAL_RULES = {
     "vault_ntfy_beszel_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_deploy_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_seerr_token": ((PATTERN, NTFY_TOKEN),),
+    "vault_pushover_token": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_TOKEN_PLACEHOLDERS),
+    ),
+    "vault_pushover_user_key": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_USER_KEY_PLACEHOLDERS),
+    ),
     "vault_beszel_superuser_email": ((PATTERN, EMAIL),),
     "vault_beszel_superuser_password": ((NONEMPTY, None),),
     "vault_beszel_app_user_email": ((PATTERN, EMAIL),),

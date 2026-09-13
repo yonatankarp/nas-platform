@@ -162,7 +162,10 @@ active service:
   identity and confirm the disposable libraries remain usable after recreation.
 - Beszel: sign in with both deployed hub identities, confirm the existing agent
   key and token connect the disposable agent, and send only a disposable ntfy
-  event.
+  event — by typing that ntfy URL into the hub's test-notification field, not by
+  testing the webhook the lane stored. The stored one is Pushover, and the
+  ephemeral vault holds stand-ins for the account it names, so testing it would
+  prove a refusal rather than a delivery.
 - Dozzle: sign in with the deployed administrator password represented by the
   installed hash, inspect its managed event rules, and send only a disposable
   ntfy event.

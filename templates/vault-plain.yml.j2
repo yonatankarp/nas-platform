@@ -82,6 +82,13 @@ vault_ntfy_deploy_token: {{ ntfy_deploy_token }}
 vault_ntfy_seerr_password_hash: "{{ ntfy_seerr_hash }}"
 vault_ntfy_seerr_token: {{ ntfy_seerr_token }}
 
+{# The Pushover pair is issued by a third-party account, so this generator
+   writes the documented stand-ins for the operator to replace rather than
+   values. The credential contract refuses both, so a vault generated and left
+   alone fails before it can deploy an alert channel that silently drops. #}
+vault_pushover_token: replace-with-pushover-token
+vault_pushover_user_key: replace-with-pushover-user-key
+
 vault_beszel_superuser_email: {{ beszel_superuser_email }}
 vault_beszel_superuser_password: {{ beszel_superuser_password }}
 vault_beszel_app_user_email: {{ beszel_app_user_email }}

@@ -12,12 +12,32 @@ mac_repo_dir=$(CDPATH= cd -- "$mac_script_dir/../.." && pwd -P)
 
 # This wrapper deliberately names only verify.yml. Calling site.yml here would
 # reconverge state and could turn a verification defect into a false pass.
+#
+# The Pushover endpoint is pointed at a port nothing listens on, and this is the
+# only lane that needs saying so. roles/beszel gates its credential check on
+# --tags platform_verify_beszel, which is exactly what this wrapper passes, so
+# the check does run here -- against a vault holding ephemeral-pushover-token,
+# which was never a Pushover credential. Every such call would be a 4xx against
+# the household's own application, and Pushover temporarily blocks an IP that
+# sends enough of them. The integration lanes need no equivalent: they converge
+# site.yml with lane tags and never run verify.yml, so the tag gate excludes
+# them by itself.
+#
+# Here rather than in inventory/group_vars/mac_hosts, because a URL is portable
+# configuration rather than a machine fact and tests/policy_platform_test.rb
+# refuses one there by name -- measured, not guessed. Here rather than in the
+# Immich fixture vars file too, because that file is regenerated and compared
+# against itself. An unreachable endpoint is the honest answer rather than a
+# workaround: a lane holding stand-in credentials cannot find out whether the
+# real pair works, and "did not find out" is a state the check reports and
+# passes on.
 mac_ansible_playbook -i "$mac_repo_dir/inventory/mac.yml" \
   "$mac_repo_dir/verify.yml" \
   --vault-password-file "$PLATFORM_MAC_VAULT_PASSWORD_FILE" \
   -e @"$PLATFORM_MAC_VAULT_FILE" \
   -e @"$PLATFORM_MAC_FIXTURE_VARS_FILE" \
   -e "platform_vault_file=$PLATFORM_MAC_VAULT_FILE" \
+  -e "beszel_pushover_validation_url=http://127.0.0.1:1/1/users/validate.json" \
   --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden
 
 for mac_verify_hook in $MAC_VERIFY_INFRASTRUCTURE_HOOKS; do

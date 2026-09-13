@@ -46,6 +46,13 @@
 # those. Inside one of the eight, every such mutation would newly be detected by
 # that script, the per-site declared sets in tests/policy_manifest_test.rb would
 # drift, and `--audit` would fail. Outside them it cannot happen.
+
+# Explicitly, not transitively. permitted_classes below names Date, and on this
+# workstation `require "yaml"` happens to define it -- psych pulls it in -- while
+# on the CI runner's psych it does not, so 5f7c1155 had to add this line after a
+# check died there with `uninitialized constant Date (NameError)` on a tree that
+# was green locally.
+require "date"
 require "fileutils"
 require "open3"
 require "rbconfig"
@@ -152,6 +159,22 @@ SELF_TEST_ROWS = [
       File.write(path, source.sub(/^    user: .*\n/, ""))
     },
     expects: "no longer reads as running a container under the shared numeric identity"
+  },
+  {
+    # THE DEFECT #596 CLOSED, and the file it is planted in was chosen for what
+    # it does NOT contribute. Corrupting reconcile_env.yml would drop a counted
+    # subject too, take the count to four and breach SUBJECT_FLOOR -- so the row
+    # would pass on the floor and prove nothing about the refusal it is written
+    # for. reconcile_connections.yml renders no restricted-mode file today, so
+    # the count stays at five and the floor stays satisfied, which is exactly
+    # the state the old `rescue Psych::Exception; nil` was silent in: a file
+    # whose contribution was zero is free to acquire a violation unseen.
+    name: "a task file that could not be parsed, whose contribution was zero",
+    plant: lambda { |root|
+      path = File.join(root, "roles/trailarr/tasks/reconcile_connections.yml")
+      File.write(path, "#{File.read(path)}\n- bad: \"unclosed\n")
+    },
+    expects: '["roles/trailarr/tasks/reconcile_connections.yml"] could not be parsed'
   },
   {
     # The negative control, and the reason the mode test is not decoration: a
@@ -325,6 +348,16 @@ def restricted_mode?(mode)
 end
 
 subjects = 0
+# A TASK FILE THAT COULD NOT BE PARSED IS NOT A TASK FILE THAT WRITES NOTHING
+# (#596). This rescued to nil and the file's contribution silently became zero,
+# which SUBJECT_FLOOR cannot see: it counts the restricted-mode writes this
+# sweep found, and a violation living in a file whose prior contribution was
+# zero costs the count nothing. Measured on this tree: a planted owner-less
+# 0600 template into {{ dozzle_state_root }} failed by name, and appending one
+# unclosed quote to the same file printed "5 restricted-mode files ... all
+# owned by it" and exited 0. The paths are recorded and refused on, so the loss
+# is reported whatever the subject count then is.
+unreadable_task_files = []
 identity_services.sort.each do |service|
   role = roles[service]
   next if role.nil?
@@ -334,10 +367,14 @@ identity_services.sort.each do |service|
 
   Dir[File.join(ROOT, "roles", role, "tasks", "**", "*.yml")].sort.each do |path|
     document = begin
-      YAML.safe_load_file(path, aliases: true)
+      YAML.safe_load_file(path, aliases: true, permitted_classes: [Date, Time])
     rescue Psych::Exception
+      unreadable_task_files << path.delete_prefix("#{ROOT}/")
       nil
     end
+    # A document that parsed to something other than a list of tasks is a file
+    # this sweep has no business reading, not a file it failed to read: an
+    # empty stage file loads as nil and legitimately declares nothing.
     next unless document.is_a?(Array)
 
     relative = path.delete_prefix("#{ROOT}/")
@@ -369,6 +406,13 @@ identity_services.sort.each do |service|
     end
   end
 end
+check(failures, unreadable_task_files.uniq.empty?,
+      "#{unreadable_task_files.uniq.sort.inspect} could not be parsed, so nothing in it was " \
+      "swept for a restricted-mode write and the count below is over the files that survived " \
+      "rather than over the roles. A file that renders nothing at 0600 and a file nothing could " \
+      "be read from are different states, and only the first is a reason to assert nothing. Fix " \
+      "the file and re-run: SUBJECT_FLOOR guards the loss of a counted subject, not the loss of " \
+      "a file whose contribution was zero before it acquired a violation")
 check_floor(failures, subjects, SUBJECT_FLOOR,
             "restricted-mode files rendered into the state trees of numeric-identity services")
 
