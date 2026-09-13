@@ -20,7 +20,7 @@ module ClassifyChanges
   end.freeze
   # Lanes that gate a workflow job of their own rather than dispatching an
   # integration suite. Every other lane is one suite.
-  JOB_LANES = %w[static docs reconciliation].freeze
+  JOB_LANES = %w[static docs vault reconciliation].freeze
   # `full` is the runner's own default and no CI lane dispatches it, so it is the
   # one row the classifier drops. A lane is its suite with hyphens written as
   # underscores, because a lane is also a GitHub Actions output key.
@@ -90,11 +90,16 @@ module ClassifyChanges
   # rather than running this playbook. The encrypted vault is the other half of
   # that: tests/integration.sh installs the sandbox vault *over*
   # inventory/group_vars/all/vault.yml before any play runs, so no suite ever
-  # reads the committed one, and the only check that opens it is
-  # tests/policy_vault_test.rb, which asserts it is still encrypted. Falling open
-  # to every lane was costing a full seventeen-suite matrix to re-prove that one
-  # line. renovate.json is read by tests/renovate_policy_test.rb and by no play
-  # at all.
+  # reads the committed one. Falling open to every lane was costing a full
+  # seventeen-suite matrix to re-prove one line. renovate.json is read by
+  # tests/renovate_policy_test.rb and by no play at all.
+  #
+  # The committed vault is still here and is no longer static-*only*: since #561
+  # a second job opens it, with the password held as a repository secret, and runs
+  # validate-vault.yml against it -- so the file selects `vault` as well, through
+  # VAULT_ROUTED_PATH below. The gate's own check on it is unchanged and remains
+  # the cheap half: tests/policy_vault_test.rb asserts the artifact is still
+  # encrypted, which needs no password and therefore no secret.
   #
   # The documents are here for the same reason and not because they are
   # documentation: each one is read *by name* by a check that only the static job
@@ -317,7 +322,14 @@ module ClassifyChanges
   # Only this one path. Anything else that appears under .github/ is unmapped and
   # keeps falling open to every lane, which is the property CLAUDE.md relies on.
   CI_WORKFLOW_ROUTED_PATH = ".github/workflows/ci.yml"
-  CI_WORKFLOW_JOB_LANES = %w[docs reconciliation].freeze
+  # The one artifact the vault job reads. It is a STATIC_ONLY_PATHS entry too --
+  # the gate's encryption check still runs on it -- so the routing is additive
+  # rather than a move. roles/vault_contract/, validate-vault.yml and the
+  # generator template are deliberately *not* listed: none of them is claimed by
+  # a lane, so each already falls open to every job including this one, and
+  # naming them here would narrow what they run rather than widen it.
+  VAULT_ROUTED_PATH = "inventory/group_vars/all/vault.yml"
+  CI_WORKFLOW_JOB_LANES = %w[docs vault reconciliation].freeze
   CI_WORKFLOW_SUITE_LANE = "beszel"
 
   module_function
@@ -334,6 +346,7 @@ module ClassifyChanges
       selection["docs"] = true if documentation
       if static_only_path?(path)
         selection["static"] = true
+        selection["vault"] = true if path == VAULT_ROUTED_PATH
         next
       end
       next if documentation || inert_path?(path)

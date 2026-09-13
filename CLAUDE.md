@@ -462,7 +462,7 @@ bumping a number here.
 gated on one of that job's outputs; `validate` runs under `if: ${{ always() }}`
 and lets `tests/ci/validate_results.rb` decide pass/fail across all legs.
 
-Jobs: `changes static docs mutation reconciliation toolchain suites validate`
+Jobs: `changes static docs vault mutation reconciliation toolchain suites validate`
 
 Read that roster before adding a check anywhere, because `static` is not the only
 job one can land in and which job it lands in is a routing decision. `mutation`
@@ -473,6 +473,19 @@ requires CI to run the mutation harness, while `tests/ci/workflow_test.rb` owns
 it for the reconciliation matrix. `docs` is not — it is a second and cheaper
 route to checks the gate still runs, so those checks reach a Markdown-only
 change in under a minute without also reaching for the Ansible toolchain.
+`vault` is neither an extraction nor a cheaper route: it is the one job the local
+gate cannot hold, because it decrypts `inventory/group_vars/all/vault.yml` with
+the `ANSIBLE_VAULT_PASSWORD` repository secret and runs `validate-vault.yml`
+against it — the play the poller runs first, and the one #559 failed on every
+five-minute tick while every check here stayed green. No manifest line
+corresponds to it and none should: the gate's own check on that file
+(`tests/policy_vault_test.rb`, that the artifact is still encrypted) needs no
+password and is unchanged. Two consequences follow from the secret rather than
+from the check. A pull request from a fork holds no secret and reds this job,
+deliberately — a skip-with-notice was considered and refused, because it is a
+green run that decrypted nothing. And the workflow stays on `pull_request`:
+`pull_request_target` would run this job with the base repository's secrets
+against a head its author controls.
 `static`, `reconciliation` and `suites` are matrices, so each contributes a leg
 per matrix entry rather than a single check — `static` one per shard of the
 policy gate's manifest, which is why its legs report as `static (1)` and not as
@@ -500,8 +513,8 @@ synthetic histories.
 The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
-for: `static`, `docs`, `reconciliation` and three suite legs instead of all
-nineteen (#395). Read that off `tests/ci/classify_changes.rb --full`, whose
+for: `static`, `docs`, `vault`, `reconciliation` and three suite legs instead of
+all nineteen (#395). Read that off `tests/ci/classify_changes.rb --full`, whose
 `suites` array is the matrix: this sentence said sixteen, then seventeen, while
 a full run dispatched nineteen, and several comments under `tests/ci/` still
 carry a count of their own that nothing bumps either. One leg stands for the
@@ -1050,6 +1063,19 @@ it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
 user's own documents), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
+
+**Since #561 the vault password lives in a second place**, and it is the only
+copy outside an operator's own machine and the NAS: the `ANSIBLE_VAULT_PASSWORD`
+repository secret, which the `vault` CI job writes to a file under `$RUNNER_TEMP`
+so `validate-vault.yml` can open the committed vault the way the poller does.
+That makes *disclosure* a failure mode beside loss, and the two cost the same
+thing. Anyone who can run a workflow in this repository can read what the secret
+decrypts, so re-keying is the answer to a leaked secret exactly as it is to a
+lost password: regenerate every credential and re-encrypt, because the vault's
+contents and not the password are what an attacker keeps. GitHub redacts a
+secret's value from logs, and the play is `no_log: true` throughout, but neither
+of those is a containment boundary — the boundary is who may dispatch a workflow.
+`docs/secrets.md` carries the rotation steps and how the secret is set.
 
 **A removed service does not take its files with it, and AdGuard Home is the
 worked example.** #577 deleted that stack -- role, Compose, contract, lane and

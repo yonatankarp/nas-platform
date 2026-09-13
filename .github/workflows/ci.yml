@@ -6,63 +6,35 @@ on:
     branches:
       - main
   schedule:
-    # 17:47 UTC, and the minute is off the hour and off the half hour because
-    # GitHub delays scheduled runs hardest at those boundaries. The hour is chosen
-    # against a measured delay rather than a nominal fire time: this workflow's
-    # scheduled runs have been *created* 4h21m to 5h22m after the cron on each of
-    # the last ten days and 12h06m on 2026-08-28, so a cron is a lower bound on
-    # when the sweep lands and nothing more.
-    #
-    # At 03:23 that put it at 07:44-08:45 UTC every day, which is squarely in this
-    # repository's merge window -- on 2026-09-10 the nightly was created at
-    # 08:14:15 and the merge run for #542 at 08:14:00, and `changes`, first in its
-    # run with nothing ahead of it, queued 4.7 minutes behind the collision. From
-    # 17:47 the same delays land it at 22:08-23:09, a 12-hour delay lands it at
-    # 05:47, and a delay that disappears lands it at 17:47. All three miss the
-    # window, which is the property being bought; the exact hour is not.
-    #
-    # Whether the delay behaves is checkable rather than assumed:
-    # `gh run list --workflow=ci.yml --event=schedule --json createdAt`.
+    # The minute is off the hour and off the half hour because GitHub delays
+    # scheduled runs hardest at those boundaries. The hour is chosen so that the
+    # whole plausible fire window misses this repository's merge window; the hour
+    # itself is not the property. CLAUDE.md, "A `cron` is a lower bound on when
+    # the sweep lands", carries the measured delays and how to re-check them.
     - cron: '47 17 * * *'
   workflow_dispatch:
 
 concurrency:
-  # A run is superseded only by a newer run of the same thing. Another push to a
-  # pull request replaces the tree the previous run was testing, so cancelling that
-  # run costs nothing. A push to `main` replaces nothing: every merge is a different
-  # tree and its post-merge run is the only run that will ever see it. Cancelling
-  # those is what ended 11 of 52 recent `main` push runs -- 21% -- in `cancelled`
-  # rather than in a verdict, so the sweep they paid for routinely never finished.
+  # A run is superseded only by a newer run of the same thing. A pull request's
+  # previous run tested a tree that no longer exists; a `main` push run is the
+  # only run that will ever see the tree it merged. Hence the predicate.
   #
-  # The event name is part of the key and is load-bearing rather than decorative:
-  # without it `push` and `schedule` both resolve to `refs/heads/main`, and the
-  # nightly sweep -- not a push, so still cancelling -- would kill an in-flight
-  # post-merge run once a night and reintroduce exactly what the predicate below
-  # removes. Keyed apart, a merge and the nightly sweep neither cancel nor block
-  # one another.
+  # The event name is load-bearing rather than decorative: without it `push` and
+  # `schedule` both resolve to `refs/heads/main`, and the nightly sweep -- not a
+  # push, so still cancelling -- would kill an in-flight post-merge run once a
+  # night and reintroduce what the predicate removes.
   #
-  # The push fallback is `github.sha`, not `github.ref`, because the predicate
-  # below was necessary but not sufficient. It did stop mid-flight cancellation:
-  # every `main` push run cancelled before it landed carries 23-25 cancelled jobs,
-  # and every one cancelled after it carries **zero**, having never left the
-  # pending queue. What kept cancelling them is the queue itself. A shared
-  # `refs/heads/main` group serialises every merge, and GitHub's default
-  # `queue: single` permits exactly one *pending* run per group: when a third
-  # merge arrives while one run is executing and one is waiting, the waiting run
-  # is cancelled to make room. That cost 5 of 57 push runs -- 8.8% -- after the
-  # predicate landed, in bursts rather than steadily, because eviction needs
-  # three merges overlapping and so tracks merge cadence.
-  #
-  # Keying pushes per commit makes eviction structurally impossible instead of
-  # merely reconfigured: every merge is its own group of one, so it neither
-  # supersedes nor waits behind another. `queue: max` (up to 100 pending) would
-  # have kept the serialisation, but the only way to find out whether GitHub
-  # rejects it alongside an *expression* for `cancel-in-progress` -- the
-  # combination with a literal `true` is a documented validation error -- is to
-  # push to `main` and see, and a workflow that refuses to start is the same
-  # untested tree with a louder failure. Serialising merges bought nothing worth
-  # that: the runs contend for one account-wide job budget either way, and that
-  # queue is at the job level, where waiting does not evict.
+  # The push fallback is `github.sha`, not `github.ref`, because the predicate was
+  # necessary but not sufficient. A shared `refs/heads/main` group serialises every
+  # merge, and GitHub's default `queue: single` permits one *pending* run per
+  # group: a third merge arriving while one runs and one waits evicts the waiter
+  # before it runs a job. That cost 5 of 57 push runs (8.8%) after the predicate
+  # landed. Per-commit groups make eviction structurally impossible rather than
+  # merely reconfigured. `queue: max` would have kept the serialisation, but the
+  # only way to learn whether GitHub rejects it alongside an *expression* for
+  # `cancel-in-progress` is to push to `main` and see, and serialising merges
+  # bought nothing worth that: the runs contend for one account-wide job budget
+  # either way, and that queue is at the job level, where waiting does not evict.
   group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -76,6 +48,7 @@ jobs:
     outputs:
       static: ${{ steps.classify.outputs.static }}
       docs: ${{ steps.classify.outputs.docs }}
+      vault: ${{ steps.classify.outputs.vault }}
       reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
@@ -155,30 +128,18 @@ jobs:
           fi
 
   static:
-    # The policy gate's wall time is bounded by its slowest single check, so a
-    # check that spawns a subprocess per case becomes the floor for the whole job
-    # however well the pool is packed. Two have grown that way -- the media
-    # acquisition reconciliation contract and the policy mutation harness -- and
-    # both now run beside the gate rather than inside it. This stays well above
-    # the observed runtime so a slow runner cannot cancel a passing gate the way
-    # the previous budget did.
+    # Three shards, each a runner with its own worker pool running one shard of
+    # the manifest. Why more cores rather than extraction, and why three is where
+    # it stops paying, is CLAUDE.md's "The `static` budget" and "The fifth
+    # occurrence" sections; read the gate's own slowest-check report rather than a
+    # number quoted anywhere. This timeout stays well above the observed runtime
+    # so a slow runner cannot cancel a passing gate the way the previous one did.
     #
-    # The fifth time the budget went over (#469) it was not that shape at all:
-    # the slowdown was uniform across unrelated checks, 2342s of check time was
-    # packing into a 611s wall on four workers -- 96% efficient -- and no single
-    # check was the floor. A pool that well packed is work-bound, so there was
-    # nothing to extract and nothing for POLICY_JOBS to fix; the only levers left
-    # were fewer checks or more cores. This matrix is more cores. Each leg is a
-    # runner with its own four workers running one shard of the manifest, and
-    # three is where it stops paying: the single slowest check is 247s, so no
-    # shard finishes faster than that however finely the rest is divided.
-    #
-    # Every step below runs on all three legs, the toolchain install included.
-    # That is the ~97s of non-gate work the arithmetic in #469 already priced per
-    # shard, and it is deliberate rather than merely simpler: a step conditioned
-    # on the shard number is a step that runs on one leg, and the guard in
-    # tests/ci/workflow_test.rb that no static step carries an `if` is what keeps
-    # a check from quietly becoming a check that runs a third as often.
+    # Every step below runs on all three legs, the toolchain install included, and
+    # that is deliberate rather than merely simpler: a step conditioned on the
+    # shard number is a step that runs on one leg, so tests/ci/workflow_test.rb
+    # refuses an `if` on any static step -- otherwise a check quietly becomes a
+    # check that runs a third as often.
     timeout-minutes: 45
     name: static (${{ matrix.shard }})
     needs: changes
@@ -186,11 +147,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       # Every shard reports. Failing fast would cancel the other two, so a run
-      # that broke checks in more than one shard would name only the first --
-      # which is the property the gate gave up its own stop-at-first-failure to
-      # get. The gate's path is deliberately not named in this comment: the
-      # mutation harness plants a defect by rewriting the first mention of it in
-      # this file, and a mention above the step it must reach would absorb that.
+      # that broke checks in more than one shard would name only the first. The
+      # gate's path is deliberately not named in this comment: the mutation
+      # harness plants a defect by rewriting the first mention of it in this file,
+      # and a mention above the step it must reach would absorb that.
       fail-fast: false
       matrix:
         shard: ['1', '2', '3']
@@ -217,32 +177,27 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
-          # image, so this normally installs nothing. It ran unconditionally until an
-          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
-          # on the one binary not otherwise guaranteed keeps apt off the happy path
-          # while still recovering automatically if the runner image drops it.
+          # All three ship in the ubuntu-latest image, so this normally installs
+          # nothing. Guarded because an unconditional apt-get update stalled
+          # mid-download for 161 minutes on 2026-08-19; the guard still recovers
+          # automatically if the image ever drops them.
           if ! command -v htpasswd >/dev/null 2>&1; then
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # The versions are not named here. controller-requirements.txt is what an
-          # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
-          # toolchain the documented install actually produces.
+          # Never name a version here: four jobs carry this block byte-identically,
+          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
       # The shard reaches the gate through the environment rather than by
-      # interpolating a matrix value into shell source, which is how every other
-      # matrix in this workflow passes its leg's identity. The gate refuses an
-      # identifier its manifest does not declare, so a matrix that names a shard
-      # the partition dropped is a red leg rather than a leg that runs nothing.
+      # interpolating a matrix value into shell source, as every other matrix here
+      # does. The gate refuses an identifier its manifest does not declare, so a
+      # matrix naming a shard the partition dropped is a red leg rather than a leg
+      # that runs nothing.
       - name: Check policy properties
         env:
           POLICY_SHARD: ${{ matrix.shard }}
@@ -280,19 +235,12 @@ jobs:
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
 
   docs:
-    # Documentation is a gate input, and it used to be routed as if it were inert.
-    # tests/docs_links_test.rb reads README.md and every *.md under docs/ through
-    # a glob and resolves each link against the working tree, but only ten named
-    # documents reached the gate, so a broken link anywhere else -- a plan under
-    # docs/superpowers/ -- merged green and turned main red.
-    #
-    # Sending all of docs/ to `static` would have closed that by spending fifteen
-    # minutes of Ansible toolchain on a typo fix. These checks read Markdown and
-    # the working tree and nothing else, so they run here instead: a checkout, the
-    # Ruby the runner image already ships, and under a minute. They stay
-    # registered in tests/validate-policy.sh as well, and deliberately so -- a
-    # link resolves against files the documents do not own, so a code rename has
-    # to keep running them too, and only `static` runs on a code rename.
+    # These checks read Markdown and the working tree and nothing else, so they
+    # run on a checkout and the Ruby the runner image ships rather than the
+    # fifteen minutes of Ansible toolchain `static` installs. They stay registered
+    # in tests/validate-policy.sh as well, and deliberately so: a link resolves
+    # against files the documents do not own, so a code rename has to keep running
+    # them too, and only `static` runs on a code rename.
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.docs == 'true' }}
@@ -310,19 +258,91 @@ jobs:
       - name: Check the secrets guide against the vault contract
         run: ruby tests/secrets_docs_test.rb
 
-  mutation:
-    # tests/policy_manifest_test.rb plants a defect in a throwaway copy of the
-    # repository and requires the policy set to reject it, once per mutation.
-    # There are over a hundred and fifty of them, and each one runs the whole
-    # eight-script policy set. It was the gate's floor, which no amount of packing
-    # the pool could lower: taking it out took the gate from the 24m32s it spent
-    # on 2026-08-30 to 630s, measured on a machine calibrated against this runner.
+  vault:
+    # Nothing in CI held the vault password, so nothing ever parsed the encrypted
+    # file and the gate could only prove it was still encrypted. Both variants of
+    # that blind spot shipped: an unparseable file (#555, #559) and a missing key
+    # (#172, #274). So this job runs the play the poller runs, with the poller's
+    # own arguments. A re-implemented parse-and-key-set check would be a second
+    # contract agreeing with itself while disagreeing with the host, so the step
+    # below mirrors scripts/production_auto_deploy.py's _vault_arguments, and
+    # tests/ci/workflow_test.rb imports that function and compares its output to
+    # this step's argv token for token.
     #
-    # It runs beside the gate for the same reason the reconciliation contract
-    # does: on its own runner its scripts get four cores to themselves instead of
-    # competing with ninety other checks for them. Nothing about the mutations is
-    # routed more narrowly than the gate, because a mutation is planted in a copy
-    # of the whole repository and any file can change what the policy set says.
+    # A real run, deliberately, and the reason is narrower than it reads. Measured
+    # on ansible-core 2.21.4, 2026-09-13: decryption happens at vars-load time, so
+    # --check does report #559's quote as rc=4 and a missing key as rc=2 -- it is
+    # not blind. --syntax-check is, exiting 0 on both, as do --list-tasks,
+    # --list-tags and --list-hosts. What rules --check out is that this job's whole
+    # claim is that the host's own command succeeded against this artifact, and a
+    # simulation cannot make that claim. Hence an argv pinned *exactly* rather than
+    # a denylist, which is what the next flag walks past.
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.vault == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Ansible tooling
+        run: |
+          # All three ship in the ubuntu-latest image, so this normally installs
+          # nothing. Guarded because an unconditional apt-get update stalled
+          # mid-download for 161 minutes on 2026-08-19; the guard still recovers
+          # automatically if the image ever drops them.
+          if ! command -v htpasswd >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
+          fi
+          #
+          # Never name a version here: four jobs carry this block byte-identically,
+          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+
+      - name: Validate the encrypted vault
+        env:
+          VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          # `secrets` is not in scope for a job-level `if:` -- that context carries
+          # only github, needs, vars and inputs -- so the emptiness check is a step,
+          # and it fails rather than skipping. A skip would be a green run that
+          # proved nothing, which is the state this job exists to end. The cost is
+          # stated rather than worked around: a pull request from a fork holds no
+          # secret and reds here.
+          if [ -z "$VAULT_PASSWORD" ]; then
+            echo "ANSIBLE_VAULT_PASSWORD is unset or empty." >&2
+            echo "This job decrypts inventory/group_vars/all/vault.yml and cannot run" >&2
+            echo "without it: gh secret set ANSIBLE_VAULT_PASSWORD." >&2
+            exit 1
+          fi
+          # Under $RUNNER_TEMP and never in the checkout, and the mode is set by
+          # umask before the file exists rather than by a chmod after it does.
+          # ansible-vault strips the trailing newline, so the value reaching the
+          # decrypt is the secret and nothing else.
+          umask 077
+          printf '%s\n' "$VAULT_PASSWORD" > "$RUNNER_TEMP/vault-password"
+          # Measured against a planted copy of #559's defect: the YAML parse
+          # failure reports "While parsing a block mapping did not find expected
+          # key" and no source line, at -vvv as well. Two mechanisms hold that --
+          # DataLoader redacts annotated source for vault-sourced data, and
+          # SourceContext.from_origin re-reads the file and answers "content
+          # encrypted" when it finds a $ANSIBLE_VAULT header -- so the output is
+          # not captured and filtered here.
+          ansible-playbook -i inventory/local.yml \
+            --vault-password-file "$RUNNER_TEMP/vault-password" \
+            validate-vault.yml
+
+  mutation:
+    # Extracted from the policy gate, which it was the floor of; CLAUDE.md's
+    # "The `static` budget" section carries the measurement. Nothing about the
+    # mutations is routed more narrowly than the gate, because a mutation is
+    # planted in a copy of the whole repository and any file can change what the
+    # policy set says.
     timeout-minutes: 45
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
@@ -336,51 +356,39 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
-          # image, so this normally installs nothing. It ran unconditionally until an
-          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
-          # on the one binary not otherwise guaranteed keeps apt off the happy path
-          # while still recovering automatically if the runner image drops it.
+          # All three ship in the ubuntu-latest image, so this normally installs
+          # nothing. Guarded because an unconditional apt-get update stalled
+          # mid-download for 161 minutes on 2026-08-19; the guard still recovers
+          # automatically if the image ever drops them.
           if ! command -v htpasswd >/dev/null 2>&1; then
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # The versions are not named here. controller-requirements.txt is what an
-          # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
-          # toolchain the documented install actually produces.
+          # Never name a version here: four jobs carry this block byte-identically,
+          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
 
-      # The harness syntax-checks a play in every sandbox it builds, and the
-      # policy set it runs there renders role defaults through Ansible, so this
-      # job needs the same toolchain the gate does.
+      # The harness syntax-checks a play in every sandbox it builds and renders
+      # role defaults through Ansible, so it needs the gate's toolchain.
       - name: Check policy mutation coverage
         run: ruby tests/policy_manifest_test.rb
 
   reconciliation:
-    # The media acquisition reconciliation contract is 373 Ansible runs across
-    # every relationship. Inside the policy gate it competed with ninety other
-    # checks for four cores and made that job the longest in the workflow. It
-    # then shared one runner between its three files, which only moved the
-    # contention: twelve worker threads still divided four cores. One runner per
-    # file gives each of them its own four cores, so the contract costs its
-    # slowest file rather than the sum of all three.
+    # The media acquisition reconciliation contract is 373 Ansible runs. One
+    # runner per file rather than one for all three: sharing a runner only moved
+    # the contention, since twelve worker threads still divided four cores. The
+    # contract now costs its slowest file rather than the sum of the three.
     timeout-minutes: 45
     name: reconciliation (${{ matrix.part }})
     needs: changes
-    # Routed, not gated on the policy flag. `static` is true whenever any lane
+    # Routed, not gated on the policy flag: `static` is true whenever any lane
     # runs at all, so a one-line change in roles/dozzle/ paid for all three legs.
-    # The contract reads roles/arr/, roles/downloaders/ and its own four test
-    # files, and the classifier selects it from those; the shared files it also
-    # loads -- site.yml, the inventory -- already select every lane. Anything the
-    # classifier does not recognise still selects every lane too, so a missed
-    # entry here costs time rather than coverage.
+    # The classifier selects this from roles/arr/, roles/downloaders/ and the
+    # contract's own test files.
     if: ${{ needs.changes.outputs.reconciliation == 'true' }}
     runs-on: ubuntu-latest
     strategy:
@@ -396,22 +404,17 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
-          # image, so this normally installs nothing. It ran unconditionally until an
-          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
-          # on the one binary not otherwise guaranteed keeps apt off the happy path
-          # while still recovering automatically if the runner image drops it.
+          # All three ship in the ubuntu-latest image, so this normally installs
+          # nothing. Guarded because an unconditional apt-get update stalled
+          # mid-download for 161 minutes on 2026-08-19; the guard still recovers
+          # automatically if the image ever drops them.
           if ! command -v htpasswd >/dev/null 2>&1; then
             sudo apt-get -o Acquire::Retries=3 update
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # The versions are not named here. controller-requirements.txt is what an
-          # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
-          # toolchain the documented install actually produces.
+          # Never name a version here: four jobs carry this block byte-identically,
+          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
@@ -423,44 +426,27 @@ jobs:
         run: ruby "tests/media_acquisition_reconciliation_${PART}_test.rb"
 
   toolchain:
-    # Every suite leg used to start a bare python:3.14-alpine and run apk, pip and
-    # ansible-galaxy inside it before it could converge anything -- the same
-    # toolchain installed up to seventeen times per matrix, from three registries,
-    # with no cache of any kind. One of those legs failed on 2026-08-30 with a
-    # corrupted galaxy response cache, a failure mode that only exists because the
-    # install repeats.
-    #
-    # It is built once here instead and published to ghcr.io, which the suites job
-    # already authenticates to. The tag is a digest of the harness's pins,
+    # The controller toolchain, built once and published to ghcr.io instead of
+    # installed inside every suite leg. The tag is a digest of the harness's pins,
     # tests/integration.Dockerfile and requirements.yml, so a bumped pin is a new
-    # tag rather than a stale layer and this job is a registry probe on every run
+    # tag rather than a stale layer, and this job is a registry probe on every run
     # that changes none of them. There is deliberately no actions/cache and no
-    # type=gha layer cache: a content-addressed tag only ever misses when its
-    # inputs changed, and then the layer cache would be cold too. The registry is
-    # the cache.
+    # type=gha layer cache: a content-addressed tag only misses when its inputs
+    # changed, and then the layer cache would be cold too. The registry is the
+    # cache.
     #
     # Nothing depends on this succeeding. tests/integration.sh builds the image
     # locally when it cannot pull one, and installs the toolchain inside the run
-    # when it cannot build one, which is exactly what it did before this job
-    # existed. That is why the suites matrix below drops the implicit success gate
-    # `needs` carries, and why tests/ci/validate_results.rb names this job
-    # non-blocking: a registry hiccup must cost time rather than a verdict. The
-    # aggregate check reports the failure instead of failing on it.
+    # when it cannot build one. That is why the suites matrix below drops the
+    # implicit success gate `needs` carries, and why tests/ci/validate_results.rb
+    # names this job non-blocking: a registry hiccup must cost time rather than a
+    # verdict, so the aggregate check reports the failure instead of failing on it.
     timeout-minutes: 20
-    # No `needs`, so this starts with `changes` rather than behind it. The suites
-    # matrix depends on this job, so every lane's start is this job's finish, and
-    # waiting for a classification it barely reads was most of that: on run
-    # 34454075921 `changes` finished at 4.8 minutes, this job started at 7.4 and
-    # its publish step took **0 seconds** -- the tag is a digest over the harness's
-    # own pins and was already in the registry -- so eighteen lanes were held 2.6
-    # minutes behind a probe that could have run from the first second.
-    #
-    # What that costs is the `suites != '[]'` term, which cannot be read without
-    # the edge: a run that dispatches no suite now probes the registry too. That
-    # probe is the 0 seconds above whenever the pins are unchanged, and a run that
-    # changes them -- requirements.yml, tests/integration.Dockerfile, the pins in
-    # tests/integration.sh -- is routed to the suites that would have selected it
-    # anyway, so the term was very nearly always true when it mattered.
+    # No `needs`, so this starts with `changes` rather than behind it -- every
+    # lane's start is this job's finish, and it was ordering a registry probe
+    # behind a classification it barely reads. CLAUDE.md's "`toolchain` no longer
+    # waits for `changes`" carries the measurement and what dropping the
+    # `suites != '[]'` term costs.
     #
     # A fork's GITHUB_TOKEN is read-only, so no packages: write scope exists for it
     # to publish with. Skipping is the honest outcome: the fork's suites then take
@@ -491,14 +477,10 @@ jobs:
         run: tests/integration.sh
 
   suites:
-    # 90 rather than 60 because idempotence-check's own work grew when its
-    # guard started doing its job. Phases 2 and 3 of an untagged run were
-    # converging 88 of 1495 tasks against a `--tags ""` that selects only the
-    # `always` pre_tasks; correcting that puts the lane at a projected 35-45
-    # minutes against an observed 19.4-20.7 before it, and a registry that
-    # rate-limits one image can add another five through the pre-pull's own
-    # ladder. 60 left no room for that, and a lane killed at its ceiling would
-    # read as the fix regressing rather than as the guard working.
+    # 90 rather than 60 because idempotence-check's own work grew when its guard
+    # started doing its job, and a lane killed at its ceiling would read as the fix
+    # regressing rather than as the guard working. CLAUDE.md, "A guard that was
+    # green while proving 6% of what it claimed", carries the numbers.
     timeout-minutes: 90
     name: ${{ matrix.suite }}
     needs:
@@ -511,17 +493,13 @@ jobs:
     # the matrix as an empty selection rather than as a skip.
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.suites != '[]' }}
     runs-on: ubuntu-latest
-    # This is the only job that talks to a container registry, so the extra scope
-    # is granted here rather than at the top level. A job-level block REPLACES the
-    # workflow-level one instead of merging with it, which is why contents: read
-    # is restated: without it actions/checkout loses the scope it needs.
-    #
-    # packages: read is the narrowest scope that names a registry read. Every
-    # ghcr.io image the plays pull is a third-party public package (immich-app,
-    # henrygd, advplyr, paperless-ngx), and public packages need no token scope at
-    # all, so this is a statement of intent rather than a functional requirement
-    # today. It is what keeps a future move to a package this repository owns from
-    # failing with a permissions error instead of working.
+    # A job-level block REPLACES the workflow-level one instead of merging with
+    # it, which is why contents: read is restated: without it actions/checkout
+    # loses the scope it needs. packages: read is intent rather than a functional
+    # requirement -- every ghcr.io image the plays pull is a third-party public
+    # package, which needs no token scope at all -- and is what keeps a future
+    # move to a package this repository owns from failing with a permissions
+    # error instead of working.
     permissions:
       contents: read
       packages: read
@@ -537,45 +515,35 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # Anonymous ghcr.io pulls draw on an allowance scoped to the runner's IP,
-      # which is shared with every other GitHub Actions job on that address. That
-      # is why a converge that pulls nothing unusual can still be told
-      # "toomanyrequests: retry-after: 218.093us, allowed: 44000/minute" and fail,
-      # as PR #84's smoke and idempotence-check legs were on 2026-08-21 while
-      # pulling ghcr.io/immich-app/immich-server. Authenticating with the job's own
-      # GITHUB_TOKEN moves the pulls onto a per-account allowance this repository
-      # is the only consumer of.
+      # Anonymous ghcr.io pulls draw on an allowance scoped to the runner's IP and
+      # shared with every other GitHub Actions job on that address, which is why a
+      # converge that pulls nothing unusual can still fail with "toomanyrequests"
+      # (PR #84, 2026-08-21). The job's own GITHUB_TOKEN moves the pulls onto a
+      # per-account allowance this repository is the only consumer of.
       - name: Authenticate to GitHub Container Registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # lscr.io is linuxserver.io's front door onto that same registry: its
-      # authentication challenge names realm="https://ghcr.io/token"
-      # service="ghcr.io", and a GitHub credential is what redeems it. The Docker
-      # CLI keys credentials by the host it was asked for, so the login above does
-      # not reach a lscr.io pull, and seven of the images the plays pull are
-      # lscr.io ones -- every arr and every downloader. Without this they stay on
-      # the anonymous per-IP allowance, which is the one that refused three
-      # unrelated PRs on 2026-08-28.
+      # lscr.io is linuxserver.io's front door onto that same registry -- its
+      # challenge names realm="https://ghcr.io/token" service="ghcr.io", so a
+      # GitHub credential redeems it. The Docker CLI keys credentials by the host
+      # it was asked for, so the login above does not reach an lscr.io pull, and
+      # seven of the images the plays pull are lscr.io ones: every arr and every
+      # downloader. Without this they stay on the anonymous per-IP allowance.
       - name: Authenticate to the linuxserver.io registry
         uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: lscr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Docker Hub is the last registry still pulled anonymously, and eleven of the
-      # images the plays pull are docker.io ones. Anonymous Hub pulls are 100 per
-      # six hours scoped to the runner's IPv4 address or IPv6 /64 -- the same shared
-      # bucket that refused the ghcr.io pulls above. A free personal account is 200
-      # per six hours that only this repository spends, so the isolation matters
-      # more than the doubling.
-      #
-      # This is the one login that needs a stored credential: GITHUB_TOKEN is not a
-      # Docker Hub account. `docker login docker.io` resolves to
-      # https://registry-1.docker.io/v2/, so naming the host reads the same as every
-      # other login here and keeps the Docker CLI's credential key correct.
+      # Eleven of the images the plays pull are docker.io ones. Anonymous Hub pulls
+      # are 100 per six hours scoped to the runner's IPv4 address or IPv6 /64 --
+      # the same shared bucket as above -- against 200 for a free account that only
+      # this repository spends, so the isolation matters more than the doubling.
+      # This is the one login needing a stored credential: GITHUB_TOKEN is not a
+      # Docker Hub account.
       #
       # Guarded on the secret being set. Authentication is an optimization over the
       # anonymous allowance, never a precondition for it, so a checkout without the
@@ -614,6 +582,7 @@ jobs:
       - changes
       - static
       - docs
+      - vault
       - mutation
       - reconciliation
       - toolchain
@@ -630,6 +599,7 @@ jobs:
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
             docs="${{ needs.docs.result }}" \
+            vault="${{ needs.vault.result }}" \
             mutation="${{ needs.mutation.result }}" \
             reconciliation="${{ needs.reconciliation.result }}" \
             toolchain="${{ needs.toolchain.result }}" \
@@ -640,22 +610,13 @@ jobs:
       # other route is one line of shard 1 of the policy gate's manifest, whose
       # preamble carries the other half of this comment.
       #
-      # tests/ci/workflow_test.rb pins this workflow's shape: that `static`
-      # exists, that its `if:` matches its classifier output, that its matrix
-      # names every shard the gate declares. Run only from the gate, it is a
-      # check inside the job it guards -- gate `static` on `if: false`, delete
-      # the job, or empty its matrix, and the objection stops running along with
-      # the thing it objects to. This job then sees `static` as `skipped`, which
-      # is legitimately allowed because the classifier skips it on diffs that
-      # cannot reach it, so the run goes green with the guard never having run.
-      #
-      # It runs here because this job cannot be skipped -- `if: ${{ always() }}`
-      # above -- so no edit to another job's condition, matrix or existence can
-      # suppress it. It needs nothing but the checkout above and the Ruby the
-      # runner image ships, and takes about a second.
-      #
-      # Each copy is what catches the loss of the other, and the check asserts
-      # both directions itself: that this step is here, and that the gate still
-      # registers it exactly once.
+      # tests/ci/workflow_test.rb pins this workflow's shape, `static` included.
+      # Run only from the gate it is a check inside the job it guards: gate
+      # `static` on `if: false`, delete it, or empty its matrix, and the objection
+      # stops running along with the thing it objects to, leaving `static` as a
+      # legitimately-allowed `skipped` and the run green. It runs here because this
+      # job cannot be skipped, so no edit to another job's condition, matrix or
+      # existence can suppress it, and it costs a second. Each copy catches the
+      # loss of the other, and the check asserts both directions itself.
       - name: Pin the workflow's own shape
         run: ruby tests/ci/workflow_test.rb
