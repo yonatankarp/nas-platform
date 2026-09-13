@@ -21,7 +21,7 @@ import tempfile
 import time
 from typing import Iterator
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode, urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
@@ -1344,6 +1344,18 @@ def publish(config: Config, notification: dict) -> bool:
     return result.returncode == 0
 
 
+def _healthchecks_fail_url(url: str) -> str:
+    """A ping URL's /fail sibling: on the path, before any query (#606).
+
+    Appending to the whole string put it after a query -- `uuid?rid=42/fail` --
+    which healthchecks.io reads as a plain success ping. The fragment is never
+    sent anyway, so it is dropped rather than left to carry the suffix.
+    """
+
+    parts = urlsplit(url)
+    return urlunsplit(parts._replace(path=f"{parts.path.rstrip('/')}/fail", fragment=""))
+
+
 def ping_healthchecks(config: Config, url: str, failed: bool) -> None:
     """Report one run to an external dead-man's switch. Never raises (#606).
 
@@ -1362,7 +1374,7 @@ def ping_healthchecks(config: Config, url: str, failed: bool) -> None:
 
     if not url:
         return
-    target = f"{url.rstrip('/')}/fail" if failed else url
+    target = _healthchecks_fail_url(url) if failed else url
     try:
         delivered = subprocess.run(
             [

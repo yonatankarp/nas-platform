@@ -3810,6 +3810,27 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
 
         self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
+    def test_fail_goes_on_the_path_before_any_query(self):
+        fail_url = production_auto_deploy._healthchecks_fail_url
+        for url, expected in (
+            ("https://hc-ping.com/uuid", "https://hc-ping.com/uuid/fail"),
+            ("https://hc-ping.com/uuid/", "https://hc-ping.com/uuid/fail"),
+            ("https://hc-ping.com/uuid?rid=42", "https://hc-ping.com/uuid/fail?rid=42"),
+            ("https://hc-ping.com/uuid#note", "https://hc-ping.com/uuid/fail"),
+            ("https://hc-ping.com/key/slug/?create=1#note",
+             "https://hc-ping.com/key/slug/fail?create=1"),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(fail_url(url), expected)
+
+    def test_a_failed_tick_with_a_query_pings_fail_rather_than_success(self):
+        # `uuid?rid=42/fail` is a success ping with an odd run id.
+        self.configure(healthchecks_poller_ping_url=self.POLLER_URL + "?rid=42")
+        with mock.patch.object(production_auto_deploy, "poll", return_value=False):
+            self.main("--poll")
+
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail?rid=42"])
+
     def test_the_ping_runs_after_the_deployment_lock_is_released(self):
         config = self.loaded_config()
         with self.eligible(MAIN_SHA), mock.patch.object(
