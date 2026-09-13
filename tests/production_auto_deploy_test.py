@@ -3432,6 +3432,63 @@ class CliTest(PollerTestCase):
         text = self.status_text(runs=(self.GREEN_RUN,))
         self.assertIn("already attempted and failed", text)
         self.assertIn(f"--retry-failed {MAIN_SHA}", text)
+        # Read-only: asking about the lock must not create it.
+        self.assertFalse(production_auto_deploy.lock_path(config).exists())
+
+    def hold_lock(self):
+        """Hold the deployment lock from another process, as a running poll does."""
+
+        holder = subprocess.Popen(
+            [sys.executable, "-c",
+             "import sys\n"
+             f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
+             "import production_auto_deploy as p\n"
+             f"config = p.load_config({str(self.config_path)!r})\n"
+             "with p.deployment_lock(config) as acquired:\n"
+             "    print(acquired, flush=True)\n"
+             "    sys.stdin.read()\n"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.stdin.close)
+        self.addCleanup(holder.stdout.close)
+        self.assertEqual(holder.stdout.readline().strip(), "True")
+        return holder
+
+    def test_status_reports_an_attempt_under_a_held_lock_as_in_progress(self):
+        """poll() records the attempt before it deploys, so a converging
+        revision must not read as a failure to retry."""
+
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        holder = self.hold_lock()
+        record = production_auto_deploy.lock_path(config).read_bytes()
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn(f"in progress: {MAIN_SHA[:9]} (holder poll (pid {holder.pid}", text)
+        self.assertNotIn("already attempted and failed", text)
+        self.assertNotIn("--retry-failed", text)
+        # Read-only: the holder's record is untouched.
+        self.assertEqual(production_auto_deploy.lock_path(config).read_bytes(), record)
+
+    def test_status_reports_a_finished_attempt_under_a_free_lock_as_failed(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        with production_auto_deploy.deployment_lock(config) as acquired:
+            self.assertTrue(acquired)
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("already attempted and failed", text)
+        self.assertIn(f"--retry-failed {MAIN_SHA}", text)
+        with production_auto_deploy.deployment_lock(config) as acquired:
+            self.assertTrue(acquired, "--status must not leave the lock held")
+
+    def test_status_reports_a_deployed_head_as_deployed_under_a_held_lock(self):
+        config = self.loaded_config()
+        production_auto_deploy.record_attempt(config, MAIN_SHA)
+        production_auto_deploy.record_success(config, MAIN_SHA, "2026-08-21T10:00:00Z")
+        self.hold_lock()
+        text = self.status_text(runs=(self.GREEN_RUN,))
+        self.assertIn("is deployed", text)
+        self.assertNotIn("in progress", text)
 
     def test_status_names_the_ambiguous_run_trap(self):
         text = self.status_text(runs=(self.GREEN_RUN, self.GREEN_RUN))
