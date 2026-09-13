@@ -192,7 +192,7 @@ STATIC_ROWS = [
     name: "a Pushover agent sending with the wrong half of the pair",
     break: lambda { |root|
       edit_yaml(root, "roles/seerr/defaults/main.yml") do |d|
-        d["seerr_pushover_user_key"] = "{{ vault_pushover_token }}"
+        d["seerr_pushover_user_key"] = "{{ vault_pushover_alerts_token }}"
       end
     },
     expects: "Seerr's Pushover agent must send with the vault's Pushover pair"
@@ -279,7 +279,7 @@ def vault_document
     "vault_seerr_api_key" => API_KEY,
     "vault_arr_radarr_api_key" => RADARR_KEY,
     "vault_arr_sonarr_api_key" => SONARR_KEY,
-    "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_pushover_alerts_token" => PUSHOVER_TOKEN,
     "vault_pushover_user_key" => PUSHOVER_USER_KEY,
     "vault_managed_jellyfin_users" => HOUSEHOLD.map { |name| { "username" => name } }
   }
@@ -639,7 +639,7 @@ RECONCILE_ROWS = [
 
 def reconcile_variables(port)
   { "seerr_api" => "http://127.0.0.1:#{port}/api/v1", "platform_public_host" => "seerr.invalid",
-    "vault_seerr_api_key" => API_KEY, "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_seerr_api_key" => API_KEY, "vault_pushover_alerts_token" => PUSHOVER_TOKEN,
     "vault_pushover_user_key" => PUSHOVER_USER_KEY }
 end
 

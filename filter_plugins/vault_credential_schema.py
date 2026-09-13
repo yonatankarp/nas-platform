@@ -106,18 +106,27 @@ OPENSUBTITLES_PASSWORD_PLACEHOLDERS = ("example-opensubtitles-password",
 COMICVINE_API_KEY_PLACEHOLDERS = ("example-comicvine-api-key",
                                   "replace-with-comicvine-api-key")
 
-# The Pushover application token and user key belong to a third-party account at
-# pushover.net, so the platform cannot generate either. They are the pair Beszel's
-# shoutrrr URL is built from, and neither has a shape this repository can vouch
-# for: Pushover documents both as 30-character opaque strings, and a pattern rule
+# The Pushover user key and the four application tokens belong to a third-party
+# account at pushover.net, so the platform cannot generate any of them. One user
+# key is shared; each token is its own application -- Alerts (Beszel), Containers
+# (the Dozzle relay and the per-service deployment reports), Deployments (the run
+# summary) and Media (Seerr). None has a shape this repository can vouch for:
+# Pushover documents them as 30-character opaque strings, and a pattern rule
 # guessed from that would be evaluated before every converge -- on a five-minute
 # poller tick, with the fix locked inside an encrypted file -- so the rules stay
 # NONEMPTY plus the stand-in refusal, the way the OpenSubtitles and ComicVine
 # credentials are. A stand-in reaching a deployment means the operator never
-# supplied the real pair, and Pushover then refuses every alert Beszel sends with
-# nothing on this platform observing that it did.
-PUSHOVER_TOKEN_PLACEHOLDERS = ("example-pushover-token",
-                               "replace-with-pushover-token")
+# supplied the real value, and Pushover then refuses every message sent with it
+# with nothing on this platform observing that it did. Each key keeps its own
+# stand-in tuple so a refusal is attributable to the one key that carried it.
+PUSHOVER_ALERTS_TOKEN_PLACEHOLDERS = ("example-pushover-alerts-token",
+                                      "replace-with-pushover-alerts-token")
+PUSHOVER_CONTAINERS_TOKEN_PLACEHOLDERS = ("example-pushover-containers-token",
+                                          "replace-with-pushover-containers-token")
+PUSHOVER_DEPLOYMENTS_TOKEN_PLACEHOLDERS = ("example-pushover-deployments-token",
+                                           "replace-with-pushover-deployments-token")
+PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS = ("example-pushover-media-token",
+                                     "replace-with-pushover-media-token")
 PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
                                   "replace-with-pushover-user-key")
 
@@ -183,9 +192,21 @@ CREDENTIAL_RULES = {
     "vault_ntfy_beszel_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_deploy_token": ((PATTERN, NTFY_TOKEN),),
     "vault_ntfy_seerr_token": ((PATTERN, NTFY_TOKEN),),
-    "vault_pushover_token": (
+    "vault_pushover_alerts_token": (
         (NONEMPTY, None),
-        (NOT_PLACEHOLDER, PUSHOVER_TOKEN_PLACEHOLDERS),
+        (NOT_PLACEHOLDER, PUSHOVER_ALERTS_TOKEN_PLACEHOLDERS),
+    ),
+    "vault_pushover_containers_token": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_CONTAINERS_TOKEN_PLACEHOLDERS),
+    ),
+    "vault_pushover_deployments_token": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_DEPLOYMENTS_TOKEN_PLACEHOLDERS),
+    ),
+    "vault_pushover_media_token": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS),
     ),
     "vault_pushover_user_key": (
         (NONEMPTY, None),

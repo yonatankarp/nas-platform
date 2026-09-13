@@ -651,7 +651,7 @@ publisher = vault.fetch("vault_ntfy_dozzle_token")
 end
 
 if MODE == "notify"
-  pushover_token = vault.fetch("vault_pushover_token")
+  pushover_token = vault.fetch("vault_pushover_alerts_token")
   pushover_user_key = vault.fetch("vault_pushover_user_key")
   image = deployed_ntfy_image
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"

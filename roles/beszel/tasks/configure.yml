@@ -304,7 +304,7 @@
         method: POST
         body_format: form-urlencoded
         body:
-          token: "{{ vault_pushover_token }}"
+          token: "{{ vault_pushover_alerts_token }}"
           user: "{{ vault_pushover_user_key }}"
         # Both halves of a real answer are data here rather than a module
         # failure: 200 is Pushover accepting the pair, 400 is Pushover refusing
@@ -393,7 +393,7 @@
         that:
           - not (beszel_pushover_answered | bool) or (beszel_pushover_accepted | bool)
         fail_msg: >-
-          Pushover refused the managed credentials. Check vault_pushover_token
+          Pushover refused the managed credentials. Check vault_pushover_alerts_token
           against the application's own page at pushover.net and
           vault_pushover_user_key against the account dashboard; a token
           regenerated in the console has to be re-authored in vault. Until it is,

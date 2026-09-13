@@ -127,7 +127,7 @@ if failures.empty?
     pushover.is_a?(Hash) && pushover["enabled"] == true &&
     pushover.dig("options", "accessToken") == "{{ seerr_pushover_access_token }}" &&
     pushover.dig("options", "userToken") == "{{ seerr_pushover_user_key }}" &&
-    defaults["seerr_pushover_access_token"] == "{{ vault_pushover_token }}" &&
+    defaults["seerr_pushover_access_token"] == "{{ vault_pushover_alerts_token }}" &&
     defaults["seerr_pushover_user_key"] == "{{ vault_pushover_user_key }}"
   # Request events moved to Pushover in #558; an ntfy agent left on publishes
   # every one of them twice.

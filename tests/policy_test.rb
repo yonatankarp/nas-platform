@@ -1987,7 +1987,7 @@ if publish_task
         "deployment report must POST to ntfy_deployment_pushover_api_url, which the lanes redirect")
   check(failures, request["body_format"] == "form-urlencoded",
         "deployment report must be a form POST, which is what Pushover's API reads")
-  check(failures, body["token"].to_s.include?("vault_pushover_token") &&
+  check(failures, body["token"].to_s.include?("vault_pushover_alerts_token") &&
                   body["user"].to_s.include?("vault_pushover_user_key"),
         "deployment report must publish with the vault's Pushover pair")
   check(failures, body["title"].to_s.include?("truncate(250") &&

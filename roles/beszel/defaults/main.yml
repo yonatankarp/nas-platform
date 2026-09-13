@@ -71,7 +71,7 @@ beszel_alerts:
 # with the parameters Pushover's own documentation attaches to priority 2. What
 # Pushover then does with such a message is unmeasured here.
 beszel_notification_url: >-
-  pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/
+  pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/
 
 # Pushover's own credential check, which is the only thing on this platform that
 # can tell a working notification chain from a stored string. Pushover documents

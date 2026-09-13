@@ -78,7 +78,7 @@ if missing.empty?
   fail_msg = verify.dig("ansible.builtin.assert", "fail_msg").to_s
   check(failures, !fail_msg.include?("beszel_pushover_validation"),
         "#{VERIFY} fail_msg must not reach into the response; it is evaluated on the passing path too")
-  check(failures, !fail_msg.match?(/vault_pushover_(token|user_key)\s*\}\}/),
+  check(failures, !fail_msg.match?(/vault_pushover_(alerts_token|user_key)\s*\}\}/),
         "#{VERIFY} fail_msg must name the credentials without printing them")
 
   # THE HARNESS HAS TO INHERIT THE ROLE'S TAGS OR IT PROVES NOTHING, and this is
@@ -108,7 +108,7 @@ if missing.empty?
     run_playbook(shipped,
                  { "beszel_pushover_validation_url" => url,
                    "platform_download_timeout" => 10,
-                   "vault_pushover_token" => "probe-token-never-valid",
+                   "vault_pushover_alerts_token" => "probe-token-never-valid",
                    "vault_pushover_user_key" => "probe-user-key-never-valid" }.merge(extra),
                  "--tags", tags)
   end

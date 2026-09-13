@@ -131,14 +131,20 @@ vault_ntfy_deploy_token: tk_01010101010101010101010101010
 vault_ntfy_seerr_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
 vault_ntfy_seerr_token: tk_10101010101010101010101010101
 
-# The Pushover application token and user key belong to a third-party account at
-# pushover.net and are never generated here. Both are 30-character opaque
-# strings Pushover issues -- the application token from the application's own
-# page, the user key from the account's dashboard -- and the credential contract
-# checks only that they are present and are not the stand-ins below, because a
-# shape rule this repository cannot vouch for would refuse a real pair on every
-# poller tick. Beszel's notification webhook is built from the two.
-vault_pushover_token: example-pushover-token
+# The Pushover user key and the four application tokens belong to a third-party
+# account at pushover.net and are never generated here. All are 30-character
+# opaque strings Pushover issues -- each application token from that
+# application's own page, the user key from the account's dashboard -- and the
+# credential contract checks only that they are present and are not the
+# stand-ins below, because a shape rule this repository cannot vouch for would
+# refuse a real value on every poller tick. One user key, four applications:
+# Alerts (Beszel's webhook), Containers (the Dozzle alert relay and the
+# per-service deployment reports), Deployments (the run summary) and Media
+# (Seerr's request events).
+vault_pushover_alerts_token: example-pushover-alerts-token
+vault_pushover_containers_token: example-pushover-containers-token
+vault_pushover_deployments_token: example-pushover-deployments-token
+vault_pushover_media_token: example-pushover-media-token
 vault_pushover_user_key: example-pushover-user-key
 
 # The Beszel hub keypair is authored before first start. The agent key contains

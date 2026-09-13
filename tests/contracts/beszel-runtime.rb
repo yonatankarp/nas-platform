@@ -333,7 +333,7 @@ else
   # values rather than read back from anywhere -- the credential direction the
   # whole platform holds to. `shoutrrr` is the URL's required user component;
   # Pushover itself takes the application token and the user key.
-  expected_url = "pushover://shoutrrr:#{vault.fetch('vault_pushover_token')}@#{vault.fetch('vault_pushover_user_key')}/"
+  expected_url = "pushover://shoutrrr:#{vault.fetch('vault_pushover_alerts_token')}@#{vault.fetch('vault_pushover_user_key')}/"
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)
   fail_contract("managed Pushover webhook differs") unless notification_settings["webhooks"] == [expected_url]

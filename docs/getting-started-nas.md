@@ -231,7 +231,7 @@ service-specific credential checks from the
 against the production deployment without exercising external integrations.
 Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
 webhook is Pushover, and since the Dozzle alert relay moved, every container
-alert is too — both built from `vault_pushover_token` and
+alert is too — both built from `vault_pushover_alerts_token` and
 `vault_pushover_user_key`, as are the deployment reports. Pushover has no disposable equivalent of a topic, so
 a test notification reaches the household's real devices. Send one only when you
 mean to.
@@ -306,7 +306,7 @@ converge.
 
 A service reports its own deployment through Pushover at priority -1, a badge
 with no sound — `Komga deployed (recreated)` — only when Compose actually
-replaced its containers. The controller sends it with `vault_pushover_token` and
+replaced its containers. The controller sends it with `vault_pushover_alerts_token` and
 `vault_pushover_user_key`, so no service needs a credential of its own inside
 its image.
 

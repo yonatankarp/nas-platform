@@ -428,7 +428,10 @@ vault_ntfy_deploy_password_hash: '$(bcrypt_password "$ntfy_deploy_password")'
 vault_ntfy_deploy_token: '$(random_token)'
 vault_ntfy_seerr_password_hash: '$(bcrypt_password "$ntfy_seerr_password")'
 vault_ntfy_seerr_token: '$(random_token)'
-vault_pushover_token: ephemeral-pushover-token
+vault_pushover_alerts_token: ephemeral-pushover-alerts-token
+vault_pushover_containers_token: ephemeral-pushover-containers-token
+vault_pushover_deployments_token: ephemeral-pushover-deployments-token
+vault_pushover_media_token: ephemeral-pushover-media-token
 vault_pushover_user_key: ephemeral-pushover-user-key
 vault_paperless_admin_username: ephemeral-admin
 vault_paperless_admin_password: '$(random_password)'

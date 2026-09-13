@@ -99,7 +99,7 @@ argument_specs:
       # publisher on this platform uses. Seerr's agent sends nothing when either
       # value is empty, so a missing pair would silence request events without
       # failing anything.
-      vault_pushover_token:
+      vault_pushover_alerts_token:
         type: str
         required: true
       vault_pushover_user_key:

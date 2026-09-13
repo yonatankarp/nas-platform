@@ -591,7 +591,7 @@ STACK_ROWS = [
     edit: lambda { |root|
       edit_text(root, "roles/dozzle/templates/env.j2") do |source|
         source.sub("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}",
-                   "PUSHOVER_USER_KEY={{ vault_pushover_token }}")
+                   "PUSHOVER_USER_KEY={{ vault_pushover_alerts_token }}")
       end
     },
     expects: "the relay secret is not a credential of its own"

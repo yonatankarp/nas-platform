@@ -121,7 +121,7 @@ def check_delivery_form(failures, label, request, priority)
                          .start_with?("application/x-www-form-urlencoded"),
         "#{label} must be a form POST, which is what Pushover's API reads")
   check(failures, form["token"] == TOKEN && form["user"] == USER_KEY,
-        "#{label} must carry vault_pushover_token as token and vault_pushover_user_key as user")
+        "#{label} must carry vault_pushover_alerts_token as token and vault_pushover_user_key as user")
   check(failures, form["priority"] == priority,
         "#{label} must be sent at Pushover priority #{priority}, got #{form['priority'].inspect}")
   check(failures, (form.keys & %w[topic tags html]).empty?,
@@ -161,7 +161,7 @@ with_controller_repository do |directory, repository, previous, current|
       "platform_release_id" => current,
       "ntfy_deployment_summary_checkout" => repository,
       "ntfy_deployment_pushover_api_url" => endpoint(port),
-      "vault_pushover_token" => TOKEN,
+      "vault_pushover_alerts_token" => TOKEN,
       "vault_pushover_user_key" => USER_KEY
     }.merge(overrides)
   end
@@ -286,7 +286,7 @@ def report_variables(url, overrides)
   {
     "platform_release_id" => RELEASE,
     "ntfy_deployment_pushover_api_url" => url,
-    "vault_pushover_token" => TOKEN,
+    "vault_pushover_alerts_token" => TOKEN,
     "vault_pushover_user_key" => USER_KEY,
     "ntfy_deployment_report_service" => "Komga",
     "ntfy_deployment_report_changed" => false
@@ -398,8 +398,8 @@ end
 with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
   stdout, stderr, = run_report(report_variables(endpoint(port), RECREATED))
   output = stdout + stderr
-  check(failures, output.include?("vault_pushover_token") && output.include?("vault_pushover_user_key"),
-        "a refusal must name vault_pushover_token and vault_pushover_user_key")
+  check(failures, output.include?("vault_pushover_alerts_token") && output.include?("vault_pushover_user_key"),
+        "a refusal must name vault_pushover_alerts_token and vault_pushover_user_key")
 end
 
 closed_port = begin
