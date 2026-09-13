@@ -335,6 +335,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/bazarr_provider_schema_test.rb --self-test
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_bazarr_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_credential_schema_test.py
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/vault_artifact_identity_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_response_schema_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
