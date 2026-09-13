@@ -63,9 +63,8 @@
       {%- set code = ntfy_pushover_delivery.status | default(-1) | int -%}
       {%- set body = ntfy_pushover_delivery.json | default(none) -%}
       {%- set answer = body.get('status') if body is mapping else none -%}
-      {%- if code == 200 and answer == 1 -%}accepted
-      {%- elif 400 <= code <= 499 and code != 429 and answer == 0 -%}refused
-      {%- else -%}unanswered{%- endif -%}
+      {%- if code == 200 and answer == 1 -%}accepted{%- elif 400 <= code <= 499
+      and code != 429 and answer == 0 -%}refused{%- else -%}unanswered{%- endif -%}
 
 # The non-verdict, said out loud and as its own task: no_log suppresses an
 # assert's success_msg but not its fail_msg (measured in #598), so a redacted

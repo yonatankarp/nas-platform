@@ -125,7 +125,7 @@ argument_specs:
     description:
       - Called by every service role after its Compose deployment, so the caller
         needs no notification endpoint or credential of its own. Delivered
-        through Pushover; the ntfy role name is a leftover until #558 stage 3.
+        through Pushover; the ntfy role name is a leftover until stage 3 of issue 558.
       - Publishes only when Compose recreated the service. What the whole run
         deployed is deployment_summary's one message, so an unchanged service
         has nothing left to add.
