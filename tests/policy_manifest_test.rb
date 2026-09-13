@@ -1928,6 +1928,40 @@ expect_failure(failures, "poller role defaults emptied",
   File.write(File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml"), "")
 end
 
+# The half of the same subject that a readable, valid, plausible defaults file
+# still empties (#597). #599's refusal reaches only `document.is_a?(Hash)`; here
+# the file parses to a complete mapping and one key's suffix simply stops
+# matching, so `production_auto_deploy_launcher_path` contributes nothing and
+# the role derives two fragments where it declares three.
+#
+# THE RENAMED KEY RATHER THAN `--- {}`, and only one row for both. The per-role
+# floor is a count, so the state that leaves 2 of 3 is strictly harder than the
+# state that leaves 0 of 3: a floor that catches this one catches the empty
+# mapping by construction, and a second row would buy a mutation's worth of
+# gate time to re-prove the same comparison. The empty mapping is measured in
+# the commit that added the floor rather than pinned here.
+#
+# THE MESSAGE IS THE BINDING ASSERTION, for the reason the row above records and
+# for one more of its own. Losing `nas-platform-deploy` also shrinks
+# `referencing_files`, so the pinned-reference equality check further down fails
+# too and the exit status alone would be satisfied by a neighbour. Measured,
+# because that is the difference between this row and a vacuous one: with only
+# the floor reverted and this plant applied, policy_deployment_test.rb exits 1
+# and prints `site.yml must not depend on ...` while `derived fewer than 3`
+# appears zero times -- so the row fails with `missing failure message` rather
+# than passing on the neighbour's refusal. With the floor restored the sentence
+# is back and the exit is unchanged. It is pinned on the prose and not
+# on the interpolated `{"production_auto_deploy" => 2}`, because Hash#inspect
+# gained spaces around `=>` in Ruby 3.4 and the row must not depend on which
+# interpreter the sandbox got.
+expect_failure(failures, "poller role defaults renamed a contributing key",
+               "derived fewer than 3 distinctive path fragments from defaults that parsed",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "production_auto_deploy", "defaults", "main.yml")
+  File.write(path, File.read(path).sub("production_auto_deploy_launcher_path:",
+                                       "production_auto_deploy_launcher_file:"))
+end
+
 expect_failure(failures, "fresh-root probe regressed to deployment root",
                "fresh-install preflight must probe the existing validated nas_docker_root",
                detected_by: %i[platform]) do |root|
