@@ -38,15 +38,23 @@ services:
     # deployed here -- a rollback is not merely a lost feature, it is that CVE
     # back in force.
     #
-    # VAULTWARDEN MIGRATES ITS OWN SQLITE STORE WHEN IT STARTS, which puts it in
-    # #511's hazard class alongside Bindery, Immich, Paperless-ngx and
-    # Nextcloud: the newer image writes a schema the older one declines to open,
-    # and it declines INSIDE the container, so the symptom is a crash loop every
-    # five minutes rather than a failure a play reports. The pin is therefore
-    # one-way in both senses at once. roles/image_downgrade_guard is the control
-    # that runs on the host and refuses a pin older than one that has already
-    # run against this store; it is included by roles/vaultwarden before the
-    # deployment for exactly that reason.
+    # VAULTWARDEN MIGRATES ITS OWN SQLITE STORE WHEN IT STARTS, but it is not in
+    # #511's hazard class, and that is why its minors and patches automerge
+    # while Bindery's, Immich's, Paperless-ngx's and Nextcloud's do not. Bindery
+    # refuses a store newer than itself. Vaultwarden does not: src/db/mod.rs
+    # calls diesel's run_pending_migrations, which applies what the binary knows
+    # is missing and checks nothing else, and every SQLite migration from 1.35.0
+    # to 1.37.3 was additive -- the archives table and two nullable sso_auth
+    # columns -- so an older image still starts on a newer store. Vaultwarden
+    # has stayed on 1.x, so a Renovate minor is its feature release; withholding
+    # minors would withhold every release. What that gives up: a future
+    # migration that drops or renames a column would break a rollback, and
+    # nothing reads the migration before the merge. Two controls still cover
+    # that release. roles/image_downgrade_guard refuses a pin older than one
+    # that has already run against this store, which also keeps the CVE floor
+    # above from coming back; it is included by roles/vaultwarden before the
+    # deployment. And roles/vaultwarden/tasks/pre_upgrade_backup.yml copies the
+    # store and rsa_key* before a pinned upgrade.
     image: docker.io/vaultwarden/server:1.37.2@sha256:094b5689ed81549bd293418395c7cf495ae9d960fc2d4928cef2083ef913d912
     cpus: 0.5
     labels:
