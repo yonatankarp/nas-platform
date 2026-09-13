@@ -24,18 +24,22 @@ module PolicySupport
   # its name inverts that service's prefix (vault_managed_komga_users, not
   # vault_komga_), and paperless-ngx's carries the role name where its credentials
   # carry `paperless`, so pinning them per service would take two exceptions to
-  # the prefix rule and buy nothing. The Pushover pair is the second kind -- an
-  # account at a third party that the platform pushes into whichever services
-  # publish alerts, Beszel being the first, so it is named here rather than under
-  # any one of them. The healthchecks.io ping URLs are the same kind with no
-  # service at all: the deployment poller reports to them, and it is installed
-  # by its own play rather than listed in the manifest.
+  # the prefix rule and buy nothing. The Pushover keys are the second kind -- one
+  # user key and four application tokens of an account at a third party, each
+  # token pushed into whichever publishers use that application (Beszel, the
+  # Dozzle relay and the ntfy role's deployment reports, the run summary, Seerr),
+  # so they are named here rather than under any one service. The healthchecks.io
+  # ping URLs are the same kind with no service at all: the deployment poller
+  # reports to them, and it is installed by its own play rather than listed in
+  # the manifest.
   GLOBAL_VAULT_KEYS = %w[
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
     vault_managed_jellyfin_users vault_managed_komga_users
     vault_managed_ntfy_users vault_managed_paperless_ngx_users
-    vault_pushover_token vault_pushover_user_key
+    vault_pushover_alerts_token vault_pushover_containers_token
+    vault_pushover_deployments_token vault_pushover_media_token
+    vault_pushover_user_key
     vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url
   ].freeze
   # The services that hold no credential at all, which is a designed property

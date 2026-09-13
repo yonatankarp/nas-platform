@@ -23,6 +23,15 @@ dozzle_compose_project_name: >-
 # tests/mac/lib.sh carry the override and say why.
 dozzle_pushover_api_url: https://api.pushover.net/1/messages.json
 
+# Where an alert's tap-through link points: Dozzle's own address, to which the
+# relay appends /container/<id>. Built from platform_public_host, the tailnet/LAN
+# name clients already use for every service here, so the link opens only on a
+# device that can reach the NAS; off the tailnet the alert still arrives and the
+# link does not load. A base with a path, query or userinfo -- or none at all --
+# costs the alerts their link rather than the relay its start-up, and
+# tests/dozzle_alert_relay_test.py holds this default to the relay's validator.
+dozzle_alert_relay_link_base: "http://{{ platform_public_host }}:{{ dozzle_port }}"
+
 # The relay's daily ceiling, and why it exists at all. Both health rules below
 # carry cooldown: 0, and the relay publishes on every transition in either
 # direction, so without a ceiling the publish rate is Docker's transition rate

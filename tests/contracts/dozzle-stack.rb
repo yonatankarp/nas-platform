@@ -47,6 +47,7 @@ abort "Dozzle contract failed: alert relay environment differs" unless
     "ALERT_RELAY_TOKEN" => "${ALERT_RELAY_TOKEN:?}",
     "ALERT_RELAY_PORT" => "${ALERT_RELAY_PORT:?}",
     "PUSHOVER_API_URL" => "${PUSHOVER_API_URL:?}",
+    "ALERT_RELAY_LINK_BASE" => "${ALERT_RELAY_LINK_BASE:?}",
     "PUSHOVER_TOKEN" => "${PUSHOVER_TOKEN:?}",
     "PUSHOVER_USER_KEY" => "${PUSHOVER_USER_KEY:?}",
     "ALERT_DAILY_CONTAINER_CEILING" => "${ALERT_DAILY_CONTAINER_CEILING:?}",
@@ -163,7 +164,7 @@ abort "Dozzle contract failed: environment does not render the single relay list
 # different vault credentials rather than the same one twice.
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
-  env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_token }}") &&
+  env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}") &&
   env_template.include?("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}")
 
 # The publish endpoint is a variable in every layer it passes through, and that
@@ -177,6 +178,13 @@ relay_defaults = File.read(ARGV.fetch(5))
 abort "Dozzle contract failed: the relay publish endpoint is not redirectable" unless
   env_template.include?("PUSHOVER_API_URL={{ dozzle_pushover_api_url }}") &&
   relay_defaults.match?(/^dozzle_pushover_api_url:\s+https:\/\/api\.pushover\.net\/1\/messages\.json$/)
+
+# The tap-through link goes to the address clients already reach Dozzle at, from
+# the two values that define it, rather than a literal host a lane or a rename
+# would leave pointing somewhere else.
+abort "Dozzle contract failed: the alert link is not built from the public host and Dozzle port" unless
+  env_template.include?("ALERT_RELAY_LINK_BASE={{ dozzle_alert_relay_link_base }}") &&
+  relay_defaults.include?(%(dozzle_alert_relay_link_base: "http://{{ platform_public_host }}:{{ dozzle_port }}"\n))
 
 # The ceiling reaches the relay from one home apiece, the way the listener port
 # does. A literal in the environment file would be a second copy of a number the

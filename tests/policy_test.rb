@@ -1954,7 +1954,7 @@ end
 # The report itself must stay a report. Both the per-service report and the run
 # summary deliver through roles/ntfy/tasks/pushover_publish.yml (#558), so the
 # two callers must reach it only outside --check, and the delivery itself must
-# be a redacted, changeless form POST of the vault's Pushover pair to the
+# be a redacted, changeless form POST of the caller's application token and the user key to the
 # redirectable endpoint every test lane overrides.
 report_path = File.join(ROOT, "roles/ntfy/tasks/deployment_report.yml")
 summary_path = File.join(ROOT, "roles/ntfy/tasks/deployment_summary.yml")
@@ -1975,6 +1975,12 @@ end
 
   check(failures, Array(publish["when"]).any? { |c| c.to_s.include?("not ansible_check_mode") },
         "#{label} must not publish under --check")
+  # Each message belongs to one Pushover application (#558): the per-service
+  # report is container lifecycle, the summary is the release record.
+  application_token = { report_path => "vault_pushover_containers_token",
+                        summary_path => "vault_pushover_deployments_token" }.fetch(path)
+  check(failures, publish.dig("vars", "ntfy_pushover_token_variable") == application_token,
+        "#{label} must send with #{application_token}")
 end
 publish_tasks = File.file?(publish_path) ? YAML.safe_load_file(publish_path, aliases: true) : []
 publish_task = Array(publish_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.uri") }
@@ -1987,9 +1993,9 @@ if publish_task
         "deployment report must POST to ntfy_deployment_pushover_api_url, which the lanes redirect")
   check(failures, request["body_format"] == "form-urlencoded",
         "deployment report must be a form POST, which is what Pushover's API reads")
-  check(failures, body["token"].to_s.include?("vault_pushover_token") &&
+  check(failures, body["token"] == "{{ lookup('ansible.builtin.vars', ntfy_pushover_token_variable) }}" &&
                   body["user"].to_s.include?("vault_pushover_user_key"),
-        "deployment report must publish with the vault's Pushover pair")
+        "deployment report must publish with the application token its caller names and the vault's user key")
   check(failures, body["title"].to_s.include?("truncate(250") &&
                   body["message"].to_s.include?("truncate(1024"),
         "deployment report must bound title and message to Pushover's 250/1024 limits")

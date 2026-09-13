@@ -379,7 +379,7 @@ says.
   Dozzle's data directory as a whole, Beszel's hub private key, Seerr's
   `settings.json` and the `settings.old.json` beside it — both mode 0644,
   holding the Seerr API key, the Jellyfin token Seerr minted for itself, the
-  session secret and the Pushover pair every notifying service shares — and the first-run configuration Ansible seeds and then
+  session secret, the Pushover Media application token and the user key every Pushover application on the platform delivers to — and the first-run configuration Ansible seeds and then
   leaves alone — SABnzbd's
   `sabnzbd/config/sabnzbd.ini` (administrator username, password and API key),
   the Radarr, Sonarr and Prowlarr `config/config.xml` files (API keys), and

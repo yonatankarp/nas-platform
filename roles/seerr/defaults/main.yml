@@ -69,8 +69,9 @@ seerr_owner_permissions: 2
 seerr_household_permissions: 160
 
 # Seerr's own notification agents. Request events go to Pushover through
-# Seerr's native agent, with the vault's Pushover pair -- the same account
-# Beszel, the Dozzle relay and the deployment reports use. POST
+# Seerr's native agent, with the Media application's token and the account's
+# user key -- the user key Beszel, the Dozzle relay and the deployment reports
+# deliver to as well, each through an application of its own. POST
 # /api/v1/settings/notifications/<agent> assigns the request body to the agent
 # verbatim, and a container start then merges the stored object over upstream's
 # defaults -- measured for ntfy, where a body without embedPoster lost it from
@@ -89,7 +90,7 @@ seerr_household_permissions: 160
 # for: tests/mac/lib.sh blanks them, because that lane converges with the
 # operator's real vault and its manual review raises a request.
 seerr_notification_types: 152
-seerr_pushover_access_token: "{{ vault_pushover_token }}"
+seerr_pushover_access_token: "{{ vault_pushover_media_token }}"
 seerr_pushover_user_key: "{{ vault_pushover_user_key }}"
 seerr_pushover_declaration:
   enabled: true

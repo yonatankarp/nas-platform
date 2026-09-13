@@ -192,10 +192,20 @@ STATIC_ROWS = [
     name: "a Pushover agent sending with the wrong half of the pair",
     break: lambda { |root|
       edit_yaml(root, "roles/seerr/defaults/main.yml") do |d|
-        d["seerr_pushover_user_key"] = "{{ vault_pushover_token }}"
+        d["seerr_pushover_user_key"] = "{{ vault_pushover_media_token }}"
       end
     },
-    expects: "Seerr's Pushover agent must send with the vault's Pushover pair"
+    expects: "Seerr's Pushover agent must send with the Media application token and the vault's user key"
+  },
+  {
+    # The Alerts application is Beszel's; request events belong on Media.
+    name: "a Pushover agent sending with the Alerts application token",
+    break: lambda { |root|
+      edit_yaml(root, "roles/seerr/defaults/main.yml") do |d|
+        d["seerr_pushover_access_token"] = "{{ vault_pushover_alerts_token }}"
+      end
+    },
+    expects: "Seerr's Pushover agent must send with the Media application token and the vault's user key"
   },
   {
     name: "an ntfy agent declared on",
@@ -233,6 +243,9 @@ API_KEY = "seerr-contract-api-key-0000000000"
 RADARR_KEY = "radarr-contract-api-key-000000000"
 SONARR_KEY = "sonarr-contract-api-key-000000000"
 PUSHOVER_TOKEN = "seerr-contract-pushover-token-never-valid"
+# Another application's token in the same vault, so an agent holding the wrong
+# one is distinguishable from an agent holding the right one.
+PUSHOVER_ALERTS_TOKEN = "seerr-contract-pushover-alerts-token-never-valid"
 PUSHOVER_USER_KEY = "seerr-contract-pushover-user-key-never-valid"
 # Only what a Seerr converged before #558 still stores; the vault no longer
 # hands it to the role.
@@ -279,7 +292,8 @@ def vault_document
     "vault_seerr_api_key" => API_KEY,
     "vault_arr_radarr_api_key" => RADARR_KEY,
     "vault_arr_sonarr_api_key" => SONARR_KEY,
-    "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_pushover_media_token" => PUSHOVER_TOKEN,
+    "vault_pushover_alerts_token" => PUSHOVER_ALERTS_TOKEN,
     "vault_pushover_user_key" => PUSHOVER_USER_KEY,
     "vault_managed_jellyfin_users" => HOUSEHOLD.map { |name| { "username" => name } }
   }
@@ -511,6 +525,11 @@ RUNTIME_ROWS = [
     expects: "Seerr's Pushover agent does not carry the declared Pushover pair"
   },
   {
+    name: "a Pushover agent carrying the Alerts application token",
+    given: { pushover_access_token: PUSHOVER_ALERTS_TOKEN },
+    expects: "Seerr's Pushover agent does not carry the declared Pushover pair"
+  },
+  {
     name: "a lane that blanked the pair",
     given: { pushover_blanked: true, pushover_access_token: "", pushover_user_key: "" },
     expects: nil
@@ -591,7 +610,7 @@ NTFY_BY_HAND = NTFY_DEFAULT.merge(
 MAC_BLANKING = ["-e", '{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""}'].freeze
 RECONCILE_MAIN = { "apiKey" => API_KEY, "defaultPermissions" => 0, "newPlexLogin" => false,
                    "localLogin" => false, "applicationUrl" => "http://seerr.invalid:5055" }.freeze
-CREDENTIALS = [API_KEY, PUSHOVER_TOKEN, PUSHOVER_USER_KEY, NTFY_TOKEN].freeze
+CREDENTIALS = [API_KEY, PUSHOVER_TOKEN, PUSHOVER_ALERTS_TOKEN, PUSHOVER_USER_KEY, NTFY_TOKEN].freeze
 PLANNED_PUSHOVER = "A live run would declare Seerr's Pushover agent enabled"
 PLANNED_NTFY = "A live run would turn Seerr's ntfy agent off"
 
@@ -639,7 +658,8 @@ RECONCILE_ROWS = [
 
 def reconcile_variables(port)
   { "seerr_api" => "http://127.0.0.1:#{port}/api/v1", "platform_public_host" => "seerr.invalid",
-    "vault_seerr_api_key" => API_KEY, "vault_pushover_token" => PUSHOVER_TOKEN,
+    "vault_seerr_api_key" => API_KEY, "vault_pushover_media_token" => PUSHOVER_TOKEN,
+    "vault_pushover_alerts_token" => PUSHOVER_ALERTS_TOKEN,
     "vault_pushover_user_key" => PUSHOVER_USER_KEY }
 end
 
@@ -1005,6 +1025,13 @@ PROGRAM_MUTATIONS = [
     rows: ["a Pushover agent sending with the wrong half of the pair"]
   },
   {
+    label: "the Media application token declaration check",
+    program: :static,
+    from: 'defaults["seerr_pushover_access_token"] == "{{ vault_pushover_media_token }}"',
+    to: "true",
+    rows: ["a Pushover agent sending with the Alerts application token"]
+  },
+  {
     label: "the ntfy agent declared-off check",
     program: :static,
     from: 'defaults.dig("seerr_ntfy_declaration", "enabled") == false',
@@ -1201,6 +1228,7 @@ PROGRAM_MUTATIONS = [
     from: '] == expected_pair',
     to: '] == expected_pair || true',
     rows: ["a Pushover agent carrying a user key the vault never authored",
+           "a Pushover agent carrying the Alerts application token",
            "a lane that blanked the pair holding the vault's anyway"]
   },
   {

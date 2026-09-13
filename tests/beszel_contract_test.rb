@@ -253,6 +253,25 @@ STATIC_ROWS = [
     expects: "telemetry polling timeout differs"
   },
   {
+    # Delivered, but into the recipient's quiet hours.
+    name: "a notification webhook that lost its priority",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/defaults/main.yml",
+                  "{{ vault_pushover_user_key }}/?priority=1",
+                  "{{ vault_pushover_user_key }}/")
+    },
+    expects: "notification webhook is not the Alerts application at priority 1"
+  },
+  {
+    name: "a notification webhook sending with the Containers application",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/defaults/main.yml",
+                  "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@",
+                  "pushover://shoutrrr:{{ vault_pushover_containers_token }}@")
+    },
+    expects: "notification webhook is not the Alerts application at priority 1"
+  },
+  {
     # Scoped to the one variable rather than to the whole file, which is what
     # the program's own comment says it is doing: the inference is planted with
     # different spacing from the retired original, so a literal-expression
@@ -927,7 +946,7 @@ VAULT = {
   "vault_beszel_app_user_password" => APP_PASSWORD,
   "vault_beszel_universal_token" => UNIVERSAL_TOKEN,
   "vault_ntfy_beszel_token" => NTFY_TOKEN,
-  "vault_pushover_token" => PUSHOVER_TOKEN,
+  "vault_pushover_alerts_token" => PUSHOVER_TOKEN,
   "vault_pushover_user_key" => PUSHOVER_USER_KEY,
   "vault_ntfy_admin_user" => NTFY_ADMIN.fetch(0),
   "vault_ntfy_admin_password" => NTFY_ADMIN.fetch(1)
@@ -937,7 +956,7 @@ VAULT = {
 # stored value against. No port: the Pushover form carries neither a host of this
 # platform's nor one of the fixture's.
 def expected_webhook
-  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"
+  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/?priority=1"
 end
 
 # What the notification proof sends instead, which is a different question --
@@ -1206,7 +1225,12 @@ RUNTIME_ROWS = [
   # and only a well-formed URL of the managed shape can do that.
   { name: "a webhook pointing at a Pushover account other than the managed one",
     mode: "verify",
-    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/"] },
+    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/?priority=1"] },
+    expects: "managed Pushover webhook differs" },
+  # The managed account without the priority: it delivers, but into the
+  # recipient's quiet hours, which is the silence priority 1 exists to break.
+  { name: "a webhook for the managed account that lost its priority", mode: "verify",
+    state: { webhooks: ["pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"] },
     expects: "managed Pushover webhook differs" },
   {
     # PocketBase returns a relation's JSON column as a string on some routes and

@@ -188,7 +188,7 @@ fail_contract("Seerr's Pushover agent does not send request events") unless push
 expected_pair = if PUSHOVER_BLANKED
                   ["", ""]
                 else
-                  [vault.fetch("vault_pushover_token"), vault.fetch("vault_pushover_user_key")]
+                  [vault.fetch("vault_pushover_media_token"), vault.fetch("vault_pushover_user_key")]
                 end
 fail_contract("Seerr's Pushover agent does not carry the declared Pushover pair") unless
   [pushover.dig("options", "accessToken"), pushover.dig("options", "userToken")] == expected_pair

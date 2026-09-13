@@ -111,10 +111,10 @@ argument_specs:
         description: >-
           Pushover message API the deployment notifications are POSTed to.
           Read by the ntfy deployment report this entry point includes.
-      vault_pushover_token:
+      vault_pushover_containers_token:
         type: str
         required: true
-        description: Pushover application token the notifications are sent with.
+        description: Token of the Pushover Containers application the service report is sent with.
       vault_pushover_user_key:
         type: str
         required: true
@@ -150,10 +150,10 @@ argument_specs:
         description: >-
           Pushover message API the deployment notifications are POSTed to.
           Every test lane overrides it so nothing reaches real devices.
-      vault_pushover_token:
+      vault_pushover_containers_token:
         type: str
         required: true
-        description: Pushover application token the notifications are sent with.
+        description: Token of the Pushover Containers application the service report is sent with.
       vault_pushover_user_key:
         type: str
         required: true
@@ -208,10 +208,10 @@ argument_specs:
         description: >-
           Pushover message API the deployment notifications are POSTed to.
           Every test lane overrides it so nothing reaches real devices.
-      vault_pushover_token:
+      vault_pushover_deployments_token:
         type: str
         required: true
-        description: Pushover application token the notifications are sent with.
+        description: Token of the Pushover Deployments application the run summary is sent with.
       vault_pushover_user_key:
         type: str
         required: true

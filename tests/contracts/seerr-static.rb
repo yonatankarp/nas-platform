@@ -123,11 +123,11 @@ if failures.empty?
   # Seerr's Pushover agent sends nothing when disabled or when either credential
   # is empty, and fails silently either way.
   pushover = defaults["seerr_pushover_declaration"]
-  failures << "Seerr's Pushover agent must send with the vault's Pushover pair" unless
+  failures << "Seerr's Pushover agent must send with the Media application token and the vault's user key" unless
     pushover.is_a?(Hash) && pushover["enabled"] == true &&
     pushover.dig("options", "accessToken") == "{{ seerr_pushover_access_token }}" &&
     pushover.dig("options", "userToken") == "{{ seerr_pushover_user_key }}" &&
-    defaults["seerr_pushover_access_token"] == "{{ vault_pushover_token }}" &&
+    defaults["seerr_pushover_access_token"] == "{{ vault_pushover_media_token }}" &&
     defaults["seerr_pushover_user_key"] == "{{ vault_pushover_user_key }}"
   # Request events moved to Pushover in #558; an ntfy agent left on publishes
   # every one of them twice.

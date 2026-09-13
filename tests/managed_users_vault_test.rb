@@ -164,7 +164,9 @@ check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
 %w[
   vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
   vault_kapowarr_comicvine_api_key
-  vault_pushover_token vault_pushover_user_key
+  vault_pushover_alerts_token vault_pushover_containers_token
+  vault_pushover_deployments_token vault_pushover_media_token
+  vault_pushover_user_key
 ].each do |key|
   check(failures, vault[key].is_a?(String) && !vault[key].empty?,
         "vault example must declare #{key}")
@@ -382,7 +384,9 @@ vault_options = spec.dig("argument_specs", "main", "options") || {}
 %w[
   vault_jellyfin_opensubtitles_username vault_jellyfin_opensubtitles_password
   vault_kapowarr_comicvine_api_key
-  vault_pushover_token vault_pushover_user_key
+  vault_pushover_alerts_token vault_pushover_containers_token
+  vault_pushover_deployments_token vault_pushover_media_token
+  vault_pushover_user_key
 ].each do |key|
   check(failures,
         vault_options[key] == { "type" => "str", "required" => true },
@@ -588,14 +592,20 @@ check(failures,
           "(NOT_PLACEHOLDER, COMICVINE_API_KEY_PLACEHOLDERS)"
         ),
       "vault contract must reject the documented ComicVine placeholder")
-# Pushover issues both halves to a human account as well, and they are the pair
-# roles/beszel builds its notification webhook from. A stand-in that reached a
-# deployment would leave Beszel sending alerts Pushover rejects, with nothing on
-# this platform observing the rejection -- the OpenSubtitles failure mode
-# exactly. Each name is checked in both its places, the rule and the literal, so
+# Pushover issues the user key and all four application tokens to a human
+# account as well, and each token is the one a publisher sends with. A stand-in
+# that reached a deployment would leave that publisher sending messages Pushover
+# rejects, with nothing on this platform observing the rejection -- the
+# OpenSubtitles failure mode exactly. Each name is checked in both its places, the rule and the literal, so
 # a rule that loses its NOT_PLACEHOLDER clause fails here rather than quietly
 # admitting the example file.
-{ "vault_pushover_token" => %w[PUSHOVER_TOKEN_PLACEHOLDERS example-pushover-token],
+{ "vault_pushover_alerts_token" => %w[PUSHOVER_ALERTS_TOKEN_PLACEHOLDERS example-pushover-alerts-token],
+  "vault_pushover_containers_token" =>
+    %w[PUSHOVER_CONTAINERS_TOKEN_PLACEHOLDERS example-pushover-containers-token],
+  "vault_pushover_deployments_token" =>
+    %w[PUSHOVER_DEPLOYMENTS_TOKEN_PLACEHOLDERS example-pushover-deployments-token],
+  "vault_pushover_media_token" =>
+    %w[PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS example-pushover-media-token],
   "vault_pushover_user_key" =>
     %w[PUSHOVER_USER_KEY_PLACEHOLDERS example-pushover-user-key] }.each do |key, (constant, literal)|
   check(failures,
@@ -616,8 +626,8 @@ end
 policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
 # The eight lists stay in the policy source rather than in
 # tests/expected/<service>.yml, for the reason GLOBAL_VAULT_KEYS states: their names
-# invert the per-service prefix that file's entries must carry. The Pushover pair
-# shares the list, so this pin asserts membership rather than the list's whole
+# invert the per-service prefix that file's entries must carry. The Pushover keys
+# share the list, so this pin asserts membership rather than the list's whole
 # contents; GLOBAL_VAULT_KEYS is concatenated into EXPECTED_VAULT_KEYS, so pinning
 # it here still pins the full expected set.
 global_vault_keys = policy[/GLOBAL_VAULT_KEYS = %w\[([^\]]*)\]\.freeze/m, 1].to_s.split
@@ -670,7 +680,10 @@ runtime_vault = duplicate(vault)
 runtime_vault["vault_jellyfin_opensubtitles_username"] = "runtime-opensubtitles-user"
 runtime_vault["vault_jellyfin_opensubtitles_password"] = "runtime-opensubtitles-password"
 runtime_vault["vault_kapowarr_comicvine_api_key"] = "runtime-comicvine-api-key"
-runtime_vault["vault_pushover_token"] = "runtime-pushover-token"
+runtime_vault["vault_pushover_alerts_token"] = "runtime-pushover-alerts-token"
+runtime_vault["vault_pushover_containers_token"] = "runtime-pushover-containers-token"
+runtime_vault["vault_pushover_deployments_token"] = "runtime-pushover-deployments-token"
+runtime_vault["vault_pushover_media_token"] = "runtime-pushover-media-token"
 runtime_vault["vault_pushover_user_key"] = "runtime-pushover-user-key"
 runtime_vault["vault_healthchecks_poller_ping_url"] = "https://hc-ping.invalid/runtime-poller"
 runtime_vault["vault_healthchecks_verify_ping_url"] = "https://hc-ping.invalid/runtime-verify"
@@ -690,11 +703,14 @@ comicvine_placeholder["vault_kapowarr_comicvine_api_key"] =
   vault["vault_kapowarr_comicvine_api_key"]
 expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_placeholder,
                       "runtime-opensubtitles-password")
-# One Pushover half at a time, for the same attribution reason: with the other
-# half runtime-valued, a refusal can only be this one. Both are exercised because
-# the two rules are separate entries carrying separate placeholder tuples, and a
-# pair checked only through one of them would let the other lose its clause.
-{ "vault_pushover_token" => "documented Pushover application token placeholder",
+# One Pushover key at a time, for the same attribution reason: with the others
+# runtime-valued, a refusal can only be this one. All five are exercised because
+# the rules are separate entries carrying separate placeholder tuples, and a key
+# checked only through another's rule would let its own lose its clause.
+{ "vault_pushover_alerts_token" => "documented Pushover Alerts application token placeholder",
+  "vault_pushover_containers_token" => "documented Pushover Containers application token placeholder",
+  "vault_pushover_deployments_token" => "documented Pushover Deployments application token placeholder",
+  "vault_pushover_media_token" => "documented Pushover Media application token placeholder",
   "vault_pushover_user_key" => "documented Pushover user key placeholder" }.each do |key, label|
   pushover_placeholder = duplicate(runtime_vault)
   pushover_placeholder[key] = vault[key]

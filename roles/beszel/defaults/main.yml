@@ -44,7 +44,7 @@ beszel_alerts:
     value: 85
     min: 15
 
-# Shoutrrr URL. Built from the Pushover application token and user key in vault,
+# Shoutrrr URL. Built from the Alerts application token and the user key in vault,
 # so the value Beszel stores is authored in one place rather than copied between
 # two web interfaces -- the same property the ntfy form had, over a transport
 # that reaches a phone without the NAS being reachable from it. Pushover itself
@@ -54,24 +54,33 @@ beszel_alerts:
 # is accepted just the same, measured against this pin. It is kept because an
 # empty user component reads as a typo, not because anything requires it.
 #
-# Priority is deliberately not set, and nothing here says what Pushover does
-# with one: the measurement below routed the API host to loopback, so only the
-# library's own verdict was ever visible.
+# This is the Alerts application (vault_pushover_alerts_token): host and platform
+# problems, silent while healthy. Priority 1, which bypasses the recipient's quiet
+# hours without an acknowledgement loop, because a host threshold breach
+# overnight is worth waking a phone for.
 #
-# Beszel 0.19.0 vendors github.com/nicholas-fedor/shoutrrr, NOT
-# containrrr/shoutrrr. Measured against this pin: priority omitted, `?priority=1`
-# and `?priority=2` are all accepted and carried through to the API call, and
-# only `?priority=200` is refused, by int8 parsing. The vendored fork imposes no
-# range. containrrr's -1..1 cap is the widely cited one, applies to the other
-# fork, and is what an earlier revision of this comment wrongly asserted.
+# KNOWN AND ACCEPTED: Beszel sends its recovery notice ("... below threshold")
+# through this same URL, so a recovery also rings at priority 1. Beszel builds
+# both from one stored webhook and has no per-event priority, and routing Beszel
+# through the relay to separate them is out of scope for #558.
 #
-# That fork's Pushover config also carries no retry or expire key -- asked for
+# How the query reaches Pushover, read from source at the pins rather than
+# assumed. Beszel 0.19.0's go.mod requires github.com/nicholas-fedor/shoutrrr
+# v0.19.0, NOT containrrr/shoutrrr. Beszel's SendShoutrrrAlert
+# (internal/alerts/alerts.go) parses this URL, takes its existing query, Adds
+# `title` to it and re-encodes it, so `priority` survives beside the title. The
+# fork's pkg/services/push/pushover/pushover_config.go declares
+# `Priority int8 key:"priority"` and setURL feeds every query key through the
+# config resolver; pushover.go's sendToDevice then sets the form's `priority`
+# only when it lies in -2..1. So 1 reaches the API. 2 would be parsed and then
+# silently NOT sent, which is what an earlier revision of this comment got wrong
+# when it said 2 was "carried through to the API call"; 200 is refused by int8
+# parsing. That gate, and the fork carrying no retry or expire key -- asked for
 # one it answers `not a valid config key: expire (valid keys: [devices
-# encryptionkey key priority title])` -- so a priority set here cannot be paired
-# with the parameters Pushover's own documentation attaches to priority 2. What
-# Pushover then does with such a message is unmeasured here.
+# encryptionkey key priority title])` -- are why the emergency priority is only
+# reachable through the Dozzle relay, which POSTs the API itself.
 beszel_notification_url: >-
-  pushover://shoutrrr:{{ vault_pushover_token }}@{{ vault_pushover_user_key }}/
+  pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1
 
 # Pushover's own credential check, which is the only thing on this platform that
 # can tell a working notification chain from a stored string. Pushover documents

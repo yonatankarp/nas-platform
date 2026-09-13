@@ -82,10 +82,13 @@
 # Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
 # 2b. A refused publish fails the converge on purpose, exactly as the
 # per-service report does; an unreachable Pushover does not. Normal priority,
-# above the quiet per-service detail.
+# above the quiet per-service detail, and the Deployments application, which
+# carries nothing but this one message per release. Plain text on purpose: the
+# poller's own richer message replaces this one in a later stage of #558.
 - name: Publish the deployment summary
   ansible.builtin.include_tasks: pushover_publish.yml
   vars:
+    ntfy_pushover_token_variable: vault_pushover_deployments_token
     ntfy_pushover_title: >-
       {{ ntfy_deployment_summary_changes
          | deployment_report_headline(ntfy_deployment_summary_commits) }}

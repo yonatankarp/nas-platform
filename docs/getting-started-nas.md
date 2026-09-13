@@ -231,8 +231,11 @@ service-specific credential checks from the
 against the production deployment without exercising external integrations.
 Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
 webhook is Pushover, and since the Dozzle alert relay moved, every container
-alert is too — both built from `vault_pushover_token` and
-`vault_pushover_user_key`, as are the deployment reports. Pushover has no disposable equivalent of a topic, so
+alert is too. They are separate Pushover applications on one account: Beszel
+sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
+the per-service deployment reports with Containers, the run summary with
+Deployments and Seerr with Media, all to the one `vault_pushover_user_key`.
+Pushover has no disposable equivalent of a topic, so
 a test notification reaches the household's real devices. Send one only when you
 mean to.
 
@@ -304,11 +307,12 @@ id alone, and the phone then fetches the body from your server. An uncached
 proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
-A service reports its own deployment through Pushover at priority -1, a badge
-with no sound — `Komga deployed (recreated)` — only when Compose actually
-replaced its containers. The controller sends it with `vault_pushover_token` and
-`vault_pushover_user_key`, so no service needs a credential of its own inside
-its image.
+A service reports its own deployment through Pushover's Containers application
+at priority -1, a badge with no sound — `Komga deployed (recreated)` — only when
+Compose actually replaced its containers, and the message expires from the
+device after a day. The controller sends it with the Containers application's
+token and the account's user key, so no service needs a credential of its own
+inside its image.
 
 A service the run left running unchanged says nothing. It used to report
 `already current` so that silence could not be mistaken for a service that was
@@ -322,8 +326,8 @@ Pushover's monthly quota in the order of hundreds of messages.
 A run that recreates nothing therefore publishes nothing, which also keeps a
 selective converge and a re-run of the installed revision silent.
 
-After every service role, a single run-level summary follows through Pushover
-at priority 0, above the per-service detail. It diffs the
+After every service role, a single run-level summary follows through Pushover's
+Deployments application at priority 0, above the per-service detail. It diffs the
 manifest of the release the deployment replaced against the one it installed,
 so it names the versions each image moved between and the commit subjects the
 release carries — readable on a phone with no checkout at hand, where a
@@ -332,7 +336,7 @@ actually moved, and reaching it means the whole run converged. Pushover caps a
 title at 250 characters and a message at 1024, so a long summary is cut with a
 trailing `…` rather than refused. A report or summary Pushover authoritatively
 refuses — a 4xx carrying its own `status: 0`, which is what a revoked or
-mistyped pair produces — fails the run there rather than going unnoticed until
+mistyped token or user key produces — fails the run there rather than going unnoticed until
 an alert is missed. Anything that is not such an answer — Pushover unreachable,
 a 5xx, the monthly quota exhausted, a proxy's page — is reported as unverified
 delivery and fails nothing, because the services have already converged.
