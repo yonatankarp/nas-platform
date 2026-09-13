@@ -601,11 +601,17 @@ so verification pauses until the next successful deployment. It takes the
 deployment lock without waiting, and a deployment already holding it is skipped
 rather than waited for, since that deployment verifies itself. Output goes to
 `logs/verify.log` and `logs/verify-mdraid.log`, overwritten each run. The
-services get 30 minutes and the array check 10, so the lock is held at most 40.
+services get 30 minutes and the array check 10, so the lock is held for roughly
+40 minutes at most, plus the time its notifications take. A run that uses its
+whole budget from 03:37 on a Sunday still holds the lock when the 04:00 image
+prune has waited its fifteen minutes, so that week's prune is skipped.
 
 Each check pages on its own: a failure publishes once to `nas-critical`
 (`Verify failed`, or `RAID arrays degraded`) and a recovery once to
-`nas-deployment`; an unchanged result publishes nothing. The last results live
+`nas-deployment`. The array run shares `verify.yml`'s setup -- Docker modules,
+vault, GPU, Compose files -- so when it fails without the array check's own
+mismatch message in its log it pages `RAID array check could not run` instead,
+and its return is `RAID array check runs again` rather than a recovery; an unchanged result publishes nothing. The last results live
 in `state/verify-verdict` and `state/verify-verdict-mdraid`, each written only
 once its notice was delivered, so an undelivered one is retried on the next run. A failing verification never touches
 the deployment record and never holds back a poll.
