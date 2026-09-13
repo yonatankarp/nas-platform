@@ -449,11 +449,15 @@ STATIC_ROWS = [
   },
   {
     # A disk declared on the host with no Compose slot is the silent drop the
-    # slot design exists to refuse.
+    # slot design exists to refuse. Deleted from Compose rather than added to
+    # inventory: a longer inventory list also trips the slot guard check below,
+    # which would leave this row unable to prove the slot check on its own.
     name: "an inventory SATA disk with no Compose slot",
     break: lambda { |root|
-      mutate_text(root, "inventory/group_vars/nas_hosts/main.yml",
-                  "  - /dev/sdc\n", "  - /dev/sdc\n  - /dev/sdd\n")
+      mutate_yaml(root, "services/beszel/compose.yml") do |document|
+        document.fetch("services").fetch("agent-intel").fetch("devices")
+                .reject! { |device| device.include?("NAS_SMART_SATA_DEVICE_3") }
+      end
     },
     expects: "NAS Intel S.M.A.R.T. device slots differ from inventory"
   },
@@ -2035,6 +2039,19 @@ STATIC_MUTATIONS = [
     to: "nil unless",
     rows: ["an Intel agent bound to some other render device",
            "an inventory render device path the compose definition cannot use"] },
+  { label: "the S.M.A.R.T. slot check",
+    from: 'refuse("NAS Intel S.M.A.R.T. device slots differ from inventory") unless',
+    to: "nil unless",
+    rows: ["an inventory SATA disk with no Compose slot",
+           "an NVMe slot mapped read-write"] },
+  { label: "the S.M.A.R.T. capability check",
+    from: 'refuse("NAS Intel agent lacks the S.M.A.R.T. capabilities") unless',
+    to: "nil unless",
+    rows: ["an Intel agent without the NVMe passthrough capability"] },
+  { label: "the S.M.A.R.T. slot guard check",
+    from: 'refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless',
+    to: "nil unless",
+    rows: ["a role slot guard that no longer counts the NVMe disks"] },
   { label: "the agent capacity mount check",
     from: 'refuse("agent capacity mounts differ") unless expected_mounts.all?',
     to: "nil unless expected_mounts.all?",
