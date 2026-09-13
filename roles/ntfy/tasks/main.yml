@@ -338,8 +338,10 @@
 # also returns once anonymous reads are denied, so it cannot tell a working
 # write-only token from a broken one. The token that matters most here is
 # dozzle's, which nothing else exercises end to end; beszel proves its own
-# webhook and the deploy publisher is proven by the deployment report failing
-# the converge when publishing is refused.
+# webhook. The deploy publisher is no longer proven by any converge: the
+# deployment report and summary that used to fail the run on a refused publish
+# go to Pushover since #558 stage 2b, so a broken deploy token now surfaces only
+# when the poller or the image prune tries to publish with it.
 #
 # Published to the verification topic, which no managed user may declare access
 # to and no device is subscribed to, so the proof reaches nobody. Cache and

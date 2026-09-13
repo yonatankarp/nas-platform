@@ -232,7 +232,7 @@ against the production deployment without exercising external integrations.
 Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
 webhook is Pushover, and since the Dozzle alert relay moved, every container
 alert is too — both built from `vault_pushover_token` and
-`vault_pushover_user_key`. Pushover has no disposable equivalent of a topic, so
+`vault_pushover_user_key`, as are the deployment reports. Pushover has no disposable equivalent of a topic, so
 a test notification reaches the household's real devices. Send one only when you
 mean to.
 
@@ -285,8 +285,9 @@ release, and a deployment poller that has gone blind. Container alerts — out o
 memory, an unexpected exit, an unhealthy container, and the recovery that closes
 one — reach Pushover instead, where an out-of-memory kill is an emergency
 message that re-alerts until you acknowledge it and a recovery is a badge with
-no sound. `nas-deployment` is the routine record for successful deployments and
-poller recovery, so deployment chatter can be muted on its own.
+no sound. `nas-deployment` is the routine record for poller recovery and image
+prune reclaims, so that chatter can be muted on its own. Successful deployments
+are no longer reported there; see below.
 
 `nas-containers` has no publisher left. It existed so recoveries could be muted
 separately from `nas-critical`, which Pushover expresses on the message itself;
@@ -303,10 +304,11 @@ id alone, and the phone then fetches the body from your server. An uncached
 proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
-A service reports its own deployment on `nas-deployment` at priority 2 —
-`Komga deployed (recreated)` — only when Compose actually replaced its
-containers. The controller publishes it with the deploy publisher's token, so
-no service needs a token of its own inside its image.
+A service reports its own deployment through Pushover at priority -1, a badge
+with no sound — `Komga deployed (recreated)` — only when Compose actually
+replaced its containers. The controller sends it with `vault_pushover_token` and
+`vault_pushover_user_key`, so no service needs a credential of its own inside
+its image.
 
 A service the run left running unchanged says nothing. It used to report
 `already current` so that silence could not be mistaken for a service that was
@@ -314,20 +316,26 @@ never deployed, but a release usually moves one image: fifteen services then
 published fifteen messages of which fourteen carried no information, and the
 topic stopped being read. The run-level summary below already answers "did a
 deployment happen, and what did it move", so the per-service report is now the
-detail behind it rather than a roll call.
+detail behind it rather than a roll call. Reports and summaries together cost
+Pushover's monthly quota in the order of hundreds of messages.
 
 A run that recreates nothing therefore publishes nothing, which also keeps a
 selective converge and a re-run of the installed revision silent.
 
-After every service role, a single run-level summary follows on
-`nas-deployment` at priority 3, above the per-service detail. It diffs the
+After every service role, a single run-level summary follows through Pushover
+at priority 0, above the per-service detail. It diffs the
 manifest of the release the deployment replaced against the one it installed,
 so it names the versions each image moved between and the commit subjects the
 release carries — readable on a phone with no checkout at hand, where a
 revision is a lookup you cannot perform. It is published only when the release
-actually moved, and reaching it means the whole run converged. Since it
-publishes with the deploy publisher's token, a broken write ACL fails the run
-there rather than going unnoticed until an alert is missed.
+actually moved, and reaching it means the whole run converged. Pushover caps a
+title at 250 characters and a message at 1024, so a long summary is cut with a
+trailing `…` rather than refused. A report or summary Pushover authoritatively
+refuses — a 4xx carrying its own `status: 0`, which is what a revoked or
+mistyped pair produces — fails the run there rather than going unnoticed until
+an alert is missed. Anything that is not such an answer — Pushover unreachable,
+a 5xx, the monthly quota exhausted, a proxy's page — is reported as unverified
+delivery and fails nothing, because the services have already converged.
 
 Message bodies only appear on iOS when the phone can reach the ntfy server named
 by `PLATFORM_PUBLIC_HOST` — over Tailscale, a VPN, or the LAN. That is the same
