@@ -377,8 +377,9 @@
           Tailscale Serve should front http://127.0.0.1:{{ vaultwarden_port }}
           on {{ vaultwarden_domain }}, but {{ vaultwarden_domain }}/alive
           answered {{ vaultwarden_serve_reachability.status | default(0) | int }}
-          rather than 200 ({{ vaultwarden_serve_reachability.msg | default('no
-          reading', true) }}). From site.yml the front has just been read or
+          rather than 200 ({{ vaultwarden_serve_reachability.msg
+          | default('no reading', true)
+          | regex_replace(' and not .[0-9, ]*]', '') }}). From site.yml the front has just been read or
           placed; from verify.yml nothing was placed, so a front that was
           removed by hand also fails here and the next converge restores it.
           The usual cause is the one setting nothing in this

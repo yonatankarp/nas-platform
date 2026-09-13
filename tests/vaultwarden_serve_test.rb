@@ -146,7 +146,7 @@ end
 # One case: run the shipped stage and report what it did.
 def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
               binary: :stub, check_mode: false, alive: true, deny: "",
-              gather: false, tags: nil, serve_tasks: SERVE_TASKS)
+              gather: false, tags: nil, candidates: [], serve_tasks: SERVE_TASKS)
   stub_server = AliveStub.new(answer: alive)
   Dir.mktmpdir("nas-platform-vaultwarden-serve-") do |directory|
     log = File.join(directory, "mutations.log")
@@ -170,7 +170,9 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
         "vaultwarden_tailscale_binary" => resolved,
         # Empty, so a case asking for the absent path finds nothing anywhere
         # rather than finding whatever this machine happens to have installed.
-        "vaultwarden_tailscale_binary_candidates" => [],
+        # `candidates: :stub` lists only the stub, for the one case that must
+        # go through discovery the way production does, with the binary unset.
+        "vaultwarden_tailscale_binary_candidates" => candidates == :stub ? [stub] : candidates,
         "platform_readiness_retries" => 1,
         "platform_readiness_delay" => 0
       },
@@ -338,7 +340,16 @@ CASES = [
     "why" => "a review under verification probes nothing and fails nothing, " \
              "the same as a review of the converge",
     "run" => { state: :fronted, alive: false, tags: VERIFY_TAG, check_mode: true },
-    "ok" => true, "mutations" => [] }
+    "ok" => true, "mutations" => [] },
+  { "name" => "verify_discovered_unreachable_front",
+    "why" => "PRODUCTION'S SHAPE, which every other row skips: they set " \
+             "vaultwarden_tailscale_binary, and that short-circuits the Locate " \
+             "task. The NAS leaves it empty, so under verification the client " \
+             "is found only if Locate is selected too -- without it the run " \
+             "reports no Tailscale client, exits 0 and never probes",
+    "run" => { state: :fronted, binary: :absent, candidates: :stub, alive: false,
+               tags: VERIFY_TAG },
+    "ok" => false, "mutations" => [], "says" => "ENABLED FOR THE TAILNET" }
 ].freeze
 
 def case_problems(row, serve_tasks: SERVE_TASKS)
@@ -427,6 +438,11 @@ MUTATIONS = [
               "  tags: [platform_verify_vaultwarden]\n",
     "to" => "- name: Resolve the Tailscale client this host holds\n",
     "breaks" => %w[verify_binary_absent verify_places_nothing] },
+  { "name" => "the client search is no longer selected by verification",
+    "from" => "- name: Locate the Tailscale client on this host\n" \
+              "  tags: [platform_verify_vaultwarden]\n",
+    "to" => "- name: Locate the Tailscale client on this host\n",
+    "breaks" => %w[verify_discovered_unreachable_front] },
   { "name" => "the placement becomes reachable from verification",
     "from" => "    - name: Place the Tailscale Serve front for Vaultwarden\n",
     "to" => "    - name: Place the Tailscale Serve front for Vaultwarden\n" \
@@ -464,8 +480,8 @@ end
 failures = []
 # A floor under the roster, because every list here is walked rather than
 # counted: a CASES that emptied would report success having run nothing.
-check_floor(failures, CASES.length, 19, "Vaultwarden Serve cases")
-check_floor(failures, MUTATIONS.length, 11, "Vaultwarden Serve plants")
+check_floor(failures, CASES.length, 20, "Vaultwarden Serve cases")
+check_floor(failures, MUTATIONS.length, 12, "Vaultwarden Serve plants")
 check(failures, File.file?(SERVE_TASKS),
       "roles/vaultwarden/tasks/serve.yml must exist for this check to have a subject")
 
