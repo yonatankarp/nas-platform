@@ -64,7 +64,7 @@ prove the second household user's permission split from the outside, and raise a
 request *as that user*, without ever holding that user's password.
 
 Everything else Seerr needs, the vault already holds: the Jellyfin administrator
-pair, the single `vault_managed_users.jellyfin` entry, the Radarr and Sonarr API
+pair, the single `vault_managed_jellyfin_users` entry, the Radarr and Sonarr API
 keys, and the Pushover pair. **Seerr needs no administrator password of its own** —
 the owner row is created with a Jellyfin user type and no local password, and
 the local-login route requires an email and password pair that only exists if
@@ -184,7 +184,7 @@ that Phase 4 does not require.
 `POST /api/v1/user/import-from-jellyfin` takes Jellyfin user GUIDs, which are
 discovered rather than guessed: `GET /api/v1/settings/jellyfin/users` returns
 username and id, so the role matches on username against
-`vault_managed_users.jellyfin[*].username` and never hardcodes a GUID.
+`vault_managed_jellyfin_users[*].username` and never hardcodes a GUID.
 
 The import is cleanly idempotent — it creates only when absent and the response
 body is the list of *newly created* users, so run 1 returned one entry and run 2

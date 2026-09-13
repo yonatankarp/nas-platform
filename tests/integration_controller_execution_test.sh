@@ -144,10 +144,6 @@ build_checkout() {
   cp "$repo_dir/inventory/group_vars/all/main.yml" \
     "$checkout/inventory/group_vars/all/main.yml"
   printf '%s\n' '---' > "$checkout/inventory/local.yml"
-  # A regular non-symlink file the controller is required to overwrite with the
-  # ephemeral vault it generated. Its bytes are the assertion for that property.
-  printf '%s\n' 'committed-operator-vault' \
-    > "$checkout/inventory/group_vars/all/vault.yml"
   printf '%s\n' '---' > "$checkout/requirements.yml"
 
   install_stub "$checkout/tests/generate-ephemeral-vault.sh" <<'STUB'
@@ -307,12 +303,19 @@ build_sandbox() {
   # byte for byte. Nothing here converges, so the target copy is seeded.
   cp "$checkout/services/ntfy/compose.yml" \
     "$sandbox/volume1/Docker/nas-platform/current/services/ntfy/compose.yml"
-  # Restored per run, not once: the controller overwrites it with the ephemeral
-  # vault it generated, and a copy left over from the previous run would make a
-  # planted defect that skips that install look like a pass.
-  printf '%s\n' 'committed-operator-vault' \
-    > "$checkout/inventory/group_vars/all/vault.yml"
-  chmod 0644 "$checkout/inventory/group_vars/all/vault.yml"
+  # Reset per run, not once: the controller installs the ephemeral vault it
+  # generated here, and a copy left over from the previous run would make a
+  # planted defect that skips the install look like a pass. A case that needs
+  # something else at that path asks for it.
+  rm -f "$checkout/inventory/group_vars/all/vault.yml"
+  case ${CASE_OPERATOR_VAULT-} in
+    file)
+      printf '%s\n' 'untracked-operator-vault' \
+        > "$checkout/inventory/group_vars/all/vault.yml" ;;
+    dangling-symlink)
+      ln -s "$work/absent-vault-target" \
+        "$checkout/inventory/group_vars/all/vault.yml" ;;
+  esac
   # A committed per-service vault, which the controller must remove for the
   # same reason: it would be decrypted with the ephemeral password.
   printf '%s\n' 'committed-operator-vault' \
@@ -519,7 +522,7 @@ case_idempotence_check() {
   # lane's request below the exception it is meant to be.
   expect_log 'ephemeral-vault argv=[--undeclared][][--output][{sandbox}/nas-platform-vault.000000/vault.yml][--password-file][{sandbox}/nas-platform-vault.000000/password]'
   expect_log 'ephemeral-vault argv=[--cleanup][{sandbox}/nas-platform-vault.000000]'
-  if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml")" != \
+  if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml" 2>/dev/null)" != \
        '$ANSIBLE_VAULT;1.1;AES256' ]; then
     fail 'the checkout vault was not replaced by the generated ephemeral vault'
   fi
@@ -754,6 +757,34 @@ case_refuses_missing_roots() {
   expect_log_count 'ansible-playbook argv=' 0
 }
 
+# No vault.yml is committed any more, but an operator's untracked single-file
+# vault, installed where the secrets guide says, reaches /repo through the
+# working-tree copy tests/integration.sh makes. That is accepted and overwritten
+# inside the disposable clone. A symlink at the path is refused instead --
+# including a dangling one, which `test -e` would report absent -- because
+# `install` would follow it out of the checkout.
+case_vault_install_path() {
+  CASE_OPERATOR_VAULT=file
+  export CASE_OPERATOR_VAULT
+  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+    site.yml
+  unset CASE_OPERATOR_VAULT
+  expect_status 0
+  if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml" 2>/dev/null)" != \
+       '$ANSIBLE_VAULT;1.1;AES256' ]; then
+    fail 'an untracked vault.yml at the install path was not replaced by the ephemeral vault'
+  fi
+
+  CASE_OPERATOR_VAULT=dangling-symlink
+  export CASE_OPERATOR_VAULT
+  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+    site.yml
+  unset CASE_OPERATOR_VAULT
+  expect_nonzero_status
+  expect_log_count 'ansible-playbook argv=' 0
+  rm -f "$checkout/inventory/group_vars/all/vault.yml"
+}
+
 # ---------------------------------------------------------------------------
 # Planted defects.
 #
@@ -824,7 +855,7 @@ build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
     downloaders bindery seerr jellyfin komga toolchain_install \
-    refuses_missing_roots; do
+    refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
 done
@@ -849,6 +880,9 @@ plant 'initial converge dropped' idempotence_check program \
 plant 'generated vault not installed into the checkout' idempotence_check \
   program 'install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml' \
   ':' 1
+plant 'dangling vault.yml symlink followed instead of refused' \
+  vault_install_path program \
+  'test ! -L /repo/inventory/group_vars/all/vault.yml' ':' 1
 plant 'committed per-service vaults left beside the ephemeral vault' \
   idempotence_check program \
   'rm -f /repo/inventory/group_vars/all/vault_*.yml' ':' 1

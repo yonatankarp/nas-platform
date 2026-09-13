@@ -88,13 +88,18 @@ module ClassifyChanges
   # one. The vault generator is the same shape: the suites build their sandbox
   # vault with tests/generate-ephemeral-vault.sh, which writes its own plaintext
   # rather than running this playbook. The encrypted vault is the other half of
-  # that: tests/integration.sh installs the sandbox vault *over*
-  # inventory/group_vars/all/vault.yml before any play runs, so no suite ever
-  # reads the committed one. Falling open to every lane was costing a full
-  # seventeen-suite matrix to re-prove one line. renovate.json is read by
-  # tests/renovate_policy_test.rb and by no play at all.
+  # that: tests/integration.sh removes the committed per-service vaults and
+  # installs the sandbox vault at inventory/group_vars/all/vault.yml before any
+  # play runs, so no suite ever reads the committed ones. Falling open to every
+  # lane was costing a full seventeen-suite matrix to re-prove one line.
+  # renovate.json is read by tests/renovate_policy_test.rb and by no play at all.
   #
-  # The committed vault is still here and is no longer static-*only*: since #561
+  # vault.yml itself is no longer committed (#612 moved its last key into the
+  # per-service files), and tests/policy_vault_test.rb refuses a tracked one. It
+  # stays listed so a change re-adding it still reaches the static job that
+  # refuses it and, through VAULT_ROUTED_PATTERN, the vault job.
+  #
+  # The committed vault is no longer static-*only*: since #561
   # a second job opens it, with the password held as a repository secret, and runs
   # validate-vault.yml against it -- so the file selects `vault` as well, through
   # VAULT_ROUTED_PATTERN below, which the per-service vault_<role>.yml files match too. The gate's own check on it is unchanged and remains

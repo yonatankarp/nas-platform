@@ -129,31 +129,30 @@ vault_ntfy_admin_password: NTFY-PASSWORD-DO-NOT-LEAK
 vault_ntfy_dozzle_token: tk_DO_NOT_LEAK_DOZZLE
 vault_paperless_admin_username: paperless-admin
 vault_paperless_admin_password: PAPERLESS-PASSWORD-DO-NOT-LEAK
-vault_managed_users:
-  audiobookshelf:
-    - username: audio-reader
-      password: AUDIO-READER-PASSWORD-DO-NOT-LEAK
-  beszel:
-    - email: beszel-reader@example.invalid
-      password: BESZEL-READER-PASSWORD-DO-NOT-LEAK
-  dozzle:
-    - username: dozzle-reader
-      password: DOZZLE-READER-PASSWORD-DO-NOT-LEAK
-  immich:
-    - email: immich-reader@example.invalid
-      password: IMMICH-READER-PASSWORD-DO-NOT-LEAK
-  jellyfin:
-    - username: jellyfin-reader
-      password: JELLYFIN-READER-PASSWORD-DO-NOT-LEAK
-  komga:
-    - email: komga-reader@example.invalid
-      password: KOMGA-READER-PASSWORD-DO-NOT-LEAK
-  ntfy:
-    - username: ntfy-reader
-      password: NTFY-READER-PASSWORD-DO-NOT-LEAK
-  paperless_ngx:
-    - username: paperless-reader
-      password: PAPERLESS-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_audiobookshelf_users:
+  - username: audio-reader
+    password: AUDIO-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_beszel_users:
+  - email: beszel-reader@example.invalid
+    password: BESZEL-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_dozzle_users:
+  - username: dozzle-reader
+    password: DOZZLE-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_immich_users:
+  - email: immich-reader@example.invalid
+    password: IMMICH-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_jellyfin_users:
+  - username: jellyfin-reader
+    password: JELLYFIN-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_komga_users:
+  - email: komga-reader@example.invalid
+    password: KOMGA-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_ntfy_users:
+  - username: ntfy-reader
+    password: NTFY-READER-PASSWORD-DO-NOT-LEAK
+vault_managed_paperless_ngx_users:
+  - username: paperless-reader
+    password: PAPERLESS-READER-PASSWORD-DO-NOT-LEAK
 YAML
 chmod 0600 "$decrypted_vault"
 

@@ -55,7 +55,7 @@ services:
     # above from coming back; it is included by roles/vaultwarden before the
     # deployment. And roles/vaultwarden/tasks/pre_upgrade_backup.yml copies the
     # store and rsa_key* before a pinned upgrade.
-    image: docker.io/vaultwarden/server:1.37.2@sha256:094b5689ed81549bd293418395c7cf495ae9d960fc2d4928cef2083ef913d912
+    image: docker.io/vaultwarden/server:1.37.3@sha256:1587c45feaa479f1f5e8af3b00eded36bff77bcf1880cf8dbf0541706dd470e0
     cpus: 0.5
     labels:
       dev.dozzle.name: vaultwarden

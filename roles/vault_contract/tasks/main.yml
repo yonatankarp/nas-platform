@@ -1,8 +1,44 @@
 ---
+# The eight lists are group_vars in their own right, each authored in its
+# service's vault_<role>.yml, and argument validation has already required every
+# one of them. What it cannot say is that there is no ninth: a leftover
+# vault_managed_users from an un-migrated vault, or a misspelt list, would load,
+# go unread, and validate. So this asks Ansible which vault_managed_ names are in
+# scope and refuses any the contract does not name, reporting names and never
+# values, before the schema is resolved.
+- name: Refuse managed-user variables the contract does not name
+  ansible.builtin.assert:
+    that:
+      - vault_contract_unexpected_managed_lists | length == 0
+    fail_msg: >-
+      Unexpected managed-user vault variables, values not shown:
+      {{ vault_contract_unexpected_managed_lists | join(', ') }}. Each service's
+      managed users belong in vault_managed_<service>_users in its own
+      vault_<role>.yml; the vault_managed_users mapping is retired.
+  vars:
+    vault_contract_unexpected_managed_lists: >-
+      {{ q('varnames', '^vault_managed_')
+         | difference(['vault_managed_audiobookshelf_users', 'vault_managed_beszel_users',
+                       'vault_managed_dozzle_users', 'vault_managed_immich_users',
+                       'vault_managed_jellyfin_users', 'vault_managed_komga_users',
+                       'vault_managed_ntfy_users', 'vault_managed_paperless_ngx_users'])
+         | sort }}
+  no_log: true
+
+# Assembled inward from the eight lists, keyed by service. The filter rejects a
+# mapping whose keys differ from its rule table, so a list dropped from here is
+# reported rather than silently left unvalidated.
 - name: Resolve managed-user vault schema violations
   ansible.builtin.set_fact:
     vault_contract_schema_errors: >-
-      {{ vault_managed_users |
+      {{ {'audiobookshelf': vault_managed_audiobookshelf_users,
+          'beszel': vault_managed_beszel_users,
+          'dozzle': vault_managed_dozzle_users,
+          'immich': vault_managed_immich_users,
+          'jellyfin': vault_managed_jellyfin_users,
+          'komga': vault_managed_komga_users,
+          'ntfy': vault_managed_ntfy_users,
+          'paperless_ngx': vault_managed_paperless_ngx_users} |
          vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,
                                     vault_ntfy_deploy_token, vault_ntfy_seerr_token],
                                    vault_contract_reserved_identities) }}
@@ -12,7 +48,7 @@
     # these would take over an account the platform reconciles from a different
     # source.
     #
-    # Keyed by vault_managed_users, not by the service roster, and the two are
+    # Keyed by the managed-user lists, not by the service roster, and the two are
     # not the same set: arr, downloaders, bindery, kapowarr, pinchflat, trailarr
     # and seerr all have vault administrators and no rows here, because
     # they have no managed users for a reserved identity to protect an account
@@ -50,7 +86,7 @@
          immich_preference_errors(immich_managed_user_preference_overrides,
                                   immich_managed_user_preference_profile_by_email,
                                   immich_managed_user_preference_profile_default,
-                                  vault_managed_users.immich |
+                                  vault_managed_immich_users |
                                   map(attribute='email') | list) }}
   when:
     - immich_managed_user_preference_profile_default is defined
@@ -74,18 +110,6 @@
     - immich_managed_user_preference_profile_by_email is defined
     - immich_managed_user_preference_overrides is defined
     - immich_managed_user_preference_profiles is defined
-  no_log: true
-
-- name: Resolve validated managed-user service lists
-  ansible.builtin.set_fact:
-    vault_managed_audiobookshelf_users: "{{ vault_managed_users.audiobookshelf }}"
-    vault_managed_beszel_users: "{{ vault_managed_users.beszel }}"
-    vault_managed_dozzle_users: "{{ vault_managed_users.dozzle }}"
-    vault_managed_immich_users: "{{ vault_managed_users.immich }}"
-    vault_managed_jellyfin_users: "{{ vault_managed_users.jellyfin }}"
-    vault_managed_komga_users: "{{ vault_managed_users.komga }}"
-    vault_managed_ntfy_users: "{{ vault_managed_users.ntfy }}"
-    vault_managed_paperless_ngx_users: "{{ vault_managed_users.paperless_ngx }}"
   no_log: true
 
 # The mapping states the key set being validated: the filter rejects a candidate

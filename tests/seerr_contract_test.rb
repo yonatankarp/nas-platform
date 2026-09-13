@@ -281,7 +281,7 @@ def vault_document
     "vault_arr_sonarr_api_key" => SONARR_KEY,
     "vault_pushover_token" => PUSHOVER_TOKEN,
     "vault_pushover_user_key" => PUSHOVER_USER_KEY,
-    "vault_managed_users" => { "jellyfin" => HOUSEHOLD.map { |name| { "username" => name } } }
+    "vault_managed_jellyfin_users" => HOUSEHOLD.map { |name| { "username" => name } }
   }
 end
 

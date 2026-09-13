@@ -399,9 +399,9 @@ def exact_role_auth_model(main_tasks, managed_tasks)
 end
 
 def generated_audiobookshelf_user_count(generator)
-  section = generator.match(/^  audiobookshelf:\n(?<body>.*?)(?=^  [a-z0-9_]+:\n)/m)
+  section = generator.match(/^vault_managed_audiobookshelf_users:\n(?<body>.*?)(?=^[a-z0-9_]+:\n)/m)
   fail_contract("ephemeral Audiobookshelf managed-user input is absent or ambiguous") unless section
-  count = section[:body].scan(/^    - username:/).length
+  count = section[:body].scan(/^  - username:/).length
   fail_contract("ephemeral Audiobookshelf managed-user input is empty") unless count.positive?
   count
 end

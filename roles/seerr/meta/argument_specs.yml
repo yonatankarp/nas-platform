@@ -74,15 +74,16 @@ argument_specs:
       # local-login route needs an email and password pair that only exists if
       # somebody sets one. The bootstrap therefore signs in as the Jellyfin
       # administrator this platform already authors, and the second household
-      # identity is the single vault_managed_users.jellyfin entry.
+      # identity is the single vault_managed_jellyfin_users entry.
       vault_jellyfin_admin_username:
         type: str
         required: true
       vault_jellyfin_admin_password:
         type: str
         required: true
-      vault_managed_users:
-        type: dict
+      vault_managed_jellyfin_users:
+        type: list
+        elements: dict
         required: true
       # Radarr's and Sonarr's own keys, consumed rather than minted again. A
       # second copy would be a second thing to rotate and a second thing to

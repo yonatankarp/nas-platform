@@ -196,7 +196,7 @@ tests/mac/verify.sh                             the Mac lane's --tags argument
 actually declare, and requires the poller's list to **equal** that set — it
 reports `missing=` and `stale=` separately, so neither a forgotten service nor a
 leftover one passes. The one exception is `platform_verify_mdraid`, which only
-the hourly `production_auto_deploy_periodic_verify_tags` carries; a service's
+the hourly `production_auto_deploy_hourly_only_verify_tags` carries; a service's
 tag always goes in the deploy list. It then requires `docs/getting-started-nas.md` to carry the
 same set. `tests/secrets_docs_test.rb` requires the guide's shell block to contain
 that exact comma-joined string — *order* included — but reads the string out of
@@ -1260,7 +1260,7 @@ it reports planned mutations under `--check` with a `debug` task rather than
 performing them.
 
 Managed non-administrator users are a separate mechanism: they live under
-`vault_managed_users.<role>` and are converged by a `tasks/managed_users.yml`
+`vault_managed_<role>_users` and are converged by a `tasks/managed_users.yml`
 included twice, once with a `reconcile` phase and once with a `verify` phase.
 `roles/komga/tasks/managed_users.yml` and `config/managed-user-capabilities.yml`
 are the reference.

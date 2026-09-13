@@ -654,7 +654,7 @@ vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 email = vault.fetch("vault_immich_admin_email")
 password = vault.fetch("vault_immich_admin_password")
-managed_users = vault.fetch("vault_managed_users").fetch("immich")
+managed_users = vault.fetch("vault_managed_immich_users")
 policy = managed_user_policy
 
 wait_for_application
