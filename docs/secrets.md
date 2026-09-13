@@ -1463,6 +1463,50 @@ in every clone of the repository. If the home must be backed up, protect that
 backup exactly as the password-manager entry is protected, and treat its
 retention and access list as part of the vault password's own.
 
+### Continuous integration vault secret
+
+CI holds a copy of the vault password. It is the `ANSIBLE_VAULT_PASSWORD`
+repository secret, and the `vault` job in `.github/workflows/ci.yml` is its only
+reader: the job writes it to a file under `$RUNNER_TEMP` under `umask 077`, then
+runs the poller's own command against the committed encrypted vault.
+
+```sh
+gh secret set ANSIBLE_VAULT_PASSWORD < "$PLATFORM_VAULT_PASSWORD_FILE"
+```
+
+The password file is one line with no trailing blank, which is what the
+["Use the vault"](#use-the-vault) checks above already require; `gh secret set`
+sends the file's bytes unchanged and `ansible-vault` strips the trailing
+newline.
+
+What the job buys is that the artifact is *parsed* before a deployment meets it.
+Nothing else in this repository opens the vault: `tests/policy_vault_test.rb`
+asserts only that the file still carries a `$ANSIBLE_VAULT;` header, which needs
+no password. That left two ways to merge a vault the NAS cannot use — an
+unparseable file and a missing required key — and both shipped, the first as a
+single unterminated `'` that failed the poller's very first play on every
+five-minute tick until a human read the log.
+
+The tradeoff is that the password now exists in a place neither the operator nor
+the NAS controls end to end. Three properties bound it, and each is asserted by
+`tests/ci/workflow_test.rb` rather than merely intended:
+
+- The workflow triggers on `pull_request`, never `pull_request_target`. The
+  latter runs with the base repository's secrets against a head the pull request
+  author supplies, which would hand this secret to anyone able to open one.
+- The secret reaches the job as step-level `env` and the password file is
+  written under `$RUNNER_TEMP`, never into the checkout, so it cannot be
+  committed by a later step or uploaded as an artifact.
+- An absent or empty secret **fails** the job by name. It does not skip: a
+  skipped job is a green run that decrypted nothing, which is the state this job
+  exists to end. A pull request from a fork carries no secret and therefore reds
+  this job — the cost of that rule, accepted deliberately.
+
+Anyone who can dispatch a workflow in this repository can reach what the secret
+decrypts, so treat a suspected disclosure exactly as a lost password: re-key.
+The boundary below applies unchanged, and the CI secret is one of the copies a
+rotation has to cover.
+
 ## Vault password rotation boundary
 
 Do not rekey one vault artifact ad hoc. Password rotation requires a separately
