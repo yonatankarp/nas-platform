@@ -2186,18 +2186,22 @@ def main(argv=None) -> int:
         # The tick heartbeat (#606), sent after poll() has released the lock.
         # None is healthy: nothing to deploy, a quarantined revision waiting for
         # an operator, or the lock held by a deployment or a verify. True is a
-        # deployment. False is a failed one -- #327 and #559 failed inside
-        # deploy() on every tick, so every tick pings /fail and the check stays
-        # down. An unhandled raise leaves `outcome` False: a tick that did not
-        # finish. An EligibilityError pings plain: GitHub could not be read, but
-        # the poller is alive and deciding, and a sustained blindness already
-        # pages on-box after BLIND_POLL_THRESHOLD polls, where a /fail here would
-        # page off-box on a single GitHub blip. The tick after a quarantined
-        # failure pings plain on purpose: this check says the poller is alive
-        # and deciding, the failure itself already paged through ntfy, and
-        # --status names the revision. A manual --retry-failed pings nothing, so
-        # it cannot vouch for a dead cron. ping_healthchecks never raises, so
-        # this `finally` changes no exception, exit code or message.
+        # deployment. False is a failed deployment and pings /fail, but only for
+        # the tick that failed: the revision is quarantined after one attempt,
+        # so the ticks after a #327- or #559-shaped failure have nothing to do
+        # and ping plain again -- /fail, then plain, then plain. A transient
+        # failure is retried for up to TRANSIENT_FORGIVENESS_LIMIT ticks and
+        # pings /fail on each. That is the intent rather than a gap: a failure
+        # that persists on the box is paged there, through ntfy, and --status
+        # names the revision; these external checks exist to hear the NAS or
+        # the poller being gone, which nothing on the box can report. An
+        # unhandled raise leaves `outcome` False: a tick that did not finish.
+        # An EligibilityError pings plain: GitHub could not be read, but the
+        # poller is alive and deciding, and sustained blindness already pages
+        # on-box after BLIND_POLL_THRESHOLD polls, where a /fail here would page
+        # off-box on a single GitHub blip. A manual --retry-failed pings
+        # nothing, so it cannot vouch for a dead cron. ping_healthchecks never
+        # raises, so this `finally` changes no exception, exit code or message.
         outcome = False
         try:
             outcome = poll(config, retry_sha=retry_sha)
