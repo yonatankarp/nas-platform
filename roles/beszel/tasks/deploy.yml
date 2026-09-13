@@ -94,6 +94,27 @@
       Beszel telemetry capability does not match platform {{ platform_kind }}.
       Required categories: {{ beszel_effective_required_telemetry_categories | join(',') }}.
 
+# Compose cannot take a list from one variable, so the agent has a fixed number of
+# device slots and env.j2 fills the unused ones with /dev/null. This is what stops
+# a disk added to inventory without a slot -- or a slot left over after a disk was
+# removed -- from being dropped silently instead of monitored.
+- name: Require one Compose S.M.A.R.T. slot for every declared disk
+  ansible.builtin.assert:
+    that:
+      - >-
+        platform_kind != 'nas' or
+        (platform_smart_sata_devices | length == 3 and
+         platform_smart_nvme_namespaces | length == 2)
+      - >-
+        platform_kind != 'mac' or
+        (platform_smart_sata_devices | length == 0 and
+         platform_smart_nvme_namespaces | length == 0)
+    fail_msg: >-
+      services/beszel/compose.yml has 3 SATA and 2 NVMe S.M.A.R.T. slots, but
+      inventory declares {{ platform_smart_sata_devices | length }} SATA and
+      {{ platform_smart_nvme_namespaces | length }} NVMe devices for
+      {{ platform_kind }}. Change the slots and the assertion with the list.
+
 - name: Install the hub keypair before the hub can generate its own
   ansible.builtin.copy:
     content: "{{ vault_beszel_hub_private_key }}"

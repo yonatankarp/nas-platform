@@ -446,6 +446,43 @@ STATIC_ROWS = [
     expects: "NAS Intel render device differs"
   },
   {
+    # A disk declared on the host with no Compose slot is the silent drop the
+    # slot design exists to refuse.
+    name: "an inventory SATA disk with no Compose slot",
+    break: lambda { |root|
+      mutate_text(root, "inventory/group_vars/nas_hosts/main.yml",
+                  "  - /dev/sdc\n", "  - /dev/sdc\n  - /dev/sdd\n")
+    },
+    expects: "NAS Intel S.M.A.R.T. device slots differ from inventory"
+  },
+  {
+    name: "an NVMe slot mapped read-write",
+    break: lambda { |root|
+      mutate_text(root, "services/beszel/compose.yml",
+                  "${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1:r",
+                  "${NAS_SMART_NVME_NAMESPACE_2:?}:/dev/nvme1")
+    },
+    expects: "NAS Intel S.M.A.R.T. device slots differ from inventory"
+  },
+  {
+    name: "an Intel agent without the NVMe passthrough capability",
+    break: lambda { |root|
+      mutate_yaml(root, "services/beszel/compose.yml") do |document|
+        document.fetch("services").fetch("agent-intel").fetch("cap_add").delete("CAP_SYS_ADMIN")
+      end
+    },
+    expects: "NAS Intel agent lacks the S.M.A.R.T. capabilities"
+  },
+  {
+    name: "a role slot guard that no longer counts the NVMe disks",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/deploy.yml",
+                  "platform_smart_nvme_namespaces | length == 2 and",
+                  "platform_smart_nvme_namespaces | length >= 0 and")
+    },
+    expects: "role does not pin the S.M.A.R.T. slot count to Compose"
+  },
+  {
     name: "a portable agent that lost a capacity mount",
     break: lambda { |root|
       mutate_yaml(root, "services/beszel/compose.yml") do |document|

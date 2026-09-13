@@ -130,8 +130,28 @@ proxy = compose.fetch("services").fetch("socket-proxy")
 refuse("NAS Intel agent image differs") unless
   intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:")
 refuse("NAS Intel render device differs") unless
-  intel.fetch("devices") == ["${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}"] &&
+  intel.fetch("devices").first == "${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}" &&
     nas_inventory.fetch("platform_render_device_path") == "/dev/dri/renderD128"
+# One Compose slot per inventory disk, each SATA base device onto itself and each
+# NVMe namespace onto its controller name, read-only. The counts come from the
+# NAS inventory, so a disk added there without a slot -- or a slot without a disk
+# -- is a refusal here as well as in the role's own assertion.
+sata = nas_inventory.fetch("platform_smart_sata_devices")
+nvme = nas_inventory.fetch("platform_smart_nvme_namespaces")
+expected_smart_devices =
+  (1..sata.length).map { |n| "${NAS_SMART_SATA_DEVICE_#{n}:?}:${NAS_SMART_SATA_DEVICE_#{n}:?}:r" } +
+  (1..nvme.length).map { |n| "${NAS_SMART_NVME_NAMESPACE_#{n}:?}:/dev/nvme#{n - 1}:r" }
+refuse("NAS Intel S.M.A.R.T. device slots differ from inventory") unless
+  intel.fetch("devices").drop(1) == expected_smart_devices &&
+    sata.all? { |path| path.match?(%r{\A/dev/sd[a-z]+\z}) } &&
+    nvme.all? { |path| path.match?(%r{\A/dev/nvme\d+n1\z}) }
+refuse("NAS Intel agent lacks the S.M.A.R.T. capabilities") unless
+  intel.fetch("cap_add") == %w[CAP_PERFMON CAP_SYS_RAWIO CAP_SYS_ADMIN]
+slot_guard = role_tasks.find { |task| task["name"] == "Require one Compose S.M.A.R.T. slot for every declared disk" }
+slot_conditions = Array(slot_guard&.dig("ansible.builtin.assert", "that")).join(" ")
+refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless
+  slot_conditions.include?("platform_smart_sata_devices | length == #{sata.length}") &&
+    slot_conditions.include?("platform_smart_nvme_namespaces | length == #{nvme.length}")
 expected_mounts = [
   "${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro",
   "${NAS_MEDIA_ROOT:?}/.beszel:/extra-filesystems/volume2:ro"
