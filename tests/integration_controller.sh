@@ -155,10 +155,11 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         "$vault_directory"
     }
 
-    # Nothing is committed at vault.yml any more: every key lives in a
-    # per-service vault_<role>.yml. So the install below must create the file,
-    # never overwrite one, and never follow a symlink someone left in its place.
-    test ! -e /repo/inventory/group_vars/all/vault.yml
+    # Nothing is committed at vault.yml any more, but an operator's untracked
+    # single-file vault installed there as the secrets guide describes reaches
+    # /repo through the working-tree copy, and the install below overwrites it
+    # inside this disposable clone. What must never be there is a symlink, which
+    # the install would follow out of the clone -- a dangling one included.
     test ! -L /repo/inventory/group_vars/all/vault.yml
     # The committed per-service vaults are encrypted under the operator's
     # password, and group_vars decrypts every file with the one password the
