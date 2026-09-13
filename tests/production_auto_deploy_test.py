@@ -3356,6 +3356,83 @@ class VerifyTest(PollerTestCase):
         (success_line,) = [n for n, line in enumerate(lines) if "success_msg:" in line]
         self.assertGreater(abs(success_line - marker_line), 3)
 
+    VERIFY_PING_URL = "https://hc-ping.com/verify-array-sentinel"
+
+    def enable_verify_ping(self):
+        """Route the healthchecks ping to a recorder, and ntfy to the stub above.
+
+        The recorder also notes whether the deployment lock was free, so the
+        ping is proved to run after verify() released it.
+        """
+
+        self.verify_pings_path = self.root / "verify-pings.jsonl"
+        ntfy = self.root / "bin/curl-ntfy"
+        ntfy.write_text(self.curl.read_text(encoding="utf-8"), encoding="utf-8")
+        ntfy.chmod(0o700)
+        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
+        self.curl.write_text(
+            f"#!{sys.executable}\n"
+            "import fcntl, json, os, sys\n"
+            "argv = sys.argv[1:]\n"
+            "if '--config' in argv and argv[argv.index('--config') + 1] == '-':\n"
+            f"    descriptor = os.open({str(lock)!r}, os.O_RDONLY)\n"
+            "    try:\n"
+            "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "        held = False\n"
+            "    except OSError:\n"
+            "        held = True\n"
+            f"    with open({str(self.verify_pings_path)!r}, 'a') as sink:\n"
+            "        sink.write(json.dumps({'url': sys.stdin.read().split('\"')[1],\n"
+            "                               'held': held}) + '\\n')\n"
+            "    sys.exit(0)\n"
+            f"os.execv({str(ntfy)!r}, [{str(ntfy)!r}, *argv])\n",
+            encoding="utf-8",
+        )
+        self.config = self.loaded_config(
+            git_path=self.git, curl_path=str(self.curl),
+            healthchecks_verify_ping_url=self.VERIFY_PING_URL,
+        )
+
+    def verify_pings(self):
+        if not self.verify_pings_path.exists():
+            return []
+        pings = [json.loads(line) for line in self.verify_pings_path.read_text().splitlines()]
+        self.verify_pings_path.unlink()
+        return pings
+
+    def test_the_verify_ping_follows_the_whole_run_not_the_services_alone(self):
+        # verify() returns all() over the services' run and every hourly-only
+        # run, so the external check hears an array verdict the services' own
+        # pass would otherwise cover (#606 on #622).
+        self.enable_verify_ping()
+        self.mark_deployed()
+        for label, arguments, code, url in (
+            ("everything passes", {}, 0, self.VERIFY_PING_URL),
+            ("services pass, array degraded", {"mdraid_exit": 2, "mismatch": True},
+             1, self.VERIFY_PING_URL + "/fail"),
+            ("services pass, array could not run", {"mdraid_exit": 2, "mismatch": False},
+             1, self.VERIFY_PING_URL + "/fail"),
+            ("services fail, array passes", {"playbook_exit": 2},
+             1, self.VERIFY_PING_URL + "/fail"),
+        ):
+            with self.subTest(label):
+                actual, _output = self.run_verify(**arguments)
+                self.assertEqual(actual, code)
+                self.assertEqual(self.verify_pings(), [{"url": url, "held": False}])
+        # Both invocations really ran on the failing rows: the ping is the run's
+        # verdict, not a shortcut past the array check.
+        self.assertTrue(any("platform_verify_mdraid" in run["argv"][-1]
+                            for run in self.playbook_runs()))
+
+    def test_a_skipped_verify_pings_nothing_even_with_a_url(self):
+        self.enable_verify_ping()
+        code, output = self.run_verify(mdraid_exit=2)
+
+        self.assertEqual(code, 0)
+        self.assertIn("nothing has deployed yet", output)
+        self.assertEqual(self.playbook_runs(), [])
+        self.assertEqual(self.verify_pings(), [])
+
     def test_the_array_failing_alone_fails_the_run(self):
         self.mark_deployed()
         code, output = self.run_verify(mdraid_exit=2)

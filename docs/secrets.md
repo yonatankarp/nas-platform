@@ -1322,8 +1322,13 @@ After the schema and consumer changes are complete, edit the owning service's
 encrypted vault in place. A key listed under vault_keys in
 `tests/expected/<service>.yml` lives in
 `inventory/group_vars/all/vault_<role>.yml`, and so does that service's
-managed-user list; the Pushover pair, which no single service owns, lives in
-`inventory/group_vars/all/vault_pushover.yml`. A service with no vault file yet gets one
+managed-user list. A key that belongs to a third-party account rather than to a
+service lives in a file of its own named for that account: the Pushover pair in
+`inventory/group_vars/all/vault_pushover.yml`, the healthchecks.io pair in
+`inventory/group_vars/all/vault_healthchecks.yml`. A new such name is added
+beside theirs to the exceptions `tests/policy_vault_test.rb` admits, because
+every other file there must name a service role. A service or account with no
+vault file yet gets one
 with `ansible-vault create` under the same password:
 
 ```sh
