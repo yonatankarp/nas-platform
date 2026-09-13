@@ -65,6 +65,15 @@ COMMAND_TIMEOUT_SECONDS = 60 * 60
 # what an hour of a held lock costs. Half the hourly cadence, so a stuck run is a
 # failure before the next one is due rather than a lock the next poll waits out.
 VERIFY_TIMEOUT_SECONDS = 30 * 60
+# Each hourly-only tag runs after the services, in the same lock hold, under its
+# own budget, so a service run that timed out still leaves it one. The hold is at
+# most 30 + 10 per hourly-only tag: 40 minutes today, under the hourly cadence.
+HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
+# Page titles for an hourly-only tag (failed, recovered). A tag missing here
+# pages under its own name.
+HOURLY_ONLY_VERIFY_TITLES = {
+    "platform_verify_mdraid": ("RAID arrays degraded", "RAID arrays recovered"),
+}
 TOOLING_TIMEOUT_SECONDS = 15 * 60
 # The ladder for the three commands in a deployment that reach a third party:
 # the checkout fetch, the pip install and the collection install. Few attempts,
@@ -137,9 +146,10 @@ class Config:
     github_api_base: str
     log_retention_days: int
     verify_tags: str
-    # The hourly --verify run's list, which adds checks a deployment must not
-    # fail on. Optional in the file: see load_config.
-    periodic_verify_tags: str
+    # Checks only the hourly --verify run selects, each in an invocation and a
+    # verdict record of its own, because a deployment must not fail on them.
+    # Comma-separated; optional in the file: see load_config.
+    hourly_only_verify_tags: str
     # Discovered by the installer. NAS firmwares scatter binaries across
     # /usr/local, /usr/builtin and /opt, so no fixed directory is correct.
     git_path: Path
@@ -182,10 +192,12 @@ def load_config(path: str | os.PathLike[str]) -> Config:
             # The install play copies this script before it renders the file, so
             # for one run -- or for good, if the render fails -- this poller reads
             # a configuration an older template wrote. Refusing it would fail
-            # every tick with nothing able to heal it (#327); the deploy list is
-            # the one an older poller verified hourly anyway.
-            if field.name == "periodic_verify_tags" and "verify_tags" in values:
-                values[field.name] = values["verify_tags"]
+            # every tick with nothing able to heal it (#327). Absent means no
+            # hourly-only checks: the services still verify, and the array check
+            # starts once the render lands. An older file's periodic_verify_tags
+            # is ignored on purpose, since it restates the whole deploy list.
+            if field.name == "hourly_only_verify_tags":
+                values[field.name] = ""
                 continue
             raise ConfigurationError(f"configuration is missing {field.name}")
         raw = payload[field.name]
@@ -1022,7 +1034,7 @@ def sync_tooling(config: Config, log=None) -> None:
 
 
 def _verify_invocation(config: Config, tags: str) -> list[str]:
-    """verify.yml with a tag list: verify_tags from a deployment, periodic_verify_tags hourly."""
+    """verify.yml with a tag list: verify_tags, or one hourly-only tag at a time."""
 
     return [
         "ansible-playbook",
@@ -1686,11 +1698,18 @@ def converge(config: Config, arguments: list[str]) -> int:
         return completed.returncode
 
 
-def _verify_verdict_path(config: Config) -> Path:
-    return config.state_root / "verify-verdict"
+def _verify_verdict_path(config: Config, tag: str | None = None) -> Path:
+    """verify-verdict for the services; verify-verdict-<name> per hourly-only tag."""
+
+    suffix = "" if tag is None else "-" + tag.removeprefix("platform_verify_")
+    return config.state_root / f"verify-verdict{suffix}"
 
 
-def read_verify_verdict(config: Config) -> str | None:
+def _hourly_only_tags(config: Config) -> list[str]:
+    return [tag for tag in config.hourly_only_verify_tags.split(",") if tag]
+
+
+def read_verify_verdict(config: Config, tag: str | None = None) -> str | None:
     """The last verdict --verify recorded: "pass", "fail", or None for no record.
 
     A file of its own, like every other fact in the state directory, so poll()
@@ -1698,7 +1717,7 @@ def read_verify_verdict(config: Config) -> str | None:
     """
 
     try:
-        parts = _verify_verdict_path(config).read_text(encoding="ascii").split()
+        parts = _verify_verdict_path(config, tag).read_text(encoding="ascii").split()
     except (OSError, UnicodeError):
         return None
     return parts[0] if parts and parts[0] in ("pass", "fail") else None
@@ -1718,29 +1737,40 @@ def _checkout_revision(config: Config) -> str | None:
     return sha if result.returncode == 0 and SHA_PATTERN.fullmatch(sha) else None
 
 
-def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) -> None:
+def note_verify_verdict(
+    config: Config, passed: bool, sha: str, log_path: Path, tag: str | None = None
+) -> None:
     """Page on a change of verdict only, and record it once the page landed.
 
     No record reads as a pass: a first failure pages and a first pass does not.
     The record moves only after delivery, as note_ci_refusal's does, because a
     recorded failure nobody received would make every later one a quiet repeat.
+    tag None is the services' verdict; an hourly-only tag keeps its own record and
+    pages under its own title, so the two signals never mask each other (#609).
     """
 
     verdict = "pass" if passed else "fail"
-    previous = read_verify_verdict(config)
+    previous = read_verify_verdict(config, tag)
     if verdict == previous:
         return
     if verdict == "fail" or previous == "fail":
         failed = verdict == "fail"
+        if tag is None:
+            title = f"{'Verify failed' if failed else 'Verify recovered'} · {sha[:9]}"
+            lines = ()
+        else:
+            titles = HOURLY_ONLY_VERIFY_TITLES.get(tag, (f"{tag} failed", f"{tag} recovered"))
+            title = titles[0 if failed else 1]
+            lines = (f"**Check:** `{markdown_escape(tag)}`",)
         published = publish(
             config,
             {
                 "topic": config.ntfy_topic_critical if failed
                 else config.ntfy_topic_deployment,
-                "title": f"{'Verify failed' if failed else 'Verify recovered'} "
-                f"· {sha[:9]}",
+                "title": title,
                 "message": "\n".join(
                     (
+                        *lines,
                         f"**Commit:** `{sha}`",
                         f"**Log:** `{markdown_escape(str(log_path))}`",
                     )
@@ -1758,7 +1788,7 @@ def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) 
     # is the loudest way to report it.
     try:
         _write_private(
-            _verify_verdict_path(config),
+            _verify_verdict_path(config, tag),
             f"{verdict} {sha} {_timestamp()}\n".encode("ascii"),
         )
     except OSError as error:
@@ -1766,8 +1796,29 @@ def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) 
               file=sys.stderr)
 
 
+def _run_verify_play(config: Config, tags: str, log_path: Path, timeout: float) -> bool:
+    """One verify.yml invocation, logged to its own file; a timeout is a failure."""
+
+    descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as log:
+        os.fchmod(log.fileno(), 0o600)
+        try:
+            return (
+                _run(
+                    _verify_invocation(config, tags),
+                    timeout=timeout,
+                    cwd=config.checkout,
+                    env=_ansible_environment(config),
+                    log=log,
+                ).returncode
+                == 0
+            )
+        except subprocess.TimeoutExpired:
+            return False
+
+
 def verify(config: Config) -> bool | None:
-    """Run verify.yml against the deployed revision with the hourly tag list. None: skipped.
+    """Verify the deployed revision: the services, then each hourly-only tag. None: skipped.
 
     It runs from the controller checkout, which is the only tree carrying the
     playbooks, and only while that checkout holds the last successful revision.
@@ -1802,24 +1853,21 @@ def verify(config: Config) -> bool | None:
             )
             return None
         log_path = config.log_root / "verify.log"
-        descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "wb") as log:
-            os.fchmod(log.fileno(), 0o600)
-            try:
-                passed = (
-                    _run(
-                        _verify_invocation(config, config.periodic_verify_tags),
-                        timeout=VERIFY_TIMEOUT_SECONDS,
-                        cwd=config.checkout,
-                        env=_ansible_environment(config),
-                        log=log,
-                    ).returncode
-                    == 0
-                )
-            except subprocess.TimeoutExpired:
-                passed = False
+        passed = _run_verify_play(config, config.verify_tags, log_path, VERIFY_TIMEOUT_SECONDS)
         note_verify_verdict(config, passed, head, log_path)
-        return passed
+        # verify.yml runs its roles before its tasks, and a failing host leaves
+        # the run, so a service failure in the same invocation would hide an
+        # hourly-only check and a paged one would hide the services (#609). One
+        # invocation and one record per tag, whatever the services' outcome.
+        results = [passed]
+        for tag in _hourly_only_tags(config):
+            tag_log = config.log_root / f"verify-{tag.removeprefix('platform_verify_')}.log"
+            tag_passed = _run_verify_play(
+                config, tag, tag_log, HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS
+            )
+            note_verify_verdict(config, tag_passed, head, tag_log, tag)
+            results.append(tag_passed)
+        return all(results)
 
 
 def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:

@@ -91,6 +91,6 @@ argument_specs:
       production_auto_deploy_verify_tags:
         description: Exact verification tag list passed to verify.yml.
         type: str
-      production_auto_deploy_periodic_verify_tags:
-        description: Verification tag list the hourly --verify run passes to verify.yml.
+      production_auto_deploy_hourly_only_verify_tags:
+        description: Verification tags only the hourly --verify run selects, each in its own verify.yml invocation.
         type: str
