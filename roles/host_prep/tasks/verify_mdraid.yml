@@ -1,7 +1,9 @@
 ---
-# A degraded mdraid array fails verification (#609). Imported by main.yml, so it
-# runs on every converge, and included by verify.yml under
-# platform_verify_mdraid, so the poller's verify run reaches it too.
+# A degraded mdraid array fails verification (#609). Reached only through
+# verify.yml under platform_verify_mdraid, and only the hourly periodic verify
+# run selects that tag. Never from site.yml or a deployment's own verify play: a
+# degraded array still serves, and failing a converge or its verify for the whole
+# rebuild would block fixes and quarantine revisions that converged.
 #
 # Healthy is not `degraded == 0`. ADM's system arrays md0 and md126 are 4-slot
 # RAID1 with two members and read degraded=2 on a healthy host, so each array is
