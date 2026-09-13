@@ -589,21 +589,25 @@ and local Docker/cron access must remain available.
 
 A deployment runs `verify.yml`, but a quiet week deploys nothing, so cron also
 runs `nas-platform-deploy --verify` at minute 37 of every hour. It runs the
-`verify.yml` invocation a deployment does with one tag more,
-`platform_verify_mdraid`, which fails when a RAID array has lost a member. A
-deployment leaves that tag out: its failed verify would quarantine a revision
-that converged, while a degraded array still serves. It runs from the poller's checkout, and only
+`verify.yml` invocation a deployment does, then a second one with
+`platform_verify_mdraid` alone, which fails when a RAID array has lost a member.
+A deployment leaves that tag out: its failed verify would quarantine a revision
+that converged, while a degraded array still serves. The second run happens
+whatever the first found, because `verify.yml` stops checking a host at its
+first failure. It runs from the poller's checkout, and only
 while that checkout holds the last successful revision: a failed deployment
 leaves it on the candidate, whose probes may name services that never activated,
 so verification pauses until the next successful deployment. It takes the
 deployment lock without waiting, and a deployment already holding it is skipped
 rather than waited for, since that deployment verifies itself. Output goes to
-`logs/verify.log`, overwritten each run.
+`logs/verify.log` and `logs/verify-mdraid.log`, overwritten each run. The
+services get 30 minutes and the array check 10, so the lock is held at most 40.
 
-A failure publishes once to `nas-critical` and a recovery once to
-`nas-deployment`; an unchanged result publishes nothing. The last result lives
-in `state/verify-verdict`, written only once its notice was delivered, so an
-undelivered one is retried on the next run. A failing verification never touches
+Each check pages on its own: a failure publishes once to `nas-critical`
+(`Verify failed`, or `RAID arrays degraded`) and a recovery once to
+`nas-deployment`; an unchanged result publishes nothing. The last results live
+in `state/verify-verdict` and `state/verify-verdict-mdraid`, each written only
+once its notice was delivered, so an undelivered one is retried on the next run. A failing verification never touches
 the deployment record and never holds back a poll.
 
 To disable automation, first save `crontab -l`, then use `crontab -e` to remove
