@@ -213,10 +213,17 @@ check(failures, doc_tags.sort == all_verify_tags.sort,
 # No task site.yml can reach may carry an hourly-only tag. There a degraded
 # array would fail every converge and quarantine each revision (#609), and
 # nothing else refuses, say, host_prep's main.yml including verify_mdraid.yml.
-# Walked structurally from site.yml: its plays' task sections and roles, then
-# every static include_tasks/import_tasks/include_role/import_role, through
-# block/rescue/always, so a planted include is found by what it reaches rather
-# than by its file name.
+# Two checks, because neither sees every route:
+# - ansible-playbook --list-tasks --list-tags resolves everything Ansible expands
+#   when it loads site.yml: roles and their meta dependencies, import_playbook,
+#   import_tasks and import_role, templated paths included. It does not list what
+#   a dynamic include_tasks or include_role would add at run time.
+# - The walker below reads the files: site.yml's task sections and roles, then
+#   every include_tasks/import_tasks/include_role/import_role whose target is a
+#   literal, through block/rescue/always. It covers the dynamic includes, and it
+#   cannot follow a templated path, a meta dependency or an import_playbook.
+# A route both miss is a dynamic include of a templated path. Without
+# ansible-playbook this file aborts at its top rather than passing.
 SITE_PLAYBOOK = File.join(ROOT, "site.yml")
 TASK_INCLUDES = %w[ansible.builtin.include_tasks ansible.builtin.import_tasks].freeze
 ROLE_INCLUDES = %w[ansible.builtin.include_role ansible.builtin.import_role].freeze
@@ -290,6 +297,73 @@ host_prep_tasks = YAML.safe_load_file(host_prep_main, aliases: true)
   tasks_with_plant, = site_reachable_tasks(host_prep_main => host_prep_tasks + [planted])
   check(failures, hourly_only_tags_in(tasks_with_plant) == HOURLY_ONLY_VERIFY_TAGS,
         "planted: host_prep's main.yml reaching verify_mdraid.yml by #{shape} must be refused")
+end
+
+def listed_hourly_only_tags(ansible, playbook)
+  environment = {
+    "ANSIBLE_CONFIG" => File.join(ROOT, "ansible.cfg"),
+    "ANSIBLE_ROLES_PATH" => File.join(ROOT, "roles")
+  }
+  output, status = Open3.capture2e(environment, ansible, "-i", File.join(ROOT, "inventory/local.yml"),
+                                   playbook, "--list-tasks", "--list-tags", chdir: ROOT)
+  return [nil, output] unless status.success?
+
+  [output.scan(/platform_verify_[a-z_]+/).uniq & HOURLY_ONLY_VERIFY_TAGS, output]
+end
+
+listed, listing = listed_hourly_only_tags(ansible, SITE_PLAYBOOK)
+check(failures, listed == [] && listing.include?("host_prep :"),
+      "ansible-playbook site.yml --list-tasks must list host_prep and no hourly-only tag; got " \
+      "#{listed.inspect}#{listed.nil? ? ": #{listing.lines.last(5).join}" : ''}")
+# Planted on disk in a copy beside the real roles, since these routes live in
+# files the walker does not read: a meta dependency of host_prep, an
+# import_playbook appended to site.yml, and a templated import_tasks path.
+Dir.mktmpdir("hourly-only-site-plant") do |sandbox|
+  site_source = File.read(SITE_PLAYBOOK)
+  mdraid_tasks = File.join(ROOT, "roles/host_prep/tasks/verify_mdraid.yml")
+  plant_host_prep = lambda do |directory|
+    FileUtils.mkdir_p(File.join(directory, "roles"))
+    FileUtils.cp_r(File.join(ROOT, "roles/host_prep"), File.join(directory, "roles/host_prep"))
+    File.join(directory, "roles/host_prep")
+  end
+  {
+    "a meta dependency of host_prep" => lambda do |directory|
+      role = plant_host_prep.call(directory)
+      File.write(File.join(role, "meta/main.yml"), "---\ndependencies:\n  - role: mdraid_probe\n")
+      FileUtils.mkdir_p(File.join(directory, "roles/mdraid_probe/tasks"))
+      FileUtils.cp(mdraid_tasks, File.join(directory, "roles/mdraid_probe/tasks/main.yml"))
+      File.write(File.join(directory, "site.yml"), site_source)
+    end,
+    "an import_playbook appended to site.yml" => lambda do |directory|
+      File.write(File.join(directory, "planted.yml"), <<~YAML)
+        ---
+        - name: Planted
+          hosts: platform_hosts
+          gather_facts: false
+          tasks:
+            - name: Planted
+              ansible.builtin.import_role:
+                name: host_prep
+                tasks_from: verify_mdraid
+      YAML
+      File.write(File.join(directory, "site.yml"), "#{site_source}\n- ansible.builtin.import_playbook: planted.yml\n")
+    end,
+    "a templated import_tasks path" => lambda do |directory|
+      role = plant_host_prep.call(directory)
+      File.write(File.join(role, "tasks/main.yml"),
+                 "#{File.read(File.join(role, 'tasks/main.yml'))}\n- name: Planted\n" \
+                 "  ansible.builtin.import_tasks: \"{{ role_path }}/tasks/verify_mdraid.yml\"\n")
+      File.write(File.join(directory, "site.yml"), site_source)
+    end
+  }.each do |route, plant|
+    directory = File.join(sandbox, route.tr(" ", "-"))
+    FileUtils.mkdir_p(directory)
+    plant.call(directory)
+    planted, planted_listing = listed_hourly_only_tags(ansible, File.join(directory, "site.yml"))
+    check(failures, planted == HOURLY_ONLY_VERIFY_TAGS,
+          "planted: #{route} reaching verify_mdraid.yml must be refused; listed #{planted.inspect}" \
+          "#{planted.nil? ? ": #{planted_listing.lines.last(5).join}" : ''}")
+  end
 end
 
 # The poller selects CI runs by workflow file and display name. A rename in
