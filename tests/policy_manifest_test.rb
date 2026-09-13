@@ -2349,6 +2349,20 @@ expect_failure(failures, "NAS coordinate leaked into vault",
   File.write(path, File.read(path) + "vault_nas_address: 192.0.2.1\n")
 end
 
+# Encrypted on purpose, so the encryption check beside it stays satisfied and the
+# only thing wrong is that the file is tracked. Written and not staged, the same
+# file is what the secrets guide's single-file install produces, and is allowed.
+expect_failure(failures, "retired single-file vault committed",
+               "inventory/group_vars/all/vault.yml is committed",
+               detected_by: %i[vault]) do |root|
+  File.write(File.join(root, "inventory", "group_vars", "all", "vault.yml"),
+             "$ANSIBLE_VAULT;1.1;AES256\n0000\n")
+  _stdout, stderr, status = capture3_without_git_routing(
+    "git", "add", "inventory/group_vars/all/vault.yml", chdir: root
+  )
+  raise "could not stage the committed vault fixture: #{stderr.lines.first&.strip}" unless status.success?
+end
+
 expect_failure(failures, "credential-bearing read left unredacted",
                "tasks that render a credential must set no_log",
                detected_by: %i[vault]) do |root|
