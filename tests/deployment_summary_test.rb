@@ -376,6 +376,14 @@ end
   { label: "a 200 carrying HTML", answer: [200, "<html><body>Sign in</body></html>", "text/html"],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
   { label: "a 403 carrying HTML", answer: [403, "<html><body>Blocked</body></html>", "text/html"],
+    expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
+  # Pushover's status is an integer. false == 0 and true == 1 in Jinja, and
+  # "0" becomes 0 under | int, so each of these would be an invented verdict.
+  { label: "a 400 whose status is false", answer: [400, JSON.generate({ "status" => false })],
+    expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
+  { label: "a 400 whose status is the string \"0\"", answer: [400, JSON.generate({ "status" => "0" })],
+    expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL },
+  { label: "a 200 whose status is true", answer: [200, JSON.generate({ "status" => true })],
     expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL }
 ].each do |row|
   with_http_probe(1, answer: row.fetch(:answer)) do |port, _requests|
@@ -412,31 +420,52 @@ end
                expect_failure: false, expect_text: NON_VERDICT, forbid_text: REFUSAL)
 end
 
-# --- every site.yml caller under tests/ redirects the endpoint -------------
+# --- the site.yml callers under tests/ redirect the endpoint ---------------
 #
 # The role default is Pushover itself, and the Mac lane converges with the
 # operator's real vault, so a caller that loses its override pushes a
-# notification to the household's devices for every service a lane recreates.
-# Read out of the function each lane converges through, so a line moved outside
-# it does not satisfy the check. tests/mac/run.sh and the Mac drift hooks reach
-# site.yml only through mac_ansible_playbook, and tests/integration_controller.sh
-# only through run_play.
+# notification to the household's devices for every service a run recreates.
+#
+# PINNED, NOT DERIVED, and this covers exactly the three commands below. A scan
+# for files that put site.yml into an ansible-playbook argv was tried and does
+# not hold: the two lane wrappers receive the playbook through a variable, so
+# they carry no site.yml literal, while the poller's tests and the docs tests
+# carry one without converging anything. A new caller has to be added here by
+# hand. Known callers and how each reaches one of these three commands:
+#   * tests/integration.sh -> tests/integration_controller.sh -> run_play
+#   * tests/mac/run.sh, tests/mac/hooks/drift/20-dozzle.sh and 40-komga.sh ->
+#     mac_ansible_playbook
+#   * tests/contracts/audiobookshelf-runtime.rb's inactive-administrator mode ->
+#     its own audiobookshelf_playbook_command
+# Every other ansible-playbook call under tests/ runs verify.yml, which cannot
+# reach the report, or a fixture playbook. Read out of the function each command
+# is built in, so a line moved outside it does not satisfy the check.
+LANE_ENDPOINT = "http://127.0.0.1:1/1/messages.json"
 DEPLOYMENT_ENDPOINT_OVERRIDES = {
   "tests/integration_controller_lib.sh" => [
     /^run_play\(\) \{\n(.*?)^\}/m,
     /-e ntfy_deployment_pushover_api_url="\$integration_deployment_pushover_api_url"/,
-    %r{^integration_deployment_pushover_api_url='http://127\.0\.0\.1:1/1/messages\.json'$}
+    /^integration_deployment_pushover_api_url='#{Regexp.escape(LANE_ENDPOINT)}'$/
   ],
   "tests/mac/lib.sh" => [
     /^mac_ansible_playbook\(\) \{\n(.*?)^\}/m,
-    %r{-e 'ntfy_deployment_pushover_api_url=http://127\.0\.0\.1:1/1/messages\.json'},
+    /-e 'ntfy_deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}'/,
+    nil
+  ],
+  "tests/contracts/audiobookshelf-runtime.rb" => [
+    /^def audiobookshelf_playbook_command\(playbook, tags\)\n(.*?)^end/m,
+    /"-e", "ntfy_deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}"/,
     nil
   ]
 }.freeze
 
 DEPLOYMENT_ENDPOINT_OVERRIDES.each do |relative, (function, argument, value)|
   source = File.read(File.join(ROOT, relative))
-  body = source[function, 1].to_s
+  body = source[function, 1]
+  check(failures, body,
+        "#{relative} no longer defines the function this check reads its site.yml command from")
+  next unless body
+
   check(failures, body.match?(argument) && (value.nil? || source.match?(value)),
         "#{relative} converges site.yml without redirecting ntfy_deployment_pushover_api_url " \
         "away from Pushover; every recreated service would notify real devices")

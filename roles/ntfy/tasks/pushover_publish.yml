@@ -57,14 +57,20 @@
 # What keeps that from reading as "refused" is the conjunction: no body means no
 # Pushover status. The -1 default is belt and braces beside it, and no row in
 # tests/deployment_summary_test.rb can observe it, because a request never made
-# has no body to disagree with it. The body status is compared without `| int`,
-# which reads any non-number as 0.
+# has no body to disagree with it.
+#
+# The body status must be a real integer. `| int` would read any non-number,
+# "0" included, as 0 and invent a refusal; a bare `== 0` is too loose the other
+# way, because false == 0 and true == 1 in Jinja. `is integer` is false for
+# both booleans, for strings and for floats, measured on the pinned Jinja, so a
+# status of false, true or "0" is no verdict.
 - name: Summarize the Pushover answer without the credentials it carried
   ansible.builtin.set_fact:
     ntfy_pushover_verdict: >-
       {%- set code = ntfy_pushover_delivery.status | default(-1) | int -%}
       {%- set body = ntfy_pushover_delivery.json | default(none) -%}
       {%- set answer = body.get('status') if body is mapping else none -%}
+      {%- set answer = answer if answer is integer else none -%}
       {%- if code == 200 and answer == 1 -%}accepted{%- elif 400 <= code <= 499
       and code != 429 and answer == 0 -%}refused{%- else -%}unanswered{%- endif -%}
 
