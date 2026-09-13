@@ -99,10 +99,9 @@ end
   "top-level private key" => "vault_service_private_key: synthetic-private-key-value\n",
   "top-level secret" => "vault_service_secret: synthetic-secret-value\n",
   "nested managed-user password" => <<~YAML,
-    vault_managed_users:
-      service:
-        - username: synthetic-user-value
-          password: synthetic-managed-password
+    vault_managed_service_users:
+      - username: synthetic-user-value
+        password: synthetic-managed-password
   YAML
   "unknown field" => "vault_future_field: synthetic-unknown-value\n",
   "identity field" => "vault_service_username: synthetic-user-value\n"

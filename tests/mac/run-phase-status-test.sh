@@ -63,9 +63,8 @@ chmod 0755 "$fake_bin/ansible-playbook"
 cat > "$fake_bin/ansible-vault" <<'STUB'
 #!/bin/sh
 cat <<'YAML'
-vault_managed_users:
-  immich:
-    - email: fixture@example.invalid
+vault_managed_immich_users:
+  - email: fixture@example.invalid
 YAML
 STUB
 chmod 0755 "$fake_bin/ansible-vault"

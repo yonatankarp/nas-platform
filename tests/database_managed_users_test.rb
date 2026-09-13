@@ -1151,7 +1151,7 @@ def exercise_disabled_paperless_target_rejection(failures)
   variables = YAML.safe_load_file(
     File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example"), aliases: false
   )
-  variables.dig("vault_managed_users", "paperless_ngx", 0)["is_active"] = false
+  variables.dig("vault_managed_paperless_ngx_users", 0)["is_active"] = false
   tasks = [{ "name" => "Validate disabled Paperless managed target",
              "ansible.builtin.include_role" => { "name" => "vault_contract" } }]
   _stdout, _stderr, status = run_playbook(tasks, variables)

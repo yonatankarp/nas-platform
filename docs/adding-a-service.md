@@ -1260,7 +1260,7 @@ it reports planned mutations under `--check` with a `debug` task rather than
 performing them.
 
 Managed non-administrator users are a separate mechanism: they live under
-`vault_managed_users.<role>` and are converged by a `tasks/managed_users.yml`
+`vault_managed_<role>_users` and are converged by a `tasks/managed_users.yml`
 included twice, once with a `reconcile` phase and once with a `verify` phase.
 `roles/komga/tasks/managed_users.yml` and `config/managed-user-capabilities.yml`
 are the reference.

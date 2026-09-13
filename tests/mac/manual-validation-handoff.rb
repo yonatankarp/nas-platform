@@ -250,8 +250,6 @@ begin
 
   vault = YAML.safe_load($stdin.read, aliases: false)
   fail_handoff("manual-validation vault is invalid") unless vault.is_a?(Hash)
-  managed = vault.fetch("vault_managed_users")
-  fail_handoff("manual-validation managed users are invalid") unless managed.is_a?(Hash)
 
   lines = [
     "Manual validation is ready.",
@@ -273,7 +271,7 @@ begin
     lines << "#{service} primary username: #{primary}"
 
     managed_key = MANAGED_KEYS.fetch(service, service)
-    entries = managed.fetch(managed_key, [])
+    entries = vault.fetch("vault_managed_#{managed_key}_users")
     fail_handoff("manual-validation managed users are invalid") unless entries.is_a?(Array)
     identities = entries.map do |entry|
       fail_handoff("manual-validation managed users are invalid") unless entry.is_a?(Hash)

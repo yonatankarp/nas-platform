@@ -6,7 +6,7 @@ require "yaml"
 output, inventory_path = ARGV
 vault = YAML.safe_load($stdin.read, aliases: false)
 inventory = YAML.safe_load_file(inventory_path, aliases: false)
-managed = vault.fetch("vault_managed_users").fetch("immich")
+managed = vault.fetch("vault_managed_immich_users")
 raise "managed" unless managed.is_a?(Array) && !managed.empty?
 
 email = managed.first.fetch("email")

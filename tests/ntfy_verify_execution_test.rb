@@ -242,22 +242,20 @@ def run_ntfy_verify_hook_fixture(port)
     fake_ansible_vault = File.join(directory, "ansible-vault")
     File.write(fake_password, "fixture\n", mode: "w", perm: 0o600)
     File.write(fake_vault, YAML.dump(
-      "vault_managed_users" => {
-        "ntfy" => [
-          {
-            "username" => "reader", "password" => "reader-secret", "role" => "user",
-            "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
-          },
-          {
-            "username" => "writer", "password" => "writer-secret", "role" => "user",
-            "access" => [{ "topic" => "nas-critical", "permission" => "write-only" }]
-          },
-          {
-            "username" => "other", "password" => "other-secret", "role" => "user",
-            "access" => [{ "topic" => "other-topic", "permission" => "read-write" }]
-          }
-        ]
-      }
+      "vault_managed_ntfy_users" => [
+        {
+          "username" => "reader", "password" => "reader-secret", "role" => "user",
+          "access" => [{ "topic" => "nas-critical", "permission" => "read-only" }]
+        },
+        {
+          "username" => "writer", "password" => "writer-secret", "role" => "user",
+          "access" => [{ "topic" => "nas-critical", "permission" => "write-only" }]
+        },
+        {
+          "username" => "other", "password" => "other-secret", "role" => "user",
+          "access" => [{ "topic" => "other-topic", "permission" => "read-write" }]
+        }
+      ]
     ), mode: "w", perm: 0o600)
     File.write(fake_ansible_vault, <<~'SH', mode: "w", perm: 0o700)
       #!/bin/sh
@@ -307,7 +305,7 @@ failures << "ntfy verification hook does not provision the topic roster" unless
 failures << "ntfy verification hook does not run its account program" unless
   verify_hook.include?("tests/mac/hooks/verify/15-ntfy.rb")
 failures << "ntfy verification hook does not inspect every eligible account subscription" unless
-  verify_program.include?("vault_managed_users") && verify_program.include?("base_url") &&
+  verify_program.include?("vault_managed_ntfy_users") && verify_program.include?("base_url") &&
     verify_program.include?("subscriptions") && verify_program.include?("Net::HTTP") &&
     verify_program.include?("basic_auth")
 failures << "ntfy verification hook incorrectly manages browser-local notification state" if

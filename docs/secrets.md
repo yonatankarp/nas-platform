@@ -706,7 +706,7 @@ source of values. Every key below is required.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the Gmail account from the current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. The names of the two mail objects are not credentials and are not recovered from here: `paperless_mail_account_name` and `paperless_mail_rule_name` label the account and rule this platform creates rather than authorising access to either, so they are operator policy in `inventory/group_vars/all/main.yml`, in plain sight and in version control. A recovery that restores this entry and finds them absent has restored a vault that cannot deploy Paperless, and the role's argument validation will name the missing one. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - Nextcloud: `vault_nextcloud_admin_username`, `vault_nextcloud_admin_password`, `vault_nextcloud_db_name`, `vault_nextcloud_db_username`, `vault_nextcloud_db_password`, `vault_nextcloud_cache_password`. Recover the administrator identity from the deployed instance's user list and its matching password from the password manager; recover the database name, user and that user's password together from the deployed Compose environment, checking them against the cluster that owns the existing data. Recover the cache password from the same deployed environment. Preserve these as one deployed identity set. The database name and user follow the Immich identifier rules; the remaining four are opaque strings that must simply be present. **Unlike Seafile's, none of these is fixed permanently by the first converge, and that is a deliberate property of how the stack is built rather than a difference in the software.** Nextcloud's entrypoint consumes every install-time variable only while the volume holds no `version.php`, exactly as Seafile's does; what differs is that `roles/nextcloud` pushes the three database values on every read as `NC_db*` environment overrides, which Nextcloud consults before `config.php` and never writes back, and rebuilds the cache credential from the environment at every start. So rotating any of those four in the vault and converging is enough. The administrator password is the one with no environment path -- it is a row in `oc_users`, not a system setting -- so the role presents the vault value to `ocs/v2.php/cloud/user` and runs `occ user:resetpassword` only when the server answers 401. That is a repair rather than a push, and it means a rotated value takes effect on the next converge but drops every session and app token derived from the old one. **There is one setting here that genuinely cannot be repaired, and it is not a credential.** `NC_setup_create_db_user` must be false on the very first converge: without it Nextcloud's installer sees that the account it was given can create roles -- the Postgres image always grants `POSTGRES_USER` superuser -- discards it, and mints an `oc_admin` of its own with a generated password that is written into `config.php` and exists nowhere else. Recovering from that state means reading that password out of `config.php`, resetting the two system values with `occ config:system:set` and dropping the stray role by hand. `services/nextcloud/compose.yml` carries the full reasoning beside the variable. `config.php` is why Nextcloud's data root is on the runtime plaintext list in the security boundary: it holds the database password, the instance secret and the cache password in clear at mode 0640. Like every other published service here Nextcloud is plain HTTP -- nothing on this platform terminates TLS -- so the administrator password, every session cookie and the file content itself are readable to anything that can observe the traffic on the LAN; a client arriving over the mesh VPN is already encrypted by that transport. Treat a Nextcloud login made across a network you do not trust as a disclosed password.
 - Vaultwarden: **no keys at all, and that is the design rather than an omission.** Every other entry above is a credential this platform authors and pushes outward. A password manager is the one service where that must not happen: master passwords are user-owned by construction, the server never learns them, and that zero-knowledge property is the entire reason to run it. So there is nothing here to recover, nothing to preserve unchanged, and `roles/vault_contract` must never grow a key for a master password. `tests/expected/vaultwarden.yml` therefore pins an empty key list — the only one on the platform that an implemented service is allowed — which `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in both directions — a service listed there that later *gains* a key fails as loudly as one that lost its last, so the exemption cannot quietly stop applying. See [The first value this platform deliberately does not own](#the-first-value-this-platform-deliberately-does-not-own) below.
-- Managed application users: `vault_managed_users`. This mapping has exactly the eight service lists documented below. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers.
+- Managed application users: one list per service, eight in all, each documented below under the variable that holds it and authored in that service's own vault file. Validation requires all eight and refuses any other variable whose name begins with vault_managed_, so a list left behind in a retired single mapping or a misspelt name fails the contract instead of going unread. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers.
 
 ### The first value this platform deliberately does not own
 
@@ -802,6 +802,7 @@ reconciliation rather than rotating credentials.
 
 #### audiobookshelf managed users
 
+Authored as `vault_managed_audiobookshelf_users` in `inventory/group_vars/all/vault_audiobookshelf.yml`, beside that service's own credentials.
 `username` is the login identity; `password` is its preserved clear credential;
 `type` is `admin`, `user`, or `guest`; `is_active` must be `true` so every run
 can prove the preserved password before reconciliation; and `permissions`
@@ -812,6 +813,7 @@ remain unchanged. Managed identities cannot duplicate the root administrator.
 
 #### beszel managed users
 
+Authored as `vault_managed_beszel_users` in `inventory/group_vars/all/vault_beszel.yml`, beside that service's own credentials.
 `email` is the normalized login identity; `password` is its preserved clear
 credential; `role` is `user` or `admin`; and `verified` must be `true`.
 Beszel 0.18.7 password authentication requires verified users, so an existing
@@ -821,6 +823,7 @@ or the existing primary application user.
 
 #### dozzle managed users
 
+Authored as `vault_managed_dozzle_users` in `inventory/group_vars/all/vault_dozzle.yml`, beside that service's own credentials.
 `username` is the login identity; `password` is its preserved clear credential;
 `password_hash` is the matching 60-character bcrypt value; `email` is either
 empty or a syntactically valid address; `name` is the displayed name; `filter`
@@ -833,6 +836,7 @@ template update uses Ansible's atomic writer with unsafe writes disabled.
 
 #### immich managed users
 
+Authored as `vault_managed_immich_users` in `inventory/group_vars/all/vault_immich.yml`, beside that service's own credentials.
 `email` is the normalized login identity; `password` is its preserved clear
 credential; `name` is the displayed name; and `quota_size` is a positive integer
 of bytes, or `null` for no limit at all. `null` is the only value that lifts the
@@ -848,6 +852,7 @@ Administrator status is not part of this allowlist contract.
 
 #### jellyfin managed users
 
+Authored as `vault_managed_jellyfin_users` in `inventory/group_vars/all/vault_jellyfin.yml`, beside that service's own credentials.
 `username` is the login identity; `password` is its preserved clear credential;
 and `policy` is an exact mapping of declared, supported boolean Jellyfin policy
 fields. Reconciliation merges those fields into the complete policy returned by
@@ -861,6 +866,7 @@ explicitly requires it.
 
 #### komga managed users
 
+Authored as `vault_managed_komga_users` in `inventory/group_vars/all/vault_komga.yml`, beside that service's own credentials.
 `email` is the normalized login identity; `password` is its preserved clear
 credential; and `roles` is a non-empty unique list drawn from `ADMIN`,
 `FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `KOREADER_SYNC`. The administrator
@@ -868,6 +874,7 @@ identity remains under the separate primary credential contract.
 
 #### ntfy managed users
 
+Authored as `vault_managed_ntfy_users` in `inventory/group_vars/all/vault_ntfy.yml`, beside that service's own credentials.
 `username` is the login identity; `password` is its preserved clear credential;
 `password_hash` is the matching bcrypt value; `role` is exactly `user` because
 managed entries are interactive nonadministrative accounts; `access` is a list
@@ -894,6 +901,7 @@ regenerating credentials.
 
 #### paperless_ngx managed users
 
+Authored as `vault_managed_paperless_ngx_users` in `inventory/group_vars/all/vault_paperless_ngx.yml`, beside that service's own credentials.
 `username` is the normalized login identity; `password` is its preserved clear
 credential; `email` is the account address; `is_active`, `is_staff`, and
 `is_superuser` are booleans; and `groups` is a unique list of exact Django group
@@ -1258,15 +1266,17 @@ unset vault_header
 git status --short inventory/group_vars/all/vault.yml
 ```
 
-Repository policy may permit committing that encrypted artifact. Never commit
-the vault password, plaintext or decrypted vaults, rendered environment files,
-temporary private keys, application/database configuration containing secrets,
-or secret-bearing logs. For an existing-deployment recovery,
-`generate-secrets.yml` remains forbidden.
+That single-file vault stays untracked. Do not commit it: repository policy
+refuses a committed `inventory/group_vars/all/vault.yml`, because every key now
+has a home in a per-service vault file and a second copy would silently compete
+with those. Never commit the vault password, plaintext or decrypted vaults,
+rendered environment files, temporary private keys, application/database
+configuration containing secrets, or secret-bearing logs. For an
+existing-deployment recovery, `generate-secrets.yml` remains forbidden.
 
-Git preserves only the executable bit, not owner-only mode `0600`. After every
-clone, checkout, or rebase that materializes the committed vault, restore its
-local permissions before using it:
+Git preserves only the executable bit, not owner-only mode `0600`, and an
+untracked file copied or restored by hand can lose that mode just as easily.
+Before using the installed vault, restore its local permissions:
 
 ```sh
 chmod 600 inventory/group_vars/all/vault.yml
@@ -1308,8 +1318,9 @@ contract before editing the encrypted value:
 After the schema and consumer changes are complete, edit the owning service's
 encrypted vault in place. A key listed under vault_keys in
 `tests/expected/<service>.yml` lives in
-`inventory/group_vars/all/vault_<role>.yml`; a key no single service owns lives
-in `vault.yml`. A service with no vault file yet gets one
+`inventory/group_vars/all/vault_<role>.yml`, and so does that service's
+managed-user list; the Pushover pair, which no single service owns, lives in
+`inventory/group_vars/all/vault_pushover.yml`. A service with no vault file yet gets one
 with `ansible-vault create` under the same password:
 
 ```sh
@@ -1348,9 +1359,8 @@ Never decrypt a vault onto disk.
 
 The repository vault is several files under one password in
 `inventory/group_vars/all/`: one file per service holds that service's own
-keys, the Pushover pair that Beszel, Dozzle and the deployment reports read has a file of its own,
-and `vault.yml` holds only the managed-user mapping, which is one variable and
-cannot be split across files.
+keys and its managed-user list, and the Pushover pair that Beszel, Dozzle and
+the deployment reports read has a file of its own.
 `group_vars` loads and decrypts all of them, and roles read credentials by
 variable name, so which file a key sits in changes nothing a play sees. A key
 defined in two files is not an error Ansible reports: the file loaded later

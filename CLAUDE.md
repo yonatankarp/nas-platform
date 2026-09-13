@@ -203,9 +203,9 @@ tests/mac/run.sh --lane fresh \
 
 **Vault is always first, and credentials flow one direction.** Every credential
 is authored in the encrypted vault under `inventory/group_vars/all/` — each
-service's own keys in `vault_<role>.yml`, the Pushover pair in
-`vault_pushover.yml`, and `vault_managed_users`, one variable that cannot span
-files, in `vault.yml` — and pushed outward. Nothing
+service's own keys and its `vault_managed_<role>_users` list in
+`vault_<role>.yml`, and the Pushover pair in `vault_pushover.yml` — and pushed
+outward. Nothing
 is ever read back from a running service, which is why a run converges in a
 single pass. Where a service would normally hand a human a generated value to
 copy-paste, this platform supplies its own instead (ntfy takes declarative
@@ -480,7 +480,7 @@ it for the reconciliation matrix. `docs` is not — it is a second and cheaper
 route to checks the gate still runs, so those checks reach a Markdown-only
 change in under a minute without also reaching for the Ansible toolchain.
 `vault` is neither an extraction nor a cheaper route: it is the one job the local
-gate cannot hold, because it decrypts `inventory/group_vars/all/vault.yml` with
+gate cannot hold, because it decrypts the vault in `inventory/group_vars/all/` with
 the `ANSIBLE_VAULT_PASSWORD` repository secret and runs `validate-vault.yml`
 against it — the play the poller runs first, and the one #559 failed on every
 five-minute tick while every check here stayed green. No manifest line
@@ -1131,7 +1131,7 @@ parked means one copy, and nothing — not even the household — can reconstruc
 client-side-encrypted item from anywhere else.
 
 **Vaultwarden also inverts the credential direction, and there it is correct.**
-Every other service takes its identity from `vault.yml` and is pushed outward. A
+Every other service takes its identity from the vault and is pushed outward. A
 password manager must not: master passwords are user-owned by construction, and
 that zero-knowledge property is the entire reason to run it. So Ansible owns
 `SIGNUPS_ALLOWED`, `INVITATIONS_ALLOWED`, `DOMAIN` and org policy, and

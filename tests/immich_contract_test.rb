@@ -673,7 +673,7 @@ def build_runtime_sandbox(root, options)
   File.write(File.join(root, "vault-plain.yml"), YAML.dump(
                                                    "vault_immich_admin_email" => ADMIN_EMAIL,
                                                    "vault_immich_admin_password" => ADMIN_PASSWORD,
-                                                   "vault_managed_users" => { "immich" => [] }
+                                                   "vault_managed_immich_users" => []
                                                  ))
   write_stub(File.join(bin, "ansible-vault"), <<~SH)
     #!/bin/sh

@@ -257,7 +257,7 @@ def vault_document
     "vault_arr_radarr_api_key" => RADARR_KEY,
     "vault_arr_sonarr_api_key" => SONARR_KEY,
     "vault_ntfy_seerr_token" => NTFY_TOKEN,
-    "vault_managed_users" => { "jellyfin" => HOUSEHOLD.map { |name| { "username" => name } } }
+    "vault_managed_jellyfin_users" => HOUSEHOLD.map { |name| { "username" => name } }
   }
 end
 

@@ -347,7 +347,7 @@ token cannot reach either record topic, and a leaked deploy token cannot write
 to `nas-containers`.
 
 ntfy runs `deny-all`, so a reading account sees only the topics named in its
-own `vault_managed_users.ntfy[].access` list, and the role subscribes it to
+own `vault_managed_ntfy_users[].access` list, and the role subscribes it to
 exactly those. Adding a topic to the platform therefore does not reach a phone
 until that account's ACL names it; a topic left out is a 403, not a quiet
 omission.

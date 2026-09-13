@@ -169,11 +169,11 @@ check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
   check(failures, vault[key].is_a?(String) && !vault[key].empty?,
         "vault example must declare #{key}")
 end
-managed = vault["vault_managed_users"]
-check(failures, managed.is_a?(Hash), "vault_managed_users must be a mapping")
-managed = {} unless managed.is_a?(Hash)
-check(failures, managed.keys.sort == ENTRY_FIELDS.keys.sort,
-      "vault_managed_users service keys differ")
+MANAGED_LIST_KEYS = ENTRY_FIELDS.keys.to_h { |service| [service, "vault_managed_#{service}_users"] }.freeze
+check(failures, vault.keys.grep(/\Avault_managed_/).sort == MANAGED_LIST_KEYS.values.sort,
+      "vault example managed-user list variables differ")
+managed = MANAGED_LIST_KEYS.select { |_service, key| vault.key?(key) }
+                           .transform_values { |key| vault[key] }
 
 ENTRY_FIELDS.each do |service, fields|
   entries = managed[service]
@@ -327,12 +327,11 @@ check(failures, (ntfy_identities & %w[dozzle beszel]).empty?,
       "ntfy managed identity must differ from publishers")
 
 spec = load_mapping(SPEC_PATH, failures, "vault argument spec")
-managed_spec = spec.dig("argument_specs", "main", "options", "vault_managed_users")
-check(failures, managed_spec.is_a?(Hash) && managed_spec["type"] == "dict" && managed_spec["required"] == true,
-      "vault_managed_users argument must be a required dict")
-managed_options = managed_spec.is_a?(Hash) ? managed_spec["options"] : nil
-check(failures, managed_options.is_a?(Hash) && managed_options.keys.sort == ARGUMENT_FIELDS.keys.sort,
-      "vault_managed_users argument service options differ")
+spec_options = spec.dig("argument_specs", "main", "options")
+spec_options = {} unless spec_options.is_a?(Hash)
+check(failures, spec_options.keys.grep(/\Avault_managed_/).sort == MANAGED_LIST_KEYS.values.sort,
+      "vault argument spec managed-user list options differ")
+managed_options = MANAGED_LIST_KEYS.transform_values { |key| spec_options[key] }
 ARGUMENT_FIELDS.each do |service, expected_fields|
   service_spec = managed_options.is_a?(Hash) ? managed_options[service] : nil
   check(failures,
@@ -410,23 +409,39 @@ reserved_identities = parsed_tasks.filter_map do |task|
 end.first
 reserved_identity_values = Array(reserved_identities&.values).flatten
 
-published_facts = parsed_tasks.flat_map do |task|
-  set_fact = task["ansible.builtin.set_fact"]
-  set_fact.is_a?(Hash) ? set_fact.keys : []
+# The eight lists are group_vars of their own now, authored in each service's
+# vault_<role>.yml, so the role publishes nothing: it assembles them inward into
+# the one mapping the schema filter reads. Each has to be submitted under its own
+# service, because a list the mapping omits is a list nothing validates -- the
+# filter reports it missing only for as long as its rule table still names it.
+submitted_lists = parsed_tasks.filter_map do |task|
+  task.dig("ansible.builtin.set_fact", "vault_contract_schema_errors")
+end.first.to_s
+MANAGED_LIST_KEYS.each do |service, key|
+  check(failures, submitted_lists.match?(/'#{Regexp.escape(service)}': #{Regexp.escape(key)}\b/),
+        "vault contract must submit #{key} for schema validation")
 end
-facts = ENTRY_FIELDS.keys.map { |service| "vault_managed_#{service}_users" }
-facts.each do |fact|
-  check(failures, published_facts.include?(fact),
-        "vault contract must publish named fact #{fact}")
+# The other direction. Argument validation requires the eight names and says
+# nothing about a ninth, so a leftover vault_managed_users from an un-migrated
+# vault, or a misspelt list, would otherwise load, go unread and validate. The
+# floor asks Ansible which vault_managed_ names are in scope and refuses any the
+# contract does not name, before the schema is resolved.
+floor_task = parsed_tasks.find do |task|
+  task["name"] == "Refuse managed-user variables the contract does not name"
 end
+floor_expression = floor_task.to_h.dig("vars", "vault_contract_unexpected_managed_lists").to_s
+check(failures,
+      floor_expression.include?("q('varnames', '^vault_managed_')") &&
+        MANAGED_LIST_KEYS.values.all? { |key| floor_expression.include?("'#{key}'") } &&
+        floor_task.to_h.dig("ansible.builtin.assert", "that").to_a ==
+          ["vault_contract_unexpected_managed_lists | length == 0"],
+      "vault contract must refuse vault_managed_ variables outside the eight lists")
+floor_position = parsed_tasks.index(floor_task)
 validation_position = parsed_tasks.index do |task|
-  task["name"] == "Require a valid managed-user vault schema"
+  task["name"] == "Resolve managed-user vault schema violations"
 end
-facts_position = parsed_tasks.index do |task|
-  task["name"] == "Resolve validated managed-user service lists"
-end
-check(failures, validation_position && facts_position && validation_position < facts_position,
-      "managed-user validation must precede named facts")
+check(failures, floor_position && validation_position && floor_position < validation_position,
+      "the unexpected managed-user variable floor must precede schema validation")
 check(failures, parsed_tasks.count { |task| task["name"].to_s.match?(/managed-user/i) } >= 3 &&
                   parsed_tasks.count { |task| task["no_log"] == true } >= 4,
       "managed-user validation must use no_log redaction")
@@ -544,7 +559,7 @@ check(failures, credential_filter_source.include?('JELLYFIN_ADMIN_USERNAME = "Yo
 # The scalar rule table must cover every scalar the role declares. A credential
 # the table forgets is one the filter reports as unexpected rather than one it
 # validates, and the role would fail closed for the wrong reason.
-scalar_vault_keys = vault_options.keys.grep(/\Avault_/) - ["vault_managed_users"]
+scalar_vault_keys = vault_options.keys.grep(/\Avault_/) - MANAGED_LIST_KEYS.values
 scalar_vault_keys.each do |key|
   check(failures, credential_filter_source.match?(/^\s*"#{Regexp.escape(key)}": \(/),
         "credential shape filter must carry a rule for #{key}")
@@ -593,57 +608,49 @@ check(failures,
 end
 
 generator = File.file?(GENERATOR_PATH) ? File.read(GENERATOR_PATH) : ""
-check(failures, generator.include?("vault_managed_users:"),
-      "ephemeral generator must include vault_managed_users")
-ENTRY_FIELDS.each_key do |service|
-  check(failures, generator.match?(/^  #{Regexp.escape(service)}:\n    - /),
+MANAGED_LIST_KEYS.each do |service, key|
+  check(failures, generator.match?(/^#{Regexp.escape(key)}:\n  - /),
         "ephemeral generator must include a synthetic #{service} entry")
 end
 
 policy = File.file?(POLICY_SUPPORT_PATH) ? File.read(POLICY_SUPPORT_PATH) : ""
-# vault_managed_users is platform-wide rather than owned by one service, so it stayed
-# in the policy source when the per-service keys moved out to
-# tests/expected/<service>.yml. It is no longer the only such key -- the Pushover pair
-# joined it, for the reason GLOBAL_VAULT_KEYS states -- so this pin asserts its
-# membership rather than the list's whole contents; the other names are pinned by the
-# credential contract's own parity checks. GLOBAL_VAULT_KEYS is concatenated into
-# EXPECTED_VAULT_KEYS, so pinning it here still pins the full expected set.
-check(failures, policy.match?(/GLOBAL_VAULT_KEYS = %w\[[^\]]*vault_managed_users[^\]]*\]\.freeze/m),
-      "policy expected vault keys must include vault_managed_users")
+# The eight lists stay in the policy source rather than in
+# tests/expected/<service>.yml, for the reason GLOBAL_VAULT_KEYS states: their names
+# invert the per-service prefix that file's entries must carry. The Pushover pair
+# shares the list, so this pin asserts membership rather than the list's whole
+# contents; GLOBAL_VAULT_KEYS is concatenated into EXPECTED_VAULT_KEYS, so pinning
+# it here still pins the full expected set.
+global_vault_keys = policy[/GLOBAL_VAULT_KEYS = %w\[([^\]]*)\]\.freeze/m, 1].to_s.split
+MANAGED_LIST_KEYS.each_value do |key|
+  check(failures, global_vault_keys.include?(key),
+        "policy expected vault keys must include #{key}")
+end
 plain_template = File.file?(PLAIN_TEMPLATE_PATH) ? File.read(PLAIN_TEMPLATE_PATH) : ""
 # The template as a whole is Jinja, but this block carries no substitutions, so
-# the block the template writes is parsed as the mapping it will be. The exact
-# eight-line string this replaced also pinned the key order, which YAML does not
-# make meaningful, and would have been satisfied by the same eight lines sitting
-# in a comment.
-plain_lines = plain_template.lines.map(&:chomp)
-managed_start = plain_lines.index("vault_managed_users:")
-managed_block = if managed_start
-                  [plain_lines[managed_start]] +
-                    plain_lines[(managed_start + 1)..].to_a.take_while do |line|
-                      line.start_with?("  ")
-                    end
-                else
-                  []
-                end
+# the lines the template writes for the eight lists are parsed as the mapping
+# they will be. An exact string would also pin the key order, which YAML does not
+# make meaningful, and would be satisfied by the same eight lines in a comment.
+managed_block = plain_template.lines.grep(/\Avault_managed_[a-z_]+:/)
 managed_defaults = begin
-  managed_block.empty? ? nil : YAML.safe_load(managed_block.join("\n"))["vault_managed_users"]
+  YAML.safe_load(managed_block.join)
 rescue Psych::SyntaxError
   nil
 end
 check(failures,
-      managed_defaults == ENTRY_FIELDS.keys.each_with_object({}) { |service, empty| empty[service] = [] },
+      managed_defaults == MANAGED_LIST_KEYS.values.to_h { |key| [key, []] },
       "brand-new vault template must render eight empty managed-user lists")
 validate_policy = File.file?(VALIDATE_POLICY_PATH) ? File.read(VALIDATE_POLICY_PATH) : ""
 check(failures, validate_policy.lines.include?("ruby tests/managed_users_vault_test.rb\n"),
       "policy validation must run the managed-user vault test")
 
 docs = File.file?(DOCS_PATH) ? File.read(DOCS_PATH) : ""
-check(failures, docs.scan(/`vault_managed_users`/).length == 1,
-      "secrets guide must document vault_managed_users exactly once")
+check(failures, !docs.include?("vault_managed_users"),
+      "secrets guide must not document the retired vault_managed_users mapping")
 ENTRY_FIELDS.each do |service, fields|
   service_section = docs.match(/^#### #{Regexp.escape(service)} managed users\n(.*?)(?=^#### |^### |^## |\z)/m)&.[](1).to_s
   check(failures, !service_section.empty?, "secrets guide must document #{service} managed users")
+  check(failures, service_section.include?("`#{MANAGED_LIST_KEYS.fetch(service)}`"),
+        "secrets guide must name #{MANAGED_LIST_KEYS.fetch(service)} in the #{service} section")
   fields.each do |field|
     check(failures, service_section.include?("`#{field}`"),
           "secrets guide must document #{service}.#{field}")
@@ -693,42 +700,42 @@ expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_pl
 end
 
 empty_immich = duplicate(runtime_vault)
-empty_immich.dig("vault_managed_users", "immich").clear
+empty_immich.dig("vault_managed_immich_users").clear
 expect_role_rejection(failures, "missing Immich family account", empty_immich,
                       runtime_vault.fetch("vault_immich_admin_email"))
 
 wrong_type = duplicate(runtime_vault)
-wrong_type.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = ["wrong-type-sentinel"]
+wrong_type.dig("vault_managed_audiobookshelf_users", 0)["permissions"] = ["wrong-type-sentinel"]
 expect_role_rejection(failures, "wrong nested field type", wrong_type, "wrong-type-sentinel")
 
 disabled_audiobookshelf = duplicate(runtime_vault)
-disabled_audiobookshelf.dig("vault_managed_users", "audiobookshelf", 0)["is_active"] = false
+disabled_audiobookshelf.dig("vault_managed_audiobookshelf_users", 0)["is_active"] = false
 expect_role_rejection(failures, "disabled Audiobookshelf target", disabled_audiobookshelf,
                       "example-reader-password")
 
 unverified_beszel = duplicate(runtime_vault)
-unverified_beszel.dig("vault_managed_users", "beszel", 0)["verified"] = false
+unverified_beszel.dig("vault_managed_beszel_users", 0)["verified"] = false
 expect_role_rejection(failures, "unverified Beszel target", unverified_beszel,
                       "example-reader-password")
 
 disabled_jellyfin = duplicate(runtime_vault)
-disabled_jellyfin.dig("vault_managed_users", "jellyfin", 0, "policy")["IsDisabled"] = true
+disabled_jellyfin.dig("vault_managed_jellyfin_users", 0, "policy")["IsDisabled"] = true
 expect_role_rejection(failures, "disabled Jellyfin target", disabled_jellyfin,
                       "example-reader-password")
 
 unsupported_abs_permission = duplicate(runtime_vault)
-unsupported_abs_permission.dig("vault_managed_users", "audiobookshelf", 0)["permissions"] = {
+unsupported_abs_permission.dig("vault_managed_audiobookshelf_users", 0)["permissions"] = {
   "flags" => { "libraries" => true }, "librariesAccessible" => [], "itemTagsSelected" => []
 }
 expect_role_rejection(failures, "unsupported Audiobookshelf permission", unsupported_abs_permission,
                       "libraries")
 
 invalid_komga_role = duplicate(runtime_vault)
-invalid_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["OPDS"]
+invalid_komga_role.dig("vault_managed_komga_users", 0)["roles"] = ["OPDS"]
 expect_role_rejection(failures, "unsupported Komga OPDS role", invalid_komga_role, "OPDS")
 
 koreader_komga_role = duplicate(runtime_vault)
-koreader_komga_role.dig("vault_managed_users", "komga", 0)["roles"] = ["KOREADER_SYNC"]
+koreader_komga_role.dig("vault_managed_komga_users", 0)["roles"] = ["KOREADER_SYNC"]
 _stdout, _stderr, koreader_status = validate_with_role(koreader_komga_role)
 check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual role evaluation")
 
@@ -737,7 +744,7 @@ check(failures, koreader_status.success?, "Komga KOREADER_SYNC must pass actual 
 # the run before vault_managed_user_errors was ever reached. Only role
 # evaluation proves the whole path accepts an unlimited quota.
 unlimited_immich_quota = duplicate(runtime_vault)
-unlimited_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = nil
+unlimited_immich_quota.dig("vault_managed_immich_users", 0)["quota_size"] = nil
 _stdout, _stderr, unlimited_status = validate_with_role(unlimited_immich_quota)
 check(failures, unlimited_status.success?,
       "unlimited Immich quota must pass actual role evaluation")
@@ -746,74 +753,74 @@ check(failures, unlimited_status.success?,
 # The schema filter is what refuses a non-integer now, so prove it still does
 # through the role rather than in isolation.
 string_immich_quota = duplicate(runtime_vault)
-string_immich_quota.dig("vault_managed_users", "immich", 0)["quota_size"] = "1073741824"
+string_immich_quota.dig("vault_managed_immich_users", 0)["quota_size"] = "1073741824"
 expect_role_rejection(failures, "string Immich quota", string_immich_quota,
                       "example-reader-password")
 
 integer_username = duplicate(runtime_vault)
-integer_username.dig("vault_managed_users", "audiobookshelf", 0)["username"] = 424_242
+integer_username.dig("vault_managed_audiobookshelf_users", 0)["username"] = 424_242
 expect_role_rejection(failures, "integer audiobookshelf username", integer_username, "424242")
 
 list_password = duplicate(runtime_vault)
-list_password.dig("vault_managed_users", "audiobookshelf", 0)["password"] =
+list_password.dig("vault_managed_audiobookshelf_users", 0)["password"] =
   ["list-password-sentinel"]
 expect_role_rejection(failures, "list audiobookshelf password", list_password,
                       "list-password-sentinel")
 
 list_dozzle_email = duplicate(runtime_vault)
-list_dozzle_email.dig("vault_managed_users", "dozzle", 0)["email"] =
+list_dozzle_email.dig("vault_managed_dozzle_users", 0)["email"] =
   ["list-email-sentinel"]
 expect_role_rejection(failures, "list Dozzle email", list_dozzle_email,
                       "list-email-sentinel")
 
 list_dozzle_name = duplicate(runtime_vault)
-list_dozzle_name.dig("vault_managed_users", "dozzle", 0)["name"] =
+list_dozzle_name.dig("vault_managed_dozzle_users", 0)["name"] =
   ["list-name-sentinel"]
 expect_role_rejection(failures, "list Dozzle name", list_dozzle_name,
                       "list-name-sentinel")
 
 list_ntfy_topic = duplicate(runtime_vault)
-list_ntfy_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] =
+list_ntfy_topic.dig("vault_managed_ntfy_users", 0, "access", 0)["topic"] =
   ["list-topic-sentinel"]
 expect_role_rejection(failures, "list ntfy access topic", list_ntfy_topic,
                       "list-topic-sentinel")
 
 %w[bad,user bad:user bad/user].each do |username|
   hostile_username = duplicate(runtime_vault)
-  hostile_username.dig("vault_managed_users", "ntfy", 0)["username"] = username
+  hostile_username.dig("vault_managed_ntfy_users", 0)["username"] = username
   expect_role_rejection(failures, "unsafe ntfy username", hostile_username, username)
 end
 
 ["bad topic", "bad/topic", "bad*topic", "bad:topic", "bad,topic"].each do |topic|
   hostile_topic = duplicate(runtime_vault)
-  hostile_topic.dig("vault_managed_users", "ntfy", 0, "access", 0)["topic"] = topic
+  hostile_topic.dig("vault_managed_ntfy_users", 0, "access", 0)["topic"] = topic
   expect_role_rejection(failures, "unsafe ntfy literal topic", hostile_topic, topic)
 end
 
 restricted_admin = duplicate(runtime_vault)
-restricted_admin_entry = restricted_admin.dig("vault_managed_users", "ntfy", 0)
+restricted_admin_entry = restricted_admin.dig("vault_managed_ntfy_users", 0)
 restricted_admin_entry["role"] = "admin"
 restricted_admin_entry.dig("access", 0)["permission"] = "read-only"
 expect_role_rejection(failures, "restricted ntfy administrator ACL", restricted_admin,
                       restricted_admin_entry.dig("access", 0, "topic"))
 
 jellyfin_secret = duplicate(runtime_vault)
-jellyfin_secret.dig("vault_managed_users", "jellyfin", 0, "policy")["Password"] =
+jellyfin_secret.dig("vault_managed_jellyfin_users", 0, "policy")["Password"] =
   "jellyfin-secret-sentinel"
 expect_role_rejection(failures, "secret-bearing Jellyfin policy", jellyfin_secret,
                       "jellyfin-secret-sentinel")
 
 duplicate_token = duplicate(runtime_vault)
 shared_token = "tk_33333333333333333333333333333"
-duplicate_token.dig("vault_managed_users", "ntfy", 0, "tokens") << shared_token
-second_ntfy = duplicate(duplicate_token.dig("vault_managed_users", "ntfy", 0))
+duplicate_token.dig("vault_managed_ntfy_users", 0, "tokens") << shared_token
+second_ntfy = duplicate(duplicate_token.dig("vault_managed_ntfy_users", 0))
 second_ntfy["username"] = "second-reader-example-invalid"
-duplicate_token.dig("vault_managed_users", "ntfy") << second_ntfy
+duplicate_token.dig("vault_managed_ntfy_users") << second_ntfy
 expect_role_rejection(failures, "cross-user duplicate ntfy token", duplicate_token, shared_token)
 
 publisher_collision = duplicate(runtime_vault)
 publisher_token = publisher_collision.fetch("vault_ntfy_dozzle_token")
-publisher_collision.dig("vault_managed_users", "ntfy", 0, "tokens") << publisher_token
+publisher_collision.dig("vault_managed_ntfy_users", 0, "tokens") << publisher_token
 expect_role_rejection(failures, "ntfy publisher token collision", publisher_collision, publisher_token)
 
 expect_role_rejection(
@@ -834,7 +841,7 @@ expect_role_rejection(
   }
 )
 
-managed_immich_email = runtime_vault.dig("vault_managed_users", "immich", 0, "email")
+managed_immich_email = runtime_vault.dig("vault_managed_immich_users", 0, "email")
 normalized_collision_email = " #{managed_immich_email.upcase} "
 expect_role_rejection(
   failures,

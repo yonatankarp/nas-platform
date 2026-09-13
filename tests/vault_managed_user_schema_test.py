@@ -216,7 +216,7 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                 candidate[service].append(copy.deepcopy(candidate[service][0]))
                 errors = vault_managed_user_errors(candidate, RESERVED,
                                                    RESERVED_IDENTITIES)
-                self.assertIn(f"vault_managed_users.{service}: {field} must be "
+                self.assertIn(f"vault_managed_{service}_users: {field} must be "
                               f"unique after normalization", errors)
 
     def test_identities_collide_after_trimming_and_lowercasing(self):
@@ -251,7 +251,7 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_no_identity_message_carries_a_value(self):
         # `dozzle` and `beszel` are excluded: they are public literals in the
         # role, not vault values, and they are also service names, so they appear
-        # legitimately in the `vault_managed_users.<service>` path prefix.
+        # legitimately in the `vault_managed_<service>_users` path prefix.
         secrets = [name for names in RESERVED_IDENTITIES.values() for name in names
                    if name not in SERVICES]
         for service, field in IDENTITY_FIELDS.items():

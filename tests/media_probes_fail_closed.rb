@@ -232,10 +232,10 @@ def exercise_disabled_target_rejection(failures)
   )
   cases = [
     ["Audiobookshelf", "audiobookshelf", "fixture-token", lambda do |vault|
-      vault.dig("vault_managed_users", "audiobookshelf", 0)["is_active"] = false
+      vault.dig("vault_managed_audiobookshelf_users", 0)["is_active"] = false
     end],
     ["Jellyfin", "jellyfin", "admin-token", lambda do |vault|
-      vault.dig("vault_managed_users", "jellyfin", 0, "policy")["IsDisabled"] = true
+      vault.dig("vault_managed_jellyfin_users", 0, "policy")["IsDisabled"] = true
     end]
   ]
   cases.each do |label, service, token, mutate|

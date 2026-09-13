@@ -567,9 +567,10 @@ check(failures, !vault_contract_tasks.empty? && vault_contract_tasks.all? { |tas
 # because both the structured keys and the scalar credentials are validated by
 # filters that return a list of violations. For the scalar credentials this stays
 # a real guard: the role passes them to the filter as a mapping of variable name
-# to value, so deleting a scalar entry stops it being inspected. For
-# vault_managed_users it is only a presence check, since the pass-through facts in
-# "Resolve validated managed-user service lists" name it too. That key's real pin
+# to value, so deleting a scalar entry stops it being inspected. The eight
+# vault_managed_<service>_users lists are submitted the same way, as a mapping of
+# service to list in "Resolve managed-user vault schema violations", so deleting
+# one stops it being inspected too. Their deeper pin
 # is tests/managed_users_vault_test.rb, which requires the schema filter by name
 # and runs some fifty rejection cases through the role; replacing the filter call
 # with a literal passes here and fails forty checks there. The scalar credentials
@@ -1134,11 +1135,27 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
-# Each service's own keys live in vault_<role>.yml; vault.yml holds only the
-# managed-user mapping, which is one variable and cannot span files. Where a key
-# sits cannot be checked without the password, so the gate holds what it can
-# read: every one is encrypted and names a real role. Pushover is the one
-# exception: an external account both Beszel and Dozzle read, with no role.
+# Each service's own keys live in vault_<role>.yml, its managed-user list
+# included since #612 split the one mapping that could not span files into eight
+# variables. Where a key sits cannot be checked without the password, so the gate
+# holds what it can read: every one is encrypted and names a real role. Pushover
+# is the one exception: an external account both Beszel and Dozzle read, with no
+# role.
+#
+# vault.yml itself is still globbed, because an operator's single-file vault
+# installed there as the secrets guide describes must be encrypted too. What is
+# refused is *committing* one: every key now has a per-service home, so a tracked
+# vault.yml can only be an un-migrated copy whose keys duplicate the per-service
+# files, and group_vars resolves a duplicate by load order without a word. The
+# refusal asks git rather than the disk for that reason, and a tree git cannot
+# enumerate -- a mutation sandbox -- reports nothing tracked.
+tracked_root_vault, _tracked_root_vault_error, _tracked_root_vault_status = Open3.capture3(
+  ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] },
+  "git", "-C", ROOT, "ls-files", "--", "inventory/group_vars/all/vault.yml"
+)
+check(failures, tracked_root_vault.strip.empty?,
+      "inventory/group_vars/all/vault.yml is committed; every vault key belongs in " \
+      "its service's vault_<role>.yml (or vault_pushover.yml)")
 manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } + ["pushover"]
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
