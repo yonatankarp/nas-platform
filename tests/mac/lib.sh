@@ -198,10 +198,20 @@ mac_validate_integration_callback() {
 # when the sandbox's own `.invalid` origin did not answer through it. The sandbox
 # is disposable and the tailnet is not. An empty list takes the role's absent
 # path, which is a reporting skip it already takes on every CI lane.
+#
+# dozzle_pushover_api_url for the reason tests/integration_controller_lib.sh
+# records at length: the alert relay POSTs to it on every container event Dozzle
+# reports, and both Dozzle health rules carry cooldown: 0 against every
+# container, so the role default would page the household's real devices off
+# this proof's own disposable containers. The port is
+# tests/contracts/dozzle.sh's PLATFORM_DOZZLE_PUSHOVER_PORT, where the notify
+# mode's recorder listens; tests/dozzle_contract_test.rb refuses the two
+# disagreeing.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
+    -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e '{"vaultwarden_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)

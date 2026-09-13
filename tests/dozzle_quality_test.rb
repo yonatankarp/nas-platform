@@ -223,13 +223,13 @@ runtime = File.read(RUNTIME)
 fixed_diagnostics = [
   "OOM drift fixture differs",
   "managed dispatcher template differs",
-  "unhealthy event did not reach the private relay and disposable ntfy",
+  "unhealthy event did not reach the private relay and the Pushover recorder",
   "healthy transition did not produce one correlated recovery",
   "startup healthy fixture did not exercise the managed recovery rule",
   "startup healthy event produced a false recovery",
   "disposable exit fixture did not exit with the expected status",
-  "exit-code-1 event did not reach the private relay and disposable ntfy",
-  "relay exposed its event envelope as ntfy message text"
+  "exit-code-1 event did not reach the private relay and the Pushover recorder",
+  "relay exposed its event envelope as Pushover message text"
 ]
 fixed_diagnostics.each do |diagnostic|
   check(failures, runtime.include?(diagnostic), "Dozzle contract is missing fixed diagnostic: #{diagnostic}")

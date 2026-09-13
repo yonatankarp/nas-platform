@@ -52,6 +52,35 @@ integration_media_adopt_existing=${integration_media_adopt_existing?}
 # lane reaches the service on 127.0.0.1 like every other.
 integration_vaultwarden_domain=https://vaultwarden.integration.invalid
 
+# THE SECOND COORDINATE THIS SANDBOX CANNOT SUPPLY, and the one whose default is
+# actively harmful here rather than merely wrong.
+#
+# roles/dozzle deploys an alert relay that POSTs to dozzle_pushover_api_url
+# whenever Dozzle reports a container event, and both Dozzle health rules carry
+# cooldown: 0 against every container. Left at the role default this lane would
+# send the household's real Pushover account one push per container transition
+# of its own disposable sandbox, against a 10,000-a-month quota, on every lane
+# that converges this stack.
+#
+# #598's conclusion does not carry over, which is worth saying out loud: it
+# recorded that "the integration lanes need no equivalent" for Beszel's Pushover
+# credential check, and that holds only because the check is a `never`-tagged
+# verification task and a lane converges rather than verifies. This endpoint is
+# read by a deployed process, so no tag gates it.
+#
+# EVERY LANE, for the same reason integration_vaultwarden_domain is: `full`,
+# `idempotence-check` and a routed `smoke` all converge the whole site, so a
+# `case $INTEGRATION_SUITE` here would leave all of those pointed at the real
+# API.
+#
+# The port is tests/contracts/dozzle.sh's PLATFORM_DOZZLE_PUSHOVER_PORT, where
+# the notify mode's recorder listens; tests/dozzle_contract_test.rb refuses the
+# two disagreeing. The host is left as a template rather than written out,
+# because only the inventory knows which address a container reaches this host
+# at. Nothing listens there outside the notify mode, and a refused connection is
+# exactly what the relay is built to do with an upstream it cannot reach.
+integration_dozzle_pushover_api_url='http://{{ platform_callback_host }}:32587/1/messages.json'
+
 # nas_compose_minimum is the one -e below that is not about this sandbox's
 # identity, and it is here for the same reason the rest are: the value inventory
 # would supply is wrong for this lane and right for the NAS.
@@ -87,6 +116,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
+    -e dozzle_pushover_api_url="$integration_dozzle_pushover_api_url" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \

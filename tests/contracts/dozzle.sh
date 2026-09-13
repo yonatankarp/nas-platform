@@ -89,6 +89,10 @@ render_group_contract() {
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     ALERT_RELAY_TOKEN=contract-relay-token ALERT_RELAY_PORT="$relay_probe_port" \
+    PUSHOVER_API_URL=http://127.0.0.1:1/1/messages.json \
+    PUSHOVER_TOKEN=contract-pushover-token PUSHOVER_USER_KEY=contract-pushover-user-key \
+    ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
+    ALERT_DAILY_GLOBAL_CEILING=200 \
     NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
     NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=contract-ntfy-token \
     NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
@@ -176,7 +180,7 @@ if [ "$mode" = static ]; then
 fi
 
 ruby -ryaml "$stack_program" "$compose" "$role" "$env_template" \
-  "$deployment_inputs" "$deployment_bundle" </dev/null
+  "$deployment_inputs" "$deployment_bundle" "$defaults" </dev/null
 
 ruby -ryaml "$alerts_program" "$defaults" "$role" "$integration" "$mac_drift" \
   "$mac_verify" "$mac_verify_labels" "$mode" </dev/null
@@ -194,9 +198,17 @@ esac
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOZZLE_PORT:=8080}"
 : "${PLATFORM_NTFY_PORT:=2586}"
+# The port the notify mode's Pushover recorder listens on, and the one every
+# lane redirects dozzle_pushover_api_url at. The number has to agree with the
+# lane that converged the relay, because the endpoint is rendered into the
+# relay's environment file long before this program runs: it is written here,
+# in tests/integration_controller_lib.sh and in tests/mac/lib.sh, and
+# tests/dozzle_contract_test.rb refuses the three disagreeing.
+: "${PLATFORM_DOZZLE_PUSHOVER_PORT:=32587}"
 PLATFORM_CONTRACT_DOZZLE_DEFAULTS=$defaults
 PLATFORM_CONTRACT_NTFY_COMPOSE=$ntfy_compose
 export PLATFORM_DOZZLE_PORT PLATFORM_NTFY_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
+export PLATFORM_DOZZLE_PUSHOVER_PORT
 export PLATFORM_CONTRACT_NTFY_COMPOSE
 
 exec ruby "$runtime_program" "$mode" "$@" </dev/null

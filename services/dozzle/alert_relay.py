@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private authenticated Dozzle event relay for structured ntfy alerts."""
+"""Private authenticated Dozzle event relay for structured Pushover alerts."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
 import hmac
+import html
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
@@ -15,6 +16,7 @@ import re
 import secrets
 import signal
 import stat
+import sys
 import threading
 import urllib.error
 import urllib.parse
@@ -28,10 +30,31 @@ STOP_SIGNALS = frozenset({signal.SIGINT, signal.SIGTERM})
 MAX_BODY_BYTES = 16 * 1024
 MAX_STATE_BYTES = 64 * 1024
 MAX_STATE_ENTRIES = 128
+# The ceiling's own bound on state growth, and the reason it is separate from
+# MAX_STATE_ENTRIES rather than shared with it. A counter is not a health entry:
+# bounded_state may drop any counter, because the global counter beneath them is
+# what actually guarantees the quota, while a health entry may only be dropped
+# once it is healthy. Sharing one bound would let counters take bytes from
+# health entries that cannot be evicted.
+#
+# WHAT THAT BUYS IS A DEFERRAL, NOT A PREVENTION, and the difference is worth
+# stating because the opposite was claimed here first. A document of nothing but
+# unhealthy entries still reaches
+# `raise StateError("unhealthy state exceeds bounds")` -- byte-identical to the
+# line that has always been there, and not something the counters introduced.
+# Measured: a short ASCII host stores 128 entries and fails at 129, which is
+# MAX_STATE_ENTRIES binding rather than the byte bound; a 256-character
+# non-ASCII host stores 39 and fails at 40. Shedding counters first buys back
+# exactly the counters' own bytes and nothing more -- 39 entries reconcile
+# alongside 128 counters by shedding all 128 -- so the entry ceiling is the same
+# as it is with no counters at all. Thirty containers run on this NAS, so
+# neither number is in reach.
+MAX_BUDGET_ENTRIES = 128
 HEALTHY_RETENTION = timedelta(days=30)
-STATE_VERSION = 2
-LEGACY_STATE_VERSION = 1
+STATE_VERSION = 3
+LEGACY_STATE_VERSIONS = (1, 2)
 MINIMUM_TIMESTAMP = "0001-01-01T00:00:00Z"
+DAY_PATTERN = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
 ENVELOPE_KEYS = {
     "version",
     "rule",
@@ -56,7 +79,92 @@ TIMESTAMP_PATTERN = re.compile(
 TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S"
 EXIT_CODE_PATTERN = re.compile(r"(?:0|[1-9][0-9]{0,2})\Z")
 PORT_PATTERN = re.compile(r"[1-9][0-9]{0,4}\Z")
-MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
+CEILING_PATTERN = re.compile(r"[1-9][0-9]{0,5}\Z")
+
+# Pushover's emergency priority, and the two parameters it refuses a message
+# without: the API rejects priority 2 outright unless both `retry` and `expire`
+# are present. They are what the acknowledge semantic this relay exists for is
+# made of -- the phone re-alerts every `retry` seconds until somebody
+# acknowledges it, until `expire` seconds have passed, or until Pushover's own
+# retry cap is reached, whichever comes first.
+#
+# THAT THIRD TERM IS EASY TO LEAVE OUT AND THIS COMMENT LEFT IT OUT. It read
+# "an hour of re-alerting once a minute is already sixty alerts", which is
+# arithmetic the API does not perform: Pushover caps a message at 50 retries
+# regardless of `expire`, and says so in its own worked example, where
+# retry=30 with expire=10800 escalates for 25 minutes rather than three hours.
+# So what this configuration actually does is re-alert every 60 seconds and
+# stop at the cap, about 50 minutes in, or the moment somebody acknowledges.
+#
+# WHY `expire` STAYS ABOVE WHAT THE CAP CAN REACH. 3600 leaves roughly ten
+# minutes the cap makes unreachable, and that slack is deliberate rather than
+# an oversight now that it is measured: the two are independent bounds, one on
+# elapsed time and one on count, and `expire` is the one that stays correct if
+# `retry` is ever changed. Lowering it to 50 * 60 would make the two coincide
+# today and silently become the binding term the moment `retry` moved. The
+# assertion below is what keeps this paragraph true: the cap must be the term
+# that fires first.
+#
+# Both values are interior to Pushover's documented bounds rather than at them
+# (retry floor 30 seconds, expire ceiling 10800), so a message is accepted
+# whatever the exact limits are today.
+#
+# NOT ROLE-CONFIGURABLE, unlike the ceilings below, and that is a decision. The
+# ceilings are numbers a household might reasonably want to tune and cannot set
+# to anything Pushover would reject. These two can: below 30 or above 10800 the
+# API refuses the message, so every out-of-memory alert would be lost to a 4xx
+# the relay reports only as a 502. A knob whose wrong setting silences the one
+# alert this transport was chosen for is worth more than the tuning it offers.
+#
+# Retries do not each cost a message against the monthly quota -- one emergency
+# message is one message however many times Pushover re-alerts it -- so the
+# ceiling below is a bound on the relay's event rate, not on this.
+EMERGENCY_PRIORITY = 2
+EMERGENCY_RETRY_SECONDS = 60
+EMERGENCY_EXPIRE_SECONDS = 3600
+# Pushover's own cap, named so the claim above is checkable rather than prose.
+# Nothing sends this value -- it is not a parameter -- but the paragraph above
+# depends on the cap being the binding term, and a later edit to `retry` could
+# make that false without touching a line of it.
+#
+# Checked by tests/dozzle_alert_relay_test.py rather than here. A module-level
+# assertion would have been the wrong place by some distance: these are literals
+# in this file, so only a developer can get them wrong, and refusing to start
+# would turn a too-short escalation window -- which still alerts -- into a relay
+# that reports nothing at all. The gate is where a developer's mistake belongs.
+EMERGENCY_MAX_RETRIES = 50
+
+# Pushover refuses a message longer than 1024 characters, and refuses it with a
+# 4xx -- so an over-long alert is not a truncated alert, it is a lost one. The
+# bound below is on the ESCAPED length rather than on the input, which is the
+# half a bound on the input cannot reach: `'` becomes `&#x27;`, so 128
+# characters of container name can render as 768 and two such fields overrun the
+# cap between them. Real Docker names cannot contain any of the five escaped
+# characters, so nothing on this platform reaches it; the envelope accepts any
+# non-control text in that field, so something could.
+#
+# 384 apiece leaves the worst case at 768 plus about sixty characters of labels,
+# comfortably inside the cap with room for the notice's extra lines.
+MAX_ESCAPED_FIELD_CHARACTERS = 384
+MAX_MESSAGE_CHARACTERS = 1024
+# The title has a cap of its own, 250, and it is reached by a shorter input than
+# the message cap is: the title is NOT escaped, so nothing expands, but it is
+# also not bounded by anything except the slice in each renderer. The envelope
+# admits a 256-character container name, and 256 plus a prefix is already over.
+# Named rather than left implicit in those slices because the slices are the
+# whole guard -- removing one produced a 268-character title and a lost alert
+# while every test stayed green.
+MAX_TITLE_CHARACTERS = 250
+MAX_TITLE_CONTAINER_CHARACTERS = 128
+
+# How much of an upstream diagnostic reaches the log. Bounded because the text
+# is the far end's rather than ours, because the stack caps this log at 10m x 3
+# and a large error body would spend that, and because the clause an operator
+# needs -- "user identifier is not a valid user" -- is at the front.
+MAX_DIAGNOSTIC_CHARACTERS = 256
+# How much of an error response is read at all. HTTPError is a file-like object
+# on a socket, so an unbounded read is an unbounded wait inside the state lock.
+MAX_DIAGNOSTIC_BYTES = 4096
 
 
 class ConfigurationError(Exception):
@@ -91,41 +199,49 @@ class Config:
     __slots__ = (
         "alert_relay_token",
         "alert_relay_port",
-        "ntfy_publish_url",
-        "ntfy_topic",
-        "ntfy_containers_topic",
-        "ntfy_token",
+        "pushover_api_url",
+        "pushover_token",
+        "pushover_user_key",
         "alert_state_path",
+        "container_ceiling",
+        "oom_container_ceiling",
+        "global_ceiling",
     )
 
     def __init__(
         self,
         relay_token,
         relay_port,
-        publish_url,
-        topic,
-        events_topic,
-        ntfy_token,
+        api_url,
+        pushover_token,
+        pushover_user_key,
         state_path,
+        container_ceiling,
+        oom_container_ceiling,
+        global_ceiling,
     ):
         self.alert_relay_token = relay_token
         self.alert_relay_port = relay_port
-        self.ntfy_publish_url = publish_url
-        self.ntfy_topic = topic
-        self.ntfy_containers_topic = events_topic
-        self.ntfy_token = ntfy_token
+        self.pushover_api_url = api_url
+        self.pushover_token = pushover_token
+        self.pushover_user_key = pushover_user_key
         self.alert_state_path = state_path
+        self.container_ceiling = container_ceiling
+        self.oom_container_ceiling = oom_container_ceiling
+        self.global_ceiling = global_ceiling
 
     @classmethod
     def from_mapping(cls, values):
         names = (
             "ALERT_RELAY_TOKEN",
             "ALERT_RELAY_PORT",
-            "NTFY_PUBLISH_URL",
-            "NTFY_TOPIC",
-            "NTFY_CONTAINERS_TOPIC",
-            "NTFY_TOKEN",
+            "PUSHOVER_API_URL",
+            "PUSHOVER_TOKEN",
+            "PUSHOVER_USER_KEY",
             "ALERT_STATE_PATH",
+            "ALERT_DAILY_CONTAINER_CEILING",
+            "ALERT_DAILY_OOM_CONTAINER_CEILING",
+            "ALERT_DAILY_GLOBAL_CEILING",
         )
         resolved = {}
         for name in names:
@@ -144,28 +260,58 @@ class Config:
             raise ConfigurationError("ALERT_RELAY_PORT must be a TCP port number")
         relay_port = int(port)
 
-        parsed = urllib.parse.urlsplit(resolved["NTFY_PUBLISH_URL"])
+        # Unlike the ntfy publisher this replaced, the endpoint carries a path:
+        # Pushover's message API is /1/messages.json, and the whole URL is a
+        # variable rather than a host so a lane can redirect it at a recorder
+        # without reaching the household's real devices. A query or a fragment
+        # is refused because the credentials travel in the form body and a URL
+        # carrying its own parameters is a sign of a hand-edited endpoint.
+        parsed = urllib.parse.urlsplit(resolved["PUSHOVER_API_URL"])
         if (
             parsed.scheme not in {"http", "https"}
             or not parsed.hostname
             or parsed.username is not None
             or parsed.password is not None
-            or parsed.path not in {"", "/"}
+            or not parsed.path.startswith("/")
+            or parsed.path.endswith("/")
             or parsed.query
             or parsed.fragment
         ):
-            raise ConfigurationError("NTFY_PUBLISH_URL must be an HTTP(S) root URL")
-        publish_url = urllib.parse.urlunsplit(
-            (parsed.scheme, parsed.netloc, "/", "", "")
+            raise ConfigurationError("PUSHOVER_API_URL must be an HTTP(S) endpoint URL")
+        api_url = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, "", "")
         )
 
-        topic = resolved["NTFY_TOPIC"]
-        events_topic = resolved["NTFY_CONTAINERS_TOPIC"]
-        for name, value in (("NTFY_TOPIC", topic), ("NTFY_CONTAINERS_TOPIC", events_topic)):
-            if len(value) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-                raise ConfigurationError(f"{name} is invalid")
-        if topic == events_topic:
-            raise ConfigurationError("NTFY_TOPIC and NTFY_CONTAINERS_TOPIC must differ")
+        # Deliberately no shape rule on either credential. Both are issued by
+        # pushover.net and this platform cannot vouch for their form; the same
+        # argument filter_plugins/vault_credential_schema.py records for the
+        # vault rules applies here, and a guessed pattern would refuse a real
+        # credential with the fix locked inside an encrypted file.
+        ceilings = []
+        for name in (
+            "ALERT_DAILY_CONTAINER_CEILING",
+            "ALERT_DAILY_OOM_CONTAINER_CEILING",
+            "ALERT_DAILY_GLOBAL_CEILING",
+        ):
+            if not CEILING_PATTERN.fullmatch(resolved[name]):
+                raise ConfigurationError(f"{name} must be a positive alert count")
+            ceilings.append(int(resolved[name]))
+        container_ceiling, oom_container_ceiling, global_ceiling = ceilings
+        # An OOM allowance below the ordinary one would be the opposite of what
+        # the higher threshold is for, and a global backstop below a per-container
+        # allowance would make the per-container ceiling unreachable and so
+        # unprovable. Both are refused at start-up rather than silently inverted.
+        if oom_container_ceiling < container_ceiling:
+            raise ConfigurationError(
+                "ALERT_DAILY_OOM_CONTAINER_CEILING must not be below "
+                "ALERT_DAILY_CONTAINER_CEILING"
+            )
+        if global_ceiling < oom_container_ceiling:
+            raise ConfigurationError(
+                "ALERT_DAILY_GLOBAL_CEILING must not be below "
+                "ALERT_DAILY_OOM_CONTAINER_CEILING"
+            )
+
         state_path = Path(resolved["ALERT_STATE_PATH"])
         if not state_path.is_absolute() or state_path.name in {"", ".", ".."}:
             raise ConfigurationError("ALERT_STATE_PATH must be an absolute file path")
@@ -173,11 +319,13 @@ class Config:
         return cls(
             resolved["ALERT_RELAY_TOKEN"],
             relay_port,
-            publish_url,
-            topic,
-            events_topic,
-            resolved["NTFY_TOKEN"],
+            api_url,
+            resolved["PUSHOVER_TOKEN"],
+            resolved["PUSHOVER_USER_KEY"],
             state_path,
+            container_ceiling,
+            oom_container_ceiling,
+            global_ceiling,
         )
 
 
@@ -304,32 +452,59 @@ def validate_envelope(payload):
     }
 
 
-def markdown_escape(value, maximum=128):
+def html_escape(value, maximum=128, escaped_maximum=MAX_ESCAPED_FIELD_CHARACTERS):
+    """Bound a container- or host-supplied string, then make it inert markup.
+
+    Truncation comes first, the way the markdown escaping this replaced did it:
+    escaping first and cutting afterwards can split `&amp;` in the middle and
+    leave a dangling entity at the boundary.
+
+    The second bound is on the result rather than the input, and it drops whole
+    input characters rather than cutting the escaped text, for that same reason.
+    It exists because escaping expands: a field of 128 apostrophes renders as 768
+    characters, and two such fields put the message past Pushover's 1024-character
+    cap -- which is a rejected message and a lost alert, not a truncated one.
+
+    `quote=True` although these only ever land in element text. Pushover parses
+    `message` under html=1 as five tags -- <b>, <i>, <u>, <font color> and
+    <a href> -- of which THIS RELAY EMITS ONLY <b>; the narrowness is ours, not
+    the API's. Two of those five take attributes, so escaping the quotes costs
+    two entities and removes the whole class of mistake a later `<a href="...">`
+    would introduce.
+    """
     bounded = value[:maximum]
-
-    def escape(match):
-        character = match.group(1)
-        position = match.start()
-        if (
-            character == "_"
-            and position > 0
-            and position + 1 < len(bounded)
-            and bounded[position - 1].isalnum()
-            and bounded[position + 1].isalnum()
-        ):
-            return character
-        return f"\\{character}"
-
-    return MARKDOWN_PATTERN.sub(escape, bounded)
+    escaped = html.escape(bounded, quote=True)
+    while bounded and len(escaped) > escaped_maximum:
+        bounded = bounded[:-1]
+        escaped = html.escape(bounded, quote=True)
+    return escaped
 
 
-def render_notification(event, topic, events_topic):
-    """Render one event. A recovery is a record, not something to wake up for."""
+def render_notification(event):
+    """Render one event as Pushover form fields.
 
+    Priorities, and why each. OOM is 2: it is the acknowledge semantic this
+    relay was moved to Pushover for, and a container the kernel killed is the
+    one event here that should keep re-alerting until a human says they have
+    seen it. `Unexpected exit` and `Unhealthy` are 1, which bypasses the
+    recipient's quiet hours without an acknowledgement loop -- a service that
+    has gone unhealthy overnight is worth waking up a phone for, and 0 would let
+    quiet hours hold it until morning. `Recovery` is -1, a badge with no sound:
+    it is a record that closes an earlier alert, not something to wake up for.
+
+    The -1 replaces a second ntfy topic. Recovery used to be routed to
+    nas-containers purely so it could be muted separately from nas-critical;
+    Pushover expresses "do not make a noise about this" on the message itself,
+    so the second topic has no remaining job and the relay no longer has one.
+
+    Only `message` is parsed as HTML under `html=1`. `title` is plain text on
+    Pushover's side, so the container name goes into it raw and deliberately --
+    escaping it would show `&amp;` to a human reading a notification title.
+    """
     rule = event["rule"]
-    host = markdown_escape(event["host"])
-    container = markdown_escape(event["container"])
-    title_container = event["container"][:128]
+    host = html_escape(event["host"])
+    container = html_escape(event["container"])
+    title_container = event["container"][:MAX_TITLE_CONTAINER_CHARACTERS]
     title_prefix = {
         "OOM": "Out of memory",
         "Unexpected exit": "Unexpected exit",
@@ -337,30 +512,82 @@ def render_notification(event, topic, events_topic):
         "Recovery": "Recovered",
     }[rule]
     title = f"{title_prefix} · {title_container}"
-    lines = [f"**Host:** `{host}`", f"**Container:** `{container}`"]
+    lines = [f"<b>Host:</b> {host}", f"<b>Container:</b> {container}"]
     if rule == "Unexpected exit":
-        lines.append(f"**Exit code:** `{event['exitCode']}`")
+        lines.append(f"<b>Exit code:</b> {html_escape(event['exitCode'])}")
     else:
         status_text = {
             "OOM": "out of memory",
             "Unhealthy": "unhealthy",
             "Recovery": "healthy",
         }[rule]
-        lines.append(f"**Status:** `{status_text}`")
-    priority, tags = {
-        "OOM": (5, ["rotating_light", "skull"]),
-        "Unexpected exit": (5, ["warning", "skull"]),
-        "Unhealthy": (5, ["rotating_light", "warning"]),
-        "Recovery": (3, ["white_check_mark"]),
+        lines.append(f"<b>Status:</b> {status_text}")
+    priority = {
+        "OOM": EMERGENCY_PRIORITY,
+        "Unexpected exit": 1,
+        "Unhealthy": 1,
+        "Recovery": -1,
     }[rule]
+    return emergency_fields(
+        {"title": title, "message": "\n".join(lines), "html": "1", "priority": priority}
+    )
+
+
+def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
+    """Render the one message a tripped ceiling is allowed to send.
+
+    Silent suppression is how somebody stops noticing that their alerting died,
+    so the ceiling says out loud what it has stopped sending and when it will
+    start again. Priority 1 for the same reason the alerts it is replacing carry
+    it: this message means the platform has gone quiet, which is worse news than
+    any single alert it suppressed. Never 2 -- there is nothing to acknowledge.
+
+    It is rendered from the event that tripped the ceiling, so the `host` is the
+    one that reported it rather than a name this process would have to invent.
+
+    `oom_allowance` is what keeps the message honest in the one case where
+    "suppressed" would overstate it. A container that has spent its ordinary
+    allowance still publishes out-of-memory kills up to the higher OOM one, so a
+    notice that said nothing about that would be claiming a silence this relay
+    is not keeping. It is None for the global scope, where nothing gets through.
+    """
+    host = html_escape(event["host"])
+    if scope == "global":
+        subject = "every container, every rule"
+        title = "Alerts suppressed · ceiling reached"
+    else:
+        subject = html_escape(event["container"])
+        title = (
+            "Alerts suppressed · "
+            f"{event['container'][:MAX_TITLE_CONTAINER_CHARACTERS]}"
+        )
+    lines = [
+        f"<b>Host:</b> {host}",
+        f"<b>Suppressed:</b> {subject}",
+        f"<b>Reason:</b> {ceiling} alerts already sent on {day} (UTC)",
+    ]
+    if oom_allowance is not None:
+        lines.append(
+            f"<b>Still reporting:</b> out-of-memory kills, to {oom_allowance} a day"
+        )
+    lines.append("<b>Resumes:</b> at the next UTC day")
     return {
-        "topic": events_topic if rule == "Recovery" else topic,
         "title": title,
         "message": "\n".join(lines),
-        "priority": priority,
-        "tags": tags,
-        "markdown": True,
+        "html": "1",
+        "priority": 1,
     }
+
+
+def emergency_fields(fields):
+    """Attach retry/expire to a priority 2 message, which Pushover requires."""
+    if fields["priority"] != EMERGENCY_PRIORITY:
+        return fields
+    return dict(
+        fields,
+        retry=EMERGENCY_RETRY_SECONDS,
+        expire=EMERGENCY_EXPIRE_SECONDS,
+    )
 
 
 def open_directory_no_symlinks(path):
@@ -414,16 +641,98 @@ def validate_state_identity(identity):
         raise StateError("invalid state identity")
 
 
-def state_bytes(entries):
+def utc_day(now):
+    """The calendar day the ceiling counts against, as an explicit UTC date.
+
+    A calendar day rather than a rolling window, and that is the whole of the
+    clock-change answer. A rolling window stores an instant and resets on
+    `now - start >= one day`, which a backwards clock jump makes negative and
+    which then never resets: the relay would be wedged into suppression until
+    somebody noticed the silence. A day *key* has no arithmetic to go negative
+    -- a clock that moves in either direction simply lands on a different key,
+    and a key that is not today's resets the budget.
+
+    Derived from the fields explicitly rather than from date.today(), which
+    reads the process's local timezone; every other clock in this file is UTC
+    and datetime_nanoseconds raises if it is handed anything else.
+    """
+    if now.tzinfo is None or now.utcoffset() != timedelta(0):
+        raise StateError("budget clock is not UTC")
+    return f"{now.year:04d}-{now.month:02d}-{now.day:02d}"
+
+
+def empty_budget(day):
+    return {"day": day, "count": 0, "notified": False, "containers": {}}
+
+
+def budget_document(budget):
+    ordered = [budget["containers"][identity] for identity in sorted(budget["containers"])]
+    return {
+        "day": budget["day"],
+        "count": budget["count"],
+        "notified": budget["notified"],
+        "containers": ordered,
+    }
+
+
+def state_bytes(entries, budget):
     ordered = [entries[identity] for identity in sorted(entries)]
     document = json.dumps(
-        {"version": STATE_VERSION, "entries": ordered},
+        {
+            "version": STATE_VERSION,
+            "entries": ordered,
+            "budget": budget_document(budget),
+        },
         ensure_ascii=True,
         separators=(",", ":"),
     ).encode("utf-8") + b"\n"
     if len(document) > MAX_STATE_BYTES:
         raise StateError("state document is oversized")
     return document
+
+
+def parse_budget_document(raw):
+    if not isinstance(raw, dict) or set(raw) != {
+        "day",
+        "count",
+        "notified",
+        "containers",
+    }:
+        raise StateError("state budget schema differs")
+    if not isinstance(raw["day"], str) or not DAY_PATTERN.fullmatch(raw["day"]):
+        raise StateError("invalid state budget day")
+    if type(raw["count"]) is not int or raw["count"] < 0:
+        raise StateError("invalid state budget count")
+    if type(raw["notified"]) is not bool:
+        raise StateError("invalid state budget notice")
+    if not isinstance(raw["containers"], list):
+        raise StateError("state budget schema differs")
+    containers = {}
+    identities = []
+    for entry in raw["containers"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "identity",
+            "count",
+            "notified",
+        }:
+            raise StateError("state budget entry schema differs")
+        validate_state_identity(entry["identity"])
+        if type(entry["count"]) is not int or entry["count"] < 0:
+            raise StateError("invalid state budget count")
+        if type(entry["notified"]) is not bool:
+            raise StateError("invalid state budget notice")
+        identities.append(entry["identity"])
+        containers[entry["identity"]] = dict(entry)
+    if identities != sorted(set(identities)):
+        raise StateError("state budget entries are not canonical")
+    if len(containers) > MAX_BUDGET_ENTRIES:
+        raise StateError("state budget has too many entries")
+    return {
+        "day": raw["day"],
+        "count": raw["count"],
+        "notified": raw["notified"],
+        "containers": containers,
+    }
 
 
 def parse_state_document(raw):
@@ -434,32 +743,21 @@ def parse_state_document(raw):
     if not isinstance(document, dict) or type(document.get("version")) is not int:
         raise StateError("state schema differs")
 
-    if document["version"] == LEGACY_STATE_VERSION:
-        if set(document) != {"version", "unhealthy"} or not isinstance(
-            document["unhealthy"], list
-        ):
-            raise StateError("state schema differs")
-        identities = document["unhealthy"]
-        if not all(isinstance(identity, str) for identity in identities):
-            raise StateError("invalid state identity")
-        if identities != sorted(set(identities)):
-            raise StateError("state entries are not canonical")
-        entries = {}
-        for identity in identities:
-            validate_state_identity(identity)
-            entries[identity] = {
-                "identity": identity,
-                "state": "unhealthy",
-                "timestamp": MINIMUM_TIMESTAMP,
-            }
-        return entries, True
+    # Both older schemas migrate rather than being refused, because the file
+    # they describe is on the NAS right now and a relay that refused it would
+    # report nothing at all. A migrated document carries no budget, which
+    # process_event then rolls to today's -- so the first day after an upgrade
+    # starts with a full allowance rather than inheriting one it cannot read.
+    if document["version"] in LEGACY_STATE_VERSIONS:
+        return parse_legacy_state_document(document), None, True
 
     if (
         document["version"] != STATE_VERSION
-        or set(document) != {"version", "entries"}
+        or set(document) != {"version", "entries", "budget"}
         or not isinstance(document["entries"], list)
     ):
         raise StateError("state schema differs")
+    budget = parse_budget_document(document["budget"])
     entries = {}
     identities = []
     for entry in document["entries"]:
@@ -486,23 +784,114 @@ def parse_state_document(raw):
         raise StateError("state entries are not canonical")
     if len(entries) > MAX_STATE_ENTRIES:
         raise StateError("state has too many entries")
-    return entries, False
+    return entries, budget, False
 
 
-def bounded_entries(entries, now):
+def parse_legacy_state_document(document):
+    if document["version"] == 1:
+        if set(document) != {"version", "unhealthy"} or not isinstance(
+            document["unhealthy"], list
+        ):
+            raise StateError("state schema differs")
+        identities = document["unhealthy"]
+        if not all(isinstance(identity, str) for identity in identities):
+            raise StateError("invalid state identity")
+        if identities != sorted(set(identities)):
+            raise StateError("state entries are not canonical")
+        entries = {}
+        for identity in identities:
+            validate_state_identity(identity)
+            entries[identity] = {
+                "identity": identity,
+                "state": "unhealthy",
+                "timestamp": MINIMUM_TIMESTAMP,
+            }
+        return entries
+
+    if set(document) != {"version", "entries"} or not isinstance(
+        document["entries"], list
+    ):
+        raise StateError("state schema differs")
+    entries = {}
+    identities = []
+    for entry in document["entries"]:
+        if not isinstance(entry, dict) or set(entry) != {
+            "identity",
+            "state",
+            "timestamp",
+        }:
+            raise StateError("state entry schema differs")
+        validate_state_identity(entry["identity"])
+        if not isinstance(entry["state"], str) or entry["state"] not in {
+            "healthy",
+            "unhealthy",
+        }:
+            raise StateError("invalid state health")
+        if not isinstance(entry["timestamp"], str) or not valid_timestamp(
+            entry["timestamp"]
+        ):
+            raise StateError("invalid state timestamp")
+        identities.append(entry["identity"])
+        entries[entry["identity"]] = dict(entry)
+    if identities != sorted(set(identities)):
+        raise StateError("state entries are not canonical")
+    if len(entries) > MAX_STATE_ENTRIES:
+        raise StateError("state has too many entries")
+    return entries
+
+
+def bounded_state(entries, budget, now):
+    """Bound the whole document, shedding counters before health entries.
+
+    The order matters and is the reason the budget is not stored as more
+    `entries`. A health entry may only be evicted once it is healthy, so a
+    document full of unhealthy entries has nothing left to shed and raises --
+    which stops the relay reporting anything at all. A counter may always be
+    evicted, because the global count beneath the per-container ones is what
+    actually guarantees the quota; losing a container's counter costs at most
+    one container's allowance being spent twice, and the global backstop still
+    holds. So the bytes are reclaimed from the droppable structure first.
+
+    THIS DEFERS THAT RAISE RATHER THAN PREVENTING IT. Shedding counters buys
+    back the counters' own bytes and nothing else, so once they are gone the
+    ceiling on all-unhealthy entries is exactly what it is with no counters at
+    all: 128 at a short ASCII host, where MAX_STATE_ENTRIES binds first, and 39
+    at a 256-character non-ASCII one. That raise predates the counters and is
+    unchanged by them; what the shed prevents is the counters making it arrive
+    sooner. MAX_BUDGET_ENTRIES carries the measurements.
+
+    Counters are evicted lowest-count first, never oldest-first: a container
+    already at its ceiling is the one whose counter is doing work, and dropping
+    it would hand that container a fresh allowance and a second notice.
+    """
     proposed = {identity: dict(entry) for identity, entry in entries.items()}
     cutoff = datetime_nanoseconds(now - HEALTHY_RETENTION)
     for identity, entry in list(proposed.items()):
         if entry["state"] == "healthy" and parse_timestamp(entry["timestamp"]) < cutoff:
             del proposed[identity]
+    bounded_budget = dict(budget)
+    bounded_budget["containers"] = {
+        identity: dict(entry) for identity, entry in budget["containers"].items()
+    }
 
     while True:
         try:
-            serialized = state_bytes(proposed)
+            serialized = state_bytes(proposed, bounded_budget)
         except StateError:
             serialized = None
-        if len(proposed) <= MAX_STATE_ENTRIES and serialized is not None:
-            return proposed, serialized
+        if (
+            len(proposed) <= MAX_STATE_ENTRIES
+            and len(bounded_budget["containers"]) <= MAX_BUDGET_ENTRIES
+            and serialized is not None
+        ):
+            return proposed, bounded_budget, serialized
+        counters = sorted(
+            (entry["count"], identity)
+            for identity, entry in bounded_budget["containers"].items()
+        )
+        if counters:
+            del bounded_budget["containers"][counters[0][1]]
+            continue
         healthy = sorted(
             (
                 (parse_timestamp(entry["timestamp"]), identity)
@@ -520,7 +909,7 @@ def read_state_at(directory_fd, state_name):
     try:
         file_fd = os.open(state_name, flags, dir_fd=directory_fd)
     except FileNotFoundError:
-        return {}, False
+        return {}, None, False
     except OSError:
         raise StateError("state file unavailable") from None
     try:
@@ -542,8 +931,9 @@ def read_state_at(directory_fd, state_name):
 
 
 def validate_operational_state_at(directory_fd, state_name):
-    entries, _ = read_state_at(directory_fd, state_name)
-    bounded_entries(entries, utc_now())
+    now = utc_now()
+    entries, budget, _ = read_state_at(directory_fd, state_name)
+    bounded_state(entries, rolled_budget(budget, now), now)
 
 
 def state_is_ready(state_path):
@@ -619,8 +1009,8 @@ class LockedState:
     def read(self):
         return read_state_at(self.directory_fd, self.state_path.name)
 
-    def replace(self, entries, document=None):
-        document = document if document is not None else state_bytes(entries)
+    def replace(self, entries, budget, document=None):
+        document = document if document is not None else state_bytes(entries, budget)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
         temporary_fd = None
         temporary_name = None
@@ -669,34 +1059,357 @@ def unique_object(pairs):
     return result
 
 
-def publish(config, notification):
-    body = json.dumps(notification, ensure_ascii=False, separators=(",", ":")).encode(
-        "utf-8"
+def log_safe(value, config, maximum=MAX_DIAGNOSTIC_CHARACTERS):
+    """One sanitiser, and every field that reaches the log goes through it.
+
+    REDACT BEFORE TRUNCATING. Truncating first can cut a credential in half and
+    leave that half in the log, and half a credential is still a leak. The
+    ordering is the whole reason this is one function rather than two steps at
+    the call site.
+
+    Control characters go because a log line is a line. A newline inside an
+    upstream response -- or inside a container name, which is text this platform
+    does not author -- forges a second entry in a log that Dozzle renders, which
+    is exactly the tool somebody is looking at when they read it.
+
+    Applied to the alert's own title as well as to the upstream's text, although
+    the envelope already rejects control characters in `container`. A sanitiser
+    with an exception is a sanitiser with a path that was missed.
+    """
+    text = str(value)
+    for secret in (config.pushover_token, config.pushover_user_key):
+        text = text.replace(secret, "[redacted]")
+    text = "".join(
+        character if not contains_control(character) else "?" for character in text
     )
+    return text[:maximum]
+
+
+def report_upstream_failure(config, notification, reason, detail):
+    """Say out loud that an alert was not delivered.
+
+    Without this the whole path is silent: there is no logging anywhere in this
+    module, /healthz reports only on the state store, and Dozzle is told 502 and
+    does not retry. A rejected alert simply vanished, and against Pushover a
+    rejection is reachable in a way it never was against a local ntfy -- the 250
+    and 1024 caps, the priority-2 parameters, and credentials that were revoked
+    or mistyped.
+
+    stderr because that is `docker logs`, and therefore Dozzle, which is the
+    tool whose job is showing somebody this.
+
+    ONE write, assembled with its own newline. print() issues two -- the text,
+    then the terminator -- and this server is threaded, so two concurrent
+    failures can interleave into a merged line. A log that garbles under
+    concurrency is worse than no log, because it gets read as evidence of
+    something it did not say.
+
+    No credential can reach here: both travel in the request body, which is
+    never logged, and log_safe redacts them from the far end's text anyway
+    in case it echoes one back.
+    """
+    line = (
+        f"alert-relay: {reason}: "
+        f"alert={log_safe(notification.get('title', 'unknown'), config)} "
+        f"detail={log_safe(detail, config)}\n"
+    )
+    sys.stderr.write(line)
+    sys.stderr.flush()
+
+
+def read_upstream_detail(error):
+    """The far end's own explanation, bounded, and never at the cost of the failure.
+
+    Pushover answers a rejection with an `errors` array naming the bad
+    parameter, which is what separates "the user key is wrong" from "the message
+    is too long" from "priority 2 without retry" -- three failures a status code
+    alone leaves an operator guessing between. A read that fails must not mask
+    the rejection it was trying to describe, so it degrades to saying so.
+    """
+    try:
+        return error.read(MAX_DIAGNOSTIC_BYTES).decode("utf-8", errors="replace")
+    except Exception:  # noqa: BLE001 - a failed read must not replace the failure
+        return "the error response could not be read"
+
+
+def publish(config, notification):
+    """POST one message to Pushover.
+
+    Pushover authenticates by form field rather than by header: the application
+    token and the user key are `token` and `user` in the body, and there is no
+    Authorization header at all. Both are therefore in the request body rather
+    than in a header, which is worth knowing wherever a request is captured --
+    a recorded body is a credential.
+    """
+    body = urllib.parse.urlencode(
+        {
+            "token": config.pushover_token,
+            "user": config.pushover_user_key,
+            **notification,
+        }
+    ).encode("ascii")
     request = urllib.request.Request(
-        config.ntfy_publish_url,
+        config.pushover_api_url,
         data=body,
-        headers={
-            "Authorization": f"Bearer {config.ntfy_token}",
-            "Content-Type": "application/json",
-        },
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
         method="POST",
     )
+    # The two failures below were one failure until #558's review: both raised
+    # `UpstreamError("upstream unavailable")`, byte for byte, so a permanent
+    # rejection and a transient outage were the same object to every caller and
+    # the same silence to every operator. They now differ in the exception and
+    # in the log, because the response to them differs -- an outage heals and a
+    # rejection never does.
+    #
+    # HTTPError first, and that ordering is load-bearing: it subclasses URLError
+    # which subclasses OSError, so the broad branch below would swallow every
+    # rejection if it came first.
     try:
         with NO_REDIRECT_OPENER.open(request, timeout=10) as response:
             if not 200 <= response.status < 300:
-                raise UpstreamError("upstream rejected publish")
+                # Defensive rather than reached: urllib raises HTTPError for
+                # anything at or above 400, and the redirect handler refuses 3xx
+                # into an HTTPError too, so nothing known lands here.
+                report_upstream_failure(
+                    config, notification,
+                    f"pushover rejected the alert (HTTP {response.status})",
+                    "the response carried no error body",
+                )
+                raise UpstreamError("upstream rejected the message")
     except urllib.error.HTTPError as error:
+        status = error.code
+        detail = read_upstream_detail(error)
         error.close()
-        raise UpstreamError("upstream unavailable") from None
-    except (OSError, urllib.error.URLError):
+        report_upstream_failure(
+            config, notification,
+            f"pushover rejected the alert (HTTP {status})", detail,
+        )
+        raise UpstreamError("upstream rejected the message") from None
+    except (OSError, urllib.error.URLError) as error:
+        report_upstream_failure(
+            config, notification,
+            f"pushover unreachable ({type(error).__name__})",
+            "the alert was not delivered and will not be retried",
+        )
         raise UpstreamError("upstream unavailable") from None
 
 
-def process_event(config, event):
+def rolled_budget(budget, now):
+    """Today's budget, resetting whenever the stored day is not today's.
+
+    Not "reset when a day has elapsed": the comparison is equality against a
+    date key, so a clock that moved backwards resets exactly as a clock that
+    moved forwards does. There is no window whose start can end up in the
+    future and no difference that can go negative, which is the one way a
+    ceiling wedges itself permanently shut.
+
+    A missing budget -- a state file written by an older schema, or none at all
+    -- is today's empty one, so an upgrade starts with a full allowance rather
+    than inheriting a count it cannot read.
+    """
+    day = utc_day(now)
+    if budget is None or budget["day"] != day:
+        return empty_budget(day)
+    return {
+        "day": day,
+        "count": budget["count"],
+        "notified": budget["notified"],
+        "containers": {
+            identity: dict(entry) for identity, entry in budget["containers"].items()
+        },
+    }
+
+
+class BudgetFloor:
+    """What this process has already authorised today, held outside the store.
+
+    THE DEFECT THIS EXISTS FOR. The ceiling lived entirely in the state file,
+    so a state write that failed took the increment with it: the next event
+    re-read an unchanged document, saw the same count, and published again.
+    Measured at 10/25/200 with the write always failing, 500 events produced
+    500 alerts and no notice, against 10 alerts and one notice with the write
+    working. The notice latch was worse, because nothing backed it at all --
+    ten over-ceiling events produced ten notices instead of one.
+
+    That is not a theoretical failure. `/state` filling or remounting read-only
+    is the same class of event this relay exists to report, so the quota bomb
+    the ceiling was added to prevent was reachable through the ceiling's own
+    storage, and reachable silently: the relay answers Dozzle 500 and keeps on
+    publishing.
+
+    FAILING CLOSED WOULD BE WORSE. Refusing to publish when the write fails
+    silences alerting on a host whose disk has just filled, which is the one
+    moment somebody needs to hear from it. So the bound degrades instead: with
+    the store working it is durable across restarts, and with the store failing
+    it holds for the lifetime of this process.
+
+    WHAT "THE LIFETIME OF THIS PROCESS" IS WORTH, stated because the phrase
+    flatters itself. A relay whose store is unwritable is in exactly the
+    situation where it may also be restarting, and each restart starts from the
+    last count that LANDED -- so the real bound with the store broken is
+    `ceiling x restarts`, not `ceiling`. Measured with the write always failing
+    and nothing ever persisting: five restarts of a hundred events each
+    delivered 50 alerts and 5 notices, where one process would have delivered
+    10 and 1. That is a bounded degradation of a device that previously had no
+    bound at all in this state -- the same run before BudgetFloor published
+    every one of the 500 -- and it is the honest description rather than a
+    reason to reach for something durable-but-unwritable.
+
+    A store that is UNREADABLE rather than unwritable does not leak at all:
+    read_state_at raises at the top of process_event, before anything is
+    rendered or published, so the request ends in a 500 with nothing sent.
+
+    THIS LOCK IS NOT THE CEILING'S INTERLOCK. `self._lock` covers exactly two
+    things -- reading the dict in raise_floor and assigning it in record -- and
+    the ceiling's decision is a check-then-act spanning both, plus a publish in
+    between. Three separate acquisitions guard nothing across the whole
+    sequence. What makes it atomic is the exclusive flock process_event holds
+    for all of it; see the ordering comment there, which also records what that
+    costs and why it is still right.
+
+    OWNED BY THE SERVER, not by the module. A module-level cache would survive
+    a create_server in the same interpreter, which is how the restart case in
+    tests/dozzle_alert_relay_test.py stands in for a container recreation -- so
+    it would have made that case stop proving the state-backed half it exists
+    to prove. One server is one process here.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._budget = None
+
+    def raise_floor(self, budget):
+        """`budget`, never lower than what this process has already authorised.
+
+        Elementwise: the larger count and the latched notice win, on the global
+        scope and on each container. A stored document that lost an increment
+        is corrected; one that is ahead of this process is left alone.
+        """
+        with self._lock:
+            floor = self._budget
+        if floor is None or floor["day"] != budget["day"]:
+            return budget
+        containers = {
+            identity: dict(entry) for identity, entry in budget["containers"].items()
+        }
+        for identity, entry in floor["containers"].items():
+            stored = containers.get(identity)
+            containers[identity] = {
+                "identity": identity,
+                "count": max(entry["count"], stored["count"]) if stored else entry["count"],
+                "notified": entry["notified"] or bool(stored and stored["notified"]),
+            }
+        return {
+            "day": budget["day"],
+            "count": max(budget["count"], floor["count"]),
+            "notified": budget["notified"] or floor["notified"],
+            "containers": containers,
+        }
+
+    def record(self, budget):
+        """Adopt a charged budget as the new floor.
+
+        Called only after the publish it authorised has actually gone out, so a
+        refusing upstream still consumes nothing -- the property the
+        publish-before-persist order already had, and which this must not cost.
+        Both halves now have to hold at once.
+
+        The budget recorded is the one bounded_state returned, so the floor
+        inherits that bound and cannot grow with container churn. A counter the
+        bound shed is one this floor forgets too, which is the same degradation
+        the shed already accepts: the global count beneath them is what
+        guarantees the quota.
+        """
+        with self._lock:
+            self._budget = {
+                "day": budget["day"],
+                "count": budget["count"],
+                "notified": budget["notified"],
+                "containers": {
+                    identity: dict(entry)
+                    for identity, entry in budget["containers"].items()
+                },
+            }
+
+
+def charge_budget(budget, identity, rule, config):
+    """Decide what today's remaining allowance lets this alert be.
+
+    Returns ("publish", budget), ("notice", budget, scope, ceiling, oom) or
+    ("silent", budget). The budget returned is a new mapping; the caller writes
+    it only once the publish it authorised has actually gone out, so an upstream
+    that is refusing does not quietly eat the day's allowance.
+
+    Two ceilings, one counter. The global count is the backstop that makes the
+    monthly quota a guarantee rather than a hope, and it is checked first so a
+    platform that has already gone quiet does not then emit one notice per
+    container on top. Beneath it each container has its own allowance, so one
+    noisy container cannot drown out a real alert somewhere else.
+
+    OOM is compared against a higher per-container allowance rather than being
+    exempt, and the crash loop is why. A container the kernel kills, that
+    `restart: unless-stopped` starts again, that the kernel kills again, emits
+    an unbounded `oom` stream; a fully exempt rule would relay all of it and
+    the quota would be gone. It still counts against the global backstop for
+    the same reason. What the higher allowance buys is that a container whose
+    ordinary alerts have been suppressed can still report that it was killed.
+    """
+    ceiling = (
+        config.oom_container_ceiling if rule == "OOM" else config.container_ceiling
+    )
+    proposed = {
+        "day": budget["day"],
+        "count": budget["count"],
+        "notified": budget["notified"],
+        "containers": {
+            key: dict(entry) for key, entry in budget["containers"].items()
+        },
+    }
+    if proposed["count"] >= config.global_ceiling:
+        if proposed["notified"]:
+            return ("silent", proposed)
+        proposed["notified"] = True
+        # None rather than an allowance: the global backstop stops every rule,
+        # out-of-memory kills included.
+        return ("notice", proposed, "global", config.global_ceiling, None)
+
+    entry = proposed["containers"].get(
+        identity, {"identity": identity, "count": 0, "notified": False}
+    )
+    if entry["count"] >= ceiling:
+        if entry["notified"]:
+            return ("silent", proposed)
+        entry = dict(entry, notified=True)
+        proposed["containers"][identity] = entry
+        # The notice names the OOM allowance only while there is one left to
+        # name: past it, "suppressed" is the whole truth for this container.
+        remaining_oom = (
+            config.oom_container_ceiling
+            if entry["count"] < config.oom_container_ceiling
+            else None
+        )
+        return ("notice", proposed, "container", ceiling, remaining_oom)
+
+    proposed["count"] += 1
+    proposed["containers"][identity] = dict(entry, count=entry["count"] + 1)
+    return ("publish", proposed)
+
+
+def process_event(config, event, floor):
+    """Reconcile one event, publish what the ceiling allows, and persist.
+
+    `floor` is required rather than defaulted, because a default would be a way
+    to call this with the safety device switched off -- which is exactly the
+    shape of the defect it was added to close.
+    """
     identity = f"{event['host']}\0{event['containerId']}"
+    now = utc_now()
     with LockedState(config.alert_state_path) as state_file:
-        entries, migration_required = state_file.read()
+        entries, stored_budget, migration_required = state_file.read()
+        # The store is read first and then corrected upwards, never trusted
+        # downwards: a document whose last increment never landed would
+        # otherwise hand this process the same allowance a second time.
+        budget = floor.raise_floor(rolled_budget(stored_budget, now))
         proposed = {key: dict(entry) for key, entry in entries.items()}
         publication_required = event["rule"] in {"OOM", "Unexpected exit"}
 
@@ -739,17 +1452,67 @@ def process_event(config, event):
                     "timestamp": event["timestamp"],
                 }
 
-        proposed, document = bounded_entries(proposed, utc_now())
-        replacement_required = migration_required or proposed != entries
+        # The ceiling is charged only once the transition logic above has said
+        # this event is worth publishing at all, so a suppressed duplicate does
+        # not spend the day's allowance on a message nobody was going to get.
+        notification = None
+        charged = budget
         if publication_required:
-            publish(
-                config,
-                render_notification(
-                    event, config.ntfy_topic, config.ntfy_containers_topic
-                ),
-            )
+            decision = charge_budget(budget, identity, event["rule"], config)
+            charged = decision[1]
+            if decision[0] == "publish":
+                notification = render_notification(event)
+            elif decision[0] == "notice":
+                notification = render_ceiling_notice(
+                    event, decision[2], decision[3], charged["day"], decision[4]
+                )
+
+        proposed, charged, document = bounded_state(proposed, charged, now)
+        replacement_required = (
+            migration_required or proposed != entries or charged != stored_budget
+        )
+        # Publish, then raise the floor, then persist -- and all three of those
+        # positions are load-bearing in a different direction.
+        #
+        # ALL OF IT INSIDE THE FLOCK, WHICH IS THE INTERLOCK. The ceiling is a
+        # check-then-act: raise_floor reads, charge_budget decides, record and
+        # replace write, and the publish those authorise sits between them.
+        # BudgetFloor's own lock covers only its dict and spans none of that, so
+        # it is NOT what keeps two concurrent events from each seeing the same
+        # remaining allowance -- the exclusive flock LockedState holds across
+        # this whole block is. Measured with the window widened to 50ms: with
+        # the flock, a ceiling of 10 delivered 10 and never had two publishes in
+        # flight; with the flock removed and BudgetFloor left in place, the same
+        # ceiling delivered 40 with 40 concurrent publishes. The floor still
+        # looked like protection the whole time.
+        #
+        # SO `publish` IS DELIBERATELY INSIDE THE LOCK, and the cost is real and
+        # is not an oversight: it holds a 10-second HTTP timeout, so a hung
+        # Pushover serialises every concurrent Dozzle POST behind it. That is
+        # accepted here because the timeout bounds it and this relay's event
+        # volume is a handful of container transitions, not a stream. Moving the
+        # publish out is the obvious throughput fix and it BREACHES THE CEILING
+        # SILENTLY -- the measurement above is what that costs. Do not take it.
+        #
+        # PUBLISH BEFORE EITHER RECORD: an UpstreamError here leaves the
+        # increment nowhere, so an upstream that is refusing cannot silently
+        # consume the whole daily allowance while delivering nothing.
+        #
+        # FLOOR BEFORE PERSIST: recording in memory cannot fail, so the bound
+        # survives a state write that does. Before this the ceiling lived only
+        # in the file, and a failing write meant no bound at all -- 500 events
+        # published 500 alerts and no notice. BudgetFloor records the
+        # measurement.
+        #
+        # PERSIST LAST, and its failure still reaches the caller as a 500. The
+        # event was delivered, so that status is about the store rather than
+        # about the alert; what it must no longer mean is that the ceiling
+        # forgot the alert happened.
+        if notification is not None:
+            publish(config, notification)
+        floor.record(charged)
         if replacement_required:
-            state_file.replace(proposed, document)
+            state_file.replace(proposed, charged, document)
 
 
 class RelayRequestHandler(BaseHTTPRequestHandler):
@@ -806,7 +1569,7 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
             self.send_text(400, "invalid request\n")
             return
         try:
-            process_event(self.server.config, event)
+            process_event(self.server.config, event, self.server.budget_floor)
         except StateError:
             self.send_text(500, "state unavailable\n")
             return
@@ -828,6 +1591,11 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # Access logging is deliberately off, and this override is what turns it
+    # off. It is NOT where a failure gets reported: publish() writes to stderr
+    # when an alert is not delivered, which is the line an operator wants, and
+    # resurrecting a request log here would bury it under one entry per Dozzle
+    # POST -- most of which are the events that were delivered fine.
     def log_message(self, _format, *_args):
         pass
 
@@ -839,6 +1607,9 @@ class RelayServer(ThreadingHTTPServer):
 def create_server(address, config):
     server = RelayServer(address, RelayRequestHandler)
     server.config = config
+    # One floor per server, so the bound is per process. See BudgetFloor for
+    # why it does not live on the module.
+    server.budget_floor = BudgetFloor()
     return server
 
 

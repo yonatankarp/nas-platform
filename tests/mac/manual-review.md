@@ -64,6 +64,10 @@ private keys, password hashes, rendered environment files, or application logs.
       stored webhook: it is Pushover, and this lane's vault holds stand-ins for
       the account it names, so it can only refuse.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.
+      Do not send a test alert by hand: the relay publishes to Pushover, this
+      lane's vault holds stand-ins for that account, and the lane redirects the
+      endpoint at the contract's own recorder. The `notify` contract already
+      proved the chain.
 
 ## NAS-only limitations
 
