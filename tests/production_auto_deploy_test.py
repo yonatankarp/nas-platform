@@ -2991,6 +2991,21 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.pages(), [])
         self.assertFalse((self.config.state_root / "verify-verdict").exists())
 
+    def test_an_unrecordable_verdict_still_reports_what_verify_found(self):
+        self.mark_deployed()
+        # A host that has polled already has its lock file, so only the verdict
+        # write meets the read-only directory.
+        with production_auto_deploy.deployment_lock(self.config):
+            pass
+        self.config.state_root.chmod(0o500)
+        self.addCleanup(self.config.state_root.chmod, 0o700)
+        code, output = self.run_verify(playbook_exit=2)
+        self.assertEqual(code, 1)
+        self.assertIn("verdict not recorded", output)
+        self.assertIn("verification failed", output)
+        self.assertNotIn("could not verify", output)
+        self.assertEqual(len(self.pages()), 1)
+
     def test_a_verify_that_outlives_its_budget_is_a_failure(self):
         self.mark_deployed()
         real_run = production_auto_deploy._run

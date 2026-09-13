@@ -1742,10 +1742,17 @@ def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) 
         if not published:
             print("production auto-deploy: verify notification failed", file=sys.stderr)
             return
-    _write_private(
-        _verify_verdict_path(config),
-        f"{verdict} {sha} {_timestamp()}\n".encode("ascii"),
-    )
+    # Caught rather than raised: verify.yml did run, so "could not verify" would
+    # be false. The cost of an unwritable state root is a page every run, which
+    # is the loudest way to report it.
+    try:
+        _write_private(
+            _verify_verdict_path(config),
+            f"{verdict} {sha} {_timestamp()}\n".encode("ascii"),
+        )
+    except OSError as error:
+        print(f"production auto-deploy: verify verdict not recorded: {error}",
+              file=sys.stderr)
 
 
 def verify(config: Config) -> bool | None:
