@@ -580,8 +580,11 @@ and local Docker/cron access must remain available.
 ### Hourly verification
 
 A deployment runs `verify.yml`, but a quiet week deploys nothing, so cron also
-runs `nas-platform-deploy --verify` at minute 37 of every hour. It runs the same
-`verify.yml` invocation a deployment does, from the poller's checkout, and only
+runs `nas-platform-deploy --verify` at minute 37 of every hour. It runs the
+`verify.yml` invocation a deployment does with one tag more,
+`platform_verify_mdraid`, which fails when a RAID array has lost a member. A
+deployment leaves that tag out: its failed verify would quarantine a revision
+that converged, while a degraded array still serves. It runs from the poller's checkout, and only
 while that checkout holds the last successful revision: a failed deployment
 leaves it on the candidate, whose probes may name services that never activated,
 so verification pauses until the next successful deployment. It takes the

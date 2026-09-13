@@ -37,7 +37,7 @@ CONFIG_KEYS = %w[
   github_api_base
   log_retention_days log_root
   ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
-  platform_callback_host platform_nas_address
+  periodic_verify_tags platform_callback_host platform_nas_address
   platform_public_host repository repository_url state_root tool_path
   vault_password_file verify_tags workflow workflow_name
 ].freeze
@@ -154,16 +154,57 @@ end
 existing_tags = Dir.glob(File.join(ROOT, "roles/*/{tasks,handlers}/*.yml")).flat_map do |path|
   declared_verify_tags(YAML.safe_load_file(path, aliases: true))
 end.uniq
-check(failures, declared_tags.sort == existing_tags.sort,
-      "the poller's verify tags must match the service roles exactly; " \
-      "missing=#{(existing_tags - declared_tags).inspect} " \
-      "stale=#{(declared_tags - existing_tags).inspect}")
+
+# A tag the hourly --verify run selects and a deployment's verify play must not.
+# A deployment whose verify fails is quarantined and never retried, and a
+# degraded RAID array still serves, so platform_verify_mdraid in the deploy list
+# would record every revision converged during a rebuild as failed (#609). Stated
+# rather than derived, and held both ways below, so a service tag cannot quietly
+# become hourly-only either.
+HOURLY_ONLY_VERIFY_TAGS = %w[platform_verify_mdraid].freeze
+PERIODIC_DERIVATION = /\A\{\{ production_auto_deploy_verify_tags \| trim \}\},(platform_verify_[a-z_]+(?:,platform_verify_[a-z_]+)*)\z/
+periodic_default = defaults.fetch("production_auto_deploy_periodic_verify_tags", "").to_s.strip
+periodic_extra = periodic_default[PERIODIC_DERIVATION, 1].to_s.split(",")
+check(failures, periodic_default.match?(PERIODIC_DERIVATION),
+      "production_auto_deploy_periodic_verify_tags must be the deploy list plus literal tags, " \
+      "so the deploy list is written once; got #{periodic_default.inspect}")
+
+def verify_tag_problems(deploy, periodic_extra, existing)
+  problems = []
+  covered = deploy + periodic_extra
+  unless (existing - covered).empty? && (covered - existing).empty?
+    problems << "the poller's verify tags must match the service roles exactly; " \
+                "missing=#{(existing - covered).inspect} stale=#{(covered - existing).inspect}"
+  end
+  leaked = deploy & HOURLY_ONLY_VERIFY_TAGS
+  unless leaked.empty?
+    problems << "#{leaked.inspect} must stay out of production_auto_deploy_verify_tags: " \
+                "a deployment failing it is quarantined while the array still serves"
+  end
+  unless periodic_extra.sort == HOURLY_ONLY_VERIFY_TAGS.sort
+    problems << "the periodic list must add exactly #{HOURLY_ONLY_VERIFY_TAGS.inspect} to the deploy list, " \
+                "got #{periodic_extra.inspect}"
+  end
+  problems
+end
+verify_tag_problems(declared_tags, periodic_extra, existing_tags).each { |problem| check(failures, false, problem) }
+# The rule has to bite on the two failures it exists for, proved on planted lists
+# rather than trusted: the hourly-only tag moved into the deploy list, and a tag
+# in neither list.
+check(failures,
+      verify_tag_problems(declared_tags + HOURLY_ONLY_VERIFY_TAGS, [], existing_tags)
+        .any? { |problem| problem.include?("must stay out of production_auto_deploy_verify_tags") },
+      "planted: platform_verify_mdraid in the deploy list must be refused")
+check(failures,
+      verify_tag_problems(declared_tags, [], existing_tags).any? { |problem| problem.include?("missing=") },
+      "planted: a verify tag in neither list must be refused")
 
 doc_tags = File.read(File.join(ROOT, "docs/getting-started-nas.md"))
               .scan(/platform_verify_[a-z_]+/).uniq
-check(failures, doc_tags.sort == declared_tags.sort,
-      "the operator guide's manual verify tags must match the poller's list; " \
-      "difference=#{((doc_tags | declared_tags) - (doc_tags & declared_tags)).inspect}")
+periodic_tags = declared_tags + periodic_extra
+check(failures, doc_tags.sort == periodic_tags.sort,
+      "the operator guide's verify tags must match the poller's deploy and hourly lists; " \
+      "difference=#{((doc_tags | periodic_tags) - (doc_tags & periodic_tags)).inspect}")
 
 # The poller selects CI runs by workflow file and display name. A rename in
 # either direction makes it stop finding runs and stall without an error.
@@ -449,6 +490,13 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "log_retention_days must be JSON integer, not a string")
     check(failures, !config["verify_tags"].include?("\n"),
           "verify_tags must be a single line")
+    # Rendered, not just declared: the hourly list is the deploy list plus the
+    # hourly-only tags, so a template or default that dropped the derivation
+    # cannot leave the two lists quietly diverging.
+    check(failures,
+          config["periodic_verify_tags"] == ([config["verify_tags"]] + HOURLY_ONLY_VERIFY_TAGS).join(","),
+          "periodic_verify_tags must render as verify_tags plus #{HOURLY_ONLY_VERIFY_TAGS.join(',')}, got " \
+          "#{config['periodic_verify_tags'].inspect}")
     check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
           "the non-secret configuration must never contain the ntfy token")
     # ntfy hashes the public host into the mobile push topic, so collapsing it

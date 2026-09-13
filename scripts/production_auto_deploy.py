@@ -137,6 +137,9 @@ class Config:
     github_api_base: str
     log_retention_days: int
     verify_tags: str
+    # The hourly --verify run's list, which adds checks a deployment must not
+    # fail on. Optional in the file: see load_config.
+    periodic_verify_tags: str
     # Discovered by the installer. NAS firmwares scatter binaries across
     # /usr/local, /usr/builtin and /opt, so no fixed directory is correct.
     git_path: Path
@@ -176,6 +179,14 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     values: dict[str, object] = {}
     for field in fields(Config):
         if field.name not in payload:
+            # The install play copies this script before it renders the file, so
+            # for one run -- or for good, if the render fails -- this poller reads
+            # a configuration an older template wrote. Refusing it would fail
+            # every tick with nothing able to heal it (#327); the deploy list is
+            # the one an older poller verified hourly anyway.
+            if field.name == "periodic_verify_tags" and "verify_tags" in values:
+                values[field.name] = values["verify_tags"]
+                continue
             raise ConfigurationError(f"configuration is missing {field.name}")
         raw = payload[field.name]
         if field.name == "external_scheduler":
@@ -1010,15 +1021,15 @@ def sync_tooling(config: Config, log=None) -> None:
     )
 
 
-def _verify_invocation(config: Config) -> list[str]:
-    """verify.yml as a deployment runs it, and as --verify runs it hourly."""
+def _verify_invocation(config: Config, tags: str) -> list[str]:
+    """verify.yml with a tag list: verify_tags from a deployment, periodic_verify_tags hourly."""
 
     return [
         "ansible-playbook",
         *_vault_arguments(config),
         "verify.yml",
         "--tags",
-        config.verify_tags,
+        tags,
     ]
 
 
@@ -1033,7 +1044,7 @@ def _deploy_invocations(config: Config):
     return (
         ["ansible-playbook", *vault, "validate-vault.yml"],
         ["ansible-playbook", *vault, "site.yml"],
-        _verify_invocation(config),
+        _verify_invocation(config, config.verify_tags),
         # The installer's own choices must be replayed: the role requires the
         # public host, and would otherwise try to install a cron entry on a host
         # where scheduling is external.
@@ -1756,7 +1767,7 @@ def note_verify_verdict(config: Config, passed: bool, sha: str, log_path: Path) 
 
 
 def verify(config: Config) -> bool | None:
-    """Run the deployment's verify play against the deployed revision. None: skipped.
+    """Run verify.yml against the deployed revision with the hourly tag list. None: skipped.
 
     It runs from the controller checkout, which is the only tree carrying the
     playbooks, and only while that checkout holds the last successful revision.
@@ -1797,7 +1808,7 @@ def verify(config: Config) -> bool | None:
             try:
                 passed = (
                     _run(
-                        _verify_invocation(config),
+                        _verify_invocation(config, config.periodic_verify_tags),
                         timeout=VERIFY_TIMEOUT_SECONDS,
                         cwd=config.checkout,
                         env=_ansible_environment(config),
