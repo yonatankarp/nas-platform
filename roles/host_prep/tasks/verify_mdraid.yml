@@ -89,8 +89,8 @@
           - host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | length == 0
         fail_msg: >-
           mdraid array differs from its healthy baseline: expected degraded
-          {{ host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | join(', ') }},
-          observed {{ host_prep_mdraid_observed | difference(host_prep_mdraid_expected) | join(', ') }}.
+          {{ host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | sort | join(', ') }},
+          observed {{ host_prep_mdraid_observed | difference(host_prep_mdraid_expected) | sort | join(', ') }}.
           Read /proc/mdstat on the host: a member has dropped out, a rebuild is
           still running, or the array is not assembled.
         success_msg: >-
