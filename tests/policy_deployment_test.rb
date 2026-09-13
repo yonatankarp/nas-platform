@@ -925,6 +925,7 @@ check(failures, real_output.include?("does not resolve to"),
 # nothing else reports.
 POLLER_ROLES = %w[production_auto_deploy image_prune].freeze
 unusable_poller_defaults = []
+poller_fragments_by_role = {}
 POLLER_INSTALLED_FRAGMENTS = POLLER_ROLES.flat_map do |role|
   defaults_path = File.join(ROOT, "roles", role, "defaults", "main.yml")
   document = File.file?(defaults_path) ? YAML.safe_load_file(defaults_path) : nil
@@ -933,13 +934,18 @@ POLLER_INSTALLED_FRAGMENTS = POLLER_ROLES.flat_map do |role|
     next []
   end
 
-  document.filter_map do |key, value|
+  # Recorded per role as well as unioned, for the per-role floor below. A
+  # defaults file that parsed cannot have come from a role directory that is
+  # absent, so this needs no Dir.exist? of its own.
+  fragments = document.filter_map do |key, value|
     next unless key.end_with?("_root", "_path") && value.is_a?(String)
 
     value.gsub(/\{\{.*?\}\}/m, " ").scan(%r{[A-Za-z0-9/._-]+})
          .select { |fragment| fragment.include?("nas-platform") }
          .map { |fragment| fragment.sub(%r{\A/}, "").sub(%r{/\z}, "") }
-  end.flatten
+  end.flatten.uniq
+  poller_fragments_by_role[role] = fragments
+  fragments
 end.uniq.sort.freeze
 check(failures, unusable_poller_defaults.empty?,
       "#{unusable_poller_defaults.inspect} is missing, empty or not a mapping, so the poller " \
@@ -948,6 +954,49 @@ check(failures, unusable_poller_defaults.empty?,
       "not be read are different states, and only the first is a reason to assert nothing. The " \
       "floor beside this does not reach it: the other poller role supplies three fragments " \
       "alone, so the count stays satisfied while half the subject is gone")
+# The same subject counted per role rather than over the union (#597). The
+# refusal above reaches only a defaults file that could not be read; two states
+# where it reads perfectly well still empty a role's contribution, in whole or
+# in part. `--- {}` is a valid mapping with no keys, so `document.is_a?(Hash)`
+# holds and the role derives nothing. A renamed key is worse, because the file
+# stays complete and plausible: `production_auto_deploy_launcher_path` becomes
+# `..._launcher_file`, the `_path` suffix stops matching, and one fragment of
+# three disappears while the other two remain.
+#
+# The union floor beneath sees neither, and the arithmetic is why. Each role
+# derives three fragments and two of them -- the share root and the config root
+# -- are common to both, so the union is 4 and EITHER ROLE ALONE satisfies a
+# floor of 3. It guards the subject list's size and not its truth, which is the
+# sentence #556, #588, #590, #593 and #596 each ended up writing about a
+# different check.
+#
+# Sized at 3 against each role's own defaults, which name exactly three
+# distinctive fragments: a share root, a config root and a launcher. That is
+# today's count with no slack, against check_floor's own advice to sit well
+# under it, and deliberately: the defect here IS a contribution shrinking by
+# one, so a floor with room to absorb that is a floor the renamed key walks
+# past. Dropping a fragment legitimately means lowering this number in the same
+# commit -- the two-place cost the shard manifest and BASE_FIXTURE_PATHS
+# already pay, and the reason a prune lands as a visible diff.
+#
+# Keyed on the roles whose defaults parsed, so a role this tree does not carry
+# is skipped exactly as the refusal above skips it. That is load-bearing rather
+# than tidy: BASE_FIXTURE_PATHS names no part of roles/image_prune, so a flat
+# per-role assertion would go red in every mutation sandbox for a reason
+# unrelated to the mutation.
+POLLER_ROLE_FRAGMENT_FLOOR = 3
+starved_poller_roles = poller_fragments_by_role
+                       .select { |_role, fragments| fragments.length < POLLER_ROLE_FRAGMENT_FLOOR }
+                       .transform_values(&:length)
+check(failures, starved_poller_roles.empty?,
+      "#{starved_poller_roles.inspect} derived fewer than #{POLLER_ROLE_FRAGMENT_FLOOR} " \
+      "distinctive path fragments from defaults that parsed, so the sweep below cannot find a " \
+      "reference to whichever of them went missing. A valid mapping with no keys and a key " \
+      "whose suffix stopped matching both read as a role that installs nothing, and neither " \
+      "poller role installs nothing")
+# Retained beneath the per-role floors rather than replaced by them. They are
+# keyed on the roles that parsed, so narrowing POLLER_ROLES itself starves them
+# of subjects and they pass over an empty set; this one still fails at 0.
 check_floor(failures, POLLER_INSTALLED_FRAGMENTS.length, 3,
             "distinctive path fragments install-production-auto-deploy.yml creates")
 
