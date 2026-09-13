@@ -97,7 +97,7 @@ module ClassifyChanges
   # The committed vault is still here and is no longer static-*only*: since #561
   # a second job opens it, with the password held as a repository secret, and runs
   # validate-vault.yml against it -- so the file selects `vault` as well, through
-  # VAULT_ROUTED_PATH below. The gate's own check on it is unchanged and remains
+  # VAULT_ROUTED_PATTERN below, which the per-service vault_<role>.yml files match too. The gate's own check on it is unchanged and remains
   # the cheap half: tests/policy_vault_test.rb asserts the artifact is still
   # encrypted, which needs no password and therefore no secret.
   #
@@ -322,13 +322,14 @@ module ClassifyChanges
   # Only this one path. Anything else that appears under .github/ is unmapped and
   # keeps falling open to every lane, which is the property CLAUDE.md relies on.
   CI_WORKFLOW_ROUTED_PATH = ".github/workflows/ci.yml"
-  # The one artifact the vault job reads. It is a STATIC_ONLY_PATHS entry too --
-  # the gate's encryption check still runs on it -- so the routing is additive
-  # rather than a move. roles/vault_contract/, validate-vault.yml and the
-  # generator template are deliberately *not* listed: none of them is claimed by
-  # a lane, so each already falls open to every job including this one, and
-  # naming them here would narrow what they run rather than widen it.
-  VAULT_ROUTED_PATH = "inventory/group_vars/all/vault.yml"
+  # The artifacts the vault job reads: vault.yml and the per-service
+  # vault_<role>.yml beside it. Each is static-only too -- the gate's encryption
+  # check still runs on it -- so the routing is additive rather than a move.
+  # roles/vault_contract/, validate-vault.yml and the generator template are
+  # deliberately *not* matched: none of them is claimed by a lane, so each
+  # already falls open to every job including this one, and naming them here
+  # would narrow what they run rather than widen it.
+  VAULT_ROUTED_PATTERN = %r{\Ainventory/group_vars/all/vault(?:_[a-z0-9_]+)?\.yml\z}
   CI_WORKFLOW_JOB_LANES = %w[docs vault reconciliation].freeze
   CI_WORKFLOW_SUITE_LANE = "beszel"
 
@@ -346,7 +347,7 @@ module ClassifyChanges
       selection["docs"] = true if documentation
       if static_only_path?(path)
         selection["static"] = true
-        selection["vault"] = true if path == VAULT_ROUTED_PATH
+        selection["vault"] = true if vault_path?(path)
         next
       end
       next if documentation || inert_path?(path)
@@ -485,8 +486,12 @@ module ClassifyChanges
       DOCUMENTATION_PREFIXES.any? { |prefix| path.start_with?(prefix) }
   end
 
+  def vault_path?(path)
+    path.match?(VAULT_ROUTED_PATTERN)
+  end
+
   def static_only_path?(path)
-    STATIC_ONLY_PATHS.include?(path) ||
+    STATIC_ONLY_PATHS.include?(path) || vault_path?(path) ||
       STATIC_ONLY_PREFIXES.any? { |prefix| path.start_with?(prefix) }
   end
 

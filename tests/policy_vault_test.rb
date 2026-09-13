@@ -1134,10 +1134,18 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
-vault_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml")
-if File.file?(vault_path)
+# vault.yml holds the keys no one service owns; each service's own keys live in
+# vault_<role>.yml. Where a key sits cannot be checked without the password, so
+# the gate holds what it can read: every one is encrypted and names a real role.
+manifest_roles = YAML.safe_load_file(manifest_path)
+                     .fetch("services").map { |service| service.fetch("role") }
+Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
+  name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip
-  check(failures, first.start_with?("$ANSIBLE_VAULT;"), "vault.yml is present but not encrypted")
+  check(failures, first.start_with?("$ANSIBLE_VAULT;"), "#{name} is present but not encrypted")
+  role = name[/\Avault_(.+)\.yml\z/, 1]
+  check(failures, role.nil? || manifest_roles.include?(role),
+        "#{name} names no role in services/manifest.yml")
 end
 
 

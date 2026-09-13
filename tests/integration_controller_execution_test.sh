@@ -313,6 +313,10 @@ build_sandbox() {
   printf '%s\n' 'committed-operator-vault' \
     > "$checkout/inventory/group_vars/all/vault.yml"
   chmod 0644 "$checkout/inventory/group_vars/all/vault.yml"
+  # A committed per-service vault, which the controller must remove for the
+  # same reason: it would be decrypted with the ephemeral password.
+  printf '%s\n' 'committed-operator-vault' \
+    > "$checkout/inventory/group_vars/all/vault_ntfy.yml"
 }
 
 # ---------------------------------------------------------------------------
@@ -518,6 +522,9 @@ case_idempotence_check() {
   if [ "$(cat "$checkout/inventory/group_vars/all/vault.yml")" != \
        '$ANSIBLE_VAULT;1.1;AES256' ]; then
     fail 'the checkout vault was not replaced by the generated ephemeral vault'
+  fi
+  if [ -e "$checkout/inventory/group_vars/all/vault_ntfy.yml" ]; then
+    fail 'a committed per-service vault was left beside the ephemeral vault'
   fi
   expect_only_disposable_project_names
 
@@ -842,6 +849,9 @@ plant 'initial converge dropped' idempotence_check program \
 plant 'generated vault not installed into the checkout' idempotence_check \
   program 'install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml' \
   ':' 1
+plant 'committed per-service vaults left beside the ephemeral vault' \
+  idempotence_check program \
+  'rm -f /repo/inventory/group_vars/all/vault_*.yml' ':' 1
 plant 'vault password file not exported' idempotence_check program \
   'export ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file"' ':' 1
 plant 'deployed manifest verified against the wrong path' idempotence_check \

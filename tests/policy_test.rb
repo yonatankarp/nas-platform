@@ -188,7 +188,7 @@ active_sources = if enumeration_status.success?
                  else
                    []
                  end
-active_sources.delete("inventory/group_vars/all/vault.yml")
+active_sources.reject! { |path| path.match?(%r{\Ainventory/group_vars/all/vault(?:_[a-z0-9_]+)?\.yml\z}) }
 
 retired_migration_sources = %w[
   scripts/migrate-media-acquisition-vault.py
