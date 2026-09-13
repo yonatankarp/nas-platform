@@ -12,6 +12,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 from pathlib import Path
 import signal
 import socket
@@ -803,18 +804,22 @@ class DozzleAlertRelayTest(unittest.TestCase):
                         }
                     )
 
-    def test_config_requires_a_bounded_link_origin(self):
-        """The link base is refused, never repaired, and never long enough to lose an alert.
+    def test_an_unusable_link_origin_costs_the_link_and_nothing_else(self):
+        """The link base is validated, never repaired, and never fatal.
 
         A url over Pushover's 512 characters is a 4xx and a lost alert, so the
         bound lives here at start-up rather than as a cut at render time: the
         longest base accepted plus the route and the longest id the envelope
-        admits must still fit.
+        admits must still fit. What an unusable base costs is the link: the
+        relay script arrives through the `current` symlink before roles/dozzle
+        re-renders this environment, so a relay restarted in between meets an
+        environment without the setting, and refusing to start there would lose
+        every container alert (see Config).
         """
         relay = self.relay_module
-        self.assertEqual(
-            relay.Config.from_mapping(self.environment()).alert_relay_link_base, LINK_BASE
-        )
+        configured = relay.Config.from_mapping(self.environment())
+        self.assertEqual(configured.alert_relay_link_base, LINK_BASE)
+        self.assertIsNone(configured.alert_relay_link_problem)
         # A trailing slash is the same origin, not a path, and must not double up.
         self.assertEqual(
             relay.Config.from_mapping(
@@ -840,7 +845,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             ("wrong scheme", "ftp://nas.tailnet.example:8080"),
             ("no host", "http://:8080"),
             ("not a port", "http://nas.tailnet.example:http"),
-            ("userinfo", "http://admin:secret@nas.tailnet.example:8080"),
+            ("userinfo", "http://admin:link-secret@nas.tailnet.example:8080"),
             ("path", "http://nas.tailnet.example:8080/dozzle"),
             ("query", "http://nas.tailnet.example:8080?x=1"),
             ("empty query", "http://nas.tailnet.example:8080?"),
@@ -850,8 +855,47 @@ class DozzleAlertRelayTest(unittest.TestCase):
         ):
             with self.subTest(label=label):
                 mutated = self.environment(ALERT_RELAY_LINK_BASE=value)
-                with self.assertRaises(relay.ConfigurationError):
-                    relay.Config.from_mapping(mutated)
+                degraded = relay.Config.from_mapping(mutated)
+                self.assertIsNone(degraded.alert_relay_link_base)
+                self.assertIn("ALERT_RELAY_LINK_BASE", degraded.alert_relay_link_problem)
+                self.assertIn("no Dozzle link", degraded.alert_relay_link_problem)
+                if value:
+                    self.assertNotIn(value, degraded.alert_relay_link_problem)
+                    self.assertNotIn("link-secret", degraded.alert_relay_link_problem)
+                # Everything else in the configuration is untouched.
+                self.assertEqual(degraded.pushover_api_url, configured.pushover_api_url)
+
+        with self.assertRaises(relay.ConfigurationError):
+            relay.validated_link_base("http://nas.tailnet.example:8080/dozzle")
+
+    def test_the_role_default_renders_a_link_base_the_relay_accepts(self):
+        """The gate half of tolerating a bad base: the role must not ship one.
+
+        A relay without a valid base still alerts, so a broken role default
+        would degrade on the NAS silently. This renders the default the way
+        Ansible would for the two host shapes platform_public_host takes -- the
+        Mac inventory's loopback address and a MagicDNS name -- and holds it to
+        the relay's own validator.
+        """
+        defaults = (ROOT / "roles" / "dozzle" / "defaults" / "main.yml").read_text()
+        template = re.search(
+            r'^dozzle_alert_relay_link_base: "([^"\n]*)"$', defaults, re.M
+        )
+        port = re.search(r"^dozzle_port: ([0-9]+)$", defaults, re.M)
+        self.assertIsNotNone(template, "roles/dozzle declares no dozzle_alert_relay_link_base")
+        self.assertIsNotNone(port, "roles/dozzle declares no numeric dozzle_port")
+        for host in ("127.0.0.1", "as6704t-0000.tail0000.ts.net"):
+            with self.subTest(host=host):
+                rendered = (
+                    template.group(1)
+                    .replace("{{ platform_public_host }}", host)
+                    .replace("{{ dozzle_port }}", port.group(1))
+                )
+                self.assertNotIn("{{", rendered)
+                self.assertEqual(
+                    self.relay_module.validated_link_base(rendered),
+                    f"http://{host}:{port.group(1)}",
+                )
 
     def test_the_link_and_event_time_fit_what_pushover_accepts(self):
         """Every rule links its container and carries its event time.
@@ -891,6 +935,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.envelope(timestamp="1969-12-31T23:59:59Z"), LINK_BASE
         )
         self.assertNotIn("timestamp", before_epoch)
+
+        unlinked = relay.render_notification(self.envelope(), None)
+        self.assertNotIn("url", unlinked)
+        self.assertNotIn("url_title", unlinked)
+        self.assertEqual(unlinked["timestamp"], 1786756933)
 
     def test_config_requires_both_pushover_credentials(self):
         for name in ("PUSHOVER_TOKEN", "PUSHOVER_USER_KEY"):
@@ -2660,8 +2709,11 @@ class RelayProcessSignalTest(unittest.TestCase):
         state_directory.mkdir(mode=0o700)
         self.state_path = state_directory / "alert-relay.json"
 
-    def start_relay(self):
-        """Run services/dozzle/alert_relay.py the way its container does."""
+    def start_relay(self, **changes):
+        """Run services/dozzle/alert_relay.py the way its container does.
+
+        `changes` overrides the environment below; None removes a name.
+        """
         port = reserve_local_port()
         environment = dict(os.environ)
         environment.update(
@@ -2682,6 +2734,11 @@ class RelayProcessSignalTest(unittest.TestCase):
                 "PYTHONDONTWRITEBYTECODE": "1",
             }
         )
+        for name, value in changes.items():
+            if value is None:
+                environment.pop(name, None)
+            else:
+                environment[name] = value
         process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             [sys.executable, str(RELAY_PATH)],
             env=environment,
@@ -2785,6 +2842,80 @@ class RelayProcessSignalTest(unittest.TestCase):
             f"{status}",
         )
 
+
+
+class RelayLinkBaseProcessTest(unittest.TestCase):
+    """A relay whose environment predates the link base still starts and alerts.
+
+    Run as a process, because the property is about start-up: the relay script
+    reaches its container through the `current` release symlink before
+    roles/dozzle re-renders the environment, so a restart in between runs this
+    script against an environment that has never heard of ALERT_RELAY_LINK_BASE.
+    """
+
+    setUp = RelayProcessSignalTest.setUp
+    start_relay = RelayProcessSignalTest.start_relay
+    reap = RelayProcessSignalTest.__dict__["reap"]
+
+    def alert_through(self, **changes):
+        pushover = ThreadingHTTPServer(("127.0.0.1", 0), RecordingPushoverHandler)
+        pushover.requests = []
+        pushover.response_status = 200
+        pushover.response_body = b""
+        thread = threading.Thread(target=pushover.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(DozzleAlertRelayTest.stop_server, pushover, thread)
+        process, port = self.start_relay(
+            PUSHOVER_API_URL=f"http://127.0.0.1:{pushover.server_port}/1/messages.json",
+            **changes,
+        )
+        body = json.dumps(DozzleAlertRelayTest.envelope(), separators=(",", ":")).encode()
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "POST", "/alerts", body=body,
+            headers={"Authorization": f"Bearer {RELAY_TOKEN}",
+                     "Content-Type": "application/json",
+                     "Content-Length": str(len(body))},
+        )
+        status = connection.getresponse().status
+        connection.close()
+        process.send_signal(signal.SIGTERM)
+        _out, error = process.communicate(timeout=RELAY_EXIT_TIMEOUT_SECONDS)
+        self.assertEqual(status, 204, "the relay did not accept the alert")
+        self.assertEqual(len(pushover.requests), 1, "the relay did not publish the alert")
+        return pushover.requests[0]["form"], error.decode(errors="replace")
+
+    def link_problem_lines(self, stderr):
+        return [line for line in stderr.splitlines() if "ALERT_RELAY_LINK_BASE" in line]
+
+    def test_a_relay_without_a_link_base_starts_and_alerts_without_a_link(self):
+        form, stderr = self.alert_through(ALERT_RELAY_LINK_BASE=None)
+        self.assertNotIn("url", form)
+        self.assertNotIn("url_title", form)
+        self.assertEqual(form["timestamp"], "1786756933")
+        self.assertEqual(
+            self.link_problem_lines(stderr),
+            ["alert-relay: ALERT_RELAY_LINK_BASE is not set; alerts will carry no Dozzle link"],
+        )
+
+    def test_a_relay_with_an_invalid_link_base_starts_and_says_so_once(self):
+        form, stderr = self.alert_through(
+            ALERT_RELAY_LINK_BASE="http://admin:link-secret@nas.tailnet.example:8080/dozzle"
+        )
+        self.assertNotIn("url", form)
+        self.assertNotIn("url_title", form)
+        self.assertEqual(form["timestamp"], "1786756933")
+        lines = self.link_problem_lines(stderr)
+        self.assertEqual(len(lines), 1, stderr)
+        self.assertTrue(lines[0].startswith("alert-relay: ALERT_RELAY_LINK_BASE must be"))
+        for secret in ("link-secret", RELAY_TOKEN, PUSHOVER_TOKEN, PUSHOVER_USER_KEY):
+            self.assertNotIn(secret, stderr)
+
+    def test_a_relay_with_a_valid_link_base_links_and_says_nothing(self):
+        form, stderr = self.alert_through()
+        self.assertEqual(form["url"], f"{LINK_BASE}/container/{CONTAINER_ID}")
+        self.assertEqual(form["url_title"], "Open in Dozzle")
+        self.assertEqual(self.link_problem_lines(stderr), [])
 
 if __name__ == "__main__":
     unittest.main()
