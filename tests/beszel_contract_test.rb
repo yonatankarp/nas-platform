@@ -430,8 +430,10 @@ STATIC_ROWS = [
     name: "an Intel agent bound to some other render device",
     break: lambda { |root|
       mutate_yaml(root, "services/beszel/compose.yml") do |document|
-        document.fetch("services").fetch("agent-intel")["devices"] =
-          ["${NAS_RENDER_DEVICE:?}:/dev/dri/card0"]
+        # Only the render entry moves: replacing the whole list would also drop
+        # the S.M.A.R.T. slots, which is a different refusal.
+        document.fetch("services").fetch("agent-intel").fetch("devices")[0] =
+          "${NAS_RENDER_DEVICE:?}:/dev/dri/card0"
       end
     },
     expects: "NAS Intel render device differs"
