@@ -122,6 +122,39 @@
     mode: "0600"
   no_log: true
 
+# A declared disk can leave the host -- a bay emptied, a disk dead or renamed --
+# and a devices: entry naming an absent node stops the agent container starting.
+# Failing here would block every deploy and take the agent dark, so an absent
+# node gets /dev/null in its slot and a warning instead, and the run goes on.
+# The count assertion above is about the lists' shape and stays strict.
+#
+# The gap this leaves: a reboot that loses a node without a deploy leaves the
+# rendered .env naming it, and the agent will not start until the next converge
+# re-renders the slot. Beszel's Status alert pages on the agent going down, so
+# that window is reported rather than silent.
+- name: Look for each declared S.M.A.R.T. device node on this host
+  ansible.builtin.stat:
+    path: "{{ item.1 }}"
+    get_checksum: false
+    get_mime: false
+    get_attributes: false
+  loop: "{{ beszel_smart_device_slots }}"
+  loop_control:
+    label: "{{ item.0 }}={{ item.1 }}"
+  register: beszel_smart_device_stats
+  changed_when: false
+  check_mode: false
+
+- name: Warn about declared S.M.A.R.T. devices absent from this host
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: {{ item.1 }} is declared in inventory for {{ item.0 }} but is not a
+      device node on this host, so {{ item.0 }} renders /dev/null and that disk
+      is not monitored until it returns.
+  loop: "{{ beszel_smart_missing_slots }}"
+  loop_control:
+    label: "{{ item.0 }}={{ item.1 }}"
+
 - name: Render the Beszel environment
   ansible.builtin.template:
     src: env.j2

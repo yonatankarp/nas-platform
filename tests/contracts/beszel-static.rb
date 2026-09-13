@@ -152,6 +152,31 @@ slot_conditions = Array(slot_guard&.dig("ansible.builtin.assert", "that")).join(
 refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless
   slot_conditions.include?("platform_smart_sata_devices | length == #{sata.length}") &&
     slot_conditions.include?("platform_smart_nvme_namespaces | length == #{nvme.length}")
+# A declared disk missing from the host must not stop the agent starting or the
+# deploy running. The role stats every slot's path for real, --check included,
+# warns about each one that is not a device node rather than failing, and env.j2
+# renders a slot's path only when it was found. tests/beszel_telemetry_ansible_test.rb
+# runs these tasks against absent paths; this holds their shape.
+smart_stat = role_tasks.find { |task| task["name"] == "Look for each declared S.M.A.R.T. device node on this host" }
+smart_warn = role_tasks.find { |task| task["name"] == "Warn about declared S.M.A.R.T. devices absent from this host" }
+env_render = role_tasks.find { |task| task["name"] == "Render the Beszel environment" }
+refuse("role does not tolerate an absent S.M.A.R.T. device") unless
+  smart_stat&.key?("ansible.builtin.stat") && smart_stat["loop"] == "{{ beszel_smart_device_slots }}" &&
+    smart_stat["register"] == "beszel_smart_device_stats" &&
+    smart_stat["check_mode"] == false && smart_stat["changed_when"] == false &&
+    smart_warn&.key?("ansible.builtin.debug") && smart_warn["loop"] == "{{ beszel_smart_missing_slots }}" &&
+    !smart_warn.key?("failed_when") && env_render &&
+    role_tasks.index(smart_stat) < role_tasks.index(smart_warn) &&
+    role_tasks.index(smart_warn) < role_tasks.index(env_render) &&
+    vars.fetch("beszel_smart_rendered_slots", "").include?("beszel_smart_present_devices") &&
+    %w[stat.isblk stat.ischr].all? { |attribute| vars.fetch("beszel_smart_present_devices", "").include?(attribute) }
+env_assignments = environment_assignments(File.join(root, "roles/beszel/templates/env.j2")).to_h
+smart_slot_names = (1..sata.length).map { |n| "NAS_SMART_SATA_DEVICE_#{n}" } +
+                   (1..nvme.length).map { |n| "NAS_SMART_NVME_NAMESPACE_#{n}" }
+refuse("env template renders a S.M.A.R.T. slot without the presence check") unless
+  smart_slot_names.all? do |name|
+    env_assignments[name] == "{{ beszel_smart_rendered_slots['#{name}'] | default('/dev/null') }}"
+  end
 expected_mounts = [
   "${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro",
   "${NAS_MEDIA_ROOT:?}/.beszel:/extra-filesystems/volume2:ro"

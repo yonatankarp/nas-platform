@@ -111,6 +111,7 @@ FIXTURE_FILES = %w[
   roles/beszel/tasks/configure.yml
   roles/beszel/tasks/alert.yml
   roles/beszel/meta/argument_specs.yml
+  roles/beszel/templates/env.j2
   services/beszel/compose.yml
   inventory/group_vars/nas_hosts/main.yml
   inventory/group_vars/mac_hosts/main.yml
@@ -487,6 +488,40 @@ STATIC_ROWS = [
                   "platform_smart_nvme_namespaces | length >= 0)")
     },
     expects: "role does not pin the S.M.A.R.T. slot count to Compose"
+  },
+  {
+    # Under --check a stat that does not really run reports every device absent,
+    # so the diff an operator reads would show every slot going to /dev/null.
+    name: "a device presence stat that is skipped under --check",
+    break: lambda { |root|
+      mutate_yaml(root, "roles/beszel/tasks/deploy.yml") do |document|
+        find_task(document, "Look for each declared S.M.A.R.T. device node on this host").delete("check_mode")
+      end
+    },
+    expects: "role does not tolerate an absent S.M.A.R.T. device"
+  },
+  {
+    # The failure the tolerance exists to remove: one pulled disk failing every
+    # five-minute tick and blocking every deploy behind it.
+    name: "an absent S.M.A.R.T. device that fails the deploy",
+    break: lambda { |root|
+      mutate_yaml(root, "roles/beszel/tasks/deploy.yml") do |document|
+        task = find_task(document, "Warn about declared S.M.A.R.T. devices absent from this host")
+        task["ansible.builtin.fail"] = task.delete("ansible.builtin.debug")
+      end
+    },
+    expects: "role does not tolerate an absent S.M.A.R.T. device"
+  },
+  {
+    # The other way to lose the tolerance: the slot bypasses the presence check
+    # and renders the declared path whether or not the node is there.
+    name: "an env slot that renders the declared path unchecked",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/templates/env.j2",
+                  "{{ beszel_smart_rendered_slots['NAS_SMART_NVME_NAMESPACE_1'] | default('/dev/null') }}",
+                  "{{ platform_smart_nvme_namespaces[0] | default('/dev/null') }}")
+    },
+    expects: "env template renders a S.M.A.R.T. slot without the presence check"
   },
   {
     name: "a portable agent that lost a capacity mount",
@@ -2052,6 +2087,15 @@ STATIC_MUTATIONS = [
     from: 'refuse("role does not pin the S.M.A.R.T. slot count to Compose") unless',
     to: "nil unless",
     rows: ["a role slot guard that no longer counts the NVMe disks"] },
+{ label: "the absent S.M.A.R.T. device check",
+  from: 'refuse("role does not tolerate an absent S.M.A.R.T. device") unless',
+  to: "nil unless",
+  rows: ["a device presence stat that is skipped under --check",
+         "an absent S.M.A.R.T. device that fails the deploy"] },
+{ label: "the S.M.A.R.T. env presence check",
+  from: 'refuse("env template renders a S.M.A.R.T. slot without the presence check") unless',
+  to: "nil unless",
+  rows: ["an env slot that renders the declared path unchecked"] },
   { label: "the agent capacity mount check",
     from: 'refuse("agent capacity mounts differ") unless expected_mounts.all?',
     to: "nil unless expected_mounts.all?",
