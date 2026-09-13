@@ -190,4 +190,7 @@ argument_specs:
       platform_vault_file:
         type: path
         required: false
-        description: Optional encrypted vault file whose SHA-256 identifies a run.
+        description: >-
+          Optional encrypted vault artifact location whose SHA-256 identifies a run.
+          A directory identifies every encrypted file directly inside it; a regular
+          file identifies itself. No credential is read through this path.

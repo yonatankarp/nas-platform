@@ -154,9 +154,12 @@ end
 site_play = YAML.safe_load_file(File.join(ROOT, "site.yml")).first
 check(failures, site_play["hosts"] == "platform_hosts",
       "site.yml must target platform_hosts")
+# The location, not one file: the identifier folds every encrypted artifact
+# directly inside it, which is what lets the vault split add files without the
+# reported identity silently narrowing to whichever one this named.
 check(failures, site_play.dig("vars", "platform_vault_file").to_s.include?(
-  "inventory/group_vars/all/vault.yml"
-), "site.yml must identify the encrypted deployment vault for SHA-256 reporting")
+  "inventory/group_vars/all"
+), "site.yml must identify the encrypted deployment vault location for SHA-256 reporting")
 
 preflight_options = YAML.safe_load_file(
   File.join(ROOT, "roles", "preflight", "meta", "argument_specs.yml")
