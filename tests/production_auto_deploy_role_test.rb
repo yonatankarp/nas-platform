@@ -219,14 +219,19 @@ check(failures, doc_tags.sort == all_verify_tags.sort,
 #   import_tasks and import_role, templated paths included. It does not list what
 #   a dynamic include_tasks or include_role would add at run time.
 # - The walker below reads the files: site.yml's task sections and roles, then
-#   every include_tasks/import_tasks/include_role/import_role whose target is a
-#   literal, through block/rescue/always. It covers the dynamic includes, and it
-#   cannot follow a templated path, a meta dependency or an import_playbook.
-# A route both miss is a dynamic include of a templated path. Without
-# ansible-playbook this file aborts at its top rather than passing.
+#   every include_tasks/import_tasks/include_role/import_role -- spelled bare,
+#   ansible.builtin. or ansible.legacy. -- whose target is a literal, through
+#   block/rescue/always. It covers the dynamic includes, and it cannot follow a
+#   templated path, a meta dependency or an import_playbook.
+# Neither covers: a dynamic include_tasks or include_role whose file, role name
+# or tasks_from is templated; a role's handlers files, which neither reads; and
+# the removed bare `include`. Without ansible-playbook this file aborts at its
+# top rather than passing.
 SITE_PLAYBOOK = File.join(ROOT, "site.yml")
-TASK_INCLUDES = %w[ansible.builtin.include_tasks ansible.builtin.import_tasks].freeze
-ROLE_INCLUDES = %w[ansible.builtin.include_role ansible.builtin.import_role].freeze
+# Every spelling Ansible and ansible-lint --strict accept for the same action.
+include_spellings = ->(*actions) { actions.flat_map { |a| [a, "ansible.builtin.#{a}", "ansible.legacy.#{a}"] } }
+TASK_INCLUDES = include_spellings.call("include_tasks", "import_tasks").freeze
+ROLE_INCLUDES = include_spellings.call("include_role", "import_role").freeze
 
 def site_reachable_tasks(overrides = {})
   load = ->(path) { overrides.fetch(path) { YAML.safe_load_file(path, aliases: true) } }
@@ -247,7 +252,13 @@ def site_reachable_tasks(overrides = {})
       tasks << task
       TASK_INCLUDES.each do |key|
         file = task[key].is_a?(Hash) ? task[key]["file"] : task[key]
-        visit.call(File.expand_path(file, directory)) if file.is_a?(String) && !file.include?("{{")
+        next unless file.is_a?(String) && !file.include?("{{")
+
+        # Ansible looks in the role's tasks directory as well as beside the
+        # including file, which differ for a file in a subdirectory.
+        visit.call(File.expand_path(file, directory))
+        tasks_root = directory[%r{\A.*/roles/[^/]+/tasks(?=/|\z)}]
+        visit.call(File.expand_path(file, tasks_root)) if tasks_root
       end
       ROLE_INCLUDES.each do |key|
         name = task[key].is_a?(Hash) ? task[key]["name"] : nil
@@ -285,18 +296,27 @@ leaked_into_site = hourly_only_tags_in(site_tasks)
 check(failures, leaked_into_site.empty?,
       "#{leaked_into_site.inspect} is reachable from site.yml: a failing hourly-only check there fails " \
       "every converge and quarantines the revision, so it belongs to verify.yml alone")
-# Planted in memory, both as a plain include and as an import inside a block,
-# the two shapes a hand edit to host_prep would take.
-host_prep_tasks = YAML.safe_load_file(host_prep_main, aliases: true)
+# Planted in memory: the shapes a hand edit would take, including the
+# ansible.legacy spellings that --list-tasks also passes, since both are dynamic.
+ntfy_main = File.join(ROOT, "roles/ntfy/tasks/main.yml")
 {
-  "include_tasks" => { "name" => "Planted", "ansible.builtin.include_tasks" => "verify_mdraid.yml" },
-  "import_tasks in a block" => {
-    "name" => "Planted", "block" => [{ "name" => "Planted", "ansible.builtin.import_tasks" => { "file" => "verify_mdraid.yml" } }]
-  }
-}.each do |shape, planted|
-  tasks_with_plant, = site_reachable_tasks(host_prep_main => host_prep_tasks + [planted])
+  "host_prep's main.yml, include_tasks" =>
+    [host_prep_main, { "name" => "Planted", "ansible.builtin.include_tasks" => "verify_mdraid.yml" }],
+  "host_prep's main.yml, import_tasks in a block" =>
+    [host_prep_main, { "name" => "Planted", "block" => [
+      { "name" => "Planted", "ansible.builtin.import_tasks" => { "file" => "verify_mdraid.yml" } }
+    ] }],
+  "host_prep's main.yml, ansible.legacy.include_tasks" =>
+    [host_prep_main, { "name" => "Planted", "ansible.legacy.include_tasks" => "verify_mdraid.yml" }],
+  "ntfy's main.yml, ansible.legacy.include_role in a block" =>
+    [ntfy_main, { "name" => "Planted", "block" => [
+      { "name" => "Planted",
+        "ansible.legacy.include_role" => { "name" => "host_prep", "tasks_from" => "verify_mdraid" } }
+    ] }]
+}.each do |shape, (path, planted)|
+  tasks_with_plant, = site_reachable_tasks(path => YAML.safe_load_file(path, aliases: true) + [planted])
   check(failures, hourly_only_tags_in(tasks_with_plant) == HOURLY_ONLY_VERIFY_TAGS,
-        "planted: host_prep's main.yml reaching verify_mdraid.yml by #{shape} must be refused")
+        "planted: #{shape} reaching verify_mdraid.yml must be refused")
 end
 
 def listed_hourly_only_tags(ansible, playbook)
