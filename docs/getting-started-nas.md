@@ -474,9 +474,11 @@ raises none. Two healthchecks.io checks report that from outside: create one for
 the poll tick (period 5 minutes, grace 15) and one for the hourly verification
 (period 1 hour, grace 2), and put their ping URLs in the vault as the
 [secrets guide](secrets.md) describes. Each `--poll` pings its check, or its
-`/fail` URL when the tick failed; each `--verify` that reaches a verdict pings
-the other, and a skipped one pings nothing, so a verification that keeps
-skipping alerts once the grace runs out. A ping that cannot be delivered never
+`/fail` URL when the tick failed. Each `--verify` that runs pings the other:
+plain when verification passed, and `/fail` when it failed or could not run at
+all, because from outside a verification that could not run is a failure. A
+skipped one pings nothing, so a verification that keeps skipping alerts once the
+grace runs out. A ping that cannot be delivered never
 changes what the poller does.
 
 Each revision is attempted once for any failure that reached the NAS, and a

@@ -2159,19 +2159,22 @@ def main(argv=None) -> int:
             # back, so it survives any change to how verify() reaches its
             # verdict. True pings plain and False pings /fail, every run,
             # whatever note_verify_verdict decided to page: the check needs the
-            # heartbeat, not the change. None is a skip -- lock held, nothing
-            # deployed, the checkout not at the deployed revision -- and pings
-            # nothing, so a verify that keeps skipping goes silent and alerts
-            # after the grace period, which is the state that must not hide. A
-            # raise leaves `passed` False: a run that could not verify is heard
-            # as a failure. ping_healthchecks never raises, so this `finally`
-            # changes no exception, return value or message.
+            # heartbeat, not the change. A run that could not verify at all -- any
+            # raise, OSError included, which leaves `passed` False -- pings /fail
+            # as well, because off the box a verification that could not run is
+            # a failure. None is a skip -- lock held, nothing deployed, the
+            # checkout not at the deployed revision -- and pings nothing, so a
+            # verify that keeps skipping goes silent and alerts after the grace
+            # period, which is the state that must not hide. ping_healthchecks
+            # never raises, so this `finally` changes no exception, return value
+            # or message.
             passed = False
             try:
                 passed = verify(config)
             except OSError as error:
-                # Not a verdict: nothing was verified, so nothing is paged and
-                # the recorded verdict stands.
+                # Nothing was verified, so no verdict is recorded and ntfy pages
+                # nothing; the external verify check still hears /fail from the
+                # `finally` below.
                 print(f"production auto-deploy: could not verify: {error}",
                       file=sys.stderr)
                 return 1
