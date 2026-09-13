@@ -134,6 +134,18 @@
       "automerge": false
     },
     {
+      "description": "The Beszel Intel agent runs as root with host networking, CAP_SYS_RAWIO, CAP_SYS_ADMIN and raw access to the SATA bays and the NVMe pair (#607), which is effectively root on the host. A malicious image does not need a new version to reach it: a tag re-pushed upstream arrives as a digest update, the routine rule above automerges digests, and the production poller converges the merge within five minutes. So no update type automerges here, digest refreshes included -- the one type the self-migrating rule above deliberately keeps. automerge false and NOT dependencyDashboardApproval, for that rule's reason: the pull request opens and is the notification; only the merge waits for a human. The hub and the portable agent are withheld too, because the beszel group rule above puts all three images on one branch and one release train, and withholding the group as a whole is what stops the hub automerging ahead of a held agent into version skew.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "ghcr.io/henrygd/beszel/beszel",
+        "ghcr.io/henrygd/beszel/beszel-agent",
+        "ghcr.io/henrygd/beszel/beszel-agent-intel"
+      ],
+      "automerge": false
+    },
+    {
       "description": "The yt-dlp build Pinchflat runs is pinned by version and sha256 together, and a bot cannot compute the checksum. A version bump whose checksum was not updated by hand fails the converge at get_url, so these never automerge: the pull request is a prompt to copy the new SHA2-256SUMS entry, not a finished change.",
       "matchDatasources": [
         "github-releases"

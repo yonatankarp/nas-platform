@@ -193,6 +193,56 @@ check(failures, open_automerge == true && !open_approval,
       "withheld. It holds no migrating store and the routine rule automerges it, so the " \
       "resolver is answering the same way for every package and the assertions above prove nothing")
 
+# #607: the Beszel Intel agent runs as root with host networking, CAP_SYS_RAWIO,
+# CAP_SYS_ADMIN and raw access to the SATA bays and the NVMe pair. The hazard is
+# not a version at all: a tag re-pushed upstream arrives as a digest update, which
+# the routine rule automerges and the poller deploys within five minutes. So this
+# set differs from the self-migrating one above in exactly the type that set
+# keeps -- here no update type may automerge, digest refreshes included.
+#
+# The hub and the portable agent are held with it, and the group rule is asserted
+# alongside, because the three share one Renovate branch and one release train:
+# withholding only the agent would let the hub automerge ahead of it into skew.
+# The same mechanism-neutral verdict as above, and the same stated count and
+# in-tree pin, for the same reasons.
+HOST_ROOT_EQUIVALENT_IMAGE_GROUP = %w[
+  ghcr.io/henrygd/beszel/beszel
+  ghcr.io/henrygd/beszel/beszel-agent
+  ghcr.io/henrygd/beszel/beszel-agent-intel
+].freeze
+EVERY_UPDATE_TYPE = %w[major minor patch pin pinDigest digest lockFileMaintenance].freeze
+check(failures, HOST_ROOT_EQUIVALENT_IMAGE_GROUP.length == 3,
+      "the host-root-equivalent Beszel image group must name three images, not " \
+      "#{HOST_ROOT_EQUIVALENT_IMAGE_GROUP.length}")
+beszel_compose_path = File.join(ROOT, "services", "beszel", "compose.yml")
+beszel_compose = File.file?(beszel_compose_path) ? File.read(beszel_compose_path) : ""
+HOST_ROOT_EQUIVALENT_IMAGE_GROUP.each do |package|
+  check(failures, beszel_compose.include?("image: #{package}:"),
+        "#{package} is withheld from automerge but services/beszel/compose.yml pins no such " \
+        "image; a rule naming an image the tree no longer has guards nothing")
+end
+check(failures, rules.any? do |rule|
+  rule["groupName"] == "beszel" &&
+    Set.new(Array(rule["matchPackageNames"])) == Set.new(HOST_ROOT_EQUIVALENT_IMAGE_GROUP)
+end, "the Beszel hub and both agents must stay one Renovate group, so a withheld agent " \
+     "cannot be left behind a hub that moved on its own")
+EVERY_UPDATE_TYPE.each do |update_type|
+  HOST_ROOT_EQUIVALENT_IMAGE_GROUP.each do |package|
+    automerge, approved = automerge_verdict(config, rules, package, update_type)
+    check(failures, automerge == false || approved,
+          "a #{update_type} update of #{package} would automerge. The Beszel Intel agent runs " \
+          "with CAP_SYS_RAWIO and CAP_SYS_ADMIN, and a re-pushed tag arrives as a digest, so no " \
+          "update to its release group may merge without a human")
+  end
+end
+# The tripwire for the type this block adds: the resolver must still be able to
+# say that a digest refresh of an image outside the group automerges.
+digest_automerge, digest_approval = automerge_verdict(config, rules,
+                                                      "docker.io/gotenberg/gotenberg", "digest")
+check(failures, digest_automerge == true && !digest_approval,
+      "the automerge resolver reports that a digest refresh of docker.io/gotenberg/gotenberg is " \
+      "withheld. The routine rule automerges it, so the Beszel digest assertions above prove nothing")
+
 # Every pinned version in the integration harness must be tracked by a custom
 # manager. Without this, a pin silently stops being bumped: nothing fails until
 # the pinned value leaves its upstream index, and then every suite fails at
