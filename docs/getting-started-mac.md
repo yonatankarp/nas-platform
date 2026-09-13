@@ -66,6 +66,16 @@ checkout:
 - `$HOME/.config/nas-platform/vault-password`
 - `$HOME/.config/nas-platform/vault.yml`
 
+That vault must carry `vault_healthchecks_poller_ping_url` and
+`vault_healthchecks_verify_ping_url` as well (#606). The proof runs
+`validate-vault.yml` against it, the credential contract requires both keys,
+and a vault written before they existed fails there, before anything deploys.
+The Mac proof never installs the deployment poller, so nothing here ever pings
+them: two different https stand-ins such as
+`https://healthchecks.invalid/mac-poller` and
+`https://healthchecks.invalid/mac-verify` are enough. On the NAS they are the
+real check URLs, as the [secrets guide](secrets.md) describes.
+
 The canonical guide is the sole owner of creating the protected directory,
 password input, and encrypted vault. Read the
 [secrets and encrypted-vault guide](secrets.md), following it from
