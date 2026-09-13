@@ -39,6 +39,7 @@
     ],
     "deny": [
       "Read(./inventory/group_vars/all/vault.yml)",
+      "Read(./inventory/group_vars/all/vault_*.yml)",
       "Read(./**/.env)",
       "Read(./**/*.key)",
       "Read(./**/*.pem)",

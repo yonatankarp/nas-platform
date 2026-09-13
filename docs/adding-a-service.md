@@ -1196,6 +1196,11 @@ tests/generate-ephemeral-vault.sh             the integration and Mac lanes' vau
 docs/secrets.md                               enforced by secrets_docs_test.rb
 ```
 
+The value itself is not in that list because it is the operator's, not the
+diff's: it goes into the encrypted `inventory/group_vars/all/vault_<role>.yml`,
+created with `ansible-vault create` for a service that has none yet. The
+[secrets guide](secrets.md#add-a-new-secret) carries the command.
+
 One of those deserves naming. `filter_plugins/vault_credential_schema.py` is where
 the credential's *shape* is stated — `NONEMPTY`, a hex pattern, a UUID — and a key
 declared in `vault_contract` without a rule here is validated only for presence.

@@ -1305,13 +1305,17 @@ contract before editing the encrypted value:
 - Update `docs/secrets.md` with the value's source, format, relationships,
   recovery rule, and any applicable generation recipe.
 
-After the schema and consumer changes are complete, edit the existing encrypted
-repository vault in place:
+After the schema and consumer changes are complete, edit the owning service's
+encrypted vault in place. A key listed under vault_keys in
+`tests/expected/<service>.yml` lives in
+`inventory/group_vars/all/vault_<role>.yml`; a key no single service owns lives
+in `vault.yml`. A service with no vault file yet gets one
+with `ansible-vault create` under the same password:
 
 ```sh
 ansible-vault edit \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  inventory/group_vars/all/vault.yml
+  inventory/group_vars/all/vault_<role>.yml
 ```
 
 Add the value as safely quoted YAML: single-quote text scalars by default,
@@ -1331,7 +1335,7 @@ tests/validate-policy.sh
 ```
 
 Privately verify that the consumer works with the intended integration. Commit
-only the encrypted `inventory/group_vars/all/vault.yml`, along with its schema,
+only the encrypted vault file you edited, along with its schema,
 consumer, test, and documentation changes. Never commit a plaintext vault,
 password file, generated secret, rendered secret-bearing file, or secret log.
 
@@ -1341,6 +1345,17 @@ Keep the controller vault password outside the repository, whether the
 controller is a workstation or the NAS itself.
 
 Never decrypt a vault onto disk.
+
+The repository vault is several files under one password in
+`inventory/group_vars/all/`: one file per service holds that service's own
+keys, the Pushover pair that Beszel and Dozzle both read has a file of its own,
+and `vault.yml` holds only the managed-user mapping, which is one variable and
+cannot be split across files.
+`group_vars` loads and decrypts all of them, and roles read credentials by
+variable name, so which file a key sits in changes nothing a play sees. A key
+defined in two files is not an error Ansible reports: the file loaded later
+wins, so keep each key in exactly one. An external single-file vault, as the
+Mac proof and a fresh generator run use, remains valid.
 
 ### Workstation controller
 
@@ -1353,7 +1368,7 @@ Use the encrypted editor for safe changes:
 ```sh
 ansible-vault edit \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
-  inventory/group_vars/all/vault.yml
+  inventory/group_vars/all/vault_<role>.yml
 ```
 
 Export the target address and SSH user, then run a remote check. Review the

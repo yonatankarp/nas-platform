@@ -529,6 +529,7 @@ check(failures,
         controller.include?(
           %(install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml)
         ) &&
+        controller.include?("rm -f /repo/inventory/group_vars/all/vault_*.yml") &&
         !harness.include?('controller_mount=$repo_dir'),
       "integration must isolate normal and linked-worktree controllers before installing its ephemeral vault")
 lock_acquire_index = harness.index("acquire_integration_lock")

@@ -1134,10 +1134,19 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
-vault_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml")
-if File.file?(vault_path)
+# Each service's own keys live in vault_<role>.yml; vault.yml holds only the
+# managed-user mapping, which is one variable and cannot span files. Where a key
+# sits cannot be checked without the password, so the gate holds what it can
+# read: every one is encrypted and names a real role. Pushover is the one
+# exception: an external account both Beszel and Dozzle read, with no role.
+manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } + ["pushover"]
+Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
+  name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip
-  check(failures, first.start_with?("$ANSIBLE_VAULT;"), "vault.yml is present but not encrypted")
+  check(failures, first.start_with?("$ANSIBLE_VAULT;"), "#{name} is present but not encrypted")
+  role = name[/\Avault_(.+)\.yml\z/, 1]
+  check(failures, role.nil? || manifest_roles.include?(role),
+        "#{name} names no role in services/manifest.yml")
 end
 
 

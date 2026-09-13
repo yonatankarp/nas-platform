@@ -157,6 +157,10 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
 
     test -f /repo/inventory/group_vars/all/vault.yml
     test ! -L /repo/inventory/group_vars/all/vault.yml
+    # The committed per-service vaults are encrypted under the operator's
+    # password, and group_vars decrypts every file with the one password the
+    # harness exports. The ephemeral vault.yml carries every key, so they go.
+    rm -f /repo/inventory/group_vars/all/vault_*.yml
     install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml
     export ANSIBLE_VAULT_PASSWORD_FILE="$vault_password_file"
 

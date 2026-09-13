@@ -177,6 +177,7 @@ if defined?(ClassifyChanges)
     # Both, not either: a route that dropped `static` here would take the
     # encryption check off the file it is about.
     ["inventory/group_vars/all/vault.yml"] => %w[static vault],
+    ["inventory/group_vars/all/vault_arr.yml"] => %w[static vault],
     ["install-production-auto-deploy.yml"] => %w[static],
     ["roles/production_auto_deploy/tasks/main.yml"] => %w[static],
     ["roles/image_prune/templates/config.json.j2"] => %w[static],
