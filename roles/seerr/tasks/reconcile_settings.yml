@@ -84,8 +84,8 @@
   ansible.builtin.debug:
     msg: >-
       A live run would declare Seerr's Pushover agent enabled for request
-      events, carrying vault_pushover_token and vault_pushover_user_key. Seerr
-      sends nothing through an agent missing either, and no request event
+      events, carrying the vault's Pushover application token and user key.
+      Seerr sends nothing through an agent missing either, and no request event
       reaches anyone.
   when:
     - ansible_check_mode
