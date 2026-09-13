@@ -48,6 +48,7 @@ host_prep_mdraid_arrays:
   md126: 2
   md1: 0
   md2: 0
+
 platform_beszel_agent_available: true
 platform_beszel_agent_kind: intel
 beszel_required_telemetry_categories:
