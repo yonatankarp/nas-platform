@@ -282,8 +282,12 @@ def deep_merge(left, right)
 end
 
 def managed_user_policy
+  # Immich's preference policy lives with the rest of that service's settings.
+  # The fixture deep-merged below happens to carry every key this needs, so
+  # reading main.yml here would still pass -- by luck rather than because the
+  # base is right, which is the kind of pass that stops being one silently.
   base = YAML.safe_load_file(
-    REPO_DIR.join("inventory", "group_vars", "all", "main.yml"), aliases: false
+    REPO_DIR.join("inventory", "group_vars", "all", "service_immich.yml"), aliases: false
   )
   fixture_path = Pathname.new(ENV.fetch("PLATFORM_MAC_FIXTURE_VARS_FILE")).expand_path
   stat = fixture_path.lstat
