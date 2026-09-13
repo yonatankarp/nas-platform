@@ -1,0 +1,73 @@
+---
+# Media acquisition staging. Shared for the same reason as the library roots:
+# downloaders writes these trees and arr reads them. They are recovery: cache and
+# regenerable, which is the whole distinction from media_libraries.yml: the
+# recovery class drives the disaster-recovery documentation, so one file holding
+# both would mix what can be rebuilt with what cannot.
+
+nas_storage_media_acquisition:
+  # The two acquisition tree roots are declared ahead of their leaves so their
+  # mode is owned rather than inherited. `ansible.builtin.file` applies the
+  # declared mode to intermediate parents only at the moment it creates them,
+  # so a root left undeclared keeps whatever the first converge produced and no
+  # later change to a leaf ever revisits it. Declared, they are re-asserted
+  # every run. They are not `media_acquisition_writer`: download clients write
+  # into `<transport>/<category>`, never into the root.
+  - path: "{{ nas_media_root }}/Media/.acquisition"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Books/.acquisition"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/movies"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/series"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/usenet/audiobooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/movies"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/series"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Media/.acquisition/torrents/audiobooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/usenet/ebooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/usenet/comics"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/torrents/ebooks"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true
+  - path: "{{ nas_media_root }}/Books/.acquisition/torrents/comics"
+    mode: "0755"
+    recovery: cache
+    media_acquisition_foundation: true
+    media_acquisition_writer: true

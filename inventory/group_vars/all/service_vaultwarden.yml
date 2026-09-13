@@ -1,0 +1,147 @@
+---
+# vaultwarden: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault.yml.
+
+# VAULTWARDEN IS ON. #547 landed the stack dark and this is the separate
+# deliberate act that turns it on. THIS LINE IS THE WHOLE OF IT:
+# roles/vaultwarden/defaults/main.yml stays false, the way nextcloud's does,
+# because a role default is the floor under this decision rather
+# than a copy of it -- it is what a caller with no inventory gets, and this
+# inventory wins on every run any playbook here makes. The comment beside that
+# default carries the argument.
+#
+# WHAT THE FLIP ITSELF DOES, given the dark merge already reached the NAS. Dark,
+# the poller had already installed services/vaultwarden/ into the release,
+# host_prep had already created {{ nas_docker_root }}/vaultwarden/data at 0700
+# because the nas_storage loop is ungated, and the role had already rendered its
+# runtime .env -- so the flip's own work is the part that was withheld: one
+# image pulled, one container created, this host's port 8086 bound, and one
+# Tailscale Serve front placed on 443 in front of it. Setting it back to false converges the Compose project to
+# `state: absent` rather than skipping it, so the flag is a deployment decision
+# in both directions -- with the one asymmetry tasks/serve.yml records: the
+# Serve entry is left in place rather than withdrawn, because that state belongs
+# to the tailnet node rather than to this stack.
+#
+# WHAT WAS TRUE BEFORE IT FLIPPED, since none of it is visible from here.
+# Tailscale Serve must front the stack -- Bitwarden clients need a secure
+# context and will not talk to plain HTTP -- and Serve only terminates TLS if
+# HTTPS certificates are ENABLED FOR THE TAILNET in the Tailscale admin console,
+# which no check in this repository can read. roles/vaultwarden/tasks/serve.yml
+# places the front and then proves it by using it, so a converge with that
+# setting off fails there naming it rather than leaving a server nobody's client
+# will reach. `tailscale serve status` on the NAS reported `No serve config` on
+# 2026-09-10, so the first converge after this merge is a genuine change.
+#
+# THAT SETTING WAS CHECKED BEFORE THIS MERGED RATHER THAN ASSUMED: on 2026-09-11
+# the operator ran `tailscale cert as6704t-4043.tail4e1ae8.ts.net` on the NAS and
+# it wrote a certificate and key, which only succeeds where the tailnet has HTTPS
+# certificates enabled. The assertion stays exactly as it is -- it is the only
+# thing that would catch the setting being turned off later, and the console is
+# not this repository's to read. What it costs if that happens is bounded and
+# worth knowing: vaultwarden is the LAST role site.yml converges, so the run
+# fails at its final role and deployment_summary does not run. No other service
+# is behind it, and the poller repeats that failure every five minutes until the
+# setting or the release changes.
+#
+# THE SECOND HOST PREREQUISITE, WHICH WAS NOT CHECKED BEFORE IT MERGED AND COST
+# EXACTLY WHAT THE PARAGRAPH ABOVE PRICES. Placing a Serve front is a privileged
+# write: tailscaled accepts serve configuration from root, or from an account
+# the host has granted with `sudo tailscale set --operator=<account>`, and
+# refuses everyone else with `Access denied: serve config denied`. Reading it is
+# not privileged, so nothing before the placement notices. The deploy account
+# had neither, and the first converge after this flip died at that command --
+# the last role of the last play -- on a bare rc=1, repeating on every
+# five-minute tick until the operator ran the grant by hand. The grant is a
+# one-time act that persists in tailscaled's own preferences; this repository
+# escalates nowhere and so cannot make it, which is exactly why
+# roles/vaultwarden/tasks/serve.yml now refuses in those terms and names the
+# account to grant rather than leaving the reader to Tailscale's own stderr.
+#
+# Flipping it is also what makes tests/deployment_gate_coverage_test.rb require
+# an integration lane that converges the vaultwarden tag and Mac lifecycle
+# coverage. Both land in this change, which is the check working: a gate-on
+# service is one CI has deployed and watched come up.
+#
+# It lives here rather than in a host group for the reason recorded above the
+# Nextcloud switch: both real inventories bind to nas_hosts, the integration
+# sandbox is a nas_hosts run like any other, and this is nonsecret policy rather
+# than a machine fact.
+vaultwarden_deployment_enabled: true
+
+# REGISTRATION STAYS OPEN, PERMANENTLY, AND THE TAILNET IS WHY.
+#
+# The value #547 landed was false, and on a fresh database that is a password
+# manager NOBODY CAN GET INTO. Both routes past it are closed by decisions this
+# platform has already made and means to keep: there is no admin panel, so there
+# is no account to invite anyone from -- /admin answers 200 serving nothing but
+# its own "the admin panel is disabled" body, measured against the pinned image
+# -- and there is no SMTP, so an invitation could not be delivered even if one
+# could be issued. With signups closed, POST /identity/accounts/register answers
+# 400, also measured. Those three together are not a door with a difficult key;
+# they are a wall.
+#
+# OPEN-THEN-CLOSE WAS THE ALTERNATIVE AND IT WAS REJECTED. Flip this true,
+# register the household's accounts, flip it false again: two merges, two
+# five-minute poller ticks, and a window that is open exactly as long either
+# way. What it buys is a closed door afterwards; what it costs is that every
+# later account -- a new phone, a family member, a rebuild -- needs the same two
+# merges again, and that the repository's stated value would then be one a
+# household member has to ask an operator to change. The decision is to leave it
+# open and say so.
+#
+# THE PERIMETER IS THE CONTROL, AND IT IS A COMPOSE LINE RATHER THAN A HOPE.
+# Vaultwarden is published only through Tailscale Serve on the tailnet: no ADM
+# port is opened and no public DNS record exists -- and, the part that actually
+# enforces it, services/vaultwarden/compose.yml publishes the container on
+# `127.0.0.1:8086` rather than on the wildcard every other service here uses, so
+# nothing off this host can reach the listener at all and Serve is the only way
+# in. #547's second chunk shipped that as a wildcard while this paragraph
+# already claimed otherwise, and the claim was measured FALSE: `docker port`
+# reported 0.0.0.0 and [::], and an uninvited POST to
+# /identity/accounts/register from a LAN address created the account. The
+# binding is what makes the sentence true, so it is not a detail to tidy away
+# later -- restoring the wildcard restores an open password manager on the LAN.
+#
+# With it in place the set of things that can create an account here is exactly
+# the set of things on the tailnet -- and that is the cost, in full: ANYTHING
+# THAT JOINS THE TAILNET
+# LATER CAN CREATE AN ACCOUNT ON THE PASSWORD MANAGER, without asking anyone,
+# including a device added for some unrelated reason. An account so created
+# holds no existing vault -- master passwords are user-owned and the server
+# never learns them, so nobody's items are readable from it -- but it is a
+# registered user on this server, and the tailnet admin console is the only
+# place that can be prevented.
+#
+# roles/vaultwarden/tasks/verify.yml knocks on the door on every converge and
+# asserts the answer matches THIS declaration in both directions, so flipping
+# this line back to false is a change the platform proves rather than merely
+# pushes.
+vaultwarden_signups_allowed: true
+
+nas_storage_vaultwarden:
+  # Vaultwarden's whole DATA_FOLDER, and it is the most irreplaceable directory
+  # on this platform. It holds db.sqlite3 with its -wal and -shm siblings, which
+  # is every vault item, organization and invitation; attachments/ and sends/,
+  # which are files nothing else has a copy of; and rsa_key.pem, which signs
+  # every session and token this server issues -- lose it and every client is
+  # logged out and every API key is void, though the vault items themselves
+  # survive because they are encrypted under keys derived from master passwords
+  # this server never had.
+  #
+  # recovery: critical, and with backup parked that means one copy exists by
+  # choice. Nothing here can regenerate any of it: the items are
+  # client-side-encrypted blobs, so not even the household could reconstruct
+  # them from a running client without exporting first.
+  #
+  # Owned by the platform identity because the container runs as
+  # ${NAS_UID}:${NAS_GID} -- the image ships no PUID/PGID handling and no
+  # entrypoint that drops privileges, so it writes as whoever it is told to be
+  # and cannot repair an ownership it did not get. 0700 rather than 0755: this
+  # is the one state tree on the platform whose contents are secret-bearing in
+  # the ordinary filesystem sense (rsa_key.pem above), and no other account on
+  # the NAS has business traversing it.
+  - path: "{{ nas_docker_root }}/vaultwarden/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0700"
+    recovery: critical

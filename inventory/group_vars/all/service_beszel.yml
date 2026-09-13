@@ -1,0 +1,20 @@
+---
+# beszel: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault.yml.
+
+nas_storage_beszel:
+  # Beszel. The hub database holds systems, alerts and notification settings.
+  - path: "{{ nas_docker_root }}/beszel/hub"
+    mode: "0755"
+    recovery: critical
+  - path: "{{ nas_docker_root }}/beszel/agent"
+    mode: "0755"
+    recovery: cache
+  # Empty bind sources that let Beszel report filesystem capacity without
+  # exposing either volume's contents.
+  - path: "{{ nas_docker_root }}/beszel/volume1"
+    mode: "0755"
+    recovery: cache
+  - path: "{{ nas_media_root }}/.beszel"
+    mode: "0755"
+    recovery: cache

@@ -1,0 +1,55 @@
+---
+# downloaders: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault.yml.
+
+# The Usenet provider is the same kind of declaration, and it is the one no
+# generator can mint: it is a paid third-party subscription. Four of its six
+# values are not credentials -- the host is published by the provider, the port
+# is 563 or 119, the connection count is a subscription tier and TLS is a
+# protocol flag -- so those four are ordinary operator policy and live here,
+# typed and readable without the vault password. Only the account name and its
+# password are vault-authored, and the `vault_` prefix now promises exactly
+# that again (#298).
+#
+# An empty host is the undeclared state, which is what starts SABnzbd with no
+# server on a target that has not bought a subscription -- exactly as an empty
+# media_arr_indexers starts Prowlarr with no indexer. The useful consequence is
+# that "is a provider declared?" became answerable without decrypting anything,
+# which is state rather than secret and is what roles/downloaders now reads.
+#
+# The port and the connection count are integers and TLS is a boolean because
+# these are typed YAML rather than vault strings, and
+# roles/downloaders/meta/argument_specs.yml enforces that before any rule is
+# consulted. ssl is a boolean rather than 1/0 specifically: SABnzbd parses a
+# server flag with `bool_conv(int_conv())` and stores any other spelling as 0,
+# so a string here would read as TLS-on and deploy TLS-off in silence. The role
+# renders it as an integer at the request.
+media_usenet_provider:
+  host: ""
+  port: 563
+  connections: 8
+  ssl: true
+
+# The account behind that host, and the only half of the provider that must not
+# be disclosed. Carried empty for the same reason the host is: the vault wins
+# over these, so authoring the pair there declares the account without removing
+# the default. The two halves have to agree -- roles/downloaders refuses a
+# declared host with no credentials, and credentials with no host -- because the
+# credential contract can no longer see the host to refuse a half-declared
+# provider itself.
+vault_downloaders_sabnzbd_server_username: ""
+vault_downloaders_sabnzbd_server_password: ""
+
+nas_storage_downloaders:
+  - path: "{{ nas_docker_root }}/sabnzbd/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true
+  - path: "{{ nas_docker_root }}/qbittorrent/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true

@@ -1,0 +1,11 @@
+---
+# seerr: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault.yml.
+
+nas_storage_seerr:
+  - path: "{{ nas_docker_root }}/seerr/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+    media_acquisition_foundation: true

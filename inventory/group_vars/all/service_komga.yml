@@ -1,0 +1,22 @@
+---
+# komga: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault.yml.
+
+# One-convergence input, and false is the only value this file may hold: this
+# layer outranks roles/komga/defaults/main.yml, so it is the one that decides
+# the run, and tests/contracts/komga-static.rb asserts it here as well as there
+# (#343). Take the single reviewed deployment that performs a Komga library root
+# move with `-e komga_library_root_migration_allowed=true`, which outranks both
+# declarations and leaves nothing committed to forget afterwards. The Phase 2
+# move -- Comics narrowed from the whole Books share to Books/Comics, with
+# Ebooks beside it -- is done, so nothing is pending behind this.
+komga_library_root_migration_allowed: false
+
+nas_storage_komga:
+  # Komga. Application configuration is critical state; books remain NAS-owned
+  # user media and are mounted read-only by the service.
+  - path: "{{ nas_docker_root }}/komga/config"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
