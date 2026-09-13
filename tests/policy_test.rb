@@ -1097,6 +1097,42 @@ PLATFORM_SERVICE_DEFAULTS = {
   "logging" => PLATFORM_LOGGING
 }.freeze
 
+# The storage inventory is composed from every nas_storage_* contributor in
+# group_vars/all rather than written in one place, so two properties that used to
+# be free have to be bought.
+#
+# Membership, because a derived composition cannot notice what it lost. Deleting
+# every contributor leaves nas_storage as [] and the play reports ok, measured
+# 2026-09-12, so contributors are held against the manifest in both directions.
+implemented_roles = Array(manifest["services"]).filter_map do |entry|
+  entry["role"] if entry.is_a?(Hash) && IMPLEMENTED_STATUSES.include?(entry["status"])
+end.uniq
+NasStorage.problems(ROOT, implemented_roles).each { |problem| check(failures, false, problem) }
+
+# And the prefix, because q('varnames') reads whatever is in scope at the moment
+# it evaluates. A role default named nas_storage_* would join the composition
+# partway through a run, which would make nas_storage evaluate to different
+# things depending on where it is read -- and host_prep reads it early. Nothing
+# outside group_vars/all may claim the prefix; the namespace is clean today and
+# this is what keeps it so.
+storage_prefix_offenders = []
+Find.find(ROOT) do |path|
+  Find.prune if File.basename(path) == ".git"
+  next unless File.file?(path) && path.end_with?(".yml")
+
+  relative = path.delete_prefix("#{ROOT}/")
+  next if relative.start_with?("inventory/group_vars/all/")
+
+  File.foreach(path) do |line|
+    storage_prefix_offenders << "#{relative}: #{line[/\A[a-zA-Z0-9_]+/]}" if line.match?(/\A#{NasStorage::CONTRIBUTOR_PREFIX}\w+:/)
+  end
+end
+check(failures, storage_prefix_offenders.empty?,
+      "#{storage_prefix_offenders.join(', ')} define a #{NasStorage::CONTRIBUTOR_PREFIX}* variable " \
+      "outside inventory/group_vars/all: the composition reads every such name in scope, so a " \
+      "definition elsewhere joins the storage inventory where it is visible and leaves it where " \
+      "it is not")
+
 declared_paths = NasStorage.entries(ROOT).map { |entry| entry.fetch("path") }
 
 # A mounted path is accounted for when nas_storage declares it, or declares an

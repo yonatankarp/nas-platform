@@ -77,6 +77,26 @@ module NasStorage
     end
   end
 
+  # The whole non-secret inventory as one hash, which is what "the shared
+  # inventory" means now that it is a directory rather than a file. Ansible
+  # composes exactly this view, so a check that swept main.yml for a property --
+  # the vault_ prefix sweep in tests/policy_vault_test.rb is the one that matters
+  # -- has to sweep all of it or the property stops holding for nineteen files it
+  # used to cover. Duplicate keys raise: Ansible would silently let the
+  # last-loaded file win, and a key defined twice across this directory is the
+  # failure this split exists to make impossible.
+  def shared_inventory(root)
+    merged = {}
+    readable_documents(root).each do |path, document|
+      document.each do |key, value|
+        raise "#{key} is defined twice; the second is in #{path}" if merged.key?(key)
+
+        merged[key] = value
+      end
+    end
+    merged
+  end
+
   # {contributor_variable => entries}, which is what the varnames lookup sees.
   def contributors(root)
     found = {}

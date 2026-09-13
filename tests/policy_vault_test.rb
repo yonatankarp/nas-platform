@@ -12,6 +12,7 @@ require "open3"
 require "rbconfig"
 require "set"
 require "yaml"
+require_relative "nas_storage_support"
 require_relative "policy_support"
 
 include PolicySupport
@@ -130,9 +131,11 @@ check(failures, actual_foundation_expectations == FOUNDATION_KEYS + OPERATOR_SUP
 # group has to be exactly the same two, because that is what stops the empty
 # strings from failing the shape rules four tasks later. Either half alone is a
 # broken converge, so both are pinned here against one list.
-shared_inventory = YAML.safe_load_file(
-  File.join(ROOT, "inventory", "group_vars", "all", "main.yml")
-)
+# The whole of group_vars/all, not one file. The vault_ prefix sweep below is a
+# namespace rule over the non-secret inventory, and the inventory is a directory
+# now: reading main.yml alone would leave nineteen files free to reintroduce
+# exactly the lie #298 and #353 removed.
+shared_inventory = NasStorage.shared_inventory(ROOT)
 check(failures,
       OPERATOR_SUPPLIED_KEYS.all? { |key| shared_inventory.fetch(key, :absent) == "" },
       "shared inventory must declare every operator-supplied key as an empty string")
