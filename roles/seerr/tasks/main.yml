@@ -9,7 +9,7 @@
     deployment_target_extra_paths: []
 
 # Redacted: the conditions name the Seerr API key, the Jellyfin administrator
-# pair and the ntfy publisher token. Compose reads the rendered .env line by
+# pair and the arrs' keys. Compose reads the rendered .env line by
 # line, so a value carrying a newline would silently truncate the credential
 # rather than fail.
 - name: Require env-safe Seerr credentials
@@ -18,13 +18,12 @@
       - vault_seerr_api_key is match('^[0-9a-f]{32}\Z')
       - vault_jellyfin_admin_username is match('^[^\r\n]+$')
       - vault_jellyfin_admin_password is match('^[^\r\n]+$')
-      - vault_ntfy_seerr_token is match('^tk_[a-z0-9]{29}\Z')
       - vault_arr_radarr_api_key is match('^[0-9a-f]{32}\Z')
       - vault_arr_sonarr_api_key is match('^[0-9a-f]{32}\Z')
     fail_msg: >-
       Seerr needs a 32-character hexadecimal API key, a single-line Jellyfin
-      administrator name and password to bootstrap with, an ntfy publisher
-      token, and Radarr's and Sonarr's own keys. Seerr imposes no format on its
+      administrator name and password to bootstrap with, and Radarr's and
+      Sonarr's own keys. Seerr imposes no format on its
       own key — it compares the value as an opaque string — so the shape is the
       platform's, matching the vault_arr_* keys.
   no_log: true

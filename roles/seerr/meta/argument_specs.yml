@@ -48,17 +48,14 @@ argument_specs:
       seerr_notification_types:
         type: int
         required: false
-      seerr_ntfy_priority:
-        type: int
-        required: false
-      seerr_ntfy_locale:
+      seerr_pushover_access_token:
         type: str
         required: false
-      seerr_ntfy_url:
+      seerr_pushover_user_key:
         type: str
         required: false
-      seerr_ntfy_topic:
-        type: str
+      seerr_pushover_declaration:
+        type: dict
         required: false
       seerr_ntfy_declaration:
         type: dict
@@ -97,9 +94,13 @@ argument_specs:
       vault_arr_sonarr_api_key:
         type: str
         required: true
-      # Seerr publishes request events to the platform's ntfy under its own
-      # identity. ntfy runs deny-all, so an agent without a token publishes
-      # nothing and fails silently.
-      vault_ntfy_seerr_token:
+      # Seerr sends request events to Pushover with the account every other
+      # publisher on this platform uses. Seerr's agent sends nothing when either
+      # value is empty, so a missing pair would silence request events without
+      # failing anything.
+      vault_pushover_token:
+        type: str
+        required: true
+      vault_pushover_user_key:
         type: str
         required: true

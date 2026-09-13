@@ -68,45 +68,52 @@ seerr_main_settings:
 seerr_owner_permissions: 2
 seerr_household_permissions: 160
 
-# Seerr's own notification agent, publishing request events to the platform's
-# ntfy. The POST replaces the agent object rather than merging into it —
-# measured, embedPoster vanished from the read-back of a partial body — so the
-# whole options mapping is declared here and sent every time.
+# Seerr's own notification agents. Request events go to Pushover through
+# Seerr's native agent, with the vault's Pushover pair -- the same account
+# Beszel, the Dozzle relay and the deployment reports use. POST
+# /api/v1/settings/notifications/<agent> assigns the request body to the agent
+# verbatim, and a container start then merges the stored object over upstream's
+# defaults -- measured for ntfy, where a body without embedPoster lost it from
+# the read-back -- so each declaration is the complete object upstream defines,
+# every key present, and the comparison is against the same shape.
 #
 # types is a bit mask: MEDIA_AVAILABLE (8) + MEDIA_FAILED (16) +
 # MEDIA_AUTO_APPROVED (128) = 152. MEDIA_PENDING, MEDIA_APPROVED and
 # MEDIA_DECLINED are omitted because both identities hold AUTO_APPROVE and none
 # of those three can ever fire.
 #
-# This platform's ntfy is deny-all, so an unauthenticated agent would publish
-# nothing and fail silently. Seerr does support authentication even though a
-# fresh instance's defaults hide it: the agent's own source reads
-# authMethodToken and sends `Bearer <token>`, and it is persisted — measured.
+# Pushover's address is hardcoded in the agent, so unlike the relay's and the
+# deployment reports' it cannot be redirected; priority is chosen by Seerr per
+# notification type and is not a setting. The agent sends only when enabled and
+# both credentials are non-empty, which is what the two indirections below are
+# for: tests/mac/lib.sh blanks them, because that lane converges with the
+# operator's real vault and its manual review raises a request.
 seerr_notification_types: 152
-seerr_ntfy_priority: 3
-seerr_ntfy_locale: en
-# ntfy is published on the host rather than joined to media-control, so the
-# address is the callback host every other publisher on this platform uses:
-# the LAN address on the NAS, host.docker.internal in the Mac sandbox. The port
-# defaults here because it belongs to the ntfy role — the same shape Dozzle's
-# and Beszel's own ntfy declarations take. The topic does not: a topic name is
-# also the ACL grant that authorises the publisher, so it is read unqualified
-# and a run where nothing declares it fails rather than posting somewhere this
-# account may not write (#345).
-seerr_ntfy_url: "http://{{ platform_callback_host }}:{{ ntfy_port }}"
-seerr_ntfy_topic: "{{ ntfy_requests_topic }}"
-seerr_ntfy_declaration:
+seerr_pushover_access_token: "{{ vault_pushover_token }}"
+seerr_pushover_user_key: "{{ vault_pushover_user_key }}"
+seerr_pushover_declaration:
   enabled: true
   embedPoster: true
   types: "{{ seerr_notification_types }}"
   options:
-    url: "{{ seerr_ntfy_url }}"
-    topic: "{{ seerr_ntfy_topic }}"
-    priority: "{{ seerr_ntfy_priority }}"
-    locale: "{{ seerr_ntfy_locale }}"
-    authMethodUsernamePassword: false
-    authMethodToken: true
-    token: "{{ vault_ntfy_seerr_token }}"
+    accessToken: "{{ seerr_pushover_access_token }}"
+    userToken: "{{ seerr_pushover_user_key }}"
+    sound: ""
+
+# The ntfy agent Seerr published through until #558, declared off so Seerr does
+# not publish twice and a hand re-enable in the web interface is reverted. This
+# is upstream's own default object, key for key, so a fresh Seerr already
+# matches it and needs no write, and the ntfy publisher token no longer sits in
+# settings.json once a converge has replaced the enabled one.
+seerr_ntfy_declaration:
+  enabled: false
+  embedPoster: true
+  types: 0
+  options:
+    url: ""
+    topic: ""
+    priority: 3
+    locale: en
 
 # Radarr and Sonarr, addressed by service alias. The keys are the arrs' own,
 # read from vault rather than minted again here: a second copy of an API key is

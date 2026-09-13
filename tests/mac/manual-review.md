@@ -34,7 +34,9 @@ private keys, password hashes, rendered environment files, or application logs.
 - [ ] Seerr: sign in with the deployed Jellyfin administrator and confirm the
       managed household user can sign in too and can raise a request that is
       approved immediately, with no quota and no service-administration menu.
-      Confirm the setup wizard does not appear. Then toggle "Enable New Media
+      Confirm the setup wizard does not appear. The request notifies nobody:
+      this lane blanks Seerr's Pushover pair, because the agent's address
+      cannot be redirected and the vault here is real. Then toggle "Enable New Media
       Server Sign-In" on in the settings, reconverge, and confirm it is off
       again — with it on, a Jellyfin user the platform never declared is
       silently created here.

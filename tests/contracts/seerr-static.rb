@@ -120,11 +120,19 @@ if failures.empty?
   failures << "Seerr must consume the arrs' own API keys" unless
     defaults.dig("seerr_radarr_server", "apiKey") == "{{ vault_arr_radarr_api_key }}" &&
     defaults.dig("seerr_sonarr_server", "apiKey") == "{{ vault_arr_sonarr_api_key }}"
-  # ntfy runs deny-all, so an agent without a token publishes nothing and fails
-  # silently. Seerr holds its own identity rather than the deploy account's.
-  failures << "Seerr's ntfy agent must authenticate with its own bearer token" unless
-    defaults.dig("seerr_ntfy_declaration", "options", "authMethodToken") == true &&
-    defaults.dig("seerr_ntfy_declaration", "options", "token") == "{{ vault_ntfy_seerr_token }}"
+  # Seerr's Pushover agent sends nothing when disabled or when either credential
+  # is empty, and fails silently either way.
+  pushover = defaults["seerr_pushover_declaration"]
+  failures << "Seerr's Pushover agent must send with the vault's Pushover pair" unless
+    pushover.is_a?(Hash) && pushover["enabled"] == true &&
+    pushover.dig("options", "accessToken") == "{{ seerr_pushover_access_token }}" &&
+    pushover.dig("options", "userToken") == "{{ seerr_pushover_user_key }}" &&
+    defaults["seerr_pushover_access_token"] == "{{ vault_pushover_token }}" &&
+    defaults["seerr_pushover_user_key"] == "{{ vault_pushover_user_key }}"
+  # Request events moved to Pushover in #558; an ntfy agent left on publishes
+  # every one of them twice.
+  failures << "Seerr's ntfy agent must be declared off" unless
+    defaults.dig("seerr_ntfy_declaration", "enabled") == false
 
   env_assignments = environment_assignments(File.join(root, "roles/seerr/templates/env.j2"))
   failures << "Seerr env must render the CPU set exactly once" unless
