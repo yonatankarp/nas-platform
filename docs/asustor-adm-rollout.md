@@ -259,15 +259,16 @@ $HOME/.local/bin/nas-platform-deploy --retry-failed <sha>
 ## After an ADM firmware update
 
 Firmware updates are reported to overwrite `/usr/builtin/etc/crontabs/root`. The
-loss is silent: deployments simply stop, the prune simply stops, and neither has
-any way to know it is no longer being called. Check both after every update:
+loss is silent: deployments, verification and the prune simply stop, and none
+has any way to know it is no longer being called. Check all three after every
+update:
 
 ```sh
 grep nas-platform- /usr/builtin/etc/crontabs/root
 ```
 
-Two lines must come back, the five-minute `nas-platform-deploy --poll` and the
-weekly `nas-platform-prune --prune`.
+Three lines must come back: the five-minute `nas-platform-deploy --poll`, the
+hourly `nas-platform-deploy --verify` and the weekly `nas-platform-prune --prune`.
 
 ## Troubleshooting
 

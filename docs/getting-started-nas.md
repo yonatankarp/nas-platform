@@ -653,8 +653,9 @@ ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml \
 ```
 
 On a host where this account manages its own crontab, that installs the weekly
-entry as well, and there is nothing further to schedule. Both entries should be
-present, and the installed prune should read its own configuration:
+entry as well, and there is nothing further to schedule. All three entries --
+poll, hourly verification and prune -- should be present, and the installed
+prune should read its own configuration:
 
 ```sh
 crontab -l
