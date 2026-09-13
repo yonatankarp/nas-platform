@@ -3624,14 +3624,16 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                     self.assertEqual(self.main("--poll")[0], code)
                 self.assertEqual(self.pinged(), [url])
 
-    def test_an_ineligible_tick_pings_fail_and_still_exits_zero(self):
+    def test_an_ineligible_tick_pings_plain_and_still_exits_zero(self):
+        # GitHub unreadable is a live poller that could not judge; one blip must
+        # not page off-box, and sustained blindness pages on-box already.
         with mock.patch.object(production_auto_deploy, "poll",
                                side_effect=production_auto_deploy.EligibilityError("x")):
             code, output = self.main("--poll")
 
         self.assertEqual(code, 0)
         self.assertIn("could not determine a candidate", output)
-        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+        self.assertEqual(self.pinged(), [self.POLLER_URL])
 
     def test_an_unhandled_exception_pings_fail_and_still_propagates(self):
         error = RuntimeError("boom")

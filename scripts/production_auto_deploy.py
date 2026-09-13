@@ -2149,9 +2149,11 @@ def main(argv=None) -> int:
         # an operator, or the lock held by a deployment or a verify. True is a
         # deployment. False is a failed one -- #327 and #559 failed inside
         # deploy() on every tick, so every tick pings /fail and the check stays
-        # down. A raise leaves `outcome` False: an EligibilityError is a tick
-        # that cannot see main or CI and so can deploy nothing, and anything
-        # unhandled is a tick that did not finish. The tick after a quarantined
+        # down. An unhandled raise leaves `outcome` False: a tick that did not
+        # finish. An EligibilityError pings plain: GitHub could not be read, but
+        # the poller is alive and deciding, and a sustained blindness already
+        # pages on-box after BLIND_POLL_THRESHOLD polls, where a /fail here would
+        # page off-box on a single GitHub blip. The tick after a quarantined
         # failure pings plain on purpose: this check says the poller is alive
         # and deciding, the failure itself already paged through ntfy, and
         # --status names the revision. A manual --retry-failed pings nothing, so
@@ -2160,6 +2162,9 @@ def main(argv=None) -> int:
         outcome = False
         try:
             outcome = poll(config, retry_sha=retry_sha)
+        except EligibilityError:
+            outcome = None
+            raise
         finally:
             if mode == "poll":
                 ping_healthchecks(config, config.healthchecks_poller_ping_url,
