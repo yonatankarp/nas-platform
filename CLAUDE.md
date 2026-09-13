@@ -347,11 +347,50 @@ validates them: if a memory policy lands (#447) the RAM figure belongs beside
 `platform_container_cpu_budget` with a preflight assert against what the Docker
 daemon reports, the way the logical CPU capacity already is.
 
-**`nas_storage` in `inventory/group_vars/all/main.yml` is one source of truth for
-three things**: `host_prep` creates the directories with those permissions, the
-policy test requires every implemented service to declare a path naming it, and
-the `recovery` class (`critical` / `user` / `cache`) drives disaster-recovery
-docs. Omit `owner`/`group` under the media root — the NAS owns those files.
+**`nas_storage` is one source of truth for three things**: `host_prep` creates the
+directories with those permissions, the policy test requires every implemented
+service to declare a path naming it, and the `recovery` class (`critical` /
+`user` / `cache`) drives disaster-recovery docs. Omit `owner`/`group` under the
+media root — the NAS owns those files.
+
+**It is no longer written in one place, and `main.yml` is no longer where a
+service's settings go.** `inventory/group_vars/all/` holds `main.yml` for the
+cross-cutting facts, one `service_<role>.yml` per service carrying that service's
+settings *and* the storage it owns, and two shared files for the nineteen media
+paths no service owns: `media_libraries.yml` for the seven `recovery: user`
+library roots and `media_acquisition.yml` for the twelve `recovery: cache`
+staging paths. The two are separate because the recovery class drives the
+disaster-recovery documentation, so one file holding both would mix what can be
+rebuilt with what cannot. `main.yml` composes whatever is present:
+
+```yaml
+platform_storage_names: "{{ q('varnames', '^nas_storage_') | sort }}"
+nas_storage: "{{ q('vars', *platform_storage_names) | flatten(levels=1) | sort(attribute='path') }}"
+```
+
+Adding a service means adding one file. Nothing else lists the contributors —
+`tests/nas_storage_support.rb` applies the same rule on the Ruby side and every
+static reader goes through it, because a sixtieth list is the one nobody edits.
+
+Four things that shape are paying for, and they are the reason not to simplify
+it back. The `vars` dictionary is deprecated and **removed in ansible-core
+2.24**, and `hostvars` is undefined while group_vars are still being assembled,
+so the varnames/vars lookup pair is not a style choice but the only supported
+form. The `sort(attribute='path')` is load-bearing: `host_prep` loops in order
+and `ansible.builtin.file` applies a declared mode to an intermediate parent only
+when it creates it, so a leaf reached before its root leaves that root holding
+the umask; a lexicographic path sort puts every parent ahead of its children
+because a parent path is a prefix of them. **The composition is silent when it
+matches nothing** — measured 2026-09-12, deleting every contributor leaves
+`nas_storage` as `[]` and the play reports `ok` — so `host_prep` asserts a
+collapse floor and `tests/nas_storage_support.rb` holds contributors against
+`services/manifest.yml` in both directions, with `SHARED_CONTRIBUTORS` and
+`STORAGE_FREE_SERVICES` closed both ways like `CREDENTIAL_FREE_SERVICES`. And
+`q('varnames')` reads whatever is in scope when it evaluates, so **nothing
+outside `inventory/group_vars/all/` may define a `nas_storage_*` variable**: one
+in a role default would join the composition partway through a run and make
+`nas_storage` mean different things in different places. `tests/policy_test.rb`
+refuses that prefix everywhere else.
 
 Custom Ansible code lives in `library/` (modules), `module_utils/` and
 `filter_plugins/`, wired through `ansible.cfg`. Note `inject_facts_as_vars =
