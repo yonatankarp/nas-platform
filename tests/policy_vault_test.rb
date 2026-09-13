@@ -1134,11 +1134,13 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
-# vault.yml holds the keys no one service owns; each service's own keys live in
-# vault_<role>.yml. Where a key sits cannot be checked without the password, so
-# the gate holds what it can read: every one is encrypted and names a real role.
+# Each service's own keys live in vault_<role>.yml; vault.yml holds only the
+# managed-user mapping, which is one variable and cannot span files. Where a key
+# sits cannot be checked without the password, so the gate holds what it can
+# read: every one is encrypted and names a real role. Pushover is the one
+# exception: an external account both Beszel and Dozzle read, with no role.
 manifest_roles = YAML.safe_load_file(manifest_path)
-                     .fetch("services").map { |service| service.fetch("role") }
+                     .fetch("services").map { |service| service.fetch("role") } + ["pushover"]
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip

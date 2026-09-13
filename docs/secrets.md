@@ -1348,9 +1348,9 @@ Never decrypt a vault onto disk.
 
 The repository vault is several files under one password in
 `inventory/group_vars/all/`: one file per service holds that service's own
-keys, and `vault.yml` holds the keys no single service owns — the managed-user
-mapping, which is one mapping and cannot be split across files, and the Pushover
-pair.
+keys, the Pushover pair that Beszel and Dozzle both read has a file of its own,
+and `vault.yml` holds only the managed-user mapping, which is one variable and
+cannot be split across files.
 `group_vars` loads and decrypts all of them, and roles read credentials by
 variable name, so which file a key sits in changes nothing a play sees. A key
 defined in two files is not an error Ansible reports: the file loaded later
