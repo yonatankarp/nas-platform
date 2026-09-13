@@ -477,8 +477,8 @@ STATIC_ROWS = [
     name: "a role slot guard that no longer counts the NVMe disks",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/tasks/deploy.yml",
-                  "platform_smart_nvme_namespaces | length == 2 and",
-                  "platform_smart_nvme_namespaces | length >= 0 and")
+                  "platform_smart_nvme_namespaces | length == 2)",
+                  "platform_smart_nvme_namespaces | length >= 0)")
     },
     expects: "role does not pin the S.M.A.R.T. slot count to Compose"
   },
