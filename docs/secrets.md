@@ -1266,15 +1266,17 @@ unset vault_header
 git status --short inventory/group_vars/all/vault.yml
 ```
 
-Repository policy may permit committing that encrypted artifact. Never commit
-the vault password, plaintext or decrypted vaults, rendered environment files,
-temporary private keys, application/database configuration containing secrets,
-or secret-bearing logs. For an existing-deployment recovery,
-`generate-secrets.yml` remains forbidden.
+That single-file vault stays untracked. Do not commit it: repository policy
+refuses a committed `inventory/group_vars/all/vault.yml`, because every key now
+has a home in a per-service vault file and a second copy would silently compete
+with those. Never commit the vault password, plaintext or decrypted vaults,
+rendered environment files, temporary private keys, application/database
+configuration containing secrets, or secret-bearing logs. For an
+existing-deployment recovery, `generate-secrets.yml` remains forbidden.
 
-Git preserves only the executable bit, not owner-only mode `0600`. After every
-clone, checkout, or rebase that materializes the committed vault, restore its
-local permissions before using it:
+Git preserves only the executable bit, not owner-only mode `0600`, and an
+untracked file copied or restored by hand can lose that mode just as easily.
+Before using the installed vault, restore its local permissions:
 
 ```sh
 chmod 600 inventory/group_vars/all/vault.yml
