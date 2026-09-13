@@ -1115,7 +1115,15 @@ NasStorage.problems(ROOT, implemented_roles).each { |problem| check(failures, fa
 # things depending on where it is read -- and host_prep reads it early. Nothing
 # outside group_vars/all may claim the prefix; the namespace is clean today and
 # this is what keeps it so.
+#
+# Read as YAML rather than by matching column zero. A root mapping may be
+# indented -- `  nas_storage_x:` with nothing above it parses to the top-level
+# key `nas_storage_x`, verified -- and a line-anchored pattern sees nothing
+# there, so the one definition this refuses is the one spelled to slip past it.
+# An unreadable subject is reported rather than skipped, the way #599 requires
+# at its three sites: a scan that cannot read a file has not cleared it.
 storage_prefix_offenders = []
+storage_prefix_unreadable = []
 Find.find(ROOT) do |path|
   Find.prune if File.basename(path) == ".git"
   next unless File.file?(path) && path.end_with?(".yml")
@@ -1123,10 +1131,24 @@ Find.find(ROOT) do |path|
   relative = path.delete_prefix("#{ROOT}/")
   next if relative.start_with?("inventory/group_vars/all/")
 
-  File.foreach(path) do |line|
-    storage_prefix_offenders << "#{relative}: #{line[/\A[a-zA-Z0-9_]+/]}" if line.match?(/\A#{NasStorage::CONTRIBUTOR_PREFIX}\w+:/)
+  document = begin
+    YAML.safe_load_file(path, aliases: true)
+  rescue StandardError => error
+    storage_prefix_unreadable << "#{relative} (#{error.class})"
+    next
+  end
+  next unless document.is_a?(Hash)
+
+  document.each_key do |key|
+    next unless key.is_a?(String) && key.start_with?(NasStorage::CONTRIBUTOR_PREFIX)
+
+    storage_prefix_offenders << "#{relative}: #{key}"
   end
 end
+check(failures, storage_prefix_unreadable.empty?,
+      "#{storage_prefix_unreadable.join(', ')} could not be read as YAML, so the " \
+      "#{NasStorage::CONTRIBUTOR_PREFIX}* namespace sweep did not clear them: a subject a scan " \
+      "cannot read is not a subject it checked")
 check(failures, storage_prefix_offenders.empty?,
       "#{storage_prefix_offenders.join(', ')} define a #{NasStorage::CONTRIBUTOR_PREFIX}* variable " \
       "outside inventory/group_vars/all: the composition reads every such name in scope, so a " \
