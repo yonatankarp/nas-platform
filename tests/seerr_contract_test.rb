@@ -649,9 +649,9 @@ def reconcile_run_failures(label, run, output, status, posts)
   wanted = run.fetch(:posts)
   failures << "#{label}: POSTed #{posts.map { |post| post[:agent] }.inspect}, " \
               "wanted #{wanted.map(&:first).inspect}" unless posts.map { |post| post[:agent] } == wanted.map(&:first)
-  posts.zip(wanted).each do |post, (agent, body)|
+  posts.zip(wanted).each do |post, (_agent, body)|
     # Named, never printed: the bodies carry the fixture credentials.
-    failures << "#{label}: the #{agent} POST did not carry the declared object" unless post[:body] == body
+    failures << "#{label}: the #{post[:agent]} POST did not carry the declared object" unless post[:body] == body
     failures << "#{label}: the #{post[:agent]} POST did not carry the vault API key" unless post[:key] == API_KEY
   end
   Array(run[:says]).each do |text|
