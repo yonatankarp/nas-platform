@@ -2559,11 +2559,16 @@ end
 # reformat costs one edit here, which is the stated-number posture this file
 # takes everywhere else.
 duplicated_constant_sites = {
+  # Two sites rather than three since #558 moved the relay to Pushover. What the
+  # relay sends is HTML now, so it escapes with html.escape and defines no
+  # character class of its own; the two scripts/*.py programs still publish
+  # Markdown to ntfy and still share this one. What went away is the third copy,
+  # not the contract -- and this is the "say which happened here" the failure
+  # message asks for.
   "MARKDOWN_PATTERN" => {
     "sites" => %w[
       scripts/image_prune.py
       scripts/production_auto_deploy.py
-      services/dozzle/alert_relay.py
     ],
     "lines" => 1
   },
@@ -2638,9 +2643,15 @@ check_floor(failures, shared_across_sites.length, 15,
 # comfortably above fifteen while the half of this check that #515 exists for
 # stopped running. DUPLICATION_SITES.length does not cover it: that proves the
 # path is in the list, not that anything was read out of it. Six today --
-# MARKDOWN_PATTERN, TIMESTAMP_PATTERN, main, markdown_escape, publish and
-# render_notification -- of which only two are byte-identical, which is exactly
-# the mix that makes the relay worth reading.
+# TIMESTAMP_PATTERN, main, publish and render_notification -- of which only one
+# is byte-identical, which is exactly the mix that makes the relay worth reading.
+#
+# Four today rather than the six this said before #558, and the floor moved with
+# it rather than the count being left to drift: the relay publishes to Pushover
+# now, so it defines neither MARKDOWN_PATTERN nor markdown_escape and shares two
+# fewer names with the two Markdown-publishing scripts. Lowering a floor is the
+# move this file exists to make visible, so it is stated here with what was lost
+# and why, and four is still a real subject rather than a vacuous one.
 relay_site = "services/dozzle/alert_relay.py"
 check(failures, DUPLICATION_SITES.include?(relay_site),
       "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
@@ -2648,7 +2659,7 @@ check(failures, DUPLICATION_SITES.include?(relay_site),
 relay_shared = (site_names[relay_site] || Set.new).select do |name|
   DUPLICATION_SITES.any? { |relative| relative != relay_site && site_names.fetch(relative).include?(name) }
 end
-check_floor(failures, relay_shared.length, 5,
+check_floor(failures, relay_shared.length, 4,
             "top-level names #{relay_site} shares with a scripts/*.py program")
 listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
 unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|

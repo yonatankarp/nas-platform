@@ -2991,11 +2991,16 @@ end
 # The other direction on the same table: a copy site that stops carrying the
 # constant at all. The site list is exact rather than a floor because a copy that
 # disappears changes the contract as much as one that diverges, and a floor of
-# two would let the relay drop it in silence.
-expect_failure(failures, "escaping character class dropped by the relay",
+# two would let a site drop it in silence.
+#
+# Planted on image_prune.py rather than on the relay since #558. The relay
+# publishes HTML to Pushover now and escapes with html.escape, so it carries no
+# character class of its own and is no longer a site of this constant: the table
+# names two sites, and this row plants the disappearance of one of them.
+expect_failure(failures, "escaping character class dropped by a copy site",
                "A copy that disappeared is as much a change to this contract as one that diverged",
                detected_by: %i[policy]) do |root|
-  mutate_text(root, "services/dozzle/alert_relay.py", /^MARKDOWN_PATTERN = .*\n/, "")
+  mutate_text(root, "scripts/image_prune.py", /^MARKDOWN_PATTERN = .*\n/, "")
 end
 
 # The hole the reduce(:&) tripwire above could not reach: it needs BOTH

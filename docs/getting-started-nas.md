@@ -228,12 +228,13 @@ delivery mechanism it assumed — a router that can hand its address to the DHCP
 scope — does not exist on this network. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
-against the production deployment without exercising external integrations; for
-ntfy, use only an agreed disposable topic when verifying alerts from Dozzle.
-Beszel is no longer one of them: its notification webhook is Pushover, built
-from `vault_pushover_token` and `vault_pushover_user_key`, and Pushover has no
-disposable equivalent of a topic — a test notification sent from the hub
-reaches the household's real devices. Send one only when you mean to.
+against the production deployment without exercising external integrations.
+Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
+webhook is Pushover, and since the Dozzle alert relay moved, every container
+alert is too — both built from `vault_pushover_token` and
+`vault_pushover_user_key`. Pushover has no disposable equivalent of a topic, so
+a test notification reaches the household's real devices. Send one only when you
+mean to.
 
 Media acquisition also requires a NAS-only ADM share check that the platform
 cannot make for you. Be precise about which half is which.
@@ -274,15 +275,23 @@ secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 [what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
 The platform provisions three ntfy topics for humans, severity first then
-subject, plus one nobody reads.
+subject, plus one nobody reads. Two of the things that used to land here are
+now Pushover's: Beszel's threshold breaches, and every container alert the
+Dozzle relay sends.
 
-`nas-critical` cuts across every publisher and carries only what should get you
-out of your chair: out of memory, an unexpected container exit, an unhealthy
-container, a Beszel threshold breach, a failed deployment, a revision CI
-refuses to release, and a deployment poller that has gone blind. The other two
-are the routine record, one per subject, so deployment chatter can be muted
-without also muting container events: `nas-deployment` for successful
-deployments and poller recovery, and `nas-containers` for container recoveries.
+`nas-critical` cuts across every remaining ntfy publisher and carries only what
+should get you out of your chair: a failed deployment, a revision CI refuses to
+release, and a deployment poller that has gone blind. Container alerts — out of
+memory, an unexpected exit, an unhealthy container, and the recovery that closes
+one — reach Pushover instead, where an out-of-memory kill is an emergency
+message that re-alerts until you acknowledge it and a recovery is a badge with
+no sound. `nas-deployment` is the routine record for successful deployments and
+poller recovery, so deployment chatter can be muted on its own.
+
+`nas-containers` has no publisher left. It existed so recoveries could be muted
+separately from `nas-critical`, which Pushover expresses on the message itself;
+the topic and the dozzle account's grant to it are still provisioned and are
+tidied up separately from the relay that used to write to them.
 
 A fourth topic, `nas-verification`, exists only for the provisioning proof:
 every publisher token publishes there once per converge to prove it can still
@@ -326,8 +335,8 @@ poll-request mechanism described above: off-network, every message shows as
 "New message" regardless of what it says.
 
 Each publisher may write only to the topics it reports on, so a leaked Beszel
-token cannot reach either record topic, and a leaked deploy token cannot post
-container events.
+token cannot reach either record topic, and a leaked deploy token cannot write
+to `nas-containers`.
 
 ntfy runs `deny-all`, so a reading account sees only the topics named in its
 own `vault_managed_users.ntfy[].access` list, and the role subscribes it to

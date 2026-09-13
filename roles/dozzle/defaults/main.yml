@@ -11,7 +11,56 @@ dozzle_compose_project_name: >-
   {{ (platform_project_name ~ '-dozzle')
      if platform_project_name | default('') | length > 0 else 'dozzle' }}
 
+# Where the relay publishes. A variable rather than a literal for the reason
+# beszel_pushover_validation_url and production_auto_deploy_github_api_base are:
+# the endpoint has to be redirectable so a lane can prove the relay's own
+# behaviour without reaching the household's real devices. Unlike Beszel's
+# credential check -- gated behind a `never` tag, so a converge never reaches it
+# -- this endpoint is read by a deployed process that POSTs whenever Docker
+# reports an event on any container, so a lane that converges this stack and
+# leaves the default in place sends real pushes off its own container churn.
+# Every lane overrides it; tests/integration_controller_lib.sh and
+# tests/mac/lib.sh carry the override and say why.
+dozzle_pushover_api_url: https://api.pushover.net/1/messages.json
+
+# The relay's daily ceiling, and why it exists at all. Both health rules below
+# carry cooldown: 0, and the relay publishes on every transition in either
+# direction, so without a ceiling the publish rate is Docker's transition rate
+# and has no bound. Pushover's allowance is 10,000 messages a month; a global
+# backstop is what turns "probably fine" into a guarantee.
+#
+# Per container as well as globally, because one flapping container exhausting a
+# shared allowance would silence a real alert somewhere else. The OOM allowance
+# is higher rather than absent: a container the kernel kills and Docker restarts
+# can emit an unbounded `oom` stream, so exempting it outright would hand that
+# stream the whole quota, while counting it with everything else would let
+# ordinary noise silence the one event this platform most needs to hear about.
+#
+# Counted against the UTC calendar day rather than a rolling window; the relay
+# records why beside utc_day. When either ceiling trips the relay sends exactly
+# one message naming what it has stopped sending, because silent suppression is
+# how somebody stops noticing that their alerting died.
+dozzle_alert_daily_container_ceiling: 10
+dozzle_alert_daily_oom_container_ceiling: 25
+dozzle_alert_daily_global_ceiling: 200
+
 dozzle_dispatcher:
+  # THE NAME IS A SELECTOR, NOT A LABEL, and it says "ntfy" in a role that
+  # publishes to Pushover. That misnomer is a stated leftover rather than an
+  # oversight waiting to be tidied, because renaming it is not a rename.
+  #
+  # Reconciliation finds the managed dispatcher by matching this string against
+  # what Dozzle returns -- roles/dozzle/tasks/main.yml:437, :461 and :504 all
+  # selectattr on it -- and :463 creates a dispatcher when nothing matches. So a
+  # new name matches nothing, the old dispatcher is orphaned with the relay's
+  # bearer token still in it, a second is created beside it, and
+  # tests/contracts/dozzle-runtime.rb:140 fails on finding two where it asserts
+  # exactly one.
+  #
+  # Renaming it is therefore a migration -- delete the old dispatcher through
+  # Dozzle's API, then converge -- and belongs with the rest of the ntfy
+  # vestiges in a later stage of #558, not in the change that moved the
+  # transport.
   name: ntfy nas-critical
   type: webhook
   url: "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
@@ -26,12 +75,12 @@ dozzle_dispatcher:
         'exitCode': '{{ index .Event.Attributes `exitCode` }}',
         'timestamp': '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'}
        | to_json(separators=(',', ':')) }}
-  # Deliberately not the ntfy publish token. The platform POSTs this header
-  # into Dozzle's /api/notifications/dispatchers, so Dozzle holds it at rest in
-  # its /data volume and returns it in cleartext over its own API; what it
-  # keeps there authorizes nothing but a POST to the relay (#172). The relay
-  # reads the same value as ALERT_RELAY_TOKEN, and its ntfy publish token is a
-  # separate credential it never hands to Dozzle.
+  # Deliberately not the Pushover application token. The platform POSTs this
+  # header into Dozzle's /api/notifications/dispatchers, so Dozzle holds it at
+  # rest in its /data volume and returns it in cleartext over its own API; what
+  # it keeps there authorizes nothing but a POST to the relay (#172). The relay
+  # reads the same value as ALERT_RELAY_TOKEN, and its Pushover credentials are
+  # separate values it never hands to Dozzle.
   headers:
     Authorization: "Bearer {{ vault_dozzle_alert_relay_token }}"
 

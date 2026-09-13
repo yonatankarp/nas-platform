@@ -1,8 +1,12 @@
 #!/usr/bin/env ruby
 # The live half of the Dozzle service contract: it talks to the deployed Dozzle
-# notification API, to the private alert relay through it, and to disposable
-# ntfy, and it owns every fixture mode the integration lane and the Mac drift
-# hooks dispatch through.
+# notification API, to the private alert relay through it, and to the Pushover
+# recorder the relay publishes at in a lane, and it owns every fixture mode the
+# integration lane and the Mac drift hooks dispatch through.
+#
+# Disposable ntfy is still reached, for one thing only: the dozzle publisher's
+# ntfy account must still be write-only, which is an ntfy ACL rather than
+# anything about the relay's transport. The relay itself no longer touches it.
 #
 # Reads the encrypted vault itself and overwrites the plaintext in place, so
 # nothing it holds reaches a diagnostic, an artifact or the environment. The
@@ -12,6 +16,7 @@ require "json"
 require "net/http"
 require "open3"
 require "securerandom"
+require "socket"
 require "timeout"
 require "uri"
 require "yaml"
@@ -186,40 +191,102 @@ rescue SystemCallError, Timeout::Error => error
   fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
 end
 
-def request_text(uri, basic:, expected: [200])
-  request = Net::HTTP::Get.new(uri)
-  request.basic_auth(*basic)
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 15) do |http|
-    http.request(request)
+# --- the Pushover stand-in -----------------------------------------------
+#
+# The relay publishes to Pushover since #558, and no proof that ends at a real
+# Pushover account can run in a lane: the messages reach somebody's phone and
+# the API has nothing to read them back from. So the lane redirects
+# dozzle_pushover_api_url at this recorder and the notify mode asserts the form
+# the relay POSTed -- which keeps every property the ntfy readback was proving
+# (the exact presentation, exactly one recovery, no false recovery on a
+# startup-healthy container, and no event envelope leaking into message text)
+# rather than trading them for a transport change.
+#
+# A listener in this process rather than a container, and that works because
+# both lanes put this program on the Docker daemon's own network. The
+# integration harness runs its controller with --network host, and the Mac lane
+# runs this program on the Mac itself, so in both a socket opened here is a
+# socket on the host and a service container reaches it at CALLBACK_HOST -- the
+# same path the relay used to reach disposable ntfy.
+PUSHOVER_RECORDER_PORT = Integer(ENV.fetch("PLATFORM_DOZZLE_PUSHOVER_PORT"), 10)
+PUSHOVER_RECORDER_URL =
+  "http://#{CALLBACK_HOST}:#{PUSHOVER_RECORDER_PORT}/1/messages.json".freeze
+
+# Reads one request and answers it. Deliberately minimal rather than a server
+# library: the relay sends a POST with a Content-Length and a urlencoded body,
+# and nothing here has to be a general HTTP implementation.
+def read_recorded_request(socket)
+  request_line = socket.gets
+  return nil if request_line.nil?
+
+  headers = {}
+  while (line = socket.gets)
+    break if line.strip.empty?
+
+    name, value = line.split(":", 2)
+    headers[name.to_s.strip.downcase] = value.to_s.strip
   end
-  fail_contract("GET #{uri.path} returned HTTP #{response.code}") unless expected.include?(response.code.to_i)
-  response.body.to_s
-rescue SystemCallError, Timeout::Error => error
-  fail_contract("GET #{uri.path} failed: #{error.class}")
+  length = Integer(headers.fetch("content-length", "0"), 10)
+  body = length.positive? ? socket.read(length).to_s : ""
+  socket.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+  {
+    "method" => request_line.split(" ", 3)[0],
+    "path" => request_line.split(" ", 3)[1],
+    "content_type" => headers["content-type"],
+    "authorization" => headers["authorization"],
+    "form" => URI.decode_www_form(body).to_h
+  }
+rescue StandardError
+  nil
 end
 
-def parse_json_lines(text)
-  text.lines.filter_map do |line|
-    next if line.strip.empty?
+# Every captured form carries the Pushover application token and user key, which
+# are the household's real credentials on the NAS. They are dropped at the point
+# of capture rather than at the point of printing, so no later diagnostic can
+# reach them: what the assertions need is that they were present and correct,
+# and that is recorded as a verdict rather than as the value.
+def redact_credentials(captured, token, user_key)
+  form = captured.fetch("form")
+  captured.merge(
+    "credentials_ok" => form["token"] == token && form["user"] == user_key,
+    "form" => form.reject { |name, _value| %w[token user].include?(name) }
+  )
+end
 
-    JSON.parse(line)
-  rescue JSON::ParserError
-    fail_contract("ntfy returned malformed JSONL")
+def with_pushover_recorder(token, user_key)
+  begin
+    server = TCPServer.new("0.0.0.0", PUSHOVER_RECORDER_PORT)
+  rescue SystemCallError => error
+    fail_contract("Pushover recorder could not listen on #{PUSHOVER_RECORDER_PORT}: #{error.class}")
+  end
+  captured = []
+  guard = Mutex.new
+  running = true
+  worker = Thread.new do
+    while running
+      begin
+        socket = server.accept
+      rescue IOError, Errno::EBADF
+        break
+      end
+      record = read_recorded_request(socket)
+      guard.synchronize { captured << redact_credentials(record, token, user_key) } if record
+      socket.close rescue nil
+    end
+  end
+  begin
+    yield(-> { guard.synchronize { captured.dup } })
+  ensure
+    running = false
+    server.close rescue nil
+    worker.join(5)
   end
 end
 
-# Alerts are split across topics by severity, and ntfy scopes the since= id to
-# one topic, so every poll names the topic it expects the message on. Watching
-# the wrong topic is the failure this parameter exists to make impossible.
-def ntfy_messages_since(topic, id, basic)
-  query = URI.encode_www_form(poll: 1, since: id)
-  parse_json_lines(request_text(endpoint(NTFY, "/#{topic}/json?#{query}"), basic: basic))
-end
-
-def wait_for_ntfy(topic, id, basic, diagnostic, timeout: 40)
+def wait_for_pushover(reader, diagnostic, timeout: 40)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
-    messages = ntfy_messages_since(topic, id, basic)
+    messages = reader.call
     match = yield messages
     return [match, messages] if match
     fail_contract(diagnostic) if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
@@ -584,119 +651,141 @@ publisher = vault.fetch("vault_ntfy_dozzle_token")
 end
 
 if MODE == "notify"
-  admin = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
-  baselines = {}
-  %w[nas-critical nas-containers].each do |topic|
-    baseline_message = "dozzle-contract-baseline-#{SecureRandom.hex(6)}"
-    _response, baseline = request(
-      "post", endpoint(NTFY, "/#{topic}"), bearer: publisher,
-      body: { message: baseline_message }
-    )
-    baselines[topic] = baseline&.fetch("id", nil)
-    fail_contract("disposable ntfy baseline publish returned no anti-replay id") unless
-      baselines[topic]
-  end
-
+  pushover_token = vault.fetch("vault_pushover_token")
+  pushover_user_key = vault.fetch("vault_pushover_user_key")
   image = deployed_ntfy_image
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
   startup_fixture = "dozzle_contract_startup_#{SecureRandom.hex(6)}"
   exit_fixture = "dozzle_contract_exit_#{SecureRandom.hex(6)}"
   initial_exit_count = rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
-  begin
-    _out, _error, health_status = Open3.capture3(
-      "docker", "run", "-d", "--name", health_fixture,
-      "--health-cmd", "test -f /tmp/healthy", "--health-interval", "1s",
-      "--health-timeout", "1s", "--health-retries", "1",
-      "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
-    )
-    fail_contract("disposable unhealthy fixture did not start") unless health_status.success?
-    unhealthy, observed = wait_for_ntfy(
-      "nas-critical", baselines["nas-critical"], admin,
-      "unhealthy event did not reach the private relay and disposable ntfy"
-    ) do |messages|
-      messages.reverse.find { |message| message["title"] == "Unhealthy · #{health_fixture}" }
-    end
-    expected_unhealthy_tail = "**Container:** `#{health_fixture}`\n**Status:** `unhealthy`"
-    fail_contract("unhealthy notification presentation differs") unless
-      unhealthy["message"].start_with?("**Host:** `") &&
-      unhealthy["message"].end_with?(expected_unhealthy_tail) &&
-      unhealthy["priority"] == 5 && unhealthy["tags"] == ["rotating_light", "warning"] &&
-      unhealthy["content_type"] == "text/markdown"
-    fail_contract("relay exposed its event envelope as ntfy message text") if
-      observed.any? { |message| message["message"].to_s.include?('"version":1') }
+  # The recorder starts before the first fixture container, and that ordering is
+  # load-bearing rather than tidy: a POST to a closed port raises UpstreamError
+  # in the relay, which answers Dozzle 502, and Dozzle does not retry. The alert
+  # is simply lost and every assertion below would fail for the wrong reason.
+  with_pushover_recorder(pushover_token, pushover_user_key) do |captured|
+    begin
+      _out, _error, health_status = Open3.capture3(
+        "docker", "run", "-d", "--name", health_fixture,
+        "--health-cmd", "test -f /tmp/healthy", "--health-interval", "1s",
+        "--health-timeout", "1s", "--health-retries", "1",
+        "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
+      )
+      fail_contract("disposable unhealthy fixture did not start") unless health_status.success?
+      unhealthy, observed = wait_for_pushover(
+        captured,
+        "unhealthy event did not reach the private relay and the Pushover recorder"
+      ) do |messages|
+        messages.reverse.find do |message|
+          message.fetch("form")["title"] == "Unhealthy · #{health_fixture}"
+        end
+      end
+      expected_unhealthy_tail =
+        "<b>Container:</b> #{health_fixture}\n<b>Status:</b> unhealthy"
+      unhealthy_form = unhealthy.fetch("form")
+      fail_contract("unhealthy notification presentation differs") unless
+        unhealthy_form["message"].to_s.start_with?("<b>Host:</b> ") &&
+        unhealthy_form["message"].to_s.end_with?(expected_unhealthy_tail) &&
+        unhealthy_form["priority"] == "1" && unhealthy_form["html"] == "1"
+      # Pushover authenticates by form field, so this is the one assertion that
+      # says the deployed relay is holding the credentials the vault declares --
+      # recorded as a verdict at capture time, never as the values.
+      fail_contract("relay published without the managed Pushover credentials") unless
+        unhealthy["credentials_ok"]
+      fail_contract("relay published to an endpoint other than the messages API") unless
+        unhealthy["path"] == "/1/messages.json" &&
+        unhealthy["content_type"].to_s.start_with?("application/x-www-form-urlencoded")
+      # A credential in a header is the ntfy shape carried across, and it would
+      # put the application token somewhere nothing on the far end reads.
+      fail_contract("relay sent a credential in an Authorization header") unless
+        unhealthy["authorization"].nil?
+      fail_contract("relay exposed its event envelope as Pushover message text") if
+        observed.any? { |message| message.fetch("form")["message"].to_s.include?('"version":1') }
 
-    baselines["nas-critical"] = unhealthy.fetch("id")
-    _exec_out, _exec_error, exec_status = Open3.capture3(
-      "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
-    )
-    fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
-    # A recovery is a record, not an emergency, so it lands on the container
-    # topic rather than the critical one.
-    recovered, observed = wait_for_ntfy(
-      "nas-containers", baselines["nas-containers"], admin,
-      "healthy transition did not produce one correlated recovery"
-    ) do |messages|
-      messages.reverse.find { |message| message["title"] == "Recovered · #{health_fixture}" }
-    end
-    expected_recovery_tail = "**Container:** `#{health_fixture}`\n**Status:** `healthy`"
-    fail_contract("recovery notification presentation differs") unless
-      recovered["message"].start_with?("**Host:** `") &&
-      recovered["message"].end_with?(expected_recovery_tail) &&
-      recovered["priority"] == 3 && recovered["tags"] == ["white_check_mark"] &&
-      recovered["content_type"] == "text/markdown" &&
-      observed.count { |message| message["title"] == "Recovered · #{health_fixture}" } == 1
-    baselines["nas-containers"] = recovered.fetch("id")
-    recovery_rules = request(
-      "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
-    ).last
-    recovery_count = recovery_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
+      _exec_out, _exec_error, exec_status = Open3.capture3(
+        "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
+      )
+      fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
+      # A recovery is a record, not an emergency. Under ntfy that was a second
+      # topic; Pushover says it on the message, so the assertion is the
+      # priority rather than the routing.
+      recovered, observed = wait_for_pushover(
+        captured, "healthy transition did not produce one correlated recovery"
+      ) do |messages|
+        messages.reverse.find do |message|
+          message.fetch("form")["title"] == "Recovered · #{health_fixture}"
+        end
+      end
+      expected_recovery_tail =
+        "<b>Container:</b> #{health_fixture}\n<b>Status:</b> healthy"
+      recovered_form = recovered.fetch("form")
+      fail_contract("recovery notification presentation differs") unless
+        recovered_form["message"].to_s.start_with?("<b>Host:</b> ") &&
+        recovered_form["message"].to_s.end_with?(expected_recovery_tail) &&
+        recovered_form["priority"] == "-1" && recovered_form["html"] == "1" &&
+        observed.count { |message|
+          message.fetch("form")["title"] == "Recovered · #{health_fixture}"
+        } == 1
+      recovery_rules = request(
+        "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
+      ).last
+      recovery_count = recovery_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
 
-    _out, _error, startup_status = Open3.capture3(
-      "docker", "run", "-d", "--name", startup_fixture,
-      "--health-cmd", "exit 0", "--health-interval", "1s", "--health-timeout", "1s",
-      "--health-retries", "1", "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
-    )
-    fail_contract("disposable startup-healthy fixture did not start") unless startup_status.success?
-    sleep 6
-    startup_rules = request(
-      "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
-    ).last
-    startup_recovery_count = startup_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
-    fail_contract("startup healthy fixture did not exercise the managed recovery rule") unless
-      startup_recovery_count > recovery_count
-    startup_messages = ntfy_messages_since(
-      "nas-containers", baselines["nas-containers"], admin
-    )
-    fail_contract("startup healthy event produced a false recovery") if
-      startup_messages.any? { |message| message["title"] == "Recovered · #{startup_fixture}" }
+      _out, _error, startup_status = Open3.capture3(
+        "docker", "run", "-d", "--name", startup_fixture,
+        "--health-cmd", "exit 0", "--health-interval", "1s", "--health-timeout", "1s",
+        "--health-retries", "1", "--entrypoint", "/bin/sh", image, "-c", "sleep 120"
+      )
+      fail_contract("disposable startup-healthy fixture did not start") unless startup_status.success?
+      sleep 6
+      startup_rules = request(
+        "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
+      ).last
+      startup_recovery_count = startup_rules.find { |rule| rule["name"] == "Recovery" }.fetch("triggerCount")
+      fail_contract("startup healthy fixture did not exercise the managed recovery rule") unless
+        startup_recovery_count > recovery_count
+      fail_contract("startup healthy event produced a false recovery") if
+        captured.call.any? do |message|
+          message.fetch("form")["title"] == "Recovered · #{startup_fixture}"
+        end
 
-    _out, _error, run_status = Open3.capture3(
-      "docker", "run", "--name", exit_fixture, "--entrypoint", "/bin/sh", image, "-c", "exit 1"
-    )
-    fail_contract("disposable exit fixture did not exit with the expected status") unless
-      run_status.exitstatus == 1
-    exited, observed = wait_for_ntfy(
-      "nas-critical", baselines["nas-critical"], admin,
-      "exit-code-1 event did not reach the private relay and disposable ntfy"
-    ) do |messages|
-      messages.reverse.find { |message| message["title"] == "Unexpected exit · #{exit_fixture}" }
+      _out, _error, run_status = Open3.capture3(
+        "docker", "run", "--name", exit_fixture, "--entrypoint", "/bin/sh", image, "-c", "exit 1"
+      )
+      fail_contract("disposable exit fixture did not exit with the expected status") unless
+        run_status.exitstatus == 1
+      exited, observed = wait_for_pushover(
+        captured,
+        "exit-code-1 event did not reach the private relay and the Pushover recorder"
+      ) do |messages|
+        messages.reverse.find do |message|
+          message.fetch("form")["title"] == "Unexpected exit · #{exit_fixture}"
+        end
+      end
+      expected_exit_tail = "<b>Container:</b> #{exit_fixture}\n<b>Exit code:</b> 1"
+      exited_form = exited.fetch("form")
+      fail_contract("unexpected-exit notification presentation differs") unless
+        exited_form["message"].to_s.start_with?("<b>Host:</b> ") &&
+        exited_form["message"].to_s.end_with?(expected_exit_tail) &&
+        exited_form["priority"] == "1" && exited_form["html"] == "1"
+      fail_contract("relay exposed its event envelope as Pushover message text") if
+        observed.any? { |message| message.fetch("form")["message"].to_s.include?('"version":1') }
+      # Nothing here should have tripped the ceiling, and a suppression notice
+      # in this window would mean the relay had spent its allowance on the
+      # lane's own container churn rather than on these three events.
+      fail_contract("the daily ceiling suppressed the contract's own alerts") if
+        captured.call.any? do |message|
+          message.fetch("form")["title"].to_s.start_with?("Alerts suppressed")
+        end
+    ensure
+      [health_fixture, startup_fixture, exit_fixture].each do |fixture|
+        system("docker", "rm", "-f", fixture, out: File::NULL, err: File::NULL)
+      end
     end
-    expected_exit_tail = "**Container:** `#{exit_fixture}`\n**Exit code:** `1`"
-    fail_contract("unexpected-exit notification presentation differs") unless
-      exited["message"].start_with?("**Host:** `") &&
-      exited["message"].end_with?(expected_exit_tail) && exited["priority"] == 5 &&
-      exited["tags"] == ["warning", "skull"] && exited["content_type"] == "text/markdown"
-    fail_contract("relay exposed its event envelope as ntfy message text") if
-      observed.any? { |message| message["message"].to_s.include?('"version":1') }
-  ensure
-    [health_fixture, startup_fixture, exit_fixture].each do |fixture|
-      system("docker", "rm", "-f", fixture, out: File::NULL, err: File::NULL)
-    end
+    current_rules = request("get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie).last
+    current_exit_count = current_rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
+    fail_contract("unique exit event was delivered without incrementing its managed rule") unless
+      exited && current_exit_count > initial_exit_count
   end
-  current_rules = request("get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie).last
-  current_exit_count = current_rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
-  fail_contract("unique exit event was delivered without incrementing its managed rule") unless
-    exited && current_exit_count > initial_exit_count
 end
 
 puts "Dozzle contract passed"

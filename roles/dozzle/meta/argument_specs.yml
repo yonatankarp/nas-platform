@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Deploy Dozzle and converge its ntfy event alerts through the pinned REST API
+    short_description: Deploy Dozzle and converge its Pushover event alerts through the pinned REST API
     options:
       platform_compose_kind:
         type: str
@@ -16,6 +16,18 @@ argument_specs:
         type: int
         required: false
       dozzle_alert_relay_port:
+        type: int
+        required: false
+      dozzle_pushover_api_url:
+        type: str
+        required: false
+      dozzle_alert_daily_container_ceiling:
+        type: int
+        required: false
+      dozzle_alert_daily_oom_container_ceiling:
+        type: int
+        required: false
+      dozzle_alert_daily_global_ceiling:
         type: int
         required: false
       dozzle_alerts:
@@ -37,6 +49,16 @@ argument_specs:
       vault_dozzle_alert_relay_token:
         type: str
         required: true
+      # Still required although no template here renders it any more: the
+      # relay's inbound token is derived from it by sha256 in
+      # inventory/group_vars/all/main.yml, so this role reads it through that
+      # derivation on every converge.
       vault_ntfy_dozzle_token:
+        type: str
+        required: true
+      vault_pushover_token:
+        type: str
+        required: true
+      vault_pushover_user_key:
         type: str
         required: true

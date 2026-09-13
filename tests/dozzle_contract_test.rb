@@ -55,10 +55,12 @@ require "digest"
 require "etc"
 require "fileutils"
 require "json"
+require "net/http"
 require "open3"
 require "rbconfig"
 require "socket"
 require "tmpdir"
+require "uri"
 require "yaml"
 
 require_relative "policy_support"
@@ -105,14 +107,18 @@ BASE_COMPOSE_FILES = %w[
   services/paperless-ngx/compose.yml
 ].freeze
 
-# The five arguments the stack program receives, in the wrapper's order, each
-# with the shell variable the wrapper binds it to.
+# The six arguments the stack program receives, in the wrapper's order, each
+# with the shell variable the wrapper binds it to. The defaults file joined them
+# with #558: the publish endpoint and the three ceilings have one home apiece in
+# that file, and a template naming a variable proves only that the template
+# names it.
 STACK_ARGUMENT_VARIABLES = {
   "services/dozzle/compose.yml" => "compose",
   "roles/dozzle/tasks/main.yml" => "role",
   "roles/dozzle/templates/env.j2" => "env_template",
   "roles/deployment_bundle/tasks/inputs.yml" => "deployment_inputs",
-  "roles/deployment_bundle/tasks/main.yml" => "deployment_bundle"
+  "roles/deployment_bundle/tasks/main.yml" => "deployment_bundle",
+  "roles/dozzle/defaults/main.yml" => "defaults"
 }.freeze
 
 # The five file arguments the alerts program receives, in the wrapper's order.
@@ -536,9 +542,59 @@ STACK_ROWS = [
     argument: "services/dozzle/compose.yml",
     edit: lambda { |root|
       edit_yaml_text(root, "services/dozzle/compose.yml",
-                     "      NTFY_TOKEN: ${NTFY_TOKEN:?}\n", "      NTFY_TOKEN: ${NTFY_PUBLISH_TOKEN:?}\n")
+                     "      PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:?}\n",
+                     "      PUSHOVER_TOKEN: ${PUSHOVER_PUBLISH_TOKEN:?}\n")
     },
     expects: "alert relay environment differs"
+  },
+  {
+    # The ceiling reaches the relay as environment like everything else, so a
+    # ceiling key that stops being passed is a relay with no ceiling at all --
+    # it refuses to start, which is loud, but only after a deployment. This is
+    # the check that refuses it before one.
+    name: "a relay handed no global ceiling",
+    argument: "services/dozzle/compose.yml",
+    edit: lambda { |root|
+      edit_yaml_text(root, "services/dozzle/compose.yml",
+                     "      ALERT_DAILY_GLOBAL_CEILING: ${ALERT_DAILY_GLOBAL_CEILING:?}\n", "")
+    },
+    expects: "alert relay environment differs"
+  },
+  {
+    # The endpoint being a variable is what keeps a lane's own container churn
+    # off the household's phones; a literal here defeats every lane override at
+    # once and nothing downstream would notice.
+    name: "a relay publishing at a literal Pushover endpoint",
+    argument: "roles/dozzle/templates/env.j2",
+    edit: lambda { |root|
+      edit_text(root, "roles/dozzle/templates/env.j2") do |source|
+        source.sub("PUSHOVER_API_URL={{ dozzle_pushover_api_url }}",
+                   "PUSHOVER_API_URL=https://api.pushover.net/1/messages.json")
+      end
+    },
+    expects: "the relay publish endpoint is not redirectable"
+  },
+  {
+    name: "a ceiling written into the environment file instead of the defaults",
+    argument: "roles/dozzle/templates/env.j2",
+    edit: lambda { |root|
+      edit_text(root, "roles/dozzle/templates/env.j2") do |source|
+        source.sub("ALERT_DAILY_CONTAINER_CEILING={{ dozzle_alert_daily_container_ceiling }}",
+                   "ALERT_DAILY_CONTAINER_CEILING=10")
+      end
+    },
+    expects: "the alert ceiling is not rendered from the role defaults"
+  },
+  {
+    name: "a relay handed the Pushover user key under another name",
+    argument: "roles/dozzle/templates/env.j2",
+    edit: lambda { |root|
+      edit_text(root, "roles/dozzle/templates/env.j2") do |source|
+        source.sub("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}",
+                   "PUSHOVER_USER_KEY={{ vault_pushover_token }}")
+      end
+    },
+    expects: "the relay secret is not a credential of its own"
   },
   {
     name: "relay state mounted read-only", argument: "services/dozzle/compose.yml",
@@ -1144,6 +1200,11 @@ def with_runtime_stub(state, relay_port: 8081)
       "DOZZLE_STUB_VAULT" => vault,
       "PLATFORM_DOZZLE_PORT" => dozzle_port.to_s,
       "PLATFORM_NTFY_PORT" => ntfy_port.to_s,
+      # The wrapper exports this in every mode, so these direct invocations
+      # supply it in every mode too. Deliberately a port nothing here binds:
+      # none of these rows reaches the notify mode, and a row that started to
+      # would have to say so by listening rather than by inheriting a socket.
+      "PLATFORM_DOZZLE_PUSHOVER_PORT" => "1",
       "PLATFORM_REPORT_ROOT" => reports,
       "PLATFORM_CONTRACT_VAULT_FILE" => vault,
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "password"),
@@ -1443,6 +1504,223 @@ def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
       "DOZZLE_STUB_RENDERS" => renders
     }
   end
+end
+
+# The recorder port has three homes and they must be one number.
+#
+# tests/contracts/dozzle.sh declares it; the two lane libraries redirect
+# dozzle_pushover_api_url at it when they converge the relay. The endpoint is
+# rendered into the relay's environment file at converge time, long before the
+# notify mode runs, so a disagreement here is not a failed assertion -- it is a
+# relay POSTing at a port nothing listens on, the alerts silently lost to a 502
+# Dozzle does not retry, and the notify mode failing for a reason that names
+# none of this.
+#
+# Read out of the real tree rather than the fixture, because these two lane
+# libraries are not files the contract inspects; they are files that have to
+# agree with it.
+PUSHOVER_PORT_SOURCES = {
+  "tests/contracts/dozzle.sh" => /PLATFORM_DOZZLE_PUSHOVER_PORT:=([0-9]+)\}/,
+  "tests/integration_controller_lib.sh" =>
+    %r{integration_dozzle_pushover_api_url='http://\{\{ platform_callback_host \}\}:([0-9]+)/1/messages\.json'},
+  "tests/mac/lib.sh" =>
+    %r{-e 'dozzle_pushover_api_url=http://\{\{ platform_callback_host \}\}:([0-9]+)/1/messages\.json'}
+}.freeze
+
+def pushover_port_failures
+  failures = []
+  found = PUSHOVER_PORT_SOURCES.to_h do |relative, pattern|
+    path = File.join(ROOT, relative)
+    [relative, File.file?(path) ? File.read(path)[pattern, 1] : nil]
+  end
+  found.each do |relative, port|
+    failures << "#{relative} declares no Pushover recorder port: the relay would be " \
+                "converged against an endpoint nothing in the lane listens on" if port.nil?
+  end
+  return failures unless failures.empty?
+
+  unless found.values.uniq.length == 1
+    failures << "the Pushover recorder port disagrees across #{found.inspect}: the lane " \
+                "renders it into the relay's environment at converge time, so a mismatch " \
+                "loses every alert to a 502 rather than failing an assertion"
+  end
+  failures
+end
+
+# --- the notify mode's recorder, executed against the real relay -----------
+#
+# The recorder is the one half of the notify mode that no other check reaches:
+# the runtime rows above all run modes that never open it, and the mode that
+# does needs Docker, a converged Dozzle and twenty minutes. What it has to be
+# right about is a protocol boundary between two languages -- Python's
+# urllib.parse.urlencode on one side and Ruby's URI.decode_www_form on the
+# other, with a message carrying newlines and spaces that quote_plus turns into
+# `+` -- and reasoning about that is exactly the kind of claim this repository
+# keeps finding to be false.
+#
+# So the helpers are read out of the shipped program and eval'd, never copied.
+# A hand-copied recorder would test a second implementation and report the
+# shipped one working; the same trap tests/contracts/dozzle.sh's two-roots rule
+# exists for. The relay on the other end is the deployed script, run the way its
+# container runs it.
+RECORDER_SECTION_START = "# --- the Pushover stand-in ---"
+RECORDER_SECTION_END = "\nrequest(\"get\", endpoint(DOZZLE,"
+RELAY_SCRIPT = File.join(ROOT, "services", "dozzle", "alert_relay.py")
+
+# Just enough of the runtime program's surroundings for the extracted section to
+# load: its two references out are fail_contract and CALLBACK_HOST, and the
+# recorder binds 0.0.0.0 rather than the callback host, so the host only has to
+# be a string.
+RECORDER_PRELUDE = <<~RUBY
+  def fail_contract(message)
+    raise "Dozzle contract failed: \#{message}"
+  end
+  CALLBACK_HOST = "127.0.0.1"
+RUBY
+
+def recorder_module(port)
+  source = File.read(RUNTIME_PROGRAM)
+  start = source.index(RECORDER_SECTION_START)
+  finish = source.index(RECORDER_SECTION_END)
+  raise "recorder section markers not found in #{RUNTIME_PROGRAM}" if start.nil? || finish.nil?
+
+  section = source[start...finish]
+  raise "recorder section does not define with_pushover_recorder" unless
+    section.include?("def with_pushover_recorder")
+
+  holder = Module.new
+  ENV["PLATFORM_DOZZLE_PUSHOVER_PORT"] = port.to_s
+  holder.module_eval("#{RECORDER_PRELUDE}\n#{section}", RUNTIME_PROGRAM, 1)
+  holder.module_eval { module_function(*holder.instance_methods(false)) }
+  holder
+end
+
+def free_local_port
+  server = TCPServer.new("127.0.0.1", 0)
+  port = server.addr[1]
+  server.close
+  port
+end
+
+def post_through_relay(relay_port, payload, token)
+  uri = URI("http://127.0.0.1:#{relay_port}/alerts")
+  request = Net::HTTP::Post.new(uri)
+  request["Authorization"] = "Bearer #{token}"
+  request["Content-Type"] = "application/json"
+  request.body = JSON.generate(payload)
+  Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 15) do |http|
+    http.request(request)
+  end
+end
+
+def recorder_failures
+  failures = []
+  recorder_port = free_local_port
+  relay_port = free_local_port
+  helpers = recorder_module(recorder_port)
+  relay_token = "recorder-case-relay-token"
+  pushover_token = "recorder-case-pushover-token"
+  pushover_user_key = "recorder-case-pushover-user-key"
+
+  Dir.mktmpdir("nas-platform-dozzle-recorder.") do |raw|
+    state_directory = File.join(File.realpath(raw), "state")
+    FileUtils.mkdir_p(state_directory)
+    File.chmod(0o700, state_directory)
+    environment = {
+      "ALERT_RELAY_TOKEN" => relay_token,
+      "ALERT_RELAY_PORT" => relay_port.to_s,
+      "PUSHOVER_API_URL" => "http://127.0.0.1:#{recorder_port}/1/messages.json",
+      "PUSHOVER_TOKEN" => pushover_token,
+      "PUSHOVER_USER_KEY" => pushover_user_key,
+      "ALERT_DAILY_CONTAINER_CEILING" => "10",
+      "ALERT_DAILY_OOM_CONTAINER_CEILING" => "25",
+      "ALERT_DAILY_GLOBAL_CEILING" => "200",
+      "ALERT_STATE_PATH" => File.join(state_directory, "alert-relay.json"),
+      "PYTHONDONTWRITEBYTECODE" => "1"
+    }
+    relay = spawn(environment, "python3", RELAY_SCRIPT,
+                  out: File::NULL, err: File::NULL)
+    begin
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 20
+      listening = false
+      until listening || Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+        begin
+          TCPSocket.new("127.0.0.1", relay_port).close
+          listening = true
+        rescue SystemCallError
+          sleep 0.05
+        end
+      end
+      return ["recorder: the relay never began listening"] unless listening
+
+      captured = nil
+      begin
+      helpers.with_pushover_recorder(pushover_token, pushover_user_key) do |reader|
+        # A container name carrying the characters that separate the two
+        # encodings: a space becomes `+` under quote_plus, and the message
+        # itself carries newlines. A recorder that decoded with anything but
+        # decode_www_form reads `svc+one` here.
+        response = post_through_relay(relay_port, {
+          "version" => 1, "rule" => "Unhealthy",
+          "containerId" => "a" * 64, "container" => "svc one & two",
+          "host" => "nas host", "event" => "health_status",
+          "healthStatus" => "unhealthy", "exitCode" => "",
+          "timestamp" => "2026-08-15T01:22:13Z"
+        }, relay_token)
+        failures << "recorder: the relay refused the envelope with HTTP #{response.code}" unless
+          response.code.to_i == 204
+        captured, = helpers.wait_for_pushover(
+          reader, "nothing reached the recorder", timeout: 10
+        ) { |messages| messages.first }
+      end
+      rescue RuntimeError => error
+        # The recorder refuses and times out through fail_contract, which the
+        # prelude turns into a raise. Reported rather than propagated, so a
+        # recorder that never listened reads as this check failing rather than
+        # as the whole program dying somewhere in its middle.
+        failures << "recorder: #{error.message}"
+      end
+      return failures if captured.nil?
+
+      # The credential verdict, in the direction a hardcoded `true` cannot
+      # satisfy. Without this the whole check passes on a recorder that reports
+      # every request as carrying the managed pair -- measured, not assumed: the
+      # plant was placed and this file stayed green.
+      mismatched = helpers.redact_credentials(
+        { "form" => { "token" => "wrong", "user" => "wrong", "title" => "x" } },
+        pushover_token, pushover_user_key
+      )
+      failures << "recorder: a request carrying the wrong credentials was reported as " \
+                  "carrying the managed pair" if mismatched["credentials_ok"]
+
+      form = captured.fetch("form")
+      failures << "recorder: the relay did not POST the messages endpoint, got " \
+                  "#{captured['path'].inspect}" unless captured["path"] == "/1/messages.json"
+      failures << "recorder: the request was not a form POST, got " \
+                  "#{captured['content_type'].inspect}" unless
+        captured["content_type"].to_s.start_with?("application/x-www-form-urlencoded")
+      failures << "recorder: a credential arrived in an Authorization header" unless
+        captured["authorization"].nil?
+      failures << "recorder: the managed Pushover credentials were not recognised" unless
+        captured["credentials_ok"]
+      failures << "recorder: the credentials survived capture as #{form.keys.sort.inspect}" unless
+        (form.keys & %w[token user]).empty?
+      failures << "recorder: the decoded title differs: #{form['title'].inspect}" unless
+        form["title"] == "Unhealthy · svc one & two"
+      failures << "recorder: the decoded message differs: #{form['message'].inspect}" unless
+        form["message"] == "<b>Host:</b> nas host\n" \
+                           "<b>Container:</b> svc one &amp; two\n" \
+                           "<b>Status:</b> unhealthy"
+      failures << "recorder: the decoded priority differs: #{form['priority'].inspect}" unless
+        form["priority"] == "1"
+      failures << "recorder: the decoded html flag differs: #{form['html'].inspect}" unless
+        form["html"] == "1"
+    ensure
+      Process.kill("TERM", relay)
+      Process.wait(relay)
+    end
+  end
+  failures
 end
 
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
@@ -2231,8 +2509,8 @@ if ARGV.include?("--self-test")
      "\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\"\n"],
     ["\"$repo_dir/services/paperless-ngx/compose.yml\" </dev/null\n",
      "\"$repo_dir/services/paperless-ngx/compose.yml\"\n"],
-    ["\"$deployment_inputs\" \"$deployment_bundle\" </dev/null\n",
-     "\"$deployment_inputs\" \"$deployment_bundle\"\n"],
+    ["\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\" </dev/null\n",
+     "\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\"\n"],
     ["\"$mac_verify\" \"$mac_verify_labels\" \"$mode\" </dev/null\n",
      "\"$mac_verify\" \"$mac_verify_labels\" \"$mode\"\n"],
     ["exec ruby \"$planned_output_program\" \"$mode\" \"$@\" </dev/null\n",
@@ -2280,7 +2558,7 @@ end
 
 failures = group_render_failures + labels_failures + stack_failures + alerts_failures +
            planned_failures + runtime_failures + runtime_sequence_failures +
-           wrapper_failures + stdin_failures
+           wrapper_failures + stdin_failures + pushover_port_failures + recorder_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Dozzle contract violation(s)"
@@ -2288,5 +2566,6 @@ end
 
 puts "dozzle contract: #{GROUP_RENDER_ROWS.length} group render, #{LABEL_ROWS.length} label, " \
      "#{STACK_ROWS.length} stack, #{ALERTS_ROWS.length} alert, #{PLANNED_ROWS.length} planned " \
-     "and #{RUNTIME_ROWS.length} runtime properties hold, and the wrapper reaches all six " \
-     "programs with an empty stdin"
+     "and #{RUNTIME_ROWS.length} runtime properties hold, the notify mode's recorder " \
+     "decodes what the deployed relay actually POSTs and redacts the credentials out of " \
+     "it, and the wrapper reaches all six programs with an empty stdin"

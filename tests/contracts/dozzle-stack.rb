@@ -46,10 +46,12 @@ abort "Dozzle contract failed: alert relay environment differs" unless
   relay["environment"] == {
     "ALERT_RELAY_TOKEN" => "${ALERT_RELAY_TOKEN:?}",
     "ALERT_RELAY_PORT" => "${ALERT_RELAY_PORT:?}",
-    "NTFY_PUBLISH_URL" => "${NTFY_PUBLISH_URL:?}",
-    "NTFY_TOPIC" => "${NTFY_TOPIC:?}",
-    "NTFY_CONTAINERS_TOPIC" => "${NTFY_CONTAINERS_TOPIC:?}",
-    "NTFY_TOKEN" => "${NTFY_TOKEN:?}",
+    "PUSHOVER_API_URL" => "${PUSHOVER_API_URL:?}",
+    "PUSHOVER_TOKEN" => "${PUSHOVER_TOKEN:?}",
+    "PUSHOVER_USER_KEY" => "${PUSHOVER_USER_KEY:?}",
+    "ALERT_DAILY_CONTAINER_CEILING" => "${ALERT_DAILY_CONTAINER_CEILING:?}",
+    "ALERT_DAILY_OOM_CONTAINER_CEILING" => "${ALERT_DAILY_OOM_CONTAINER_CEILING:?}",
+    "ALERT_DAILY_GLOBAL_CEILING" => "${ALERT_DAILY_GLOBAL_CEILING:?}",
     "ALERT_STATE_PATH" => "/state/alert-relay.json"
   }
 abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"] == [
@@ -156,9 +158,37 @@ abort "Dozzle contract failed: environment does not render the single relay list
   env_template.include?("ALERT_RELAY_PORT={{ dozzle_alert_relay_port }}")
 # The separation #172 was filed for, asserted in the one file that renders both
 # credentials side by side. The relay's shared secret ends up at rest in Dozzle's
-# /data volume and in a second container's `docker inspect` environment; the ntfy
-# publish token must reach neither, so these two lines have to name two different
-# vault credentials rather than the same one twice.
+# /data volume and in a second container's `docker inspect` environment; the
+# Pushover application token must reach neither, so these lines have to name
+# different vault credentials rather than the same one twice.
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
-  env_template.include?("NTFY_TOKEN={{ vault_ntfy_dozzle_token }}")
+  env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_token }}") &&
+  env_template.include?("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}")
+
+# The publish endpoint is a variable in every layer it passes through, and that
+# is a safety property rather than tidiness: a literal here would mean every
+# lane that converges this stack POSTs its own container churn at the
+# household's real Pushover account. Read from the defaults as well as the
+# template, because a template reading a variable that no longer exists renders
+# empty and the relay then refuses to start -- which is the loud failure, but
+# only after a deployment.
+relay_defaults = File.read(ARGV.fetch(5))
+abort "Dozzle contract failed: the relay publish endpoint is not redirectable" unless
+  env_template.include?("PUSHOVER_API_URL={{ dozzle_pushover_api_url }}") &&
+  relay_defaults.match?(/^dozzle_pushover_api_url:\s+https:\/\/api\.pushover\.net\/1\/messages\.json$/)
+
+# The ceiling reaches the relay from one home apiece, the way the listener port
+# does. A literal in the environment file would be a second copy of a number the
+# role documents, and a ceiling nobody can change without editing a template is
+# a ceiling that gets edited in the running container instead.
+abort "Dozzle contract failed: the alert ceiling is not rendered from the role defaults" unless
+  %w[
+    ALERT_DAILY_CONTAINER_CEILING=dozzle_alert_daily_container_ceiling
+    ALERT_DAILY_OOM_CONTAINER_CEILING=dozzle_alert_daily_oom_container_ceiling
+    ALERT_DAILY_GLOBAL_CEILING=dozzle_alert_daily_global_ceiling
+  ].all? do |pair|
+    name, variable = pair.split("=")
+    env_template.include?("#{name}={{ #{variable} }}") &&
+      relay_defaults.match?(/^#{Regexp.escape(variable)}:\s+[1-9][0-9]*$/)
+  end
