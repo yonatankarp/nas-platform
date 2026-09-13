@@ -76,6 +76,7 @@ jobs:
     outputs:
       static: ${{ steps.classify.outputs.static }}
       docs: ${{ steps.classify.outputs.docs }}
+      vault: ${{ steps.classify.outputs.vault }}
       reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
@@ -229,7 +230,7 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
+          # four jobs run this same block: naming a version in it made three copies
           # nothing compared, so a bump could land in one and leave the other two on
           # the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
@@ -310,6 +311,92 @@ jobs:
       - name: Check the secrets guide against the vault contract
         run: ruby tests/secrets_docs_test.rb
 
+  vault:
+    # #559: the poller failed at validate-vault.yml -- its first play -- on every
+    # five-minute tick, because inventory/group_vars/all/vault.yml carried one
+    # unterminated single-quoted scalar. Nothing in this repository parsed the
+    # encrypted vault, because nothing in CI held the password, so both variants of
+    # that blind spot shipped: an unparseable file (#555, #559) and a missing key
+    # (#172, #274). The gate could only ever prove the artifact was still
+    # encrypted.
+    #
+    # So this job runs the play the poller runs, with the poller's own arguments,
+    # against the committed encrypted vault. A re-implemented parse-and-key-set
+    # check here would be a second contract that agrees with itself while
+    # disagreeing with the host; scripts/production_auto_deploy.py's
+    # _vault_arguments is what the step below mirrors -- `-i inventory/local.yml`,
+    # which is the group_vars binding the implicit localhost has no other route to,
+    # and --vault-password-file, the one input that cannot be committed.
+    #
+    # A real run, deliberately: --syntax-check parses the playbook and
+    # --check simulates the tasks, and neither opens the vault, which is the whole
+    # defect. No -v either -- the verbosity buys nothing here, and the argument for
+    # it would have to be made against the disclosure question the step settles.
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.vault == 'true' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Ansible tooling
+        run: |
+          # apache2-utils, openssh-client and openssl all ship in the ubuntu-latest
+          # image, so this normally installs nothing. It ran unconditionally until an
+          # apt-get update stalled mid-download for 161 minutes on 2026-08-19. Guarding
+          # on the one binary not otherwise guaranteed keeps apt off the happy path
+          # while still recovering automatically if the runner image drops it.
+          if ! command -v htpasswd >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
+          fi
+          #
+          # The versions are not named here. controller-requirements.txt is what an
+          # operator installs from and what CLAUDE.md calls the source of truth, and
+          # four jobs run this same block: naming a version in it made three copies
+          # nothing compared, so a bump could land in one and leave the other two on
+          # the old pin. Installing from the file is how the gate validates the
+          # toolchain the documented install actually produces.
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+
+      - name: Validate the encrypted vault
+        env:
+          VAULT_PASSWORD: ${{ secrets.ANSIBLE_VAULT_PASSWORD }}
+        run: |
+          # `secrets` is not in scope for a job-level `if:` -- that context carries
+          # only github, needs, vars and inputs -- so the emptiness check is a step,
+          # and it fails rather than skipping. A skip would be a green run that
+          # proved nothing, which is the state this job exists to end. The cost is
+          # stated rather than worked around: a pull request from a fork holds no
+          # secret and reds here.
+          if [ -z "$VAULT_PASSWORD" ]; then
+            echo "ANSIBLE_VAULT_PASSWORD is unset or empty." >&2
+            echo "This job decrypts inventory/group_vars/all/vault.yml and cannot run" >&2
+            echo "without it: gh secret set ANSIBLE_VAULT_PASSWORD." >&2
+            exit 1
+          fi
+          # Under $RUNNER_TEMP and never in the checkout, and the mode is set by
+          # umask before the file exists rather than by a chmod after it does.
+          # ansible-vault strips the trailing newline, so the value reaching the
+          # decrypt is the secret and nothing else.
+          umask 077
+          printf '%s\n' "$VAULT_PASSWORD" > "$RUNNER_TEMP/vault-password"
+          # Measured against a planted copy of #559's defect: the YAML parse
+          # failure reports "While parsing a block mapping did not find expected
+          # key" and no source line, at -vvv as well. Two mechanisms hold that --
+          # DataLoader redacts annotated source for vault-sourced data, and
+          # SourceContext.from_origin re-reads the file and answers "content
+          # encrypted" when it finds a $ANSIBLE_VAULT header -- so the output is
+          # not captured and filtered here.
+          ansible-playbook -i inventory/local.yml \
+            --vault-password-file "$RUNNER_TEMP/vault-password" \
+            validate-vault.yml
+
   mutation:
     # tests/policy_manifest_test.rb plants a defect in a throwaway copy of the
     # repository and requires the policy set to reject it, once per mutation.
@@ -348,7 +435,7 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
+          # four jobs run this same block: naming a version in it made three copies
           # nothing compared, so a bump could land in one and leave the other two on
           # the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
@@ -408,7 +495,7 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # three jobs run this same block: naming a version in it made three copies
+          # four jobs run this same block: naming a version in it made three copies
           # nothing compared, so a bump could land in one and leave the other two on
           # the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
@@ -614,6 +701,7 @@ jobs:
       - changes
       - static
       - docs
+      - vault
       - mutation
       - reconciliation
       - toolchain
@@ -630,6 +718,7 @@ jobs:
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
             docs="${{ needs.docs.result }}" \
+            vault="${{ needs.vault.result }}" \
             mutation="${{ needs.mutation.result }}" \
             reconciliation="${{ needs.reconciliation.result }}" \
             toolchain="${{ needs.toolchain.result }}" \

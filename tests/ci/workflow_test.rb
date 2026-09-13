@@ -51,7 +51,7 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static docs mutation reconciliation toolchain suites validate].freeze
+EXPECTED_JOBS = %w[changes static docs vault mutation reconciliation toolchain suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -92,7 +92,7 @@ IDEMPOTENCE_SHARD_SUITES = %w[
 # below has to cover.
 INTEGRATION_SUITES = (FULL_RUN_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static docs reconciliation suites selected_tags].freeze
+CLASSIFIER_OUTPUTS = %w[static docs vault reconciliation suites selected_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
@@ -119,6 +119,24 @@ DOCS_CHECK_COMMANDS = [
   "ruby tests/docs_links_test.rb",
   "ruby tests/docs_links_test.rb --self-test",
   "ruby tests/secrets_docs_test.rb"
+].freeze
+# The vault job (#561). Its whole value is that it runs the play the poller runs
+# first, with the poller's own arguments, so the argv is pinned as a literal
+# against what scripts/production_auto_deploy.py's _vault_arguments builds. A job
+# that bound group_vars differently -- or that reached for --syntax-check or
+# --check, neither of which opens the vault -- could pass on a vault that breaks
+# the host, which is the one failure this job exists to make impossible.
+VAULT_STEP_NAMES = [
+  "Check out repository",
+  "Install Ansible tooling",
+  "Validate the encrypted vault"
+].freeze
+VAULT_PASSWORD_SECRET = "ANSIBLE_VAULT_PASSWORD"
+VAULT_PASSWORD_ENV = "VAULT_PASSWORD"
+VAULT_PLAY_ARGV = [
+  "ansible-playbook -i inventory/local.yml \\",
+  '--vault-password-file "$RUNNER_TEMP/vault-password" \\',
+  "validate-vault.yml"
 ].freeze
 RETIRED_MIGRATION_MARKERS = %w[
   nas-infrastructure
@@ -483,9 +501,9 @@ check(failures,
       end,
       "the mutation job must install the pinned Ansible toolchain")
 
-# Three jobs need that toolchain and each carries its own copy of the step that
-# installs it. The pins used to be written into all three, so a bump could land
-# in one and leave the other two on the old version with nothing comparing them;
+# Four jobs need that toolchain and each carries its own copy of the step that
+# installs it. The pins used to be written into all of them, so a bump could land
+# in one and leave the rest on the old version with nothing comparing them;
 # they now install from controller-requirements.txt, which is the one place the
 # versions are authored. The copies that remain are held byte-identical, so a
 # flag, a retry or a package added to one of them cannot quietly apply to a
@@ -497,8 +515,8 @@ toolchain_installs = jobs.each_with_object({}) do |(name, job), collected|
   end
   collected[name] = step["run"].to_s if step
 end
-check(failures, toolchain_installs.length >= 3,
-      "at least three jobs install the Ansible toolchain; found #{toolchain_installs.keys.inspect}, " \
+check(failures, toolchain_installs.length >= 4,
+      "at least four jobs install the Ansible toolchain; found #{toolchain_installs.keys.inspect}, " \
       "which means this comparison is proving less than it reads as")
 check(failures, toolchain_installs.values.uniq.length == 1,
       "every #{INSTALL_TOOLCHAIN_STEP.inspect} step must be byte-identical, " \
@@ -885,13 +903,65 @@ DOCS_CHECK_COMMANDS.each do |command|
         "for a documentation change, the gate runs it for everything else")
 end
 
+# The vault job. It holds the only secret in this workflow that opens the
+# repository's own credentials, so what is asserted here is the argv, the
+# refusal, and where the password lands -- not merely that a step exists.
+vault_job = jobs.fetch("vault", {})
+vault_steps = Array(vault_job["steps"])
+check(failures, vault_job["needs"] == "changes", "vault must depend only on changes")
+check(failures, expression(vault_job["if"]) == "${{ needs.changes.outputs.vault == 'true' }}",
+      "vault must be gated on its own classifier output, found " \
+      "#{expression(vault_job['if']).inspect}")
+check(failures, vault_job["strategy"].nil?, "the vault job is one runner and must not declare a matrix")
+check(failures, vault_steps.map { |step| step["name"] } == VAULT_STEP_NAMES,
+      "vault steps differ: got #{vault_steps.map { |step| step['name'] }.inspect}, " \
+      "expected #{VAULT_STEP_NAMES.inspect}")
+check(failures, vault_steps.none? { |step| step.key?("if") },
+      "vault steps must be unconditional: `secrets` is not in scope for a job-level or step-level " \
+      "condition anyway, and a skipped step here is a green run that decrypted nothing")
+vault_play_steps = vault_steps.select { |step| step["run"].to_s.include?("validate-vault.yml") }
+check(failures, vault_play_steps.length == 1, "vault must run validate-vault.yml from exactly one step")
+vault_play = vault_play_steps.first || {}
+vault_play_commands = normalize_shell(vault_play["run"]).lines(chomp: true)
+VAULT_PLAY_ARGV.each do |fragment|
+  check(failures, vault_play_commands.include?(fragment),
+        "the vault play must invoke the poller's own argv; #{fragment.inspect} is missing from " \
+        "#{vault_play_commands.inspect}")
+end
+# A real run. --syntax-check parses the playbook and --check simulates the tasks,
+# and neither one parses vault contents, so either would restore the blind spot
+# while leaving a green job in its place.
+%w[--syntax-check --check].each do |flag|
+  check(failures, !vault_play["run"].to_s.include?(flag),
+        "the vault play must not pass #{flag}: it does not parse the vault, which is the defect")
+end
+check(failures, vault_play.dig("env", VAULT_PASSWORD_ENV) == "${{ secrets.#{VAULT_PASSWORD_SECRET} }}",
+      "the vault play must take the password from secrets.#{VAULT_PASSWORD_SECRET} through env")
+check(failures, vault_play["run"].to_s.include?(%(if [ -z "$#{VAULT_PASSWORD_ENV}" ])) &&
+                vault_play["run"].to_s.include?("exit 1"),
+      "the vault play must fail loudly on an absent or empty secret rather than skipping: " \
+      "`secrets` is not readable from a job-level `if:`, so the guard has to be a step")
+check(failures, vault_play["run"].to_s.include?(VAULT_PASSWORD_SECRET),
+      "the refusal must name #{VAULT_PASSWORD_SECRET}, which is the one thing an operator has to set")
+check(failures, vault_play["run"].to_s.include?("umask 077"),
+      "the vault password file must be created under a restrictive umask, not chmodded afterwards")
+check(failures, vault_play["run"].to_s.include?('> "$RUNNER_TEMP/vault-password"'),
+      "the vault password file must be written under $RUNNER_TEMP, never into the checkout: a " \
+      "relative target puts the repository's own credentials inside the tree the job checked out")
+# pull_request, never pull_request_target: the latter runs with the base
+# repository's secrets against a head the pull request author controls, which
+# would hand this secret to anyone who can open one. Asserted here as well as in
+# the trigger block above, because this is the job that makes it matter.
+check(failures, !triggers.to_h.key?("pull_request_target"),
+      "the workflow must not use pull_request_target while a job holds the vault password")
+
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static docs mutation reconciliation toolchain suites]
+expected_needs = %w[changes static docs vault mutation reconciliation toolchain suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, docs, mutation, reconciliation, the toolchain " \
-      "publish and the suite matrix " \
+      "validate must need changes, static, docs, the vault validation, mutation, " \
+      "reconciliation, the toolchain publish and the suite matrix " \
       "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, validate_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
@@ -1004,7 +1074,7 @@ end
 
 # controller-requirements.txt is the anchor, not a mirror: it is what an operator
 # installs from, what the production poller installs from, what CLAUDE.md names as
-# the source of truth, and now what all three toolchain jobs above install from.
+# the source of truth, and now what all four toolchain jobs above install from.
 # The ansible-core version is still restated where it cannot be read out of a pip
 # requirement -- the integration sandbox bakes it into a runner image tag, and the
 # Beszel telemetry test refuses to run against any other version because it asserts
@@ -1036,7 +1106,7 @@ check(failures, requirement_lines.length >= 3,
       "#{requirement_lines.length}")
 requirement_lines.each do |line|
   check(failures, line.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*==\d+(\.\d+)*\z/),
-        "controller-requirements.txt must pin every requirement exactly, three CI jobs " \
+        "controller-requirements.txt must pin every requirement exactly, four CI jobs " \
         "install from it: #{line.inspect}")
 end
 
