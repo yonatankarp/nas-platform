@@ -28,13 +28,15 @@ NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
 # exports neither variable.
 CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
                 .compact.reject(&:empty?).first || "host.docker.internal"
-MANAGED_ALERTS = {
-  "Status" => [0, 0],
-  "CPU" => [90, 10],
-  "Memory" => [90, 10],
-  "Disk" => [85, 10],
-  "Temperature" => [85, 15]
-}.freeze
+# What roles/beszel converges, read out of the inspected tree rather than typed
+# here. The hand-typed map this replaced drifted from beszel_alerts silently: a
+# threshold moved or an alert deleted in the defaults passed the static gate, and
+# only a live hub in the beszel lane could notice (#608).
+# tests/beszel_contract_test.rb keeps the one literal copy left, as the fixture
+# its hub serves, and holds that copy against the same defaults.
+MANAGED_ALERTS = YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "roles/beszel/defaults/main.yml"))
+                     .fetch("beszel_alerts")
+                     .to_h { |alert| [alert.fetch("name"), [alert.fetch("value"), alert.fetch("min")]] }.freeze
 DECOY_NAME = "00-contract-decoy"
 WRONG_OWNER_EMAIL = "wrong-owner-fixture@example.invalid"
 DUPLICATE_EVIDENCE = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "beszel-duplicate-ids.txt")
