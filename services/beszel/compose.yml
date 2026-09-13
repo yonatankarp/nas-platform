@@ -114,8 +114,11 @@ services:
       - CAP_SYS_ADMIN
     # Devices are host facts: inventory/group_vars/nas_hosts/main.yml lists them
     # and roles/beszel asserts one slot per disk, so a disk added there without a
-    # slot here fails the run instead of going unmonitored. Read-only, as
-    # upstream's own DeviceAllow guidance grants them; smartctl opens O_RDONLY.
+    # slot here fails the run instead of going unmonitored, while a declared disk
+    # missing from the host renders /dev/null and warns. `:r` refuses a write-open
+    # and nothing more. It does not contain these disks: CAP_SYS_RAWIO lets SG_IO
+    # send any SCSI/ATA command, WRITE included, through a read-only handle, and
+    # CAP_SYS_ADMIN lets NVMe admin passthrough send Format and Sanitize.
     devices:
       - ${NAS_RENDER_DEVICE:?}:${NAS_RENDER_DEVICE:?}
       # SATA bays: base devices, never partitions (beszel-docs guide/smart-data).
