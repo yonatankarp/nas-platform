@@ -4,8 +4,8 @@
 # its failure semantics are stated once.
 #
 # It lives in roles/ntfy although it no longer touches ntfy, and that is a stated
-# leftover rather than an oversight: fifteen service roles include
-# `name: ntfy, tasks_from: deployment_report`, and moving the files is stage 3
+# leftover rather than an oversight: every other deploying role includes the
+# report by that role name and entry point, and moving the files is stage 3
 # of #558, which deletes the role. Until then the location also keeps CI routing
 # right, because a change under roles/ntfy/ selects exactly the lanes that run
 # these reports.
@@ -52,11 +52,13 @@
 # make. 429 is Pushover's quota answer: a message not delivered, not credentials
 # refused, so it fails nothing.
 #
-# -1 rather than 0 for a missing status, because a uri that refused before it
-# made any request -- an unparseable url, an unsupported scheme -- registers no
-# status at all (the #521 shape), and a default inside the authoritative range
-# would turn "never asked" into "refused". The body status is compared without
-# `| int`, which reads any non-number as 0.
+# A uri that refused before it made any request -- an unparseable url, an
+# unsupported scheme -- registers no status and no body at all (the #521 shape).
+# What keeps that from reading as "refused" is the conjunction: no body means no
+# Pushover status. The -1 default is belt and braces beside it, and no row in
+# tests/deployment_summary_test.rb can observe it, because a request never made
+# has no body to disagree with it. The body status is compared without `| int`,
+# which reads any non-number as 0.
 - name: Summarize the Pushover answer without the credentials it carried
   ansible.builtin.set_fact:
     ntfy_pushover_verdict: >-
