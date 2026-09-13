@@ -24,6 +24,7 @@
 # check that fails when that third party is down.
 
 require "json"
+require "uri"
 require "yaml"
 require_relative "policy_support"
 require_relative "http_fixture_support"
@@ -38,7 +39,19 @@ SUMMARIZE = "Summarize the Pushover answer without the credentials it carried"
 NO_ANSWER = "Report that Pushover did not answer, which is not a refusal"
 VERIFY = "Verify Pushover still accepts the managed credentials"
 TASK_NAMES = [ASK, SUMMARIZE, NO_ANSWER, VERIFY].freeze
-REFUSAL = "Pushover refused the managed credentials."
+REFUSAL = "Pushover refused the managed credentials for"
+# One sentinel per application token, keyed by the vault name the refusal must
+# carry. The fixture answers per token, so a verdict pinned to the wrong key --
+# or a refusal that named every key whatever was refused -- is visible.
+TOKENS = {
+  "vault_pushover_alerts_token" => "probe-alerts-token-never-valid",
+  "vault_pushover_containers_token" => "probe-containers-token-never-valid",
+  "vault_pushover_deployments_token" => "probe-deployments-token-never-valid",
+  "vault_pushover_media_token" => "probe-media-token-never-valid"
+}.freeze
+USER_KEY = "probe-user-key-never-valid"
+ACCEPT = [200, JSON.generate({ "status" => 1, "devices" => ["phone"] })].freeze
+REFUSE = [400, JSON.generate({ "status" => 0, "errors" => ["application token is invalid"] })].freeze
 
 failures = []
 
@@ -78,8 +91,10 @@ if missing.empty?
   fail_msg = verify.dig("ansible.builtin.assert", "fail_msg").to_s
   check(failures, !fail_msg.include?("beszel_pushover_validation"),
         "#{VERIFY} fail_msg must not reach into the response; it is evaluated on the passing path too")
-  check(failures, !fail_msg.match?(/vault_pushover_(alerts_token|user_key)\s*\}\}/),
+  check(failures, !fail_msg.match?(/vault_pushover_[a-z_]+\s*\}\}/) && !fail_msg.include?("lookup("),
         "#{VERIFY} fail_msg must name the credentials without printing them")
+  check(failures, Array(ask["loop"]).sort == TOKENS.keys.sort,
+        "#{ASK} must ask about every application token by vault key name, got #{ask['loop'].inspect}")
 
   # THE HARNESS HAS TO INHERIT THE ROLE'S TAGS OR IT PROVES NOTHING, and this is
   # not a hypothetical: without it the tag-gate rows below passed against a
@@ -108,8 +123,7 @@ if missing.empty?
     run_playbook(shipped,
                  { "beszel_pushover_validation_url" => url,
                    "platform_download_timeout" => 10,
-                   "vault_pushover_alerts_token" => "probe-token-never-valid",
-                   "vault_pushover_user_key" => "probe-user-key-never-valid" }.merge(extra),
+                   "vault_pushover_user_key" => USER_KEY }.merge(TOKENS).merge(extra),
                  "--tags", tags)
   end
 
@@ -145,16 +159,19 @@ if missing.empty?
   end
 
   # The converse, so the gate is shown open as well as closed: the tag the
-  # poller actually asks for does let the request through, exactly once.
-  verify_requests = 0
+  # poller actually asks for does let the requests through, once per token and
+  # each with the shared user key.
+  asked = []
   with_http_fixture(lambda { |port|
     run_tasks(selected, "http://127.0.0.1:#{port}/1/users/validate.json")
-  }) { |_method, _target, _headers, _body|
-    verify_requests += 1
-    [200, JSON.generate({ "status" => 1 })]
+  }) { |_method, _target, _headers, body|
+    asked << URI.decode_www_form(body.to_s).to_h
+    ACCEPT
   }
-  check(failures, verify_requests == 1,
-        "--tags platform_verify_beszel must reach Pushover exactly once, made #{verify_requests}")
+  check(failures, asked.map { |form| form["token"] }.sort == TOKENS.values.sort &&
+                  asked.all? { |form| form["user"] == USER_KEY },
+        "--tags platform_verify_beszel must ask Pushover once per application token with the user key, " \
+        "asked about #{asked.map { |form| TOKENS.key(form['token']) || 'something else' }.inspect}")
 
   # A fixture speaking Pushover's documented shapes, so the two branches that
   # cannot be reached from the real endpoint without a real account are still
@@ -173,9 +190,9 @@ if missing.empty?
     { label: "a pair Pushover accepts", status: 200,
       body: JSON.generate({ "status" => 1, "devices" => ["phone"] }),
       expect_failure: false, forbid_text: "This is not a refusal and is not a failure" },
-    { label: "a pair Pushover authoritatively refuses", status: 400,
+    { label: "a user key Pushover authoritatively refuses", status: 400,
       body: JSON.generate({ "status" => 0, "errors" => ["user identifier is not a valid user"] }),
-      expect_failure: true, expect_text: REFUSAL },
+      expect_failure: true, expect_text: "#{REFUSAL} #{TOKENS.keys.join(', ')}." },
     { label: "a 5xx, which is not an answer", status: 500,
       body: JSON.generate({ "status" => 0 }),
       expect_failure: false, expect_text: "This is not a refusal and is not a failure" },
@@ -200,13 +217,53 @@ if missing.empty?
         check(failures, !output.include?(row.fetch(:forbid_text)),
               "#{row.fetch(:label)} must not report #{row.fetch(:forbid_text).inspect}")
       end
-      # Neither credential may reach the transcript on any path.
-      %w[probe-token-never-valid probe-user-key-never-valid].each do |secret|
+      # No credential may reach the transcript on any path.
+      [*TOKENS.values, USER_KEY].each do |secret|
         check(failures, !output.include?(secret),
               "#{row.fetch(:label)} disclosed a credential in its diagnostic")
       end
     }) { |_method, _target, _headers, _body| [row.fetch(:status), row.fetch(:body)] }
   end
+
+  # One application's token refused while the others are accepted -- a token
+  # regenerated in one application's console. The refusal must name that key
+  # and no other, and a second row with a different key proves the name comes
+  # from the verdict rather than from a position in the loop.
+  %w[vault_pushover_media_token vault_pushover_alerts_token].each do |refused_key|
+    with_http_fixture(lambda { |port|
+      stdout, stderr, status = run_tasks(selected, "http://127.0.0.1:#{port}/1/users/validate.json")
+      output = stdout + stderr
+      label = "only #{refused_key} refused"
+      check(failures, !status.success?, "#{label} must fail the verification")
+      check(failures, output.include?("#{REFUSAL} #{refused_key}."),
+            "#{label} must name #{refused_key} in the refusal")
+      (TOKENS.keys - [refused_key]).each do |other|
+        check(failures, !output.include?(other), "#{label} must not name #{other}")
+      end
+      check(failures, [*TOKENS.values, USER_KEY].none? { |secret| output.include?(secret) },
+            "#{label} disclosed a credential in its diagnostic")
+    }) { |_method, _target, _headers, body|
+      URI.decode_www_form(body.to_s).to_h["token"] == TOKENS.fetch(refused_key) ? REFUSE : ACCEPT
+    }
+  end
+
+  # A refusal and a non-answer in the same run: the refusal still fails, it
+  # names only the refused key, and the non-answer is still reported as one.
+  with_http_fixture(lambda { |port|
+    stdout, stderr, status = run_tasks(selected, "http://127.0.0.1:#{port}/1/users/validate.json")
+    output = stdout + stderr
+    check(failures, !status.success? && output.include?("#{REFUSAL} vault_pushover_containers_token.") &&
+                    !output.include?("vault_pushover_deployments_token"),
+          "a refusal beside a non-answer must fail naming only the refused key")
+    check(failures, output.include?("Pushover did not answer for 1 of"),
+          "a non-answer beside a refusal must still be reported as one")
+  }) { |_method, _target, _headers, body|
+    case URI.decode_www_form(body.to_s).to_h["token"]
+    when TOKENS.fetch("vault_pushover_containers_token") then REFUSE
+    when TOKENS.fetch("vault_pushover_deployments_token") then [503, "unavailable"]
+    else ACCEPT
+    end
+  }
 
   # Nothing listening: the connection-refused path, which is the shape a Pushover
   # outage takes and the one that must never be read as a refusal. The port is

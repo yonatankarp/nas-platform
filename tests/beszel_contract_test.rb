@@ -937,7 +937,7 @@ VAULT = {
 # stored value against. No port: the Pushover form carries neither a host of this
 # platform's nor one of the fixture's.
 def expected_webhook
-  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"
+  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/?priority=1"
 end
 
 # What the notification proof sends instead, which is a different question --
@@ -1206,7 +1206,12 @@ RUNTIME_ROWS = [
   # and only a well-formed URL of the managed shape can do that.
   { name: "a webhook pointing at a Pushover account other than the managed one",
     mode: "verify",
-    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/"] },
+    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/?priority=1"] },
+    expects: "managed Pushover webhook differs" },
+  # The managed account without the priority: it delivers, but into the
+  # recipient's quiet hours, which is the silence priority 1 exists to break.
+  { name: "a webhook for the managed account that lost its priority", mode: "verify",
+    state: { webhooks: ["pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"] },
     expects: "managed Pushover webhook differs" },
   {
     # PocketBase returns a relation's JSON column as a string on some routes and
