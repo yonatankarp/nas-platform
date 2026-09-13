@@ -6,8 +6,8 @@
 #
 # It takes NO arguments. Every input arrives in the environment, exported by
 # tests/contracts/seerr.sh: PLATFORM_SEERR_PORT, PLATFORM_SEERR_CONTAINER,
-# PLATFORM_SEERR_ARRS, PLATFORM_DOCKER_ROOT, PLATFORM_CONTRACT_VAULT_FILE and
-# PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
+# PLATFORM_SEERR_ARRS, PLATFORM_SEERR_PUSHOVER_BLANKED, PLATFORM_DOCKER_ROOT,
+# PLATFORM_CONTRACT_VAULT_FILE and PLATFORM_CONTRACT_VAULT_PASSWORD_FILE.
 #
 require "json"
 require "net/http"
@@ -31,6 +31,10 @@ READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_SEERR_READY_TIMEOUT_SECONDS"
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_SEERR_PORT'), 10)}")
 CONTAINER = ENV.fetch("PLATFORM_SEERR_CONTAINER")
 ARRS_EXPECTED = ENV.fetch("PLATFORM_SEERR_ARRS") == "true"
+# "true" where the converge blanked the Pushover pair: tests/mac/lib.sh does,
+# because that lane holds the operator's real vault and Seerr's Pushover address
+# cannot be redirected.
+PUSHOVER_BLANKED = ENV.fetch("PLATFORM_SEERR_PUSHOVER_BLANKED") == "true"
 # The user table is Seerr's real state and the only thing that closes its
 # anonymous takeover window: a restore that brought back settings.json without
 # this file would reopen it.
@@ -175,11 +179,22 @@ fail_contract("Seerr accepted a foreign Jellyfin server after bootstrap") unless
   end
 end
 
+pushover = json(request("/api/v1/settings/notifications/pushover", key: key), "the Seerr Pushover agent")
+fail_contract("Seerr's Pushover agent is disabled") unless pushover["enabled"] == true
+fail_contract("Seerr's Pushover agent does not send request events") unless pushover["types"] == 152
+# Seerr's agent posts to a hardcoded Pushover address, so a lane that converges
+# with a real vault cannot redirect it the way it redirects the relay: the Mac
+# lane blanks the pair instead, and says so here.
+expected_pair = if PUSHOVER_BLANKED
+                  ["", ""]
+                else
+                  [vault.fetch("vault_pushover_token"), vault.fetch("vault_pushover_user_key")]
+                end
+fail_contract("Seerr's Pushover agent does not carry the declared Pushover pair") unless
+  [pushover.dig("options", "accessToken"), pushover.dig("options", "userToken")] == expected_pair
+
 ntfy = json(request("/api/v1/settings/notifications/ntfy", key: key), "the Seerr ntfy agent")
-fail_contract("Seerr's ntfy agent is disabled") unless ntfy["enabled"] == true
-fail_contract("Seerr's ntfy agent publishes without authenticating") unless
-  ntfy.dig("options", "authMethodToken") == true &&
-  ntfy.dig("options", "token") == vault.fetch("vault_ntfy_seerr_token")
+fail_contract("Seerr's ntfy agent still publishes beside Pushover") unless ntfy["enabled"] == false
 
 fail_contract("Seerr did not persist its database in the declared config root") unless
   File.file?(DATABASE) && File.size?(DATABASE)

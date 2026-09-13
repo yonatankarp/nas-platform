@@ -65,7 +65,7 @@ request *as that user*, without ever holding that user's password.
 
 Everything else Seerr needs, the vault already holds: the Jellyfin administrator
 pair, the single `vault_managed_jellyfin_users` entry, the Radarr and Sonarr API
-keys, and an ntfy token. **Seerr needs no administrator password of its own** —
+keys, and the Pushover pair. **Seerr needs no administrator password of its own** —
 the owner row is created with a Jellyfin user type and no local password, and
 the local-login route requires an email and password pair that only exists if
 someone sets one. Confirmed. The design's "two explicit Seerr permission
@@ -113,7 +113,10 @@ published beyond the LAN" — are correct afterwards and understated before.
 `settings.json` in that config volume is written mode `0644` and holds the Seerr
 API key, the Jellyfin token Seerr minted for itself, the session secret, the
 VAPID private key, and later the Radarr and Sonarr keys and the ntfy token.
-Confirmed. A `settings.old.json` is written beside it at the same mode with the
+Confirmed. Since #558 the ntfy token is gone from it and the Pushover pair is
+there instead — the pair every other publisher on the platform shares, so a
+read of this file now reaches Beszel's, the Dozzle relay's and the deployment
+reports' credential too. A `settings.old.json` is written beside it at the same mode with the
 same contents one revision behind — **found during the promotion**, and it
 belongs in the same class. It belongs in the runtime secret-bearing list beside Dozzle's users
 file and Beszel's private key, not only in the `critical` recovery class.
@@ -320,6 +323,14 @@ interface, which breaks Ansible until the next container start re-asserts
 `API_KEY`. Worth a line in the role's comment so a future reader knows why the
 key comes back.
 
+**Superseded by #558:** request events go to Seerr's native Pushover agent and
+the ntfy agent is declared off, as upstream's own default object. The two
+paragraphs below are what the ntfy agent turned out to be, kept because the
+replace-not-merge finding is what the Pushover declaration still rests on.
+Pushover's agent sends only when it is enabled and both `accessToken` and
+`userToken` are non-empty, posts to an address hardcoded in the application,
+and chooses the priority itself per notification type.
+
 Seerr's ntfy agent **does** support authentication even though the defaults hide
 it: a fresh instance returns only url, topic, priority and locale, which reads
 as "cannot authenticate". It can — either basic or a bearer token, confirmed
@@ -380,7 +391,8 @@ reconverge; 10 through 18 are all read-compare-then-write.
 15 GET /user → locate the two rows
 16 GET /user/<id>/settings/permissions; POST the same path only on drift
    (160). The owner's 2 is asserted, never written: that route refuses it
-17 GET /settings/notifications/ntfy; POST on drift, with the token
+17 GET /settings/notifications/pushover; POST on drift, with the Pushover
+   pair; GET /settings/notifications/ntfy; POST on drift, declaring it off
 18 GET /settings/public; POST /settings/initialize when not initialized
 19 platform_verify_seerr: assert the Jellyfin server is declared, both arr
    connections are present, both permission values are exact, and — through
@@ -405,6 +417,9 @@ the useful part.
   platform's ntfy is deny-all, so an unauthenticated agent publishes nothing
   and fails silently; and a dedicated identity can be revoked without touching
   deployment reporting, which reusing `vault_ntfy_deploy_token` could not.
+  **Retired by #558:** request events moved to Pushover with the shared pair,
+  so that identity is still provisioned by the ntfy role and nothing publishes
+  with it; stage 3 removes it with ntfy.
 - Ownership and mode of the files Seerr creates on a real Linux bind mount.
   Docker Desktop masks it; only that `--user 1000:100` starts and writes was
   confirmed, and re-confirmed against the pinned digest during the promotion.

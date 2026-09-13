@@ -59,7 +59,60 @@
   changed_when: true
   no_log: true
 
-# Redacted: the request carries the API key.
+# Redacted: the request carries the API key, and the read-back carries the
+# Pushover pair.
+- name: Read the declared Seerr Pushover notification agent
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/notifications/pushover"
+    method: GET
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    status_code: [200]
+    return_content: true
+  register: seerr_pushover_current
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Redacted: the comparison reads the Pushover pair on both sides.
+- name: Decide whether the Seerr Pushover notification agent needs repair
+  ansible.builtin.set_fact:
+    seerr_pushover_repair: "{{ (seerr_pushover_current.json | default({})) != seerr_pushover_declaration }}"
+  no_log: true
+
+- name: Report the planned Seerr Pushover notification agent repair
+  ansible.builtin.debug:
+    msg: >-
+      A live run would declare Seerr's Pushover agent enabled for request
+      events, carrying the vault's Pushover application token and user key.
+      Seerr sends nothing through an agent missing either, and no request event
+      reaches anyone.
+  when:
+    - ansible_check_mode
+    - seerr_pushover_repair | bool
+
+# The POST assigns the body to the agent verbatim — measured for ntfy, a partial
+# body dropped embedPoster from the read-back — so the whole object goes every
+# time and the comparison above is against the same shape.
+#
+# Redacted: the request carries the API key and the Pushover pair.
+- name: Declare the Seerr Pushover notification agent
+  ansible.builtin.uri:
+    url: "{{ seerr_api }}/settings/notifications/pushover"
+    method: POST
+    headers:
+      X-Api-Key: "{{ vault_seerr_api_key }}"
+    body_format: json
+    body: "{{ seerr_pushover_declaration }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - seerr_pushover_repair | bool
+  changed_when: true
+  no_log: true
+
+# Redacted: the request carries the API key, and before the first converge after
+# #558 the read-back still carries the ntfy publisher token.
 - name: Read the declared Seerr ntfy notification agent
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/notifications/ntfy"
@@ -73,27 +126,24 @@
   check_mode: false
   no_log: true
 
+# Redacted for the same reason as the read above.
 - name: Decide whether the Seerr ntfy notification agent needs repair
   ansible.builtin.set_fact:
     seerr_ntfy_repair: "{{ (seerr_ntfy_current.json | default({})) != seerr_ntfy_declaration }}"
+  no_log: true
 
 - name: Report the planned Seerr ntfy notification agent repair
   ansible.builtin.debug:
     msg: >-
-      A live run would point Seerr's ntfy agent at
-      {{ seerr_ntfy_url }}/{{ seerr_ntfy_topic }} with its own bearer token.
-      This platform's ntfy is deny-all, so an agent without one publishes
-      nothing and fails silently.
+      A live run would turn Seerr's ntfy agent off and clear what it stored.
+      Request events go to Pushover, so an enabled ntfy agent would publish
+      every one of them twice.
   when:
     - ansible_check_mode
     - seerr_ntfy_repair | bool
 
-# The POST replaces the agent object rather than merging into it — measured, a
-# partial body dropped embedPoster from the read-back — so the whole options
-# mapping goes every time and the comparison above is against the same shape.
-#
-# Redacted: the request carries the API key and the ntfy publisher token.
-- name: Declare the Seerr ntfy notification agent
+# Redacted: the request carries the API key.
+- name: Turn off the Seerr ntfy notification agent
   ansible.builtin.uri:
     url: "{{ seerr_api }}/settings/notifications/ntfy"
     method: POST

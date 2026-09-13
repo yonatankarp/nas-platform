@@ -214,12 +214,22 @@ mac_validate_integration_callback() {
 # push to the household's devices. A port nothing listens on, because nothing
 # here asserts those notifications; tests/deployment_summary_test.rb refuses
 # this function losing the line.
+#
+# seerr_pushover_access_token and seerr_pushover_user_key for the same account
+# reached a third way, and the one that cannot be redirected: Seerr's Pushover
+# agent posts to an address hardcoded in the application. Nothing automated here
+# raises a request, but tests/mac/manual-review.md asks the operator to, and an
+# auto-approved request is one of the events the agent sends. Seerr sends nothing
+# through an agent with either value empty, so blanking both closes it and keeps
+# the real pair out of the sandbox's mode-0644 settings.json.
+# tests/seerr_contract_test.rb refuses this function losing the line.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e 'ntfy_deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \
+    -e '{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""}' \
     -e '{"vaultwarden_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)

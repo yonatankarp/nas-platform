@@ -144,6 +144,11 @@ case $mac_service in
     ;;
   seerr)
     : "${PLATFORM_SEERR_PORT:?PLATFORM_SEERR_PORT is required}"
+    # mac_ansible_playbook blanks Seerr's Pushover pair; the contract must
+    # expect what this lane converged. tests/seerr_contract_test.rb refuses the
+    # two disagreeing.
+    PLATFORM_SEERR_PUSHOVER_BLANKED=true
+    export PLATFORM_SEERR_PUSHOVER_BLANKED
     ;;
   kapowarr)
     : "${PLATFORM_KAPOWARR_PORT:?PLATFORM_KAPOWARR_PORT is required}"
