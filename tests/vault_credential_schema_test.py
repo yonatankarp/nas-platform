@@ -256,9 +256,25 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_distinct_credential_groups_are_exact(self):
         self.assertEqual(
             DISTINCT_KEY_GROUPS,
-            (NTFY_DISTINCT_KEYS, HEALTHCHECKS_PING_URL_KEYS, FOUNDATION_API_KEYS,
-         FOUNDATION_PASSWORDS),
+            (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS),
         )
+
+    def test_the_two_ping_urls_must_name_different_checks(self):
+        # Compared as checks rather than strings (#606): case in the scheme and
+        # host, a trailing slash and a fragment all leave one check.
+        refusal = ("vault credentials: vault_healthchecks_poller_ping_url, "
+                   "vault_healthchecks_verify_ping_url must address different checks")
+        base = "https://hc-ping.com/0b8f4a9e"
+        for verify in (base, base + "/", base + "//", "https://HC-PING.com/0b8f4a9e",
+                       base + "#note", "HTTPS://hc-ping.com/0b8f4a9e/"):
+            with self.subTest(verify=verify):
+                self.assertIn(refusal, errors_for(vault_healthchecks_poller_ping_url=base,
+                                                  vault_healthchecks_verify_ping_url=verify))
+        for verify in ("https://hc-ping.com/1c9e5b0f", "https://hc-ping.com/0B8F4A9E",
+                       "https://ping.example.org/0b8f4a9e"):
+            with self.subTest(verify=verify):
+                self.assertEqual(errors_for(vault_healthchecks_poller_ping_url=base,
+                                            vault_healthchecks_verify_ping_url=verify), [])
 
     def test_foundation_api_keys_are_exactly_lowercase_hex_32(self):
         if not all(key in CREDENTIAL_RULES for key in FOUNDATION_API_KEYS):

@@ -267,6 +267,15 @@ def load_config(path: str | os.PathLike[str]) -> Config:
             values[field.name] = candidate
         else:
             values[field.name] = raw
+    # Two URLs for one check is what the vault contract refuses, compared by the
+    # same function. A configuration that still carries them pings neither, so
+    # both checks go silent and alert, rather than every tick vouching for a
+    # verify that stopped running.
+    if values["healthchecks_poller_ping_url"] and healthchecks_check_identity(
+        values["healthchecks_poller_ping_url"]
+    ) == healthchecks_check_identity(values["healthchecks_verify_ping_url"]):
+        values["healthchecks_poller_ping_url"] = ""
+        values["healthchecks_verify_ping_url"] = ""
     for url_field in ("repository_url", "github_api_base"):
         if urlsplit(str(values[url_field])).scheme != "https":
             raise ConfigurationError(f"{url_field} must be https")
@@ -1342,6 +1351,24 @@ def publish(config: Config, notification: dict) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return result.returncode == 0
+
+
+def healthchecks_check_identity(url):
+    """The check a healthchecks.io ping URL addresses, for telling two apart.
+
+    Scheme and host compare case-insensitively, trailing slashes and the
+    fragment address nothing, and the query is kept. Written byte for byte in
+    filter_plugins/vault_credential_schema.py and scripts/production_auto_deploy.py,
+    and tests/policy_vault_test.rb holds the two copies identical, so the vault
+    contract and the poller always agree on when two URLs are one check (#606).
+    """
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    return (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"),
+            parts.query)
 
 
 def _healthchecks_fail_url(url: str) -> str:

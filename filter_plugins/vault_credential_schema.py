@@ -46,6 +46,7 @@ are reported for their own ticket.
 """
 
 import re
+from urllib.parse import urlsplit
 
 
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
@@ -137,6 +138,8 @@ PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
 # literal, held by tests/policy_vault_test.rb, because drift would let this
 # contract accept a URL the poller ignores and the check alert on a healthy one.
 HTTPS_URL = re.compile(r'^https://[^\s"\\]+\Z')
+HEALTHCHECKS_PING_URL_KEYS = ("vault_healthchecks_poller_ping_url",
+                              "vault_healthchecks_verify_ping_url")
 
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
 # vault.yml.example that has to be rejected here rather than by the service that
@@ -307,10 +310,6 @@ OPTIONAL_KEY_GROUPS = (
 DISTINCT_KEY_GROUPS = (
     ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
      "vault_ntfy_deploy_token", "vault_ntfy_seerr_token"),
-    # One URL pasted into both would collapse the tick heartbeat and the verify
-    # verdict into one check, so every tick would vouch for a verify that
-    # stopped running -- the two signals #606 keeps apart.
-    ("vault_healthchecks_poller_ping_url", "vault_healthchecks_verify_ping_url"),
     ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key",
      "vault_arr_prowlarr_api_key", "vault_arr_bazarr_api_key",
      "vault_downloaders_sabnzbd_api_key"),
@@ -318,6 +317,24 @@ DISTINCT_KEY_GROUPS = (
      "vault_arr_prowlarr_admin_password", "vault_arr_bazarr_admin_password",
      "vault_downloaders_sabnzbd_admin_password"),
 )
+
+
+def healthchecks_check_identity(url):
+    """The check a healthchecks.io ping URL addresses, for telling two apart.
+
+    Scheme and host compare case-insensitively, trailing slashes and the
+    fragment address nothing, and the query is kept. Written byte for byte in
+    filter_plugins/vault_credential_schema.py and scripts/production_auto_deploy.py,
+    and tests/policy_vault_test.rb holds the two copies identical, so the vault
+    contract and the poller always agree on when two URLs are one check (#606).
+    """
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    return (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"),
+            parts.query)
 
 
 def _text(value):
@@ -429,6 +446,17 @@ def vault_credential_errors(value):
         if len(distinct) != len(key_group):
             errors.append("vault credentials: "
                           f"{', '.join(key_group)} must all differ")
+
+    # The two ping URLs must name different checks, compared the way the checks
+    # resolve rather than as strings: `.../uuid` and `.../uuid/`, or hc-ping.com
+    # and HC-PING.com, are one check. One check for both signals would let every
+    # tick vouch for a verify that had stopped running (#606).
+    ping_urls = [value.get(key) for key in HEALTHCHECKS_PING_URL_KEYS]
+    if (all(isinstance(url, str) for url in ping_urls)
+            and healthchecks_check_identity(ping_urls[0])
+            == healthchecks_check_identity(ping_urls[1])):
+        errors.append("vault credentials: "
+                      f"{', '.join(HEALTHCHECKS_PING_URL_KEYS)} must address different checks")
     return errors
 
 

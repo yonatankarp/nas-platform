@@ -1147,6 +1147,16 @@ poller_url_rule = url_rule.call("scripts/production_auto_deploy.py", "HEALTHCHEC
 check(failures, !contract_url_rule.nil? && contract_url_rule == poller_url_rule,
       "the poller's HEALTHCHECKS_URL_PATTERN must be the vault contract's HTTPS_URL literal, " \
       "found #{contract_url_rule.inspect} and #{poller_url_rule.inspect}")
+# The same holds for when two ping URLs are one check: the contract refuses such a
+# pair and the poller pings neither, and those two verdicts only line up while
+# the function deciding it is the same text in both files.
+identity_function = lambda do |relative|
+  File.read(File.join(ROOT, relative))[/^def healthchecks_check_identity\(url\):\n.*?(?=^\S)/m]
+end
+contract_identity = identity_function.call("filter_plugins/vault_credential_schema.py")
+poller_identity = identity_function.call("scripts/production_auto_deploy.py")
+check(failures, !contract_identity.nil? && contract_identity == poller_identity,
+      "healthchecks_check_identity must be byte-identical in the vault contract and the poller")
 
 # Each service's own keys live in vault_<role>.yml, its managed-user list
 # included since #612 split the one mapping that could not span files into eight

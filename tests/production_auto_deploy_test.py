@@ -191,6 +191,20 @@ class ConfigTest(PollerTestCase):
                 config = self.loaded_config(healthchecks_poller_ping_url=raw)
                 self.assertEqual(config.healthchecks_poller_ping_url, "")
 
+    def test_two_ping_urls_for_one_check_ping_neither(self):
+        one = "https://hc-ping.com/one"
+        for verify in (one, one + "/", "https://HC-PING.com/one#note"):
+            with self.subTest(verify=verify):
+                config = self.loaded_config(healthchecks_poller_ping_url=one,
+                                            healthchecks_verify_ping_url=verify)
+                self.assertEqual((config.healthchecks_poller_ping_url,
+                                  config.healthchecks_verify_ping_url), ("", ""))
+        config = self.loaded_config(healthchecks_poller_ping_url=one,
+                                    healthchecks_verify_ping_url="https://hc-ping.com/two")
+        self.assertEqual((config.healthchecks_poller_ping_url,
+                          config.healthchecks_verify_ping_url),
+                         (one, "https://hc-ping.com/two"))
+
     def test_load_config_rejects_unreadable_or_non_object_payloads(self):
         for payload in ("[]", "null", "not json", '"text"'):
             self.config_path.write_text(payload, encoding="utf-8")
