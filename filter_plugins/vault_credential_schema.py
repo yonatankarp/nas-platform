@@ -133,8 +133,9 @@ PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
 # is also what refuses them, and tests/managed_users_vault_test.rb proves it
 # through the role; a NOT_PLACEHOLDER clause here would never be the one that
 # fired. The excluded characters are what would let one value read as more than
-# one curl config directive, and the poller's HEALTHCHECKS_URL_PATTERN is the
-# same text, so no value this contract accepts is one the poller ignores.
+# one curl config directive. The poller's HEALTHCHECKS_URL_PATTERN is the same
+# literal, held by tests/policy_vault_test.rb, because drift would let this
+# contract accept a URL the poller ignores and the check alert on a healthy one.
 HTTPS_URL = re.compile(r'^https://[^\s"\\]+\Z')
 
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in

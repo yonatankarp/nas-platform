@@ -65,10 +65,11 @@ NOTIFICATION_TIMEOUT_CEILING_SECONDS = 5 * 60
 HEALTHCHECKS_TIMEOUT_SECONDS = 10
 # https, and nothing a curl config line would read as more than one URL: no
 # whitespace, which ends the value or starts a directive, and no quote or
-# backslash, which end or escape it. The same text is the vault contract's rule
-# in filter_plugins/vault_credential_schema.py, so a value the contract accepts
-# is never one this poller ignores.
-HEALTHCHECKS_URL_PATTERN = re.compile(r'https://[^\s"\\]+')
+# backslash, which end or escape it. Byte for byte the vault contract's HTTPS_URL
+# in filter_plugins/vault_credential_schema.py, which tests/policy_vault_test.rb
+# holds: drift would let the contract accept a URL this poller ignores, and the
+# check would then alert on silence from a healthy poller.
+HEALTHCHECKS_URL_PATTERN = re.compile(r'^https://[^\s"\\]+\Z')
 # Consecutive polls that fail before eligibility is even decided. At the
 # five-minute cron cadence this is a quarter hour of being unable to see
 # main, which no transient network blip should reach.
@@ -231,7 +232,7 @@ def load_config(path: str | os.PathLike[str]) -> Config:
             # monitoring value that must not stop deployments. Both read as "no
             # ping", and the external check alerts on exactly that silence.
             raw = payload.get(field.name, "")
-            usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.fullmatch(raw)
+            usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.match(raw)
             values[field.name] = raw if usable else ""
             continue
         if field.name not in payload:
@@ -1380,7 +1381,7 @@ def ping_healthchecks(config: Config, url: str, failed: bool) -> None:
             env={"PATH": config.tool_path, "LC_ALL": "C"},
             check=False,
         ).returncode == 0
-    except Exception:  # noqa: BLE001 -- see the docstring: nothing may escape.
+    except Exception:  # Deliberately broad; see the docstring: nothing may escape.
         delivered = False
     if not delivered:
         print("production auto-deploy: healthchecks ping failed", file=sys.stderr)

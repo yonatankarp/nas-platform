@@ -1135,6 +1135,19 @@ check(failures, repository_vault_nas_references.empty?,
       "NAS connection coordinates must stay in inventory, not shared vault: " \
       "#{repository_vault_nas_references.join(', ')}")
 
+# The vault contract and the deployment poller each decide whether a
+# healthchecks.io ping URL is usable (#606). If the two rules drift, the contract
+# accepts a URL the poller silently ignores, and the external check alerts on a
+# healthy poller with nothing anywhere saying why. So the two literals must match.
+url_rule = lambda do |relative, name|
+  File.read(File.join(ROOT, relative))[/^#{name} = re\.compile\((r'[^\n]*')\)$/, 1]
+end
+contract_url_rule = url_rule.call("filter_plugins/vault_credential_schema.py", "HTTPS_URL")
+poller_url_rule = url_rule.call("scripts/production_auto_deploy.py", "HEALTHCHECKS_URL_PATTERN")
+check(failures, !contract_url_rule.nil? && contract_url_rule == poller_url_rule,
+      "the poller's HEALTHCHECKS_URL_PATTERN must be the vault contract's HTTPS_URL literal, " \
+      "found #{contract_url_rule.inspect} and #{poller_url_rule.inspect}")
+
 # Each service's own keys live in vault_<role>.yml, its managed-user list
 # included since #612 split the one mapping that could not span files into eight
 # variables. Where a key sits cannot be checked without the password, so the gate
