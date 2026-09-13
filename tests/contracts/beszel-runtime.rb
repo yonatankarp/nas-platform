@@ -32,7 +32,8 @@ MANAGED_ALERTS = {
   "Status" => [0, 0],
   "CPU" => [90, 10],
   "Memory" => [90, 10],
-  "Disk" => [85, 10]
+  "Disk" => [85, 10],
+  "Temperature" => [85, 15]
 }.freeze
 DECOY_NAME = "00-contract-decoy"
 WRONG_OWNER_EMAIL = "wrong-owner-fixture@example.invalid"
