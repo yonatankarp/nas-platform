@@ -25,7 +25,7 @@ require "yaml"
 vault = YAML.safe_load($stdin.read, aliases: false)
 abort "ntfy verification vault is not a mapping" unless vault.is_a?(Hash)
 
-managed = vault.dig("vault_managed_users", "ntfy")
+managed = vault["vault_managed_ntfy_users"]
 abort "ntfy managed-user vault shape is invalid" unless managed.is_a?(Array)
 
 base_url = ENV.fetch("PLATFORM_NTFY_BASE_URL")

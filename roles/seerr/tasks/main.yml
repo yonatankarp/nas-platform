@@ -314,14 +314,14 @@
   check_mode: false
   no_log: true
 
-# Redacted: vault_managed_users carries every managed user's plaintext password
+# Redacted: vault_managed_jellyfin_users carries every managed user's plaintext password
 # alongside the usernames this reads. The assertion below stays readable, which
 # is why the names are resolved into a fact here instead of inside it.
 - name: Resolve the declared Seerr household identities
   tags: [platform_verify_seerr]
   ansible.builtin.set_fact:
     seerr_household_usernames: >-
-      {{ vault_managed_users.jellyfin | default([]) | map(attribute='username') | list }}
+      {{ vault_managed_jellyfin_users | default([]) | map(attribute='username') | list }}
   no_log: true
 
 - name: Require the exact Seerr verification results

@@ -329,36 +329,39 @@ ENTRY_VALIDATORS = {
 
 def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
                               reserved_identities=None):
-    """Return every schema violation in `vault_managed_users`, as field paths.
+    """Return every schema violation in the managed-user lists, as field paths.
 
     Never includes a value, so the result is safe to print from a `fail_msg`.
     An empty list means the structure satisfies the contract.
+
+    `value` maps each service to its `vault_managed_<service>_users` list, as
+    `roles/vault_contract` assembles it from those eight variables.
 
     `reserved_identities` maps a service to the identities a managed user may not
     claim: the service administrator, plus any name the platform owns itself.
     """
     errors = []
     if not _GUARDS.is_mapping(value):
-        return ["vault_managed_users: must be a mapping"]
+        return ["managed-user service lists: must be a mapping"]
     if sorted(map(str, value.keys())) != sorted(SERVICES):
         missing = [name for name in SERVICES if name not in value]
         extra = [name for name in value if name not in SERVICES]
         if missing:
-            errors.append(f"vault_managed_users: missing {', '.join(missing)}")
+            errors.append(f"managed-user service lists: missing {', '.join(missing)}")
         if extra:
-            errors.append(f"vault_managed_users: unexpected "
+            errors.append(f"managed-user service lists: unexpected "
                           f"{', '.join(map(str, extra))}")
         if not missing and not extra:
-            errors.append("vault_managed_users: service key set is invalid")
+            errors.append("managed-user service lists: service key set is invalid")
         return errors
 
     for service in SERVICES:
         entries = value[service]
         if not _GUARDS.is_list(entries):
-            errors.append(f"vault_managed_users.{service}: must be a list")
+            errors.append(f"vault_managed_{service}_users: must be a list")
             continue
         if service in NONEMPTY_SERVICES and not entries:
-            errors.append(f"vault_managed_users.{service}: must not be empty")
+            errors.append(f"vault_managed_{service}_users: must not be empty")
         validate = ENTRY_VALIDATORS[service]
         for index, entry in enumerate(entries):
             validate(errors, f"{service}[{index}]", entry)
@@ -388,14 +391,14 @@ def _identity_ownership(value, reserved_identities):
             continue
         identities = _normalized_identities(entries, field)
         if len(set(identities)) != len(identities):
-            errors.append(f"vault_managed_users.{service}: {field} must be "
+            errors.append(f"vault_managed_{service}_users: {field} must be "
                           f"unique after normalization")
         reserved = {name.strip().lower()
                     for name in reserved_identities.get(service, [])
                     if _GUARDS.is_string(name)}
         claimed = reserved & set(identities)
         if claimed:
-            errors.append(f"vault_managed_users.{service}: {len(claimed)} "
+            errors.append(f"vault_managed_{service}_users: {len(claimed)} "
                           f"{field} value{'' if len(claimed) == 1 else 's'} "
                           f"reuse a platform-owned identity")
     return errors
@@ -411,10 +414,10 @@ def _ntfy_token_ownership(value, reserved_ntfy_tokens):
             tokens.extend(entry["tokens"])
     errors = []
     if len(set(map(str, tokens))) != len(tokens):
-        errors.append("vault_managed_users.ntfy: tokens must be unique across users")
+        errors.append("vault_managed_ntfy_users: tokens must be unique across users")
     reserved = set(map(str, reserved_ntfy_tokens or []))
     if reserved & set(map(str, tokens)):
-        errors.append("vault_managed_users.ntfy: tokens must not reuse a "
+        errors.append("vault_managed_ntfy_users: tokens must not reuse a "
                       "service-owned token")
     return errors
 

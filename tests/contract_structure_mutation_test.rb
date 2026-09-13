@@ -1447,11 +1447,11 @@ check_rejected(
 # --- Managed-user vault contract ----------------------------------------------
 
 check_rejected(
-  :managed_users_vault, "a published fact demoted to a comment",
+  :managed_users_vault, "a managed-user list dropped from the schema mapping",
   [[VAULT_CONTRACT,
-    "    vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n",
-    "    # vault_managed_komga_users: \"{{ vault_managed_users.komga }}\"\n"]],
-  "vault contract must publish named fact vault_managed_komga_users"
+    "          'komga': vault_managed_komga_users,\n",
+    ""]],
+  "vault contract must submit vault_managed_komga_users for schema validation"
 )
 
 check_rejected(

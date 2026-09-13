@@ -89,7 +89,7 @@ vault = YAML.safe_load(vault_yaml)
 vault_yaml.replace("\0" * vault_yaml.bytesize)
 vault_error.replace("\0" * vault_error.bytesize)
 key = vault.fetch("vault_seerr_api_key")
-household = Array(vault.dig("vault_managed_users", "jellyfin")).map { |entry| entry.fetch("username") }
+household = Array(vault["vault_managed_jellyfin_users"]).map { |entry| entry.fetch("username") }
 
 # Three access outcomes on a protected route: refused anonymously, refused with
 # a wrong key, accepted with exactly the vault's.

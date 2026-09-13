@@ -203,9 +203,9 @@ tests/mac/run.sh --lane fresh \
 
 **Vault is always first, and credentials flow one direction.** Every credential
 is authored in the encrypted vault under `inventory/group_vars/all/` — each
-service's own keys in `vault_<role>.yml`, the Pushover pair in
-`vault_pushover.yml`, and `vault_managed_users`, one variable that cannot span
-files, in `vault.yml` — and pushed outward. Nothing
+service's own keys and its `vault_managed_<role>_users` list in
+`vault_<role>.yml`, and the Pushover pair in `vault_pushover.yml` — and pushed
+outward. Nothing
 is ever read back from a running service, which is why a run converges in a
 single pass. Where a service would normally hand a human a generated value to
 copy-paste, this platform supplies its own instead (ntfy takes declarative

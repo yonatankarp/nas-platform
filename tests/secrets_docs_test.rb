@@ -130,9 +130,9 @@ check(failures,
 managed_user_services = %w[
   audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx
 ]
-managed_users = vault_example["vault_managed_users"]
+managed_users = vault_example.keys.grep(/\Avault_managed_/)
 check(failures,
-      managed_users.is_a?(Hash) && managed_users.keys.sort == managed_user_services.sort,
+      managed_users.sort == managed_user_services.map { |service| "vault_managed_#{service}_users" }.sort,
       "vault example managed-user services differ")
 managed_user_services.each do |service|
   check(failures, secrets_guide.include?("#### #{service} managed users"),
