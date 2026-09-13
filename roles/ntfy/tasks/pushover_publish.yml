@@ -1,0 +1,95 @@
+---
+# Delivers one deployment notification -- a per-service report or the run's
+# summary -- to Pushover. Both callers include this file, so the delivery and
+# its failure semantics are stated once.
+#
+# It lives in roles/ntfy although it no longer touches ntfy, and that is a stated
+# leftover rather than an oversight: fifteen service roles include
+# `name: ntfy, tasks_from: deployment_report`, and moving the files is stage 3
+# of #558, which deletes the role. Until then the location also keeps CI routing
+# right, because a change under roles/ntfy/ selects exactly the lanes that run
+# these reports.
+#
+# THE VERDICT FOLLOWS roles/beszel/tasks/configure.yml (#598). An authoritative
+# refusal fails the converge; anything that is not an authoritative answer does
+# not, because a third party's uptime must not decide whether this NAS deployed.
+# By the time this runs the services have already converged, so failing on an
+# outage would report a broken deployment that is not broken.
+
+# Pushover refuses a title over 250 characters and a message over 1024 with a
+# 400 and status 0 -- an authoritative refusal, which would fail the converge
+# after every service had already deployed. The summary's image lines are
+# unbounded (a Renovate batch moves many images), so both are cut here, with a
+# visible marker, before they can become one. leeway 0, because Jinja's default
+# leeway lets a string run five characters past the length it was given.
+- name: Publish the deployment notification to Pushover
+  ansible.builtin.uri:
+    url: "{{ ntfy_deployment_pushover_api_url }}"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      token: "{{ vault_pushover_token }}"
+      user: "{{ vault_pushover_user_key }}"
+      title: "{{ ntfy_pushover_title | truncate(250, false, '…', 0) }}"
+      message: "{{ ntfy_pushover_message | truncate(1024, false, '…', 0) }}"
+      priority: "{{ ntfy_pushover_priority }}"
+    # Pushover's two real answers. The verdict is the tasks below, not this list:
+    # failed_when replaces the module's own, and uri parses a JSON body whatever
+    # the status, so a 403 still registers what Pushover said.
+    status_code: [200, 400]
+    timeout: 10
+  register: ntfy_pushover_delivery
+  # Without this line a DNS failure, a timeout or a 5xx fails the run.
+  failed_when: false
+  # Publishing is not host state, and the converge-every-run model asserts a
+  # second run reports no changes.
+  changed_when: false
+  no_log: true
+
+# A verdict needs BOTH an authoritative code and Pushover's own status field.
+# A captive portal or proxy can answer 200 or 4xx with a body that carries no
+# verdict, and reading that as a refusal is the one invention this must not
+# make. 429 is Pushover's quota answer: a message not delivered, not credentials
+# refused, so it fails nothing.
+#
+# -1 rather than 0 for a missing status, because a uri that refused before it
+# made any request -- an unparseable url, an unsupported scheme -- registers no
+# status at all (the #521 shape), and a default inside the authoritative range
+# would turn "never asked" into "refused". The body status is compared without
+# `| int`, which reads any non-number as 0.
+- name: Summarize the Pushover answer without the credentials it carried
+  ansible.builtin.set_fact:
+    ntfy_pushover_verdict: >-
+      {%- set code = ntfy_pushover_delivery.status | default(-1) | int -%}
+      {%- set body = ntfy_pushover_delivery.json | default(none) -%}
+      {%- set answer = body.get('status') if body is mapping else none -%}
+      {%- if code == 200 and answer == 1 -%}accepted
+      {%- elif 400 <= code <= 499 and code != 429 and answer == 0 -%}refused
+      {%- else -%}unanswered{%- endif -%}
+
+# The non-verdict, said out loud and as its own task: no_log suppresses an
+# assert's success_msg but not its fail_msg (measured in #598), so a redacted
+# assert cannot say that nothing was found out. It names no vault key, which is
+# what lets it stay visible.
+- name: Report that Pushover did not answer, which is not a refusal
+  ansible.builtin.debug:
+    msg: >-
+      Pushover did not answer "{{ ntfy_pushover_title }}", so its delivery is
+      unverified this run. This is not a refusal and is not a failure; the
+      deployment itself converged.
+  when: ntfy_pushover_verdict == 'unanswered'
+
+# Redacted because the fail_msg names the vault keys to fix, which
+# tests/policy_vault_test.rb requires; no_log still lets the fail_msg through,
+# and it renders no value. No success_msg: no_log would suppress it.
+- name: Refuse a deployment notification Pushover rejected
+  ansible.builtin.assert:
+    that:
+      - ntfy_pushover_verdict != 'refused'
+    fail_msg: >-
+      Pushover refused the deployment notification. Check vault_pushover_token
+      against the application's own page at pushover.net and
+      vault_pushover_user_key against the account dashboard; a token regenerated
+      in the console has to be re-authored in vault. The services in this run
+      already converged. Values are not shown.
+  no_log: true

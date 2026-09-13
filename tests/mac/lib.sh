@@ -207,11 +207,19 @@ mac_validate_integration_callback() {
 # tests/contracts/dozzle.sh's PLATFORM_DOZZLE_PUSHOVER_PORT, where the notify
 # mode's recorder listens; tests/dozzle_contract_test.rb refuses the two
 # disagreeing.
+#
+# ntfy_deployment_pushover_api_url for the same account reached a second way:
+# every recreated service's deployment report and the run summary. This lane
+# runs with the operator's REAL vault, so without it every converge here would
+# push to the household's devices. A port nothing listens on, because nothing
+# here asserts those notifications; tests/deployment_summary_test.rb refuses
+# this function losing the line.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
+    -e 'ntfy_deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \
     -e '{"vaultwarden_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)

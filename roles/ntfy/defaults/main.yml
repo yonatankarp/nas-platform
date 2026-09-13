@@ -76,6 +76,13 @@ ntfy_publishers:
     token: "{{ vault_ntfy_seerr_token }}"
     topics: "{{ [ntfy_requests_topic, ntfy_verification_topic] }}"
 
+# Where the per-service reports and the run summary are delivered: Pushover's
+# message API, with the vault's Pushover pair. A variable rather than a literal
+# so that no test lane reaches the household's real devices: every site.yml
+# caller under tests/ points it at an address where nothing listens, and
+# tests/deployment_summary_test.rb refuses a caller that does not.
+ntfy_deployment_pushover_api_url: https://api.pushover.net/1/messages.json
+
 # What counts as a deployment, for both the per-service reports and the
 # run-level summary: a run that moved the release. The two must agree, or a
 # service would report a deployment the summary denies happened.
