@@ -44,7 +44,7 @@ beszel_alerts:
     value: 85
     min: 15
 
-# Shoutrrr URL. Built from the Pushover application token and user key in vault,
+# Shoutrrr URL. Built from the Alerts application token and the user key in vault,
 # so the value Beszel stores is authored in one place rather than copied between
 # two web interfaces -- the same property the ntfy form had, over a transport
 # that reaches a phone without the NAS being reachable from it. Pushover itself

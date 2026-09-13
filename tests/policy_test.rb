@@ -1954,7 +1954,7 @@ end
 # The report itself must stay a report. Both the per-service report and the run
 # summary deliver through roles/ntfy/tasks/pushover_publish.yml (#558), so the
 # two callers must reach it only outside --check, and the delivery itself must
-# be a redacted, changeless form POST of the vault's Pushover pair to the
+# be a redacted, changeless form POST of the caller's application token and the user key to the
 # redirectable endpoint every test lane overrides.
 report_path = File.join(ROOT, "roles/ntfy/tasks/deployment_report.yml")
 summary_path = File.join(ROOT, "roles/ntfy/tasks/deployment_summary.yml")

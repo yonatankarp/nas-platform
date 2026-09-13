@@ -97,7 +97,7 @@ argument_specs:
       beszel_notification_url:
         type: str
         required: false
-        description: Shoutrrr URL, built from the Pushover pair in vault.
+        description: Shoutrrr URL, built from the Alerts application token and user key in vault, at priority 1.
       beszel_pushover_validation_url:
         type: str
         required: false

@@ -75,7 +75,8 @@ ntfy_publishers:
     topics: "{{ [ntfy_requests_topic, ntfy_verification_topic] }}"
 
 # Where the per-service reports and the run summary are delivered: Pushover's
-# message API, with the vault's Pushover pair. A variable rather than a literal
+# message API, with the Containers application token for a report and the
+# Deployments one for the summary, and the account's user key. A variable rather than a literal
 # so that no test lane reaches the household's real devices: every site.yml
 # caller under tests/ points it at an address where nothing listens, and
 # tests/deployment_summary_test.rb refuses a caller that does not.

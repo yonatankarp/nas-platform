@@ -69,6 +69,12 @@ refuse("freshness must cover exactly three one-minute samples") unless
   defaults["beszel_telemetry_freshness_seconds"] == 180
 refuse("telemetry polling timeout differs") unless
   defaults["beszel_telemetry_poll_timeout_seconds"] == 90
+# The Alerts application at priority 1 (#558). Beszel keeps the stored URL's
+# query when it adds the title, and the shoutrrr fork it vendors sends `priority`
+# as the form field, so this string is the whole of what sets the priority.
+refuse("notification webhook is not the Alerts application at priority 1") unless
+  defaults["beszel_notification_url"].to_s.strip ==
+    "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1"
 # Scoped to the one variable rather than to the whole file: naming the required
 # categories anywhere else, including in a comment, is not the same as deriving
 # them, and matching a literal expression would miss the same inference written
