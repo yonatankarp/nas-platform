@@ -673,13 +673,13 @@ def reconcile_failures(rows = RECONCILE_ROWS)
     client = lambda do |port|
       row.fetch(:runs).each_with_index do |run, index|
         posts.clear
-        stdout, stderr, status = run_playbook(tasks, reconcile_variables(port), "-v", *run.fetch(:args, []),
+        stdout, stderr, status = HttpFixtureSupport.run_playbook(tasks, reconcile_variables(port), "-v", *run.fetch(:args, []),
                                               prefix: "nas-platform-seerr-reconcile-")
         collected.concat(reconcile_run_failures("reconcile: #{row.fetch(:name)}, run #{index + 1}",
                                                 run, stdout + stderr, status, posts.dup))
       end
     end
-    with_http_fixture(client) do |method, target, headers, body|
+    HttpFixtureSupport.with_http_fixture(client) do |method, target, headers, body|
       path = target.split("?").first
       agent = path[%r{\A/api/v1/settings/notifications/(pushover|ntfy)\z}, 1]
       if agent && method == "GET"
