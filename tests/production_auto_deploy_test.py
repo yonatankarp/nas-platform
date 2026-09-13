@@ -27,6 +27,14 @@ OLDER_SHA = "c" * 40
 
 class PollerTestCase(unittest.TestCase):
     def setUp(self):
+        # Ten seconds is the production budget; a loaded machine can spend it
+        # spawning the stub curl, and then a record goes unwritten.
+        environment = mock.patch.dict(
+            os.environ,
+            {production_auto_deploy.NOTIFICATION_TIMEOUT_ENVIRONMENT: "120"},
+        )
+        environment.start()
+        self.addCleanup(environment.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
@@ -2835,8 +2843,10 @@ class VerifyTest(PollerTestCase):
         venv.mkdir(parents=True)
         self.invocations = self.root / "playbook-invocations.jsonl"
         self.playbook_exit = self.root / "playbook-exit"
-        # The array check's own exit code, so the two invocations can disagree.
+        # The array check's own exit code, so the two invocations can disagree,
+        # and what its log says: the mismatch marker, or a setup failure.
         self.mdraid_exit = self.root / "mdraid-exit"
+        self.mdraid_output = self.root / "mdraid-output"
         lock = self.root / ".local/share/nas-platform/state/deployment.lock"
         playbook = venv / "ansible-playbook"
         playbook.write_text(
@@ -2862,6 +2872,8 @@ class VerifyTest(PollerTestCase):
             "    except FileNotFoundError:\n"
             "        return 0\n"
             "tags = sys.argv[-1].split(',')\n"
+            "if 'platform_verify_mdraid' in tags:\n"
+            f"    print(open({str(self.mdraid_output)!r}).read())\n"
             f"codes = [code({str(self.mdraid_exit)!r})] if 'platform_verify_mdraid' in tags else []\n"
             "if any(tag != 'platform_verify_mdraid' for tag in tags):\n"
             f"    codes.append(code({str(self.playbook_exit)!r}))\n"
@@ -2876,9 +2888,24 @@ class VerifyTest(PollerTestCase):
             self.config, sha or self.deployed, "2026-09-13T10:00:00Z"
         )
 
-    def run_verify(self, playbook_exit=0, curl_exit=0, mdraid_exit=0):
+    MISMATCH = (
+        'fatal: [nas]: FAILED! => {"msg": "'
+        + production_auto_deploy.MDRAID_MISMATCH_MARKER
+        + ': mdraid array differs from its healthy baseline"}'
+    )
+    SETUP_FAILURE = (
+        'fatal: [nas]: FAILED! => {"msg": "vault_managed_users is undefined"}'
+    )
+
+    def run_verify(self, playbook_exit=0, curl_exit=0, mdraid_exit=0, mismatch=True):
+        """mdraid_exit fails the array run; mismatch says whether its log shows why."""
+
         self.playbook_exit.write_text(str(playbook_exit), encoding="ascii")
         self.mdraid_exit.write_text(str(mdraid_exit), encoding="ascii")
+        self.mdraid_output.write_text(
+            self.MISMATCH if mdraid_exit and mismatch else self.SETUP_FAILURE
+            if mdraid_exit else "ok: [nas]", encoding="ascii",
+        )
         self.curl_exit.write_text(str(curl_exit), encoding="ascii")
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
@@ -3111,9 +3138,10 @@ class VerifyTest(PollerTestCase):
         with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
             code, _output = self.run_verify()
         self.assertEqual(code, 1)
+        # A timed-out array run says nothing about the disks.
         self.assertEqual(
             sorted(page["title"].split(" ·")[0] for page in self.pages()),
-            ["RAID arrays degraded", "Verify failed"],
+            ["RAID array check could not run", "Verify failed"],
         )
         # The whole lock hold stays under the hourly cadence, so a stuck run is a
         # failure before the next --verify is due.
@@ -3217,6 +3245,77 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
         self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
 
+    def test_a_setup_failure_in_both_runs_pages_could_not_run_not_degraded(self):
+        """verify.yml's always-tagged setup runs in the array invocation too, so a
+        vault or Docker failure fails both runs with no word about the disks."""
+
+        self.mark_deployed()
+        code, _output = self.run_verify(playbook_exit=2, mdraid_exit=2, mismatch=False)
+        self.assertEqual(code, 1)
+        pages = self.pages()
+        self.assertEqual(
+            sorted((page["topic"], page["title"].split(" ·")[0]) for page in pages),
+            [("nas-critical", "RAID array check could not run"), ("nas-critical", "Verify failed")],
+        )
+        (array,) = [page for page in pages if page["title"].startswith("RAID")]
+        self.assertIn("verify\\-mdraid\\.log", array["message"])
+        self.assertEqual(
+            (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0],
+            "unchecked",
+        )
+
+    def test_a_real_mismatch_pages_degraded(self):
+        self.mark_deployed()
+        self.assertEqual(self.run_verify(mdraid_exit=2)[0], 1)
+        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(
+            (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0], "fail"
+        )
+
+    def test_transitions_between_could_not_run_and_degraded(self):
+        self.mark_deployed()
+        self.run_verify(mdraid_exit=2, mismatch=False)
+        self.assertEqual(self.titles(), [("nas-critical", "RAID array check could not run")])
+        self.run_verify(mdraid_exit=2, mismatch=False)
+        self.assertEqual(self.pages(), [])
+        # The check runs again and finds a mismatch.
+        self.run_verify(mdraid_exit=2)
+        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        # Degraded, then the setup breaks: visibility lost, which pages.
+        self.run_verify(mdraid_exit=2, mismatch=False)
+        self.assertEqual(self.titles(), [("nas-critical", "RAID array check could not run")])
+        # Back from could-not-run to healthy is not a recovery of the disks.
+        self.assertEqual(self.run_verify()[0], 0)
+        self.assertEqual(self.titles(), [("nas-deployment", "RAID array check runs again")])
+        # A real mismatch recovering is.
+        self.run_verify(mdraid_exit=2)
+        self.pages()
+        self.run_verify()
+        self.assertEqual(self.titles(), [("nas-deployment", "RAID arrays recovered")])
+
+    def test_a_fail_record_without_a_kind_recovers_as_a_mismatch(self):
+        self.mark_deployed()
+        (self.config.state_root / "verify-verdict-mdraid").write_text(
+            f"fail {self.deployed} 2026-09-13T10:00:00Z\n", encoding="ascii"
+        )
+        self.run_verify()
+        self.assertEqual(self.titles(), [("nas-deployment", "RAID arrays recovered")])
+
+    def test_the_mismatch_marker_is_the_literal_opening_the_roles_fail_msg(self):
+        import yaml
+
+        path = SCRIPTS.parent / "roles/host_prep/tasks/verify_mdraid.yml"
+        text = path.read_text(encoding="utf-8")
+        marker = production_auto_deploy.MDRAID_MISMATCH_MARKER
+        # Once, in the fail_msg: a success message or a debug carrying it would
+        # make a failing setup read as a degraded array.
+        self.assertEqual(text.count(marker), 1)
+        (block,) = [task for task in yaml.safe_load(text) if "block" in task]
+        (assertion,) = [task for task in block["block"] if "ansible.builtin.assert" in task]
+        fail_msg = assertion["ansible.builtin.assert"]["fail_msg"]
+        self.assertTrue(fail_msg.startswith(marker + ":"), fail_msg)
+        self.assertNotIn(marker, assertion["ansible.builtin.assert"]["success_msg"])
+
     def test_the_array_failing_alone_fails_the_run(self):
         self.mark_deployed()
         code, output = self.run_verify(mdraid_exit=2)
@@ -3238,6 +3337,18 @@ class VerifyTest(PollerTestCase):
     def test_an_unusable_configuration_exits_one(self):
         self.config_path.write_text("{}", encoding="utf-8")
         self.assertEqual(self.run_verify()[0], 1)
+
+
+class NotificationBudgetTest(unittest.TestCase):
+    def test_the_budget_is_ten_seconds_unless_raised_within_bounds(self):
+        name = production_auto_deploy.NOTIFICATION_TIMEOUT_ENVIRONMENT
+        for raw, expected in (
+            (None, 10), ("", 10), ("abc", 10), ("0", 10), ("-5", 10), ("1.5", 10),
+            ("1", 1), ("120", 120), ("99999", 300),
+        ):
+            environment = {} if raw is None else {name: raw}
+            with self.subTest(raw=raw), mock.patch.dict(os.environ, environment, clear=True):
+                self.assertEqual(production_auto_deploy._notification_timeout(), expected)
 
 
 class CliTest(PollerTestCase):

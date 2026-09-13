@@ -1,7 +1,7 @@
 ---
 # A degraded mdraid array fails verification (#609). Reached only through
-# verify.yml under platform_verify_mdraid, and only the hourly periodic verify
-# run selects that tag. Never from site.yml or a deployment's own verify play: a
+# verify.yml under platform_verify_mdraid, which only the poller's hourly --verify
+# selects, in an invocation of its own. Never from site.yml or a deployment's own verify play: a
 # degraded array still serves, and failing a converge or its verify for the whole
 # rebuild would block fixes and quarantine revisions that converged.
 #
@@ -85,12 +85,17 @@
           inventory/group_vars/nas_hosts/main.yml.
       when: host_prep_mdraid_undeclared | length > 0
 
+    # fail_msg opens with a fixed literal marker, written once in this file. The
+    # poller's MDRAID_MISMATCH_MARKER must equal it: a
+    # failed array run whose log lacks it is a check that could not run -- a
+    # vault or Docker precondition -- and pages as that, never as a degraded
+    # array. tests/production_auto_deploy_test.py reads it back from this task.
     - name: Verify no declared mdraid array has lost a member
       ansible.builtin.assert:
         that:
           - host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | length == 0
         fail_msg: >-
-          mdraid array differs from its healthy baseline: expected degraded
+          MDRAID-BASELINE-MISMATCH: mdraid array differs from its healthy baseline: expected degraded
           {{ host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | sort | join(', ') }},
           observed {{ host_prep_mdraid_observed | difference(host_prep_mdraid_expected) | sort | join(', ') }}.
           Read /proc/mdstat on the host: a member has dropped out, a rebuild is

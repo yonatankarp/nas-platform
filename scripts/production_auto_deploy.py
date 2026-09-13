@@ -54,6 +54,11 @@ GIT_FETCH_TIMEOUT_SECONDS = 3 * 60
 # same, so they are bounded too -- generously, because a checkout writes files.
 GIT_LOCAL_TIMEOUT_SECONDS = 60
 NOTIFICATION_TIMEOUT_SECONDS = 10
+# The tests raise the notification budget on a loaded machine, where spawning the
+# stub curl alone can outlast ten seconds (#319's shape). Unset or unusable, it is
+# NOTIFICATION_TIMEOUT_SECONDS; it never exceeds five minutes of a held lock.
+NOTIFICATION_TIMEOUT_ENVIRONMENT = "PLATFORM_AUTO_DEPLOY_NOTIFICATION_TIMEOUT_SECONDS"
+NOTIFICATION_TIMEOUT_CEILING_SECONDS = 5 * 60
 # Consecutive polls that fail before eligibility is even decided. At the
 # five-minute cron cadence this is a quarter hour of being unable to see
 # main, which no transient network blip should reach.
@@ -69,10 +74,22 @@ VERIFY_TIMEOUT_SECONDS = 30 * 60
 # own budget, so a service run that timed out still leaves it one. The hold is at
 # most 30 + 10 per hourly-only tag: 40 minutes today, under the hourly cadence.
 HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
-# Page titles for an hourly-only tag (failed, recovered). A tag missing here
-# pages under its own name.
-HOURLY_ONLY_VERIFY_TITLES = {
-    "platform_verify_mdraid": ("RAID arrays degraded", "RAID arrays recovered"),
+# What an hourly-only tag's failure looks like in its log, and its page titles.
+# The array run also runs verify.yml's always-tagged setup (Docker modules, vault
+# contract, GPU, Compose files), and a failure there is no evidence about the
+# disks, so "degraded" is claimed only when the log carries the literal that opens
+# roles/host_prep/tasks/verify_mdraid.yml's fail_msg. Any other failure, a timeout
+# included, is "unchecked": the check could not run. The record keeps which, so
+# a recovery says "recovered" only after a real mismatch.
+MDRAID_MISMATCH_MARKER = "MDRAID-BASELINE-MISMATCH"
+HOURLY_ONLY_VERIFY_CHECKS = {
+    "platform_verify_mdraid": {
+        "marker": MDRAID_MISMATCH_MARKER,
+        "fail": "RAID arrays degraded",
+        "unchecked": "RAID array check could not run",
+        "recovered": "RAID arrays recovered",
+        "restored": "RAID array check runs again",
+    },
 }
 TOOLING_TIMEOUT_SECONDS = 15 * 60
 # The ladder for the three commands in a deployment that reach a third party:
@@ -1262,6 +1279,13 @@ def notify(
     )
 
 
+def _notification_timeout() -> int:
+    raw = os.environ.get(NOTIFICATION_TIMEOUT_ENVIRONMENT, "")
+    if not raw.isdigit() or int(raw) < 1:
+        return NOTIFICATION_TIMEOUT_SECONDS
+    return min(int(raw), NOTIFICATION_TIMEOUT_CEILING_SECONDS)
+
+
 def publish(config: Config, notification: dict) -> bool:
     """Send one prepared ntfy document through the protected curl config."""
 
@@ -1275,13 +1299,13 @@ def publish(config: Config, notification: dict) -> bool:
                 "--silent",
                 "--show-error",
                 "--max-time",
-                "10",
+                str(_notification_timeout()),
                 "--config",
                 str(config.ntfy_curl_config),
                 "--data-binary",
                 body,
             ],
-            timeout=NOTIFICATION_TIMEOUT_SECONDS,
+            timeout=_notification_timeout(),
             env={"PATH": config.tool_path, "LC_ALL": "C"},
         )
     except (OSError, subprocess.SubprocessError):
@@ -1720,7 +1744,7 @@ def read_verify_verdict(config: Config, tag: str | None = None) -> str | None:
         parts = _verify_verdict_path(config, tag).read_text(encoding="ascii").split()
     except (OSError, UnicodeError):
         return None
-    return parts[0] if parts and parts[0] in ("pass", "fail") else None
+    return parts[0] if parts and parts[0] in ("pass", "fail", "unchecked") else None
 
 
 def _checkout_revision(config: Config) -> str | None:
@@ -1738,7 +1762,12 @@ def _checkout_revision(config: Config) -> str | None:
 
 
 def note_verify_verdict(
-    config: Config, passed: bool, sha: str, log_path: Path, tag: str | None = None
+    config: Config,
+    passed: bool,
+    sha: str,
+    log_path: Path,
+    tag: str | None = None,
+    failure: str = "fail",
 ) -> None:
     """Page on a change of verdict only, and record it once the page landed.
 
@@ -1747,20 +1776,23 @@ def note_verify_verdict(
     recorded failure nobody received would make every later one a quiet repeat.
     tag None is the services' verdict; an hourly-only tag keeps its own record and
     pages under its own title, so the two signals never mask each other (#609).
+    failure is "fail", or "unchecked" for an hourly-only check that could not run;
+    a record of either pages its change, and only "fail" is recovered from.
     """
 
-    verdict = "pass" if passed else "fail"
+    verdict = "pass" if passed else failure
     previous = read_verify_verdict(config, tag)
     if verdict == previous:
         return
-    if verdict == "fail" or previous == "fail":
-        failed = verdict == "fail"
+    if verdict != "pass" or previous is not None:
+        failed = verdict != "pass"
         if tag is None:
             title = f"{'Verify failed' if failed else 'Verify recovered'} · {sha[:9]}"
             lines = ()
         else:
-            titles = HOURLY_ONLY_VERIFY_TITLES.get(tag, (f"{tag} failed", f"{tag} recovered"))
-            title = titles[0 if failed else 1]
+            titles = HOURLY_ONLY_VERIFY_CHECKS.get(tag, {})
+            key = verdict if failed else "recovered" if previous == "fail" else "restored"
+            title = titles.get(key, f"{tag}: {key}")
             lines = (f"**Check:** `{markdown_escape(tag)}`",)
         published = publish(
             config,
@@ -1796,25 +1828,22 @@ def note_verify_verdict(
               file=sys.stderr)
 
 
-def _run_verify_play(config: Config, tags: str, log_path: Path, timeout: float) -> bool:
-    """One verify.yml invocation, logged to its own file; a timeout is a failure."""
+def _run_verify_play(config: Config, tags: str, log_path: Path, timeout: float) -> int | None:
+    """One verify.yml invocation, logged to its own file: its exit code, None on timeout."""
 
     descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(descriptor, "wb") as log:
         os.fchmod(log.fileno(), 0o600)
         try:
-            return (
-                _run(
-                    _verify_invocation(config, tags),
-                    timeout=timeout,
-                    cwd=config.checkout,
-                    env=_ansible_environment(config),
-                    log=log,
-                ).returncode
-                == 0
-            )
+            return _run(
+                _verify_invocation(config, tags),
+                timeout=timeout,
+                cwd=config.checkout,
+                env=_ansible_environment(config),
+                log=log,
+            ).returncode
         except subprocess.TimeoutExpired:
-            return False
+            return None
 
 
 def verify(config: Config) -> bool | None:
@@ -1853,7 +1882,7 @@ def verify(config: Config) -> bool | None:
             )
             return None
         log_path = config.log_root / "verify.log"
-        passed = _run_verify_play(config, config.verify_tags, log_path, VERIFY_TIMEOUT_SECONDS)
+        passed = _run_verify_play(config, config.verify_tags, log_path, VERIFY_TIMEOUT_SECONDS) == 0
         note_verify_verdict(config, passed, head, log_path)
         # verify.yml runs its roles before its tasks, and a failing host leaves
         # the run, so a service failure in the same invocation would hide an
@@ -1862,10 +1891,17 @@ def verify(config: Config) -> bool | None:
         results = [passed]
         for tag in _hourly_only_tags(config):
             tag_log = config.log_root / f"verify-{tag.removeprefix('platform_verify_')}.log"
-            tag_passed = _run_verify_play(
-                config, tag, tag_log, HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS
-            )
-            note_verify_verdict(config, tag_passed, head, tag_log, tag)
+            code = _run_verify_play(config, tag, tag_log, HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS)
+            tag_passed = code == 0
+            failure = "fail"
+            marker = HOURLY_ONLY_VERIFY_CHECKS.get(tag, {}).get("marker")
+            if marker is not None and not tag_passed:
+                failure = "unchecked"
+                if code is not None:
+                    with contextlib.suppress(OSError):
+                        if marker.encode("ascii") in tag_log.read_bytes():
+                            failure = "fail"
+            note_verify_verdict(config, tag_passed, head, tag_log, tag, failure)
             results.append(tag_passed)
         return all(results)
 
