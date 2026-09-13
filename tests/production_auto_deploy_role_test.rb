@@ -34,10 +34,10 @@ TIMEOUT_SECONDS = 300
 
 CONFIG_KEYS = %w[
   ansible_locale branch checkout curl_path external_scheduler git_path
-  github_api_base
+  github_api_base hourly_only_verify_tags
   log_retention_days log_root
   ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
-  periodic_verify_tags platform_callback_host platform_nas_address
+  platform_callback_host platform_nas_address
   platform_public_host repository repository_url state_root tool_path
   vault_password_file verify_tags workflow workflow_name
 ].freeze
@@ -162,51 +162,135 @@ end.uniq
 # rather than derived, and held both ways below, so a service tag cannot quietly
 # become hourly-only either.
 HOURLY_ONLY_VERIFY_TAGS = %w[platform_verify_mdraid].freeze
-PERIODIC_DERIVATION = /\A\{\{ production_auto_deploy_verify_tags \| trim \}\},(platform_verify_[a-z_]+(?:,platform_verify_[a-z_]+)*)\z/
-periodic_default = defaults.fetch("production_auto_deploy_periodic_verify_tags", "").to_s.strip
-periodic_extra = periodic_default[PERIODIC_DERIVATION, 1].to_s.split(",")
-check(failures, periodic_default.match?(PERIODIC_DERIVATION),
-      "production_auto_deploy_periodic_verify_tags must be the deploy list plus literal tags, " \
-      "so the deploy list is written once; got #{periodic_default.inspect}")
+hourly_default = defaults.fetch("production_auto_deploy_hourly_only_verify_tags", "").to_s.strip
+hourly_tags = hourly_default.split(",")
 
-def verify_tag_problems(deploy, periodic_extra, existing)
+def verify_tag_problems(deploy, hourly, existing)
   problems = []
-  covered = deploy + periodic_extra
+  covered = deploy + hourly
   unless (existing - covered).empty? && (covered - existing).empty?
     problems << "the poller's verify tags must match the service roles exactly; " \
                 "missing=#{(existing - covered).inspect} stale=#{(covered - existing).inspect}"
   end
-  leaked = deploy & HOURLY_ONLY_VERIFY_TAGS
+  leaked = deploy & (HOURLY_ONLY_VERIFY_TAGS | hourly)
   unless leaked.empty?
     problems << "#{leaked.inspect} must stay out of production_auto_deploy_verify_tags: " \
                 "a deployment failing it is quarantined while the array still serves"
   end
-  unless periodic_extra.sort == HOURLY_ONLY_VERIFY_TAGS.sort
-    problems << "the periodic list must add exactly #{HOURLY_ONLY_VERIFY_TAGS.inspect} to the deploy list, " \
-                "got #{periodic_extra.inspect}"
+  unless hourly.sort == HOURLY_ONLY_VERIFY_TAGS.sort
+    problems << "production_auto_deploy_hourly_only_verify_tags must be exactly " \
+                "#{HOURLY_ONLY_VERIFY_TAGS.join(',')}, got #{hourly.inspect}"
   end
   problems
 end
-verify_tag_problems(declared_tags, periodic_extra, existing_tags).each { |problem| check(failures, false, problem) }
-# The rule has to bite on the two failures it exists for, proved on planted lists
-# rather than trusted: the hourly-only tag moved into the deploy list, and a tag
-# in neither list. Built from the deploy list without the hourly-only tags, so a
-# broken real list cannot also make a plant misreport.
+verify_tag_problems(declared_tags, hourly_tags, existing_tags).each { |problem| check(failures, false, problem) }
+# The rule has to bite on the three failures it exists for, proved on planted
+# lists rather than trusted: the hourly-only tag moved into the deploy list, a
+# tag in neither list, and a service tag made hourly-only. Built from the deploy
+# list without the hourly-only tags, so a broken real list cannot also make a
+# plant misreport.
 deploy_without_hourly = declared_tags - HOURLY_ONLY_VERIFY_TAGS
 check(failures,
       verify_tag_problems(deploy_without_hourly + HOURLY_ONLY_VERIFY_TAGS, [], existing_tags)
         .any? { |problem| problem.include?("must stay out of production_auto_deploy_verify_tags") },
       "planted: platform_verify_mdraid in the deploy list must be refused")
 check(failures,
-      verify_tag_problems(deploy_without_hourly, [], existing_tags).any? { |problem| problem.include?("missing=") },
+      verify_tag_problems(deploy_without_hourly, [], existing_tags)
+        .any? { |problem| problem.include?("missing=") },
       "planted: a verify tag in neither list must be refused")
+check(failures,
+      verify_tag_problems(deploy_without_hourly.drop(1), HOURLY_ONLY_VERIFY_TAGS + deploy_without_hourly.take(1),
+                          existing_tags).any? { |problem| problem.include?("must be exactly") },
+      "planted: a service tag moved to the hourly-only list must be refused")
 
 doc_tags = File.read(File.join(ROOT, "docs/getting-started-nas.md"))
               .scan(/platform_verify_[a-z_]+/).uniq
-periodic_tags = (declared_tags + periodic_extra).uniq
-check(failures, doc_tags.sort == periodic_tags.sort,
-      "the operator guide's verify tags must match the poller's deploy and hourly lists; " \
-      "difference=#{((doc_tags | periodic_tags) - (doc_tags & periodic_tags)).inspect}")
+all_verify_tags = (declared_tags + hourly_tags).uniq
+check(failures, doc_tags.sort == all_verify_tags.sort,
+      "the operator guide's verify tags must match the poller's deploy and hourly-only lists; " \
+      "difference=#{((doc_tags | all_verify_tags) - (doc_tags & all_verify_tags)).inspect}")
+
+# No task site.yml can reach may carry an hourly-only tag. There a degraded
+# array would fail every converge and quarantine each revision (#609), and
+# nothing else refuses, say, host_prep's main.yml including verify_mdraid.yml.
+# Walked structurally from site.yml: its plays' task sections and roles, then
+# every static include_tasks/import_tasks/include_role/import_role, through
+# block/rescue/always, so a planted include is found by what it reaches rather
+# than by its file name.
+SITE_PLAYBOOK = File.join(ROOT, "site.yml")
+TASK_INCLUDES = %w[ansible.builtin.include_tasks ansible.builtin.import_tasks].freeze
+ROLE_INCLUDES = %w[ansible.builtin.include_role ansible.builtin.import_role].freeze
+
+def site_reachable_tasks(overrides = {})
+  load = ->(path) { overrides.fetch(path) { YAML.safe_load_file(path, aliases: true) } }
+  files = []
+  tasks = []
+  role_file = lambda do |name, tasks_from|
+    File.join(ROOT, "roles", name, "tasks", "#{tasks_from.to_s.delete_suffix('.yml')}.yml")
+  end
+  walk = nil
+  visit = lambda do |path|
+    next if files.include?(path) || !(overrides.key?(path) || File.file?(path))
+
+    files << path
+    walk.call(load.call(path), File.dirname(path))
+  end
+  walk = lambda do |list, directory|
+    PolicySupport.flatten_tasks(list).each do |task|
+      tasks << task
+      TASK_INCLUDES.each do |key|
+        file = task[key].is_a?(Hash) ? task[key]["file"] : task[key]
+        visit.call(File.expand_path(file, directory)) if file.is_a?(String) && !file.include?("{{")
+      end
+      ROLE_INCLUDES.each do |key|
+        name = task[key].is_a?(Hash) ? task[key]["name"] : nil
+        next unless name.is_a?(String) && !name.include?("{{")
+
+        visit.call(role_file.call(name, task[key].fetch("tasks_from", "main")))
+      end
+    end
+  end
+  Array(load.call(SITE_PLAYBOOK)).each do |play|
+    tasks << { "tags" => play["tags"] }
+    %w[pre_tasks tasks post_tasks handlers].each { |section| walk.call(play[section], ROOT) }
+    Array(play["roles"]).each do |entry|
+      name = entry.is_a?(Hash) ? entry["role"] || entry["name"] : entry
+      tasks << { "tags" => entry["tags"] } if entry.is_a?(Hash)
+      visit.call(role_file.call(name, "main")) if name.is_a?(String)
+    end
+  end
+  [tasks, files]
+end
+
+def hourly_only_tags_in(tasks)
+  tasks.flat_map do |task|
+    applied = (TASK_INCLUDES + ROLE_INCLUDES).filter_map { |key| task[key]["apply"] if task[key].is_a?(Hash) }
+    (Array(task["tags"]) + applied.flat_map { |apply| Array(apply.is_a?(Hash) ? apply["tags"] : nil) }) &
+      HOURLY_ONLY_VERIFY_TAGS
+  end.uniq
+end
+
+site_tasks, site_files = site_reachable_tasks
+host_prep_main = File.join(ROOT, "roles/host_prep/tasks/main.yml")
+check(failures, site_files.include?(host_prep_main) && site_files.length >= 20,
+      "the site.yml walk must reach host_prep's main.yml and every role; reached #{site_files.length} files")
+leaked_into_site = hourly_only_tags_in(site_tasks)
+check(failures, leaked_into_site.empty?,
+      "#{leaked_into_site.inspect} is reachable from site.yml: a failing hourly-only check there fails " \
+      "every converge and quarantines the revision, so it belongs to verify.yml alone")
+# Planted in memory, both as a plain include and as an import inside a block,
+# the two shapes a hand edit to host_prep would take.
+host_prep_tasks = YAML.safe_load_file(host_prep_main, aliases: true)
+{
+  "include_tasks" => { "name" => "Planted", "ansible.builtin.include_tasks" => "verify_mdraid.yml" },
+  "import_tasks in a block" => {
+    "name" => "Planted", "block" => [{ "name" => "Planted", "ansible.builtin.import_tasks" => { "file" => "verify_mdraid.yml" } }]
+  }
+}.each do |shape, planted|
+  tasks_with_plant, = site_reachable_tasks(host_prep_main => host_prep_tasks + [planted])
+  check(failures, hourly_only_tags_in(tasks_with_plant) == HOURLY_ONLY_VERIFY_TAGS,
+        "planted: host_prep's main.yml reaching verify_mdraid.yml by #{shape} must be refused")
+end
 
 # The poller selects CI runs by workflow file and display name. A rename in
 # either direction makes it stop finding runs and stall without an error.
@@ -492,13 +576,14 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "log_retention_days must be JSON integer, not a string")
     check(failures, !config["verify_tags"].include?("\n"),
           "verify_tags must be a single line")
-    # Rendered, not just declared: the hourly list is the deploy list plus the
-    # hourly-only tags, so a template or default that dropped the derivation
-    # cannot leave the two lists quietly diverging.
+    # Rendered, not just declared, and under the new key only: an older poller
+    # reads periodic_verify_tags as its whole hourly list, so rendering that key
+    # with the hourly-only meaning would verify the services not at all (#609).
     check(failures,
-          config["periodic_verify_tags"] == ([config["verify_tags"]] + HOURLY_ONLY_VERIFY_TAGS).join(","),
-          "periodic_verify_tags must render as verify_tags plus #{HOURLY_ONLY_VERIFY_TAGS.join(',')}, got " \
-          "#{config['periodic_verify_tags'].inspect}")
+          config["hourly_only_verify_tags"] == HOURLY_ONLY_VERIFY_TAGS.join(",") &&
+            !config.key?("periodic_verify_tags"),
+          "hourly_only_verify_tags must render as #{HOURLY_ONLY_VERIFY_TAGS.join(',')} with no " \
+          "periodic_verify_tags beside it, got #{config.slice('hourly_only_verify_tags', 'periodic_verify_tags').inspect}")
     check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
           "the non-secret configuration must never contain the ntfy token")
     # ntfy hashes the public host into the mobile push topic, so collapsing it
