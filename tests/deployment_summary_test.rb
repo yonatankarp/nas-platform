@@ -27,7 +27,16 @@ DIGEST_A = "@sha256:#{'a' * 64}"
 DIGEST_B = "@sha256:#{'b' * 64}"
 # Sentinels rather than anything shaped like a real pair, so a transcript
 # containing one is unambiguous.
-TOKEN = "probe-pushover-token-never-valid"
+# One sentinel per application, so a message sent with the wrong application's
+# token is visible as that token rather than as "a token".
+CONTAINERS_TOKEN = "probe-pushover-containers-token-never-valid"
+DEPLOYMENTS_TOKEN = "probe-pushover-deployments-token-never-valid"
+ALERTS_TOKEN = "probe-pushover-alerts-token-never-valid"
+TOKENS = {
+  "vault_pushover_alerts_token" => ALERTS_TOKEN,
+  "vault_pushover_containers_token" => CONTAINERS_TOKEN,
+  "vault_pushover_deployments_token" => DEPLOYMENTS_TOKEN
+}.freeze
 USER_KEY = "probe-pushover-user-key-never-valid"
 ENDPOINT_PATH = "/1/messages.json"
 ACCEPTED = [200, JSON.generate({ "status" => 1, "request" => "fixture" })].freeze
@@ -111,8 +120,11 @@ def run_report(variables, *arguments)
   run_ntfy_task("deployment_report", variables, *arguments)
 end
 
-# The form every delivery must be, whichever message it carries.
-def check_delivery_form(failures, label, request, priority)
+# The form every delivery must be, whichever message it carries. `token` names
+# the vault variable whose sentinel must arrive; `extras` is the exact set of
+# optional fields (html, ttl) the caller sends, so a field that leaks into the
+# other caller is as visible as one that goes missing.
+def check_delivery_form(failures, label, request, priority, token:, extras: {})
   form = request["form"] || {}
   check(failures, request["method"] == "POST" && request["target"] == ENDPOINT_PATH,
         "#{label} must POST to the Pushover message API, got " \
@@ -120,12 +132,16 @@ def check_delivery_form(failures, label, request, priority)
   check(failures, request.dig("headers", "content-type").to_s
                          .start_with?("application/x-www-form-urlencoded"),
         "#{label} must be a form POST, which is what Pushover's API reads")
-  check(failures, form["token"] == TOKEN && form["user"] == USER_KEY,
-        "#{label} must carry vault_pushover_alerts_token as token and vault_pushover_user_key as user")
+  sent_with = TOKENS.key(form["token"]) || form["token"].inspect
+  check(failures, form["token"] == TOKENS.fetch(token) && form["user"] == USER_KEY,
+        "#{label} must carry #{token} as token and vault_pushover_user_key as user, " \
+        "got #{sent_with}")
   check(failures, form["priority"] == priority,
         "#{label} must be sent at Pushover priority #{priority}, got #{form['priority'].inspect}")
-  check(failures, (form.keys & %w[topic tags html]).empty?,
-        "#{label} must carry no ntfy-only field and no html flag: #{form.keys.inspect}")
+  check(failures, (form.keys & %w[topic tags]).empty?,
+        "#{label} must carry no ntfy-only field: #{form.keys.inspect}")
+  check(failures, form.slice("html", "ttl") == extras,
+        "#{label} must send exactly #{extras.inspect} of html and ttl, got #{form.slice('html', 'ttl').inspect}")
   check(failures, !form["message"].to_s.strip.empty? && !form["title"].to_s.strip.empty?,
         "#{label} must never send an empty title or message; Pushover refuses one")
 end
@@ -161,9 +177,8 @@ with_controller_repository do |directory, repository, previous, current|
       "platform_release_id" => current,
       "ntfy_deployment_summary_checkout" => repository,
       "ntfy_deployment_pushover_api_url" => endpoint(port),
-      "vault_pushover_alerts_token" => TOKEN,
       "vault_pushover_user_key" => USER_KEY
-    }.merge(overrides)
+    }.merge(TOKENS).merge(overrides)
   end
 
   with_http_probe(1) do |port, requests|
@@ -175,7 +190,8 @@ with_controller_repository do |directory, repository, previous, current|
     published = requests.first || {}
     form = published["form"] || {}
     message = form["message"].to_s
-    check_delivery_form(failures, "the summary", published, "0")
+    check_delivery_form(failures, "the summary", published, "0",
+                        token: "vault_pushover_deployments_token")
     check(failures, form["title"] == "NAS deployed: jellyfin",
           "the summary title must name what moved: #{form['title'].inspect}")
     check(failures, message.include?("jellyfin 10.10.3 → 10.11.0"),
@@ -191,6 +207,19 @@ with_controller_repository do |directory, repository, previous, current|
           "the summary must name the release and the one it replaced")
     check(failures, message.start_with?("Images\n- ") && message.include?("\n\nChanges\n- "),
           "the summary must read as plain text lists, not markup: #{message.inspect}")
+  end
+
+  # A refused summary names the Deployments token, the one it was sent with.
+  with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
+    stdout, stderr, status = run_summary(
+      base.call(port, "deployment_bundle_previous_release_id" => previous)
+    )
+    output = stdout + stderr
+    check(failures, !status.success? && output.include?("Check vault_pushover_deployments_token against") &&
+                    !output.include?("vault_pushover_containers_token"),
+          "a refused summary must fail naming vault_pushover_deployments_token and no other token")
+    check(failures, TOKENS.values.none? { |secret| output.include?(secret) },
+          "a refused summary disclosed a Pushover token")
   end
 
   # A converge that reinstalls the same revision recreated nothing, and the
@@ -286,11 +315,10 @@ def report_variables(url, overrides)
   {
     "platform_release_id" => RELEASE,
     "ntfy_deployment_pushover_api_url" => url,
-    "vault_pushover_alerts_token" => TOKEN,
     "vault_pushover_user_key" => USER_KEY,
     "ntfy_deployment_report_service" => "Komga",
     "ntfy_deployment_report_changed" => false
-  }.merge(overrides)
+  }.merge(TOKENS).merge(overrides)
 end
 
 def check_report(failures, label, variables_overrides, expected_count, *arguments)
@@ -309,14 +337,45 @@ RECREATED = {
   "ntfy_deployment_report_changed" => true
 }.freeze
 
+REPORT_EXTRAS = { "html" => "1", "ttl" => "86400" }.freeze
+
 check_report(failures, "recreated", RECREATED, 1) do |request|
   form = request["form"] || {}
-  check_delivery_form(failures, "a service report", request, "-1")
+  check_delivery_form(failures, "a service report", request, "-1",
+                      token: "vault_pushover_containers_token", extras: REPORT_EXTRAS)
   check(failures, form["title"] == "Komga deployed (recreated)",
         "a recreated service must say so: #{form['title'].inspect}")
-  check(failures, form["message"].to_s.include?("Compose recreated Komga") &&
-                  form["message"].to_s.include?(RELEASE[0, 12]),
-        "a recreated service must name what happened and at which release")
+  check(failures, form["message"] == "<b>Komga</b>\nCompose recreated it at release #{RELEASE[0, 12]}",
+        "a recreated service must name itself in bold and the release it was recreated at: " \
+        "#{form['message'].inspect}")
+end
+
+# The message is HTML, so a service name is text inside markup rather than
+# markup, and the title -- which Pushover never parses -- stays as written.
+HOSTILE_SERVICE = %(Paperless & "Tika" <i>'x'</i>)
+check_report(failures, "a service name carrying markup",
+             RECREATED.merge("ntfy_deployment_report_service" => HOSTILE_SERVICE), 1) do |request|
+  form = request["form"] || {}
+  check(failures, form["title"] == "#{HOSTILE_SERVICE} deployed (recreated)",
+        "the report title must stay plain text: #{form['title'].inspect}")
+  check(failures, form["message"].to_s.start_with?(
+    "<b>Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;</b>\n"
+  ), "every value in the report's HTML must be escaped: #{form['message'].inspect}")
+  check(failures, form["message"].to_s.scan("<").length == 2,
+        "the report's only markup must be its own <b></b>: #{form['message'].inspect}")
+end
+
+# Escaping expands, and a cut after escaping can split an entity or the closing
+# tag. The name is cut first, so even a name made of nothing but ampersands
+# arrives whole: complete entities, a closed tag, under Pushover's cap, and never
+# reaching the publish task's own cut.
+check_report(failures, "a service name long enough to overrun the message",
+             RECREATED.merge("ntfy_deployment_report_service" => "&" * 300), 1) do |request|
+  message = (request["form"] || {})["message"].to_s
+  check(failures, message.length <= 1024 && !message.include?("…"),
+        "an overlong service name must be bounded before escaping, not cut after: #{message.length}")
+  check(failures, message.start_with?("<b>#{'&amp;' * 128}</b>\n"),
+        "an overlong service name must keep whole entities and its closing tag: #{message[0, 40].inspect}")
 end
 
 # The release moved, but Compose left this service running the image it already
@@ -355,7 +414,7 @@ def check_answer(failures, label, output, status, expect_failure:, expect_text:,
         "#{label} must #{expect_failure ? 'fail' : 'not fail'} the converge")
   check(failures, output.include?(expect_text), "#{label} must report #{expect_text.inspect}") if expect_text
   check(failures, !output.include?(forbid_text), "#{label} must not report #{forbid_text.inspect}") if forbid_text
-  [TOKEN, USER_KEY].each do |secret|
+  [*TOKENS.values, USER_KEY].each do |secret|
     check(failures, !output.include?(secret), "#{label} disclosed a Pushover credential")
   end
 end
@@ -398,8 +457,14 @@ end
 with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
   stdout, stderr, = run_report(report_variables(endpoint(port), RECREATED))
   output = stdout + stderr
-  check(failures, output.include?("vault_pushover_alerts_token") && output.include?("vault_pushover_user_key"),
-        "a refusal must name vault_pushover_alerts_token and vault_pushover_user_key")
+  check(failures, output.include?("Check vault_pushover_containers_token against") &&
+                  output.include?("vault_pushover_user_key"),
+        "a refused report must name vault_pushover_containers_token and vault_pushover_user_key")
+  check(failures, !output.include?("vault_pushover_deployments_token") &&
+                  !output.include?("vault_pushover_alerts_token"),
+        "a refused report must not send the operator to another application's token")
+  check(failures, TOKENS.values.none? { |secret| output.include?(secret) },
+        "a refused report disclosed a Pushover token")
 end
 
 closed_port = begin

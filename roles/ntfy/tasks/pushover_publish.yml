@@ -10,6 +10,18 @@
 # right, because a change under roles/ntfy/ selects exactly the lanes that run
 # these reports.
 #
+# WHICH APPLICATION SENDS IT is the caller's choice, by vault key NAME rather
+# than by value: ntfy_pushover_token_variable names the vault variable holding
+# the application token (vault_pushover_containers_token for a service report,
+# vault_pushover_deployments_token for the run summary), and the value is read
+# through the vars lookup below. The name is what lets a refusal say which
+# token to fix without the value ever reaching a message.
+#
+# ntfy_pushover_ttl and ntfy_pushover_html are optional and omitted from the form
+# when unset. With html set the caller owns escaping: every interpolated value in
+# ntfy_pushover_message must already be HTML-escaped and short enough that the
+# 1024 cut below never fires, because a cut can split an entity or a tag.
+#
 # THE VERDICT FOLLOWS roles/beszel/tasks/configure.yml (#598). An authoritative
 # refusal fails the converge; anything that is not an authoritative answer does
 # not, because a third party's uptime must not decide whether this NAS deployed.
@@ -28,11 +40,13 @@
     method: POST
     body_format: form-urlencoded
     body:
-      token: "{{ vault_pushover_alerts_token }}"
+      token: "{{ lookup('ansible.builtin.vars', ntfy_pushover_token_variable) }}"
       user: "{{ vault_pushover_user_key }}"
       title: "{{ ntfy_pushover_title | truncate(250, false, '…', 0) }}"
       message: "{{ ntfy_pushover_message | truncate(1024, false, '…', 0) }}"
       priority: "{{ ntfy_pushover_priority }}"
+      ttl: "{{ ntfy_pushover_ttl | default(omit) }}"
+      html: "{{ ntfy_pushover_html | default(omit) }}"
     # Pushover's two real answers. The verdict is the tasks below, not this list:
     # failed_when replaces the module's own, and uri parses a JSON body whatever
     # the status, so a 403 still registers what Pushover said.
@@ -94,9 +108,10 @@
     that:
       - ntfy_pushover_verdict != 'refused'
     fail_msg: >-
-      Pushover refused the deployment notification. Check vault_pushover_alerts_token
-      against the application's own page at pushover.net and
-      vault_pushover_user_key against the account dashboard; a token regenerated
+      Pushover refused the deployment notification. Check
+      {{ ntfy_pushover_token_variable }} against its application's own page at
+      pushover.net and vault_pushover_user_key against the account dashboard; a
+      token regenerated
       in the console has to be re-authored in vault. The services in this run
       already converged. Values are not shown.
   no_log: true
