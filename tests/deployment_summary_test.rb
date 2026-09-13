@@ -140,9 +140,12 @@ CURRENT_IMAGES = {
 }.freeze
 
 # A Renovate batch in miniature, sized so both halves overrun Pushover's limits
-# by construction: three service names of 120 characters put the headline past
-# 250, and forty change lines of about 140 put the body past 1024.
-LONG_NAMES = (1..40).map { |index| format("service-%02d-%s", index, "x" * 109) }
+# by construction. The headline is three 77-character names plus "+37", which is
+# 253 characters: past 250, but inside the five characters of leeway Jinja's
+# truncate grants by default, so the row also proves that leeway is off. Forty
+# change lines of about 90 characters put the body past 1024.
+LONG_NAMES = (1..40).map { |index| format("service-%02d-%s", index, "x" * 66) }
+LONG_HEADLINE = "NAS deployed: #{LONG_NAMES.first(3).join(', ')} +37"
 LONG_PREVIOUS = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:1.0.0#{DIGEST_A}" }] }
 LONG_CURRENT = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:2.0.0#{DIGEST_B}" }] }
 
@@ -259,7 +262,7 @@ with_controller_repository do |directory, repository, previous, current|
   long_form = long_requests.first || {}
   expected_lines = LONG_NAMES.map { |name| "- #{name} 1.0.0 → 2.0.0" }.join("\n")
   check(failures, long_requests.length == 1 && expected_lines.length > 1024 &&
-                  LONG_NAMES.first(3).join(", ").length > 250,
+                  LONG_HEADLINE.length.between?(251, 255),
         "the overlong row must actually overrun both limits to prove anything")
   check(failures, long_form["title"].to_s.length.between?(1, 250) &&
                   long_form["message"].to_s.length.between?(1, 1024),
