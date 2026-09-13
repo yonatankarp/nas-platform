@@ -25,6 +25,16 @@
 # facility they are not meant to have. The presence path only ever runs where it
 # cannot be exercised before merge, which is why the absence path is the one
 # proved by running.
+#
+# FIVE TASKS HERE ALSO RUN FROM verify.yml (#610), and they are the reads: the
+# client discovery, the absence report, and the probe of the HTTPS front with
+# its assertion. They carry platform_verify_vaultwarden, so the certificate and
+# the front are proved whenever verification runs rather than only at converge
+# -- a certificate whose renewal broke is invisible to every loopback probe.
+# Nothing that writes carries the tag: verify.yml lists this role under
+# [never], so an untagged task, the placement above all, cannot run from it.
+# The Serve configuration read is untagged too, because the probe needs none of
+# what it resolves: using the front is the proof that it is placed.
 
 # DISCOVERED RATHER THAN ASSUMED, and the resolved absolute path is what every
 # task below invokes. /usr/local/bin/tailscale is on the NAS's default PATH, so
@@ -34,6 +44,7 @@
 # accidental. roles/vaultwarden/defaults/main.yml carries the candidate list, the
 # measurement behind it and the override.
 - name: Locate the Tailscale client on this host
+  tags: [platform_verify_vaultwarden]
   ansible.builtin.stat:
     path: "{{ item }}"
   loop: "{{ vaultwarden_tailscale_binary_candidates }}"
@@ -48,6 +59,7 @@
 # the whole discovery, including the loop above, which is why its results are
 # read through a default rather than directly.
 - name: Resolve the Tailscale client this host holds
+  tags: [platform_verify_vaultwarden]
   ansible.builtin.set_fact:
     vaultwarden_tailscale_path: >-
       {{ vaultwarden_tailscale_binary
@@ -58,14 +70,15 @@
                 | map(attribute='stat.path') | list) + ['']) | first }}
 
 - name: Report the tailnet HTTPS front this host cannot hold
+  tags: [platform_verify_vaultwarden]
   ansible.builtin.debug:
     msg: >-
       No Tailscale client was found at
       {{ vaultwarden_tailscale_binary_candidates | join(', ')
          | default('any path, because this run was given no candidates at all',
                    true) }}, so this host
-      places no HTTPS front in front of Vaultwarden and nothing here fails for
-      it. An empty candidate list is a lane asking for this path on purpose:
+      places no HTTPS front in front of Vaultwarden, has none to verify, and
+      nothing here fails for it. An empty candidate list is a lane asking for this path on purpose:
       tests/mac/lib.sh passes one, because the first default candidate is where
       Homebrew installs the Tailscale CLI and a disposable sandbox must not
       reach an operator's real tailnet. Only the NAS runs Tailscale; the integration container, the Mac
@@ -330,7 +343,8 @@
     # Any status accepted, so the assertion below is what fails and can say
     # which outcome differed. `until` rather than a single read because the node
     # provisions its certificate on first use, which is not instant.
-    - name: Read Vaultwarden over the tailnet HTTPS front
+    - name: Verify Vaultwarden over the tailnet HTTPS front
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.uri:
         url: "{{ vaultwarden_domain }}/alive"
         method: GET
@@ -344,19 +358,30 @@
       check_mode: false
       when: not ansible_check_mode
 
-    - name: Require Vaultwarden reachable over the tailnet HTTPS front
+    # The message names only terms defined on every path that reaches it,
+    # site.yml and verify.yml alike: verify.yml does not read the Serve
+    # configuration, so it cannot claim the front is placed, only that it
+    # should be.
+    - name: Require Vaultwarden verified over the tailnet HTTPS front
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
         that:
           - vaultwarden_serve_reachability.status | default(0) | int == 200
         fail_msg: >-
-          Tailscale Serve fronts http://127.0.0.1:{{ vaultwarden_port }} on
-          {{ vaultwarden_domain }}, but {{ vaultwarden_domain }}/alive answered
-          {{ vaultwarden_serve_reachability.status | default(0) | int }} rather
-          than 200. The usual cause is the one setting nothing in this
+          Tailscale Serve should front http://127.0.0.1:{{ vaultwarden_port }}
+          on {{ vaultwarden_domain }}, but {{ vaultwarden_domain }}/alive
+          answered {{ vaultwarden_serve_reachability.status | default(0) | int }}
+          rather than 200 ({{ vaultwarden_serve_reachability.msg | default('no
+          reading', true) }}). From site.yml the front has just been read or
+          placed; from verify.yml nothing was placed, so a front that was
+          removed by hand also fails here and the next converge restores it.
+          The usual cause is the one setting nothing in this
           repository can read: HTTPS certificates must be ENABLED FOR THE
           TAILNET in the Tailscale admin console, under DNS. Serve accepts the
           configuration whether or not they are, so the front is placed and
-          nothing terminates TLS on it. Until that is on, no Bitwarden client
+          nothing terminates TLS on it. A certificate that has EXPIRED because
+          renewal stopped fails the same way, and this is the only check that
+          sees it. Until either is fixed, no Bitwarden client
           will talk to this server -- the browser crypto requires a secure
           context, which is the whole reason this task exists.
         success_msg: >-

@@ -146,7 +146,7 @@ end
 # One case: run the shipped stage and report what it did.
 def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
               binary: :stub, check_mode: false, alive: true, deny: "",
-              gather: false, serve_tasks: SERVE_TASKS)
+              gather: false, tags: nil, serve_tasks: SERVE_TASKS)
   stub_server = AliveStub.new(answer: alive)
   Dir.mktmpdir("nas-platform-vaultwarden-serve-") do |directory|
     log = File.join(directory, "mutations.log")
@@ -174,10 +174,15 @@ def run_serve(state:, public_host: NODE_NAME, node_key: NODE_NAME, gate: true,
         "platform_readiness_retries" => 1,
         "platform_readiness_delay" => 0
       },
-      "tasks" => [{ "ansible.builtin.include_tasks" => serve_tasks }]
+      # `always` on the include, so a tag-selected case still reads the file and
+      # the selection is made by the stage's own task tags. A dynamic include's
+      # tags reach only the include itself, never the tasks it loads, so this
+      # changes nothing about which of them run.
+      "tasks" => [{ "ansible.builtin.include_tasks" => serve_tasks, "tags" => ["always"] }]
     }]), mode: "w", perm: 0o600)
     arguments = ["ansible-playbook", "-i", "localhost,", "-c", "local", playbook]
     arguments += ["--check"] if check_mode
+    arguments += ["--tags", tags] if tags
     stdout, stderr, status = Open3.capture3(
       { "ANSIBLE_NOCOLOR" => "1", "TS_STATE" => state.to_s, "TS_KEY" => node_key,
         "TS_DENY" => deny.to_s, "TS_LOG" => log },
@@ -195,6 +200,7 @@ end
 # than a count, because "it placed a front" and "it placed the RIGHT front" are
 # different claims and only the argv carries the second.
 PLACEMENT = "MUTATE serve --bg --yes #{SERVE_PORT}"
+VERIFY_TAG = "platform_verify_vaultwarden"
 CASES = [
   { "name" => "already_fronted",
     "why" => "the declared front is in place, so the stage must place nothing: " \
@@ -305,7 +311,34 @@ CASES = [
              "thing no check in this repository can read -- so the front is " \
              "proved by using it, and the refusal names the setting",
     "run" => { state: :fronted, alive: false }, "ok" => false, "mutations" => [],
-    "says" => "ENABLED FOR THE TAILNET" }
+    "says" => "ENABLED FOR THE TAILNET" },
+  # THE verify.yml SELECTION (#610). verify.yml lists this role under [never],
+  # so --tags platform_verify_vaultwarden is exactly what reaches this stage
+  # there. These rows run the stage under that selection.
+  { "name" => "verify_unreachable_front",
+    "why" => "the monitor itself: under verification the probe of the HTTPS " \
+             "front must run and a non-200 must fail. It is the failing stub on " \
+             "purpose, because a tag selection that selected nothing also exits 0",
+    "run" => { state: :fronted, alive: false, tags: VERIFY_TAG }, "ok" => false,
+    "mutations" => [], "says" => "ENABLED FOR THE TAILNET" },
+  { "name" => "verify_places_nothing",
+    "why" => "verification must never write: a host whose Serve configuration " \
+             "differs gets no placement from verify.yml, only the probe, which " \
+             "here answers 200",
+    "run" => { state: :drifted, tags: VERIFY_TAG }, "ok" => true, "mutations" => [] },
+  { "name" => "verify_binary_absent",
+    "why" => "the absence path again, under verification. The Mac lane runs " \
+             "verify.yml with this tag and an empty candidate list, so the " \
+             "discovery the probe depends on must be selected too, or the " \
+             "report meets an undefined vaultwarden_tailscale_path",
+    "run" => { state: :fronted, binary: :absent, tags: VERIFY_TAG }, "ok" => true,
+    "mutations" => [],
+    "says" => "No Tailscale client was found at any path, because this run was given no candidates" },
+  { "name" => "verify_check_mode",
+    "why" => "a review under verification probes nothing and fails nothing, " \
+             "the same as a review of the converge",
+    "run" => { state: :fronted, alive: false, tags: VERIFY_TAG, check_mode: true },
+    "ok" => true, "mutations" => [] }
 ].freeze
 
 def case_problems(row, serve_tasks: SERVE_TASKS)
@@ -382,7 +415,23 @@ MUTATIONS = [
   { "name" => "the unreachable front stops being refused",
     "from" => "          - vaultwarden_serve_reachability.status | default(0) | int == 200\n",
     "to" => "          - true\n",
-    "breaks" => %w[unreachable_front] }
+    "breaks" => %w[unreachable_front] },
+  # The verify.yml selection, planted in all three ways it can be lost.
+  { "name" => "the tailnet assertion is no longer selected by verification",
+    "from" => "    - name: Require Vaultwarden verified over the tailnet HTTPS front\n" \
+              "      tags: [platform_verify_vaultwarden]\n",
+    "to" => "    - name: Require Vaultwarden verified over the tailnet HTTPS front\n",
+    "breaks" => %w[verify_unreachable_front] },
+  { "name" => "the client discovery is no longer selected by verification",
+    "from" => "- name: Resolve the Tailscale client this host holds\n" \
+              "  tags: [platform_verify_vaultwarden]\n",
+    "to" => "- name: Resolve the Tailscale client this host holds\n",
+    "breaks" => %w[verify_binary_absent verify_places_nothing] },
+  { "name" => "the placement becomes reachable from verification",
+    "from" => "    - name: Place the Tailscale Serve front for Vaultwarden\n",
+    "to" => "    - name: Place the Tailscale Serve front for Vaultwarden\n" \
+            "      tags: [platform_verify_vaultwarden]\n",
+    "breaks" => %w[verify_places_nothing] }
 ].freeze
 
 def self_test_problems
@@ -415,8 +464,8 @@ end
 failures = []
 # A floor under the roster, because every list here is walked rather than
 # counted: a CASES that emptied would report success having run nothing.
-check_floor(failures, CASES.length, 15, "Vaultwarden Serve cases")
-check_floor(failures, MUTATIONS.length, 8, "Vaultwarden Serve plants")
+check_floor(failures, CASES.length, 19, "Vaultwarden Serve cases")
+check_floor(failures, MUTATIONS.length, 11, "Vaultwarden Serve plants")
 check(failures, File.file?(SERVE_TASKS),
       "roles/vaultwarden/tasks/serve.yml must exist for this check to have a subject")
 
