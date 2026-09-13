@@ -92,7 +92,7 @@ render_group_contract() {
     DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     ALERT_RELAY_TOKEN=contract-relay-token ALERT_RELAY_PORT="$relay_probe_port" \
-    PUSHOVER_API_URL=http://127.0.0.1:1/1/messages.json \
+    PUSHOVER_API_URL=http://127.0.0.1:1/1/messages.json ALERT_RELAY_LINK_BASE=http://127.0.0.1:38080 \
     PUSHOVER_TOKEN=contract-pushover-token PUSHOVER_USER_KEY=contract-pushover-user-key \
     ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
     ALERT_DAILY_GLOBAL_CEILING=200 \

@@ -651,7 +651,7 @@ publisher = vault.fetch("vault_ntfy_dozzle_token")
 end
 
 if MODE == "notify"
-  pushover_token = vault.fetch("vault_pushover_alerts_token")
+  pushover_token = vault.fetch("vault_pushover_containers_token")
   pushover_user_key = vault.fetch("vault_pushover_user_key")
   image = deployed_ntfy_image
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
@@ -664,7 +664,7 @@ if MODE == "notify"
   # is simply lost and every assertion below would fail for the wrong reason.
   with_pushover_recorder(pushover_token, pushover_user_key) do |captured|
     begin
-      _out, _error, health_status = Open3.capture3(
+      health_out, _error, health_status = Open3.capture3(
         "docker", "run", "-d", "--name", health_fixture,
         "--health-cmd", "test -f /tmp/healthy", "--health-interval", "1s",
         "--health-timeout", "1s", "--health-retries", "1",
@@ -686,6 +686,13 @@ if MODE == "notify"
         unhealthy_form["message"].to_s.start_with?("<b>Host:</b> ") &&
         unhealthy_form["message"].to_s.end_with?(expected_unhealthy_tail) &&
         unhealthy_form["priority"] == "1" && unhealthy_form["html"] == "1"
+      # The tap-through link opens this container's page in Dozzle, whose route
+      # is keyed on the 12-character short id Docker printed for the fixture,
+      # and the event time travels as Unix seconds.
+      fail_contract("unhealthy notification does not link its container in Dozzle") unless
+        unhealthy_form["url"].to_s.match?(%r{\Ahttps?://[^/?#@]+/container/#{Regexp.escape(health_out.strip[0, 12])}\z}) &&
+        unhealthy_form["url_title"] == "Open in Dozzle" &&
+        unhealthy_form["timestamp"].to_s.match?(/\A[1-9][0-9]{9}\z/)
       # Pushover authenticates by form field, so this is the one assertion that
       # says the deployed relay is holding the credentials the vault declares --
       # recorded as a verdict at capture time, never as the values.

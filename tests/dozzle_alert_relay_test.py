@@ -33,6 +33,10 @@ RELAY_TOKEN = "relay-secret-that-must-not-leak"
 PUSHOVER_TOKEN = "pushover-app-secret-that-must-not-leak"
 PUSHOVER_USER_KEY = "pushover-user-secret-that-must-not-leak"
 CONTAINER_ID = "a" * 64
+# Dozzle's address as roles/dozzle renders it, which the relay turns into a
+# tap-through link. A name rather than 127.0.0.1 so a relay that substituted its
+# own host would be visible.
+LINK_BASE = "http://nas.tailnet.example:8080"
 # The ceilings these cases run against. Deliberately not the deployment's
 # 10/25/200: a case that trips a ceiling has to publish one message per unit of
 # allowance first, and a relay that ignored its configuration and kept a literal
@@ -216,6 +220,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             "ALERT_RELAY_PORT": str(DEPLOYED_PORT),
             "PUSHOVER_API_URL":
                 f"http://127.0.0.1:{self.pushover.server_port}/1/messages.json",
+            "ALERT_RELAY_LINK_BASE": LINK_BASE,
             "PUSHOVER_TOKEN": PUSHOVER_TOKEN,
             "PUSHOVER_USER_KEY": PUSHOVER_USER_KEY,
             "ALERT_STATE_PATH": str(self.state_path),
@@ -603,6 +608,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
                                    "<b>Status:</b> unhealthy",
                         "html": "1",
                         "priority": "1",
+                        # The container's own page in Dozzle, by the short id
+                        # the page's store is keyed on, and the moment Docker
+                        # reported the event (2026-08-15T01:22:13Z) as Unix
+                        # seconds, which is the form Pushover reads.
+                        "url": f"{LINK_BASE}/container/{CONTAINER_ID}",
+                        "url_title": "Open in Dozzle",
+                        "timestamp": "1786756933",
                     },
                 }
             ],
@@ -791,6 +803,95 @@ class DozzleAlertRelayTest(unittest.TestCase):
                         }
                     )
 
+    def test_config_requires_a_bounded_link_origin(self):
+        """The link base is refused, never repaired, and never long enough to lose an alert.
+
+        A url over Pushover's 512 characters is a 4xx and a lost alert, so the
+        bound lives here at start-up rather than as a cut at render time: the
+        longest base accepted plus the route and the longest id the envelope
+        admits must still fit.
+        """
+        relay = self.relay_module
+        self.assertEqual(
+            relay.Config.from_mapping(self.environment()).alert_relay_link_base, LINK_BASE
+        )
+        # A trailing slash is the same origin, not a path, and must not double up.
+        self.assertEqual(
+            relay.Config.from_mapping(
+                self.environment(ALERT_RELAY_LINK_BASE=LINK_BASE + "/")
+            ).alert_relay_link_base,
+            LINK_BASE,
+        )
+        longest = "http://" + "h" * (relay.MAX_LINK_BASE_CHARACTERS - len("http://"))
+        accepted = relay.Config.from_mapping(self.environment(ALERT_RELAY_LINK_BASE=longest))
+        self.assertEqual(accepted.alert_relay_link_base, longest)
+        self.assertLessEqual(
+            len(
+                relay.render_notification(
+                    self.envelope(containerId="f" * 64), accepted.alert_relay_link_base
+                )["url"]
+            ),
+            relay.MAX_URL_CHARACTERS,
+        )
+
+        for label, value in (
+            ("missing", None),
+            ("empty", ""),
+            ("wrong scheme", "ftp://nas.tailnet.example:8080"),
+            ("no host", "http://:8080"),
+            ("not a port", "http://nas.tailnet.example:http"),
+            ("userinfo", "http://admin:secret@nas.tailnet.example:8080"),
+            ("path", "http://nas.tailnet.example:8080/dozzle"),
+            ("query", "http://nas.tailnet.example:8080?x=1"),
+            ("empty query", "http://nas.tailnet.example:8080?"),
+            ("fragment", "http://nas.tailnet.example:8080#x"),
+            ("control character", LINK_BASE + "\n"),
+            ("one character too long", longest + "h"),
+        ):
+            with self.subTest(label=label):
+                mutated = self.environment(ALERT_RELAY_LINK_BASE=value)
+                with self.assertRaises(relay.ConfigurationError):
+                    relay.Config.from_mapping(mutated)
+
+    def test_the_link_and_event_time_fit_what_pushover_accepts(self):
+        """Every rule links its container and carries its event time.
+
+        `url_title` has a cap of its own, 100, and `timestamp` is Unix seconds,
+        so an ISO string or a negative number is a refused message. The
+        envelope admits a timestamp before 1970 and Docker never sends one; it
+        is left off rather than sent for Pushover to refuse.
+        """
+        relay = self.relay_module
+        for rule, changes in (
+            ("Unhealthy", {}),
+            ("OOM", {}),
+            ("Unexpected exit", {"exitCode": "23"}),
+            ("Recovery", {}),
+        ):
+            with self.subTest(rule=rule):
+                rendered = relay.render_notification(
+                    self.envelope(rule, containerId="0123456789ab", **changes), LINK_BASE
+                )
+                self.assertEqual(rendered["url"], f"{LINK_BASE}/container/0123456789ab")
+                self.assertEqual(rendered["url_title"], "Open in Dozzle")
+                self.assertLessEqual(
+                    len(rendered["url_title"]), relay.MAX_URL_TITLE_CHARACTERS
+                )
+                self.assertEqual(rendered["timestamp"], 1786756933)
+
+        fractional = relay.render_notification(
+            self.envelope(timestamp="2026-08-15T01:22:13.999999999Z"), LINK_BASE
+        )
+        self.assertEqual(fractional["timestamp"], 1786756933)
+        epoch = relay.render_notification(
+            self.envelope(timestamp="1970-01-01T00:00:00Z"), LINK_BASE
+        )
+        self.assertEqual(epoch["timestamp"], 0)
+        before_epoch = relay.render_notification(
+            self.envelope(timestamp="1969-12-31T23:59:59Z"), LINK_BASE
+        )
+        self.assertNotIn("timestamp", before_epoch)
+
     def test_config_requires_both_pushover_credentials(self):
         for name in ("PUSHOVER_TOKEN", "PUSHOVER_USER_KEY"):
             for label, value in (("missing", None), ("empty", "")):
@@ -973,6 +1074,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 # A recovery is a record, not an emergency: a badge and no
                 # sound, which is what the second ntfy topic used to express.
                 "priority": "-1",
+                "url": f"{LINK_BASE}/container/{'b' * 64}",
+                "url_title": "Open in Dozzle",
+                "timestamp": "1786756934",
             },
         )
         self.assertEqual(
@@ -1807,7 +1911,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
         def drive(index):
             notification = self.relay_module.render_notification(
-                self.envelope("Unhealthy", container=f"service-{index}")
+                self.envelope("Unhealthy", container=f"service-{index}"), LINK_BASE
             )
             try:
                 self.relay_module.publish(self.config, notification)
@@ -2396,7 +2500,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 event = dict(
                     self.envelope(rule, container=hostile, host=hostile, **changes)
                 )
-                rendered = self.relay_module.render_notification(event)
+                rendered = self.relay_module.render_notification(event, LINK_BASE)
                 self.assertLessEqual(len(rendered["message"]), cap)
                 self.assertNotIn("&#x2", rendered["message"].removesuffix("&#x27;")[-5:])
 
@@ -2441,7 +2545,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         ):
             with self.subTest(rule=rule):
                 title = self.relay_module.render_notification(
-                    self.envelope(rule, container=longest, host=longest, **changes)
+                    self.envelope(rule, container=longest, host=longest, **changes),
+                    LINK_BASE,
                 )["title"]
                 self.assertLessEqual(len(title), cap)
                 # Bounded, not emptied: the name still identifies the container.
@@ -2567,6 +2672,7 @@ class RelayProcessSignalTest(unittest.TestCase):
                 # address keeps a misdirected publish from reaching anything,
                 # and it is emphatically not api.pushover.net.
                 "PUSHOVER_API_URL": "http://127.0.0.1:9/1/messages.json",
+                "ALERT_RELAY_LINK_BASE": LINK_BASE,
                 "PUSHOVER_TOKEN": PUSHOVER_TOKEN,
                 "PUSHOVER_USER_KEY": PUSHOVER_USER_KEY,
                 "ALERT_DAILY_CONTAINER_CEILING": str(CONTAINER_CEILING),

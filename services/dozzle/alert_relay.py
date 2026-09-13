@@ -157,6 +157,28 @@ MAX_MESSAGE_CHARACTERS = 1024
 MAX_TITLE_CHARACTERS = 250
 MAX_TITLE_CONTAINER_CHARACTERS = 128
 
+# The tap-through link to the container's page in Dozzle, and Pushover's caps on
+# it: `url` at most 512 characters, `url_title` at most 100. Over either is a
+# 4xx and a lost alert, the same as an over-long message, so the link is bounded
+# by construction rather than cut: the base is refused at start-up when it is
+# longer than MAX_LINK_BASE_CHARACTERS, which leaves room for the route and the
+# longest container id the envelope admits.
+#
+# The route is Dozzle's own, read from the pinned image's source (v11.0.1):
+# assets/pages/container/[id].vue is the file-based route /container/:id, and
+# the page looks the id up in a store keyed by container.id. That id is the
+# 12-character short id -- internal/docker/client.go builds every container
+# with c.ID[:12], and internal/notification/types.go hands that same field to
+# the dispatcher template as .Container.ID -- so the envelope's containerId is
+# exactly the key the page resolves.
+MAX_URL_CHARACTERS = 512
+CONTAINER_ROUTE = "/container/"
+MAX_LINK_BASE_CHARACTERS = MAX_URL_CHARACTERS - len(CONTAINER_ROUTE) - 64
+URL_TITLE = "Open in Dozzle"
+MAX_URL_TITLE_CHARACTERS = 100
+# parse_timestamp counts from 0001-01-01; Pushover's `timestamp` is Unix seconds.
+UNIX_EPOCH_SECONDS = (datetime(1970, 1, 1).toordinal() - 1) * 86_400
+
 # How much of an upstream diagnostic reaches the log. Bounded because the text
 # is the far end's rather than ours, because the stack caps this log at 10m x 3
 # and a large error body would spend that, and because the clause an operator
@@ -200,6 +222,7 @@ class Config:
         "alert_relay_token",
         "alert_relay_port",
         "pushover_api_url",
+        "alert_relay_link_base",
         "pushover_token",
         "pushover_user_key",
         "alert_state_path",
@@ -219,8 +242,10 @@ class Config:
         container_ceiling,
         oom_container_ceiling,
         global_ceiling,
+        link_base,
     ):
         self.alert_relay_token = relay_token
+        self.alert_relay_link_base = link_base
         self.alert_relay_port = relay_port
         self.pushover_api_url = api_url
         self.pushover_token = pushover_token
@@ -236,6 +261,7 @@ class Config:
             "ALERT_RELAY_TOKEN",
             "ALERT_RELAY_PORT",
             "PUSHOVER_API_URL",
+            "ALERT_RELAY_LINK_BASE",
             "PUSHOVER_TOKEN",
             "PUSHOVER_USER_KEY",
             "ALERT_STATE_PATH",
@@ -282,6 +308,39 @@ class Config:
             (parsed.scheme, parsed.netloc, parsed.path, "", "")
         )
 
+        # The tap-through link's base: Dozzle's own address, rendered by
+        # roles/dozzle from platform_public_host and dozzle_port. That host is the
+        # tailnet/LAN name, so the link opens only on a device that can reach the
+        # NAS -- a phone off the tailnet shows the alert and a link that does not
+        # load, which is the honest limit rather than a defect. Refused rather
+        # than repaired, the way PUSHOVER_API_URL is: no userinfo, no path (this
+        # deployment sets no DOZZLE_BASE, so Dozzle serves from the root), no
+        # query or fragment, and a length that keeps the finished url inside
+        # Pushover's cap whatever id is appended.
+        link = urllib.parse.urlsplit(resolved["ALERT_RELAY_LINK_BASE"])
+        try:
+            link_port_valid = link.port is None or link.port > 0
+        except ValueError:
+            link_port_valid = False
+        if (
+            link.scheme not in {"http", "https"}
+            or not link.hostname
+            or not link_port_valid
+            or link.username is not None
+            or link.password is not None
+            or link.path not in {"", "/"}
+            or link.query
+            or link.fragment
+            or resolved["ALERT_RELAY_LINK_BASE"].endswith("?")
+            or resolved["ALERT_RELAY_LINK_BASE"].endswith("#")
+            or len(resolved["ALERT_RELAY_LINK_BASE"]) > MAX_LINK_BASE_CHARACTERS
+        ):
+            raise ConfigurationError(
+                "ALERT_RELAY_LINK_BASE must be an HTTP(S) origin of at most "
+                f"{MAX_LINK_BASE_CHARACTERS} characters"
+            )
+        link_base = urllib.parse.urlunsplit((link.scheme, link.netloc, "", "", ""))
+
         # Deliberately no shape rule on either credential. Both are issued by
         # pushover.net and this platform cannot vouch for their form; the same
         # argument filter_plugins/vault_credential_schema.py records for the
@@ -326,6 +385,7 @@ class Config:
             container_ceiling,
             oom_container_ceiling,
             global_ceiling,
+            link_base,
         )
 
 
@@ -480,7 +540,7 @@ def html_escape(value, maximum=128, escaped_maximum=MAX_ESCAPED_FIELD_CHARACTERS
     return escaped
 
 
-def render_notification(event):
+def render_notification(event, link_base):
     """Render one event as Pushover form fields.
 
     Priorities, and why each. OOM is 2: it is the acknowledge semantic this
@@ -500,6 +560,15 @@ def render_notification(event):
     Only `message` is parsed as HTML under `html=1`. `title` is plain text on
     Pushover's side, so the container name goes into it raw and deliberately --
     escaping it would show `&amp;` to a human reading a notification title.
+
+    `url` opens the container's page in Dozzle (see CONTAINER_ROUTE for the
+    route and why the id fits it) and `timestamp` is when Docker reported the
+    event rather than when Pushover received it, so a delayed delivery still
+    reads at the right time. The containerId is validated hex and the base is
+    validated in Config, so neither needs quoting and the url cannot exceed
+    Pushover's cap. A timestamp before 1970 -- the envelope admits one, Docker
+    never sends one -- is left off rather than sent negative for Pushover to
+    refuse.
     """
     rule = event["rule"]
     host = html_escape(event["host"])
@@ -528,9 +597,18 @@ def render_notification(event):
         "Unhealthy": 1,
         "Recovery": -1,
     }[rule]
-    return emergency_fields(
-        {"title": title, "message": "\n".join(lines), "html": "1", "priority": priority}
-    )
+    fields = {
+        "title": title,
+        "message": "\n".join(lines),
+        "html": "1",
+        "priority": priority,
+        "url": f"{link_base}{CONTAINER_ROUTE}{event['containerId']}",
+        "url_title": URL_TITLE,
+    }
+    unix_seconds = parse_timestamp(event["timestamp"]) // 1_000_000_000 - UNIX_EPOCH_SECONDS
+    if unix_seconds >= 0:
+        fields["timestamp"] = unix_seconds
+    return emergency_fields(fields)
 
 
 def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
@@ -1461,7 +1539,9 @@ def process_event(config, event, floor):
             decision = charge_budget(budget, identity, event["rule"], config)
             charged = decision[1]
             if decision[0] == "publish":
-                notification = render_notification(event)
+                notification = render_notification(
+                    event, config.alert_relay_link_base
+                )
             elif decision[0] == "notice":
                 notification = render_ceiling_notice(
                     event, decision[2], decision[3], charged["day"], decision[4]

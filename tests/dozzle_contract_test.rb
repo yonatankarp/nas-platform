@@ -591,10 +591,44 @@ STACK_ROWS = [
     edit: lambda { |root|
       edit_text(root, "roles/dozzle/templates/env.j2") do |source|
         source.sub("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}",
-                   "PUSHOVER_USER_KEY={{ vault_pushover_alerts_token }}")
+                   "PUSHOVER_USER_KEY={{ vault_pushover_containers_token }}")
       end
     },
     expects: "the relay secret is not a credential of its own"
+  },
+  {
+    # The Containers application, not the Alerts one Beszel sends with: the
+    # two are separate channels on the phone, and a relay sending with the
+    # Alerts token files container churn under host problems.
+    name: "a relay sending with the Alerts application token",
+    argument: "roles/dozzle/templates/env.j2",
+    edit: lambda { |root|
+      edit_text(root, "roles/dozzle/templates/env.j2") do |source|
+        source.sub("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}",
+                   "PUSHOVER_TOKEN={{ vault_pushover_alerts_token }}")
+      end
+    },
+    expects: "the relay secret is not a credential of its own"
+  },
+  {
+    name: "an alert link base written as a literal host",
+    argument: "roles/dozzle/templates/env.j2",
+    edit: lambda { |root|
+      edit_text(root, "roles/dozzle/templates/env.j2") do |source|
+        source.sub("ALERT_RELAY_LINK_BASE={{ dozzle_alert_relay_link_base }}",
+                   "ALERT_RELAY_LINK_BASE=http://nas.local:8080")
+      end
+    },
+    expects: "the alert link is not built from the public host and Dozzle port"
+  },
+  {
+    name: "a relay handed no alert link base",
+    argument: "services/dozzle/compose.yml",
+    edit: lambda { |root|
+      edit_yaml_text(root, "services/dozzle/compose.yml",
+                     "      ALERT_RELAY_LINK_BASE: ${ALERT_RELAY_LINK_BASE:?}\n", "")
+    },
+    expects: "alert relay environment differs"
   },
   {
     name: "relay state mounted read-only", argument: "services/dozzle/compose.yml",
@@ -1630,6 +1664,7 @@ def recorder_failures
       "ALERT_RELAY_TOKEN" => relay_token,
       "ALERT_RELAY_PORT" => relay_port.to_s,
       "PUSHOVER_API_URL" => "http://127.0.0.1:#{recorder_port}/1/messages.json",
+      "ALERT_RELAY_LINK_BASE" => "http://127.0.0.1:38080",
       "PUSHOVER_TOKEN" => pushover_token,
       "PUSHOVER_USER_KEY" => pushover_user_key,
       "ALERT_DAILY_CONTAINER_CEILING" => "10",
