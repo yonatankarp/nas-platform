@@ -817,7 +817,8 @@ DRIFT_TOKEN = "11111111-1111-4111-a111-111111111111"
 DRIFT_WEBHOOK =
   "https://sentinel-user:sentinel-password@example.invalid/hook?api_key=sentinel-query-key"
 MANAGED_ALERTS = { "Status" => [0, 0], "CPU" => [90, 10],
-                   "Memory" => [90, 10], "Disk" => [85, 10] }.freeze
+                   "Memory" => [90, 10], "Disk" => [85, 10],
+                   "Temperature" => [85, 15] }.freeze
 DELIVERED_MESSAGE = "This is a notification from Beszel."
 
 VAULT = {

@@ -31,6 +31,18 @@ beszel_alerts:
   - name: Disk
     value: 85
     min: 10
+  # Watches CPU, NVMe and cooling, not the SATA bay disks: the hub's temperature
+  # panel on 2026-09-13 showed coretemp package/cores at ~64°C with spikes to
+  # ~85°C under load, NVMe at ~51-54°C, acpitz at ~28°C, and no sensor for the
+  # bay disks at all (SMART, #607, is what would cover those). In 0.19.0 an alert
+  # with min above 1 fires only when the hottest sensor right now is above value
+  # AND the hottest sensor's own mean over min minutes is above it, strictly
+  # (internal/alerts/alerts_system.go:89-131,325-356). No PRIMARY_SENSOR is set,
+  # so "hottest" is the max across sensors. A load spike to 85 is therefore not
+  # enough; fifteen minutes averaging above 85 is a cooling failure.
+  - name: Temperature
+    value: 85
+    min: 15
 
 # Shoutrrr URL. Built from the Pushover application token and user key in vault,
 # so the value Beszel stores is authored in one place rather than copied between
