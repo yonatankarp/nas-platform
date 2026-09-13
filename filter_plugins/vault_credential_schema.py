@@ -46,6 +46,7 @@ are reported for their own ticket.
 """
 
 import re
+from urllib.parse import urlsplit
 
 
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
@@ -130,6 +131,25 @@ PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS = ("example-pushover-media-token",
 PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
                                   "replace-with-pushover-user-key")
 
+# The two healthchecks.io ping URLs the poller reports to (#606, #610) belong to
+# a third-party account too, and the token in each path is the check's whole
+# authentication. The rule is presence and https and nothing narrower, for the
+# Pushover reason: healthchecks.io serves UUID paths under hc-ping.com, but also
+# slug paths and self-hosted or custom ping domains, and a host or path rule
+# guessed from one of them would refuse a real URL before every converge --
+# including every five-minute poller tick, which runs validate-vault.yml first --
+# with the fix locked inside the encrypted vault. The stand-ins in
+# vault.yml.example and templates/vault-plain.yml.j2 are not URLs, so this rule
+# is also what refuses them, and tests/managed_users_vault_test.rb proves it
+# through the role; a NOT_PLACEHOLDER clause here would never be the one that
+# fired. The excluded characters are what would let one value read as more than
+# one curl config directive. The poller's HEALTHCHECKS_URL_PATTERN is the same
+# literal, held by tests/policy_vault_test.rb, because drift would let this
+# contract accept a URL the poller ignores and the check alert on a healthy one.
+HTTPS_URL = re.compile(r'^https://[^\s"\\]+\Z')
+HEALTHCHECKS_PING_URL_KEYS = ("vault_healthchecks_poller_ping_url",
+                              "vault_healthchecks_verify_ping_url")
+
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
 # vault.yml.example that has to be rejected here rather than by the service that
 # receives it. The others fail somewhere: `tk_` and 29 zeros is not a token ntfy
@@ -212,6 +232,8 @@ CREDENTIAL_RULES = {
         (NONEMPTY, None),
         (NOT_PLACEHOLDER, PUSHOVER_USER_KEY_PLACEHOLDERS),
     ),
+    "vault_healthchecks_poller_ping_url": ((PATTERN, HTTPS_URL),),
+    "vault_healthchecks_verify_ping_url": ((PATTERN, HTTPS_URL),),
     "vault_beszel_superuser_email": ((PATTERN, EMAIL),),
     "vault_beszel_superuser_password": ((NONEMPTY, None),),
     "vault_beszel_app_user_email": ((PATTERN, EMAIL),),
@@ -325,6 +347,24 @@ DISTINCT_KEY_GROUPS = (
 )
 
 
+def healthchecks_check_identity(url):
+    """The check a healthchecks.io ping URL addresses, for telling two apart.
+
+    Scheme and host compare case-insensitively, trailing slashes and the
+    fragment address nothing, and the query is kept. Written byte for byte in
+    filter_plugins/vault_credential_schema.py and scripts/production_auto_deploy.py,
+    and tests/policy_vault_test.rb holds the two copies identical, so the vault
+    contract and the poller always agree on when two URLs are one check (#606).
+    """
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    return (parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"),
+            parts.query)
+
+
 def _text(value):
     """Coerce as Ansible's `match` and `search` tests do before comparing.
 
@@ -434,6 +474,17 @@ def vault_credential_errors(value):
         if len(distinct) != len(key_group):
             errors.append("vault credentials: "
                           f"{', '.join(key_group)} must all differ")
+
+    # The two ping URLs must name different checks, compared the way the checks
+    # resolve rather than as strings: `.../uuid` and `.../uuid/`, or hc-ping.com
+    # and HC-PING.com, are one check. One check for both signals would let every
+    # tick vouch for a verify that had stopped running (#606).
+    ping_urls = [value.get(key) for key in HEALTHCHECKS_PING_URL_KEYS]
+    if (all(isinstance(url, str) for url in ping_urls)
+            and healthchecks_check_identity(ping_urls[0])
+            == healthchecks_check_identity(ping_urls[1])):
+        errors.append("vault credentials: "
+                      f"{', '.join(HEALTHCHECKS_PING_URL_KEYS)} must address different checks")
     return errors
 
 

@@ -147,6 +147,16 @@ vault_pushover_deployments_token: example-pushover-deployments-token
 vault_pushover_media_token: example-pushover-media-token
 vault_pushover_user_key: example-pushover-user-key
 
+# The two healthchecks.io ping URLs belong to a third-party account too: one
+# check for the poller's five-minute tick (period 5 minutes, grace 15), one for
+# the hourly verify verdict (period 1 hour, grace 2). Copy each check's ping URL
+# from its page; it looks like https://hc-ping.com/<uuid>. The credential
+# contract checks only that each is an https URL and that the two differ, because
+# healthchecks.io also serves slug paths and custom ping domains that a narrower
+# rule would refuse. The stand-ins below are not URLs, so that rule refuses them.
+vault_healthchecks_poller_ping_url: example-healthchecks-poller-ping-url
+vault_healthchecks_verify_ping_url: example-healthchecks-verify-ping-url
+
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.
 vault_beszel_superuser_email: admin@example.invalid

@@ -22,5 +22,7 @@
   'curl_path': production_auto_deploy_tools['curl'],
   'tool_path': production_auto_deploy_tool_path,
   'ansible_locale': production_auto_deploy_locale,
-  'external_scheduler': production_auto_deploy_external_scheduler | bool
+  'external_scheduler': production_auto_deploy_external_scheduler | bool,
+  'healthchecks_poller_ping_url': vault_healthchecks_poller_ping_url,
+  'healthchecks_verify_ping_url': vault_healthchecks_verify_ping_url
 } | to_nice_json }}

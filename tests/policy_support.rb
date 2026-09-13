@@ -28,7 +28,10 @@ module PolicySupport
   # user key and four application tokens of an account at a third party, each
   # token pushed into whichever publishers use that application (Beszel, the
   # Dozzle relay and the ntfy role's deployment reports, the run summary, Seerr),
-  # so they are named here rather than under any one service.
+  # so they are named here rather than under any one service. The healthchecks.io
+  # ping URLs are the same kind with no service at all: the deployment poller
+  # reports to them, and it is installed by its own play rather than listed in
+  # the manifest.
   GLOBAL_VAULT_KEYS = %w[
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
@@ -37,6 +40,7 @@ module PolicySupport
     vault_pushover_alerts_token vault_pushover_containers_token
     vault_pushover_deployments_token vault_pushover_media_token
     vault_pushover_user_key
+    vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url
   ].freeze
   # The services that hold no credential at all, which is a designed property
   # here rather than an unfinished slice. See expectation_problems below for the

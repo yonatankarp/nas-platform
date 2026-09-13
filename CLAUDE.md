@@ -1057,7 +1057,9 @@ Three things about it generalise:
 Safe to commit: Compose definitions, pinned digests, roles, the **encrypted**
 vault, documentation. Never commit: the vault password, any decrypted vault
 copy, rendered `.env` files, plaintext credentials, or application data. At
-runtime plaintext lives in service `.env` files, Dozzle's whole data directory
+runtime plaintext lives in service `.env` files, the deployment poller's
+`deployer.json` (since #606 it carries the two healthchecks.io ping URLs, whose
+path tokens are those checks' whole authentication), Dozzle's whole data directory
 (its users file, plus the dispatcher record whose `Authorization: Bearer`
 header the platform POSTs in), Beszel's private key, Seerr's mode-0644
 `settings.json` and the `settings.old.json` beside it, Bindery's whole

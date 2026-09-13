@@ -73,6 +73,8 @@ argument_specs:
       vault_pushover_deployments_token: {type: str, required: true}
       vault_pushover_media_token: {type: str, required: true}
       vault_pushover_user_key: {type: str, required: true}
+      vault_healthchecks_poller_ping_url: {type: str, required: true}
+      vault_healthchecks_verify_ping_url: {type: str, required: true}
       vault_paperless_admin_username: {type: str, required: true}
       vault_paperless_admin_password: {type: str, required: true}
       vault_paperless_admin_email: {type: str, required: true}

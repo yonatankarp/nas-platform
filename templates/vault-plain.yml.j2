@@ -93,6 +93,11 @@ vault_pushover_deployments_token: replace-with-pushover-deployments-token
 vault_pushover_media_token: replace-with-pushover-media-token
 vault_pushover_user_key: replace-with-pushover-user-key
 
+{# The healthchecks.io ping URLs are issued by a third-party account as well,
+   and the contract refuses these stand-ins for the same reason. #}
+vault_healthchecks_poller_ping_url: replace-with-healthchecks-poller-ping-url
+vault_healthchecks_verify_ping_url: replace-with-healthchecks-verify-ping-url
+
 vault_beszel_superuser_email: {{ beszel_superuser_email }}
 vault_beszel_superuser_password: {{ beszel_superuser_password }}
 vault_beszel_app_user_email: {{ beszel_app_user_email }}

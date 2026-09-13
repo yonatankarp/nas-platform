@@ -15,6 +15,19 @@ argument_specs:
         description: The deployer's own least-privilege write-only ntfy token.
         type: str
         required: true
+      vault_healthchecks_poller_ping_url:
+        description: >-
+          healthchecks.io ping URL the poller reports every --poll tick to, or
+          its /fail when the tick failed (#606). Secret: the token in the path
+          is the check's whole authentication.
+        type: str
+        required: true
+      vault_healthchecks_verify_ping_url:
+        description: >-
+          healthchecks.io ping URL each hourly --verify verdict is reported to
+          (#610). Secret for the same reason.
+        type: str
+        required: true
       ntfy_port:
         description: >-
           Port the poller reaches ntfy on. Required rather than defaulted
