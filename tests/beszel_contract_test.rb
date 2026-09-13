@@ -894,9 +894,30 @@ CALLBACK_HOST = "beszel-callback.example.invalid"
 DRIFT_TOKEN = "11111111-1111-4111-a111-111111111111"
 DRIFT_WEBHOOK =
   "https://sentinel-user:sentinel-password@example.invalid/hook?api_key=sentinel-query-key"
+# A pin, not a derivation, and on purpose. The runtime half reads beszel_alerts
+# out of the inspected tree, so if this fixture read it too, a threshold moved in
+# the defaults would move both sides at once and every row would still pass.
+# alert_pin_failures holds this literal against the defaults instead.
 MANAGED_ALERTS = { "Status" => [0, 0], "CPU" => [90, 10],
                    "Memory" => [90, 10], "Disk" => [85, 10],
                    "Temperature" => [85, 15] }.freeze
+
+# Compared over the union of both sides' names rather than by walking the pin.
+# If an alert is deleted from the defaults, the runtime half checks one alert
+# fewer, and the extra one this fixture still serves is never looked at. Walking
+# the pin would report no failure there either, so the deletion would pass.
+def alert_pin_failures(root = ROOT)
+  declared = YAML.safe_load_file(File.join(root, "roles/beszel/defaults/main.yml"))
+                 .fetch("beszel_alerts")
+                 .to_h { |alert| [alert.fetch("name"), [alert.fetch("value"), alert.fetch("min")]] }
+  (MANAGED_ALERTS.keys | declared.keys).filter_map do |name|
+    next if MANAGED_ALERTS[name] == declared[name]
+
+    "alert pin: #{name} is pinned at #{MANAGED_ALERTS[name].inspect} but " \
+      "roles/beszel/defaults/main.yml declares #{declared[name].inspect}"
+  end
+end
+
 DELIVERED_MESSAGE = "This is a notification from Beszel."
 
 VAULT = {
@@ -1204,6 +1225,15 @@ RUNTIME_ROWS = [
   { name: "a managed alert that is absent", mode: "verify",
     alerts: -> { converged_state.fetch(:alerts).reject { |a| a.fetch("name") == "Memory" } },
     expects: "managed Memory alert is absent" },
+  # The hub still serves the pin; only the inspected tree's defaults declare one
+  # alert more. A runtime half with its own hand copy of the alerts accepts this.
+  # It appends rather than editing a named entry so that a defaults edit deleting
+  # that entry cannot crash this row ahead of the alert pin's own diagnostic.
+  { name: "an alert the inspected defaults added", mode: "verify",
+    inspected_defaults: lambda { |document|
+      document.fetch("beszel_alerts") << { "name" => "Bandwidth", "value" => 100, "min" => 10 }
+    },
+    expects: "managed Bandwidth alert is absent" },
   { name: "managed alerts attached to the decoy system", mode: "verify",
     state: { systems: [{ "id" => "managed-system", "name" => SYSTEM_NAME,
                          "users" => ["app-user"] },
@@ -1426,6 +1456,10 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
     label = "runtime: #{row.fetch(:name)}"
     state = prepare_state(row)
     with_runtime_sandbox(state) do |paths|
+      if row[:inspected_defaults]
+        state[:inspected_root] = build_fixture_repository(File.join(paths.fetch(:sandbox), "inspected"))
+        mutate_yaml(state.fetch(:inspected_root), "roles/beszel/defaults/main.yml", &row[:inspected_defaults])
+      end
       with_http_fixture(lambda { |hub_port|
         state[:hub_port] = hub_port
         with_http_fixture(lambda { |ntfy_port|
@@ -2257,6 +2291,11 @@ RUNTIME_MUTATIONS = [
     from: 'fail_contract("managed #{name} alert differs") unless',
     to: "nil unless",
     rows: ["a drifted managed alert threshold"] },
+  { label: "the managed alerts' read of the inspected defaults",
+    from: %(YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "roles/beszel/defaults/main.yml"))\n) +
+          %(                     .fetch("beszel_alerts")),
+    to: %([{ "name" => "Temperature", "value" => 85, "min" => 15 }]),
+    rows: ["an alert the inspected defaults added"] },
   { label: "the decoy alert refusal",
     from: 'fail_contract("managed alerts were attached to the decoy system") unless',
     to: "nil unless",
@@ -2704,6 +2743,24 @@ if ARGV.include?("--self-test")
   end
   planted += wrapper_cases.length
 
+  # The two edits #608's adversarial check made to the real defaults. This file
+  # accepted both with rc=0 before the pin was checked against the defaults.
+  # Planted in a fixture copy, because `ROOT` is the checkout.
+  [["moving the Temperature threshold from 85 to 86",
+    "    value: 85\n    min: 15\n", "    value: 86\n    min: 15\n"],
+   ["deleting the Temperature alert",
+    "  - name: Temperature\n    value: 85\n    min: 15\n", ""]].each do |label, from, to|
+    Dir.mktmpdir("nas-platform-beszel-alert-pin.") do |raw|
+      root = build_fixture_repository(File.realpath(raw))
+      mutate_text(root, "roles/beszel/defaults/main.yml", from, to)
+      caught = alert_pin_failures(root)
+      mismatches << "#{label} in the role defaults was not caught by the alert pin alone: " \
+                    "#{caught.inspect}" unless
+        caught.length == 1 && caught.first.start_with?("alert pin: Temperature ")
+    end
+    planted += 1
+  end
+
   skipped.each { |note| warn "SKIP self-test plant: #{note}" }
   unless mismatches.empty?
     mismatches.each { |mismatch| warn "FAIL self-test: #{mismatch}" }
@@ -2714,7 +2771,7 @@ if ARGV.include?("--self-test")
   exit
 end
 
-failures = static_failures + missing_file_failures + fixtures_failures + runtime_failures +
+failures = alert_pin_failures + static_failures + missing_file_failures + fixtures_failures + runtime_failures +
            budget_failures + wrapper_failures + self_read_failures + stdin_failures +
            two_roots_failures + runtime_program_root_failures
 unless failures.empty?
