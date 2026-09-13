@@ -2115,42 +2115,54 @@ def main(argv=None) -> int:
         if mode == "converge":
             return converge(config, playbook_arguments)
         if mode == "verify":
-            # The verify check's pings (#610). A verdict pings every run, pass
-            # or fail, whatever note_verify_verdict decided to page: the check
-            # needs the heartbeat, not the change. A skip -- lock held, nothing
-            # deployed, the checkout not at the deployed revision -- pings
+            # The verify check's ping (#610), keyed only on what verify() hands
+            # back, so it survives any change to how verify() reaches its
+            # verdict. True pings plain and False pings /fail, every run,
+            # whatever note_verify_verdict decided to page: the check needs the
+            # heartbeat, not the change. None is a skip -- lock held, nothing
+            # deployed, the checkout not at the deployed revision -- and pings
             # nothing, so a verify that keeps skipping goes silent and alerts
-            # after the grace period, which is the state that must not hide.
+            # after the grace period, which is the state that must not hide. A
+            # raise leaves `passed` False: a run that could not verify is heard
+            # as a failure. ping_healthchecks never raises, so this `finally`
+            # changes no exception, return value or message.
+            passed = False
             try:
                 passed = verify(config)
             except OSError as error:
                 # Not a verdict: nothing was verified, so nothing is paged and
-                # the recorded verdict stands. It is still a run that could not
-                # verify, which the external check hears as a failure.
+                # the recorded verdict stands.
                 print(f"production auto-deploy: could not verify: {error}",
                       file=sys.stderr)
-                ping_healthchecks(config, config.healthchecks_verify_ping_url, True)
                 return 1
-            except Exception:
-                ping_healthchecks(config, config.healthchecks_verify_ping_url, True)
-                raise
-            if passed is not None:
-                ping_healthchecks(config, config.healthchecks_verify_ping_url,
-                                  passed is False)
+            finally:
+                if passed is not None:
+                    ping_healthchecks(config, config.healthchecks_verify_ping_url,
+                                      passed is False)
             if passed is False:
                 print("production auto-deploy: verification failed", file=sys.stderr)
                 return 1
             return 0
+        # The tick heartbeat (#606), sent after poll() has released the lock.
+        # None is healthy: nothing to deploy, a quarantined revision waiting for
+        # an operator, or the lock held by a deployment or a verify. True is a
+        # deployment. False is a failed one -- #327 and #559 failed inside
+        # deploy() on every tick, so every tick pings /fail and the check stays
+        # down. A raise leaves `outcome` False: an EligibilityError is a tick
+        # that cannot see main or CI and so can deploy nothing, and anything
+        # unhandled is a tick that did not finish. The tick after a quarantined
+        # failure pings plain on purpose: this check says the poller is alive
+        # and deciding, the failure itself already paged through ntfy, and
+        # --status names the revision. A manual --retry-failed pings nothing, so
+        # it cannot vouch for a dead cron. ping_healthchecks never raises, so
+        # this `finally` changes no exception, exit code or message.
+        outcome = False
         try:
             outcome = poll(config, retry_sha=retry_sha)
-        except Exception:
-            # EligibilityError included: a tick that cannot see main or CI can
-            # deploy nothing, and #559's shape is a tick failing identically
-            # forever. Re-raised unchanged, so every exit code and message
-            # below is exactly what it was.
+        finally:
             if mode == "poll":
-                ping_healthchecks(config, config.healthchecks_poller_ping_url, True)
-            raise
+                ping_healthchecks(config, config.healthchecks_poller_ping_url,
+                                  outcome is False)
     except ConfigurationError:
         # No ping: the URL is in the file that could not be trusted. The tick
         # check hears silence and alerts once its grace period runs out.
@@ -2162,18 +2174,6 @@ def main(argv=None) -> int:
         print("production auto-deploy: could not determine a candidate",
               file=sys.stderr)
         return 0
-    if mode == "poll":
-        # The tick heartbeat (#606), sent after poll() has released the lock.
-        # None is healthy: nothing to deploy, a quarantined revision waiting for
-        # an operator, or the lock held by a deployment or a verify. True is a
-        # deployment. False is a failed one -- #327 and #559 failed inside
-        # deploy() on every tick, so every tick pings /fail and the check stays
-        # down. The tick after a quarantined failure pings plain on purpose:
-        # this check says the poller is alive and deciding, the failure itself
-        # already paged through ntfy, and --status names the revision. A manual
-        # --retry-failed pings nothing, so it cannot vouch for a dead cron.
-        ping_healthchecks(config, config.healthchecks_poller_ping_url,
-                          outcome is False)
     if outcome is False:
         print("production auto-deploy: attempt failed", file=sys.stderr)
         return 1

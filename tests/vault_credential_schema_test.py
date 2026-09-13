@@ -47,6 +47,7 @@ from vault_credential_schema import (  # noqa: E402
     HEX_32,
     DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS,
     HEX_64,
+    HTTPS_URL,
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
     NOT_PLACEHOLDER,
@@ -83,6 +84,10 @@ PATTERN_SAMPLES = {
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
     HEX_64.pattern: ("a" * 64, "a" * 64 + "x"),
+    # Appending "x" extends a URL rather than breaking it, so the anchoring guard
+    # appends a second curl directive, which is what the end anchor refuses.
+    HTTPS_URL.pattern: ("https://hc-ping.com/token",
+                        'https://hc-ping.com/token\nurl = "https://elsewhere"'),
 }
 
 # The non-string values the original conditions accepted, and the ones they
@@ -131,7 +136,11 @@ MALFORMED = {
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
     HEX_64.pattern: "A" * 64,
+    HTTPS_URL.pattern: "http://hc-ping.com/token",
 }
+# The two ping URLs must differ, so each valid value is keyed off its own name.
+HEALTHCHECKS_PING_URL_KEYS = ("vault_healthchecks_poller_ping_url",
+                              "vault_healthchecks_verify_ping_url")
 
 FOUNDATION_KEYS = (
     "vault_arr_radarr_api_key",
@@ -165,6 +174,8 @@ ALL_DIGIT_KEY = "1" * 32
 
 def _valid_value(key, rules):
     """Build the accepted value for one credential from its own rules."""
+    if key in HEALTHCHECKS_PING_URL_KEYS:
+        return f"https://hc-ping.com/{key}"
     if key in FOUNDATION_API_KEYS:
         # Leading "a" rather than a bare index: the two keys this platform
         # submits to Bazarr must carry at least one a-f character, and an index
@@ -245,7 +256,8 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_distinct_credential_groups_are_exact(self):
         self.assertEqual(
             DISTINCT_KEY_GROUPS,
-            (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS),
+            (NTFY_DISTINCT_KEYS, HEALTHCHECKS_PING_URL_KEYS, FOUNDATION_API_KEYS,
+         FOUNDATION_PASSWORDS),
         )
 
     def test_foundation_api_keys_are_exactly_lowercase_hex_32(self):

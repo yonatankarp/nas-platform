@@ -121,6 +121,22 @@ PUSHOVER_TOKEN_PLACEHOLDERS = ("example-pushover-token",
 PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
                                   "replace-with-pushover-user-key")
 
+# The two healthchecks.io ping URLs the poller reports to (#606, #610) belong to
+# a third-party account too, and the token in each path is the check's whole
+# authentication. The rule is presence and https and nothing narrower, for the
+# Pushover reason: healthchecks.io serves UUID paths under hc-ping.com, but also
+# slug paths and self-hosted or custom ping domains, and a host or path rule
+# guessed from one of them would refuse a real URL before every converge --
+# including every five-minute poller tick, which runs validate-vault.yml first --
+# with the fix locked inside the encrypted vault. The stand-ins in
+# vault.yml.example and templates/vault-plain.yml.j2 are not URLs, so this rule
+# is also what refuses them, and tests/managed_users_vault_test.rb proves it
+# through the role; a NOT_PLACEHOLDER clause here would never be the one that
+# fired. The excluded characters are what would let one value read as more than
+# one curl config directive, and the poller's HEALTHCHECKS_URL_PATTERN is the
+# same text, so no value this contract accepts is one the poller ignores.
+HTTPS_URL = re.compile(r'^https://[^\s"\\]+\Z')
+
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
 # vault.yml.example that has to be rejected here rather than by the service that
 # receives it. The others fail somewhere: `tk_` and 29 zeros is not a token ntfy
@@ -191,6 +207,8 @@ CREDENTIAL_RULES = {
         (NONEMPTY, None),
         (NOT_PLACEHOLDER, PUSHOVER_USER_KEY_PLACEHOLDERS),
     ),
+    "vault_healthchecks_poller_ping_url": ((PATTERN, HTTPS_URL),),
+    "vault_healthchecks_verify_ping_url": ((PATTERN, HTTPS_URL),),
     "vault_beszel_superuser_email": ((PATTERN, EMAIL),),
     "vault_beszel_superuser_password": ((NONEMPTY, None),),
     "vault_beszel_app_user_email": ((PATTERN, EMAIL),),
@@ -288,6 +306,10 @@ OPTIONAL_KEY_GROUPS = (
 DISTINCT_KEY_GROUPS = (
     ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
      "vault_ntfy_deploy_token", "vault_ntfy_seerr_token"),
+    # One URL pasted into both would collapse the tick heartbeat and the verify
+    # verdict into one check, so every tick would vouch for a verify that
+    # stopped running -- the two signals #606 keeps apart.
+    ("vault_healthchecks_poller_ping_url", "vault_healthchecks_verify_ping_url"),
     ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key",
      "vault_arr_prowlarr_api_key", "vault_arr_bazarr_api_key",
      "vault_downloaders_sabnzbd_api_key"),

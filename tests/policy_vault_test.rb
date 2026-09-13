@@ -1139,8 +1139,8 @@ check(failures, repository_vault_nas_references.empty?,
 # included since #612 split the one mapping that could not span files into eight
 # variables. Where a key sits cannot be checked without the password, so the gate
 # holds what it can read: every one is encrypted and names a real role. Pushover
-# is the one exception: an external account both Beszel and Dozzle read, with no
-# role.
+# and healthchecks are the exceptions: external accounts with no service role,
+# read by Beszel and Dozzle, and by the deployment poller's installer.
 #
 # vault.yml itself is still globbed, because an operator's single-file vault
 # installed there as the secrets guide describes must be encrypted too. What is
@@ -1155,8 +1155,9 @@ tracked_root_vault, _tracked_root_vault_error, _tracked_root_vault_status = Open
 )
 check(failures, tracked_root_vault.strip.empty?,
       "inventory/group_vars/all/vault.yml is committed; every vault key belongs in " \
-      "its service's vault_<role>.yml (or vault_pushover.yml)")
-manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } + ["pushover"]
+      "its service's vault_<role>.yml (or vault_pushover.yml or vault_healthchecks.yml)")
+manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } +
+                 %w[pushover healthchecks]
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip

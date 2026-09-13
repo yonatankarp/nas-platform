@@ -27,13 +27,16 @@ module PolicySupport
   # the prefix rule and buy nothing. The Pushover pair is the second kind -- an
   # account at a third party that the platform pushes into whichever services
   # publish alerts, Beszel being the first, so it is named here rather than under
-  # any one of them.
+  # any one of them. The healthchecks.io ping URLs are the same kind with no
+  # service at all: the deployment poller reports to them, and it is installed
+  # by its own play rather than listed in the manifest.
   GLOBAL_VAULT_KEYS = %w[
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
     vault_managed_jellyfin_users vault_managed_komga_users
     vault_managed_ntfy_users vault_managed_paperless_ngx_users
     vault_pushover_token vault_pushover_user_key
+    vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url
   ].freeze
   # The services that hold no credential at all, which is a designed property
   # here rather than an unfinished slice. See expectation_problems below for the
