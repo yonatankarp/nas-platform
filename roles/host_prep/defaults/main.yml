@@ -1,0 +1,6 @@
+---
+# Array name -> degraded member count on a healthy host. Empty skips the mdraid
+# check; only inventory/group_vars/nas_hosts/main.yml declares arrays.
+host_prep_mdraid_arrays: {}
+# Tests point this at a fixture tree.
+host_prep_mdraid_sysfs_root: /sys

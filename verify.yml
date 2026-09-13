@@ -50,6 +50,14 @@
         apply:
           tags: [platform_verify_media_acquisition_foundation]
       tags: [never, platform_verify_media_acquisition_foundation]
+
+    - name: Verify mdraid arrays against the declared healthy baseline
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_mdraid
+        apply:
+          tags: [platform_verify_mdraid]
+      tags: [never, platform_verify_mdraid]
   roles:
     - role: ntfy
       tags: [never]

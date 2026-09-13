@@ -1,0 +1,68 @@
+---
+# One case of tests/host_prep_mdraid_verify_test.yml. Separate because a block
+# cannot be looped. The facts are reset first because set_fact and register
+# persist across iterations, and a case judged on the previous case's values is
+# a green run reporting the wrong thing.
+- name: Reset the facts this case is judged on
+  ansible.builtin.set_fact:
+    host_prep_mdraid_devices: {}
+    host_prep_mdraid_undeclared: []
+    mdraid_case_refused: false
+    mdraid_case_message: ""
+
+- name: Clear the previous case's fixture tree
+  ansible.builtin.file:
+    path: "{{ mdraid_root }}"
+    state: absent
+
+# A skip case writes no tree, as on a runner kernel with no arrays: had its
+# reads run, the find would not be skipped and a declared array would read absent.
+- name: Create the md directory of every array this host exposes
+  ansible.builtin.file:
+    path: "{{ mdraid_root }}/block/{{ array }}/md"
+    state: directory
+    mode: "0755"
+  loop: "{{ item.present | default({}) | list }}"
+  loop_control:
+    loop_var: array
+
+- name: Write the md/degraded file of every array this host exposes
+  ansible.builtin.copy:
+    dest: "{{ mdraid_root }}/block/{{ array.key }}/md/degraded"
+    content: "{{ array.value }}\n"
+    mode: "0644"
+  loop: "{{ item.present | default({}) | dict2items }}"
+  loop_control:
+    loop_var: array
+    label: "{{ array.key }}"
+
+- name: Run the shipped verification
+  block:
+    - name: Include the mdraid verification
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_mdraid
+        apply:
+          check_mode: "{{ item.check | default(false) }}"
+      vars:
+        host_prep_mdraid_arrays: "{{ item.baseline | default(mdraid_nas) }}"
+        host_prep_mdraid_sysfs_root: "{{ mdraid_root }}"
+        platform_compose_kind: "{{ item.compose_kind | default('nas') }}"
+  rescue:
+    - name: Record the refusal
+      ansible.builtin.set_fact:
+        mdraid_case_refused: true
+        mdraid_case_message: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: Judge the case
+  ansible.builtin.assert:
+    that:
+      - mdraid_case_refused == item.refused
+      - item.says | default([]) | reject('in', mdraid_case_message) | list | length == 0
+      - (host_prep_mdraid_devices.skipped | default(false)) == (item.skipped | default(false))
+      - host_prep_mdraid_undeclared == item.undeclared | default([])
+    fail_msg: >-
+      {{ item.name }}: refused={{ mdraid_case_refused }} (wanted {{ item.refused }}),
+      message={{ mdraid_case_message }}, wanted it to name {{ item.says | default([]) }},
+      skipped={{ host_prep_mdraid_devices.skipped | default(false) }},
+      undeclared={{ host_prep_mdraid_undeclared }}.

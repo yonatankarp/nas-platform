@@ -151,12 +151,27 @@ def verifier_problems(tasks, verify_play)
 
   play = Array(verify_play).first || {}
   includes = Array(play["tasks"]).select { |task| task.dig("ansible.builtin.include_role", "name") == "host_prep" }
-  include_task = includes.one? ? includes.first : nil
+  # host_prep carries a second standalone verifier (verify_mdraid, #609), so this
+  # one is found by its file rather than by being the only include; every include
+  # is still held to a verify_ file under its own never-guarded verify tag, so
+  # host_prep's mutating main stays unreachable.
+  foundation_includes = includes.select do |task|
+    task.dig("ansible.builtin.include_role", "tasks_from") == "verify_media_acquisition"
+  end
+  include_task = foundation_includes.one? ? foundation_includes.first : nil
   include_role = include_task ? include_task.fetch("ansible.builtin.include_role", {}) : {}
-  problems << "verify.yml must explicitly include only the standalone host_prep verifier" unless
+  problems << "verify.yml must explicitly include the standalone host_prep verifier exactly once" unless
     include_role["tasks_from"] == "verify_media_acquisition" &&
       Array(include_role.dig("apply", "tags")) == ["platform_verify_media_acquisition_foundation"] &&
       Array(include_task["tags"]) == %w[never platform_verify_media_acquisition_foundation]
+  problems << "verify.yml must include host_prep only through standalone verify_ files under never-guarded verify tags" unless
+    includes.all? do |task|
+      role = task.fetch("ansible.builtin.include_role", {})
+      applied = Array(role.dig("apply", "tags"))
+      role["tasks_from"].to_s.start_with?("verify_") &&
+        applied.length == 1 && applied.first.to_s.start_with?("platform_verify_") &&
+        Array(task["tags"]) == ["never", *applied]
+    end
   problems << "verify.yml must never load host_prep as a plain role" if
     Array(play["roles"]).any? { |role| role == "host_prep" || role.is_a?(Hash) && role["role"] == "host_prep" }
   problems

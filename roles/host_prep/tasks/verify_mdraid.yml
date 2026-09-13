@@ -1,0 +1,99 @@
+---
+# A degraded mdraid array fails verification (#609). Reached only through
+# verify.yml under platform_verify_mdraid, and only the hourly periodic verify
+# run selects that tag. Never from site.yml or a deployment's own verify play: a
+# degraded array still serves, and failing a converge or its verify for the whole
+# rebuild would block fixes and quarantine revisions that converged.
+#
+# Healthy is not `degraded == 0`. ADM's system arrays md0 and md126 are 4-slot
+# RAID1 with two members and read degraded=2 on a healthy host, so each array is
+# compared against the count declared in inventory/group_vars/nas_hosts/main.yml
+# -- by equality, because 2 -> 3 on md0 is a lost member and `<=` would miss it.
+# A declared array that is absent, or has no `md/degraded` because it is
+# inactive, reads as `absent` and fails too.
+#
+# /sys/block/<md>/md/degraded rather than /proc/mdstat: one integer per array,
+# nothing to parse. It does not go back down while a rebuild runs, only when
+# recovery completes, so a rebuilding array fails until then without reading
+# sync_action.
+#
+# An array nobody declared is reported and does not fail. md126 is already an
+# auto-assembled name, so a renumbering or an array added by firmware is churn
+# rather than a disk fault; a renamed declared array still fails as absent.
+#
+# Skipped, and reported as such, off the NAS: with no baseline (the Mac lane),
+# or when platform_compose_kind is not `nas`. The integration sandbox runs
+# inventory/local.yml and so inherits the NAS baseline, against a runner kernel
+# that has none of these arrays; `integration` is what marks it.
+- name: Report why mdraid verification does not apply to this host
+  ansible.builtin.debug:
+    msg: >-
+      mdraid verification skipped:
+      {{ 'no array baseline is declared for this host'
+         if host_prep_mdraid_arrays | length == 0 else
+         'platform_compose_kind is ' ~ platform_compose_kind ~ ', and only nas has these arrays' }}.
+  when: host_prep_mdraid_arrays | length == 0 or platform_compose_kind != 'nas'
+  tags: [platform_verify_mdraid]
+
+- name: Verify mdraid arrays against the declared healthy baseline
+  when:
+    - host_prep_mdraid_arrays | length > 0
+    - platform_compose_kind == 'nas'
+  tags: [platform_verify_mdraid]
+  block:
+    - name: Inspect the md block devices present on the host
+      ansible.builtin.find:
+        paths: "{{ host_prep_mdraid_sysfs_root }}/block"
+        patterns: "md*"
+        file_type: any
+      register: host_prep_mdraid_devices
+      changed_when: false
+
+    # failed_when: false because absence is a verdict here, not an error: a
+    # missing file becomes `absent` below and fails the assert with its name.
+    - name: Read the degraded member count of every declared array
+      ansible.builtin.slurp:
+        src: "{{ host_prep_mdraid_sysfs_root }}/block/{{ item }}/md/degraded"
+      loop: "{{ host_prep_mdraid_arrays.keys() | sort }}"
+      register: host_prep_mdraid_degraded
+      changed_when: false
+      failed_when: false
+
+    # Every value the assert's messages name is computed here on every path, so
+    # neither message can reference a key the passing path lacks.
+    - name: Compare every declared array against its baseline
+      ansible.builtin.set_fact:
+        host_prep_mdraid_expected: >-
+          {{ host_prep_mdraid_arrays.keys() | sort |
+             zip(host_prep_mdraid_arrays.keys() | sort | map('extract', host_prep_mdraid_arrays) | map('string')) |
+             map('join', '=') | list }}
+        host_prep_mdraid_observed: >-
+          {{ host_prep_mdraid_degraded.results | map(attribute='item') |
+             zip(host_prep_mdraid_degraded.results | map(attribute='content', default='') |
+                 map('b64decode') | map('trim') | map('default', 'absent', true)) |
+             map('join', '=') | list }}
+        host_prep_mdraid_undeclared: >-
+          {{ host_prep_mdraid_devices.files | map(attribute='path') | map('basename') |
+             difference(host_prep_mdraid_arrays.keys()) | sort }}
+      changed_when: false
+
+    - name: Report md arrays present on the host but absent from the baseline
+      ansible.builtin.debug:
+        msg: >-
+          UNDECLARED mdraid arrays, not verified: {{ host_prep_mdraid_undeclared | join(', ') }}.
+          Read them off the host and declare them in host_prep_mdraid_arrays in
+          inventory/group_vars/nas_hosts/main.yml.
+      when: host_prep_mdraid_undeclared | length > 0
+
+    - name: Verify no declared mdraid array has lost a member
+      ansible.builtin.assert:
+        that:
+          - host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | length == 0
+        fail_msg: >-
+          mdraid array differs from its healthy baseline: expected degraded
+          {{ host_prep_mdraid_expected | difference(host_prep_mdraid_observed) | sort | join(', ') }},
+          observed {{ host_prep_mdraid_observed | difference(host_prep_mdraid_expected) | sort | join(', ') }}.
+          Read /proc/mdstat on the host: a member has dropped out, a rebuild is
+          still running, or the array is not assembled.
+        success_msg: >-
+          mdraid arrays match their healthy baseline: {{ host_prep_mdraid_observed | join(', ') }}.

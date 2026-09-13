@@ -66,3 +66,12 @@ argument_specs:
       nas_media_root:
         type: str
         required: true
+      host_prep_mdraid_arrays:
+        type: dict
+        required: false
+        default: {}
+        description: Array name to degraded member count on a healthy host.
+      host_prep_mdraid_sysfs_root:
+        type: str
+        required: false
+        default: /sys

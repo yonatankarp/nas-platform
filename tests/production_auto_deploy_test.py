@@ -66,6 +66,9 @@ class PollerTestCase(unittest.TestCase):
             "github_api_base": "https://api.github.com",
             "log_retention_days": 30,
             "verify_tags": "platform_verify_ntfy,platform_verify_beszel",
+            "periodic_verify_tags": (
+                "platform_verify_ntfy,platform_verify_beszel,platform_verify_mdraid"
+            ),
             "git_path": "/usr/local/bin/git",
             "curl_path": "/usr/bin/curl",
             "tool_path": "/usr/local/bin:/usr/bin:/bin",
@@ -96,8 +99,9 @@ class ConfigTest(PollerTestCase):
         self.assertTrue(config.state_root.is_absolute())
 
     def test_load_config_requires_every_field(self):
+        # periodic_verify_tags alone is optional, and has its own test below.
         for field in [f.name for f in production_auto_deploy.fields(
-                production_auto_deploy.Config)]:
+                production_auto_deploy.Config) if f.name != "periodic_verify_tags"]:
             payload = self.config_payload()
             payload.pop(field)
             self.config_path.write_text(json.dumps(payload), encoding="utf-8")
@@ -114,6 +118,8 @@ class ConfigTest(PollerTestCase):
             {"repository_url": "http://github.com/x/y.git"},
             {"github_api_base": "http://api.github.com"},
             {"state_root": "relative/path"},
+            {"periodic_verify_tags": ""},
+            {"periodic_verify_tags": ["platform_verify_mdraid"]},
         )
         for override in cases:
             payload = self.config_payload(**override)
@@ -121,6 +127,26 @@ class ConfigTest(PollerTestCase):
             with self.subTest(override=override):
                 with self.assertRaises(production_auto_deploy.ConfigurationError):
                     production_auto_deploy.load_config(self.config_path)
+
+    def test_load_config_reads_the_hourly_tag_list_separately(self):
+        config = self.loaded_config()
+
+        self.assertEqual(config.verify_tags, "platform_verify_ntfy,platform_verify_beszel")
+        self.assertEqual(
+            config.periodic_verify_tags,
+            "platform_verify_ntfy,platform_verify_beszel,platform_verify_mdraid",
+        )
+
+    def test_a_configuration_from_an_older_template_verifies_hourly_with_the_deploy_list(self):
+        # The install play copies the poller before it renders deployer.json, so
+        # this script meets a file without the key for at least one run (#327).
+        payload = self.config_payload()
+        payload.pop("periodic_verify_tags")
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+        config = production_auto_deploy.load_config(self.config_path)
+
+        self.assertEqual(config.periodic_verify_tags, config.verify_tags)
 
     def test_load_config_rejects_unreadable_or_non_object_payloads(self):
         for payload in ("[]", "null", "not json", '"text"'):
@@ -949,6 +975,25 @@ class DeployTest(DeployHarness, PollerTestCase):
             tagged[0][tagged[0].index("--tags") + 1],
             "platform_verify_ntfy,platform_verify_beszel",
         )
+
+    def test_a_deployments_verify_play_never_carries_the_hourly_only_tags(self):
+        # Byte for byte what a deployment ran before the hourly list existed: a
+        # failure there quarantines the revision, and platform_verify_mdraid
+        # fails for a whole rebuild while the array still serves (#609).
+        config = self.loaded_config()
+        _outcome, calls, _kwargs = self.deploy_with(config)
+        (verify_call,) = [call for call in calls if "verify.yml" in call]
+        self.assertEqual(
+            verify_call,
+            [
+                "ansible-playbook",
+                *production_auto_deploy._vault_arguments(config),
+                "verify.yml",
+                "--tags",
+                "platform_verify_ntfy,platform_verify_beszel",
+            ],
+        )
+        self.assertNotIn("platform_verify_mdraid", " ".join(verify_call))
 
     def test_every_play_carries_the_vault_password_provider(self):
         config = self.loaded_config()
@@ -2843,16 +2888,18 @@ class VerifyTest(PollerTestCase):
         self.published_path.unlink()
         return pages
 
-    def test_verify_runs_the_deployments_own_verify_play_under_the_lock(self):
+    def test_verify_runs_the_deployments_verify_play_with_the_hourly_tags_under_the_lock(self):
         self.mark_deployed()
         code, _output = self.run_verify()
 
         self.assertEqual(code, 0)
         (run,) = self.playbook_runs()
+        deployment_verify = production_auto_deploy._deploy_invocations(self.config)[2]
         self.assertEqual(
             ["ansible-playbook", *run["argv"]],
-            production_auto_deploy._deploy_invocations(self.config)[2],
+            [*deployment_verify[:-1], self.config.periodic_verify_tags],
         )
+        self.assertEqual(run["argv"][-1], "platform_verify_ntfy,platform_verify_beszel,platform_verify_mdraid")
         self.assertEqual(Path(run["cwd"]).resolve(), self.checkout.resolve())
         self.assertTrue(run["held"], "verify.yml must run under the deployment lock")
         self.assertEqual(run["owner"], str(os.getpid()))
@@ -2860,6 +2907,18 @@ class VerifyTest(PollerTestCase):
         log = self.config.log_root / "verify.log"
         self.assertIn("PLAY RECAP", log.read_text())
         self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+
+    def test_verify_under_an_older_configuration_runs_the_deploy_list(self):
+        payload = json.loads(self.config_path.read_text(encoding="utf-8"))
+        payload.pop("periodic_verify_tags")
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+        self.mark_deployed()
+
+        code, _output = self.run_verify()
+
+        self.assertEqual(code, 0)
+        (run,) = self.playbook_runs()
+        self.assertEqual(run["argv"][-1], "platform_verify_ntfy,platform_verify_beszel")
 
     def test_a_first_ever_pass_and_a_repeated_pass_page_nobody(self):
         self.mark_deployed()

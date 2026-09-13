@@ -62,6 +62,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/host_prep/meta/argument_specs.yml
   roles/host_prep/tasks/main.yml
   roles/host_prep/tasks/verify_media_acquisition.yml
+  roles/host_prep/tasks/verify_mdraid.yml
+  roles/host_prep/defaults/main.yml
   roles/deployment_bundle/defaults/main.yml
   roles/deployment_bundle/meta/argument_specs.yml
   roles/deployment_bundle/files/validate_target.py

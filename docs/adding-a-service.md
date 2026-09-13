@@ -195,7 +195,9 @@ tests/mac/verify.sh                             the Mac lane's --tags argument
 `roles/*/{tasks,handlers}/*.yml`, collects each `platform_verify_*` tag the roles
 actually declare, and requires the poller's list to **equal** that set — it
 reports `missing=` and `stale=` separately, so neither a forgotten service nor a
-leftover one passes. It then requires `docs/getting-started-nas.md` to carry the
+leftover one passes. The one exception is `platform_verify_mdraid`, which only
+the hourly `production_auto_deploy_periodic_verify_tags` carries; a service's
+tag always goes in the deploy list. It then requires `docs/getting-started-nas.md` to carry the
 same set. `tests/secrets_docs_test.rb` requires the guide's shell block to contain
 that exact comma-joined string — *order* included — but reads the string out of
 the poller's own defaults rather than keeping a fourth copy of it.
