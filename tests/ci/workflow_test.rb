@@ -1,7 +1,9 @@
 #!/usr/bin/env ruby
 
 require "fileutils"
+require "json"
 require "open3"
+require "shellwords"
 require "tmpdir"
 require "yaml"
 require_relative "classify_changes"
@@ -121,11 +123,12 @@ DOCS_CHECK_COMMANDS = [
   "ruby tests/secrets_docs_test.rb"
 ].freeze
 # The vault job (#561). Its whole value is that it runs the play the poller runs
-# first, with the poller's own arguments, so the argv is pinned as a literal
-# against what scripts/production_auto_deploy.py's _vault_arguments builds. A job
-# that bound group_vars differently -- or that reached for --syntax-check or
-# --check, neither of which opens the vault -- could pass on a vault that breaks
-# the host, which is the one failure this job exists to make impossible.
+# first, with the poller's own arguments, so the expected argv is *derived* from
+# scripts/production_auto_deploy.py below rather than restated here. It was a
+# hand-typed literal and that was the defect the job exists to prevent, one level
+# out: changing the poller to `-i inventory/nas-only.yml` and giving it an extra
+# `-e` left every check in this file green, which is a second contract agreeing
+# with itself while disagreeing with the host.
 VAULT_STEP_NAMES = [
   "Check out repository",
   "Install Ansible tooling",
@@ -133,11 +136,12 @@ VAULT_STEP_NAMES = [
 ].freeze
 VAULT_PASSWORD_SECRET = "ANSIBLE_VAULT_PASSWORD"
 VAULT_PASSWORD_ENV = "VAULT_PASSWORD"
-VAULT_PLAY_ARGV = [
-  "ansible-playbook -i inventory/local.yml \\",
-  '--vault-password-file "$RUNNER_TEMP/vault-password" \\',
-  "validate-vault.yml"
-].freeze
+# The one argument that legitimately differs: the poller reads its password file
+# out of its own configuration, and the job writes one under $RUNNER_TEMP. The
+# derivation is fed this value, so every other token has to match exactly.
+VAULT_PASSWORD_FILE = "$RUNNER_TEMP/vault-password"
+VAULT_PLAYBOOK = "validate-vault.yml"
+POLLER_SCRIPT_PATH = File.expand_path("../../scripts/production_auto_deploy.py", __dir__)
 RETIRED_MIGRATION_MARKERS = %w[
   nas-infrastructure
   tests/adoption-integration.sh
@@ -178,6 +182,70 @@ end
 
 def normalize_shell(source)
   source.to_s.lines.map(&:strip).reject(&:empty?).join("\n")
+end
+
+# One command out of a `run:` block, as argv. Backslash continuations are joined
+# and the result is split the way a shell would split it, so a flag inserted
+# anywhere in the invocation changes the answer. Asserting that a set of
+# fragments is *present* cannot do that: an argv with --list-tasks spliced into
+# it still contains every fragment, and --list-tasks exits 0 having parsed
+# nothing at all.
+def shell_invocation(source, program)
+  lines = normalize_shell(source).lines(chomp: true)
+  start = lines.index { |line| line == program || line.start_with?("#{program} ") }
+  return nil unless start
+
+  command = +""
+  lines[start..].each do |line|
+    command << line.delete_suffix("\\")
+    break unless line.end_with?("\\")
+
+    command << " "
+  end
+  Shellwords.split(command)
+end
+
+# Import the poller and ask it what it runs. The claim this file makes about the
+# vault job is that the job runs the *host's* first play with the host's own
+# arguments, and only scripts/production_auto_deploy.py can answer what those
+# are; a literal transcribed from it proves the transcription, not the agreement.
+# Shelling out to build an expected argv is already this file's pattern -- see
+# integration_argv above, which runs the suite matrix's own shell.
+#
+# The stub answers any attribute the poller reaches for, because _deploy_invocations
+# also reads verify_tags, platform_public_host and external_scheduler for the
+# three invocations after the one under test.
+def poller_vault_invocation
+  program = <<~PYTHON
+    import importlib.util, json, sys
+
+    class Stub:
+        def __init__(self, **known):
+            self.__dict__.update(known)
+
+        def __getattr__(self, name):
+            return "<unset %s>" % name
+
+    spec = importlib.util.spec_from_file_location("poller", sys.argv[1])
+    poller = importlib.util.module_from_spec(spec)
+    # Registered before it is executed: @dataclass resolves a field's annotation
+    # through sys.modules[cls.__module__], so Config dies on import without this.
+    sys.modules[spec.name] = poller
+    spec.loader.exec_module(poller)
+    config = Stub(vault_password_file=sys.argv[2])
+    json.dump({
+        "vault_arguments": list(poller._vault_arguments(config)),
+        "invocations": [list(argv) for argv in poller._deploy_invocations(config)],
+    }, sys.stdout)
+  PYTHON
+  stdout, stderr, status = Open3.capture3(
+    "python3", "-c", program, POLLER_SCRIPT_PATH, VAULT_PASSWORD_FILE
+  )
+  return [nil, stderr.lines.last.to_s.strip] unless status.success?
+
+  [JSON.parse(stdout), nil]
+rescue JSON::ParserError => error
+  [nil, error.message]
 end
 
 def contains_path_filter?(value)
@@ -916,25 +984,60 @@ check(failures, vault_job["strategy"].nil?, "the vault job is one runner and mus
 check(failures, vault_steps.map { |step| step["name"] } == VAULT_STEP_NAMES,
       "vault steps differ: got #{vault_steps.map { |step| step['name'] }.inspect}, " \
       "expected #{VAULT_STEP_NAMES.inspect}")
-check(failures, vault_steps.none? { |step| step.key?("if") },
-      "vault steps must be unconditional: `secrets` is not in scope for a job-level or step-level " \
-      "condition anyway, and a skipped step here is a green run that decrypted nothing")
-vault_play_steps = vault_steps.select { |step| step["run"].to_s.include?("validate-vault.yml") }
-check(failures, vault_play_steps.length == 1, "vault must run validate-vault.yml from exactly one step")
+check(failures,
+      vault_steps.none? { |step| %w[if continue-on-error].any? { |key| step.key?(key) } },
+      "vault steps must be unconditional and must fail the job: `secrets` is not in scope for a " \
+      "job-level or step-level condition anyway, a skipped step here is a green run that " \
+      "decrypted nothing, and `continue-on-error` on the play is the same green run with the " \
+      "decryption attempted and its verdict thrown away")
+check(failures, !vault_job.key?("continue-on-error"),
+      "the vault job must not tolerate its own failure: this is the only job that opens the " \
+      "vault, so a tolerated failure is a merge of a vault the NAS cannot parse")
+vault_play_steps = vault_steps.select { |step| step["run"].to_s.include?(VAULT_PLAYBOOK) }
+check(failures, vault_play_steps.length == 1,
+      "vault must run #{VAULT_PLAYBOOK} from exactly one step")
 vault_play = vault_play_steps.first || {}
-vault_play_commands = normalize_shell(vault_play["run"]).lines(chomp: true)
-VAULT_PLAY_ARGV.each do |fragment|
-  check(failures, vault_play_commands.include?(fragment),
-        "the vault play must invoke the poller's own argv; #{fragment.inspect} is missing from " \
-        "#{vault_play_commands.inspect}")
-end
-# A real run. --syntax-check parses the playbook and --check simulates the tasks,
-# and neither one parses vault contents, so either would restore the blind spot
-# while leaving a green job in its place.
-%w[--syntax-check --check].each do |flag|
-  check(failures, !vault_play["run"].to_s.include?(flag),
-        "the vault play must not pass #{flag}: it does not parse the vault, which is the defect")
-end
+# The poller's own first invocation, derived rather than restated. A failure to
+# derive it is a failure here: an empty expectation would pin nothing and pass.
+poller, poller_error = poller_vault_invocation
+check(failures, poller_error.nil?,
+      "this check must be able to read the poller's own argv out of " \
+      "#{POLLER_SCRIPT_PATH.inspect}; deriving it failed with #{poller_error.inspect}, which " \
+      "leaves the vault job's argv pinned against nothing")
+expected_vault_argv = Array(poller && poller["invocations"]).first
+check(failures, Array(expected_vault_argv).first == "ansible-playbook" &&
+                Array(expected_vault_argv).last == VAULT_PLAYBOOK,
+      "the poller's first play must still be ansible-playbook ... #{VAULT_PLAYBOOK}; " \
+      "_deploy_invocations builds #{expected_vault_argv.inspect} first, so either the play order " \
+      "moved or there is nothing here for the vault job to mirror")
+check(failures,
+      expected_vault_argv == ["ansible-playbook", *Array(poller && poller["vault_arguments"]),
+                              VAULT_PLAYBOOK],
+      "the poller's first play must carry _vault_arguments and nothing else; it builds " \
+      "#{expected_vault_argv.inspect} from #{Array(poller && poller['vault_arguments']).inspect}")
+# Pinned as an exact argv, not as fragments that must be present. Two reasons,
+# and the second is the one that was measured wrong.
+#
+# Fragments are a denylist in disguise: --list-tasks, --list-tags or --list-hosts
+# spliced into this command leaves every fragment present, and each of them exits
+# 0 having parsed nothing -- a permanently green job. An exact comparison kills
+# the whole class rather than naming three more flags.
+#
+# And what rules out --check here is *not* that it fails to parse the vault.
+# Measured on ansible-core 2.21.4 on 2026-09-13 against a sandbox vault:
+# decryption happens at vars-load time, before task simulation, so --check
+# reports #559's unterminated quote as rc=4 and a missing required key as rc=2 --
+# the same verdicts the real run gives. --syntax-check is the blind one, rc=0 on
+# both, as are the three --list-* flags. --check is refused because it is not
+# what the poller runs, and this job's whole claim is that the host's own command
+# succeeded against this artifact.
+check(failures, shell_invocation(vault_play["run"], "ansible-playbook") == expected_vault_argv,
+      "the vault play must invoke exactly the poller's own argv. The poller builds " \
+      "#{expected_vault_argv.inspect}; the workflow runs " \
+      "#{shell_invocation(vault_play['run'], 'ansible-playbook').inspect}. Any difference is a " \
+      "job that proves something other than what the host does -- a different inventory binds " \
+      "different group_vars, and an inserted --syntax-check or --list-tasks exits 0 without " \
+      "parsing the vault at all")
 check(failures, vault_play.dig("env", VAULT_PASSWORD_ENV) == "${{ secrets.#{VAULT_PASSWORD_SECRET} }}",
       "the vault play must take the password from secrets.#{VAULT_PASSWORD_SECRET} through env")
 check(failures, vault_play["run"].to_s.include?(%(if [ -z "$#{VAULT_PASSWORD_ENV}" ])) &&

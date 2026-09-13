@@ -230,9 +230,9 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # four jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
+          # four jobs run this same block: naming a version in it made four copies
+          # nothing compared, so a bump could land in one and leave the other three
+          # on the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -327,10 +327,22 @@ jobs:
     # _vault_arguments is what the step below mirrors -- `-i inventory/local.yml`,
     # which is the group_vars binding the implicit localhost has no other route to,
     # and --vault-password-file, the one input that cannot be committed.
+    # tests/ci/workflow_test.rb imports that function and compares its output to
+    # this step's argv token for token, so the mirror is proved rather than
+    # transcribed: a change to the poller's inventory or arguments reds this job.
     #
-    # A real run, deliberately: --syntax-check parses the playbook and
-    # --check simulates the tasks, and neither opens the vault, which is the whole
-    # defect. No -v either -- the verbosity buys nothing here, and the argument for
+    # A real run, deliberately, and the reason is narrower than it reads. Measured
+    # on ansible-core 2.21.4 on 2026-09-13 against a sandbox vault: decryption
+    # happens at vars-load time, before any task is simulated, so --check reports
+    # #559's unterminated quote as rc=4 and a missing required key as rc=2 -- the
+    # same two verdicts the real run gives. --check is not blind. --syntax-check
+    # is, exiting 0 on both, and so do --list-tasks, --list-tags and --list-hosts.
+    # What rules --check out is that it is not what the poller runs: this job's
+    # whole claim is that the host's own command succeeded against this artifact,
+    # and a simulation cannot make that claim. So tests/ci/workflow_test.rb pins
+    # the invocation *exactly*, against the argv the poller itself builds, rather
+    # than refusing flags by name -- a denylist is what the next flag walks past.
+    # No -v either -- the verbosity buys nothing here, and the argument for
     # it would have to be made against the disclosure question the step settles.
     timeout-minutes: 15
     needs: changes
@@ -355,9 +367,9 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # four jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
+          # four jobs run this same block: naming a version in it made four copies
+          # nothing compared, so a bump could land in one and leave the other three
+          # on the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -435,9 +447,9 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # four jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
+          # four jobs run this same block: naming a version in it made four copies
+          # nothing compared, so a bump could land in one and leave the other three
+          # on the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -495,9 +507,9 @@ jobs:
           #
           # The versions are not named here. controller-requirements.txt is what an
           # operator installs from and what CLAUDE.md calls the source of truth, and
-          # four jobs run this same block: naming a version in it made three copies
-          # nothing compared, so a bump could land in one and leave the other two on
-          # the old pin. Installing from the file is how the gate validates the
+          # four jobs run this same block: naming a version in it made four copies
+          # nothing compared, so a bump could land in one and leave the other three
+          # on the old pin. Installing from the file is how the gate validates the
           # toolchain the documented install actually produces.
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
