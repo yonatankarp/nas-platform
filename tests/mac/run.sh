@@ -259,7 +259,7 @@ generate_immich_fixture_vars() {
   fixture_temporary=$(mktemp "$protected_input_root/.immich-fixture-vars.XXXXXX") || return 1
   if ! ansible-vault view --vault-password-file "$vault_password_file" "$vault_file" 2>/dev/null |
       ruby "$mac_script_dir/generate-immich-fixture-vars.rb" \
-        "$fixture_temporary" "$mac_repo_dir/inventory/group_vars/all/main.yml" 2>/dev/null
+        "$fixture_temporary" "$mac_repo_dir/inventory/group_vars/all/service_immich.yml" 2>/dev/null
   then
     unlink "$fixture_temporary" >/dev/null 2>&1 || true
     return 1

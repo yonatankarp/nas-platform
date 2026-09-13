@@ -183,6 +183,7 @@ module ClassifyChanges
     tests/mac/snapshot-paperless.rb
     tests/mac/snapshot-paperless.sh
     tests/mac_inventory_path_test.yml
+    tests/nas_storage_support.rb
     tests/policy_support.rb
     tests/run_contracts.rb
     tests/sandbox_cleanup.sh
