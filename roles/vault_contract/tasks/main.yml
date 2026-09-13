@@ -194,7 +194,7 @@
     success_msg: Portable vault credential shapes are valid; values are redacted.
   no_log: true
 
-- name: Inspect the candidate vault artifact without hashing
+- name: Inspect the candidate vault artifact location without hashing
   ansible.builtin.stat:
     path: "{{ platform_vault_file }}"
     get_checksum: false
@@ -204,45 +204,67 @@
   when: platform_vault_file is defined
   no_log: true
 
-- name: Read only the encrypted vault format header
-  ansible.builtin.command:
-    argv:
-      - head
-      - -c
-      - "15"
-      - "{{ platform_vault_file }}"
+# Selection is the header test and nothing else, which is what keeps the
+# plaintext vault.yml.example out of the identifier without naming it, and what
+# keeps the identifier honest about what Ansible loads: group_vars takes .yml,
+# .yaml, .json and extensionless files, skips dotfiles and `~` backups, so an
+# extension filter here would omit a vault.yaml Ansible decrypted and a hidden
+# file would identify one it did not. A path that is a regular file is selected
+# through its own parent so one task covers both shapes: the mac lane and the
+# integration harness pass a single file and must not have to move for this.
+#
+# `read_whole_file` with a `\A` anchor matches the header at the start of the
+# file, not at the start of any line; a plaintext file quoting the header on
+# line two is not an encrypted artifact. It reads the file to match and reports
+# only paths, never content, and every task here carries no_log regardless.
+- name: Select the encrypted vault artifacts
+  ansible.builtin.find:
+    paths: >-
+      {{ platform_vault_file if vault_contract_candidate_file.stat.isdir | default(false)
+         else (platform_vault_file | dirname) }}
+    patterns: >-
+      {{ omit if vault_contract_candidate_file.stat.isdir | default(false)
+         else (platform_vault_file | basename) }}
+    excludes: "{{ ['*~'] if vault_contract_candidate_file.stat.isdir | default(false) else [] }}"
+    file_type: file
+    recurse: false
+    hidden: false
+    read_whole_file: true
+    contains: '\A\$ANSIBLE_VAULT;'
+    get_checksum: true
+    checksum_algorithm: sha256
   delegate_to: localhost
   become: false
-  register: vault_contract_encrypted_header
-  changed_when: false
-  check_mode: false
+  register: vault_contract_artifacts
   when: platform_vault_file is defined
   no_log: true
 
-- name: Require the reported vault artifact to be encrypted
+- name: Require at least one encrypted vault artifact
   ansible.builtin.assert:
     that:
-      - vault_contract_candidate_file.stat.isreg | default(false)
-      - vault_contract_encrypted_header.stdout | default('') is match('^\\$ANSIBLE_VAULT;')
-    fail_msg: The encrypted vault file is unavailable; no credential values were read.
-    success_msg: The vault artifact is encrypted and may be identified by SHA-256.
+      - vault_contract_candidate_file.stat.exists | default(false)
+      - vault_contract_artifacts.files | default([]) | length >= 1
+    fail_msg: >-
+      No encrypted vault artifact was found at the reported location. A selection
+      that matches nothing has a digest of its own and would otherwise report a
+      successful identification; no credential values were read.
+    success_msg: >-
+      {{ vault_contract_artifacts.files | default([]) | length }} encrypted vault
+      artifact(s) may be identified by SHA-256.
   when: platform_vault_file is defined
   no_log: true
 
 - name: Compute the encrypted vault artifact SHA-256
-  ansible.builtin.stat:
-    path: "{{ platform_vault_file }}"
-    checksum_algorithm: sha256
-  delegate_to: localhost
-  become: false
-  register: vault_contract_encrypted_file
+  ansible.builtin.set_fact:
+    vault_contract_encrypted_identity: >-
+      {{ vault_contract_artifacts.files | vault_artifact_identity }}
   when: platform_vault_file is defined
   no_log: true
 
 - name: Require an encrypted vault artifact SHA-256
   ansible.builtin.assert:
     that:
-      - vault_contract_encrypted_file.stat.checksum | default('') | length == 64
+      - vault_contract_encrypted_identity | default('') | length == 64
     fail_msg: The encrypted vault artifact could not be identified by SHA-256.
     success_msg: The encrypted vault artifact has a SHA-256 identifier.
   when: platform_vault_file is defined
@@ -250,6 +272,6 @@
 
 - name: Record only the encrypted vault artifact SHA-256
   ansible.builtin.set_fact:
-    platform_encrypted_vault_sha256: "{{ vault_contract_encrypted_file.stat.checksum }}"  # noqa var-naming[no-role-prefix]
+    platform_encrypted_vault_sha256: "{{ vault_contract_encrypted_identity }}"  # noqa var-naming[no-role-prefix]
   when: platform_vault_file is defined
   no_log: true

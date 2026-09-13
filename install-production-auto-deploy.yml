@@ -5,7 +5,7 @@
   vars:
     platform_vault_file: >-
       {{ lookup('env', 'PLATFORM_VAULT_FILE') |
-         default(playbook_dir ~ '/inventory/group_vars/all/vault.yml', true) }}
+         default(playbook_dir ~ '/inventory/group_vars/all', true) }}
 
   pre_tasks:
     - name: Validate portable credentials before poller installation

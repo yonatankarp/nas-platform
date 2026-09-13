@@ -587,29 +587,51 @@ check(failures, vault_contract_tasks.none? { |task| task.to_s.match?(/vault_[a-z
       "vault contract must never hash an individual plaintext credential")
 
 vault_metadata_index = vault_contract_tasks.index do |task|
-  task["name"] == "Inspect the candidate vault artifact without hashing"
+  task["name"] == "Inspect the candidate vault artifact location without hashing"
 end
-vault_header_index = vault_contract_tasks.index do |task|
-  task["name"] == "Read only the encrypted vault format header"
+# The header test is now the selection rule rather than a separate task: find
+# takes only files whose first line matches the vault header, so a plaintext file
+# in the same directory -- vault.yml.example is one, and sits right there -- is
+# never a candidate to hash. The property the old ordering protected is
+# therefore stronger, but it moved, so it is asserted where it lives.
+vault_selection_index = vault_contract_tasks.index do |task|
+  task["name"] == "Select the encrypted vault artifacts"
 end
-vault_encryption_guard_index = vault_contract_tasks.index do |task|
-  task["name"] == "Require the reported vault artifact to be encrypted"
+vault_floor_index = vault_contract_tasks.index do |task|
+  task["name"] == "Require at least one encrypted vault artifact"
 end
 vault_checksum_index = vault_contract_tasks.index do |task|
   task["name"] == "Compute the encrypted vault artifact SHA-256"
 end
 vault_metadata_task = vault_metadata_index && vault_contract_tasks[vault_metadata_index]
+vault_selection_task = vault_selection_index && vault_contract_tasks[vault_selection_index]
+vault_find = vault_selection_task&.dig("ansible.builtin.find") || {}
 vault_order_indexes = [
   vault_metadata_index,
-  vault_header_index,
-  vault_encryption_guard_index,
+  vault_selection_index,
+  vault_floor_index,
   vault_checksum_index
 ]
 check(failures,
       vault_metadata_task&.dig("ansible.builtin.stat", "get_checksum") == false &&
+        vault_find["contains"].to_s.include?("ANSIBLE_VAULT") &&
+        # \A with the whole file read anchors the header at the start of the
+        # file; ^ alone matches the start of any line, so a plaintext file
+        # quoting the header on line two would be identified as encrypted.
+        vault_find["contains"].to_s.start_with?("\\A") &&
+        vault_find["read_whole_file"] == true &&
+        # No extension glob: group_vars loads .yaml, .json and extensionless
+        # files too, and a '*.yml' pattern omitted a vault.yaml Ansible had
+        # decrypted from the identity it reported.
+        !vault_find["patterns"].to_s.include?("*.") &&
+        vault_find["hidden"] == false &&
+        vault_find["get_checksum"] == true &&
+        vault_find["checksum_algorithm"] == "sha256" &&
+        vault_find["recurse"] == false &&
         vault_order_indexes.all? { |index| index.is_a?(Integer) } &&
         vault_order_indexes.each_cons(2).all? { |left, right| left < right },
-      "vault contract must verify encryption header before computing SHA-256")
+      "vault contract must select on the encryption header, floor the selection, " \
+      "then compute SHA-256")
 
 site_pre_tasks = Array(site_play["pre_tasks"])
 target_dependency_index = site_pre_tasks.index do |task|
