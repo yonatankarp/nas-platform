@@ -98,8 +98,9 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
   "docker.io/library/nextcloud" => "nextcloud",
   # #551: Karakeep runs its drizzle migrations against db.db before it serves,
-  # and Meilisearch refuses an index written by another version. Both pins live
-  # in the one Karakeep stack.
+  # and Meilisearch upgrades an index an older version wrote -- only because
+  # MEILI_UPGRADE_DB tells it to, and one-way either way. Both pins live in the
+  # one Karakeep stack.
   "ghcr.io/karakeep-app/karakeep" => "karakeep",
   "docker.io/getmeili/meilisearch" => "karakeep"
 }.freeze
@@ -125,6 +126,18 @@ SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|
         "#{package} is withheld from automerge but services/#{directory}/compose.yml " \
         "pins no such image; a rule naming an image the tree no longer has guards nothing")
 end
+
+# Withholding Meilisearch's automerge is only half of what its pin needs. Without
+# MEILI_UPGRADE_DB the engine refuses an index an older version wrote and
+# crash-loops -- measured, v1.53.2 on a v1.41.0 index -- so the first pull request
+# anybody merges would stop the host exactly as #511 did. services/karakeep/compose.yml
+# carries the measurement; this is what fails if the line goes.
+karakeep_compose_path = File.join(ROOT, "services", "karakeep", "compose.yml")
+karakeep_compose = File.file?(karakeep_compose_path) ? File.read(karakeep_compose_path) : ""
+meilisearch_service = karakeep_compose[/^  meilisearch:\n(.*?)(?=^  \S|^\S)/m, 1].to_s
+check(failures, meilisearch_service.match?(/^      MEILI_UPGRADE_DB: "true"$/),
+      "services/karakeep/compose.yml must set MEILI_UPGRADE_DB: \"true\" on the meilisearch " \
+      "service: without it a Meilisearch version bump crash-loops on the existing index")
 
 # The resolver below reads matchPackageNames, matchUpdateTypes, matchDatasources
 # and matchCategories and ignores matchFileNames, which is sound only while no
