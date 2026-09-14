@@ -294,9 +294,20 @@ if failures.empty?
   # Compose's dry run recreates nothing, so --check before the upgrade reaches
   # the older image, which has no indexer interface. That 404 is the review and
   # must not fail it; on a live run the pinned image is running and a 404 must.
+  # The verdict is an assert rather than the redacted read's own status list,
+  # because a redacted task that fails says only "censored".
+  indexer_read_assert = tasks.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_indexers.status")
+    end
+  end
   failures << "the Kapowarr indexer read may accept a 404 only under --check" unless
-    indexer_read &&
-    indexer_read.dig("ansible.builtin.uri", "status_code") == "{{ [200, 404] if ansible_check_mode else [200] }}"
+    Array(indexer_read_assert&.dig("ansible.builtin.assert", "that")).join(" ")
+      .include?("or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)")
+  failures << "the Kapowarr indexer read must fail with its status rather than redacted" unless
+    indexer_read && indexer_read["failed_when"] == false && indexer_read_assert &&
+    indexer_read_assert.dig("ansible.builtin.assert", "fail_msg").to_s.include?("kapowarr_indexers.status") &&
+    tasks.index(indexer_read) < tasks.index(indexer_read_assert)
   # The indexer interface is not a partial merge: it reads every field out of the
   # body and refuses a missing one. A write must restate the record it read,
   # replacing only the order, or it would own fields nothing declares. It reaches
@@ -316,6 +327,23 @@ if failures.empty?
     indexer_write.dig("ansible.builtin.uri", "body").to_s.include?("combine")
   failures << "the Kapowarr service order write must stay redacted" unless
     indexer_write && indexer_write["no_log"] == true
+  # Kapowarr tests the indexer against getcomics.org inside this request, with a
+  # 30s timeout of its own, so the request needs a bound above that and below an
+  # unbounded wait, and its failure has to say so where the redacted task cannot.
+  write_timeout = indexer_write&.dig("ansible.builtin.uri", "timeout")
+  failures << "the Kapowarr service order write must bound the call Kapowarr makes to getcomics.org" unless
+    write_timeout.is_a?(Integer) && write_timeout.between?(31, 120)
+  write_assert = tasks.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_service_order_write.status")
+    end
+  end
+  write_message = write_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
+  failures << "the Kapowarr service order write must fail with its status and the getcomics.org cause" unless
+    indexer_write && indexer_write["failed_when"] == false && write_assert &&
+    write_message.include?("kapowarr_service_order_write.status") && write_message.include?("ClientNotWorking") &&
+    Array(write_assert["when"]).join(" ").include?("kapowarr_service_preference_declared") &&
+    tasks.index(indexer_write) < tasks.index(write_assert)
   # None means the indexer was deleted and two means the database was edited
   # outside the application; either is refused, and before the write.
   indexer_refusal = tasks.find do |task|

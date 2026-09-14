@@ -527,12 +527,41 @@
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/indexers?api_key={{ kapowarr_settings_api_key }}"
     method: GET
-    status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
+    status_code: "{{ range(100, 600) | list }}"
     return_content: true
   register: kapowarr_indexers
+  failed_when: false
   changed_when: false
   check_mode: false
   no_log: true
+
+# The verdict on the read, and readable where the read is not: a redacted task
+# that fails says only "censored". It names the status and Kapowarr's own error
+# code and nothing else. Measured bodies carry no secret -- v1.3.1's missing route
+# is `{"error": "NotFound", "result": {}}` -- but the request URL carries the API
+# key, so no part of the request is ever printed.
+- name: Require a Kapowarr indexer read the role can act on
+  ansible.builtin.assert:
+    that:
+      - >-
+        kapowarr_indexers.status | default(0) | int == 200
+        or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)
+    fail_msg: >-
+      Kapowarr answered GET /api/indexers with status
+      {{ kapowarr_indexers.status | default('none') }}
+      ({{ (kapowarr_indexers.json | default({})).error | default('no error code', true) }}).
+      {{ kapowarr_indexers_missing if kapowarr_indexers.status | default(0) | int == 404
+         else kapowarr_indexers_unreadable }}
+  vars:
+    kapowarr_indexers_missing: >-
+      This live run has just deployed the pinned image, which serves that route,
+      so the Kapowarr answering on port {{ kapowarr_port }} is not the pinned
+      one. Check which image the container runs and whether something else holds
+      the port. No indexer was changed.
+    kapowarr_indexers_unreadable: >-
+      A status of -1 means no answer arrived at all. The API key this run holds
+      came from the login above, so a 401 means Kapowarr rotated it meanwhile.
+      No indexer was changed.
 
 - name: Report the Kapowarr download service order check mode defers
   ansible.builtin.debug:
@@ -639,12 +668,55 @@
     body: >-
       {{ kapowarr_getcomics_indexers[0]
          | combine({'gc_service_preference': kapowarr_service_preference_declared}) }}
-    status_code: [200]
+    status_code: "{{ range(100, 600) | list }}"
+    # Bounded above Kapowarr's own 30-second request timeout, so a slow but
+    # healthy getcomics.org still completes, and below an unbounded wait. A
+    # healthy write measured 0.16-0.26s.
+    timeout: 75
+  register: kapowarr_service_order_write
   when:
     - not ansible_check_mode
     - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
-  changed_when: true
+  failed_when: false
+  changed_when: kapowarr_service_order_write.status | default(0) | int == 200
   no_log: true
+
+# Readable, because the write is redacted. It prints the status, Kapowarr's error
+# code and, where Kapowarr gives one, its reason enum -- never the request, which
+# carries the API key, and never the rest of the result, which on InvalidKeyValue
+# echoes the submitted value back.
+- name: Require the Kapowarr download service order write to have been stored
+  ansible.builtin.assert:
+    that:
+      - kapowarr_service_order_write.status | default(0) | int == 200
+    fail_msg: >-
+      Kapowarr answered the download service order write on GetComics indexer
+      {{ kapowarr_getcomics_indexers[0].id }} with status
+      {{ kapowarr_service_order_write.status | default('none') }}
+      ({{ (kapowarr_service_order_write.json | default({})).error | default('no error code', true) }}{{
+         (', ' ~ kapowarr_service_order_write.json.result.reason)
+         if ((kapowarr_service_order_write.json | default({})).result | default({})).reason is defined
+         else '' }}), so the order was not stored.
+      {{ kapowarr_service_order_unreachable
+         if (kapowarr_service_order_write.json | default({})).error | default('') == 'ClientNotWorking'
+            or kapowarr_service_order_write.status | default(0) | int == -1
+         else kapowarr_service_order_refused }}
+  vars:
+    kapowarr_service_order_unreachable: >-
+      Kapowarr tests the GetComics indexer against its URL before it stores
+      anything, and answers ClientNotWorking when getcomics.org cannot be reached
+      from the NAS; a status of -1 means this request gave up after 75 seconds
+      while that test was still waiting. The write only runs because the order
+      was changed in the web interface. Restore the NAS's reach to getcomics.org
+      and rerun, or put the order back under Settings, Indexers so that no write
+      is needed. Until one of those happens every converge stops here, and
+      nothing after Kapowarr in site.yml runs.
+    kapowarr_service_order_refused: >-
+      Kapowarr validated the order it was sent and refused it. The order sent is
+      kapowarr_service_preference merged over the order the indexer held.
+  when:
+    - not ansible_check_mode
+    - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
 
 # Declaring volume_folder_naming does not migrate the library. Kapowarr stores
 # each volume's absolute folder in its own database at add time and re-derives

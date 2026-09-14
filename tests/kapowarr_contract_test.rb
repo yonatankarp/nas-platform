@@ -585,16 +585,46 @@ STATIC_ROWS = [
     # that is not the pinned one, and accepting it would skip the reconciliation.
     name: "an indexer read that accepts a 404 on a live run",
     break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/tasks/main.yml",
+                  "or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)",
+                  "or kapowarr_indexers.status | default(0) | int == 404")
+    },
+    expects: "the Kapowarr indexer read may accept a 404 only under --check"
+  },
+  {
+    # A redacted read that fails reports only "censored": no status, no body.
+    name: "an indexer read whose failure says only censored",
+    break: lambda { |root|
       role_tasks(root) do |document|
         task = find_task(document) do |candidate|
           candidate.dig("ansible.builtin.uri", "method") == "GET" &&
             candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers") &&
             !Array(candidate["tags"]).include?("platform_verify_kapowarr")
         end
-        task["ansible.builtin.uri"]["status_code"] = [200, 404]
+        task.delete("failed_when")
       end
     },
-    expects: "the Kapowarr indexer read may accept a 404 only under --check"
+    expects: "the Kapowarr indexer read must fail with its status rather than redacted"
+  },
+  {
+    # Without a bound the converge waits out whatever getcomics.org does.
+    name: "a service order write with no bound on the call to getcomics.org",
+    break: ->(root) { role_tasks(root) { |document| indexer_write(document)["ansible.builtin.uri"].delete("timeout") } },
+    expects: "the Kapowarr service order write must bound the call Kapowarr makes to getcomics.org"
+  },
+  {
+    # The one failure an operator most needs named is the one a redacted task hides.
+    name: "a service order write whose failure says only censored",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! do |task|
+          Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+            value.to_s.include?("kapowarr_service_order_write.status")
+          end
+        end
+      end
+    },
+    expects: "the Kapowarr service order write must fail with its status and the getcomics.org cause"
   },
   {
     # The write reaches getcomics.org, so an ungated one would make every
@@ -1983,9 +2013,30 @@ PROGRAM_MUTATIONS = [
   {
     label: "the check-mode-only 404 acceptance check",
     program: :static,
-    from: 'indexer_read.dig("ansible.builtin.uri", "status_code") == "{{ [200, 404] if ansible_check_mode else [200] }}"',
-    to: "true",
+    from: 'include?("or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)")',
+    to: 'include?("")',
     rows: ["an indexer read that accepts a 404 on a live run"]
+  },
+  {
+    label: "the legible indexer read failure check",
+    program: :static,
+    from: 'indexer_read && indexer_read["failed_when"] == false && indexer_read_assert &&',
+    to: "true || indexer_read_assert &&",
+    rows: ["an indexer read whose failure says only censored"]
+  },
+  {
+    label: "the bounded service order write check",
+    program: :static,
+    from: "write_timeout.is_a?(Integer) && write_timeout.between?(31, 120)",
+    to: "true",
+    rows: ["a service order write with no bound on the call to getcomics.org"]
+  },
+  {
+    label: "the legible service order write failure check",
+    program: :static,
+    from: 'indexer_write && indexer_write["failed_when"] == false && write_assert &&',
+    to: "true || write_assert &&",
+    rows: ["a service order write whose failure says only censored"]
   },
   {
     label: "the drift-gated service order write check",
