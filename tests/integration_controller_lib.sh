@@ -25,6 +25,9 @@ fixture_vars_file=${fixture_vars_file?}
 integration_media_usenet_enabled=${integration_media_usenet_enabled?}
 integration_media_usenet_provider=${integration_media_usenet_provider?}
 integration_media_adopt_existing=${integration_media_adopt_existing?}
+# Dark-landing narrowing for Karakeep, set in tests/integration_controller.sh.
+# Deleted with that block when the stack is turned on (#551, #564).
+integration_karakeep_deployment_enabled=${integration_karakeep_deployment_enabled?}
 
 # THE ONE COORDINATE THIS SANDBOX CANNOT SUPPLY, requested by every lane rather
 # than by the one that converges the service.
@@ -124,6 +127,7 @@ run_play() {
     -e "$integration_media_usenet_provider" \
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
+    -e karakeep_deployment_enabled="$integration_karakeep_deployment_enabled" \
     -e dozzle_pushover_api_url="$integration_dozzle_pushover_api_url" \
     -e deployment_pushover_api_url="$integration_deployment_pushover_api_url" \
     -e nas_compose_minimum=2.24.4 \
@@ -626,6 +630,7 @@ run_verification() {
     -e platform_project_name="$integration_project_namespace" \
     -e platform_beszel_agent_kind=portable \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
+    -e karakeep_deployment_enabled="$integration_karakeep_deployment_enabled" \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \
     "$@"
@@ -683,6 +688,10 @@ run_nextcloud_verify_only() {
 # of the lane's runtime assertion rather than a supplement to one.
 run_vaultwarden_verify_only() {
   run_verification vaultwarden
+}
+
+run_karakeep_verify_only() {
+  run_verification karakeep
 }
 
 # Audiobookshelf is the one reader the seerr lane's own suite tags leave

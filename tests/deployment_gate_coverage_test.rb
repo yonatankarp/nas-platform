@@ -176,24 +176,32 @@ ROOT = File.expand_path("..", __dir__)
 # MAC_UNREGISTERED_SERVICES name. SUBJECT_FLOOR is again the one that did not
 # move, by the rule above.
 #
-# THE FIFTH TIME IS THE FIRST THAT MOVES SUBJECT_FLOOR, and the reason is not the
-# one a reader would guess. #558 stage 4a gave ntfy a gate and turned it off.
-# Every floor was set to an impossible value and the check run: 17 implemented,
-# 3 gate variables, 16 subjects, a 17-name Mac roster, 16 tagged rows, 17 lane
-# tags, 31 site tags. Only GATE_VARIABLE_FLOOR moved on the count, 2 to 3.
-# SUBJECT_FLOOR moved by its RULE, 17 - 3 = 14, even though 16 subjects exist
-# today: it moved because a gate VARIABLE appeared, not because a stack went
-# dark, and the rule is what lets the next gate go dark without a guard fighting
-# it. Do not "correct" it to 15 or 16. ntfy stays in the Mac roster and in every
-# lane's tags because the service is still implemented until stage 4c removes
-# it, at which point every one of these is re-derived again.
-IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
-GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and ntfy _deployment_enabled
-SUBJECT_FLOOR = 14           # 17 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 17        # 15 registered contracts plus ntfy and vaultwarden
-TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 31          # the role tags site.yml declares
+# THE FIFTH TIME WAS AN ADDITION THAT LANDED DARK. #551 added Karakeep with its
+# gate false and its lane in the same change, and the floors were re-derived the
+# same way: 18 implemented, 3 gate variables, 17 tagged rows, 18 lane tags and 32
+# site tags (`documents` was already Nextcloud's, so only `karakeep` is new). The
+# Mac roster stays 17, because a dark stack is not a subject and Karakeep is in
+# neither half of it yet. SUBJECT_FLOOR stays 15 by its rule, 18 - 3.
+#
+# THE SIXTH TIME IS THE FIRST THAT MOVES SUBJECT_FLOOR DOWN, and the reason is
+# not the one a reader would guess. #558 stage 4a gave ntfy a gate and turned it
+# off, and it met #551 in a merge, so neither side's numbers were carried over:
+# every floor was set to an impossible value on the merged tree and the check
+# run: 18 implemented, 4 gate variables, 16 subjects, a 17-name Mac roster, 17
+# tagged rows, 18 lane tags, 32 site tags. GATE_VARIABLE_FLOOR moved on the
+# count, 3 to 4. SUBJECT_FLOOR moved by its RULE, 18 - 4 = 14, even though 16
+# subjects exist today: it moved because a gate VARIABLE appeared, not because a
+# stack went dark, and the rule is what lets the next gate go dark without a
+# guard fighting it. Do not "correct" it to 15 or 16. ntfy stays in the Mac
+# roster and in every lane's tags because the service is still implemented until
+# stage 4c removes it, at which point every one of these is re-derived again.
+IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
+GATE_VARIABLE_FLOOR = 4      # nextcloud, vaultwarden, karakeep and ntfy _deployment_enabled
+SUBJECT_FLOOR = 14           # 18 implemented, of which at most the 4 gated ones may be dark
+MAC_ROSTER_FLOOR = 17         # 15 registered contracts plus ntfy and vaultwarden
+TAGGED_LANE_FLOOR = 17        # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 18           # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 32           # the role tags site.yml declares
 
 failures = []
 
@@ -398,8 +406,8 @@ gate_names.each do |name|
   # the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
-  # it in full -- nextcloud, vaultwarden and ntfy are the three gates that
-  # exist, and all three ship false -- and because the harm is worst exactly where a per-service
+  # it in full -- nextcloud, vaultwarden, karakeep and ntfy are the four gates
+  # that exist, and all four ship false -- and because the harm is worst exactly where a per-service
   # check is most likely to be missing. AdGuard used to be the only one carrying
   # its own assertion, in tests/contracts/adguard-static.rb, and #577 removed
   # that contract with the service; neither survivor has a static contract to

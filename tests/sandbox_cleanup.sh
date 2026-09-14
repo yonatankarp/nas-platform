@@ -8,7 +8,7 @@ cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f
 # therefore never a cleanup target, and is left untouched.
 cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
 cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders bindery kapowarr pinchflat trailarr"
-cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud vaultwarden"
+cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud vaultwarden karakeep"
 cleanup_sandbox_ntfy_services='ntfy'
 cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
 cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
@@ -27,6 +27,7 @@ cleanup_sandbox_trailarr_services='trailarr'
 cleanup_sandbox_seerr_services='seerr'
 cleanup_sandbox_nextcloud_services='nextcloud nextcloud-cron nextcloud-db nextcloud-cache'
 cleanup_sandbox_vaultwarden_services='vaultwarden'
+cleanup_sandbox_karakeep_services='karakeep karakeep-chrome karakeep-meilisearch'
 
 # The sandbox-clearing program is tests/sandbox_cleanup_contents.py, and the
 # container reads it on standard input exactly as it read the heredoc that used
@@ -86,6 +87,27 @@ cleanup_sandbox_project_services() {
     seerr) cleanup_project_services=$cleanup_sandbox_seerr_services ;;
     nextcloud) cleanup_project_services=$cleanup_sandbox_nextcloud_services ;;
     vaultwarden) cleanup_project_services=$cleanup_sandbox_vaultwarden_services ;;
+    karakeep) cleanup_project_services=$cleanup_sandbox_karakeep_services ;;
+    *)
+      printf 'unknown sandbox cleanup project kind: %s\n' "$1" >&2
+      return 1
+      ;;
+  esac
+}
+
+# The Compose network keys each project may create, stated beside the services
+# and for the same reason: a network is owned only under a key declared here.
+# Karakeep is the first stack with named networks, and keeps them because they
+# are the isolation -- chrome reaches web but never Meilisearch. A key added to a
+# compose.yml and not here makes cleanup refuse, which is the failure to want.
+cleanup_sandbox_project_networks() {
+  case $1 in
+    karakeep) cleanup_project_networks='default browser search' ;;
+    ntfy | beszel | dozzle | audiobookshelf | komga | jellyfin | immich | paperless | \
+      arr | downloaders | bindery | kapowarr | pinchflat | trailarr | seerr | \
+      nextcloud | vaultwarden)
+      cleanup_project_networks=default
+      ;;
     *)
       printf 'unknown sandbox cleanup project kind: %s\n' "$1" >&2
       return 1
@@ -154,7 +176,24 @@ cleanup_named_container_kind() {
 
 cleanup_named_network_kind() {
   for cleanup_named_kind in $cleanup_sandbox_projects; do
-    [ "$1" = "$cleanup_owner_namespace-${cleanup_named_kind}_default" ] || continue
+    cleanup_sandbox_project_networks "$cleanup_named_kind" || return 1
+    for cleanup_named_network in $cleanup_project_networks; do
+      [ "$1" = "$cleanup_owner_namespace-${cleanup_named_kind}_$cleanup_named_network" ] ||
+        continue
+      return 0
+    done
+  done
+  return 1
+}
+
+# A Compose network under a project label is owned only when its name is that
+# project's name for a declared key and its network label is that same key.
+cleanup_owns_compose_network() {
+  cleanup_sandbox_project_networks "$cleanup_owner_kind" || return 1
+  for cleanup_owned_key in $cleanup_project_networks; do
+    [ "$cleanup_identity_name" = "${cleanup_owner_project}_$cleanup_owned_key" ] ||
+      continue
+    [ "$cleanup_identity_network" = "$cleanup_owned_key" ] || return 1
     return 0
   done
   return 1
@@ -218,8 +257,11 @@ cleanup_collect_namespace_ownership() {
 
   set --
   for cleanup_owner_kind in $cleanup_sandbox_projects; do
-    set -- "$@" \
-      --filter "name=^$cleanup_owner_namespace-${cleanup_owner_kind}_default\$"
+    cleanup_sandbox_project_networks "$cleanup_owner_kind" || return 1
+    for cleanup_owner_network in $cleanup_project_networks; do
+      set -- "$@" --filter \
+        "name=^$cleanup_owner_namespace-${cleanup_owner_kind}_$cleanup_owner_network\$"
+    done
   done
   cleanup_owner_ids=$(docker network ls -q --no-trunc "$@") || return 1
   for cleanup_owner_id in $cleanup_owner_ids; do
@@ -227,7 +269,7 @@ cleanup_collect_namespace_ownership() {
     if ! cleanup_named_network_kind "$cleanup_identity_name" ||
        [ "$cleanup_identity_project" != \
          "$cleanup_owner_namespace-$cleanup_named_kind" ] ||
-       [ "$cleanup_identity_network" != default ]; then
+       [ "$cleanup_identity_network" != "$cleanup_named_network" ]; then
       cleanup_refuse_ownership network "$cleanup_identity_name"
       return 1
     fi
@@ -254,11 +296,10 @@ cleanup_collect_namespace_ownership() {
       --filter "label=com.docker.compose.project=$cleanup_owner_project") || return 1
     for cleanup_owner_id in $cleanup_owner_ids; do
       cleanup_read_network_identity "$cleanup_owner_id" || return 1
-      # The name probe above already rejected a mislabelled ${project}_default.
-      # This is a second observation of daemon state, so it repeats the label
-      # check rather than trusting the earlier round trip.
-      if [ "$cleanup_identity_name" != "${cleanup_owner_project}_default" ] ||
-         [ "$cleanup_identity_network" != default ]; then
+      # The name probe above already rejected a mislabelled declared name. This
+      # is a second observation of daemon state, so it repeats the label check
+      # rather than trusting the earlier round trip.
+      if ! cleanup_owns_compose_network; then
         cleanup_refuse_ownership network "$cleanup_identity_name"
         return 1
       fi

@@ -4,8 +4,8 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-seventeen implemented service projects are Audiobookshelf, Beszel, Bindery,
-Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy, Paperless-ngx,
+eighteen implemented service projects are Audiobookshelf, Beszel, Bindery,
+Dozzle, Immich, Jellyfin, Kapowarr, Karakeep, Komga, Nextcloud, ntfy, Paperless-ngx,
 Pinchflat, Seerr, Trailarr, Vaultwarden, and the Arr and downloader projects,
 which this host runs because it enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
@@ -213,8 +213,9 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for sixteen of the seventeen implemented service projects; the
-seventeenth, ntfy, is dark. Its switch was turned off in #558 stage 4a, once
+unchanged for sixteen of the eighteen implemented service projects; the other
+two, Karakeep and ntfy, are dark. Karakeep landed dark in #551 and has nothing
+deployed to check yet. ntfy's switch was turned off in #558 stage 4a, once
 every publisher had moved to Pushover, so a converge takes that project to
 `state: absent` and there is no ntfy credential left to check; stage 4c removes
 the code once the container is confirmed gone. Neither of the other two gated
@@ -454,7 +455,7 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 

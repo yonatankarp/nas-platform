@@ -1,0 +1,55 @@
+---
+argument_specs:
+  main:
+    short_description: Deploy Karakeep, bootstrap its administrator, and prove its three containers are wired
+    options:
+      platform_project_name:
+        type: str
+        required: false
+      # NEXTAUTH_URL is built from it; roles/preflight requires it nonempty.
+      platform_public_host:
+        type: str
+        required: false
+      # Declared bool: the teardown and deploy branches are selected by it, and
+      # a string "false" is true in Jinja.
+      karakeep_deployment_enabled:
+        type: bool
+        required: true
+      karakeep_port:
+        type: int
+        required: false
+      karakeep_url:
+        type: str
+        required: false
+      karakeep_nextauth_url:
+        type: str
+        required: false
+      karakeep_publish_address:
+        type: str
+        required: false
+      karakeep_data_host_path:
+        type: path
+        required: false
+      karakeep_meilisearch_host_path:
+        type: path
+        required: false
+      karakeep_compose_project_name:
+        type: str
+        required: false
+      # Not credentials: the administrator's login identity. Nonsecret policy
+      # lives in inventory/group_vars/all/service_karakeep.yml.
+      karakeep_admin_name:
+        type: str
+        required: true
+      karakeep_admin_email:
+        type: str
+        required: true
+      vault_karakeep_nextauth_secret:
+        type: str
+        required: true
+      vault_karakeep_meili_master_key:
+        type: str
+        required: true
+      vault_karakeep_admin_password:
+        type: str
+        required: true

@@ -1,0 +1,53 @@
+---
+# karakeep: non-secret settings and the storage this service owns.
+# Cross-cutting facts live in main.yml; secrets in vault_karakeep.yml.
+
+# KARAKEEP IS DARK. #551 lands the whole stack with this false and turning it on
+# is a separate, deliberate change. roles/karakeep/defaults/main.yml is false as
+# well; that default is the floor under this decision, not a copy of it.
+#
+# WHAT THE FLIP WILL DO. Dark, the poller installs services/karakeep/ into the
+# release, host_prep creates both directories below (the nas_storage loop is
+# ungated) and the role renders its runtime .env -- nothing else. Turned on, the
+# first converge pulls three images, starts the stack with signups closed,
+# finds that the vault administrator cannot sign in, reopens signups with the
+# application published on 127.0.0.1 only, registers the administrator, and
+# closes the door again before the role yields. Setting it back to false
+# converges the project to `state: absent`.
+#
+# THE FLIP HAS OBLIGATIONS THIS CHANGE DELIBERATELY DOES NOT DISCHARGE, and
+# tests/deployment_gate_coverage_test.rb refuses the flip until they are:
+# `integration_karakeep_deployment_enabled` must be deleted from
+# tests/integration_controller.sh (while dark it is what lets the karakeep lane
+# converge the stack at all), the lane must gain its
+# `run_play --tags karakeep -e karakeep_deployment_enabled=false` step, and the
+# Mac lifecycle must account for the service.
+karakeep_deployment_enabled: false
+
+# The administrator's login identity. Not a credential -- the password is
+# vault_karakeep_admin_password -- and not a mailbox either: no SMTP is
+# configured, so Karakeep never sends to it. `.invalid` says so. Karakeep's first
+# registered account is its administrator, and tasks/bootstrap.yml registers
+# this one. Changing it after the bootstrap does not rename the account; the
+# converge fails at the sign-in probe instead, naming the state.
+karakeep_admin_name: admin
+karakeep_admin_email: nasadmin@karakeep.invalid
+
+nas_storage_karakeep:
+  # DATA_DIR: db.db (every bookmark, list, tag, user and API key, with bcrypt
+  # password hashes), queue.db, and the archived assets and screenshots. The only
+  # part of this stack that matters, and nothing else has a copy. The containers
+  # run as root, so the platform identity owns the directory rather than its
+  # contents.
+  - path: "{{ nas_docker_root }}/karakeep/data"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: critical
+  # The Meilisearch index. Rebuildable from the data root above -- Karakeep
+  # reindexes from its own database -- and it will be the larger of the two.
+  - path: "{{ nas_docker_root }}/karakeep/meilisearch"
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0755"
+    recovery: cache

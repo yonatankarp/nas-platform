@@ -123,7 +123,9 @@
       "matchPackageNames": [
         "ghcr.io/vavallee/bindery",
         "ghcr.io/paperless-ngx/paperless-ngx",
-        "docker.io/library/nextcloud"
+        "docker.io/library/nextcloud",
+        "ghcr.io/karakeep-app/karakeep",
+        "docker.io/getmeili/meilisearch"
       ],
       "matchUpdateTypes": [
         "major",

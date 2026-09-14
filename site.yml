@@ -159,10 +159,10 @@
     - role: nextcloud
       tags: [nextcloud, documents]
 
-    # Vaultwarden last, and the position carries no dependency either: it reads
-    # no platform service and none reads it. It is last because it is the
-    # newest, and because a password manager that fails to converge should not
-    # be able to hold up the stacks that were already running.
+    # Vaultwarden, and the position carries no dependency either: it reads no
+    # platform service and none reads it. It was last because it was the newest,
+    # and a password manager that fails to converge should not be able to hold
+    # up the stacks that were already running.
     #
     # No `when:` here, deliberately, for the reason the entry above gives: the
     # gate is `vaultwarden_deployment_enabled` and it lives inside the role, so
@@ -170,6 +170,13 @@
     # still run when it is false.
     - role: vaultwarden
       tags: [vaultwarden, secrets]
+
+    # Karakeep last: it reads no platform service and none reads it, and it is
+    # the newest -- the one whose first converge registers an administrator, so
+    # a failure there should hold up nothing that was already running. Its gate
+    # lives inside the role, for the reason the entries above give.
+    - role: karakeep
+      tags: [karakeep, documents]
 
   post_tasks:
     # After every service, so reaching it means the whole run converged: the

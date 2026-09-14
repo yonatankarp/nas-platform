@@ -79,7 +79,8 @@ module ClassifyChanges
     "immich" => %w[immich],
     "paperless" => %w[paperless paperless-ngx paperless_ngx],
     "nextcloud" => %w[nextcloud],
-    "vaultwarden" => %w[vaultwarden]
+    "vaultwarden" => %w[vaultwarden],
+    "karakeep" => %w[karakeep]
   }.freeze
   # Paths the policy gate checks and nothing else in CI reads. The auto-deploy
   # playbook and its two roles are reachable only from

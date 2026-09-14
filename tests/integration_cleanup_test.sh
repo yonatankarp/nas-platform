@@ -91,6 +91,48 @@ test_cleanup_service_registry() {
     done
   done
 
+  # Every registered project declares its Compose network keys with default
+  # among them, and every network a service's compose.yml has Compose create is
+  # declared for the project of that name, so a new one cannot land undeclared
+  # and surface only as a refused cleanup at the end of a lane. An external
+  # network is not Compose's to create -- the media-control bridge is host_prep's
+  # and cleanup owns it by its own rule -- so it is not a key.
+  for registered_cleanup_project in $cleanup_sandbox_projects; do
+    cleanup_sandbox_project_networks "$registered_cleanup_project" || exit 1
+    case " $cleanup_project_networks " in
+      *" default "*) ;;
+      *)
+        printf 'sandbox cleanup project declares no default network: %s\n' \
+          "$registered_cleanup_project" >&2
+        exit 1
+        ;;
+    esac
+  done
+  compose_named_networks=$(ruby -ryaml -e '
+    ARGV.sort.each do |path|
+      networks = YAML.safe_load_file(path, aliases: true)&.fetch("networks", nil) || {}
+      networks.each do |key, definition|
+        next if definition.is_a?(Hash) && definition["external"]
+        puts "#{File.basename(File.dirname(path))} #{key}"
+      end
+    end
+  ' "$cleanup_sandbox_repo_dir"/services/*/compose.yml) || exit 1
+  [ -n "$compose_named_networks" ] || {
+    printf '%s\n' 'no compose.yml declares a named network; the declaration check reads nothing' >&2
+    exit 1
+  }
+  printf '%s\n' "$compose_named_networks" | while read -r compose_kind compose_network; do
+    cleanup_sandbox_project_networks "$compose_kind" || exit 1
+    case " $cleanup_project_networks " in
+      *" $compose_network "*) ;;
+      *)
+        printf 'sandbox cleanup does not declare %s network: %s\n' \
+          "$compose_kind" "$compose_network" >&2
+        exit 1
+        ;;
+    esac
+  done || exit 1
+
   for expected_cleanup_namespace in nas-platform-cleanup-a1b2c3 \
     nas-platform-cleanup-a1b2c3-negative; do
     printf '%s\n' "$(cleanup_sandbox_namespaces nas-platform-cleanup-a1b2c3)" |
@@ -260,6 +302,116 @@ test_docker_failure() {
   failure_sandbox=
 }
 
+# A named Compose network is owned only as ${project}_${key} for a declared key,
+# carrying that project label and that key as its network label. The fake daemon
+# holds a table of networks and answers the calls cleanup makes against it; it
+# renders `network inspect` only for the exact format cleanup sends, field by
+# field in that order, so a changed format fails here instead of passing blind.
+test_named_networks() {
+  named_scenario=$1
+  failure_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
+  named_namespace=nas-platform-cleanup-$(printf '%s' "${failure_sandbox##*.}" |
+    tr '[:upper:]' '[:lower:]')
+  named_project=$named_namespace-karakeep
+  failure_diagnostic=$(mktemp "${TMPDIR:-/tmp}/nas-platform-cleanup-diagnostic.XXXXXX")
+  named_removed=$failure_diagnostic.removed
+  : > "$named_removed"
+  # id|name|com.docker.compose.project|com.docker.compose.network
+  named_table="net-search|${named_project}_search|$named_project|search"
+  named_target=${named_project}_browser
+  case $named_scenario in
+    owned)
+      named_table="$named_table net-browser|${named_project}_browser|$named_project|browser"
+      ;;
+    undeclared-key)
+      named_target=${named_project}_scraper
+      named_table="$named_table net-scraper|${named_project}_scraper|$named_project|scraper"
+      ;;
+    network-label)
+      named_table="$named_table net-browser|${named_project}_browser|$named_project|search"
+      ;;
+    project-label)
+      named_table="$named_table net-browser|${named_project}_browser|somebody-else|browser"
+      ;;
+    *) printf 'unknown named network scenario: %s\n' "$named_scenario" >&2; exit 2 ;;
+  esac
+  named_status=0
+  (
+    docker() {
+      case "${1-}:${2-}" in
+        network:ls)
+          shift 2
+          while [ "$#" -gt 0 ]; do
+            if [ "$1" = --filter ]; then
+              for named_row in $named_table; do
+                named_id=${named_row%%|*}
+                named_rest=${named_row#*|}
+                named_name=${named_rest%%|*}
+                named_rest=${named_rest#*|}
+                named_label_project=${named_rest%%|*}
+                case $2 in
+                  "name=^$named_name\$" | \
+                    "label=com.docker.compose.project=$named_label_project")
+                    printf '%s\n' "$named_id"
+                    ;;
+                esac
+              done
+              shift
+            fi
+            shift
+          done
+          ;;
+        network:inspect)
+          [ "${4-}" = --format ] &&
+            [ "${5-}" = '{{.Name}}|{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.network"}}' ] ||
+            return 99
+          for named_row in $named_table; do
+            [ "${named_row%%|*}" = "${3-}" ] || continue
+            printf '%s\n' "${named_row#*|}"
+            return 0
+          done
+          return 1
+          ;;
+        network:rm) printf '%s\n' "${3-}" >> "$named_removed" ;;
+      esac
+      return 0
+    }
+    cleanup_sandbox "$failure_sandbox"
+  ) >"$failure_diagnostic" 2>&1 || named_status=$?
+
+  if [ "$named_scenario" = owned ]; then
+    [ "$named_status" -eq 0 ] && [ ! -e "$failure_sandbox" ] || {
+      cat "$failure_diagnostic" >&2
+      printf '%s\n' 'cleanup did not own the declared karakeep networks' >&2
+      exit 1
+    }
+    [ "$(LC_ALL=C sort "$named_removed" | tr '\n' ' ')" = 'net-browser net-search ' ] || {
+      printf 'cleanup removed the wrong networks: %s\n' "$(tr '\n' ' ' < "$named_removed")" >&2
+      exit 1
+    }
+  else
+    [ "$named_status" -ne 0 ] || {
+      printf 'cleanup accepted karakeep %s network ownership mismatch\n' "$named_scenario" >&2
+      exit 1
+    }
+    [ "$(grep -Fxc "Refusing cleanup ownership for network $named_target" \
+      "$failure_diagnostic")" -eq 1 ] || {
+      cat "$failure_diagnostic" >&2
+      printf 'cleanup omitted the exact refusal for %s\n' "$named_target" >&2
+      exit 1
+    }
+    [ ! -s "$named_removed" ] && [ -d "$failure_sandbox" ] || {
+      printf 'cleanup mutated state before refusing karakeep %s\n' "$named_scenario" >&2
+      exit 1
+    }
+    rmdir "$failure_sandbox"
+  fi
+  failure_sandbox=
+  unlink "$named_removed"
+  unlink "$failure_diagnostic"
+  failure_diagnostic=
+}
+
 test_symlink_swap() {
   swap_sandbox=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup.XXXXXX")
   swap_victim=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-cleanup-target.XXXXXX")
@@ -367,6 +519,12 @@ case "$test_case" in
   docker-network-list) test_docker_failure ownership-network-list; exit 0 ;;
   docker-network-inspect) test_docker_failure ownership-network-inspect; exit 0 ;;
   docker-network-rm) test_docker_failure ownership-network-rm; exit 0 ;;
+  named-networks)
+    for named_case in owned undeclared-key network-label project-label; do
+      test_named_networks "$named_case"
+    done
+    exit 0
+    ;;
   symlink-swap) test_symlink_swap; exit 0 ;;
   trap-statuses) test_trap_statuses; exit 0 ;;
   python-root-symlink) test_python_rejects_root_symlink; exit 0 ;;
@@ -384,6 +542,9 @@ test_docker_failure ownership-rm
 test_docker_failure ownership-network-list
 test_docker_failure ownership-network-inspect
 test_docker_failure ownership-network-rm
+for named_case in owned undeclared-key network-label project-label; do
+  test_named_networks "$named_case"
+done
 test_symlink_swap
 test_trap_statuses
 test_python_rejects_root_symlink

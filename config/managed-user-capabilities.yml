@@ -183,6 +183,24 @@ services:
       create: NEXTCLOUD_ADMIN_USER/NEXTCLOUD_ADMIN_PASSWORD
       authenticate: ocs/v2.php/cloud/user
       reconcile: occ user:resetpassword, on an authentication failure only
+  # Karakeep has one platform identity, its administrator, and no managed
+  # non-administrator users. Karakeep makes its first registered account the
+  # administrator and cannot seed one from the environment, so the identity is
+  # created through the API: roles/karakeep registers it on the converge that
+  # first starts the stack, with signups open only while the listener is on
+  # loopback. Nothing reconciles it afterwards -- a password that stops signing
+  # in fails the converge rather than being reset, because the only reset path
+  # needs the administrator session the failure means we do not have.
+  karakeep:
+    preserves_unmanaged_users: true
+    password_rotation: refuse
+    existing_identity_password_update: forbidden
+    mode: api
+    interfaces:
+      list: api/trpc/users.list
+      create: api/trpc/users.create, first account only, signups open on loopback
+      authenticate: api/auth/callback/credentials
+      reconcile: none; a password that no longer signs in fails the converge
   # THE ONE SERVICE WHERE THIS PLATFORM MANAGES NO IDENTITY AT ALL, and the
   # register has to be able to say so. Every other row here describes how Ansible
   # declares an identity and what it will and will not do to reconcile one.

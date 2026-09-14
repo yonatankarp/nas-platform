@@ -601,7 +601,14 @@ MAC_REVIEW_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
-                   "proved by its Docker integration suite"
+                   "proved by its Docker integration suite",
+  # #551 landed Karakeep dark: karakeep_deployment_enabled is false and the Mac
+  # lane converges the project to `state: absent`, so a review entry would tell
+  # an operator to exercise a service the lane deliberately did not deploy. The
+  # flip removes this exemption and writes the entry;
+  # tests/deployment_gate_coverage_test.rb is what makes that mandatory.
+  "karakeep" => "its stack is gated off until the change that turns it on, and " \
+                "its integration suite proves the bootstrap and the wiring"
 }.freeze
 
 # One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"
