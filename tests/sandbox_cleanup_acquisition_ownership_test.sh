@@ -1121,9 +1121,10 @@ done
 # match. A wrong project, an extra label, and a labelled network under another
 # name each refuse before anything is deleted.
 for bridge_purpose in media-control alert-relay; do
-  bridge_network=$fixture_namespace-$bridge_purpose
   for media_mismatch in project extra-label unexpected-name; do
     new_sandbox
+    # After new_sandbox, which is what derives this run's namespace.
+    bridge_network=$fixture_namespace-$bridge_purpose
     case $media_mismatch in
       project)
         media_refusal_target=$bridge_network
