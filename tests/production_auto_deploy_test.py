@@ -14,6 +14,7 @@ import sys
 import tempfile
 from unittest import mock
 import unittest
+from urllib.error import HTTPError, URLError
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
@@ -1252,6 +1253,30 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertEqual(
             shutil.which("ansible-playbook", path=environment["PATH"]), str(fake)
         )
+
+    def test_only_the_deployments_plays_are_handed_a_summary_path(self):
+        """The #558 handshake's first half: with the variable, site.yml writes the
+        summary and publishes nothing, so it must reach the plays deploy() runs
+        and nothing else -- verify.yml shares the environment builder."""
+
+        config = self.loaded_config()
+        variable = production_auto_deploy.SUMMARY_PATH_ENVIRONMENT
+        _outcome, calls, options = self.deploy_with(config)
+        plays = [option["env"] for call, option in zip(calls, options) if call[0] == "ansible-playbook"]
+        self.assertEqual(len(plays), 4)
+        for environment in plays:
+            self.assertEqual(environment.get(variable),
+                             str(config.state_root / "deployment-summary.json"))
+
+        seen = []
+        with mock.patch.object(production_auto_deploy, "_run",
+                               side_effect=lambda arguments, **kwargs: seen.append(kwargs["env"])
+                               or subprocess.CompletedProcess(arguments, 0, b"", b"")):
+            production_auto_deploy._run_verify_play(
+                config, config.verify_tags, config.log_root / "verify.log", 5)
+        (environment,) = seen
+        self.assertNotIn(variable, environment,
+                         "the hourly verify must never be handed the summary path")
 
     def test_the_plays_are_told_the_poller_already_holds_the_lock(self):
         """deploy() runs inside poll()'s lock, and deployment_bundle refuses a
@@ -2636,8 +2661,13 @@ class PollTest(PollHarness, PollerTestCase):
         # A lost notification must not cast doubt on the recorded state.
         self.assertIsNone(production_auto_deploy.read_state(config)["last_successful"])
 
-    def test_a_successful_deployment_leaves_reporting_to_the_deployment(self):
+    def test_a_release_whose_site_yml_wrote_no_summary_sends_nothing(self):
+        """The handshake's #327 row: this poller meeting a site.yml older than the
+        variable. That site.yml published its own plain summary, so a second
+        message here would be the release's second; and nothing may raise."""
+
         config = self.loaded_config()
+        buffer = io.StringIO()
         with mock.patch.object(
             production_auto_deploy, "resolve_main_sha", return_value=MAIN_SHA
         ), mock.patch.object(
@@ -2650,14 +2680,13 @@ class PollTest(PollHarness, PollerTestCase):
             production_auto_deploy, "publish", return_value=True
         ) as published, mock.patch.object(
             production_auto_deploy, "deploy", return_value=True
-        ):
+        ), contextlib.redirect_stderr(buffer):
             self.assertTrue(production_auto_deploy.poll(config))
 
-        # site.yml publishes the summary that says what shipped; a second
-        # message here would carry a revision and say less. Nothing reaches the
-        # Deployments app from the poller either.
         notified.assert_not_called()
         published.assert_not_called()
+        self.assertEqual(buffer.getvalue().count("\n"), 1, buffer.getvalue())
+        self.assertIn("no release message", buffer.getvalue())
         self.assertEqual(
             production_auto_deploy.read_state(config)["last_successful"]["sha"],
             MAIN_SHA,
@@ -2688,6 +2717,339 @@ class PollTest(PollHarness, PollerTestCase):
             self.assertTrue(acquired)
             probe = subprocess.run([sys.executable, "-c", program])
             self.assertEqual(probe.returncode, 0)
+
+
+class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
+    """The one Deployments message a verified release gets (#558).
+
+    site.yml writes what shipped; the poller links it and sends it. Driven
+    through poll() where the outcome matters, and through render_release where
+    only the shape of the message does.
+    """
+
+    RADARR_COMMIT = "d" * 40
+    BAZARR_COMMIT = "e" * 40
+    PULLS = {RADARR_COMMIT: 626, BAZARR_COMMIT: 624}
+    ROCKET = "\U0001f680 Deployed · "
+    IMAGES_HEADER = "\U0001f4e6 <b>Images</b>"
+    CHANGES_HEADER = "\U0001f4dd <b>Changes</b>"
+    FOOTER = "⏱️ "
+
+    def summary(self, **overrides):
+        payload = {
+            "version": 1,
+            "release": MAIN_SHA,
+            "previous": OTHER_SHA,
+            "images": [
+                {"name": "radarr", "kind": "updated", "from": "6.2.0", "to": "6.3.0",
+                 "commit": self.RADARR_COMMIT},
+                {"name": "bazarr", "kind": "added", "from": None, "to": "1.5.1",
+                 "commit": self.BAZARR_COMMIT},
+                {"name": "readarr", "kind": "removed", "from": "0.4.0", "to": None, "commit": None},
+            ],
+            "commits": [
+                {"sha": self.RADARR_COMMIT, "subject": "chore(deps): update radarr to 6.3.0"},
+                {"sha": self.BAZARR_COMMIT, "subject": "feat(arr): add bazarr"},
+                {"sha": "f" * 40, "subject": "fix(arr): retire readarr"},
+                {"sha": "1" * 40, "subject": "docs: say what shipped & <why>"},
+            ],
+        }
+        payload.update(overrides)
+        return payload
+
+    def write_summary(self, config, payload):
+        target = config.state_root / "deployment-summary.json"
+        target.write_bytes(payload if isinstance(payload, bytes) else json.dumps(payload).encode())
+
+    def pull_answer(self, url):
+        """GitHub's commit-to-pull-request answer for the fixture commits."""
+
+        number = next((n for sha, n in self.PULLS.items() if f"/commits/{sha}/pulls" in url), None)
+        pulls = [] if number is None else [
+            {"html_url": f"https://github.com/yonatankarp/nas-platform/pull/{number}"}]
+        return json.dumps(pulls).encode()
+
+    @contextlib.contextmanager
+    def github(self, answer=None):
+        """urlopen answering each request through answer(url): bytes, or an exception to raise."""
+
+        seen = []
+
+        def opener(request, timeout):
+            seen.append(request.full_url)
+            outcome = (answer or self.pull_answer)(request.full_url)
+            if isinstance(outcome, BaseException):
+                raise outcome
+            response = mock.MagicMock()
+            response.__enter__.return_value.read.return_value = outcome
+            return response
+
+        with mock.patch.object(production_auto_deploy, "urlopen", side_effect=opener):
+            yield seen
+
+    def poll_release(self, config, deployed=True, curl=ACCEPTED, curl_exit=0, answer=None):
+        """One poll that deploys MAIN_SHA; returns its outcome, every curl argv, GitHub URLs, stderr."""
+
+        sent = []
+
+        def run(arguments, **kwargs):
+            sent.append([str(argument) for argument in arguments])
+            return subprocess.CompletedProcess(arguments, curl_exit, curl, b"")
+
+        stderr = io.StringIO()
+        with self.seeing(MAIN_SHA, (self.green_run(MAIN_SHA),)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=deployed
+        ), mock.patch.object(production_auto_deploy, "_run", side_effect=run), \
+                self.github(answer) as seen, contextlib.redirect_stderr(stderr):
+            outcome = production_auto_deploy.poll(config)
+        return outcome, sent, seen, stderr.getvalue()
+
+    def render(self, config, summary, links=None):
+        return production_auto_deploy.render_release(
+            config, summary, {} if links is None else links,
+            "2026-09-14T10:00:00Z", "2026-09-14T10:06:12Z")
+
+    def test_a_verified_release_sends_one_deployments_message_at_priority_0(self):
+        config = self.loaded_config()
+        self.write_summary(config, self.summary())
+        outcome, sent, seen, stderr = self.poll_release(config)
+
+        self.assertTrue(outcome)
+        (arguments,) = sent
+        self.assertEqual(arguments[arguments.index("--config") + 1], str(self.deployments_notifier))
+        form = form_of(arguments)
+        self.assertEqual(form["priority"], "0")
+        self.assertNotIn("ttl", form)
+        self.assertEqual(form["html"], "1")
+        self.assertEqual(form["title"], self.ROCKET + "radarr, bazarr +1")
+        self.assertEqual(form["url"],
+                         f"https://github.com/yonatankarp/nas-platform/compare/{OTHER_SHA}...{MAIN_SHA}")
+        self.assertEqual(form["url_title"], "View changes on GitHub")
+        self.assertRegex(form["timestamp"], r"\A[0-9]{10}\Z")
+        # Two image commits, each asked about once; the removed image has none.
+        self.assertEqual(sorted(seen), sorted(
+            f"https://api.github.com/repos/yonatankarp/nas-platform/commits/{sha}/pulls"
+            for sha in (self.RADARR_COMMIT, self.BAZARR_COMMIT)))
+        self.assertEqual(stderr, "")
+        lines = form["message"].split("\n")
+        self.assertEqual(lines[:-1], [
+            self.IMAGES_HEADER,
+            '<b>radarr</b> 6.2.0 → <font color="#2e7d32">6.3.0</font> · '
+            '<a href="https://github.com/yonatankarp/nas-platform/pull/626">release notes</a>',
+            '\U0001f195 <b>bazarr</b> <font color="#2e7d32">1.5.1</font> · '
+            '<a href="https://github.com/yonatankarp/nas-platform/pull/624">release notes</a>',
+            '\U0001f5d1️ <b>readarr</b> <font color="#9e9e9e">removed</font>',
+            "",
+            self.CHANGES_HEADER,
+            f'• <a href="https://github.com/yonatankarp/nas-platform/commit/{self.RADARR_COMMIT[:12]}">'
+            "chore(deps): update radarr to 6.3.0</a>",
+            f'• <a href="https://github.com/yonatankarp/nas-platform/commit/{self.BAZARR_COMMIT[:12]}">'
+            "feat(arr): add bazarr</a>",
+            f'• <a href="https://github.com/yonatankarp/nas-platform/commit/{"f" * 12}">'
+            "fix(arr): retire readarr</a>",
+            f'• <a href="https://github.com/yonatankarp/nas-platform/commit/{"1" * 12}">'
+            "docs: say what shipped &amp; &lt;why&gt;</a>",
+            "",
+        ])
+        # An ordinary release fits whole: nothing counted away as "more".
+        self.assertNotIn("… and ", form["message"])
+        # The duration is the poll's own clock, so only its place is pinned here;
+        # test_the_footer_carries_the_duration pins its text.
+        self.assertRegex(
+            lines[-1],
+            "\\A" + re.escape(self.FOOTER) + r"\S+ · " + re.escape(
+                f'<font color="#9e9e9e"><a href="https://github.com/yonatankarp/nas-platform/compare/'
+                f'{OTHER_SHA[:12]}...{MAIN_SHA[:12]}">{OTHER_SHA[:7]} → {MAIN_SHA[:7]}</a></font>') + r"\Z",
+        )
+
+    def test_the_footer_carries_the_duration(self):
+        config = self.loaded_config()
+        footer = self.render(config, self.summary())["message"].split("\n")[-1]
+
+        self.assertTrue(footer.startswith(f"{self.FOOTER}6m 12s · "), footer)
+
+    def test_the_title_names_what_moved_on_its_own(self):
+        """The lock screen shows the title and no HTML, so the title is the message."""
+
+        config = self.loaded_config()
+        image = {"kind": "updated", "from": "1.0.0", "to": "2.0.0", "commit": None}
+        for label, images, commits, expected in (
+            ("one image", [{**image, "name": "radarr", "to": "6.3.0"}], [], "radarr 6.3.0"),
+            ("one removed image", [{**image, "name": "readarr", "kind": "removed", "to": None}], [],
+             "readarr removed"),
+            ("three services", [{**image, "name": n} for n in ("radarr", "sonarr", "bazarr")], [],
+             "radarr, sonarr +1"),
+            ("one service's two containers",
+             [{**image, "name": n} for n in ("immich/immich-server", "immich/immich-ml")], [], "immich"),
+            ("commits alone", [], [{"sha": "1" * 40, "subject": s} for s in "abcd"], "4 commits"),
+            ("one commit", [], [{"sha": "1" * 40, "subject": "a"}], "1 commit"),
+        ):
+            with self.subTest(label):
+                fields = self.render(config, self.summary(images=images, commits=commits))
+                self.assertEqual(fields["title"], self.ROCKET + expected)
+                self.assertNotIn("<", fields["title"])
+
+    def test_an_image_without_a_pull_request_links_no_release_notes(self):
+        config = self.loaded_config()
+        lines = self.render(config, self.summary(), links={self.BAZARR_COMMIT: "https://github.com/p/1"})[
+            "message"].split("\n")
+
+        self.assertEqual(lines[1], '<b>radarr</b> 6.2.0 → <font color="#2e7d32">6.3.0</font>')
+        self.assertTrue(lines[2].endswith('<a href="https://github.com/p/1">release notes</a>'), lines[2])
+        self.assertNotIn("release notes", lines[3])
+
+    def test_github_unreachable_costs_only_the_pull_request_links(self):
+        config = self.loaded_config()
+        self.write_summary(config, self.summary())
+        outcome, sent, seen, stderr = self.poll_release(
+            config, answer=lambda url: URLError("unreachable"))
+
+        self.assertTrue(outcome)
+        (arguments,) = sent
+        message = form_of(arguments)["message"]
+        self.assertNotIn("release notes", message)
+        self.assertIn(f"/commit/{self.RADARR_COMMIT[:12]}", message)
+        self.assertIn(f"/compare/{OTHER_SHA[:12]}...{MAIN_SHA[:12]}", message)
+        self.assertEqual(len(seen), 1, "the first failure must stop further lookups")
+        self.assertEqual(stderr.count("\n"), 1, stderr)
+        self.assertIn("release notes links omitted", stderr)
+
+    def test_lookups_stop_at_a_403_ask_each_commit_once_and_stop_at_eight(self):
+        config = self.loaded_config()
+        forbidden = HTTPError("https://api.github.com", 403, "rate limit exceeded", {}, None)
+        with self.github(lambda url: forbidden) as seen, contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(production_auto_deploy.release_pull_requests(config, ["1" * 40, "2" * 40]), {})
+        self.assertEqual(len(seen), 1, "a 403 must stop the lookups: the budget is shared with the poll")
+
+        shas = [f"{index:040x}" for index in range(12)]
+        with self.github(lambda url: b'[{"html_url": "https://github.com/p/1"}]') as seen:
+            links = production_auto_deploy.release_pull_requests(config, [shas[0], *shas, shas[1]])
+        self.assertEqual(len(seen), production_auto_deploy.MAX_PULL_REQUEST_LOOKUPS)
+        self.assertEqual(production_auto_deploy.MAX_PULL_REQUEST_LOOKUPS, 8)
+        self.assertEqual([url.split("/commits/")[1][:40] for url in seen], shas[:8])
+        self.assertEqual(list(links), shas[:8])
+
+    def test_a_missing_stale_or_malformed_summary_sends_nothing_and_never_raises(self):
+        image = self.summary()["images"][0]
+        for label, payload in (
+            ("no summary at all", None),
+            ("another release's summary", self.summary(release=OTHER_SHA)),
+            ("a version 2 summary", self.summary(version=2)),
+            ("a version of true", self.summary(version=True)),
+            ("not JSON", b"{not json"),
+            ("not UTF-8", b"\xff\xfe"),
+            ("a JSON list", b"[]"),
+            ("JSON nested past the recursion limit", b"[" * 200_000),
+            ("an oversized summary", b" " * (production_auto_deploy.MAX_RESPONSE_BYTES + 1)),
+            ("images that are not a list", self.summary(images="radarr")),
+            ("an image commit that is not a SHA", self.summary(images=[{**image, "commit": "abc"}])),
+            ("an unknown image kind", self.summary(images=[{**image, "kind": "rebuilt"}])),
+            ("a commit without a subject", self.summary(commits=[{"sha": "1" * 40}])),
+            ("a previous that is not a SHA", self.summary(previous="HEAD~1")),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                config = self.loaded_config()
+                if payload is not None:
+                    self.write_summary(config, payload)
+                outcome, sent, seen, stderr = self.poll_release(config)
+                self.assertTrue(outcome)
+                self.assertEqual(sent, [])
+                self.assertEqual(seen, [])
+                self.assertEqual(stderr.count("\n"), 1, stderr)
+                self.assertIn(f"no release message for {MAIN_SHA[:9]}", stderr)
+                self.assertEqual(
+                    production_auto_deploy.read_state(config)["last_successful"]["sha"], MAIN_SHA)
+
+    def test_a_failed_deployment_sends_no_release_message(self):
+        config = self.loaded_config()
+        self.write_summary(config, self.summary())
+        outcome, sent, seen, _stderr = self.poll_release(config, deployed=False)
+
+        self.assertFalse(outcome)
+        self.assertEqual(sent, [], "a failure is notify()'s, which this harness stubs")
+        self.assertEqual(seen, [])
+
+    def test_a_refused_or_unanswered_release_message_changes_no_outcome(self):
+        for label, curl, curl_exit in (
+            ("refused", b'{"status":0,"errors":["application token is invalid"]}\n400', 0),
+            ("unanswered", b"curl: (6) Could not resolve host\n000", 6),
+        ):
+            with self.subTest(label):
+                self.setUp()
+                config = self.loaded_config()
+                self.write_summary(config, self.summary())
+                with mock.patch.object(production_auto_deploy, "load_config", return_value=config):
+                    sent = []
+
+                    def run(arguments, **kwargs):
+                        sent.append(arguments)
+                        return subprocess.CompletedProcess(arguments, curl_exit, curl, b"")
+
+                    stderr = io.StringIO()
+                    with self.seeing(MAIN_SHA, (self.green_run(MAIN_SHA),)), mock.patch.object(
+                        production_auto_deploy, "deploy", return_value=True
+                    ), mock.patch.object(production_auto_deploy, "_run", side_effect=run), \
+                            self.github(), contextlib.redirect_stderr(stderr), \
+                            contextlib.redirect_stdout(io.StringIO()):
+                        code = production_auto_deploy.main(["--config", str(self.config_path), "--poll"])
+                self.assertEqual(len(sent), 1)
+                self.assertEqual(code, 0)
+                self.assertEqual(
+                    production_auto_deploy.read_state(config)["last_successful"]["sha"], MAIN_SHA)
+                self.assertIn("release notification failed", stderr.getvalue())
+
+    def test_sixty_images_and_forty_commits_fit_with_markers_and_keep_the_footer(self):
+        config = self.loaded_config()
+        images = [
+            {"name": f"service-{index:02d}", "kind": "updated", "from": "1.0.0", "to": "2.0.0",
+             "commit": f"{index:040x}"}
+            for index in range(60)
+        ]
+        commits = [{"sha": f"{index + 100:040x}", "subject": f"chore(deps): update service-{index:02d} & co"}
+                   for index in range(40)]
+        links = {image["commit"]: f"https://github.com/yonatankarp/nas-platform/pull/{700 + i}"
+                 for i, image in enumerate(images)}
+        summary = self.summary(images=images, commits=commits)
+        message = self.render(config, summary, links)["message"]
+        whole = [production_auto_deploy._release_image_line(image, links) for image in images]
+
+        self.assertLessEqual(len(message), production_auto_deploy.MAX_MESSAGE_CHARACTERS)
+        lines = message.split("\n")
+        self.assertTrue(lines[-1].startswith(self.FOOTER) and "/compare/" in lines[-1], lines[-1])
+        shown = [line for line in lines if line in whole]
+        self.assertEqual(lines[: len(shown) + 2], [self.IMAGES_HEADER, *shown, f"… and {60 - len(shown)} more images"])
+        self.assertGreater(len(shown), 0)
+        self.assertEqual(lines[len(shown) + 2:],
+                         ["", self.CHANGES_HEADER, "… and 40 more changes", "", lines[-1]])
+        for tag in ("b", "a", "font"):
+            self.assertEqual(message.count(f"<{tag}>") + message.count(f"<{tag} "),
+                             message.count(f"</{tag}>"), tag)
+        self.assertIsNone(HALF_ENTITY.search(message))
+
+    def test_commits_give_way_before_images(self):
+        config = self.loaded_config()
+        commits = [{"sha": f"{index:040x}", "subject": "x" * 100} for index in range(20)]
+        lines = self.render(config, self.summary(commits=commits))["message"].split("\n")
+
+        self.assertEqual(lines[:5], [self.IMAGES_HEADER, *self.render(config, self.summary())["message"]
+                                     .split("\n")[1:4], ""])
+        self.assertEqual(lines[5], self.CHANGES_HEADER)
+        hidden = [line for line in lines if line.startswith("… and ")]
+        self.assertEqual(len(hidden), 1)
+        self.assertRegex(hidden[0], r"\A… and \d+ more changes\Z")
+        self.assertTrue(lines[-1].startswith(self.FOOTER))
+        self.assertLessEqual(len("\n".join(lines)), production_auto_deploy.MAX_MESSAGE_CHARACTERS)
+
+    def test_a_first_install_links_its_commit_rather_than_a_comparison(self):
+        config = self.loaded_config()
+        fields = self.render(config, self.summary(previous="", commits=[]))
+
+        self.assertEqual(fields["url"], f"https://github.com/yonatankarp/nas-platform/commit/{MAIN_SHA}")
+        self.assertNotIn(self.CHANGES_HEADER, fields["message"])
+        self.assertTrue(fields["message"].split("\n")[-1].endswith(
+            f'<font color="#9e9e9e">{MAIN_SHA[:7]}</font>'))
+        self.assertNotIn("/compare/", fields["message"])
 
 
 class PollTransientFailureTest(PollHarness, PollerTestCase):
@@ -2901,6 +3263,7 @@ class ConvergeTest(PollerTestCase):
             "record = {\n"
             "    'argv': sys.argv[1:],\n"
             "    'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
+            "    'summary': os.environ.get('PLATFORM_DEPLOYMENT_SUMMARY_PATH'),\n"
             "    'held': held,\n"
             "    'cwd': os.getcwd(),\n"
             "    'lock_record': open(lock).read(),\n"
@@ -2915,6 +3278,25 @@ class ConvergeTest(PollerTestCase):
         patched.start()
         self.addCleanup(patched.stop)
         return record
+
+    def test_an_operator_converge_never_hands_site_yml_a_summary_path(self):
+        """The handshake's operator row: nothing announces after an operator's
+        command, so site.yml must publish its plain summary -- even when the
+        shell that ran the launcher carries the variable."""
+
+        record = self.fake_playbook()
+        leaked = {production_auto_deploy.SUMMARY_PATH_ENVIRONMENT: str(self.root / "leaked.json")}
+        with mock.patch.dict(os.environ, leaked):
+            code = production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge", "--", "site.yml"]
+            )
+
+        self.assertEqual(code, 0)
+        self.assertIsNone(
+            json.loads(record.read_text(encoding="utf-8"))["summary"],
+            "converge() handed site.yml PLATFORM_DEPLOYMENT_SUMMARY_PATH: site.yml would write the "
+            "summary and publish nothing, and no poller announces after an operator's converge",
+        )
 
     def test_converge_runs_the_operator_command_while_holding_the_lock(self):
         record = self.fake_playbook()

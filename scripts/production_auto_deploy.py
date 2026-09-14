@@ -1658,8 +1658,12 @@ def render_release(
 
     release, previous = summary["release"], summary["previous"]
     repository = html_escape(config.repository)
+    # Links in the body name twelve-character SHAs, which GitHub resolves: the
+    # markup counts against Pushover's 1024, and full SHAs alone pushed an
+    # ordinary three-image, four-commit release over it. The button has its
+    # own 512 and keeps them whole.
     commit_lines = [
-        f'• <a href="https://github.com/{repository}/commit/{commit["sha"]}">'
+        f'• <a href="https://github.com/{repository}/commit/{commit["sha"][:12]}">'
         f"{html_escape(commit['subject'])}</a>"
         for commit in summary["commits"]
     ]
@@ -1667,7 +1671,7 @@ def render_release(
     if previous:
         url = f"https://github.com/{config.repository}/compare/{previous}...{release}"
         revisions = (
-            f'<a href="https://github.com/{repository}/compare/{previous}...{release}">'
+            f'<a href="https://github.com/{repository}/compare/{previous[:12]}...{release[:12]}">'
             f"{previous[:7]} → {release[:7]}</a>"
         )
     else:
