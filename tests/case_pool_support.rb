@@ -3,13 +3,18 @@
 # The bounded case pool the slow policy checks drive their independent cases
 # through.
 #
-# The pattern is tests/media_acquisition_reconciliation_support.rb's
-# `in_parallel_cases`, which the fourteen contract tests each carry their own
-# copy of. This file exists so the checks converted for issue #319 share one
-# copy instead of adding eight more: every one of them spends its wall time
-# waiting on a subprocess -- ansible-playbook, a contract program, a policy
-# script -- and a case that waits alone is a case the gate has to place in its
-# own slot.
+# The pattern began in tests/media_acquisition_reconciliation_support.rb, and
+# fourteen contract tests each carried their own copy of it until #637 moved
+# every one of them here. Sharing is the point rather than the tidiness: every
+# one of these checks spends its wall time waiting on a subprocess --
+# ansible-playbook, a contract program, a policy script -- and a case that waits
+# alone is a case the gate has to place in its own slot.
+#
+# The copies are why #637 exists. #514 fixed the raising-case defect in this file
+# and reached none of them, and POLICY_JOBS=1 reached none of them either,
+# because each resolved its own `*_CASE_WORKERS` and consulted nothing else. One
+# copy means a fix lands once; it also means CASE_POOL_WORKERS below is now the
+# only knob, which is what CLAUDE.md's width-varying advice refers to.
 #
 # `require "digest"` only installs an autoload for Digest::SHA256. Workers touch
 # it for the first time concurrently, and autoloading it from several threads at
@@ -125,4 +130,61 @@ def in_parallel_cases(failures, items, &case_body)
     end.each(&:join)
   end
   collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
+end
+
+# THE BY-VALUE SHAPE, for checks whose cases RETURN their findings instead of
+# appending to a list handed in. Five contract tests pooled that way with a copy
+# each until #637 -- audiobookshelf, dozzle, immich, jellyfin and paperless.
+#
+# They carried the #514 defect mirrored rather than absent: their PARALLEL path
+# rescued a raising case and their SERIAL path did not
+# (`return items.flat_map { |item| yield item } if workers <= 1`, in all five),
+# so the same broken row reported a finding at width 8 and ended the run at
+# width 1. Routing both widths through one per-case body is what makes that
+# impossible here, the same way it does above.
+#
+# DELIBERATELY NOT BUILT ON run_pool_case OR in_parallel_cases, and the label
+# expression below is theirs repeated rather than extracted.
+# tests/case_pool_behavior_test.rb reinstates the pre-#514 helper by scanning
+# this file for exactly those two definitions, asserting it finds two, and then
+# rewriting their bodies by literal text. Refactoring either of them to share
+# code with this one breaks that plant in the direction that is silent: the
+# substitution stops matching and the pre-#514 behaviour stops being planted.
+# The names here are chosen so that scan cannot match them either -- its `\b`
+# after `run_pool_case` and `in_parallel_cases` fails against the `_` that
+# follows both.
+def run_pool_case_returning(item, &case_body)
+  Array(case_body.call(item))
+rescue StandardError => error
+  ["#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: case raised " \
+   "#{error.class}: #{error.message}"]
+end
+
+def in_parallel_case_results(items, &case_body)
+  items = items.to_a
+  workers = [CASE_POOL_WORKERS, items.length].min
+  collected = {}
+  if workers <= 1
+    items.each_with_index do |item, index|
+      collected[index] = run_pool_case_returning(item, &case_body)
+    end
+  else
+    pending = Queue.new
+    items.each_with_index { |item, index| pending << [index, item] }
+    lock = Mutex.new
+    Array.new(workers) do
+      Thread.new do
+        loop do
+          index, item = begin
+                          pending.pop(true)
+                        rescue ThreadError
+                          break
+                        end
+          local = run_pool_case_returning(item, &case_body)
+          lock.synchronize { collected[index] = local }
+        end
+      end
+    end.each(&:join)
+  end
+  collected.keys.sort.flat_map { |index| collected.fetch(index) }
 end
