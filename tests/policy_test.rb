@@ -1133,6 +1133,17 @@ storage_prefix_offenders = []
 storage_prefix_unreadable = []
 Find.find(ROOT) do |path|
   Find.prune if File.basename(path) == ".git"
+  # A nested checkout is a different tree, and none of its files is in scope for
+  # a run of this one. .gitignore anticipates agent worktrees under
+  # .claude/worktrees/ and git honours it; Find does not, so a single
+  # `git worktree add` put a second copy of all 19 contributors into this sweep
+  # and failed the check naming every one -- 133 paths at seven worktrees, none
+  # of them a definition Ansible would ever read (#665). Pruning on the nested
+  # .git rather than on that path name is what makes it a statement about what
+  # the sweep's subject is: a worktree carries a .git file and a clone a .git
+  # directory, both answer File.exist?, and a mutation sandbox is no git tree at
+  # all, so nothing there is pruned and a planted file is still seen.
+  Find.prune if path != ROOT && File.directory?(path) && File.exist?(File.join(path, ".git"))
   next unless File.file?(path) && path.end_with?(".yml")
 
   relative = path.delete_prefix("#{ROOT}/")
