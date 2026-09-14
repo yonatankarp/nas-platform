@@ -151,8 +151,8 @@ ROOT = File.expand_path("..", __dir__)
 # side was picked. Every number below is therefore read off the merged tree
 # rather than carried over from either. Re-read this whole block when a service
 # is added, removed, gated or ungated, and re-derive rather than reason: the
-# summary line at the foot of this file prints four of the seven live counts, and
-# the other three are one instrumented run away.
+# summary line at the foot of this file prints four of the eight live counts, and
+# the other four are one instrumented run away.
 #
 # THE THIRD TIME, AND IT WAS THE SAME MERGE AGAIN. #547's second chunk rebased
 # onto the AdGuard flip above, and neither side's numbers were right for the
@@ -182,8 +182,11 @@ ROOT = File.expand_path("..", __dir__)
 # site tags (`documents` was already Nextcloud's, so only `karakeep` is new). The
 # Mac roster stays 17, because a dark stack is not a subject and Karakeep is in
 # neither half of it yet. SUBJECT_FLOOR stays 15 by its rule, 18 - 3.
+# DECISION_FILE_FLOOR (#635) was measured on the tree with Karakeep already in it,
+# the same way: set to 999, the check printed `3 found`.
 IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and karakeep _deployment_enabled
+DECISION_FILE_FLOOR = 3      # service_nextcloud.yml, service_vaultwarden.yml and service_karakeep.yml parsed (#635)
 SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
 MAC_ROSTER_FLOOR = 17        # 15 registered contracts plus ntfy and vaultwarden
 TAGGED_LANE_FLOOR = 17       # the acquisition and service rows of tests/ci/suites.conf
@@ -328,43 +331,79 @@ check(failures, unparsed_yaml.empty?,
       "are different states, and only the first is a reason to assert nothing. Fix the file and " \
       "re-run: nothing else this run reports about a gate can be trusted")
 
-# AND THE FILE THE DECISION LIVES IN HAS TO HAVE SURVIVED, which the refusal
+gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
+check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
+            "#{GATE_SUFFIX} variables found under roles/ and inventory/")
+
+# AND THE FILE EACH DECISION LIVES IN HAS TO HAVE SURVIVED, which the refusal
 # above cannot say on its own: `Dir[]` yields no entry for a file that is not
 # there, and a 0-byte file is valid YAML that parses to nil. Both of those took
 # the same route as the unparseable one -- measured on this tree, an unclosed
 # quote, a `mv` and a `: >` each printed `15 of 17 ... 2 dark` and exited 0 --
 # so the refusal is stated over the path as well as over the parse.
 #
-# NAMED AS A LITERAL, in a file that derives everything else, for the same
-# reason INTEGRATION_CONTROLLER is one 250 lines below: it is a fixed path this
-# check's conclusions rest on, and its absence has to fail rather than narrow a
-# subject list. Flooring the inventory scan instead would be wrong rather than
-# merely blunt -- `inventory_gates` being empty for a gate is a LEGITIMATE state
-# by this file's own reasoning (the role default must ship `false` precisely so
-# that dark-by-deletion works, and `overrides.empty?` is handled as a resolution
-# rather than as a fault), so a floor there would fight the idiom the rest of
-# this file exists to protect. And GATE_VARIABLE_FLOOR does not reach any of
-# this: it counts gate NAMES, and the role defaults alone supply both of them,
-# so the count stays at 2 while every value has silently become `false`. It
-# guards the subject list's size and not its truth.
+# DERIVED FROM THE GATE'S OWN ROLE, not named. This used to be one literal,
+# inventory/group_vars/all/main.yml, on the argument that a fixed path this
+# check's conclusions rest on has to fail rather than narrow a subject list.
+# The path was fixed; what it held was not. #602 moved every gate into the
+# per-service files -- `nextcloud_deployment_enabled` into service_nextcloud.yml,
+# `vaultwarden_deployment_enabled` into service_vaultwarden.yml -- and the
+# literal went on guarding a file that no longer declared a gate. Measured on
+# that tree (#635): gutting service_vaultwarden.yml printed `16 of 17 ... 1 dark`
+# and exited 0, gutting service_nextcloud.yml the same, and gutting main.yml
+# failed loudly over a file whose emptiness had become harmless to this check.
+# A literal can drift from the thing it guards without anything noticing; a
+# path built from the gate's own prefix cannot, because the prefix IS the role
+# name and the role's inventory file is service_<role>.yml by this repository's
+# layout. The loop is over `gate_names`, the union of both homes, so a gate whose
+# inventory file is gutted is still a subject through its role default and its
+# file is still asked for.
 #
-# WHAT THIS PROVES IS NARROW, deliberately: that the file parsed and is not
-# gutted. It does not prove the file declares the gates, because that is the
+# WHAT DERIVING COSTS is that a derivation can rot as well as a literal can, and
+# it rots in the other direction: a naming rule that stopped matching the layout
+# would point every gate at a file that is not there, and each per-gate refusal
+# below would fire -- loud, and the right answer. What it cannot catch alone is
+# the loop going quiet, which is what DECISION_FILE_FLOOR is for: it counts the
+# files that PARSED, not the gates that were named, so the count GATE_VARIABLE_FLOOR
+# holds through the role defaults alone cannot stand in for it. That is the
+# gap #593 called counting names rather than truth: before this floor, every
+# decision file on the platform could be gutted while the gate-name count stayed
+# exactly where it was.
+#
+# Flooring the inventory scan instead would be wrong rather than merely blunt --
+# `inventory_gates` being empty for a gate is a LEGITIMATE state by this file's
+# own reasoning (the role default must ship `false` precisely so that
+# dark-by-deletion works, and `overrides.empty?` is handled as a resolution
+# rather than as a fault), so a floor there would fight the idiom the rest of
+# this file exists to protect.
+#
+# WHAT THIS PROVES IS NARROW, deliberately: that each gate's file parsed and is
+# not gutted. It does not prove the file declares the gate, because that is the
 # floor rejected in the paragraph above.
-DECISION_FILE = File.join("inventory", "group_vars", "all", "main.yml")
-# The accumulator is thrown away: the inventory scan above has already recorded
-# this path if it failed to parse, and reporting it twice would name it twice.
-decision_document = load_plain_yaml(File.join(ROOT, DECISION_FILE), [])
-check(failures, decision_document.is_a?(Hash) && !decision_document.empty?,
-      "#{DECISION_FILE} is where every deployment decision on this platform is made and won, " \
-      "and it parsed to an empty #{decision_document.class} -- missing, empty or holding " \
-      "nothing. Every gate then resolves from its role default, which this check requires to " \
-      "ship OFF, so every stack reads as dark and every requirement below holds for nobody. " \
-      "Fix the file and re-run: nothing else this run reports about a gate can be trusted")
+def decision_file_for(prefix)
+  File.join("inventory", "group_vars", "all", "service_#{prefix}.yml")
+end
 
-gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
-check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
-            "#{GATE_SUFFIX} variables found under roles/ and inventory/")
+parsed_decision_files = []
+gate_names.each do |name|
+  decision_file = decision_file_for(name[GATE_KEY, 1])
+  # The accumulator is thrown away: the inventory scan above has already
+  # recorded this path if it failed to parse, and reporting it twice would name
+  # it twice.
+  decision_document = load_plain_yaml(File.join(ROOT, decision_file), [])
+  survived = decision_document.is_a?(Hash) && !decision_document.empty?
+  parsed_decision_files << decision_file if survived
+  check(failures, survived,
+        "#{decision_file} is where the deployment decision for #{name} is made and won, and it " \
+        "parsed to an empty #{decision_document.class} -- missing, empty or holding nothing. " \
+        "The gate then resolves from its role default, which this check requires to ship OFF, " \
+        "so the stack reads as dark and every requirement below holds for nobody it would " \
+        "otherwise have reached. Fix the file and re-run: nothing else this run reports about " \
+        "a gate can be trusted")
+end
+check_floor(failures, parsed_decision_files.length, DECISION_FILE_FLOOR,
+            "deployment decision files under inventory/group_vars/all/ that parsed to a " \
+            "non-empty mapping")
 
 # Both directions on the gate scan itself. A gate whose prefix is not a manifest
 # role is either a typo -- in which case the switch the operator edits is read by
@@ -388,9 +427,9 @@ gate_names.each do |name|
   # AND IT MUST BE DECLARED OFF. A role default is what a caller gets with no
   # inventory at all, so this line is the FLOOR under the deployment decision
   # rather than a mirror of it: the decision lives in
-  # inventory/group_vars/all/main.yml, which wins on every run any playbook here
-  # makes, and turning it back off there must not leave the stack converging on
-  # the strength of a role default nobody edited.
+  # inventory/group_vars/all/service_<role>.yml, which wins on every run any
+  # playbook here makes, and turning it back off there must not leave the stack
+  # converging on the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
   # it in full -- nextcloud and vaultwarden are the two gates that exist, and
@@ -409,7 +448,7 @@ gate_names.each do |name|
   check(failures, declaration.nil? || declaration["value"] == false,
         "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
         "and a role default must ship the gate OFF. It is the floor under the deployment " \
-        "decision, not a copy of it: inventory/group_vars/all/main.yml is where the decision " \
+        "decision, not a copy of it: #{decision_file_for(prefix)} is where the decision " \
         "is made and won, and a true default means a caller with no inventory -- or an " \
         "inventory that turned the stack back off -- converges the stack anyway. Set it false " \
         "here and leave inventory to say what this platform runs")
