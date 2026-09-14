@@ -128,7 +128,7 @@ check(failures,
       "canonical secrets guide must document foundation shape and uniqueness")
 
 managed_user_services = %w[
-  audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx
+  audiobookshelf beszel dozzle immich jellyfin komga paperless_ngx
 ]
 managed_users = vault_example.keys.grep(/\Avault_managed_/)
 check(failures,

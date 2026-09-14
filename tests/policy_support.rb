@@ -12,14 +12,14 @@ module PolicySupport
   # needed. It lives in this module rather than in one policy script because several
   # of them check different properties of the same roster.
   EXPECTED_SERVICES = %w[
-    audiobookshelf beszel dozzle immich jellyfin komga nextcloud ntfy
+    audiobookshelf beszel dozzle immich jellyfin komga nextcloud
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
     vaultwarden karakeep
   ].freeze
   # Not every vault key belongs to a service; these are platform-wide.
   # expectation_problems below requires every key in a tests/expected/<service>.yml
   # to carry that service's own `vault_<name>_` prefix, so a credential no single
-  # service owns has nowhere else to be pinned. The eight managed-user lists are
+  # service owns has nowhere else to be pinned. The seven managed-user lists are
   # the first kind: each is authored in its own service's vault_<role>.yml, but
   # its name inverts that service's prefix (vault_managed_komga_users, not
   # vault_komga_), and paperless-ngx's carries the role name where its credentials
@@ -36,7 +36,7 @@ module PolicySupport
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
     vault_managed_jellyfin_users vault_managed_komga_users
-    vault_managed_ntfy_users vault_managed_paperless_ngx_users
+    vault_managed_paperless_ngx_users
     vault_pushover_alerts_token vault_pushover_containers_token
     vault_pushover_deployments_token vault_pushover_media_token
     vault_pushover_user_key
