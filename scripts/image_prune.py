@@ -627,9 +627,13 @@ OUTCOMES = {
     # Pushover application, title, priority. A prune that reclaimed nothing is
     # not in here on purpose: a weekly no-op notification is noise, and the
     # weeks that reclaim nothing are most of them.
-    "reclaimed": ("containers", "Images pruned", -1),
-    "failed": ("alerts", "Image prune failed", 1),
+    "reclaimed": ("containers", "\U0001f9f9 Images pruned", -1),
+    "failed": ("alerts", "\U0001f534 Image prune failed", 1),
 }
+
+
+def _images(count: int) -> str:
+    return f"{count} image" if count == 1 else f"{count} images"
 
 
 def render_notification(config: Config, outcome: str, summary: dict) -> tuple[str, dict]:
@@ -639,19 +643,35 @@ def render_notification(config: Config, outcome: str, summary: dict) -> tuple[st
         app, title, priority = OUTCOMES[outcome]
     except KeyError:
         raise ValueError(f"unknown prune outcome: {outcome}") from None
-    lines = []
+    took = f"⏱️ <b>Took</b> {format_duration(int(summary.get('seconds', 0)))}"
+    log = f'\U0001f4c4 <b>Log</b> <font color="{COLOR_GREY}">{html_escape(str(summary.get("log", "")))}</font>'
+    window = (
+        f'\U0001f5d3️ <b>Window</b> <font color="{COLOR_GREY}">unused older than '
+        f"{config.retention_hours}h · dangling older than {config.dangling_retention_hours}h</font>"
+    )
     if outcome == "failed":
-        lines.append(f"<b>Pass:</b> {html_escape(str(summary.get('pass', '?')))}")
-        lines.append(f"<b>Reason:</b> {html_escape(str(summary.get('reason', '?')))}")
+        lead = f'<b>Image prune</b> <font color="{COLOR_RED}">failed</font>'
+        details = [
+            f'❓ <b>Reason</b> <font color="{COLOR_RED}">{html_escape(str(summary.get("reason", "?")))}</font>',
+            f"\U0001f9f9 <b>Pass</b> {html_escape(str(summary.get('pass', '?')))}",
+            took,
+            log,
+            window,
+        ]
+        # The prune is scheduled, never retried by hand, and a failure changes
+        # nothing about the next run: it finds the same images, one week older.
+        closing = "<i>The next scheduled prune tries again.</i>"
     else:
-        lines.append(f"<b>Reclaimed:</b> {format_bytes(summary['reclaimed_bytes'])}")
-        lines.append(f"<b>Images removed:</b> {summary['images_removed']}")
+        size = format_bytes(summary["reclaimed_bytes"])
+        lead = f'<b>Unused images</b> <font color="{COLOR_GREEN}">pruned</font>'
+        details = [
+            f'\U0001f4be <b>Reclaimed</b> <font color="{COLOR_GREEN}">{size}</font>',
+            f"\U0001f5d1️ <b>Removed</b> {_images(summary['images_removed'])}",
+        ]
         if summary.get("images_remaining") is not None:
-            lines.append(f"<b>Images remaining:</b> {summary['images_remaining']}")
-    lines.append(f"<b>Unused older than:</b> {config.retention_hours}h")
-    lines.append(f"<b>Dangling older than:</b> {config.dangling_retention_hours}h")
-    lines.append(f"<b>Duration:</b> {format_duration(int(summary.get('seconds', 0)))}")
-    lines.append(f"<b>Log:</b> {html_escape(str(summary.get('log', '')))}")
+            details.append(f"\U0001f4da <b>Remaining</b> {_images(summary['images_remaining'])}")
+        details += [took, window, log]
+        closing = ""
     # A lock screen shows the title and little else, so the reclaimed size is
     # the one number worth putting there. A failure says so in the title
     # already and does not need it said twice.
@@ -660,7 +680,7 @@ def render_notification(config: Config, outcome: str, summary: dict) -> tuple[st
         if outcome == "reclaimed"
         else title
     )
-    fields = {"title": headline, "message": fit_message(lines), "priority": priority}
+    fields = {"title": headline, "message": compose_message(lead, details, closing), "priority": priority}
     if outcome == "reclaimed":
         # A ttl is never sent with priority 2, which none of these is.
         fields["ttl"] = RECLAIMED_TTL_SECONDS

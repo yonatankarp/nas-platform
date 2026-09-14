@@ -31,6 +31,24 @@ ACCEPTED = b'{"status":1,"request":"r"}\n200'
 HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
 
 
+def message_shape(message):
+    """A message's lead line, its detail labels in order, and its closing line.
+
+    Every detail line must be `emoji <b>Label</b> value`; one that is not fails
+    here rather than reading as a missing label.
+    """
+    blocks = message.split("\n\n")
+    closing = blocks.pop() if len(blocks) > 1 and blocks[-1].startswith("<i>") else ""
+    details = blocks[1].split("\n") if len(blocks) > 1 else []
+    labels = []
+    for line in details:
+        matched = re.fullmatch(r"\S+ <b>([^<]+)</b> .+", line)
+        if matched is None:
+            raise AssertionError(f"not an `emoji <b>Label</b> value` detail line: {line!r}")
+        labels.append(matched.group(1))
+    return {"lead": blocks[0], "labels": labels, "closing": closing}
+
+
 def form_of(arguments):
     """The --form-string fields one curl invocation sends, as a dict."""
 
@@ -1647,16 +1665,25 @@ class PushoverTransportTest(PollerTestCase):
         self.assertEqual(form["priority"], "1")
         self.assertEqual(form["html"], "1")
         self.assertNotIn("ttl", form)
-        self.assertEqual(form["title"], f"Deploy failed \u00b7 {MAIN_SHA[:9]}")
+        self.assertEqual(form["title"], f"\U0001f534 Deploy failed \u00b7 {MAIN_SHA[:7]}")
+        self.assertEqual(form["url_title"], "Open CI run")
         # The releasing run is the tap-through; the commit is a link in the body.
         self.assertEqual(form["url"], self.RUN_URL)
         self.assertIn(
-            f'<b>Commit:</b> <a href="https://github.com/yonatankarp/nas-platform/commit/{MAIN_SHA}">'
-            f"{MAIN_SHA[:9]}</a>",
+            f'\U0001f516 <b>Revision</b> <a href="https://github.com/yonatankarp/nas-platform/commit/{MAIN_SHA}">'
+            f"{MAIN_SHA[:12]}</a>",
             form["message"],
         )
-        self.assertIn("<b>Duration:</b> 4m 30s", form["message"])
-        self.assertIn("<b>Log:</b> " + str(config.log_root / "20260821T150000Z-deploy.log"),
+        self.assertIn("<b>Took</b> 4m 30s", form["message"])
+        self.assertIn("<b>When</b> 21 Aug 15:04 UTC", form["message"])
+        self.assertIn(f'<b>CI</b> <a href="{self.RUN_URL}">', form["message"])
+        shape = message_shape(form["message"])
+        self.assertEqual(shape["lead"], '<b>Deployment</b> <font color="#c62828">failed</font>')
+        self.assertEqual(shape["labels"], ["Revision", "CI", "When", "Took", "Log"])
+        self.assertEqual(
+            shape["closing"], "<i>The poller will not retry this revision; merge a fix to main.</i>"
+        )
+        self.assertIn('<b>Log</b> <font color="#9e9e9e">' + str(config.log_root / "20260821T150000Z-deploy.log"),
                       form["message"])
 
     def test_a_failed_deployment_without_a_run_url_sends_no_link(self):
@@ -1672,7 +1699,7 @@ class PushoverTransportTest(PollerTestCase):
             lambda: self.notify_failure(config, started="start", finished="finish")
         )
 
-        self.assertIn("<b>Duration:</b> unknown", form_of(arguments)["message"])
+        self.assertIn("<b>Took</b> unknown", form_of(arguments)["message"])
 
     def test_the_log_path_is_escaped_for_html(self):
         config = self.loaded_config()
@@ -1849,6 +1876,137 @@ class PushoverTransportTest(PollerTestCase):
                 _delivered, (arguments,) = self.sent(lambda: production_auto_deploy.publish(
                     config, app, {"title": "t", "message": "m", "priority": 0}))
                 self.assertEqual(arguments[arguments.index("--config") + 1], str(path))
+
+
+class MessageStyleTest(PollerTestCase):
+    """Every message this poller renders: its title form, its shape and its colour.
+
+    The title is all a lock screen shows, and it is plain text, so its form is
+    pinned exactly. The body is pinned by shape -- a lead line, labelled
+    details in order, a closing line -- and by the colour the lead gives its
+    state, rather than by prose.
+    """
+
+    def rendered(self, action):
+        captured = []
+
+        def publish(_config, app, fields):
+            captured.append((app, fields))
+            return True
+
+        with mock.patch.object(production_auto_deploy, "publish", side_effect=publish), \
+                mock.patch.object(production_auto_deploy, "fetch_ci_runs", return_value=()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            action()
+        return captured
+
+    def every_message(self, config, reason="github unreachable", detail="failure", log="/logs/verify.log"):
+        """(label, fields) for each message type, rendered through the real code paths."""
+
+        state = config.state_root
+        messages = [("deploy failed", production_auto_deploy.render_notification(
+            config, MAIN_SHA, "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z", Path(log),
+            "https://github.com/yonatankarp/nas-platform/actions/runs/9"))]
+        messages.append(("deploy failed, retrying", production_auto_deploy.render_notification(
+            config, MAIN_SHA, "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z", Path(log), "", True)))
+        for app, fields in self.rendered(lambda: production_auto_deploy.note_ci_refusal(
+                config, MAIN_SHA, production_auto_deploy.CI_FAILED, detail,
+                "https://github.com/yonatankarp/nas-platform/actions/runs/9")):
+            messages.append(("ci blocks", fields))
+        (state / "blind-polls").write_text(f"{production_auto_deploy.BLIND_POLL_THRESHOLD - 1}\n")
+        (state / "blind-alarm").unlink(missing_ok=True)
+        for app, fields in self.rendered(lambda: production_auto_deploy.note_blind_poll(config, reason)):
+            messages.append(("poller blind", fields))
+        (state / "blind-polls").write_text(f"{production_auto_deploy.BLIND_POLL_THRESHOLD}\n")
+        for app, fields in self.rendered(lambda: production_auto_deploy.note_seeing_poll(config)):
+            messages.append(("poller recovered", fields))
+        tag = "platform_verify_mdraid"
+        for label, passed, failure, record_tag, previous in (
+            ("verify failed", False, "fail", None, None),
+            ("verify recovered", True, "fail", None, "fail"),
+            ("raid degraded", False, "fail", tag, None),
+            ("raid unchecked", False, "unchecked", tag, None),
+            ("raid healthy", True, "fail", tag, "fail"),
+            ("raid check running again", True, "unchecked", tag, "unchecked"),
+        ):
+            path = state / ("verify-verdict" if record_tag is None else "verify-verdict-mdraid")
+            path.unlink(missing_ok=True)
+            if previous:
+                path.write_text(f"{previous} {MAIN_SHA} 2026-08-21T15:00:00Z\n")
+            for app, fields in self.rendered(lambda: production_auto_deploy.note_verify_verdict(
+                    config, passed, MAIN_SHA, Path(log), record_tag, failure)):
+                messages.append((label, fields))
+        return messages
+
+    def test_every_title_form_is_pinned(self):
+        titles = {label: fields["title"] for label, fields in self.every_message(self.loaded_config())}
+        short = MAIN_SHA[:7]
+        self.assertEqual(titles, {
+            "deploy failed": f"\U0001f534 Deploy failed \u00b7 {short}",
+            "deploy failed, retrying": f"\U0001f534 Deploy failed \u00b7 {short}",
+            "ci blocks": f"\u26d4 CI blocks deploy \u00b7 {short}",
+            "poller blind": f"\U0001f648 Deploy poller blind \u00b7 {production_auto_deploy.BLIND_POLL_THRESHOLD} polls",
+            "poller recovered": "\U0001f7e2 Deploy poller recovered",
+            "verify failed": f"\U0001f534 Verify failed \u00b7 {short}",
+            "verify recovered": f"\U0001f7e2 Verify recovered \u00b7 {short}",
+            "raid degraded": "\U0001f7e0 RAID degraded",
+            "raid unchecked": "\u2754 RAID check could not run",
+            "raid healthy": "\U0001f7e2 RAID healthy",
+            "raid check running again": "\U0001f7e2 RAID check running again",
+        })
+
+    def test_every_message_leads_with_its_state_in_the_colour_of_that_state(self):
+        red, amber, green = "#c62828", "#f9a825", "#2e7d32"
+        expected = {
+            "deploy failed": (red, ["Revision", "CI", "When", "Took", "Log"], True),
+            "deploy failed, retrying": (red, ["Revision", "When", "Took", "Log"], True),
+            "ci blocks": (red, ["Revision", "CI"], True),
+            "poller blind": (red, ["Reason", "Polls"], True),
+            "poller recovered": (green, ["Polls"], False),
+            "verify failed": (red, ["Revision", "Log"], True),
+            "verify recovered": (green, ["Revision", "Log"], False),
+            "raid degraded": (red, ["Check", "Revision", "Log"], True),
+            "raid unchecked": (amber, ["Check", "Revision", "Log"], True),
+            "raid healthy": (green, ["Check", "Revision", "Log"], False),
+            "raid check running again": (green, ["Check", "Revision", "Log"], False),
+        }
+        messages = self.every_message(self.loaded_config())
+        self.assertEqual(sorted(label for label, _fields in messages), sorted(expected))
+        for label, fields in messages:
+            with self.subTest(label):
+                colour, labels, closes = expected[label]
+                shape = message_shape(fields["message"])
+                self.assertTrue(shape["lead"].startswith("<b>"), shape["lead"])
+                self.assertEqual(
+                    re.findall(r'<font color="(#[0-9a-f]{6})">', shape["lead"]), [colour],
+                    f"the {label} lead line must colour its state {colour}, and "
+                    f"{shape['lead']!r} does not",
+                )
+                self.assertEqual(shape["labels"], labels)
+                self.assertEqual(bool(shape["closing"]), closes)
+        closings = dict((label, message_shape(fields["message"])["closing"]) for label, fields in messages)
+        self.assertEqual(closings["deploy failed, retrying"],
+                         "<i>Nothing reached the host; the next poll tries this revision again.</i>")
+
+    def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
+        hostile = ("<b>&'\"\n\0\U0001f9e8" * 1500)[:10_000]
+        config = self.loaded_config()
+        messages = self.every_message(config, reason=hostile, detail=hostile, log="/" + hostile)
+        messages.append(("hostile times", production_auto_deploy.render_notification(
+            config, MAIN_SHA, hostile, hostile, Path("/" + hostile), "")))
+        for label, fields in messages:
+            with self.subTest(label):
+                message = fields["message"]
+                self.assertTrue(message)
+                self.assertLessEqual(len(message), production_auto_deploy.MAX_MESSAGE_CHARACTERS)
+                self.assertTrue(fields["title"])
+                self.assertLessEqual(len(fields["title"]), production_auto_deploy.MAX_TITLE_CHARACTERS)
+                self.assertNotIn("&amp;", fields["title"])
+                self.assertIsNone(HALF_ENTITY.search(message), message[-40:])
+                for tag in ("b", "i", "font", "a"):
+                    self.assertEqual(len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag)
+                # The lead survives the fit: the details give way first.
+                self.assertTrue(message.startswith("<b>"), message[:40])
 
 
 class PollBlindnessTest(PollerTestCase):
@@ -2280,7 +2438,7 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertIsNone(outcome)
         self.assertEqual(len(published), 1)
         self.assertEqual((published[0]["app"], published[0]["priority"]), ("alerts", 1))
-        self.assertIn(MAIN_SHA[:9], published[0]["title"])
+        self.assertEqual(published[0]["title"], f"\u26d4 CI blocks deploy \u00b7 {MAIN_SHA[:7]}")
         self.assertIn("failure", published[0]["message"])
         self.assertEqual(published[0]["url"], self.RED_RUN["html_url"])
         self.assertIn(f"/commit/{MAIN_SHA}", published[0]["message"])
@@ -2345,7 +2503,7 @@ class PollCiRefusalTest(PollerTestCase):
         )
 
         self.assertEqual(len(published), 1)
-        self.assertIn(OTHER_SHA[:9], published[0]["title"])
+        self.assertEqual(published[0]["title"], f"\u26d4 CI blocks deploy \u00b7 {OTHER_SHA[:7]}")
 
     def test_a_revision_that_goes_green_clears_the_refusal(self):
         config = self.loaded_config()
@@ -3126,6 +3284,8 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         ) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(notify.call_args.args[1], MAIN_SHA)
+        # Forgiven, so the notice says the next poll takes it again.
+        self.assertIs(notify.call_args.kwargs["retrying"], True)
         latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
         self.assertIn("transient failure", latest)
         self.assertIn("git fetch failed", latest)
@@ -3138,9 +3298,11 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         config = self.loaded_config()
         with self.eligible(MAIN_SHA), mock.patch.object(
             production_auto_deploy, "deploy", return_value=False
-        ):
+        ), mock.patch.object(production_auto_deploy, "notify", return_value=True) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+        # Quarantined, so the notice must not promise a retry.
+        self.assertIs(notify.call_args.kwargs["retrying"], False)
 
     def test_forgiveness_is_bounded_and_the_revision_ends_up_quarantined(self):
         """A cause that only looks transient must not be retried every five
@@ -3646,7 +3808,7 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(code, 1)
         (page,) = self.pages()
         self.assertEqual(page["priority"], "1")
-        self.assertIn(self.deployed[:9], page["title"])
+        self.assertEqual(page["title"], f"\U0001f534 Verify failed \u00b7 {self.deployed[:7]}")
         self.assertIn("verify.log", page["message"])
 
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
@@ -3795,7 +3957,7 @@ class VerifyTest(PollerTestCase):
         # A timed-out array run says nothing about the disks.
         self.assertEqual(
             sorted(page["title"].split(" ·")[0] for page in self.pages()),
-            ["RAID array check could not run", "Verify failed"],
+            ["\u2754 RAID check could not run", "\U0001f534 Verify failed"],
         )
         # The whole lock hold stays under the hourly cadence, so a stuck run is a
         # failure before the next --verify is due.
@@ -3820,7 +3982,7 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(array["argv"][-1], "platform_verify_mdraid")
         self.assertEqual(
             sorted(page["title"].split(" ·")[0] for page in self.pages()),
-            ["RAID arrays degraded", "Verify failed"],
+            ["\U0001f534 Verify failed", "\U0001f7e0 RAID degraded"],
         )
 
     # The two verdicts are independent (#609): verify.yml drops a failing host
@@ -3838,10 +4000,11 @@ class VerifyTest(PollerTestCase):
         pages = self.pages()
         self.assertEqual(
             sorted((page["priority"], page["title"].split(" ·")[0]) for page in pages),
-            [("1", "RAID arrays degraded"), ("1", "Verify failed")],
+            [("1", "\U0001f534 Verify failed"), ("1", "\U0001f7e0 RAID degraded")],
         )
-        (array,) = [page for page in pages if page["title"].startswith("RAID")]
-        self.assertIn("<b>Check:</b> platform_verify_mdraid", array["message"])
+        (array,) = [page for page in pages if "RAID" in page["title"]]
+        self.assertIn("<b>Check</b> platform_verify_mdraid", array["message"])
+        self.assertEqual(message_shape(array["message"])["labels"], ["Check", "Revision", "Log"])
         self.assertIn("verify-mdraid.log", array["message"])
         for record in ("verify-verdict", "verify-verdict-mdraid"):
             self.assertEqual((self.config.state_root / record).read_text().split()[0], "fail")
@@ -3849,25 +4012,25 @@ class VerifyTest(PollerTestCase):
     def test_the_array_degrading_while_a_service_already_fails_pages_the_array(self):
         self.mark_deployed()
         self.run_verify(playbook_exit=2)
-        self.assertEqual(self.titles(), [("1", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "\U0001f534 Verify failed")])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
 
     def test_a_service_breaking_after_the_array_paged_pages_the_service(self):
         self.mark_deployed()
         self.assertEqual(self.run_verify(mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("1", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "\U0001f534 Verify failed")])
 
     def test_the_two_recoveries_page_independently(self):
         self.mark_deployed()
         self.run_verify(playbook_exit=2, mdraid_exit=2)
         self.pages()
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID healthy")])
         self.assertEqual(self.run_verify()[0], 0)
-        self.assertEqual(self.titles(), [("-1", "Verify recovered")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 Verify recovered")])
         self.run_verify()
         self.assertEqual(self.pages(), [])
 
@@ -3876,7 +4039,7 @@ class VerifyTest(PollerTestCase):
         real_publish = production_auto_deploy.publish
 
         def publish(config, app, fields):
-            return False if fields["title"].startswith("RAID") else real_publish(
+            return False if "RAID" in fields["title"] else real_publish(
                 config, app, fields
             )
 
@@ -3884,10 +4047,10 @@ class VerifyTest(PollerTestCase):
             code, output = self.run_verify(playbook_exit=2, mdraid_exit=2)
         self.assertEqual(code, 1)
         self.assertIn("notification failed", output)
-        self.assertEqual(self.titles(), [("1", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "\U0001f534 Verify failed")])
         self.assertFalse((self.config.state_root / "verify-verdict-mdraid").exists())
         self.run_verify(playbook_exit=2, mdraid_exit=2)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
 
     def test_a_failed_verify_links_its_commit_and_the_run_that_released_it(self):
         self.mark_deployed()
@@ -3899,7 +4062,9 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
         (page,) = self.pages()
         self.assertEqual(page["url"], run["html_url"])
-        self.assertIn(f'/commit/{self.deployed}">{self.deployed[:9]}</a>', page["message"])
+        self.assertIn(f'/commit/{self.deployed}">{self.deployed[:12]}</a>', page["message"])
+        self.assertEqual(page["url_title"], "Open CI run")
+        self.assertEqual(message_shape(page["message"])["labels"], ["Revision", "CI", "Log"])
         self.assertEqual(self.ci_runs.call_count, 1)
 
         # An unchanged verdict pages nothing, and so asks GitHub nothing.
@@ -3911,7 +4076,7 @@ class VerifyTest(PollerTestCase):
         self.mark_deployed()
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
         (page,) = self.pages()
-        self.assertEqual(page["title"].split(" ·")[0], "Verify failed")
+        self.assertEqual(page["title"].split(" ·")[0], "\U0001f534 Verify failed")
         self.assertNotIn("url", page)
         self.assertEqual((self.config.state_root / "verify-verdict").read_text().split()[0], "fail")
 
@@ -3941,7 +4106,7 @@ class VerifyTest(PollerTestCase):
             f"fail {self.deployed} 2026-09-13T10:00:00Z\n", encoding="ascii"
         )
         self.assertEqual(self.run_verify()[0], 0)
-        self.assertEqual(self.titles(), [("-1", "Verify recovered")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 Verify recovered")])
         self.run_verify()
         self.assertEqual(self.pages(), [])
 
@@ -3953,7 +4118,7 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
         self.assertEqual(self.pages(), [])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
 
     def test_a_setup_failure_in_both_runs_pages_could_not_run_not_degraded(self):
         """verify.yml's always-tagged setup runs in the array invocation too, so a
@@ -3965,9 +4130,9 @@ class VerifyTest(PollerTestCase):
         pages = self.pages()
         self.assertEqual(
             sorted((page["priority"], page["title"].split(" ·")[0]) for page in pages),
-            [("1", "RAID array check could not run"), ("1", "Verify failed")],
+            [("1", "\u2754 RAID check could not run"), ("1", "\U0001f534 Verify failed")],
         )
-        (array,) = [page for page in pages if page["title"].startswith("RAID")]
+        (array,) = [page for page in pages if "RAID" in page["title"]]
         self.assertIn("verify-mdraid.log", array["message"])
         self.assertEqual(
             (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0],
@@ -3977,7 +4142,7 @@ class VerifyTest(PollerTestCase):
     def test_a_real_mismatch_pages_degraded(self):
         self.mark_deployed()
         self.assertEqual(self.run_verify(mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
         self.assertEqual(
             (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0], "fail"
         )
@@ -3985,23 +4150,23 @@ class VerifyTest(PollerTestCase):
     def test_transitions_between_could_not_run_and_degraded(self):
         self.mark_deployed()
         self.run_verify(mdraid_exit=2, mismatch=False)
-        self.assertEqual(self.titles(), [("1", "RAID array check could not run")])
+        self.assertEqual(self.titles(), [("1", "\u2754 RAID check could not run")])
         self.run_verify(mdraid_exit=2, mismatch=False)
         self.assertEqual(self.pages(), [])
         # The check runs again and finds a mismatch.
         self.run_verify(mdraid_exit=2)
-        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "\U0001f7e0 RAID degraded")])
         # Degraded, then the setup breaks: visibility lost, which pages.
         self.run_verify(mdraid_exit=2, mismatch=False)
-        self.assertEqual(self.titles(), [("1", "RAID array check could not run")])
+        self.assertEqual(self.titles(), [("1", "\u2754 RAID check could not run")])
         # Back from could-not-run to healthy is not a recovery of the disks.
         self.assertEqual(self.run_verify()[0], 0)
-        self.assertEqual(self.titles(), [("-1", "RAID array check runs again")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID check running again")])
         # A real mismatch recovering is.
         self.run_verify(mdraid_exit=2)
         self.pages()
         self.run_verify()
-        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID healthy")])
 
     def test_a_fail_record_without_a_kind_recovers_as_a_mismatch(self):
         self.mark_deployed()
@@ -4009,7 +4174,7 @@ class VerifyTest(PollerTestCase):
             f"fail {self.deployed} 2026-09-13T10:00:00Z\n", encoding="ascii"
         )
         self.run_verify()
-        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID healthy")])
 
     def test_the_mismatch_marker_is_the_literal_opening_the_roles_fail_msg(self):
         import yaml

@@ -31,6 +31,24 @@ import image_prune  # noqa: E402
 # A half-cut or invented entity: an ampersand that does not open one html.escape writes.
 HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
 
+
+def message_shape(message):
+    """A message's lead line, its detail labels in order, and its closing line.
+
+    Every detail line must be `emoji <b>Label</b> value`; one that is not fails
+    here rather than reading as a missing label.
+    """
+    blocks = message.split("\n\n")
+    closing = blocks.pop() if len(blocks) > 1 and blocks[-1].startswith("<i>") else ""
+    details = blocks[1].split("\n") if len(blocks) > 1 else []
+    labels = []
+    for line in details:
+        matched = re.fullmatch(r"\S+ <b>([^<]+)</b> .+", line)
+        if matched is None:
+            raise AssertionError(f"not an `emoji <b>Label</b> value` detail line: {line!r}")
+        labels.append(matched.group(1))
+    return {"lead": blocks[0], "labels": labels, "closing": closing}
+
 # One pass reporting decimal units, one reporting none, so the parser is proved
 # against Docker's real report rather than a single hand-picked line.
 UNUSED_OUTPUT = """Deleted Images:
@@ -563,9 +581,23 @@ class NotificationTest(PruneTestCase):
         self.assertEqual(app, "containers")
         self.assertEqual(fields["priority"], -1)
         self.assertEqual(fields["ttl"], 604800)
-        self.assertIn("1.5 GB", fields["title"])
-        self.assertIn("<b>Images removed:</b> 3", fields["message"])
-        self.assertIn("<b>Unused older than:</b> 168h", fields["message"])
+        self.assertEqual(fields["title"], "\U0001f9f9 Images pruned · 1.5 GB")
+        shape = message_shape(fields["message"])
+        self.assertEqual(shape["lead"], '<b>Unused images</b> <font color="#2e7d32">pruned</font>')
+        self.assertEqual(shape["labels"], ["Reclaimed", "Removed", "Remaining", "Took", "Window", "Log"])
+        self.assertEqual(shape["closing"], "")
+        self.assertIn('<b>Reclaimed</b> <font color="#2e7d32">1.5 GB</font>', fields["message"])
+        self.assertIn("<b>Removed</b> 3 images\n", fields["message"])
+        self.assertIn("<b>Remaining</b> 24 images\n", fields["message"])
+        self.assertIn("unused older than 168h · dangling older than 24h", fields["message"])
+
+    def test_a_reclaim_without_an_inventory_leaves_the_remaining_line_out(self):
+        _app, fields = image_prune.render_notification(
+            self.config(), "reclaimed", self.summary(images_removed=1, images_remaining=None)
+        )
+        self.assertEqual(message_shape(fields["message"])["labels"],
+                         ["Reclaimed", "Removed", "Took", "Window", "Log"])
+        self.assertIn("<b>Removed</b> 1 image\n", fields["message"])
 
     def test_a_failure_reports_to_the_alerts_application(self):
         app, fields = image_prune.render_notification(
@@ -577,21 +609,46 @@ class NotificationTest(PruneTestCase):
         self.assertEqual(fields["priority"], 1)
         # A ttl would let a failure expire unread.
         self.assertNotIn("ttl", fields)
-        self.assertIn("<b>Reason:</b> unused pass exited 1", fields["message"])
-        self.assertEqual(fields["title"], "Image prune failed")
+        self.assertEqual(fields["title"], "\U0001f534 Image prune failed")
         self.assertNotIn("1.5 GB", fields["title"])
+        shape = message_shape(fields["message"])
+        self.assertEqual(
+            re.findall(r'<font color="(#[0-9a-f]{6})">', shape["lead"]), ["#c62828"],
+            f"a failure's lead line must colour its state red, and {shape['lead']!r} does not",
+        )
+        self.assertEqual(shape["labels"], ["Reason", "Pass", "Took", "Log", "Window"])
+        self.assertIn('<b>Reason</b> <font color="#c62828">unused pass exited 1</font>', fields["message"])
+        self.assertEqual(shape["closing"], "<i>The next scheduled prune tries again.</i>")
+
+    def test_a_reclaim_leads_green_and_names_what_it_reclaimed(self):
+        _app, fields = image_prune.render_notification(self.config(), "reclaimed", self.summary())
+        self.assertEqual(
+            re.findall(r'<font color="(#[0-9a-f]{6})">', message_shape(fields["message"])["lead"]),
+            ["#2e7d32"],
+            "a reclaim's lead line must colour its state green",
+        )
 
     def test_hostile_input_stays_inside_pushovers_limits_without_a_cut_entity(self):
-        hostile = ("<b>&'\"" * 2500)[:10_000]
+        hostile = ("<b>&'\"\n\0\U0001f9e8" * 1500)[:10_000]
+        for outcome in ("reclaimed", "failed"):
+            with self.subTest(outcome=outcome):
+                _app, rendered = image_prune.render_notification(
+                    self.config(), outcome,
+                    self.summary(**{"pass": hostile, "reason": hostile, "log": hostile}),
+                )
+                message = rendered["message"]
+                self.assertLessEqual(len(message), image_prune.MAX_MESSAGE_CHARACTERS)
+                self.assertTrue(message)
+                self.assertIsNone(HALF_ENTITY.search(message), message)
+                for tag in ("b", "i", "font", "a"):
+                    self.assertEqual(len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag)
+                # The title is plain text: nothing in it is escaped.
+                self.assertNotIn("&amp;", rendered["title"])
         app, fields = image_prune.render_notification(
             self.config(), "failed",
             self.summary(**{"pass": hostile, "reason": hostile, "log": hostile}),
         )
         message = fields["message"]
-        self.assertLessEqual(len(message), image_prune.MAX_MESSAGE_CHARACTERS)
-        self.assertTrue(message)
-        self.assertIsNone(HALF_ENTITY.search(message), message)
-        self.assertEqual(message.count("<b>"), message.count("</b>"))
         with mock.patch.object(
             image_prune, "_run",
             return_value=subprocess.CompletedProcess([], 0, b'{"status":1}\n200', b""),
