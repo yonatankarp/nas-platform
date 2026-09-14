@@ -12,7 +12,6 @@
 
 require "fileutils"
 require "digest"
-require "etc"
 require "digest/md5"
 # require "digest" only installs an autoload for Digest::SHA256. The case
 # workers touch it for the first time concurrently, and autoloading it from
@@ -27,6 +26,7 @@ require "socket"
 require "tmpdir"
 require "uri"
 require "yaml"
+require_relative "case_pool_support"
 
 ROOT = File.expand_path("..", __dir__)
 
@@ -3092,48 +3092,6 @@ def mutation_requests(api, matcher)
   end
 end
 
-# Every case builds its own stub server on an OS-assigned port and its own
-# mktmpdir sandbox, so cases share nothing but the failure list. The work is
-# almost entirely spent waiting on an ansible-playbook subprocess, which
-# releases the GVL, so a bounded pool of threads turns a queue of independent
-# Ansible runs into real parallelism. Failures are collected per case and
-# concatenated in the original order, so the report stays deterministic.
-# Never more workers than cores: tests/validate-policy.sh already runs its
-# checks concurrently, and oversubscribing a small CI runner trades wall time
-# for the contention that made the harness deadlines fire in the first place.
-# Never more workers than cores. Halving this to leave room for the rest of the
-# gate was measured and made things worse: the static job went from 32 minutes
-# to over 45 and was cancelled, because the throughput lost exceeded the
-# contention saved. These files get their own CI job instead.
-CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("ACQUISITION_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }
-)
-
-def in_parallel_cases(failures, items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.each { |item| yield item, failures } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        local = []
-        yield item, local
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
-end
 
 
 module CaseIteration

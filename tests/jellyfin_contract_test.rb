@@ -42,13 +42,13 @@
 # above detect it.
 
 require "digest"
-require "etc"
 require "fileutils"
 require "open3"
 require "rbconfig"
 require "shellwords"
 require "tmpdir"
 require "yaml"
+require_relative "case_pool_support"
 
 ROOT = File.expand_path("..", __dir__)
 CONTRACT = File.join(ROOT, "tests", "contracts", "jellyfin.sh")
@@ -99,48 +99,6 @@ FIXTURE_FILES = %w[
 # read it from the tree it is inspecting; the direction absence cannot decide is
 # covered instead by planting a different program at that path.
 
-# Runs independent cases through a worker pool, capped at the core count. The
-# same shape and the same reasoning as in_parallel_cases in
-# tests/media_acquisition_reconciliation_support.rb: a check that spawns a
-# subprocess per case, serially, becomes the floor for the whole policy gate, and
-# oversubscribing a four-core CI runner trades wall time for contention. Never
-# more workers than cores.
-CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("JELLYFIN_CONTRACT_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }, 10
-)
-
-def in_parallel_cases(items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.flat_map { |item| yield item } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        # A row whose fixture edit raises is a broken row, not a crashed suite:
-        # without this the worker thread dies and the pool reports nothing about
-        # the other rows it was carrying.
-        local = begin
-          yield item
-        rescue StandardError => error
-          ["#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: fixture raised " \
-           "#{error.class}: #{error.message}"]
-        end
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.flat_map { |index| collected.fetch(index) }
-end
 
 def build_fixture_repository(root)
   FIXTURE_FILES.each do |relative|
@@ -704,7 +662,7 @@ def run_static(program, root, platform, contract_repo_dir: root)
 end
 
 def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     failures = []
     Dir.mktmpdir("nas-platform-jellyfin-static.") do |raw|
       root = File.realpath(raw)
@@ -800,7 +758,7 @@ SELF_READ_ROWS = [
 # it belongs to its own change and not to #147.
 
 def self_read_failures(program = STATIC_PROGRAM, rows = SELF_READ_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     failures = []
     Dir.mktmpdir("nas-platform-jellyfin-selfread.") do |raw|
       root = File.realpath(raw)
@@ -936,7 +894,7 @@ RUNTIME_ROWS = [
 ].freeze
 
 def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     failures = []
     with_runtime_sandbox do |_root, environment, media|
       if row.fetch(:seed_first, false)
@@ -1670,7 +1628,7 @@ end
 ALL_STATIC_ROWS = (STATIC_ROWS + SELF_READ_ROWS).freeze
 
 if ARGV.include?("--self-test")
-  in_parallel_cases(PROGRAM_MUTATIONS) do |mutation|
+  in_parallel_case_results(PROGRAM_MUTATIONS) do |mutation|
     with_mutant(mutation) do |mutant|
       rows = mutation.fetch(:program) == :static ? ALL_STATIC_ROWS : RUNTIME_ROWS
       named = rows_named(rows, mutation.fetch(:rows))
