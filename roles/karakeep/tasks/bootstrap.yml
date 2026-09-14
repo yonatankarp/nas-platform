@@ -327,10 +327,10 @@
       After the bootstrap the vault administrator signed in with status
       {{ karakeep_census_login.status | default('none') }} and the account list
       answered {{ karakeep_census.status | default('none') }} with
-      {{ (karakeep_census.json | default({})).result.data.json.users | default([])
-         | length }} account(s) holding roles
-      {{ (karakeep_census.json | default({})).result.data.json.users | default([])
-         | map(attribute='role') | list }}; emails are not shown. Signups are
+      {{ (karakeep_census.json | default({})).result.data.json.users | default([]) | length }}
+      account(s) holding roles
+      {{ (karakeep_census.json | default({})).result.data.json.users | default([]) | map(attribute='role') | list }};
+      emails are not shown. Signups are
       closed. Anything other than exactly the vault administrator email as the one
       admin means an account was
       registered while the door was open; remove it in the administrator
