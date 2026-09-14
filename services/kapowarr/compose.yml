@@ -35,7 +35,15 @@ services:
   kapowarr:
     <<: *service-defaults
     container_name: kapowarr
-    image: docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
+    # THIS IMAGE MIGRATES ITS OWN STORE. Kapowarr applies its database migrations
+    # to /app/db/Kapowarr.db when it starts, and there is no way back: v1.3.2
+    # took a v1.3.1 store from database version 45 to 51, migration 47 moving the
+    # global service_preference into the GetComics indexer record and deleting
+    # the config row, measured against both pinned images (#671). So a bump is
+    # one-way. renovate.json withholds its major, minor and patch updates from
+    # automerge, and roles/image_downgrade_guard refuses a pin older than one
+    # that has already run here.
+    image: docker.io/mrcas/kapowarr:v1.3.2@sha256:cd3f004caff59636dde73b06df5b2f8068b485b47ff5fe82f6129562c0f2ac3b
     cpus: 1.0
     labels:
       dev.dozzle.name: kapowarr

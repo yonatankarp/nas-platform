@@ -1194,6 +1194,14 @@ repository vault remains encrypted:
   this directory is revoked in Audiobookshelf's own API-key list rather than
   rotated: delete the key named `bindery` there and the next converge mints and
   pushes a replacement.
+- Kapowarr's configuration root, for the same reason as Bindery's: its SQLite
+  database stores the ComicVine API key in clear, beside the administrator
+  identity hashed with a per-install salt and the application's own API key.
+  Before each pinned upgrade `roles/kapowarr/tasks/pre_upgrade_backup.yml` stops
+  the container and copies that database into `pre-upgrade-backup/` under the
+  same root at mode 0600 inside a 0700 directory (#671). That copy carries the
+  same credentials and is secret-bearing wherever it is copied to next; it is a
+  rollback path for a one-way migration on the same disk, not a backup.
 - Trailarr's `/config/.env`, which belongs in this class rather than merely in
   the `critical` recovery class its configuration root already carries: the
   application writes its own API key into that file on every boot, in clear, and

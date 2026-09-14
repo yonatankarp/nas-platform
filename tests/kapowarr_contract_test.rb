@@ -71,6 +71,7 @@ FIXTURE_FILES = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
+  roles/kapowarr/tasks/pre_upgrade_backup.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -189,6 +190,13 @@ def settings_write(document)
     task.dig("ansible.builtin.uri", "method") == "PUT" &&
       task.dig("ansible.builtin.uri", "url").to_s.include?("/api/settings") &&
       task.dig("ansible.builtin.uri", "body").to_s.include?("kapowarr_settings_declared")
+  end
+end
+
+def indexer_write(document)
+  find_task(document) do |task|
+    task.dig("ansible.builtin.uri", "method") == "PUT" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers/")
   end
 end
 
@@ -527,6 +535,212 @@ STATIC_ROWS = [
     expects: "Kapowarr must declare its download service order"
   },
   {
+    # #671: v1.3.2 migrated a v1.3.1 store from database version 45 to 51 on
+    # start, and an older image cannot open what a newer one migrated.
+    name: "no guard against a pin that goes back past a migration",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! { |task| task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard" }
+      end
+    },
+    expects: "Kapowarr must refuse an image older than the store already on disk"
+  },
+  {
+    name: "a downgrade guard that runs after the deployment",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        guard = document.find { |task| task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard" }
+        document.delete(guard)
+        document.push(guard)
+      end
+    },
+    expects: "Kapowarr must refuse an image older than the store already on disk"
+  },
+  {
+    # A guard pointed at another project reads another stack's containers and passes.
+    name: "a downgrade guard pointed at another Compose project",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        guard = document.find { |task| task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard" }
+        guard["vars"]["image_downgrade_guard_project_name"] = "somebody-else"
+      end
+    },
+    expects: "the Kapowarr downgrade guard must judge Kapowarr's own containers"
+  },
+  {
+    # Neither image takes a copy before its one-way migration, so without this
+    # nothing makes going back possible.
+    name: "no pre-upgrade copy of the store a pinned upgrade migrates",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+      end
+    },
+    expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
+  },
+  {
+    name: "a pre-upgrade copy taken after the deployment",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        copy = document.find { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+        document.delete(copy)
+        document.push(copy)
+      end
+    },
+    expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
+  },
+  {
+    name: "an upgrade keyed on something other than the recorded image",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending") }
+          .dig("ansible.builtin.set_fact")["kapowarr_upgrade_pending"] = "{{ kapowarr_pinned_image | length > 0 }}"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must key on the image the container was created from"
+  },
+  {
+    # A copy on every converge never reports a converged run.
+    name: "a pre-upgrade copy that runs on every converge",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("ansible.builtin.copy") }["when"] = ["not ansible_check_mode"]
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check"
+  },
+  {
+    name: "a pre-upgrade copy check mode does not report",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.reject! { |task| task.key?("ansible.builtin.debug") }
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must be reported under --check"
+  },
+  {
+    # Measured on roles/vaultwarden: without recreate: never the stop replaces the
+    # container with one on the new pin before anything is copied.
+    name: "a pre-upgrade stop that recreates the container onto the new pin",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("community.docker.docker_compose_v2") }
+          .fetch("community.docker.docker_compose_v2").delete("recreate")
+      end
+    },
+    expects: "the Kapowarr pre-upgrade stop must stop the old container rather than recreate it"
+  },
+  {
+    # The copy carries the ComicVine key the store holds.
+    name: "a world-readable pre-upgrade copy",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("ansible.builtin.copy") }["ansible.builtin.copy"]["mode"] = "0644"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must be private"
+  },
+  {
+    name: "an indexer read that does not really run under --check",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "GET" &&
+            candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers") &&
+            !Array(candidate["tags"]).include?("platform_verify_kapowarr")
+        end
+        task.delete("check_mode")
+      end
+    },
+    expects: "the Kapowarr indexer read must be a redacted, real, changeless read"
+  },
+  {
+    # A live run has deployed the pinned image, so a 404 there is a Kapowarr
+    # that is not the pinned one, and accepting it would skip the reconciliation.
+    name: "an indexer read that accepts a 404 on a live run",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/tasks/main.yml",
+                  "or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)",
+                  "or kapowarr_indexers.status | default(0) | int == 404")
+    },
+    expects: "the Kapowarr indexer read may accept a 404 only under --check"
+  },
+  {
+    # A redacted read that fails reports only "censored": no status, no body.
+    name: "an indexer read whose failure says only censored",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "GET" &&
+            candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers") &&
+            !Array(candidate["tags"]).include?("platform_verify_kapowarr")
+        end
+        task.delete("failed_when")
+      end
+    },
+    expects: "the Kapowarr indexer read must fail with its status rather than redacted"
+  },
+  {
+    # Without a bound the converge waits out whatever getcomics.org does.
+    name: "a service order write with no bound on the call to getcomics.org",
+    break: ->(root) { role_tasks(root) { |document| indexer_write(document)["ansible.builtin.uri"].delete("timeout") } },
+    expects: "the Kapowarr service order write must bound the call Kapowarr makes to getcomics.org"
+  },
+  {
+    # The one failure an operator most needs named is the one a redacted task hides.
+    name: "a service order write whose failure says only censored",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! do |task|
+          Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+            value.to_s.include?("kapowarr_service_order_write.status")
+          end
+        end
+      end
+    },
+    expects: "the Kapowarr service order write must fail with its status and the getcomics.org cause"
+  },
+  {
+    # The write reaches getcomics.org, so an ungated one would make every
+    # converge depend on a third party and report a change it never needed.
+    name: "a service order write that runs on every converge",
+    break: ->(root) { role_tasks(root) { |document| indexer_write(document)["when"] = ["not ansible_check_mode"] } },
+    expects: "the Kapowarr service order write must be gated on the resolved order"
+  },
+  {
+    # The indexer interface is not a partial merge, so a body built from
+    # constants would revert the title, URL and enabled flag nothing declares.
+    name: "a service order write that owns indexer fields nothing declares",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        indexer_write(document)["ansible.builtin.uri"]["body"] = {
+          "title" => "GetComics", "enabled" => true, "url" => "https://getcomics.org",
+          "gc_avoid_large_downloads" => false,
+          "gc_service_preference" => "{{ kapowarr_service_preference_declared }}"
+        }
+      end
+    },
+    expects: "the Kapowarr service order write must restate the indexer it read"
+  },
+  {
+    name: "a service order write rendered in full",
+    break: ->(root) { role_tasks(root) { |document| indexer_write(document).delete("no_log") } },
+    expects: "the Kapowarr service order write must stay redacted"
+  },
+  {
+    # None means it was deleted in the web interface, two means a database edited
+    # outside the application; indexing the first would guess.
+    name: "a service order written without refusing a missing or duplicate GetComics indexer",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! do |task|
+          Array(task.dig("ansible.builtin.assert", "that")).include?("kapowarr_getcomics_indexers | length == 1")
+        end
+      end
+    },
+    expects: "Kapowarr must refuse anything but exactly one GetComics indexer"
+  },
+  {
     # The read carries the API key in its query string and is a read: it must be
     # redacted, must not claim a change, and must really run under --check, or
     # the write decides from nothing.
@@ -860,6 +1074,47 @@ STATIC_ROWS = [
     expects: "Kapowarr verification must read the library roots it owns"
   },
   {
+    # Since v1.3.2 the settings no longer hold the order, so a verification that
+    # reads only them has nothing to assert the order against.
+    name: "verification that never reads the GetComics indexer",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          Array(candidate["tags"]).include?("platform_verify_kapowarr") &&
+            candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers")
+        end
+        task["ansible.builtin.uri"]["url"] = "{{ kapowarr_api }}/api/public"
+      end
+    },
+    expects: "Kapowarr verification must read the GetComics indexer holding the service order"
+  },
+  {
+    name: "an outcome assertion that stops asserting the download service order",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          Array(candidate["tags"]).include?("platform_verify_kapowarr") &&
+            candidate.key?("ansible.builtin.assert")
+        end
+        task["ansible.builtin.assert"]["that"].reject! { |value| value.include?("kapowarr_service_preference") }
+      end
+    },
+    expects: "Kapowarr verification must assert its exact access and ownership outcomes"
+  },
+  {
+    name: "an outcome assertion that accepts any number of GetComics indexers",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          Array(candidate["tags"]).include?("platform_verify_kapowarr") &&
+            candidate.key?("ansible.builtin.assert")
+        end
+        task["ansible.builtin.assert"]["that"].reject! { |value| value.include?("length == 1") }
+      end
+    },
+    expects: "Kapowarr verification must assert its exact access and ownership outcomes"
+  },
+  {
     name: "a probe that pins a status instead of deferring to the assertion",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -1003,6 +1258,10 @@ RUNTIME_DEFAULTS = {
   root_folders: [LIBRARY_ROOT],
   settings_code: 200,
   settings_overrides: {},
+  indexers_code: 200,
+  # nil serves the one GetComics indexer a fresh v1.3.2 creates, holding the
+  # declared order; a row replaces the whole list to move the record count.
+  indexers: nil,
   service_preference: nil,
   database: true,
   # The inspected tree's own declaration, which is what the program must read.
@@ -1046,6 +1305,18 @@ def build_runtime_sandbox(root, options)
   [bin, docker_root]
 end
 
+# The record GET /api/indexers returns for the GetComics indexer, shaped as a
+# fresh v1.3.2 answered it.
+def getcomics_indexer(options, order: nil)
+  {
+    "id" => 1, "enabled" => true, "download_type" => 1, "client_type" => "GetComics",
+    "required_tokens" => %w[title enabled url gc_service_preference gc_avoid_large_downloads],
+    "title" => "GetComics", "url" => "https://getcomics.org",
+    "gc_service_preference" => order || options.fetch(:service_preference) || DECLARED_ORDER,
+    "gc_avoid_large_downloads" => false
+  }
+end
+
 def runtime_responder(options)
   lambda do |method, target, _headers, body|
     path = target.split("?").first
@@ -1074,10 +1345,11 @@ def runtime_responder(options)
       next [options.fetch(:settings_code), "{}"] unless options.fetch(:settings_code) == 200
 
       document = DECLARED_SETTINGS.merge(options.fetch(:settings_overrides))
-      document = document.merge(
-        "service_preference" => options.fetch(:service_preference) || DECLARED_ORDER
-      )
       [200, JSON.generate("result" => document)]
+    when %w[GET /api/indexers]
+      next [options.fetch(:indexers_code), "{}"] unless options.fetch(:indexers_code) == 200
+
+      [200, JSON.generate("result" => options.fetch(:indexers) || [getcomics_indexer(options)])]
     else [404, "{}"]
     end
   end
@@ -1192,6 +1464,34 @@ RUNTIME_ROWS = [
     name: "a download service order the application reordered",
     given: { service_preference: DECLARED_ORDER.reverse },
     expects: "Kapowarr does not hold the declared download service order"
+  },
+  {
+    # An empty order satisfies the partial-order comparison vacuously.
+    name: "a GetComics indexer holding no download service order",
+    given: { service_preference: [] },
+    expects: "Kapowarr does not hold the declared download service order"
+  },
+  {
+    # Since v1.3.2 the order is read from the indexers, not from the settings.
+    name: "indexers the service refuses to list",
+    given: { indexers_code: 401 },
+    expects: "Kapowarr refused to list its indexers"
+  },
+  {
+    # Deleted in the web interface: nothing holds the order at all.
+    name: "no GetComics indexer",
+    given: { indexers: [] },
+    expects: "Kapowarr does not hold exactly one GetComics indexer"
+  },
+  {
+    # The application refuses to add a second, so two means a database edited
+    # outside it, and which one Kapowarr searches with is not knowable here.
+    name: "two GetComics indexers",
+    given: {
+      indexers: [getcomics_indexer(RUNTIME_DEFAULTS, order: DECLARED_ORDER),
+                 getcomics_indexer(RUNTIME_DEFAULTS, order: DECLARED_ORDER.reverse).merge("id" => 2)]
+    },
+    expects: "Kapowarr does not hold exactly one GetComics indexer"
   },
   {
     # The runtime half's own two-roots row, and the only signal that separates
@@ -1759,6 +2059,162 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["a verification read that claims a change"]
   },
+  # The ordering half only. An absent guard also fails the subject check below
+  # it, so planting the presence half away leaves that row refused by the other
+  # sentence -- the same redundancy the drift-assertion note further down records.
+  # Since the pre-upgrade copy (#671) the same row also breaks that copy's own
+  # ordering, which requires the guard ahead of it, so with this check planted
+  # away the row is still refused -- by the copy's sentence. That is the
+  # detection: the row names this check's sentence and gets another.
+  {
+    label: "the downgrade guard ordering check",
+    program: :static,
+    from: "guard_index < deploy_index",
+    to: "true",
+    rows: ["a downgrade guard that runs after the deployment"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "the downgrade guard subject check",
+    program: :static,
+    from: 'guard_vars["image_downgrade_guard_project_name"] == "{{ kapowarr_compose_project_name }}"',
+    to: "true",
+    rows: ["a downgrade guard pointed at another Compose project"]
+  },
+  # The ordering half of the pre-upgrade copy check only, for the reason the
+  # downgrade guard's plant above gives: an absent import fails the same sentence
+  # through its first term, which no plant of the ordering can remove.
+  {
+    label: "the pre-upgrade copy ordering check",
+    program: :static,
+    from: "guard_index < backup_import && backup_import < deploy_index",
+    to: "true",
+    rows: ["a pre-upgrade copy taken after the deployment"]
+  },
+  {
+    label: "the recorded-image upgrade key check",
+    program: :static,
+    from: 'pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")',
+    to: "true",
+    rows: ["an upgrade keyed on something other than the recorded image"]
+  },
+  {
+    label: "the pending-upgrade-only copy check",
+    program: :static,
+    from: 'conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")',
+    to: "true",
+    rows: ["a pre-upgrade copy that runs on every converge"]
+  },
+  {
+    label: "the check-mode copy report check",
+    program: :static,
+    from: 'task.key?("ansible.builtin.debug") && conditions.include?("ansible_check_mode") &&',
+    to: "true ||",
+    rows: ["a pre-upgrade copy check mode does not report"]
+  },
+  {
+    label: "the non-recreating pre-upgrade stop check",
+    program: :static,
+    from: 'backup_stop.dig("community.docker.docker_compose_v2", "recreate") == "never"',
+    to: "true",
+    rows: ["a pre-upgrade stop that recreates the container onto the new pin"]
+  },
+  {
+    label: "the private pre-upgrade copy check",
+    program: :static,
+    from: 'backup_copy && backup_copy.dig("ansible.builtin.copy", "mode") == "0600" &&',
+    to: "true ||",
+    rows: ["a world-readable pre-upgrade copy"]
+  },
+  {
+    label: "the redacted real indexer read check",
+    program: :static,
+    from: 'indexer_read && indexer_read["changed_when"] == false &&
+    indexer_read["check_mode"] == false && indexer_read["no_log"] == true',
+    to: "true",
+    rows: ["an indexer read that does not really run under --check"]
+  },
+  {
+    label: "the check-mode-only 404 acceptance check",
+    program: :static,
+    from: 'include?("or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)")',
+    to: 'include?("")',
+    rows: ["an indexer read that accepts a 404 on a live run"]
+  },
+  {
+    label: "the legible indexer read failure check",
+    program: :static,
+    from: 'indexer_read && indexer_read["failed_when"] == false && indexer_read_assert &&',
+    to: "true || indexer_read_assert &&",
+    rows: ["an indexer read whose failure says only censored"]
+  },
+  {
+    label: "the bounded service order write check",
+    program: :static,
+    from: "write_timeout.is_a?(Integer) && write_timeout.between?(31, 120)",
+    to: "true",
+    rows: ["a service order write with no bound on the call to getcomics.org"]
+  },
+  {
+    label: "the legible service order write failure check",
+    program: :static,
+    from: 'indexer_write && indexer_write["failed_when"] == false && write_assert &&',
+    to: "true || write_assert &&",
+    rows: ["a service order write whose failure says only censored"]
+  },
+  {
+    label: "the drift-gated service order write check",
+    program: :static,
+    from: 'indexer_write && indexer_conditions.include?("kapowarr_service_preference_declared") &&
+    indexer_conditions.include?("kapowarr_service_preference_deployed") &&
+    indexer_conditions.include?("ansible_check_mode")',
+    to: "true",
+    rows: ["a service order write that runs on every converge"]
+  },
+  {
+    label: "the restated indexer record check",
+    program: :static,
+    from: 'indexer_write.dig("ansible.builtin.uri", "body").to_s.include?("kapowarr_getcomics_indexers[0]") &&
+    indexer_write.dig("ansible.builtin.uri", "body").to_s.include?("combine")',
+    to: "true",
+    rows: ["a service order write that owns indexer fields nothing declares"]
+  },
+  {
+    label: "the redacted service order write check",
+    program: :static,
+    from: 'indexer_write && indexer_write["no_log"] == true',
+    to: "true",
+    rows: ["a service order write rendered in full"]
+  },
+  {
+    label: "the exactly-one GetComics indexer refusal check",
+    program: :static,
+    from: "indexer_refusal && indexer_write && tasks.index(indexer_refusal) < tasks.index(indexer_write)",
+    to: "true",
+    rows: ["a service order written without refusing a missing or duplicate GetComics indexer"]
+  },
+  {
+    label: "the indexer verification read check",
+    program: :static,
+    from: "indexers_verification.nil?",
+    to: "false",
+    rows: ["verification that never reads the GetComics indexer"]
+  },
+  {
+    label: "the asserted exactly-one GetComics indexer outcome",
+    program: :static,
+    from: 'value.include?("kapowarr_verify_getcomics_indexers") && value.include?("length == 1")',
+    to: "true",
+    rows: ["an outcome assertion that accepts any number of GetComics indexers"]
+  },
+  {
+    label: "the asserted download service order outcome",
+    program: :static,
+    from: 'value.include?("kapowarr_verify_getcomics_indexers") &&
+        value.include?("kapowarr_service_preference")',
+    to: "true",
+    rows: ["an outcome assertion that stops asserting the download service order"]
+  },
   {
     label: "the username-and-password mode check",
     program: :runtime,
@@ -1825,6 +2281,22 @@ PROGRAM_MUTATIONS = [
     declared_order.select { |service| deployed_order.include?(service) }',
     to: "true",
     rows: ["a download service order the application reordered"]
+  },
+  {
+    label: "the empty download service order refusal",
+    program: :runtime,
+    from: "!deployed_order.empty? &&",
+    to: "true &&",
+    rows: ["a GetComics indexer holding no download service order"]
+  },
+  {
+    # Only the two-record row: with none, the order read after this check
+    # dereferences a missing record, which is a crash rather than a refusal.
+    label: "the exactly-one GetComics indexer check",
+    program: :runtime,
+    from: "getcomics.length == 1",
+    to: "true",
+    rows: ["two GetComics indexers"]
   }
 ].freeze
 

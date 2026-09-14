@@ -14,6 +14,7 @@ required = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
+  roles/kapowarr/tasks/pre_upgrade_backup.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -224,9 +225,11 @@ if failures.empty?
   # Kapowarr masks every stored credential on read -- both halves of the
   # administrator identity answer as literal asterisks -- so a declaration
   # naming one could never match what comes back, and the write would run on
-  # every converge. The service order is excluded for a different reason: the
-  # application validates it as a permutation of its own service list, so it is
-  # declared as a partial ordering and merged over the deployed order instead.
+  # every converge. The service order is excluded for a different reason: since
+  # v1.3.2 it is not a setting at all but the GetComics indexer's
+  # gc_service_preference (#671), still validated as a permutation of the
+  # deployed version's service list, so it is declared as a partial ordering and
+  # merged over the order that indexer holds.
   declared_settings = defaults["kapowarr_settings"]
   credential_keys = Array(defaults["kapowarr_settings_credential_keys"])
   failures << "Kapowarr must declare the application settings it owns" unless
@@ -256,6 +259,148 @@ if failures.empty?
   end
   failures << "Kapowarr must declare its download service order" if
     Array(defaults["kapowarr_service_preference"]).empty?
+
+  # #671: Kapowarr migrates its own store on start, and v1.3.2 took a v1.3.1
+  # store from database version 45 to 51 with no way back. So a pin older than
+  # one that has already run must be refused before Compose recreates the
+  # container from it, and the guard must judge Kapowarr's own containers.
+  deploy_index = tasks.index do |task|
+    compose = task["community.docker.docker_compose_v2"]
+    compose.is_a?(Hash) && compose["state"] == "present" && !compose.key?("recreate")
+  end
+  guard_index = tasks.index do |task|
+    task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard"
+  end
+  failures << "Kapowarr must refuse an image older than the store already on disk" unless
+    guard_index && deploy_index && guard_index < deploy_index
+  guard_vars = guard_index ? (tasks[guard_index]["vars"] || {}) : {}
+  failures << "the Kapowarr downgrade guard must judge Kapowarr's own containers" unless
+    guard_vars["image_downgrade_guard_service_name"] == "kapowarr" &&
+    guard_vars["image_downgrade_guard_compose_service"] == "kapowarr" &&
+    guard_vars["image_downgrade_guard_project_name"] == "{{ kapowarr_compose_project_name }}"
+
+  # The guard refuses going back; the pre-upgrade copy is what makes going back
+  # possible at all. Neither image offers an on-demand backup, so the store is
+  # copied from a stopped container, between the guard and the deployment.
+  backup_import = tasks.index do |task|
+    task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml"
+  end
+  failures << "Kapowarr must copy its store aside between the downgrade guard and the deployment" unless
+    backup_import && guard_index && deploy_index &&
+    guard_index < backup_import && backup_import < deploy_index
+  backup_tasks = flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml"), aliases: true)
+  )
+  pending_fact = backup_tasks.find do |task|
+    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending")
+  end.to_s
+  failures << "the Kapowarr pre-upgrade copy must key on the image the container was created from" unless
+    pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")
+  # A copy on every converge would never report a converged run, and --check
+  # must stop and copy nothing.
+  backup_mutations = backup_tasks.select do |task|
+    %w[community.docker.docker_compose_v2 ansible.builtin.find ansible.builtin.file ansible.builtin.copy]
+      .any? { |name| task.key?(name) }
+  end
+  failures << "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check" unless
+    backup_mutations.length >= 5 && backup_mutations.all? do |task|
+      conditions = Array(task["when"]).join(" ")
+      conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")
+    end
+  failures << "the Kapowarr pre-upgrade copy must be reported under --check" unless
+    backup_tasks.any? do |task|
+      conditions = Array(task["when"])
+      task.key?("ansible.builtin.debug") && conditions.include?("ansible_check_mode") &&
+        conditions.join(" ").include?("kapowarr_upgrade_pending")
+    end
+  # Without recreate: never the stop first replaces the container with one on the
+  # new pin, and a failed copy no longer reads as a pending upgrade next time.
+  backup_stop = backup_tasks.find { |task| task.key?("community.docker.docker_compose_v2") }
+  failures << "the Kapowarr pre-upgrade stop must stop the old container rather than recreate it" unless
+    backup_stop && backup_stop.dig("community.docker.docker_compose_v2", "state") == "stopped" &&
+    backup_stop.dig("community.docker.docker_compose_v2", "recreate") == "never"
+  # The copy carries every credential the store holds, the ComicVine key among them.
+  backup_copy = backup_tasks.find { |task| task.key?("ansible.builtin.copy") }
+  backup_directory = backup_tasks.find { |task| task.dig("ansible.builtin.file", "state") == "directory" }
+  failures << "the Kapowarr pre-upgrade copy must be private" unless
+    backup_copy && backup_copy.dig("ansible.builtin.copy", "mode") == "0600" &&
+    backup_directory && backup_directory.dig("ansible.builtin.file", "mode") == "0700"
+
+  # Since v1.3.2 the service order is gc_service_preference on the GetComics
+  # indexer, not a setting (#671). The indexer read must be a redacted, real,
+  # changeless read, or the write decides from nothing under --check.
+  indexer_read = tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "GET" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers") &&
+      !Array(task["tags"]).include?("platform_verify_kapowarr")
+  end
+  failures << "Kapowarr must read its deployed indexers before declaring the service order" if
+    indexer_read.nil?
+  failures << "the Kapowarr indexer read must be a redacted, real, changeless read" unless
+    indexer_read && indexer_read["changed_when"] == false &&
+    indexer_read["check_mode"] == false && indexer_read["no_log"] == true
+  # Compose's dry run recreates nothing, so --check before the upgrade reaches
+  # the older image, which has no indexer interface. That 404 is the review and
+  # must not fail it; on a live run the pinned image is running and a 404 must.
+  # The verdict is an assert rather than the redacted read's own status list,
+  # because a redacted task that fails says only "censored".
+  indexer_read_assert = tasks.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_indexers.status")
+    end
+  end
+  failures << "the Kapowarr indexer read may accept a 404 only under --check" unless
+    Array(indexer_read_assert&.dig("ansible.builtin.assert", "that")).join(" ")
+      .include?("or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)")
+  failures << "the Kapowarr indexer read must fail with its status rather than redacted" unless
+    indexer_read && indexer_read["failed_when"] == false && indexer_read_assert &&
+    indexer_read_assert.dig("ansible.builtin.assert", "fail_msg").to_s.include?("kapowarr_indexers.status") &&
+    tasks.index(indexer_read) < tasks.index(indexer_read_assert)
+  # The indexer interface is not a partial merge: it reads every field out of the
+  # body and refuses a missing one. A write must restate the record it read,
+  # replacing only the order, or it would own fields nothing declares. It reaches
+  # getcomics.org, so it must also stay off a converged host.
+  indexer_write = tasks.find do |task|
+    task.dig("ansible.builtin.uri", "method") == "PUT" &&
+      task.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers/")
+  end
+  indexer_conditions = Array(indexer_write&.fetch("when", nil)).join(" ")
+  failures << "the Kapowarr service order write must be gated on the resolved order" unless
+    indexer_write && indexer_conditions.include?("kapowarr_service_preference_declared") &&
+    indexer_conditions.include?("kapowarr_service_preference_deployed") &&
+    indexer_conditions.include?("ansible_check_mode")
+  failures << "the Kapowarr service order write must restate the indexer it read" unless
+    indexer_write &&
+    indexer_write.dig("ansible.builtin.uri", "body").to_s.include?("kapowarr_getcomics_indexers[0]") &&
+    indexer_write.dig("ansible.builtin.uri", "body").to_s.include?("combine")
+  failures << "the Kapowarr service order write must stay redacted" unless
+    indexer_write && indexer_write["no_log"] == true
+  # Kapowarr tests the indexer against getcomics.org inside this request, with a
+  # 30s timeout of its own, so the request needs a bound above that and below an
+  # unbounded wait, and its failure has to say so where the redacted task cannot.
+  write_timeout = indexer_write&.dig("ansible.builtin.uri", "timeout")
+  failures << "the Kapowarr service order write must bound the call Kapowarr makes to getcomics.org" unless
+    write_timeout.is_a?(Integer) && write_timeout.between?(31, 120)
+  write_assert = tasks.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_service_order_write.status")
+    end
+  end
+  write_message = write_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
+  failures << "the Kapowarr service order write must fail with its status and the getcomics.org cause" unless
+    indexer_write && indexer_write["failed_when"] == false && write_assert &&
+    write_message.include?("kapowarr_service_order_write.status") && write_message.include?("ClientNotWorking") &&
+    Array(write_assert["when"]).join(" ").include?("kapowarr_service_preference_declared") &&
+    tasks.index(indexer_write) < tasks.index(write_assert)
+  # None means the indexer was deleted and two means the database was edited
+  # outside the application; either is refused, and before the write.
+  indexer_refusal = tasks.find do |task|
+    Array(task.dig("ansible.builtin.assert", "that")).any? do |value|
+      value.to_s.include?("kapowarr_getcomics_indexers | length == 1")
+    end
+  end
+  failures << "Kapowarr must refuse anything but exactly one GetComics indexer" unless
+    indexer_refusal && indexer_write && tasks.index(indexer_refusal) < tasks.index(indexer_write)
 
   settings_read = tasks.find do |task|
     task.dig("ansible.builtin.uri", "method") == "GET" &&
@@ -496,6 +641,11 @@ if failures.empty?
   end
   failures << "Kapowarr verification must read the settings it declares" if
     settings_verification.nil?
+  indexers_verification = verification.find do |task|
+    task.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers")
+  end
+  failures << "Kapowarr verification must read the GetComics indexer holding the service order" if
+    indexers_verification.nil?
 
   # Every probe accepts any status and defers to the assertion, so a drifted
   # credential fails with a diagnosis rather than inside the redacted request.
@@ -526,7 +676,10 @@ if failures.empty?
       value.include?("kapowarr_verify_settings") && value.include?("kapowarr_settings")
     end &&
     conditions.any? do |value|
-      value.include?("kapowarr_verify_settings") &&
+      value.include?("kapowarr_verify_getcomics_indexers") && value.include?("length == 1")
+    end &&
+    conditions.any? do |value|
+      value.include?("kapowarr_verify_getcomics_indexers") &&
         value.include?("kapowarr_service_preference")
     end
   # The diagnosis is the point of deferring, so it must not be redacted away.

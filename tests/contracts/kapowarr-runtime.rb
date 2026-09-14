@@ -128,13 +128,25 @@ unless mismatched.empty?
   )
 end
 
+# Since v1.3.2 the service order lives on the GetComics indexer rather than in
+# the settings (#671). Exactly one such indexer is what the application creates
+# and what the role reconciles, so none or two is refused here as it is there.
+indexers = get("/api/indexers?api_key=#{api_key}")
+fail_contract("Kapowarr refused to list its indexers") unless indexers.code == "200"
+getcomics = Array(JSON.parse(indexers.body).fetch("result")).select do |entry|
+  entry.is_a?(Hash) && entry["client_type"] == "GetComics"
+end
+fail_contract("Kapowarr does not hold exactly one GetComics indexer") unless getcomics.length == 1
+
 # The declared order is a partial one: the services it names must appear in that
 # relative order, and a service the deployed version knows and the declaration
 # does not is free to sit anywhere. Filtering both lists by the other is what
-# makes this a statement about order rather than about membership.
+# makes this a statement about order rather than about membership. An empty
+# deployed order satisfies that vacuously, so it is refused first.
 declared_order = Array(role_defaults.fetch("kapowarr_service_preference"))
-deployed_order = Array(deployed_settings.fetch("service_preference"))
+deployed_order = Array(getcomics.first["gc_service_preference"])
 fail_contract("Kapowarr does not hold the declared download service order") unless
+  !deployed_order.empty? &&
   deployed_order.select { |service| declared_order.include?(service) } ==
     declared_order.select { |service| deployed_order.include?(service) }
 
