@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,21 @@ MAIN_SHA = "a" * 40
 OTHER_SHA = "b" * 40
 # A third revision, for the walk back from a head whose run is still going.
 OLDER_SHA = "c" * 40
+# What curl prints for a message Pushover took, under --write-out '\n%{http_code}'.
+ACCEPTED = b'{"status":1,"request":"r"}\n200'
+# A half-cut or invented entity: an ampersand that does not open one html.escape writes.
+HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
+
+
+def form_of(arguments):
+    """The --form-string fields one curl invocation sends, as a dict."""
+
+    arguments = [str(argument) for argument in arguments]
+    return dict(
+        arguments[index + 1].split("=", 1)
+        for index, argument in enumerate(arguments)
+        if argument == "--form-string"
+    )
 
 
 class PollerTestCase(unittest.TestCase):
@@ -47,8 +63,9 @@ class PollerTestCase(unittest.TestCase):
             (self.root / relative).mkdir(parents=True)
         self.vault = self.root / ".config/nas-platform/vault.yml"
         self.password = self.root / ".config/nas-platform/vault-password"
-        self.notifier = self.root / ".config/nas-platform/ntfy.curl"
-        for path in (self.vault, self.password, self.notifier):
+        self.alerts_notifier = self.root / ".config/nas-platform/pushover-alerts.curl"
+        self.deployments_notifier = self.root / ".config/nas-platform/pushover-deployments.curl"
+        for path in (self.vault, self.password, self.alerts_notifier, self.deployments_notifier):
             path.write_text("x\n", encoding="utf-8")
             path.chmod(0o600)
         self.config_path = self.root / ".config/nas-platform/deployer.json"
@@ -65,9 +82,8 @@ class PollerTestCase(unittest.TestCase):
             "state_root": str(self.root / ".local/share/nas-platform/state"),
             "log_root": str(self.root / ".local/share/nas-platform/logs"),
             "vault_password_file": str(self.password),
-            "ntfy_curl_config": str(self.notifier),
-            "ntfy_topic_critical": "nas-critical",
-            "ntfy_topic_deployment": "nas-deployment",
+            "pushover_alerts_curl_config": str(self.alerts_notifier),
+            "pushover_deployments_curl_config": str(self.deployments_notifier),
             "platform_nas_address": "192.168.0.139",
             "platform_public_host": "192.168.0.139",
             "platform_callback_host": "192.168.0.139",
@@ -105,10 +121,11 @@ class ConfigTest(PollerTestCase):
         self.assertTrue(config.state_root.is_absolute())
 
     def test_load_config_requires_every_field(self):
-        # hourly_only_verify_tags and the two ping URLs are optional, and have
-        # their own tests below.
+        # hourly_only_verify_tags, the two ping URLs and the two Pushover configs
+        # are optional, and have their own tests below.
         optional = {"hourly_only_verify_tags", "healthchecks_poller_ping_url",
-                    "healthchecks_verify_ping_url"}
+                    "healthchecks_verify_ping_url", "pushover_alerts_curl_config",
+                    "pushover_deployments_curl_config"}
         for field in [f.name for f in production_auto_deploy.fields(
                 production_auto_deploy.Config) if f.name not in optional]:
             payload = self.config_payload()
@@ -169,6 +186,51 @@ class ConfigTest(PollerTestCase):
 
         self.assertEqual(config.healthchecks_poller_ping_url, "")
         self.assertEqual(config.healthchecks_verify_ping_url, "")
+
+    def test_an_ntfy_era_configuration_loads_and_cannot_publish(self):
+        # The install play copies this poller before it renders deployer.json, so
+        # the first tick after the move to Pushover reads the file the ntfy-era
+        # template wrote (#327). Refusing it would stop every deployment with
+        # nothing able to heal the host: it loads, says so in one stderr line,
+        # and publishes nothing.
+        payload = self.config_payload(
+            ntfy_curl_config=str(self.root / ".config/nas-platform/ntfy.curl"),
+            ntfy_topic_critical="nas-critical",
+            ntfy_topic_deployment="nas-deployment",
+        )
+        payload.pop("pushover_alerts_curl_config")
+        payload.pop("pushover_deployments_curl_config")
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            config = production_auto_deploy.load_config(self.config_path)
+
+        self.assertIsNone(config.pushover_alerts_curl_config)
+        self.assertIsNone(config.pushover_deployments_curl_config)
+        (line,) = stderr.getvalue().splitlines()
+        self.assertIn("pushover_alerts_curl_config", line)
+        self.assertIn("pushover_deployments_curl_config", line)
+        with mock.patch.object(production_auto_deploy, "_run") as run:
+            for app in ("alerts", "deployments"):
+                self.assertFalse(production_auto_deploy.publish(
+                    config, app, {"title": "t", "message": "m", "priority": 1}))
+        run.assert_not_called()
+
+    def test_an_unusable_pushover_path_cannot_publish_rather_than_refusing(self):
+        for raw in ("", "relative/pushover-alerts.curl", 42, None, ["/x"]):
+            with self.subTest(raw=raw):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    config = self.loaded_config(pushover_alerts_curl_config=raw)
+                self.assertIsNone(config.pushover_alerts_curl_config)
+                self.assertEqual(config.pushover_deployments_curl_config,
+                                 self.deployments_notifier)
+
+    def test_a_current_configuration_loads_silently(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            config = self.loaded_config()
+        self.assertEqual(config.pushover_alerts_curl_config, self.alerts_notifier)
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_a_ping_url_is_read_when_present(self):
         config = self.loaded_config(
@@ -1514,185 +1576,213 @@ class LogTest(PollerTestCase):
         self.assertTrue(malformed.exists(), "an unparsable stamp is left alone")
 
 
-class NotifyTest(PollerTestCase):
-    def published(self, config, outcome):
-        """Return the ntfy publish body notify() would send for one outcome."""
+class PushoverTransportTest(PollerTestCase):
+    """What reaches Pushover, through which application's config, and what counts as sent."""
 
-        seen = {}
+    SENTINEL = "sentinel-token-that-must-stay-in-its-file"
+    RUN_URL = "https://github.com/yonatankarp/nas-platform/actions/runs/9"
+
+    def sent(self, action, stdout=ACCEPTED, returncode=0):
+        """Run action with curl stubbed; return its result and every argv it ran."""
+
+        seen = []
 
         def run(arguments, **kwargs):
-            seen["arguments"] = [str(a) for a in arguments]
-            return subprocess.CompletedProcess(arguments, 0, b"", b"")
+            seen.append([str(argument) for argument in arguments])
+            return subprocess.CompletedProcess(arguments, returncode, stdout, b"")
 
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            delivered = production_auto_deploy.notify(
-                config, outcome, MAIN_SHA,
-                "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z",
-                config.log_root / "20260821T150000Z-deploy.log",
-            )
-        arguments = seen["arguments"]
-        body = json.loads(arguments[arguments.index("--data-binary") + 1])
-        return delivered, arguments, body
+        stderr = io.StringIO()
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=run), \
+                contextlib.redirect_stderr(stderr):
+            result = action()
+        self.last_stderr = stderr.getvalue()
+        return result, seen
 
-    def test_notify_posts_through_the_protected_config(self):
+    def notify_failure(self, config, started="2026-08-21T15:00:00Z",
+                       finished="2026-08-21T15:04:30Z", log_path=None, run_url=RUN_URL):
+        return production_auto_deploy.notify(
+            config, MAIN_SHA, started, finished,
+            log_path or config.log_root / "20260821T150000Z-deploy.log", run_url,
+        )
+
+    def test_a_failed_deployment_goes_to_the_alerts_application_at_priority_1(self):
         config = self.loaded_config()
-        delivered, arguments, _body = self.published(config, "success")
+        delivered, (arguments,) = self.sent(lambda: self.notify_failure(config))
 
         self.assertTrue(delivered)
         self.assertEqual(arguments[0], "/usr/bin/curl")
-        self.assertIn("--config", arguments)
-        self.assertEqual(
-            arguments[arguments.index("--config") + 1], str(config.ntfy_curl_config)
+        self.assertEqual(arguments[arguments.index("--config") + 1], str(self.alerts_notifier))
+        # No --fail: a 4xx body is the refusal, and --fail would discard it.
+        self.assertNotIn("--fail", arguments)
+        self.assertEqual(arguments[-2:], ["--write-out", "\n%{http_code}"])
+        form = form_of(arguments)
+        self.assertEqual(form["priority"], "1")
+        self.assertEqual(form["html"], "1")
+        self.assertNotIn("ttl", form)
+        self.assertEqual(form["title"], f"Deploy failed \u00b7 {MAIN_SHA[:9]}")
+        # The releasing run is the tap-through; the commit is a link in the body.
+        self.assertEqual(form["url"], self.RUN_URL)
+        self.assertIn(
+            f'<b>Commit:</b> <a href="https://github.com/yonatankarp/nas-platform/commit/{MAIN_SHA}">'
+            f"{MAIN_SHA[:9]}</a>",
+            form["message"],
+        )
+        self.assertIn("<b>Duration:</b> 4m 30s", form["message"])
+        self.assertIn("<b>Log:</b> " + str(config.log_root / "20260821T150000Z-deploy.log"),
+                      form["message"])
+
+    def test_a_failed_deployment_without_a_run_url_sends_no_link(self):
+        config = self.loaded_config()
+        _delivered, (arguments,) = self.sent(lambda: self.notify_failure(config, run_url=""))
+
+        self.assertNotIn("url", form_of(arguments))
+        self.assertNotIn("url_title", form_of(arguments))
+
+    def test_the_duration_is_admitted_unknown_rather_than_guessed(self):
+        config = self.loaded_config()
+        _delivered, (arguments,) = self.sent(
+            lambda: self.notify_failure(config, started="start", finished="finish")
         )
 
-    def test_notify_publishes_ntfy_structured_json_not_a_raw_outcome_dict(self):
-        """The body must be ntfy's publish schema, addressed to the root URL.
+        self.assertIn("<b>Duration:</b> unknown", form_of(arguments)["message"])
 
-        Posting a JSON document to /<topic> makes ntfy treat it as literal
-        message text, which is how deploy alerts arrived as unreadable JSON.
-        """
-
+    def test_the_log_path_is_escaped_for_html(self):
         config = self.loaded_config()
-        _delivered, _arguments, body = self.published(config, "success")
-
-        self.assertEqual(
-            sorted(body),
-            ["markdown", "message", "priority", "tags", "title", "topic"],
+        _delivered, (arguments,) = self.sent(
+            lambda: self.notify_failure(config, log_path=config.log_root / 'we<ird>&"name".log')
         )
-        self.assertTrue(body["markdown"])
-        self.assertNotIn("outcome", body)
-        self.assertNotIn("log_path", body)
 
-    def test_notify_routes_success_to_the_events_topic_quietly(self):
+        message = form_of(arguments)["message"]
+        self.assertIn("we&lt;ird&gt;&amp;&quot;name&quot;.log", message)
+        self.assertNotIn("<ird>", message)
+
+    def test_no_credential_reaches_argv_a_timeout_or_stderr(self):
         config = self.loaded_config()
-        _delivered, _arguments, body = self.published(config, "success")
+        self.alerts_notifier.write_text(
+            'url = "https://api.pushover.net/1/messages.json"\n'
+            f'form-string = "user={self.SENTINEL}"\n'
+            f'form-string = "token={self.SENTINEL}"\n',
+            encoding="utf-8",
+        )
+        delivered, (arguments,) = self.sent(
+            lambda: self.notify_failure(config),
+            stdout=b'{"status":0,"errors":["application token is invalid"]}\n400',
+        )
 
-        self.assertEqual(body["topic"], "nas-deployment")
-        self.assertEqual(body["priority"], 3)
-        self.assertEqual(body["tags"], ["white_check_mark"])
-        self.assertEqual(body["title"], f"Deployed \u00b7 {MAIN_SHA[:9]}")
+        self.assertFalse(delivered)
+        self.assertNotIn(self.SENTINEL, " ".join(arguments))
+        self.assertNotIn(self.SENTINEL, self.last_stderr)
+        self.assertIn("vault_pushover_alerts_token", self.last_stderr)
+        self.assertIn("vault_pushover_user_key", self.last_stderr)
 
-    def test_notify_routes_failure_to_the_critical_topic_loudly(self):
-        """Severity, not source, picks the topic: a failed deploy is critical."""
+        raised = []
 
+        def stalled(arguments, **kwargs):
+            raised.append(subprocess.TimeoutExpired(arguments, kwargs["timeout"]))
+            raise raised[-1]
+
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=stalled):
+            self.assertFalse(self.notify_failure(config))
+        (timeout,) = raised
+        self.assertNotIn(self.SENTINEL, repr(timeout) + str(timeout)
+                         + " ".join(str(argument) for argument in timeout.cmd))
+
+    def test_only_an_accepted_answer_is_delivered_and_only_a_refusal_names_keys(self):
         config = self.loaded_config()
-        _delivered, _arguments, body = self.published(config, "failed")
-
-        self.assertEqual(body["topic"], "nas-critical")
-        self.assertEqual(body["priority"], 5)
-        self.assertEqual(body["tags"], ["warning", "skull"])
-        self.assertEqual(body["title"], f"Deploy failed \u00b7 {MAIN_SHA[:9]}")
-
-    def test_notify_message_states_commit_duration_and_log(self):
-        config = self.loaded_config()
-        _delivered, _arguments, body = self.published(config, "success")
-
-        self.assertEqual(
-            body["message"],
-            "\n".join(
-                (
-                    f"**Commit:** `{MAIN_SHA}`",
-                    "**Started:** `2026-08-21T15:00:00Z`",
-                    "**Finished:** `2026-08-21T15:04:30Z`",
-                    "**Duration:** `4m 30s`",
-                    "**Log:** `"
-                    + production_auto_deploy.markdown_escape(
-                        str(config.log_root / "20260821T150000Z-deploy.log")
-                    )
-                    + "`",
+        cases = (
+            ("accepted", 0, ACCEPTED, "accepted"),
+            ("refused with a 400", 0, b'{"status":0,"errors":["x"]}\n400', "refused"),
+            ("refused with a 401", 0, b'{"status":0}\n401', "refused"),
+            ("curl could not resolve", 6, b"curl: (6) Could not resolve host\n000", "unanswered"),
+            ("a 503", 0, b'{"status":0}\n503', "unanswered"),
+            ("the quota 429", 0, b'{"status":0}\n429', "unanswered"),
+            ("200 without a status", 0, b'{"request":"r"}\n200', "unanswered"),
+            ("200 with status 0", 0, b'{"status":0}\n200', "unanswered"),
+            ('a status of "0"', 0, b'{"status":"0"}\n400', "unanswered"),
+            ("a status of true", 0, b'{"status":true}\n200', "unanswered"),
+            ("a status of false", 0, b'{"status":false}\n400', "unanswered"),
+            ("a proxy page", 0, b"<html>captive portal</html>\n200", "unanswered"),
+            ("a JSON list", 0, b"[1]\n200", "unanswered"),
+            ("nothing at all", 0, b"", "unanswered"),
+        )
+        for label, returncode, stdout, expected in cases:
+            with self.subTest(label):
+                self.assertEqual(
+                    production_auto_deploy.pushover_verdict(returncode, stdout), expected
                 )
+                delivered, _calls = self.sent(
+                    lambda: self.notify_failure(config), stdout=stdout, returncode=returncode
+                )
+                self.assertEqual(delivered, expected == "accepted")
+                self.assertEqual("vault_pushover_alerts_token" in self.last_stderr,
+                                 expected == "refused")
+
+    def test_a_curl_that_cannot_run_is_not_delivered_and_does_not_raise(self):
+        config = self.loaded_config()
+        with mock.patch.object(production_auto_deploy, "_run", side_effect=OSError("no curl")):
+            self.assertFalse(self.notify_failure(config))
+
+    def test_hostile_input_stays_inside_pushovers_limits_without_a_cut_entity(self):
+        config = self.loaded_config()
+        hostile = ("<b>&'\"" * 2500)[:10_000]
+        state = config.state_root / "blind-polls"
+        renderers = {
+            "a failed deployment": lambda: self.notify_failure(
+                config, started=hostile, finished=hostile, log_path=Path("/" + hostile)),
+            "blindness": lambda: (
+                state.write_text(f"{production_auto_deploy.BLIND_POLL_THRESHOLD}\n"),
+                production_auto_deploy.note_blind_poll(config, hostile),
             ),
-        )
+            "a CI refusal": lambda: production_auto_deploy.note_ci_refusal(
+                config, MAIN_SHA, production_auto_deploy.CI_FAILED, hostile, self.RUN_URL),
+            "a hostile title": lambda: production_auto_deploy.publish(
+                config, "alerts", {"title": hostile, "message": "m", "priority": 1}),
+        }
+        for label, render in renderers.items():
+            with self.subTest(label):
+                _result, (arguments,) = self.sent(render)
+                form = form_of(arguments)
+                self.assertLessEqual(len(form["message"]),
+                                     production_auto_deploy.MAX_MESSAGE_CHARACTERS)
+                self.assertLessEqual(len(form["title"]),
+                                     production_auto_deploy.MAX_TITLE_CHARACTERS)
+                self.assertTrue(form["message"])
+                self.assertIsNone(HALF_ENTITY.search(form["message"]), form["message"])
+                self.assertEqual(form["message"].count("<b>"), form["message"].count("</b>"))
 
-    def test_notify_states_an_unknown_duration_rather_than_guessing(self):
-        """Timestamps come from the poller, but a corrupt one must not crash it."""
-
+    def test_a_link_over_512_characters_or_not_https_is_omitted(self):
         config = self.loaded_config()
-        seen = {}
-
-        def run(arguments, **kwargs):
-            seen["arguments"] = [str(a) for a in arguments]
-            return subprocess.CompletedProcess(arguments, 0, b"", b"")
-
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.notify(
-                config, "success", MAIN_SHA, "start", "finish",
-                config.log_root / "latest",
-            )
-
-        arguments = seen["arguments"]
-        body = json.loads(arguments[arguments.index("--data-binary") + 1])
-        self.assertIn("**Duration:** `unknown`", body["message"])
-
-    def test_notify_escapes_markdown_in_the_log_path(self):
-        """The path is operator-controlled, but it lands inside markdown."""
-
-        config = self.loaded_config()
-        seen = {}
-
-        def run(arguments, **kwargs):
-            seen["arguments"] = [str(a) for a in arguments]
-            return subprocess.CompletedProcess(arguments, 0, b"", b"")
-
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.notify(
-                config, "success", MAIN_SHA, "s", "f",
-                config.log_root / "we*ird_[name].log",
-            )
-
-        arguments = seen["arguments"]
-        body = json.loads(arguments[arguments.index("--data-binary") + 1])
-        self.assertIn(r"we\*ird", body["message"])
-        self.assertIn(r"\[name\]", body["message"])
-
-    def test_notify_refuses_an_unknown_outcome(self):
-        config = self.loaded_config()
-
-        with mock.patch.object(production_auto_deploy, "_run") as run:
-            with self.assertRaises(ValueError):
-                production_auto_deploy.notify(
-                    config, "partially", MAIN_SHA, "s", "f",
-                    config.log_root / "latest",
-                )
-        run.assert_not_called()
-
-    def test_notify_never_places_a_token_on_the_command_line(self):
-        config = self.loaded_config()
-        config.ntfy_curl_config.write_text(
-            'header = "Authorization: Bearer supersecret"\n', encoding="utf-8"
-        )
-        seen = {}
-
-        def run(arguments, **kwargs):
-            seen["arguments"] = [str(a) for a in arguments]
-            return subprocess.CompletedProcess(arguments, 0, b"", b"")
-
-        with mock.patch.object(production_auto_deploy, "_run", side_effect=run):
-            production_auto_deploy.notify(
-                config, "failed", MAIN_SHA, "start", "finish",
-                config.log_root / "latest",
-            )
-
-        joined = " ".join(seen["arguments"])
-        self.assertNotIn("supersecret", joined)
-        self.assertNotIn("Bearer", joined)
-
-    def test_notify_reports_failure_without_raising(self):
-        config = self.loaded_config()
-        for side_effect in (
-            lambda *a, **k: subprocess.CompletedProcess([], 7, b"", b""),
-            OSError("no curl"),
+        longest = "https://" + "a" * (production_auto_deploy.MAX_URL_CHARACTERS - len("https://"))
+        for url, kept in (
+            (self.RUN_URL, True),
+            (longest, True),
+            (longest + "a", False),
+            ("http://github.com/yonatankarp/nas-platform/actions/runs/9", False),
+            ("javascript:alert(1)", False),
+            ("https://", False),
         ):
-            with mock.patch.object(
-                production_auto_deploy, "_run", side_effect=side_effect
-            ):
-                with self.subTest(side_effect=side_effect):
-                    self.assertFalse(
-                        production_auto_deploy.notify(
-                            config, "failed", MAIN_SHA, "s", "f",
-                            config.log_root / "latest",
-                        )
-                    )
+            with self.subTest(url=url[:40]):
+                _delivered, (arguments,) = self.sent(lambda: production_auto_deploy.publish(
+                    config, "alerts",
+                    {"title": "t", "message": "m", "priority": 1, "url": url, "url_title": "x" * 300},
+                ))
+                form = form_of(arguments)
+                if kept:
+                    self.assertEqual(form["url"], url)
+                    self.assertEqual(len(form["url_title"]),
+                                     production_auto_deploy.MAX_URL_TITLE_CHARACTERS)
+                else:
+                    self.assertNotIn("url", form)
+                    self.assertNotIn("url_title", form)
+
+    def test_each_application_is_sent_through_its_own_config(self):
+        config = self.loaded_config()
+        for app, path in (("alerts", self.alerts_notifier),
+                          ("deployments", self.deployments_notifier)):
+            with self.subTest(app=app):
+                _delivered, (arguments,) = self.sent(lambda: production_auto_deploy.publish(
+                    config, app, {"title": "t", "message": "m", "priority": 0}))
+                self.assertEqual(arguments[arguments.index("--config") + 1], str(path))
 
 
 class PollBlindnessTest(PollerTestCase):
@@ -1706,8 +1796,8 @@ class PollBlindnessTest(PollerTestCase):
     def blind_poll(self, config, reason="GitHub request failed", delivered=True):
         published = []
 
-        def fake_notify(_config, notification):
-            published.append(notification)
+        def fake_notify(_config, app, fields):
+            published.append(dict(fields, app=app))
             # `delivered` is what the real publish() reports when curl cannot
             # reach ntfy: attempted, not received. The distinction is the whole
             # point of the alarm path, so it is a parameter of the fake rather
@@ -1728,8 +1818,8 @@ class PollBlindnessTest(PollerTestCase):
     def seeing_poll(self, config, delivered=True):
         published = []
 
-        def fake_notify(_config, notification):
-            published.append(notification)
+        def fake_notify(_config, app, fields):
+            published.append(dict(fields, app=app))
             return delivered
 
         state = production_auto_deploy.read_state(config)
@@ -1770,8 +1860,7 @@ class PollBlindnessTest(PollerTestCase):
         published = self.blind_poll(config)
 
         self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["topic"], "nas-critical")
-        self.assertEqual(published[0]["priority"], 5)
+        self.assertEqual((published[0]["app"], published[0]["priority"]), ("alerts", 1))
         self.assertIn("GitHub request failed", published[0]["message"])
         self.assertIn(
             str(production_auto_deploy.BLIND_POLL_THRESHOLD), published[0]["message"]
@@ -1788,7 +1877,7 @@ class PollBlindnessTest(PollerTestCase):
 
         published = self.seeing_poll(config)
         self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["topic"], "nas-deployment")
+        self.assertEqual((published[0]["app"], published[0]["priority"]), ("alerts", -1))
         self.assertIn("again", published[0]["message"])
 
         self.assertEqual(self.seeing_poll(config), [])
@@ -1822,11 +1911,11 @@ class PollBlindnessTest(PollerTestCase):
 
         retried = self.blind_poll(config, delivered=True)
         self.assertEqual(len(retried), 1)
-        self.assertEqual(retried[0]["topic"], "nas-critical")
+        self.assertEqual((retried[0]["app"], retried[0]["priority"]), ("alerts", 1))
         # The count kept climbing while the alarm was retried, so the notice
         # that finally lands reports the outage as it actually stands.
         self.assertIn(
-            f"`{production_auto_deploy.BLIND_POLL_THRESHOLD + 1}`",
+            f"</b> {production_auto_deploy.BLIND_POLL_THRESHOLD + 1}",
             retried[0]["message"],
         )
 
@@ -1851,7 +1940,7 @@ class PollBlindnessTest(PollerTestCase):
         published = self.blind_poll(config)
 
         self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["topic"], "nas-critical")
+        self.assertEqual((published[0]["app"], published[0]["priority"]), ("alerts", 1))
 
     def test_an_undeliverable_recovery_notice_is_retried_on_the_next_poll(self):
         config = self.loaded_config()
@@ -1863,13 +1952,31 @@ class PollBlindnessTest(PollerTestCase):
 
         retried = self.seeing_poll(config)
         self.assertEqual(len(retried), 1)
-        self.assertEqual(retried[0]["topic"], "nas-deployment")
+        self.assertEqual((retried[0]["app"], retried[0]["priority"]), ("alerts", -1))
 
         # Delivered, so the count is finally cleared and the all-clear stops.
         self.assertEqual(self.seeing_poll(config), [])
         self.assertEqual(
             (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "0"
         )
+
+    def test_an_inherited_ntfy_era_outage_gets_exactly_one_pushover_recovery(self):
+        """The one message an ntfy-era state directory may cost (#558).
+
+        An outage the ntfy poller announced leaves a count past the threshold
+        and an announced marker. The first Pushover poll that sees main again
+        closes it, once, quietly, on the Alerts app; a still-blind one repeats
+        nothing.
+        """
+
+        config = self.loaded_config()
+        (config.state_root / "blind-polls").write_text("5\n", encoding="ascii")
+        (config.state_root / "blind-alarm").write_text("announced\n", encoding="ascii")
+
+        self.assertEqual(self.blind_poll(config), [])
+        (recovery,) = self.seeing_poll(config)
+        self.assertEqual((recovery["app"], recovery["priority"]), ("alerts", -1))
+        self.assertEqual(self.seeing_poll(config), [])
 
     def test_a_corrupt_blind_count_does_not_stop_the_poller(self):
         config = self.loaded_config()
@@ -2081,8 +2188,8 @@ class PollCiRefusalTest(PollerTestCase):
 
         published = []
 
-        def fake_publish(_config, notification):
-            published.append(notification)
+        def fake_publish(_config, app, fields):
+            published.append(dict(fields, app=app))
             return delivered
 
         with mock.patch.object(
@@ -2106,11 +2213,11 @@ class PollCiRefusalTest(PollerTestCase):
 
         self.assertIsNone(outcome)
         self.assertEqual(len(published), 1)
-        self.assertEqual(published[0]["topic"], "nas-critical")
-        self.assertEqual(published[0]["priority"], 4)
+        self.assertEqual((published[0]["app"], published[0]["priority"]), ("alerts", 1))
         self.assertIn(MAIN_SHA[:9], published[0]["title"])
         self.assertIn("failure", published[0]["message"])
-        self.assertIn("actions/runs/17", published[0]["message"])
+        self.assertEqual(published[0]["url"], self.RED_RUN["html_url"])
+        self.assertIn(f"/commit/{MAIN_SHA}", published[0]["message"])
         # Nothing was attempted, so the revision stays deployable once it goes
         # green rather than being quarantined by the report.
         self.assertEqual(production_auto_deploy.attempted_shas(config), set())
@@ -2212,6 +2319,17 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertIsNone(outcome)
         self.assertEqual(published, [])
         self.assertEqual(production_auto_deploy.read_ci_refusal(config), recorded)
+
+    def test_an_ntfy_era_refusal_record_is_not_announced_again(self):
+        """The marker format is transport-agnostic, so a refusal the ntfy poller
+        announced is not repeated by the first Pushover poll (#558)."""
+
+        config = self.loaded_config()
+        (config.state_root / "ci-refusal").write_text(
+            f"{MAIN_SHA} {production_auto_deploy.CI_FAILED} failure\n", encoding="ascii"
+        )
+
+        self.assertEqual(self.poll_with(config, (self.RED_RUN,))[0], [])
 
     def test_an_unreadable_refusal_record_does_not_stop_the_poller(self):
         config = self.loaded_config()
@@ -2488,17 +2606,33 @@ class PollTest(PollHarness, PollerTestCase):
         ), mock.patch.object(
             production_auto_deploy, "notify", return_value=True
         ) as notified, mock.patch.object(
+            production_auto_deploy, "publish", return_value=True
+        ) as published, mock.patch.object(
             production_auto_deploy, "deploy", return_value=True
         ):
             self.assertTrue(production_auto_deploy.poll(config))
 
         # site.yml publishes the summary that says what shipped; a second
-        # message here would carry a revision and say less.
+        # message here would carry a revision and say less. Nothing reaches the
+        # Deployments app from the poller either.
         notified.assert_not_called()
+        published.assert_not_called()
         self.assertEqual(
             production_auto_deploy.read_state(config)["last_successful"]["sha"],
             MAIN_SHA,
         )
+
+    def test_a_failed_deployment_links_the_run_that_released_it(self):
+        config = self.loaded_config()
+        run = {**self.GREEN_RUN, "head_sha": MAIN_SHA,
+               "html_url": "https://github.com/yonatankarp/nas-platform/actions/runs/42"}
+        with self.seeing(MAIN_SHA, (run,)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=False
+        ), mock.patch.object(production_auto_deploy, "notify", return_value=True) as notify:
+            self.assertFalse(production_auto_deploy.poll(config))
+
+        self.assertEqual(notify.call_args.args[1], MAIN_SHA)
+        self.assertEqual(notify.call_args.args[5], run["html_url"])
 
     def test_poll_declines_while_another_holder_deploys(self):
         config = self.loaded_config()
@@ -2558,7 +2692,7 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
             production_auto_deploy, "notify", return_value=True
         ) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
-        self.assertEqual(notify.call_args.args[1], "failed")
+        self.assertEqual(notify.call_args.args[1], MAIN_SHA)
         latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
         self.assertIn("transient failure", latest)
         self.assertIn("git fetch failed", latest)
@@ -2873,18 +3007,34 @@ class VerifyTest(PollerTestCase):
         self.published_path = self.root / "published.jsonl"
         self.curl = binary / "curl"
         self.curl_exit = self.root / "curl-exit"
+        # Records the form fields and the config each Pushover send names, and
+        # answers the way Pushover does when it takes a message -- unless told to
+        # exit non-zero, which is curl failing to reach it.
         self.curl.write_text(
-            "#!/bin/sh\n"
-            'while [ "$#" -gt 0 ]; do\n'
-            '  if [ "$1" = --data-binary ]; then\n'
-            f"    printf '%s\\n' \"$2\" >> {str(self.published_path)!r}\n"
-            "  fi\n"
-            "  shift\n"
-            "done\n"
-            f"exit \"$(cat {str(self.curl_exit)!r} 2>/dev/null || echo 0)\"\n",
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "argv = sys.argv[1:]\n"
+            "page = {argv[i + 1].split('=', 1)[0]: argv[i + 1].split('=', 1)[1]\n"
+            "        for i, a in enumerate(argv) if a == '--form-string'}\n"
+            "page['config'] = argv[argv.index('--config') + 1]\n"
+            f"with open({str(self.published_path)!r}, 'a') as sink:\n"
+            "    sink.write(json.dumps(page) + '\\n')\n"
+            f"code = int(open({str(self.curl_exit)!r}).read()) if os.path.exists({str(self.curl_exit)!r}) else 0\n"
+            "if code == 0:\n"
+            "    sys.stdout.write('{\"status\":1,\"request\":\"r\"}\\n200')\n"
+            "sys.exit(code)\n",
             encoding="utf-8",
         )
         self.curl.chmod(0o700)
+        # The verify-failed page asks GitHub for the releasing run. A unit test
+        # must not reach api.github.com (the seeing_poll comment above records
+        # what that cost once), so GitHub is unreachable unless a test says so.
+        ci_runs = mock.patch.object(
+            production_auto_deploy, "fetch_ci_runs",
+            side_effect=production_auto_deploy.EligibilityError("no network in tests"),
+        )
+        self.ci_runs = ci_runs.start()
+        self.addCleanup(ci_runs.stop)
 
         venv = self.checkout / ".venv/bin"
         venv.mkdir(parents=True)
@@ -2971,6 +3121,10 @@ class VerifyTest(PollerTestCase):
             return []
         pages = [json.loads(line) for line in self.published_path.read_text().splitlines()]
         self.published_path.unlink()
+        # Every verify page is the Alerts app's: a failure at 1, its close at -1.
+        for page in pages:
+            self.assertEqual(page["config"], str(self.alerts_notifier))
+            self.assertEqual(page["html"], "1")
         return pages
 
     def test_verify_runs_the_deployments_verify_play_then_the_array_check_under_the_lock(self):
@@ -3038,9 +3192,9 @@ class VerifyTest(PollerTestCase):
         code, _output = self.run_verify(playbook_exit=2)
         self.assertEqual(code, 1)
         (page,) = self.pages()
-        self.assertEqual(page["topic"], "nas-critical")
+        self.assertEqual(page["priority"], "1")
         self.assertIn(self.deployed[:9], page["title"])
-        self.assertIn("verify\\.log", page["message"])
+        self.assertIn("verify.log", page["message"])
 
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
         self.assertEqual(self.pages(), [])
@@ -3056,7 +3210,7 @@ class VerifyTest(PollerTestCase):
         self.pages()
         self.assertEqual(self.run_verify()[0], 0)
         (page,) = self.pages()
-        self.assertEqual(page["topic"], "nas-deployment")
+        self.assertEqual(page["priority"], "-1")
         self.assertIn("recovered", page["title"].lower())
         self.run_verify()
         self.assertEqual(self.pages(), [])
@@ -3081,7 +3235,7 @@ class VerifyTest(PollerTestCase):
         self.pages()
         self.run_verify()
         (page,) = self.pages()
-        self.assertEqual(page["topic"], "nas-deployment")
+        self.assertEqual(page["priority"], "-1")
 
     def test_a_corrupt_verdict_record_reads_as_no_record(self):
         self.mark_deployed()
@@ -3221,7 +3375,7 @@ class VerifyTest(PollerTestCase):
     # degraded array, and a paged array hide a service breaking.
 
     def titles(self):
-        return sorted((page["topic"], page["title"].split(" ·")[0]) for page in self.pages())
+        return sorted((page["priority"], page["title"].split(" ·")[0]) for page in self.pages())
 
     def test_a_service_and_the_array_failing_together_page_both(self):
         self.mark_deployed()
@@ -3230,37 +3384,37 @@ class VerifyTest(PollerTestCase):
         self.assertIn("verification failed", output)
         pages = self.pages()
         self.assertEqual(
-            sorted((page["topic"], page["title"].split(" ·")[0]) for page in pages),
-            [("nas-critical", "RAID arrays degraded"), ("nas-critical", "Verify failed")],
+            sorted((page["priority"], page["title"].split(" ·")[0]) for page in pages),
+            [("1", "RAID arrays degraded"), ("1", "Verify failed")],
         )
         (array,) = [page for page in pages if page["title"].startswith("RAID")]
-        self.assertIn("platform\\_verify\\_mdraid", array["message"])
-        self.assertIn("verify\\-mdraid\\.log", array["message"])
+        self.assertIn("<b>Check:</b> platform_verify_mdraid", array["message"])
+        self.assertIn("verify-mdraid.log", array["message"])
         for record in ("verify-verdict", "verify-verdict-mdraid"):
             self.assertEqual((self.config.state_root / record).read_text().split()[0], "fail")
 
     def test_the_array_degrading_while_a_service_already_fails_pages_the_array(self):
         self.mark_deployed()
         self.run_verify(playbook_exit=2)
-        self.assertEqual(self.titles(), [("nas-critical", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "Verify failed")])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
 
     def test_a_service_breaking_after_the_array_paged_pages_the_service(self):
         self.mark_deployed()
         self.assertEqual(self.run_verify(mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-critical", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "Verify failed")])
 
     def test_the_two_recoveries_page_independently(self):
         self.mark_deployed()
         self.run_verify(playbook_exit=2, mdraid_exit=2)
         self.pages()
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-deployment", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
         self.assertEqual(self.run_verify()[0], 0)
-        self.assertEqual(self.titles(), [("nas-deployment", "Verify recovered")])
+        self.assertEqual(self.titles(), [("-1", "Verify recovered")])
         self.run_verify()
         self.assertEqual(self.pages(), [])
 
@@ -3268,19 +3422,75 @@ class VerifyTest(PollerTestCase):
         self.mark_deployed()
         real_publish = production_auto_deploy.publish
 
-        def publish(config, notification):
-            return False if notification["title"].startswith("RAID") else real_publish(
-                config, notification
+        def publish(config, app, fields):
+            return False if fields["title"].startswith("RAID") else real_publish(
+                config, app, fields
             )
 
         with mock.patch.object(production_auto_deploy, "publish", side_effect=publish):
             code, output = self.run_verify(playbook_exit=2, mdraid_exit=2)
         self.assertEqual(code, 1)
         self.assertIn("notification failed", output)
-        self.assertEqual(self.titles(), [("nas-critical", "Verify failed")])
+        self.assertEqual(self.titles(), [("1", "Verify failed")])
         self.assertFalse((self.config.state_root / "verify-verdict-mdraid").exists())
         self.run_verify(playbook_exit=2, mdraid_exit=2)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
+
+    def test_a_failed_verify_links_its_commit_and_the_run_that_released_it(self):
+        self.mark_deployed()
+        run = {**EligibilityTest.GREEN_RUN, "head_sha": self.deployed,
+               "html_url": "https://github.com/yonatankarp/nas-platform/actions/runs/77"}
+        self.ci_runs.side_effect = None
+        self.ci_runs.return_value = (run,)
+
+        self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
+        (page,) = self.pages()
+        self.assertEqual(page["url"], run["html_url"])
+        self.assertIn(f'/commit/{self.deployed}">{self.deployed[:9]}</a>', page["message"])
+        self.assertEqual(self.ci_runs.call_count, 1)
+
+        # An unchanged verdict pages nothing, and so asks GitHub nothing.
+        self.run_verify(playbook_exit=2)
+        self.assertEqual(self.pages(), [])
+        self.assertEqual(self.ci_runs.call_count, 1)
+
+    def test_github_unreachable_costs_the_verify_page_its_link_and_nothing_else(self):
+        self.mark_deployed()
+        self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
+        (page,) = self.pages()
+        self.assertEqual(page["title"].split(" ·")[0], "Verify failed")
+        self.assertNotIn("url", page)
+        self.assertEqual((self.config.state_root / "verify-verdict").read_text().split()[0], "fail")
+
+    def test_a_refused_page_moves_no_record_and_changes_no_exit_code(self):
+        self.mark_deployed()
+        refused = self.root / "bin/curl-refused"
+        refused.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "sys.stdout.write('{\"status\":0,\"errors\":[\"user key is invalid\"]}\\n400')\n",
+            encoding="utf-8",
+        )
+        refused.chmod(0o700)
+        self.config = self.loaded_config(git_path=self.git, curl_path=str(refused))
+
+        code, output = self.run_verify(playbook_exit=2)
+        self.assertEqual(code, 1)
+        self.assertIn("check vault_pushover_alerts_token and vault_pushover_user_key", output)
+        self.assertIn("verify notification failed", output)
+        self.assertFalse((self.config.state_root / "verify-verdict").exists())
+
+    def test_an_inherited_ntfy_era_failure_recovers_once_on_pushover(self):
+        """A failure the ntfy poller recorded is closed by the first Pushover pass (#558)."""
+
+        self.mark_deployed()
+        (self.config.state_root / "verify-verdict").write_text(
+            f"fail {self.deployed} 2026-09-13T10:00:00Z\n", encoding="ascii"
+        )
+        self.assertEqual(self.run_verify()[0], 0)
+        self.assertEqual(self.titles(), [("-1", "Verify recovered")])
+        self.run_verify()
+        self.assertEqual(self.pages(), [])
 
     def test_a_corrupt_array_record_reads_as_no_record(self):
         self.mark_deployed()
@@ -3290,7 +3500,7 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.run_verify(playbook_exit=2)[0], 1)
         self.assertEqual(self.pages(), [])
         self.assertEqual(self.run_verify(playbook_exit=2, mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
 
     def test_a_setup_failure_in_both_runs_pages_could_not_run_not_degraded(self):
         """verify.yml's always-tagged setup runs in the array invocation too, so a
@@ -3301,11 +3511,11 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(code, 1)
         pages = self.pages()
         self.assertEqual(
-            sorted((page["topic"], page["title"].split(" ·")[0]) for page in pages),
-            [("nas-critical", "RAID array check could not run"), ("nas-critical", "Verify failed")],
+            sorted((page["priority"], page["title"].split(" ·")[0]) for page in pages),
+            [("1", "RAID array check could not run"), ("1", "Verify failed")],
         )
         (array,) = [page for page in pages if page["title"].startswith("RAID")]
-        self.assertIn("verify\\-mdraid\\.log", array["message"])
+        self.assertIn("verify-mdraid.log", array["message"])
         self.assertEqual(
             (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0],
             "unchecked",
@@ -3314,7 +3524,7 @@ class VerifyTest(PollerTestCase):
     def test_a_real_mismatch_pages_degraded(self):
         self.mark_deployed()
         self.assertEqual(self.run_verify(mdraid_exit=2)[0], 1)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
         self.assertEqual(
             (self.config.state_root / "verify-verdict-mdraid").read_text().split()[0], "fail"
         )
@@ -3322,23 +3532,23 @@ class VerifyTest(PollerTestCase):
     def test_transitions_between_could_not_run_and_degraded(self):
         self.mark_deployed()
         self.run_verify(mdraid_exit=2, mismatch=False)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID array check could not run")])
+        self.assertEqual(self.titles(), [("1", "RAID array check could not run")])
         self.run_verify(mdraid_exit=2, mismatch=False)
         self.assertEqual(self.pages(), [])
         # The check runs again and finds a mismatch.
         self.run_verify(mdraid_exit=2)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID arrays degraded")])
+        self.assertEqual(self.titles(), [("1", "RAID arrays degraded")])
         # Degraded, then the setup breaks: visibility lost, which pages.
         self.run_verify(mdraid_exit=2, mismatch=False)
-        self.assertEqual(self.titles(), [("nas-critical", "RAID array check could not run")])
+        self.assertEqual(self.titles(), [("1", "RAID array check could not run")])
         # Back from could-not-run to healthy is not a recovery of the disks.
         self.assertEqual(self.run_verify()[0], 0)
-        self.assertEqual(self.titles(), [("nas-deployment", "RAID array check runs again")])
+        self.assertEqual(self.titles(), [("-1", "RAID array check runs again")])
         # A real mismatch recovering is.
         self.run_verify(mdraid_exit=2)
         self.pages()
         self.run_verify()
-        self.assertEqual(self.titles(), [("nas-deployment", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
 
     def test_a_fail_record_without_a_kind_recovers_as_a_mismatch(self):
         self.mark_deployed()
@@ -3346,7 +3556,7 @@ class VerifyTest(PollerTestCase):
             f"fail {self.deployed} 2026-09-13T10:00:00Z\n", encoding="ascii"
         )
         self.run_verify()
-        self.assertEqual(self.titles(), [("nas-deployment", "RAID arrays recovered")])
+        self.assertEqual(self.titles(), [("-1", "RAID arrays recovered")])
 
     def test_the_mismatch_marker_is_the_literal_opening_the_roles_fail_msg(self):
         import yaml
@@ -3373,16 +3583,16 @@ class VerifyTest(PollerTestCase):
     VERIFY_PING_URL = "https://hc-ping.com/verify-array-sentinel"
 
     def enable_verify_ping(self):
-        """Route the healthchecks ping to a recorder, and ntfy to the stub above.
+        """Route the healthchecks ping to a recorder, and Pushover to the stub above.
 
         The recorder also notes whether the deployment lock was free, so the
         ping is proved to run after verify() released it.
         """
 
         self.verify_pings_path = self.root / "verify-pings.jsonl"
-        ntfy = self.root / "bin/curl-ntfy"
-        ntfy.write_text(self.curl.read_text(encoding="utf-8"), encoding="utf-8")
-        ntfy.chmod(0o700)
+        pushover = self.root / "bin/curl-pushover"
+        pushover.write_text(self.curl.read_text(encoding="utf-8"), encoding="utf-8")
+        pushover.chmod(0o700)
         lock = self.root / ".local/share/nas-platform/state/deployment.lock"
         self.curl.write_text(
             f"#!{sys.executable}\n"
@@ -3399,7 +3609,7 @@ class VerifyTest(PollerTestCase):
             "        sink.write(json.dumps({'url': sys.stdin.read().split('\"')[1],\n"
             "                               'held': held}) + '\\n')\n"
             "    sys.exit(0)\n"
-            f"os.execv({str(ntfy)!r}, [{str(ntfy)!r}, *argv])\n",
+            f"os.execv({str(pushover)!r}, [{str(pushover)!r}, *argv])\n",
             encoding="utf-8",
         )
         self.config = self.loaded_config(

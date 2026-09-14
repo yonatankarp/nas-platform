@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -26,6 +27,9 @@ LOCK_PROBE = (
 )
 
 import image_prune  # noqa: E402
+
+# A half-cut or invented entity: an ampersand that does not open one html.escape writes.
+HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
 
 # One pass reporting decimal units, one reporting none, so the parser is proved
 # against Docker's real report rather than a single hand-picked line.
@@ -56,12 +60,32 @@ class PruneTestCase(unittest.TestCase):
             "bin",
         ):
             (self.root / relative).mkdir(parents=True)
-        self.notifier = self.root / ".config/nas-platform/ntfy-prune.curl"
-        self.notifier.write_text("x\n", encoding="utf-8")
-        self.notifier.chmod(0o600)
+        self.alerts_notifier = self.root / ".config/nas-platform/pushover-prune-alerts.curl"
+        self.deployments_notifier = (
+            self.root / ".config/nas-platform/pushover-prune-deployments.curl"
+        )
+        for notifier in (self.alerts_notifier, self.deployments_notifier):
+            notifier.write_text("x\n", encoding="utf-8")
+            notifier.chmod(0o600)
         self.lock = self.root / ".local/share/nas-platform/state/deployment.lock"
         self.docker = self.stub("docker")
-        self.curl = self.stub("curl")
+        # Records each send's argv as one JSON line -- a message spans lines, so
+        # the shell stub's one-line record cannot hold it -- and answers as
+        # Pushover does when it takes a message, unless curl-answer says otherwise.
+        self.curl_calls = self.root / "curl.jsonl"
+        self.curl_answer = self.root / "curl-answer"
+        self.curl = self.root / "bin" / "curl"
+        self.curl.write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            f"with open({str(self.curl_calls)!r}, 'a') as sink:\n"
+            "    sink.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            f"answer = {str(self.curl_answer)!r}\n"
+            "sys.stdout.write(open(answer).read() if os.path.exists(answer)\n"
+            "                 else '{\"status\":1,\"request\":\"r\"}\\n200')\n",
+            encoding="utf-8",
+        )
+        self.curl.chmod(0o700)
         self.config_path = self.root / ".config/nas-platform/image-prune.json"
         self.config_path.write_text(json.dumps(self.config_payload()), encoding="utf-8")
 
@@ -79,6 +103,22 @@ class PruneTestCase(unittest.TestCase):
         path.chmod(0o700)
         return path
 
+    def published(self):
+        """Every Pushover send: its config and --form-string fields, in order."""
+
+        if not self.curl_calls.exists():
+            return []
+        sends = []
+        for line in self.curl_calls.read_text(encoding="utf-8").splitlines():
+            argv = json.loads(line)
+            form = dict(
+                argv[index + 1].split("=", 1)
+                for index, argument in enumerate(argv)
+                if argument == "--form-string"
+            )
+            sends.append({"config": argv[argv.index("--config") + 1], "argv": argv, **form})
+        return sends
+
     def invocations(self, name):
         record = self.root / f"{name}.argv"
         if not record.exists():
@@ -91,9 +131,8 @@ class PruneTestCase(unittest.TestCase):
             "log_root": str(self.root / ".local/share/nas-platform/prune-logs"),
             "deployment_lock": str(self.lock),
             "deployment_lock_wait_seconds": 0,
-            "ntfy_curl_config": str(self.notifier),
-            "ntfy_topic_critical": "nas-critical",
-            "ntfy_topic_deployment": "nas-deployment",
+            "pushover_alerts_curl_config": str(self.alerts_notifier),
+            "pushover_deployments_curl_config": str(self.deployments_notifier),
             "retention_hours": 168,
             "dangling_retention_hours": 24,
             "log_retention_days": 30,
@@ -122,7 +161,9 @@ class ConfigTest(PruneTestCase):
         self.assertEqual(config.docker_path, self.docker)
 
     def test_load_config_requires_every_field(self):
-        for field in self.config_payload():
+        # The two Pushover configs are optional and have their own test below.
+        optional = {"pushover_alerts_curl_config", "pushover_deployments_curl_config"}
+        for field in [name for name in self.config_payload() if name not in optional]:
             payload = self.config_payload()
             del payload[field]
             path = self.root / "partial.json"
@@ -138,13 +179,47 @@ class ConfigTest(PruneTestCase):
             {"deployment_lock_wait_seconds": -1},
             {"docker_path": "docker"},
             {"log_root": ""},
-            {"ntfy_topic_critical": 3},
         ):
             payload = self.config_payload(**overrides)
             path = self.root / "invalid.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
             with self.assertRaises(image_prune.ConfigurationError, msg=overrides):
                 image_prune.load_config(path)
+
+    def test_an_ntfy_era_configuration_loads_and_cannot_publish(self):
+        # The install play copies this script before it renders its
+        # configuration, so a prune in that window reads the ntfy-era file
+        # (#327). It must prune, not refuse: one stderr line, nothing published.
+        payload = self.config_payload(
+            ntfy_curl_config=str(self.root / ".config/nas-platform/ntfy-prune.curl"),
+            ntfy_topic_critical="nas-critical",
+            ntfy_topic_deployment="nas-deployment",
+        )
+        payload.pop("pushover_alerts_curl_config")
+        payload.pop("pushover_deployments_curl_config")
+        path = self.root / "ntfy-era.json"
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            config = image_prune.load_config(path)
+
+        self.assertIsNone(config.pushover_alerts_curl_config)
+        self.assertIsNone(config.pushover_deployments_curl_config)
+        (line,) = stderr.getvalue().splitlines()
+        self.assertIn("pushover_alerts_curl_config", line)
+        self.stub("docker", body="echo 'Cannot connect to the Docker daemon'\nexit 1")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertFalse(image_prune.prune(config))
+        self.assertEqual(self.published(), [])
+        self.assertEqual(self.state()["outcome"], "failed")
+
+    def test_an_unusable_pushover_path_cannot_publish_rather_than_refusing(self):
+        for raw in ("", "relative/pushover.curl", 42, None):
+            with self.subTest(raw=raw):
+                with contextlib.redirect_stderr(io.StringIO()):
+                    config = self.config(pushover_deployments_curl_config=raw)
+                self.assertIsNone(config.pushover_deployments_curl_config)
+                self.assertEqual(config.pushover_alerts_curl_config, self.alerts_notifier)
 
     def test_a_prune_never_removes_a_same_day_image(self):
         payload = self.config_payload(
@@ -369,15 +444,17 @@ class PruneRunTest(PruneTestCase):
     def test_a_prune_that_reclaimed_something_reports_it(self):
         self.reporting_docker()
         image_prune.prune(self.config())
-        published = self.invocations("curl")
-        self.assertEqual(len(published), 1)
-        self.assertIn("nas-deployment", published[0])
-        self.assertIn("1.5 GB", published[0])
+        (send,) = self.published()
+        # A record, not an alarm: the Deployments app, silent, gone in a week.
+        self.assertEqual(send["config"], str(self.deployments_notifier))
+        self.assertEqual((send["priority"], send["ttl"], send["html"]), ("-1", "604800", "1"))
+        self.assertIn("1.5 GB", send["title"])
+        self.assertNotIn("--fail", send["argv"])
 
     def test_a_week_with_nothing_to_reclaim_stays_quiet(self):
         self.stub("docker", body="echo 'Total reclaimed space: 0B'\nexit 0")
         self.assertTrue(image_prune.prune(self.config()))
-        self.assertEqual(self.invocations("curl"), [])
+        self.assertEqual(self.published(), [])
         self.assertEqual(self.state()["outcome"], "nothing")
 
     def test_a_failing_pass_is_reported_as_critical_and_fails_the_run(self):
@@ -386,9 +463,31 @@ class PruneRunTest(PruneTestCase):
         recorded = self.state()
         self.assertEqual(recorded["outcome"], "failed")
         self.assertEqual(recorded["pass"], "unused")
-        published = self.invocations("curl")
-        self.assertEqual(len(published), 1)
-        self.assertIn("nas-critical", published[0])
+        (send,) = self.published()
+        self.assertEqual(send["config"], str(self.alerts_notifier))
+        self.assertEqual(send["priority"], "1")
+        self.assertNotIn("ttl", send)
+
+    def test_a_refused_or_unanswered_report_changes_no_outcome_and_names_only_keys(self):
+        sentinel = "sentinel-token-that-must-stay-in-its-file"
+        self.deployments_notifier.write_text(f'form-string = "token={sentinel}"\n', encoding="utf-8")
+        for label, answer, named in (
+            ("refused", '{"status":0,"errors":["application token is invalid"]}\n400', True),
+            ("unanswered", '<html>captive portal</html>\n200', False),
+        ):
+            with self.subTest(label):
+                self.curl_answer.write_text(answer, encoding="utf-8")
+                self.reporting_docker()
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.assertTrue(image_prune.prune(self.config()))
+                self.assertEqual(self.state()["outcome"], "reclaimed")
+                self.assertIn("outcome notification failed", stderr.getvalue())
+                self.assertEqual("vault_pushover_deployments_token" in stderr.getvalue(), named)
+                self.assertNotIn(sentinel, stderr.getvalue())
+                self.assertTrue(all(sentinel not in " ".join(send["argv"])
+                                    for send in self.published()))
+                self.curl_calls.unlink()
 
     def test_the_second_pass_never_runs_after_the_first_fails(self):
         self.stub("docker", body="exit 1")
@@ -452,28 +551,51 @@ class NotificationTest(PruneTestCase):
         payload.update(overrides)
         return payload
 
-    def test_a_reclaim_reports_on_the_deployment_topic(self):
-        document = image_prune.render_notification(
+    def test_a_reclaim_reports_to_the_deployments_application_quietly(self):
+        app, fields = image_prune.render_notification(
             self.config(), "reclaimed", self.summary()
         )
-        self.assertEqual(document["topic"], "nas-deployment")
-        self.assertEqual(document["priority"], 3)
-        self.assertTrue(document["markdown"])
-        self.assertIn("1.5 GB", document["title"])
-        self.assertIn("**Images removed:** `3`", document["message"])
-        self.assertIn("**Unused older than:** `168h`", document["message"])
+        self.assertEqual(app, "deployments")
+        self.assertEqual(fields["priority"], -1)
+        self.assertEqual(fields["ttl"], 604800)
+        self.assertIn("1.5 GB", fields["title"])
+        self.assertIn("<b>Images removed:</b> 3", fields["message"])
+        self.assertIn("<b>Unused older than:</b> 168h", fields["message"])
 
-    def test_a_failure_reports_on_the_critical_topic(self):
-        document = image_prune.render_notification(
+    def test_a_failure_reports_to_the_alerts_application(self):
+        app, fields = image_prune.render_notification(
             self.config(),
             "failed",
             self.summary(**{"pass": "unused", "reason": "unused pass exited 1"}),
         )
-        self.assertEqual(document["topic"], "nas-critical")
-        self.assertEqual(document["priority"], 5)
-        self.assertIn("unused pass exited 1", document["message"])
-        self.assertEqual(document["title"], "Image prune failed")
-        self.assertNotIn("1.5 GB", document["title"])
+        self.assertEqual(app, "alerts")
+        self.assertEqual(fields["priority"], 1)
+        # A ttl would let a failure expire unread.
+        self.assertNotIn("ttl", fields)
+        self.assertIn("<b>Reason:</b> unused pass exited 1", fields["message"])
+        self.assertEqual(fields["title"], "Image prune failed")
+        self.assertNotIn("1.5 GB", fields["title"])
+
+    def test_hostile_input_stays_inside_pushovers_limits_without_a_cut_entity(self):
+        hostile = ("<b>&'\"" * 2500)[:10_000]
+        app, fields = image_prune.render_notification(
+            self.config(), "failed",
+            self.summary(**{"pass": hostile, "reason": hostile, "log": hostile}),
+        )
+        message = fields["message"]
+        self.assertLessEqual(len(message), image_prune.MAX_MESSAGE_CHARACTERS)
+        self.assertTrue(message)
+        self.assertIsNone(HALF_ENTITY.search(message), message)
+        self.assertEqual(message.count("<b>"), message.count("</b>"))
+        with mock.patch.object(
+            image_prune, "_run",
+            return_value=subprocess.CompletedProcess([], 0, b'{"status":1}\n200', b""),
+        ) as run:
+            self.assertTrue(image_prune.publish(self.config(), app, dict(fields, title=hostile)))
+        arguments = run.call_args.args[0]
+        titles = [argument for argument in arguments if argument.startswith("title=")]
+        self.assertEqual([len(title) - len("title=") for title in titles],
+                         [image_prune.MAX_TITLE_CHARACTERS])
 
     def test_an_unknown_outcome_is_refused_rather_than_published(self):
         with self.assertRaises(ValueError):
@@ -482,10 +604,11 @@ class NotificationTest(PruneTestCase):
     def test_the_published_document_carries_no_credential(self):
         # The token lives in the curl config the installer renders with no_log,
         # never in the body this script builds.
-        document = image_prune.render_notification(
+        _app, fields = image_prune.render_notification(
             self.config(), "reclaimed", self.summary()
         )
-        self.assertNotIn("Authorization", json.dumps(document))
+        self.assertNotIn("token", json.dumps(fields))
+        self.assertNotIn("user", json.dumps(fields))
 
 
 class CommandLineTest(PruneTestCase):
