@@ -1748,7 +1748,7 @@ def recorder_failures
                            "\u{1F4E6} <b>Container</b> " \
                            "<a href=\"http://127.0.0.1:38080/container/#{'a' * 64}\">svc one &amp; two</a>\n" \
                            "\u{1F552} <b>When</b> 15 Aug 01:22 UTC\n\n" \
-                           "<i>A recovery follows here once its health check passes again.</i>"
+                           "<i>Open it in Dozzle to see why.</i>"
       failures << "recorder: the decoded priority differs: #{form['priority'].inspect}" unless
         form["priority"] == "1"
       failures << "recorder: the decoded html flag differs: #{form['html'].inspect}" unless

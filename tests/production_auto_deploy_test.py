@@ -1907,8 +1907,9 @@ class MessageStyleTest(PollerTestCase):
         messages = [("deploy failed", production_auto_deploy.render_notification(
             config, MAIN_SHA, "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z", Path(log),
             "https://github.com/yonatankarp/nas-platform/actions/runs/9"))]
-        messages.append(("deploy failed, retrying", production_auto_deploy.render_notification(
-            config, MAIN_SHA, "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z", Path(log), "", True)))
+        for failure in ("retrying", "quarantined"):
+            messages.append((f"deploy failed, {failure}", production_auto_deploy.render_notification(
+                config, MAIN_SHA, "2026-08-21T15:00:00Z", "2026-08-21T15:04:30Z", Path(log), "", failure)))
         for app, fields in self.rendered(lambda: production_auto_deploy.note_ci_refusal(
                 config, MAIN_SHA, production_auto_deploy.CI_FAILED, detail,
                 "https://github.com/yonatankarp/nas-platform/actions/runs/9")):
@@ -1944,6 +1945,7 @@ class MessageStyleTest(PollerTestCase):
         self.assertEqual(titles, {
             "deploy failed": f"\U0001f534 Deploy failed \u00b7 {short}",
             "deploy failed, retrying": f"\U0001f534 Deploy failed \u00b7 {short}",
+            "deploy failed, quarantined": f"\U0001f534 Deploy failed \u00b7 {short}",
             "ci blocks": f"\u26d4 CI blocks deploy \u00b7 {short}",
             "poller blind": f"\U0001f648 Deploy poller blind \u00b7 {production_auto_deploy.BLIND_POLL_THRESHOLD} polls",
             "poller recovered": "\U0001f7e2 Deploy poller recovered",
@@ -1960,12 +1962,13 @@ class MessageStyleTest(PollerTestCase):
         expected = {
             "deploy failed": (red, ["Revision", "CI", "When", "Took", "Log"], True),
             "deploy failed, retrying": (red, ["Revision", "When", "Took", "Log"], True),
+            "deploy failed, quarantined": (red, ["Revision", "When", "Took", "Log"], True),
             "ci blocks": (red, ["Revision", "CI"], True),
             "poller blind": (red, ["Reason", "Polls"], True),
             "poller recovered": (green, ["Polls"], False),
             "verify failed": (red, ["Revision", "Log"], True),
             "verify recovered": (green, ["Revision", "Log"], False),
-            "raid degraded": (red, ["Check", "Revision", "Log"], True),
+            "raid degraded": (amber, ["Check", "Revision", "Log"], True),
             "raid unchecked": (amber, ["Check", "Revision", "Log"], True),
             "raid healthy": (green, ["Check", "Revision", "Log"], False),
             "raid check running again": (green, ["Check", "Revision", "Log"], False),
@@ -1985,8 +1988,20 @@ class MessageStyleTest(PollerTestCase):
                 self.assertEqual(shape["labels"], labels)
                 self.assertEqual(bool(shape["closing"]), closes)
         closings = dict((label, message_shape(fields["message"])["closing"]) for label, fields in messages)
-        self.assertEqual(closings["deploy failed, retrying"],
-                         "<i>Nothing reached the host; the next poll tries this revision again.</i>")
+        # Each cause names the remedy that fits it, and none promises the next poll.
+        self.assertEqual(
+            closings,
+            closings | {
+                "deploy failed": "<i>The poller will not retry this revision; merge a fix to main.</i>",
+                "deploy failed, retrying": "<i>The poller retries this revision on a later poll, "
+                "unless a newer green revision deploys first.</i>",
+                "deploy failed, quarantined": "<i>The poller will not retry this revision; run "
+                f"nas-platform-deploy --retry-failed {MAIN_SHA} once the cause is fixed.</i>",
+            },
+            "a failed deployment's closing line must name its own remedy",
+        )
+        self.assertNotIn("next poll", closings["deploy failed, retrying"],
+                         "the retrying line must not claim the next poll: a newer green revision goes first")
 
     def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
         hostile = ("<b>&'\"\n\0\U0001f9e8" * 1500)[:10_000]
@@ -3284,8 +3299,9 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         ) as notify:
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(notify.call_args.args[1], MAIN_SHA)
-        # Forgiven, so the notice says the next poll takes it again.
-        self.assertIs(notify.call_args.kwargs["retrying"], True)
+        # Forgiven: the notice and the attempted record agree that it is retried.
+        self.assertEqual(notify.call_args.kwargs["failure"], "retrying")
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
         latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
         self.assertIn("transient failure", latest)
         self.assertIn("git fetch failed", latest)
@@ -3302,7 +3318,24 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
             self.assertFalse(production_auto_deploy.poll(config))
         self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
         # Quarantined, so the notice must not promise a retry.
-        self.assertIs(notify.call_args.kwargs["retrying"], False)
+        self.assertEqual(notify.call_args.kwargs["failure"], "failed")
+
+    def test_a_transient_failure_past_its_limit_is_reported_as_quarantined(self):
+        """Forgiveness spent: the record keeps the revision, and the notice names
+        --retry-failed rather than a merge, because nothing about the revision
+        is known to be wrong."""
+
+        config = self.loaded_config()
+        production_auto_deploy._write_private(
+            production_auto_deploy._transient_path(config),
+            f"{MAIN_SHA} {production_auto_deploy.TRANSIENT_FORGIVENESS_LIMIT}\n".encode("ascii"),
+        )
+        with self.eligible(MAIN_SHA), mock.patch.object(
+            production_auto_deploy, "deploy", side_effect=[self.transient()]
+        ), mock.patch.object(production_auto_deploy, "notify", return_value=True) as notify:
+            self.assertFalse(production_auto_deploy.poll(config))
+        self.assertEqual(production_auto_deploy.attempted_shas(config), {MAIN_SHA})
+        self.assertEqual(notify.call_args.kwargs["failure"], "quarantined")
 
     def test_forgiveness_is_bounded_and_the_revision_ends_up_quarantined(self):
         """A cause that only looks transient must not be retried every five

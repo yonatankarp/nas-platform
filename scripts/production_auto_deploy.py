@@ -117,7 +117,7 @@ HOURLY_ONLY_VERIFY_CHECKS = {
         "marker": MDRAID_MISMATCH_MARKER,
         "fail": (
             "\U0001f7e0 RAID degraded",
-            f'<b>RAID arrays</b> are <font color="{COLOR_RED}">degraded</font>',
+            f'<b>RAID arrays</b> are <font color="{COLOR_AMBER}">degraded</font>',
             "<i>Read /proc/mdstat on the host; the log names the arrays that differ.</i>",
         ),
         "unchecked": (
@@ -1550,14 +1550,15 @@ def render_notification(
     finished: str,
     log_path: Path,
     run_url: str = "",
-    retrying: bool = False,
+    failure: str = "failed",
 ) -> dict:
     """Build the Pushover fields for a failed deployment.
 
     Only a failure is rendered here. A successful deployment reports itself from
-    inside the run, where what shipped is still at hand. retrying is whether the
-    attempt was forgotten after a transient failure, which is the one case the
-    next poll takes the same revision again.
+    inside the run, where what shipped is still at hand. failure is how poll()
+    left the revision: "failed" quarantines it, "retrying" forgot the attempt
+    after a transient failure, and "quarantined" is a transient failure the
+    poller would not forgive -- its limit reached, or its counter unwritable.
     """
 
     details = [f"\U0001f516 <b>Revision</b> {commit_link(config, sha)}"]
@@ -1568,11 +1569,14 @@ def render_notification(
         f"⏱️ <b>Took</b> {format_duration(started, finished)}",
         log_line(log_path),
     ]
-    closing = (
-        "<i>Nothing reached the host; the next poll tries this revision again.</i>"
-        if retrying
-        else "<i>The poller will not retry this revision; merge a fix to main.</i>"
-    )
+    # A forgotten attempt is not a promise about the next poll: a newer green
+    # revision is deployed ahead of it, and --retry-failed takes the full SHA.
+    closing = {
+        "retrying": "<i>The poller retries this revision on a later poll, unless a newer green "
+        "revision deploys first.</i>",
+        "quarantined": "<i>The poller will not retry this revision; run nas-platform-deploy "
+        f"--retry-failed {sha} once the cause is fixed.</i>",
+    }.get(failure, "<i>The poller will not retry this revision; merge a fix to main.</i>")
     fields = {
         "title": f"\U0001f534 Deploy failed · {sha[:7]}",
         "message": compose_message(
@@ -1592,14 +1596,14 @@ def notify(
     finished: str,
     log_path: Path,
     run_url: str = "",
-    retrying: bool = False,
+    failure: str = "failed",
 ) -> bool:
     """Publish a failed deployment to the Alerts application."""
 
     return publish(
         config,
         "alerts",
-        render_notification(config, sha, started, finished, log_path, run_url, retrying),
+        render_notification(config, sha, started, finished, log_path, run_url, failure),
     )
 
 
@@ -2254,7 +2258,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         # retry loop on the next five-minute tick.
         record_attempt(config, candidate)
         started = _timestamp()
-        retrying = False
+        failure = "failed"
         with attempt_log(config, candidate) as log:
             log_path = Path(log.name)
             try:
@@ -2270,7 +2274,9 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 log.write(note.encode("ascii", "replace") + b"\n")
                 if may_retry_after_transient_failure(config, candidate):
                     forget_attempt(config, candidate)
-                    retrying = True
+                    failure = "retrying"
+                else:
+                    failure = "quarantined"
             finished = _timestamp()
             if succeeded:
                 record_success(config, candidate, finished)
@@ -2292,7 +2298,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 finished,
                 log_path,
                 selection.verdict[2] if selection.verdict else "",
-                retrying=retrying,
+                failure=failure,
             ):
                 warning = "production auto-deploy: outcome notification failed"
                 log.write(warning.encode("ascii") + b"\n")

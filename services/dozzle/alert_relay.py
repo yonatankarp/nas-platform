@@ -708,7 +708,7 @@ def render_notification(event, link_base):
         "Unhealthy": (
             f"\U0001f7e0 {name} unhealthy",
             f'is <font color="{COLOR_AMBER}">unhealthy</font>',
-            "<i>A recovery follows here once its health check passes again.</i>",
+            "<i>Open it in Dozzle to see why.</i>",
         ),
         "Recovery": (
             f"\U0001f7e2 {name} recovered",
@@ -716,6 +716,12 @@ def render_notification(event, link_base):
             "",
         ),
     }[rule]
+    # No closing promises a recovery: state is keyed on host and container id,
+    # so a container recreated under the same name -- every image bump -- never
+    # closes the entry its predecessor opened, and neither does one the ceiling
+    # suppressed or the store evicted. Pointing at Dozzle is true only with a link.
+    if link_base is None and rule == "Unhealthy":
+        closing = ""
     shown = container
     if link_base is not None:
         # Validated in Config and hex after it, so escaping changes nothing

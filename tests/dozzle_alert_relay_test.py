@@ -643,7 +643,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                                    "paperless_webserver</a>\n"
                                    "\U0001f552 <b>When</b> 15 Aug 01:22 UTC\n"
                                    "\n"
-                                   "<i>A recovery follows here once its health check passes again.</i>",
+                                   "<i>Open it in Dozzle to see why.</i>",
                         "html": "1",
                         "priority": "1",
                         # The container's own page in Dozzle, by the short id
@@ -778,6 +778,23 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertEqual(shape["labels"], labels)
                 self.assertIn('<font color="#f9a825">paused</font>', shape["lead"])
                 self.assertTrue(shape["closing"])
+
+    def test_an_unhealthy_alert_promises_no_recovery_it_cannot_guarantee(self):
+        """State is keyed on host and container id, so a recovery is not certain.
+
+        A container recreated under the same name -- every image bump -- never
+        closes the entry its predecessor opened, and a ceiling-suppressed or
+        evicted entry closes nothing either, so the closing line points at Dozzle
+        instead, and only when there is a link to point with.
+        """
+        linked = message_shape(self.relay_module.render_notification(self.envelope(), LINK_BASE)["message"])
+        self.assertEqual(
+            linked["closing"], "<i>Open it in Dozzle to see why.</i>",
+            "an unhealthy alert's closing line must not promise a recovery: a recreated "
+            "container never sends one",
+        )
+        unlinked = message_shape(self.relay_module.render_notification(self.envelope(), None)["message"])
+        self.assertEqual(unlinked["closing"], "", "no link, so no line pointing at Dozzle")
 
     def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
         """The renderers, not only the envelope, bound what they are handed."""
