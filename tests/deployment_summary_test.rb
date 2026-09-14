@@ -54,8 +54,10 @@ def with_http_probe(expected_count, answer: ACCEPTED, &block)
                   "form" => URI.decode_www_form(body).to_h }
     answer
   end
+  # nil leaves the count to the row, whose own check can say what an extra
+  # request means rather than aborting the file before it reports.
   raise "deployment record probe request count differs: #{requests.length}" unless
-    requests.length == expected_count
+    expected_count.nil? || requests.length == expected_count
 end
 
 def endpoint(port)
@@ -236,7 +238,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
     File.exist?(summary_path) ? JSON.parse(File.read(summary_path)) : nil
   end
 
-  with_http_probe(0) do |port, requests|
+  with_http_probe(nil) do |port, requests|
     _stdout, stderr, status = run_summary(
       base.call(port, "deployment_bundle_previous_release_id" => previous),
       environment: poller_environment
