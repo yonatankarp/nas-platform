@@ -862,9 +862,37 @@ check(failures, gate_step["run"].to_s.strip == 'tests/validate-policy.sh "$POLIC
 check(failures, !gate_step["run"].to_s.include?("${{ matrix"),
       "the gate step must not interpolate a matrix value into shell source")
 
+# The shell syntax sweep runs one file per invocation. `sh -n` parses only its
+# first argument, so the `-exec sh -n {} +` form this replaced fed it all
+# ninety-eight scripts, checked the first, and reported green over the other
+# ninety-seven (#634). A literal pin would only have pinned that bug, so assert
+# the shape that cannot degenerate the same way: no batching, a loop, a parser
+# invoked per script, the parser chosen from the shebang -- one script here is
+# bash and is not valid POSIX sh -- and a status that outlives the loop.
+syntax_steps = static_steps.select { |step| step["run"].to_s.include?("-name '*.sh'") }
+check(failures, syntax_steps.length == 1,
+      "static must have exactly one shell syntax sweep, found #{syntax_steps.length}")
+# Comments are stripped first: the step's own comment names the batched form it
+# replaced, and a check that reads prose would be satisfied -- or in this case
+# defeated -- by it.
+syntax_sweep = (syntax_steps.first || {})["run"].to_s
+                                             .lines.reject { |line| line.strip.start_with?("#") }.join
+check(failures, !syntax_sweep.include?("-exec sh -n"),
+      "the shell syntax sweep must not batch scripts into one `sh -n`: it parses only its " \
+      "first argument, so a batched sweep checks one file and passes over the rest")
+check(failures, syntax_sweep.match?(/while\s+IFS=\s*read\s+-r/),
+      "the shell syntax sweep must loop over the scripts one at a time")
+check(failures, syntax_sweep.include?("head -n 1"),
+      "the shell syntax sweep must choose the parser from each script's shebang")
+check(failures,
+      syntax_sweep.include?('bash -n "$script"') && syntax_sweep.include?('sh -n "$script"'),
+      "the shell syntax sweep must invoke a parser on one named script at a time")
+check(failures, syntax_sweep.match?(/exit\s+"\$status"/),
+      "the shell syntax sweep must report a parse failure: find and a bare loop both exit 0 " \
+      "regardless of what the parser said")
+
 static_commands = run_steps(static)
 [
-  "find tests -type f -name '*.sh' -exec sh -n {} +",
   "tests/validate-policy.sh",
   "tests/integration_cleanup_test.sh",
   "tests/immich_probe_status_test.py",
