@@ -38,6 +38,11 @@ CONTAINER_ID = "a" * 64
 # tap-through link. A name rather than 127.0.0.1 so a relay that substituted its
 # own host would be visible.
 LINK_BASE = "http://nas.tailnet.example:8080"
+# Beszel's app URL as inventory renders it, and a PocketBase record id: the link
+# Beszel appends to an alert is the one to the other.
+BESZEL_LINK_BASE = "http://nas.tailnet.example:8090"
+BESZEL_SYSTEM_ID = "a1b2c3d4e5f6g7h"
+ALERTS_TOKEN = "pushover-alerts-secret-that-must-not-leak"
 # The ceilings these cases run against. Deliberately not the deployment's
 # 10/25/200: a case that trips a ceiling has to publish one message per unit of
 # allowance first, and a relay that ignored its configuration and kept a literal
@@ -255,6 +260,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 f"http://127.0.0.1:{self.pushover.server_port}/1/messages.json",
             "ALERT_RELAY_LINK_BASE": LINK_BASE,
             "PUSHOVER_TOKEN": PUSHOVER_TOKEN,
+            "PUSHOVER_ALERTS_TOKEN": ALERTS_TOKEN,
+            "BESZEL_LINK_BASE": BESZEL_LINK_BASE,
             "PUSHOVER_USER_KEY": PUSHOVER_USER_KEY,
             "ALERT_STATE_PATH": str(self.state_path),
             "ALERT_DAILY_CONTAINER_CEILING": str(CONTAINER_CEILING),
@@ -739,7 +746,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         container_notice = self.relay_module.render_ceiling_notice(event, "container", 10, "2026-09-14", 25)
         global_notice = self.relay_module.render_ceiling_notice(event, "global", 10, "2026-09-14")
         self.assertEqual(container_notice["title"], f"\U0001f507 {name} alerts paused")
-        self.assertEqual(global_notice["title"], "\U0001f507 Container alerts paused")
+        self.assertEqual(global_notice["title"], "\U0001f507 Alerts paused")
         self.assertNotEqual(container_notice["title"], global_notice["title"])
 
     def test_every_message_leads_with_its_state_in_the_colour_of_that_state(self):
@@ -1614,8 +1621,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
             204,
         )
         notice = self.pushover.requests[-1]["form"]
-        self.assertEqual(notice["title"], "\U0001f507 Container alerts paused")
-        self.assertIn("<b>Every container alert</b> is", notice["message"])
+        self.assertEqual(notice["title"], "\U0001f507 Alerts paused")
+        self.assertIn("<b>Every alert</b> is", notice["message"])
         self.assertIn(f"{GLOBAL_CEILING} alerts already sent", notice["message"])
 
         for index in range(4):
@@ -1835,7 +1842,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertFalse(self.state_path.exists())
         titles = [form["title"] for form in self.published_forms()]
         alerts = [t for t in titles if t.startswith("\U0001f6d1 ")]
-        notices = [t for t in titles if t == "\U0001f507 Container alerts paused"]
+        notices = [t for t in titles if t == "\U0001f507 Alerts paused"]
         self.assertEqual(
             len(alerts), GLOBAL_CEILING,
             f"the global backstop failed open across a broken store: {len(alerts)}",
@@ -1864,13 +1871,20 @@ class DozzleAlertRelayTest(unittest.TestCase):
         this cannot flake and it fails the moment somebody takes the trap.
         """
         tree = ast.parse(RELAY_PATH.read_text(encoding="utf-8"))
+        # Both callers of the ceiling: Dozzle's container events and Beszel's
+        # host alerts charge the same global counter under the same lock.
+        for function_name in ("process_event", "process_beszel"):
+            with self.subTest(function=function_name):
+                self.assert_ceiling_decision_is_locked(tree, function_name)
+
+    def assert_ceiling_decision_is_locked(self, tree, function_name):
         function = next(
             node for node in tree.body
-            if isinstance(node, ast.FunctionDef) and node.name == "process_event"
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
         )
         locked = [node for node in function.body if isinstance(node, ast.With)]
         self.assertEqual(
-            len(locked), 1, "process_event must hold exactly one state lock"
+            len(locked), 1, f"{function_name} must hold exactly one state lock"
         )
         self.assertTrue(
             any(
@@ -1878,7 +1892,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 and getattr(item.context_expr.func, "id", None) == "LockedState"
                 for item in locked[0].items
             ),
-            "the one with-block in process_event must be the state lock",
+            f"the one with-block in {function_name} must be the state lock",
         )
 
         def calls_within(node):
@@ -2122,7 +2136,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.envelope("Unhealthy", container=f"service-{index}"), LINK_BASE
             )
             try:
-                self.relay_module.publish(self.config, notification)
+                self.relay_module.publish(self.config, notification, self.config.pushover_token)
             except self.relay_module.UpstreamError:
                 refusals.append(index)
 
@@ -2831,9 +2845,293 @@ class DozzleAlertRelayTest(unittest.TestCase):
             204,
         )
         notice = self.pushover.requests[-1]["form"]
-        self.assertEqual(notice["title"], "\U0001f507 Container alerts paused")
-        self.assertIn("<b>Every container alert</b> is", notice["message"])
+        self.assertEqual(notice["title"], "\U0001f507 Alerts paused")
+        self.assertIn("<b>Every alert</b> is", notice["message"])
         self.assertNotIn("still get through", notice["message"])
+
+    # --- Beszel host alerts, POSTed to /beszel ------------------------------
+
+    # Each Beszel 0.19.0 subject exactly as it renders one, the body it sends
+    # with it, and the title and priority this relay must turn them into.
+    BESZEL_SUBJECTS = (
+        ("ASUSTOR-AS6704T CPU above threshold",
+         "CPU averaged 93.20% for the previous 10 minutes.",
+         "\U0001f534 ASUSTOR-AS6704T CPU above threshold", 1),
+        ("ASUSTOR-AS6704T CPU below threshold",
+         "CPU averaged 41.07% for the previous 10 minutes.",
+         "\U0001f7e2 ASUSTOR-AS6704T CPU back below threshold", -1),
+        ("ASUSTOR-AS6704T temperature above threshold",
+         "Highest sensor coretemp_core_2 averaged 87.53\u00b0C for the previous 15 minutes.",
+         "\U0001f534 ASUSTOR-AS6704T temperature above threshold", 1),
+        # A system name with spaces, and a metric name with one.
+        ("Office NAS 2 15m load below threshold",
+         "15m Load averaged 1.20 for the previous 10 minutes.",
+         "\U0001f7e2 Office NAS 2 15m load back below threshold", -1),
+        ("ASUSTOR-AS6704T disk usage above threshold",
+         "Usage of /extra-filesystems/volume1 averaged 85.12% for the previous 1 minute.",
+         "\U0001f534 ASUSTOR-AS6704T disk usage above threshold", 1),
+        ("Connection to ASUSTOR-AS6704T is down \U0001f534",
+         "Connection to ASUSTOR-AS6704T is down ",
+         "\U0001f534 ASUSTOR-AS6704T unreachable", 1),
+        ("Connection to ASUSTOR-AS6704T is up \u2705",
+         "Connection to ASUSTOR-AS6704T is up ",
+         "\U0001f7e2 ASUSTOR-AS6704T reachable again", -1),
+        # Battery is the one inverted alert: its problem is the low side.
+        ("laptop battery below threshold",
+         "Battery averaged 8.00% for the previous 5 minutes.",
+         "\U0001f534 laptop battery below threshold", 1),
+        ("laptop battery above threshold",
+         "Battery averaged 64.00% for the previous 5 minutes.",
+         "\U0001f7e2 laptop battery back above threshold", -1),
+        # Titles this relay does not parse go out as Beszel wrote them.
+        ("nvme0 S.M.A.R.T. status is healthy \u2705", "The drive reports healthy.",
+         "nvme0 S.M.A.R.T. status is healthy \u2705", -1),
+        ("Test Alert", "This is a notification from Beszel.", "Test Alert", 1),
+    )
+
+    @staticmethod
+    def beszel(title, body, link=None):
+        """A Beszel alert as its generic webhook sends it: body, blank line, link."""
+        if link is None:
+            link = f"{BESZEL_LINK_BASE}/system/{BESZEL_SYSTEM_ID}"
+        return {"title": title, "message": f"{body}\n\n{link}"}
+
+    def post_beszel(self, payload, **kwargs):
+        if not isinstance(payload, (bytes, dict)):
+            payload = json.dumps(payload).encode("utf-8")
+        return self.request("POST", "/beszel", payload, **kwargs)
+
+    def render_beszel(self, subject, link_base=BESZEL_LINK_BASE):
+        return self.relay_module.render_beszel(
+            self.beszel(subject[0], subject[1]), link_base, FIXED_NOW
+        )
+
+    def test_every_beszel_subject_maps_to_its_title_and_priority(self):
+        # More subjects than the test's global ceiling, which is not under test here.
+        self.relay.config = self.relay_module.Config.from_mapping(
+            self.environment(ALERT_DAILY_GLOBAL_CEILING="1000")
+        )
+        for subject, body, title, priority in self.BESZEL_SUBJECTS:
+            with self.subTest(subject=subject):
+                before = len(self.pushover.requests)
+                self.assertEqual(self.post_beszel(self.beszel(subject, body))[0], 204)
+                self.assertEqual(len(self.pushover.requests), before + 1)
+                form = self.pushover.requests[-1]["form"]
+                self.assertEqual(form["title"], title)
+                self.assertEqual(
+                    form["priority"], str(priority),
+                    "a Beszel recovery must arrive quiet at -1 and an alert must ring at 1",
+                )
+
+    def test_a_beszel_message_leads_with_its_state_and_labels_its_facts(self):
+        red = self.relay_module.COLOR_RED
+        green = self.relay_module.COLOR_GREEN
+        subjects = self.BESZEL_SUBJECTS
+
+        above = self.render_beszel(subjects[2])
+        shape = message_shape(above["message"])
+        self.assertEqual(shape["labels"], ["Host", "Average", "When"])
+        self.assertEqual(
+            shape["lead"],
+            f'<b>ASUSTOR-AS6704T</b> temperature is <font color="{red}">above</font> its threshold',
+        )
+        self.assertIn(
+            "\U0001f321\ufe0f <b>Average</b> 87.53\u00b0C over 15 minutes "
+            "\u00b7 Highest sensor coretemp_core_2",
+            above["message"],
+        )
+        self.assertIn("\U0001f552 <b>When</b> 15 Aug 12:00 UTC", above["message"])
+
+        below = self.render_beszel(subjects[1])
+        self.assertEqual(
+            message_shape(below["message"])["lead"],
+            f'<b>ASUSTOR-AS6704T</b> CPU is <font color="{green}">back below</font> its threshold',
+        )
+        self.assertIn("\U0001f4c8 <b>Average</b> 41.07% over 10 minutes \u00b7 CPU", below["message"])
+        self.assertIn("over 1 minute \u00b7", self.render_beszel(subjects[4])["message"])
+
+        down = self.render_beszel(subjects[5])
+        self.assertEqual(message_shape(down["message"])["labels"], ["Host", "When"])
+        self.assertIn(f'<font color="{red}">unreachable</font>', down["message"])
+        up = self.render_beszel(subjects[6])
+        self.assertIn(f'<font color="{green}">reachable</font> again', up["message"])
+
+        fallback = self.render_beszel(subjects[-1])
+        self.assertEqual(fallback["message"], "This is a notification from Beszel.")
+
+    def test_the_beszel_envelope_is_exactly_a_title_and_a_message(self):
+        valid = self.beszel("Test Alert", "line one\nline two")
+        refused = {
+            "a missing message": {"title": "Test Alert"},
+            "an extra key": dict(valid, priority=2),
+            "a non-string title": dict(valid, title=1),
+            "a non-string message": dict(valid, message=["x"]),
+            "an empty title": dict(valid, title=""),
+            "a newline in the title": dict(valid, title="Test\nAlert"),
+            "a carriage return in the message": dict(valid, message="a\rb"),
+            "a NUL in the message": dict(valid, message="a\0b"),
+            "not an object": ["Test Alert"],
+        }
+        for name, payload in refused.items():
+            with self.subTest(refused=name):
+                self.assertEqual(self.post_beszel(payload)[0], 400)
+        self.assertEqual(
+            self.request("POST", "/beszel", b'{"title":"a","title":"b","message":"c"}')[0], 400
+        )
+        self.assertEqual(self.post_beszel(valid, headers={"Content-Type": "text/plain"})[0], 400)
+        self.assertEqual(
+            self.request("POST", "/beszel", b"x" * (self.relay_module.MAX_BODY_BYTES + 1))[0], 413
+        )
+        self.assertEqual(self.pushover.requests, [])
+        self.assertEqual(self.post_beszel(valid)[0], 204)
+
+    def test_the_beszel_route_is_behind_the_relay_bearer_token(self):
+        payload = self.beszel("Test Alert", "This is a notification from Beszel.")
+        for token in (None, "wrong-token"):
+            with self.subTest(token=token):
+                self.assertEqual(
+                    self.post_beszel(payload, token=token)[0], 401,
+                    "the /beszel route must refuse a request without the relay's bearer token",
+                )
+        self.assertEqual(self.pushover.requests, [])
+        self.assertEqual(self.request("GET", "/beszel", token=None)[0], 404)
+        self.assertEqual(self.request("POST", "/beszel/", payload)[0], 404)
+        self.assertEqual(self.request("POST", "/elsewhere", payload)[0], 404)
+
+    def test_without_the_alerts_token_beszel_is_refused_and_containers_still_alert(self):
+        self.relay.config = self.relay_module.Config.from_mapping(
+            self.environment(PUSHOVER_ALERTS_TOKEN=None)
+        )
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            status, body = self.post_beszel(self.beszel("Test Alert", "x"))
+        self.assertEqual((status, body), (503, b"alerts token unavailable\n"))
+        self.assertEqual(
+            recorder.writes,
+            ["alert-relay: PUSHOVER_ALERTS_TOKEN is not set; a Beszel alert was not delivered\n"],
+        )
+        self.assertEqual(self.pushover.requests, [])
+        self.assertEqual(self.post(self.envelope())[0], 204)
+        self.assertEqual(len(self.pushover.requests), 1)
+
+    def test_each_route_publishes_on_its_own_pushover_application(self):
+        self.assertEqual(self.post(self.envelope())[0], 204)
+        self.assertEqual(self.post_beszel(self.beszel(*self.BESZEL_SUBJECTS[0][:2]))[0], 204)
+        container, host = self.published_forms()
+        self.assertEqual(container["token"], PUSHOVER_TOKEN, "/alerts must stay on the Containers application")
+        self.assertEqual(host["token"], ALERTS_TOKEN, "/beszel must publish on the Alerts application")
+        self.assertEqual(container["user"], PUSHOVER_USER_KEY)
+        self.assertEqual(host["user"], PUSHOVER_USER_KEY)
+
+    def test_the_alerts_token_is_redacted_like_the_others(self):
+        self.pushover.response_status = 400
+        self.pushover.response_body = f'{{"errors":["token {ALERTS_TOKEN} is invalid"]}}'.encode()
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            status, _body = self.post_beszel(self.beszel("Test Alert", "x"))
+        self.assertEqual(status, 502)
+        self.assertIn("[redacted]", recorder.getvalue())
+        self.assertNotIn(ALERTS_TOKEN, recorder.getvalue())
+
+    def test_a_beszel_alert_charges_only_the_global_ceiling(self):
+        alert = self.beszel(*self.BESZEL_SUBJECTS[0][:2])
+        self.assertEqual(self.post_beszel(alert)[0], 204)
+        budget = self.read_state()["budget"]
+        self.assertEqual(budget["count"], 1)
+        self.assertEqual(
+            budget["containers"], [],
+            "a Beszel alert has no container, so it must charge only the global counter",
+        )
+        for _index in range(GLOBAL_CEILING - 1):
+            self.assertEqual(self.post_beszel(alert)[0], 204)
+        self.assertEqual(len(self.pushover.requests), GLOBAL_CEILING)
+
+        self.assertEqual(self.post_beszel(alert)[0], 204)
+        notice = self.pushover.requests[-1]["form"]
+        self.assertEqual(notice["title"], "\U0001f507 Alerts paused")
+        self.assertIn("<b>Every alert</b> is", notice["message"])
+        self.assertIn("<b>Host</b> ASUSTOR-AS6704T", notice["message"])
+        self.assertEqual(notice["token"], ALERTS_TOKEN)
+
+        # One shared ceiling: container alerts stop too, and nothing notices twice.
+        self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
+        self.assertEqual(self.post_beszel(alert)[0], 204)
+        self.assertEqual(len(self.pushover.requests), GLOBAL_CEILING + 1)
+        budget = self.read_state()["budget"]
+        self.assertEqual((budget["count"], budget["containers"], budget["notified"]),
+                         (GLOBAL_CEILING, [], True))
+
+    def test_a_beszel_button_links_only_to_this_relays_beszel_system_page(self):
+        subject, body = self.BESZEL_SUBJECTS[0][:2]
+        render = self.relay_module.render_beszel
+        valid = f"{BESZEL_LINK_BASE}/system/{BESZEL_SYSTEM_ID}"
+        rendered = render(self.beszel(subject, body, valid), BESZEL_LINK_BASE, FIXED_NOW)
+        self.assertEqual((rendered.get("url"), rendered.get("url_title")), (valid, "Open in Beszel"))
+
+        refused = {
+            "the app URL alone": BESZEL_LINK_BASE,
+            "another origin": f"https://elsewhere.example/system/{BESZEL_SYSTEM_ID}",
+            "a lookalike host": f"{BESZEL_LINK_BASE}.elsewhere.example/system/{BESZEL_SYSTEM_ID}",
+            "a path escape": f"{BESZEL_LINK_BASE}/system/../_/admin",
+            "a query": f"{BESZEL_LINK_BASE}/system/{BESZEL_SYSTEM_ID}?next=https://elsewhere.example",
+            "a quote": f'{BESZEL_LINK_BASE}/system/abc"onclick=x',
+            "a script": f"javascript:alert(1)//{BESZEL_LINK_BASE}/system/{BESZEL_SYSTEM_ID}",
+            "an empty id": f"{BESZEL_LINK_BASE}/system/",
+        }
+        for name, link in refused.items():
+            with self.subTest(refused=name):
+                rendered = render(self.beszel(subject, body, link), BESZEL_LINK_BASE, FIXED_NOW)
+                self.assertNotIn(
+                    "url", rendered,
+                    "a link from the request body reached the button without validation",
+                )
+                self.assertNotIn("url_title", rendered)
+                self.assertNotIn("href", rendered["message"])
+
+        # No base, or a base the validator refuses: no button, and the relay starts.
+        self.assertNotIn("url", render(self.beszel(subject, body, valid), None, FIXED_NOW))
+        for raw in (None, "http://admin:link-secret@nas.tailnet.example:8090/beszel"):
+            with self.subTest(base=raw):
+                config = self.relay_module.Config.from_mapping(self.environment(BESZEL_LINK_BASE=raw))
+                self.assertIsNone(config.beszel_link_base)
+                self.assertIn("BESZEL_LINK_BASE", config.beszel_link_problem)
+                self.assertNotIn("link-secret", config.beszel_link_problem)
+
+        self.assertEqual(self.post_beszel(self.beszel(subject, body, valid))[0], 204)
+        self.assertEqual(self.pushover.requests[-1]["form"]["url"], valid)
+
+    def test_hostile_beszel_input_renders_a_message_pushover_takes(self):
+        hostile = ("<b>&'\"\n\U0001f9e8" * 1500)[:10_000]
+        line = hostile.replace("\n", " ")
+        alerts = [
+            {"title": line, "message": hostile},
+            {"title": f"{line} CPU above threshold",
+             "message": f"{line} averaged 1.00% for the previous 1 minute.\n\n{hostile}"},
+            {"title": f"{line} temperature below threshold",
+             "message": f"{line} averaged 99.99\u00b0C for the previous 99 minutes."},
+            {"title": f"Connection to {line} is down \U0001f534", "message": hostile},
+            {"title": f"{line} \u2705", "message": ""},
+            {"title": "x", "message": "\n\n\n"},
+        ]
+        rendered = [
+            self.relay_module.render_beszel(alert, BESZEL_LINK_BASE, FIXED_NOW) for alert in alerts
+        ]
+        self.assertEqual(self.post_beszel({"title": line[:1500], "message": hostile[:3000]})[0], 204)
+        rendered.append(self.pushover.requests[-1]["form"])
+        for fields in rendered:
+            with self.subTest(title=fields["title"][:24]):
+                title = fields["title"]
+                message = fields["message"]
+                self.assertTrue(title)
+                self.assertLessEqual(len(title), self.relay_module.MAX_TITLE_CHARACTERS)
+                self.assertNotIn("&amp;", title, "a title is plain text on Pushover's side")
+                self.assertTrue(message.strip())
+                self.assertLessEqual(len(message), self.relay_module.MAX_MESSAGE_CHARACTERS)
+                self.assertIsNone(HALF_ENTITY.search(message), message[-40:])
+                for tag in ("b", "i", "font", "a"):
+                    self.assertEqual(
+                        len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag
+                    )
 
 
 class RelayProcessSignalTest(unittest.TestCase):
@@ -3072,6 +3370,71 @@ class RelayLinkBaseProcessTest(unittest.TestCase):
         self.assertEqual(form["url"], f"{LINK_BASE}/container/{CONTAINER_ID}")
         self.assertEqual(form["url_title"], "Open in Dozzle")
         self.assertEqual(self.link_problem_lines(stderr), [])
+
+class RelayPreviousEnvironmentProcessTest(unittest.TestCase):
+    """This relay, started with exactly the environment main renders today.
+
+    deployment_bundle repoints `current` before roles/dozzle re-renders the
+    environment file, so a relay restarted in between runs this script with
+    neither PUSHOVER_ALERTS_TOKEN nor BESZEL_LINK_BASE. It must start, keep
+    serving /alerts on the Containers application, and refuse /beszel without
+    crashing -- the rule CLAUDE.md records after #327.
+    """
+
+    setUp = RelayProcessSignalTest.setUp
+    start_relay = RelayProcessSignalTest.start_relay
+    reap = RelayProcessSignalTest.__dict__["reap"]
+
+    @staticmethod
+    def post(port, path, payload):
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        connection.request(
+            "POST", path, body=body,
+            headers={"Authorization": f"Bearer {RELAY_TOKEN}",
+                     "Content-Type": "application/json",
+                     "Content-Length": str(len(body))},
+        )
+        status = connection.getresponse().status
+        connection.close()
+        return status
+
+    def test_the_previous_environment_serves_alerts_and_refuses_beszel(self):
+        pushover = ThreadingHTTPServer(("127.0.0.1", 0), RecordingPushoverHandler)
+        pushover.requests = []
+        pushover.response_status = 200
+        pushover.response_body = b""
+        thread = threading.Thread(target=pushover.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(DozzleAlertRelayTest.stop_server, pushover, thread)
+        process, port = self.start_relay(
+            PUSHOVER_API_URL=f"http://127.0.0.1:{pushover.server_port}/1/messages.json",
+            PUSHOVER_ALERTS_TOKEN=None,
+            BESZEL_LINK_BASE=None,
+        )
+        statuses = [
+            self.post(port, "/alerts", DozzleAlertRelayTest.envelope()),
+            self.post(port, "/beszel", DozzleAlertRelayTest.beszel(
+                "Test Alert", "This is a notification from Beszel.")),
+            self.post(port, "/alerts", DozzleAlertRelayTest.envelope("Unexpected exit")),
+        ]
+        alive = process.poll() is None
+        process.send_signal(signal.SIGTERM)
+        _out, error = process.communicate(timeout=RELAY_EXIT_TIMEOUT_SECONDS)
+        stderr = error.decode(errors="replace")
+
+        self.assertTrue(alive, f"the relay died serving the previous environment: {stderr}")
+        self.assertEqual(statuses, [204, 503, 204])
+        self.assertEqual(process.returncode, 0)
+        self.assertEqual(
+            [request["form"]["token"] for request in pushover.requests],
+            [PUSHOVER_TOKEN, PUSHOVER_TOKEN],
+        )
+        self.assertEqual(
+            [line for line in stderr.splitlines() if "PUSHOVER_ALERTS_TOKEN" in line],
+            ["alert-relay: PUSHOVER_ALERTS_TOKEN is not set; a Beszel alert was not delivered"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Private authenticated Dozzle event relay for structured Pushover alerts."""
+"""Private authenticated relay for Dozzle container events and Beszel host alerts."""
 
 from __future__ import annotations
 
@@ -178,6 +178,47 @@ CONTAINER_ROUTE = "/container/"
 MAX_LINK_BASE_CHARACTERS = MAX_URL_CHARACTERS - len(CONTAINER_ROUTE) - 64
 URL_TITLE = "Open in Dozzle"
 MAX_URL_TITLE_CHARACTERS = 100
+
+# Beszel's host alerts, POSTed to /beszel by Beszel 0.19.0's shoutrrr generic
+# webhook with template=json: exactly {"title", "message"}, where message is
+# Beszel's body followed by a blank line and a link (internal/alerts/alerts.go:
+# SendShoutrrrAlert). Beszel sends a recovery through the same URL as the alert
+# it closes, so it cannot give the two different priorities; this relay can.
+BESZEL_ENVELOPE_KEYS = {"title", "message"}
+# internal/alerts/alerts_status.go: sendStatusAlert. The body is the title with
+# the emoji trimmed, so it carries nothing the title does not.
+BESZEL_STATUS_TITLE = re.compile(
+    r"Connection to (?P<system>.+) is (?P<state>down \U0001F534|up \u2705)\Z"
+)
+# internal/alerts/alerts_system.go: sendSystemAlert. The system name is the
+# user's own text and may contain spaces, so the title is read from its fixed
+# end: the direction, then a metric name from the list below, and whatever is
+# left is the system.
+BESZEL_THRESHOLD_TITLE = re.compile(r"(?P<rest>.+) (?P<direction>above|below) threshold\Z")
+# Every metric name sendSystemAlert can put in a title, as it renders them:
+# Disk becomes "disk usage", LoadAvgN becomes "Nm load", the CPU state alerts
+# keep their labels, and everything but CPU and GPU is lowercased. Longest
+# first, so a system is never read as ending in part of a longer name.
+BESZEL_METRICS = (
+    "CPU Steal Time", "CPU I/O Wait", "temperature", "disk usage", "bandwidth",
+    "15m load", "battery", "5m load", "1m load", "memory", "CPU", "GPU",
+)
+# The one alert whose problem is the low side (alerts_system.go: isLowAlert).
+# Not among beszel_alerts today; handled because it costs one comparison.
+BESZEL_INVERTED_METRIC = "battery"
+# "%s averaged %.2f%s for the previous %v %s." Anchored on the literals rather
+# than on the unit, which is "%", "°C", " MB/s" or nothing at all.
+BESZEL_AVERAGE_BODY = re.compile(
+    r"(?P<descriptor>.+) averaged (?P<value>-?[0-9]+\.[0-9]{2})(?P<unit>.*)"
+    r" for the previous (?P<minutes>[0-9]+) minutes?\.\Z"
+)
+# The link hub.MakeLink builds: the app URL, then /system/<PocketBase record id>,
+# each part url.PathEscape'd. A record id is short and alphanumeric, so anything
+# else after the route is refused rather than escaped, and a link that does not
+# start with this relay's own configured base never reaches an href.
+BESZEL_SYSTEM_ROUTE = "/system/"
+BESZEL_SYSTEM_ID_PATTERN = re.compile(r"[A-Za-z0-9]{1,64}\Z")
+BESZEL_URL_TITLE = "Open in Beszel"
 # The palette scripts/production_auto_deploy.py documents, spelled as it spells
 # it; tests/policy_test.rb holds the copies identical.
 COLOR_GREEN = "#2e7d32"
@@ -238,6 +279,9 @@ class Config:
         "container_ceiling",
         "oom_container_ceiling",
         "global_ceiling",
+        "pushover_alerts_token",
+        "beszel_link_base",
+        "beszel_link_problem",
     )
 
     def __init__(
@@ -253,7 +297,13 @@ class Config:
         global_ceiling,
         link_base,
         link_problem=None,
+        alerts_token=None,
+        beszel_link_base=None,
+        beszel_link_problem=None,
     ):
+        self.pushover_alerts_token = alerts_token
+        self.beszel_link_base = beszel_link_base
+        self.beszel_link_problem = beszel_link_problem
         self.alert_relay_token = relay_token
         self.alert_relay_link_base = link_base
         self.alert_relay_link_problem = link_problem
@@ -345,6 +395,31 @@ class Config:
             except ConfigurationError as error:
                 link_problem = f"{error}; alerts will carry no Dozzle link"
 
+        # Beszel's two settings are optional for the same reason, and for one
+        # more: until a converge reaches roles/dozzle the running environment is
+        # the one rendered before they existed. Without the Alerts token /beszel
+        # answers 503 and says so on stderr; /alerts, which never needed it,
+        # keeps working. Without a usable link base a Beszel alert carries no
+        # button.
+        alerts_token = values.get("PUSHOVER_ALERTS_TOKEN")
+        if not isinstance(alerts_token, str) or not alerts_token or contains_control(alerts_token):
+            alerts_token = None
+        beszel_link_base = None
+        beszel_link_problem = None
+        raw_beszel_link_base = values.get("BESZEL_LINK_BASE")
+        if not isinstance(raw_beszel_link_base, str) or not raw_beszel_link_base:
+            beszel_link_problem = (
+                "BESZEL_LINK_BASE is not set; Beszel alerts will carry no link"
+            )
+        else:
+            try:
+                beszel_link_base = validated_link_base(raw_beszel_link_base)
+            except ConfigurationError:
+                beszel_link_problem = (
+                    "BESZEL_LINK_BASE must be an HTTP(S) origin; "
+                    "Beszel alerts will carry no link"
+                )
+
         # Deliberately no shape rule on either credential. Both are issued by
         # pushover.net and this platform cannot vouch for their form; the same
         # argument filter_plugins/vault_credential_schema.py records for the
@@ -391,6 +466,9 @@ class Config:
             global_ceiling,
             link_base,
             link_problem,
+            alerts_token,
+            beszel_link_base,
+            beszel_link_problem,
         )
 
 
@@ -759,6 +837,138 @@ def render_notification(event, link_base):
     return emergency_fields(fields)
 
 
+def validate_beszel_envelope(payload):
+    """Beszel's alert exactly as its generic webhook sends it, or SchemaError.
+
+    Exactly the two keys, both strings. The title may not carry a control
+    character; the message may carry newlines, because Beszel separates its body
+    from the link with a blank line, and nothing else.
+    """
+    if not isinstance(payload, dict) or set(payload) != BESZEL_ENVELOPE_KEYS:
+        raise SchemaError("envelope keys differ")
+    title = payload["title"]
+    message = payload["message"]
+    if not isinstance(title, str) or not isinstance(message, str) or not title:
+        raise SchemaError("title and message must be strings")
+    if contains_control(title) or contains_control(message.replace("\n", "")):
+        raise SchemaError("invalid control characters")
+    require_utf8(title, "invalid title")
+    require_utf8(message, "invalid message")
+    return {"title": title, "message": message}
+
+
+def classify_beszel(alert):
+    """What a Beszel alert is: its kind, system, metric, direction and body.
+
+    kind is "status", "threshold", or None for any title this relay does not
+    recognise -- "Test Alert", and the S.M.A.R.T., ZFS, systemd and container
+    alerts 0.19.0 can also send, which is why the fallback is a path and not a
+    corner. problem is True for an alert and False for a recovery.
+    """
+    title = alert["title"]
+    body, separator, trailing = alert["message"].rpartition("\n\n")
+    if not separator or "\n" in trailing:
+        body, trailing = alert["message"], ""
+    result = {
+        "kind": None, "system": None, "metric": None, "direction": None,
+        "problem": not title.endswith("\u2705"), "body": body, "link": trailing,
+    }
+    status = BESZEL_STATUS_TITLE.fullmatch(title)
+    if status:
+        return dict(result, kind="status", system=status.group("system"),
+                    problem=status.group("state").startswith("down"))
+    threshold = BESZEL_THRESHOLD_TITLE.fullmatch(title)
+    if threshold:
+        rest = threshold.group("rest")
+        for metric in BESZEL_METRICS:
+            if rest.endswith(f" {metric}") and len(rest) > len(metric) + 1:
+                direction = threshold.group("direction")
+                return dict(
+                    result, kind="threshold", system=rest[: -len(metric) - 1],
+                    metric=metric, direction=direction,
+                    problem=(direction == "above") != (metric == BESZEL_INVERTED_METRIC),
+                )
+    return result
+
+
+def beszel_link(link, link_base):
+    """The link Beszel sent, only if it is this relay's own Beszel system page."""
+    if link_base is None:
+        return None
+    route = f"{link_base}{BESZEL_SYSTEM_ROUTE}"
+    if not link.startswith(route) or not BESZEL_SYSTEM_ID_PATTERN.fullmatch(link[len(route):]):
+        return None
+    return link
+
+
+def render_beszel(alert, link_base, now):
+    """Render one Beszel alert as Pushover form fields.
+
+    An alert is 1 and its recovery -1, the split Beszel cannot make itself: a
+    host crossing a threshold overnight is worth waking a phone for, and the
+    notice that it came back is a record rather than a reason to. An
+    unrecognised title goes out as Beszel wrote it at 1, unless it ends in the
+    check mark Beszel puts on good news, which goes at -1.
+
+    The title is plain text and the message HTML, as in render_notification.
+    The When line is this relay's clock, because Beszel sends no time. The link
+    is the one Beszel appended, used only as the button and only when
+    beszel_link accepts it.
+    """
+    parsed = classify_beszel(alert)
+    fields = {"html": "1", "priority": 1 if parsed["problem"] else -1}
+    link = beszel_link(parsed["link"], link_base)
+    if link is not None:
+        fields["url"] = link
+        fields["url_title"] = BESZEL_URL_TITLE
+    if parsed["kind"] is None:
+        text = parsed["body"].strip() or alert["title"]
+        escaped = html_escape(text, MAX_MESSAGE_CHARACTERS, MAX_MESSAGE_CHARACTERS)
+        return dict(
+            fields,
+            title=alert["title"][:MAX_TITLE_CHARACTERS],
+            message=fit_message(escaped.split("\n")),
+        )
+
+    name = parsed["system"][:MAX_TITLE_CONTAINER_CHARACTERS]
+    shown = html_escape(parsed["system"])
+    colour = COLOR_RED if parsed["problem"] else COLOR_GREEN
+    details = [f"\U0001f5a5\ufe0f <b>Host</b> {shown}"]
+    if parsed["kind"] == "status":
+        if parsed["problem"]:
+            title = f"\U0001f534 {name} unreachable"
+            lead = f'<b>{shown}</b> is <font color="{colour}">unreachable</font>'
+        else:
+            title = f"\U0001f7e2 {name} reachable again"
+            lead = f'<b>{shown}</b> is <font color="{colour}">reachable</font> again'
+    else:
+        metric = parsed["metric"]
+        direction = parsed["direction"]
+        if parsed["problem"]:
+            title = f"\U0001f534 {name} {metric} {direction} threshold"
+            state = direction
+        else:
+            title = f"\U0001f7e2 {name} {metric} back {direction} threshold"
+            state = f"back {direction}"
+        lead = f'<b>{shown}</b> {metric} is <font color="{colour}">{state}</font> its threshold'
+        average = BESZEL_AVERAGE_BODY.fullmatch(parsed["body"])
+        if average:
+            emoji = "\U0001f321\ufe0f" if metric == "temperature" else "\U0001f4c8"
+            minutes = average.group("minutes")
+            unit = "minute" if minutes == "1" else "minutes"
+            reading = html_escape(average.group("value") + average.group("unit"))
+            descriptor = html_escape(average.group("descriptor"))
+            details.append(
+                f"{emoji} <b>Average</b> {reading} over {minutes} {unit} \u00b7 {descriptor}"
+            )
+    details.append(f"\U0001f552 <b>When</b> {human_time(datetime_nanoseconds(now))}")
+    return dict(
+        fields,
+        title=title[:MAX_TITLE_CHARACTERS],
+        message=compose_message(lead, details),
+    )
+
+
 def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
     """Render the one message a tripped ceiling is allowed to send.
 
@@ -781,8 +991,10 @@ def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
     paused = f'<font color="{COLOR_AMBER}">paused</font>'
     details = [f"\U0001f5a5️ <b>Host</b> {host}"]
     if scope == "global":
-        title = "\U0001f507 Container alerts paused"
-        lead = f"<b>Every container alert</b> is {paused}"
+        # Every alert, not every container alert: Beszel's host alerts count
+        # against the same global ceiling and stop with it.
+        title = "\U0001f507 Alerts paused"
+        lead = f"<b>Every alert</b> is {paused}"
     else:
         container = html_escape(event["container"])
         title = f"\U0001f507 {event['container'][:MAX_TITLE_CONTAINER_CHARACTERS]} alerts paused"
@@ -1302,8 +1514,9 @@ def log_safe(value, config, maximum=MAX_DIAGNOSTIC_CHARACTERS):
     with an exception is a sanitiser with a path that was missed.
     """
     text = str(value)
-    for secret in (config.pushover_token, config.pushover_user_key):
-        text = text.replace(secret, "[redacted]")
+    for secret in (config.pushover_token, config.pushover_user_key, config.pushover_alerts_token):
+        if secret:
+            text = text.replace(secret, "[redacted]")
     text = "".join(
         character if not contains_control(character) else "?" for character in text
     )
@@ -1357,8 +1570,11 @@ def read_upstream_detail(error):
         return "the error response could not be read"
 
 
-def publish(config, notification):
-    """POST one message to Pushover.
+def publish(config, notification, token):
+    """POST one message to Pushover, as the application `token` names.
+
+    Container events go out on the Containers application and Beszel's host
+    alerts on the Alerts one, so the caller chooses; the user key is shared.
 
     Pushover authenticates by form field rather than by header: the application
     token and the user key are `token` and `user` in the body, and there is no
@@ -1368,7 +1584,7 @@ def publish(config, notification):
     """
     body = urllib.parse.urlencode(
         {
-            "token": config.pushover_token,
+            "token": token,
             "user": config.pushover_user_key,
             **notification,
         }
@@ -1598,6 +1814,13 @@ def charge_budget(budget, identity, rule, config):
         # out-of-memory kills included.
         return ("notice", proposed, "global", config.global_ceiling, None)
 
+    # No identity is a Beszel host alert. It has no container to charge, and a
+    # state identity requires a container id, so it counts against the global
+    # ceiling alone -- the bound that makes the monthly quota a guarantee.
+    if identity is None:
+        proposed["count"] += 1
+        return ("publish", proposed)
+
     entry = proposed["containers"].get(
         identity, {"identity": identity, "count": 0, "notified": False}
     )
@@ -1736,7 +1959,40 @@ def process_event(config, event, floor):
         # about the alert; what it must no longer mean is that the ceiling
         # forgot the alert happened.
         if notification is not None:
-            publish(config, notification)
+            publish(config, notification, config.pushover_token)
+        floor.record(charged)
+        if replacement_required:
+            state_file.replace(proposed, charged, document)
+
+
+def process_beszel(config, alert, floor):
+    """Charge one Beszel alert against the global ceiling, publish it, persist.
+
+    The order and the lock are process_event's, for the reasons recorded there:
+    everything from raise_floor to replace inside the flock, publish before the
+    floor records, the floor before the persist. There is no health state to
+    reconcile, so every Beszel alert is a publication the ceiling decides on.
+    """
+    now = utc_now()
+    with LockedState(config.alert_state_path) as state_file:
+        entries, stored_budget, migration_required = state_file.read()
+        budget = floor.raise_floor(rolled_budget(stored_budget, now))
+        decision = charge_budget(budget, None, None, config)
+        charged = decision[1]
+        notification = None
+        if decision[0] == "publish":
+            notification = render_beszel(alert, config.beszel_link_base, now)
+        elif decision[0] == "notice":
+            system = classify_beszel(alert)["system"] or "Beszel"
+            notification = render_ceiling_notice(
+                {"host": system}, decision[2], decision[3], charged["day"], decision[4]
+            )
+        proposed, charged, document = bounded_state(entries, charged, now)
+        replacement_required = (
+            migration_required or proposed != entries or charged != stored_budget
+        )
+        if notification is not None:
+            publish(config, notification, config.pushover_alerts_token)
         floor.record(charged)
         if replacement_required:
             state_file.replace(proposed, charged, document)
@@ -1757,7 +2013,10 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         self.send_text(200, "ok\n")
 
     def do_POST(self):  # noqa: N802 - BaseHTTPRequestHandler API
-        if self.path != "/alerts":
+        # /alerts is Dozzle's and /beszel is Beszel's. Both take the same bearer
+        # token, the same content type and the same size bound; they differ only
+        # in the envelope and in which Pushover application publishes.
+        if self.path not in {"/alerts", "/beszel"}:
             self.send_text(404, "not found\n")
             return
         authorization = self.headers.get("Authorization", "")
@@ -1789,6 +2048,9 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         if len(raw) != content_length:
             self.send_text(400, "invalid request\n")
             return
+        if self.path == "/beszel":
+            self.handle_beszel(raw)
+            return
         try:
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
             event = validate_envelope(payload)
@@ -1797,6 +2059,33 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
             return
         try:
             process_event(self.server.config, event, self.server.budget_floor)
+        except StateError:
+            self.send_text(500, "state unavailable\n")
+            return
+        except UpstreamError:
+            self.send_text(502, "upstream unavailable\n")
+            return
+        self.send_empty(204)
+
+    def handle_beszel(self, raw):
+        config = self.server.config
+        try:
+            payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+            alert = validate_beszel_envelope(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError):
+            self.send_text(400, "invalid request\n")
+            return
+        if config.pushover_alerts_token is None:
+            # One write per refused alert, like report_upstream_failure, naming
+            # the setting and never a value.
+            sys.stderr.write(
+                "alert-relay: PUSHOVER_ALERTS_TOKEN is not set; a Beszel alert was not delivered\n"
+            )
+            sys.stderr.flush()
+            self.send_text(503, "alerts token unavailable\n")
+            return
+        try:
+            process_beszel(config, alert, self.server.budget_floor)
         except StateError:
             self.send_text(500, "state unavailable\n")
             return
@@ -1920,6 +2209,9 @@ def main():
         # One write, like report_upstream_failure, and it names the setting
         # rather than its value.
         sys.stderr.write(f"alert-relay: {config.alert_relay_link_problem}\n")
+        sys.stderr.flush()
+    if config.beszel_link_problem is not None:
+        sys.stderr.write(f"alert-relay: {config.beszel_link_problem}\n")
         sys.stderr.flush()
     # All interfaces, but only inside this container's network namespace: the relay
     # publishes no host port (services/dozzle/compose.yml gives it no ports mapping,
