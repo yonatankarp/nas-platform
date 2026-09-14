@@ -272,24 +272,6 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
-    # KARAKEEP'S GATE IS NARROWED HERE, AND ONLY WHILE INVENTORY SAYS FALSE.
-    # #551 lands the stack dark, so without this no lane would ever converge it
-    # before the flip: every lane would take the `state: absent` branch and the
-    # bootstrap, the network isolation and the verification would first run on
-    # the NAS. It is set on every lane so each requests the state it claims, and
-    # true for the karakeep lane alone -- Karakeep has no registered contract,
-    # so `full` has nothing of it to execute.
-    #
-    # THE CHANGE THAT TURNS KARAKEEP ON MUST DELETE THIS BLOCK AND THE MATCHING
-    # LINES IN tests/integration_controller_lib.sh. Left in place it keeps
-    # Karakeep out of smoke and idempotence-check while the NAS runs it -- #564,
-    # which is what the Nextcloud paragraph below records -- and
-    # tests/deployment_gate_coverage_test.rb refuses the flip until it is gone.
-    integration_karakeep_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      karakeep) integration_karakeep_deployment_enabled=true ;;
-    esac
-
     # NTFY'S GATE IS NARROWED THE OTHER WAY, FOR TWO CONTRACTS THAT STILL READ IT.
     # #558 stage 4a turns ntfy off in inventory, and every lane converges that --
     # except the two whose runtime contracts still talk to the platform's ntfy:
