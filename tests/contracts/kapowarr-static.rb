@@ -357,9 +357,7 @@ if failures.empty?
   failures << "the Kapowarr pre-upgrade copy must not start the old container over a missing store" unless
     rescue_start.nil? || (
       rescue_store_read && backup_rescue.index(rescue_store_read) < start_index &&
-      Array(rescue_start["when"]).any? &&
-      Array(rescue_start["when"]).all? { |condition| condition.to_s.include?("stat.exists") } &&
-      Array(rescue_start["when"]).join(" ").include?(rescue_store_read["register"].to_s + ".stat.exists")
+      Array(rescue_start["when"]).join(" ").include?("#{rescue_store_read['register']}.stat.exists")
     )
   failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
     backup_rescue.last&.key?("ansible.builtin.fail")

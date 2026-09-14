@@ -2267,18 +2267,12 @@ PROGRAM_MUTATIONS = [
     rows: ["a pre-upgrade rescue with a second start that recreates onto the new pin"]
   },
   {
-    label: "the conditional rescue start check",
-    program: :static,
-    from: 'Array(rescue_start["when"]).any? &&',
-    to: "true &&",
-    rows: ["a pre-upgrade rescue that starts Kapowarr over a missing store"]
-  },
-  {
     label: "the store-read rescue start condition check",
     program: :static,
-    from: 'Array(rescue_start["when"]).all? { |condition| condition.to_s.include?("stat.exists") } &&',
-    to: "true &&",
-    rows: ["a pre-upgrade rescue start that never runs"]
+    from: 'Array(rescue_start["when"]).join(" ").include?("#{rescue_store_read[\'register\']}.stat.exists")',
+    to: "true",
+    rows: ["a pre-upgrade rescue that starts Kapowarr over a missing store",
+           "a pre-upgrade rescue start that never runs"]
   },
   {
     label: "the redacted real indexer read check",
