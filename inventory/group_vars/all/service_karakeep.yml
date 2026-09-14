@@ -22,14 +22,12 @@
 # service.
 karakeep_deployment_enabled: true
 
-# The administrator's login identity. Not a credential -- the password is
-# vault_karakeep_admin_password -- and not a mailbox either: no SMTP is
-# configured, so Karakeep never sends to it. `.invalid` says so. Karakeep's first
-# registered account is its administrator, and tasks/bootstrap.yml registers
-# this one. Changing it after the bootstrap does not rename the account; the
-# converge fails at the sign-in probe instead, naming the state.
+# The administrator's display name, and nothing else: the login identity is
+# vault_karakeep_admin_email and the password vault_karakeep_admin_password, both
+# in the vault like every other service's administrator. Karakeep's first
+# registered account is its administrator, and tasks/bootstrap.yml registers the
+# vault identity under this name.
 karakeep_admin_name: admin
-karakeep_admin_email: nasadmin@karakeep.invalid
 
 nas_storage_karakeep:
   # DATA_DIR: db.db (every bookmark, list, tag, user and API key, with bcrypt

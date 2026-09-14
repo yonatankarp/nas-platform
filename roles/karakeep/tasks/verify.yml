@@ -37,7 +37,7 @@
     body_format: form-urlencoded
     body:
       csrfToken: "{{ (karakeep_verify_csrf.json | default({})).csrfToken | default('') }}"
-      email: "{{ karakeep_admin_email }}"
+      email: "{{ vault_karakeep_admin_email }}"
       password: "{{ vault_karakeep_admin_password }}"
       json: "true"
     headers:
@@ -129,7 +129,7 @@
   ansible.builtin.debug:
     msg: >-
       karakeep_deployment_enabled is false, so there is no Karakeep instance to
-      query. A live run would sign in as {{ karakeep_admin_email }}, require
+      query. A live run would sign in as the vault administrator, require
       admin.checkConnections to report Meilisearch and chrome connected, and
       require config.clientConfig to report signups disabled.
   when: not karakeep_deployment_enabled | bool

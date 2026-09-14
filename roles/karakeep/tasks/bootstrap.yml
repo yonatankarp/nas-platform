@@ -56,7 +56,7 @@
     body_format: form-urlencoded
     body:
       csrfToken: "{{ (karakeep_bootstrap_csrf.json | default({})).csrfToken | default('') }}"
-      email: "{{ karakeep_admin_email }}"
+      email: "{{ vault_karakeep_admin_email }}"
       password: "{{ vault_karakeep_admin_password }}"
       json: "true"
     headers:
@@ -97,7 +97,7 @@
 - name: Report the planned Karakeep administrator bootstrap
   ansible.builtin.debug:
     msg: >-
-      The vault Karakeep administrator {{ karakeep_admin_email }} does not sign
+      The vault Karakeep administrator does not sign
       in at {{ karakeep_url }} (probe status
       {{ karakeep_bootstrap_probe.status | default('none') }}). A live run would
       recreate the application with signups open and published on 127.0.0.1
@@ -170,7 +170,7 @@
         body:
           json:
             name: "{{ karakeep_admin_name }}"
-            email: "{{ karakeep_admin_email }}"
+            email: "{{ vault_karakeep_admin_email }}"
             password: "{{ vault_karakeep_admin_password }}"
             confirmPassword: "{{ vault_karakeep_admin_password }}"
         status_code: "{{ range(100, 600) | list }}"
@@ -237,8 +237,8 @@
       {{ (karakeep_bootstrap_signup.json | default({})).error.json.message | default('') }}
       and role
       {{ (karakeep_bootstrap_signup.json | default({})).result.data.json.role | default('none') }}.
-      Signups are closed again. "Email is already taken" means an account named
-      {{ karakeep_admin_email }} already exists and the vault administrator
+      Signups are closed again. "Email is already taken" means an account with
+      vault_karakeep_admin_email already exists and the vault administrator
       password does not sign in to it: the vault value was rotated or the account's
       password was changed in the interface, and nothing here resets it. A 200
       with role "user" means another account was registered first and
@@ -274,7 +274,7 @@
     body_format: form-urlencoded
     body:
       csrfToken: "{{ (karakeep_census_csrf.json | default({})).csrfToken | default('') }}"
-      email: "{{ karakeep_admin_email }}"
+      email: "{{ vault_karakeep_admin_email }}"
       password: "{{ vault_karakeep_admin_password }}"
       json: "true"
     headers:
@@ -318,7 +318,8 @@
       - karakeep_census.status | default(0) | int == 200
       - >-
         (karakeep_census.json | default({})).result.data.json.users | default([])
-        | map(attribute='email') | list == [karakeep_admin_email]
+        | map(attribute='email') | map('trim') | map('lower') | list
+        == [vault_karakeep_admin_email | trim | lower]
       - >-
         (karakeep_census.json | default({})).result.data.json.users | default([])
         | map(attribute='role') | list == ['admin']
@@ -327,8 +328,11 @@
       {{ karakeep_census_login.status | default('none') }} and the account list
       answered {{ karakeep_census.status | default('none') }} with
       {{ (karakeep_census.json | default({})).result.data.json.users | default([])
-         | map(attribute='email') | list }}. Signups are closed. Anything other
-      than exactly {{ karakeep_admin_email }} as admin means an account was
+         | length }} account(s) holding roles
+      {{ (karakeep_census.json | default({})).result.data.json.users | default([])
+         | map(attribute='role') | list }}; emails are not shown. Signups are
+      closed. Anything other than exactly vault_karakeep_admin_email as the one
+      admin means an account was
       registered while the door was open; remove it in the administrator
       interface before trusting this instance.
   when:

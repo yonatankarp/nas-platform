@@ -302,7 +302,8 @@ CREDENTIAL_RULES = {
     # Meilisearch to accept it, and the administrator password is registered
     # through Karakeep's signup, which requires 8 to 100 characters. 64 hex
     # satisfies all three and leaves no `$` or newline for the rendered .env to
-    # mangle.
+    # mangle. The administrator email is the login identity, shaped like Immich's.
+    "vault_karakeep_admin_email": ((PATTERN, EMAIL),),
     "vault_karakeep_nextauth_secret": ((PATTERN, HEX_64),),
     "vault_karakeep_meili_master_key": ((PATTERN, HEX_64),),
     "vault_karakeep_admin_password": ((PATTERN, HEX_64),),
