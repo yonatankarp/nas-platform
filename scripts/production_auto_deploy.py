@@ -1378,9 +1378,9 @@ def html_escape(value: str, maximum: int = 128, escaped_maximum: int = MAX_ESCAP
 def fit_message(lines) -> str:
     """Join message lines, dropping whole lines from the end until Pushover takes it.
 
-    Identical to the copy in the other script by construction, and
-    tests/policy_test.rb compares the two definitions as text so it stays that
-    way (#423). Prose true of only one script goes in a comment above the def,
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
     which that comparison does not read.
 
     Whole lines where it can, because every line is HTML and a cut can split an
@@ -1408,6 +1408,33 @@ def fit_message(lines) -> str:
     if unclosed:
         cut = cut[: unclosed[0].start()]
     return f"{cut}\u2026"
+
+
+def compose_message(lead: str, details, closing: str = "") -> str:
+    """One message in the platform's shape: a lead line, labelled details, what next.
+
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
+    which that comparison does not read.
+
+    The lead says what happened with its state coloured; each detail is one
+    `emoji <b>Label</b> value` fact; the closing, in italics, says what happens
+    next. Blank lines separate the three. Over MAX_MESSAGE_CHARACTERS the details
+    give way from the last, so the lead and the closing survive wherever they
+    can, and fit_message is the backstop for a lead that cannot fit on its own.
+    """
+
+    details = list(details)
+    while True:
+        lines = [lead]
+        if details:
+            lines += ["", *details]
+        if closing:
+            lines += ["", closing]
+        if not details or len("\n".join(lines)) <= MAX_MESSAGE_CHARACTERS:
+            return fit_message(lines)
+        details.pop()
 
 
 def pushover_verdict(returncode: int, output: bytes) -> str:

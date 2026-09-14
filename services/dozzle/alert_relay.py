@@ -143,8 +143,10 @@ EMERGENCY_MAX_RETRIES = 50
 # characters, so nothing on this platform reaches it; the envelope accepts any
 # non-control text in that field, so something could.
 #
-# 384 apiece leaves the worst case at 768 plus about sixty characters of labels,
-# comfortably inside the cap with room for the notice's extra lines.
+# 384 apiece keeps any one line well inside the cap. The whole message is not
+# bounded by construction any more: the container's name appears in the lead and
+# in a detail line beside a link of up to 512 characters, so compose_message
+# drops detail lines from the last until it fits.
 MAX_ESCAPED_FIELD_CHARACTERS = 384
 MAX_MESSAGE_CHARACTERS = 1024
 # The title has a cap of its own, 250, and it is reached by a shorter input than
@@ -568,8 +570,8 @@ def html_escape(value, maximum=128, escaped_maximum=MAX_ESCAPED_FIELD_CHARACTERS
 
     `quote=True` although these only ever land in element text. Pushover parses
     `message` under html=1 as five tags -- <b>, <i>, <u>, <font color> and
-    <a href> -- of which THIS RELAY EMITS ONLY <b>; the narrowness is ours, not
-    the API's. Two of those five take attributes, so escaping the quotes costs
+    <a href> -- of which this relay emits <b> and <font color>; the narrowness
+    is ours, not the API's. Two of those five take attributes, so escaping the quotes costs
     two entities and removes the whole class of mistake a later `<a href="...">`
     would introduce.
     """
@@ -579,6 +581,74 @@ def html_escape(value, maximum=128, escaped_maximum=MAX_ESCAPED_FIELD_CHARACTERS
         bounded = bounded[:-1]
         escaped = html.escape(bounded, quote=True)
     return escaped
+
+
+def fit_message(lines) -> str:
+    """Join message lines, dropping whole lines from the end until Pushover takes it.
+
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
+    which that comparison does not read.
+
+    Whole lines where it can, because every line is HTML and a cut can split an
+    entity or a tag. A message over MAX_MESSAGE_CHARACTERS is refused outright,
+    and so is an empty one -- which Pushover would blame on the token -- so a
+    first line that does not fit on its own is cut instead: back past any
+    partial tag or entity at the cut, and before any tag the cut left unclosed,
+    with a marker, and never to nothing when there was something to send.
+    """
+
+    kept = list(lines)
+    while len(kept) > 1 and len("\n".join(kept)) > MAX_MESSAGE_CHARACTERS:
+        kept.pop()
+    message = "\n".join(kept)
+    if len(message) <= MAX_MESSAGE_CHARACTERS:
+        return message
+    cut = message[: MAX_MESSAGE_CHARACTERS - 1]
+    cut = re.sub(r"<[^>]*\Z", "", cut)
+    cut = re.sub(r"&[^;<>\s]*\Z", "", cut)
+    unclosed = [
+        opening
+        for opening in re.finditer(r"<(b|i|u|a|font)\b[^>]*>", cut)
+        if f"</{opening.group(1)}>" not in cut[opening.end():]
+    ]
+    if unclosed:
+        cut = cut[: unclosed[0].start()]
+    return f"{cut}\u2026"
+
+
+def compose_message(lead: str, details, closing: str = "") -> str:
+    """One message in the platform's shape: a lead line, labelled details, what next.
+
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
+    which that comparison does not read.
+
+    The lead says what happened with its state coloured; each detail is one
+    `emoji <b>Label</b> value` fact; the closing, in italics, says what happens
+    next. Blank lines separate the three. Over MAX_MESSAGE_CHARACTERS the details
+    give way from the last, so the lead and the closing survive wherever they
+    can, and fit_message is the backstop for a lead that cannot fit on its own.
+    """
+
+    details = list(details)
+    while True:
+        lines = [lead]
+        if details:
+            lines += ["", *details]
+        if closing:
+            lines += ["", closing]
+        if not details or len("\n".join(lines)) <= MAX_MESSAGE_CHARACTERS:
+            return fit_message(lines)
+        details.pop()
+
+
+def human_time(nanoseconds):
+    """An instant from parse_timestamp as `14 Sep 02:03 UTC`, read at a glance."""
+    moment = datetime(1, 1, 1) + timedelta(microseconds=nanoseconds // 1000)
+    return f"{moment.day} {moment:%b %H:%M} UTC"
 
 
 def render_notification(event, link_base):
@@ -615,24 +685,53 @@ def render_notification(event, link_base):
     rule = event["rule"]
     host = html_escape(event["host"])
     container = html_escape(event["container"])
-    title_container = event["container"][:MAX_TITLE_CONTAINER_CHARACTERS]
-    title_prefix = {
-        "OOM": "Out of memory",
-        "Unexpected exit": "Unexpected exit",
-        "Unhealthy": "Unhealthy",
-        "Recovery": "Recovered",
+    name = event["container"][:MAX_TITLE_CONTAINER_CHARACTERS]
+    exit_code = event["exitCode"]
+    # The title carries the whole meaning, because a lock screen shows the title
+    # and no HTML; the lead line says it again with the state coloured. No OOM
+    # line names an exit code: the envelope pins exitCode to "" for that rule
+    # (RELATIONSHIPS), so there is none to show. The OOM closing is what
+    # emergency_fields sends, and no rule claims a restart: that is each
+    # container's own Compose policy, which this relay never sees.
+    title, state, closing = {
+        "OOM": (
+            f"\U0001f4a5 Out of memory · {name}",
+            f'was <font color="{COLOR_RED}">killed</font> by the kernel for running out of memory',
+            f"<i>Repeats every {EMERGENCY_RETRY_SECONDS} seconds until acknowledged, "
+            f"at most {EMERGENCY_MAX_RETRIES} times.</i>",
+        ),
+        "Unexpected exit": (
+            f"\U0001f6d1 {name} exited ({exit_code})",
+            f'<font color="{COLOR_RED}">stopped unexpectedly</font>',
+            "",
+        ),
+        "Unhealthy": (
+            f"\U0001f7e0 {name} unhealthy",
+            f'is <font color="{COLOR_AMBER}">unhealthy</font>',
+            "<i>A recovery follows here once its health check passes again.</i>",
+        ),
+        "Recovery": (
+            f"\U0001f7e2 {name} recovered",
+            f'is <font color="{COLOR_GREEN}">healthy</font> again',
+            "",
+        ),
     }[rule]
-    title = f"{title_prefix} · {title_container}"
-    lines = [f"<b>Host:</b> {host}", f"<b>Container:</b> {container}"]
+    shown = container
+    if link_base is not None:
+        # Validated in Config and hex after it, so escaping changes nothing
+        # today; it is what keeps a quote from ending the attribute regardless.
+        href = html_escape(
+            f"{link_base}{CONTAINER_ROUTE}{event['containerId']}",
+            MAX_URL_CHARACTERS,
+            6 * MAX_URL_CHARACTERS,
+        )
+        shown = f'<a href="{href}">{container}</a>'
+    details = [f"\U0001f5a5️ <b>Host</b> {host}", f"\U0001f4e6 <b>Container</b> {shown}"]
     if rule == "Unexpected exit":
-        lines.append(f"<b>Exit code:</b> {html_escape(event['exitCode'])}")
-    else:
-        status_text = {
-            "OOM": "out of memory",
-            "Unhealthy": "unhealthy",
-            "Recovery": "healthy",
-        }[rule]
-        lines.append(f"<b>Status:</b> {status_text}")
+        details.append(
+            f'\U0001f522 <b>Exit code</b> <font color="{COLOR_RED}">{html_escape(exit_code)}</font>'
+        )
+    details.append(f"\U0001f552 <b>When</b> {human_time(parse_timestamp(event['timestamp']))}")
     priority = {
         "OOM": EMERGENCY_PRIORITY,
         "Unexpected exit": 1,
@@ -641,7 +740,7 @@ def render_notification(event, link_base):
     }[rule]
     fields = {
         "title": title,
-        "message": "\n".join(lines),
+        "message": compose_message(f"<b>{container}</b> {state}", details, closing),
         "html": "1",
         "priority": priority,
     }
@@ -673,28 +772,27 @@ def render_ceiling_notice(event, scope, ceiling, day, oom_allowance=None):
     is not keeping. It is None for the global scope, where nothing gets through.
     """
     host = html_escape(event["host"])
+    paused = f'<font color="{COLOR_AMBER}">paused</font>'
+    details = [f"\U0001f5a5️ <b>Host</b> {host}"]
     if scope == "global":
-        subject = "every container, every rule"
-        title = "Alerts suppressed · ceiling reached"
+        title = "\U0001f507 Container alerts paused"
+        lead = f"<b>Every container alert</b> is {paused}"
     else:
-        subject = html_escape(event["container"])
-        title = (
-            "Alerts suppressed · "
-            f"{event['container'][:MAX_TITLE_CONTAINER_CHARACTERS]}"
+        container = html_escape(event["container"])
+        title = f"\U0001f507 {event['container'][:MAX_TITLE_CONTAINER_CHARACTERS]} alerts paused"
+        lead = f"<b>Alerts for {container}</b> are {paused}"
+        details.append(f"\U0001f4e6 <b>Container</b> {container}")
+    details.append(f"\u2753 <b>Reason</b> {ceiling} alerts already sent on {day} (UTC)")
+    if oom_allowance is None:
+        closing = "<i>Nothing more gets through until the next UTC day.</i>"
+    else:
+        closing = (
+            f"<i>Out-of-memory kills still get through, up to {oom_allowance} a day; "
+            "everything else resumes at the next UTC day.</i>"
         )
-    lines = [
-        f"<b>Host:</b> {host}",
-        f"<b>Suppressed:</b> {subject}",
-        f"<b>Reason:</b> {ceiling} alerts already sent on {day} (UTC)",
-    ]
-    if oom_allowance is not None:
-        lines.append(
-            f"<b>Still reporting:</b> out-of-memory kills, to {oom_allowance} a day"
-        )
-    lines.append("<b>Resumes:</b> at the next UTC day")
     return {
         "title": title,
-        "message": "\n".join(lines),
+        "message": compose_message(lead, details, closing),
         "html": "1",
         "priority": 1,
     }
