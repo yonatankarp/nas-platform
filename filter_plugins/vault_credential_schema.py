@@ -52,6 +52,12 @@ from urllib.parse import urlsplit
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}$")
 DATABASE_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
+# Karakeep's own email validation, read from its refusal, restricted to lowercase
+# because Karakeep stores and compares the address case-sensitively. `\Z` rather
+# than `$`, so a trailing newline does not pass.
+KARAKEEP_EMAIL = re.compile(
+    r"^(?!\.)(?!.*\.\.)[a-z0-9_'+\-.]*[a-z0-9_+-]@([a-z0-9][a-z0-9-]*\.)+[a-z]{2,}\Z"
+)
 HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 
 # The Dozzle alert relay's shared secret. 64 lowercase hex is what
@@ -302,8 +308,16 @@ CREDENTIAL_RULES = {
     # Meilisearch to accept it, and the administrator password is registered
     # through Karakeep's signup, which requires 8 to 100 characters. 64 hex
     # satisfies all three and leaves no `$` or newline for the rendered .env to
-    # mangle. The administrator email is the login identity, shaped like Immich's.
-    "vault_karakeep_admin_email": ((PATTERN, EMAIL),),
+    # mangle.
+    #
+    # The administrator email is the login identity, and NOT shaped like
+    # Immich's: EMAIL accepts `admin@nas`, which Karakeep refuses with 400
+    # invalid_format "Invalid email address" on every converge, and it accepts a
+    # trailing newline and surrounding tabs. Karakeep also stores the address
+    # exactly as given and signs in case-sensitively, so a vault value that
+    # differs from the registered account only in case registers a second
+    # account. KARAKEEP_EMAIL is Karakeep's own pattern, lowercase only.
+    "vault_karakeep_admin_email": ((PATTERN, KARAKEEP_EMAIL),),
     "vault_karakeep_nextauth_secret": ((PATTERN, HEX_64),),
     "vault_karakeep_meili_master_key": ((PATTERN, HEX_64),),
     "vault_karakeep_admin_password": ((PATTERN, HEX_64),),

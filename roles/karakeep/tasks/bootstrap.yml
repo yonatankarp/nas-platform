@@ -318,8 +318,7 @@
       - karakeep_census.status | default(0) | int == 200
       - >-
         (karakeep_census.json | default({})).result.data.json.users | default([])
-        | map(attribute='email') | map('trim') | map('lower') | list
-        == [vault_karakeep_admin_email | trim | lower]
+        | map(attribute='email') | list == [vault_karakeep_admin_email]
       - >-
         (karakeep_census.json | default({})).result.data.json.users | default([])
         | map(attribute='role') | list == ['admin']
