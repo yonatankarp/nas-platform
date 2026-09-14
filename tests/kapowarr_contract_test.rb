@@ -604,7 +604,7 @@ STATIC_ROWS = [
     name: "a pre-upgrade copy that runs on every converge",
     break: lambda { |root|
       edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
-        document.find { |task| task.key?("ansible.builtin.copy") }["when"] = ["not ansible_check_mode"]
+        find_task(document) { |task| task.key?("ansible.builtin.copy") }["when"] = ["not ansible_check_mode"]
       end
     },
     expects: "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check"
@@ -624,7 +624,7 @@ STATIC_ROWS = [
     name: "a pre-upgrade stop that recreates the container onto the new pin",
     break: lambda { |root|
       edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
-        document.find { |task| task.key?("community.docker.docker_compose_v2") }
+        find_task(document) { |task| task.key?("community.docker.docker_compose_v2") }
           .fetch("community.docker.docker_compose_v2").delete("recreate")
       end
     },
@@ -635,10 +635,48 @@ STATIC_ROWS = [
     name: "a world-readable pre-upgrade copy",
     break: lambda { |root|
       edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
-        document.find { |task| task.key?("ansible.builtin.copy") }["ansible.builtin.copy"]["mode"] = "0644"
+        find_task(document) { |task| task.key?("ansible.builtin.copy") }["ansible.builtin.copy"]["mode"] = "0644"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must be private"
+  },
+  {
+    # Measured before the rescue existed: a file planted where pre-upgrade-backup/
+    # belongs failed the copy after the stop, and Kapowarr stayed exited through
+    # every later converge.
+    name: "a pre-upgrade copy whose failure leaves Kapowarr stopped",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .reject! { |task| task.key?("community.docker.docker_compose_v2") }
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
+  },
+  {
+    # Without recreate: never the start replaces the stopped container with one on
+    # the new pin, which migrates the store nothing copied.
+    name: "a pre-upgrade rescue that starts Kapowarr on the new pin",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }
+          .fetch("community.docker.docker_compose_v2").delete("recreate")
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
+  },
+  {
+    # A rescue that only restarts turns a failed copy into a green run, and the
+    # deployment after it upgrades a store nothing copied.
+    name: "a pre-upgrade rescue that lets the upgrade proceed",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .reject! { |task| task.key?("ansible.builtin.fail") }
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must still fail the run after starting the old container"
   },
   {
     name: "an indexer read that does not really run under --check",
@@ -681,6 +719,22 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read must fail with its status rather than redacted"
   },
   {
+    # A 200 with a body that is not a list of records counts as zero GetComics
+    # indexers and blames the operator for deleting one.
+    name: "an indexer read that accepts a 200 whose body is not a list",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          Array(candidate.dig("ansible.builtin.assert", "that")).any? do |value|
+            value.to_s.include?("kapowarr_indexers.status")
+          end
+        end
+        task["ansible.builtin.assert"]["that"] = task["ansible.builtin.assert"]["that"].first(1)
+      end
+    },
+    expects: "the Kapowarr indexer read must refuse a 200 whose body is not a list of indexers"
+  },
+  {
     # Without a bound the converge waits out whatever getcomics.org does.
     name: "a service order write with no bound on the call to getcomics.org",
     break: ->(root) { role_tasks(root) { |document| indexer_write(document)["ansible.builtin.uri"].delete("timeout") } },
@@ -699,6 +753,16 @@ STATIC_ROWS = [
       end
     },
     expects: "the Kapowarr service order write must fail with its status and the getcomics.org cause"
+  },
+  {
+    # An API that refused the connection instantly was reported as a 75-second
+    # wait on getcomics.org.
+    name: "a service order write that reads every -1 as its own timeout",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/tasks/main.yml",
+                  "kapowarr_service_order_write.elapsed | default(0) | int >= 75", "true")
+    },
+    expects: "the Kapowarr service order write must tell a refused connection from its own timeout"
   },
   {
     # The write reaches getcomics.org, so an ungated one would make every
@@ -2127,6 +2191,21 @@ PROGRAM_MUTATIONS = [
     rows: ["a world-readable pre-upgrade copy"]
   },
   {
+    label: "the rescue that starts the old container check",
+    program: :static,
+    from: 'rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never"',
+    to: "true",
+    rows: ["a pre-upgrade copy whose failure leaves Kapowarr stopped",
+           "a pre-upgrade rescue that starts Kapowarr on the new pin"]
+  },
+  {
+    label: "the rescue that still fails the run check",
+    program: :static,
+    from: 'rescue_start && backup_rescue.last&.key?("ansible.builtin.fail") &&',
+    to: "true ||",
+    rows: ["a pre-upgrade rescue that lets the upgrade proceed"]
+  },
+  {
     label: "the redacted real indexer read check",
     program: :static,
     from: 'indexer_read && indexer_read["changed_when"] == false &&
@@ -2149,6 +2228,13 @@ PROGRAM_MUTATIONS = [
     rows: ["an indexer read whose failure says only censored"]
   },
   {
+    label: "the usable indexer body check",
+    program: :static,
+    from: 'include?("kapowarr_indexers.json.result | reject(\'mapping\') | list | length == 0")',
+    to: 'include?("")',
+    rows: ["an indexer read that accepts a 200 whose body is not a list"]
+  },
+  {
     label: "the bounded service order write check",
     program: :static,
     from: "write_timeout.is_a?(Integer) && write_timeout.between?(31, 120)",
@@ -2161,6 +2247,13 @@ PROGRAM_MUTATIONS = [
     from: 'indexer_write && indexer_write["failed_when"] == false && write_assert &&',
     to: "true || write_assert &&",
     rows: ["a service order write whose failure says only censored"]
+  },
+  {
+    label: "the refused-connection versus timeout check",
+    program: :static,
+    from: 'write_message.include?("kapowarr_service_order_write.elapsed | default(0) | int >= #{write_timeout}")',
+    to: "true",
+    rows: ["a service order write that reads every -1 as its own timeout"]
   },
   {
     label: "the drift-gated service order write check",
