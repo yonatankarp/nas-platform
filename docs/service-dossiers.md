@@ -108,8 +108,9 @@ at the end of each file.
 
 ## The pins these files rest on
 
-Behaviour is a property of a version. Each of the seven acquisition dossiers is
-derived from exactly one image, and the Seafile dossier from the three that
+Behaviour is a property of a version. Six of the seven acquisition dossiers are
+derived from exactly one image, the Gluetun and qBittorrent dossier from its
+two, and the Seafile dossier from the three that
 stack ran; all of them are digest-pinned the way `tests/policy_test.rb` requires — a
 readable tag
 for humans and Renovate, and the top-level manifest-list digest for

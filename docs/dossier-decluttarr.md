@@ -22,13 +22,15 @@ the backlog, and asked for this file before any role. Its short answer is that
 the search half is deployable, but three findings decide the shape more than
 the feature list does:
 
-- **A misconfigured container crash-loops, reports healthy and pages nobody.**
+- **A container refused at startup crash-loops, reports healthy and pages
+  nobody.** A failure that arrives while it runs pages once, then joins that
+  loop.
 - **The search throttle is the arr's, not Decluttarr's**, and it only exists
   while an indexer answers.
 - **The blocklist column in #632 was inverted**, which changes why
   `remove_failed_imports` has to stay off, though not the conclusion.
 
-## A misconfigured Decluttarr crash-loops, reports healthy, and pages nobody
+## A refusal at startup crash-loops, reports healthy, and pages nobody
 
 Three properties compose, and each was measured separately.
 
@@ -65,9 +67,27 @@ code: under it the bad-key container restarted, and Docker emitted `die` with
 `exitCode=0`. Confirmed. Dozzle's `die` rule excludes exit codes `0`, `130` and
 `143` (`roles/dozzle/defaults/main.yml:107`). Confirmed, read from the tree.
 
-So a Decluttarr whose API key was rotated, or whose arr was switched to another
-language, restarts every thirty seconds indefinitely, reads `healthy` whenever
-it is asked, and sends nothing. The one refusal that *does* page is running it
+So a Decluttarr that starts against a wrong key, an arr in another language, or
+an arr it cannot reach restarts every thirty seconds indefinitely, reads
+`healthy` whenever it is asked, and sends nothing.
+
+**A failure after a clean start is different, and it does page once.** Each of
+these was driven against a container that had already logged `OK | …` and run a
+cycle:
+
+- a proxy in front of Sonarr switched to a wrong key (`401 … /api/v3/wanted/missing`);
+- the arr's container stopped (`ConnectionError`);
+- the arr's container paused for fifty seconds (`Read timed out. (read timeout=15)`).
+
+Every one ended in a traceback and exit `1`. Confirmed by the verification pass
+on this file. Nothing in the job loop catches what `make_request` re-raises.
+Inferred, from `src/utils/common.py` and `main.py`. Dozzle's `die` rule pages on
+exit `1`. After that, a key that is still wrong puts the restarted container into
+the exit-0 loop above. So a rotated key pages once and then goes quiet, and an
+arr recreated by a converge or a digest automerge while Decluttarr runs will
+probably page once too. Inferred.
+
+The one refusal that *does* page is running it
 as a non-root user: `/app` is root-owned, the log directory is the relative path
 `./logs`, and under `--user 1000:1000` the process died at start with
 `PermissionError: [Errno 13] Permission denied: 'logs'` and exit `1`. Confirmed.
@@ -78,13 +98,17 @@ README shows `PUID` and `PGID` in its Compose example, and nothing in the source
 reads either. Inferred, from a search of `src/` and `main.py`.
 
 What a role should take from this: its verification cannot trust the health
-status, and nothing that watches exit codes will see a refusal loop. What
-*does* distinguish the two states is the log. Successful setup prints
-`OK | Sonarr (http://sonarr:8989)` for each instance, and a refusal prints
-`Decluttarr will wait for 30 seconds and then exit.` Both lines are Confirmed.
-A contract that requires one `OK |` line per configured instance since the
-container's last start, and a `RestartCount` that does not move across more
-than thirty seconds, would tell the two apart. That design is Inferred.
+status, nothing that watches exit codes will see a refusal loop, and
+`RestartCount` cannot be the signal either, because a short arr outage moves it
+too. What *does* distinguish the states is the log since the container's last
+start:
+
+- successful setup prints `OK | Sonarr (http://sonarr:8989)` for each instance;
+- a refusal prints `Decluttarr will wait for 30 seconds and then exit.`
+
+Both lines are Confirmed. A contract that requires one `OK |` line per
+configured instance since the last start, and no refusal line after it, would
+tell a working container from a looping one. That design is Inferred.
 
 ## Test mode suppresses every write, the search half included
 
@@ -117,8 +141,9 @@ went out. Inferred, from `src/jobs/removal_handler.py`. So a test-mode log is a
 forecast for its first cycle only.
 
 This is the #550 finding again from the other side. Radarr and Sonarr log
-identically whether a dry run is on or off, and so does Decluttarr, apart from
-the `TEST MODE IS ACTIVE` banner at start. The only proof of a dry run is the
+identically whether a dry run is on or off. So does Decluttarr at its default
+`INFO` level, apart from the `TEST MODE IS ACTIVE` banner at start. Only at
+`DEBUG` does each suppressed write log `[Test Run] Simulating …`. The only proof of a dry run is the
 download client's queue and the arr's command history. A `TEST_RUN: true` first
 deployment proves which items would be selected. It says nothing about search
 volume, because no search is sent.
@@ -283,10 +308,21 @@ already keeps and is lost on recreate, so nothing needs to be mounted for it.
   `Termination signal received`. Confirmed. So this is not the `alert-relay` or
   `nextcloud-cron` shape, and no `init` or `stop_signal` is needed.
 - **Minimum versions.** Decluttarr's minimum versions are Sonarr `4.0.9.2332`
-  and Radarr `5.10.3.9171`. The platform's pins passed setup. Confirmed.
-- **Wiring.** No port, no volume and no data directory while
-  `detect_deletions` stays off. It needs only to reach the arrs by name, which
-  the `arr` project's `media-control` network already provides. Inferred.
+  and Radarr `5.10.3.9171`. Inferred, from `src/settings/_constants.py`. The
+  platform's pins passed setup. Confirmed.
+- **Wiring.** No port, no volume and no data directory. It needs only to reach
+  the arrs by name, which the `arr` project's `media-control` network already
+  provides. Inferred.
+- **`detect_deletions` is not gated by its setting.** `main.py` tests
+  `if settings.jobs.detect_deletions:`. That is a job object whose truth value
+  is `True` even when `enabled` is `False`, so the file watcher's setup runs on
+  every start. Confirmed with
+  `JobParams()` printing `enabled=False` and `bool=True` inside the image. Every
+  run without `DETECT_DELETIONS` logged `WARNING | Job 'detect_deletions' on
+  Sonarr … does not have access to this path … '/data/tv'`. Confirmed. Only the
+  missing mount keeps the watcher inert. Mounting the library at the arrs' paths
+  would switch it on, and a Dozzle log rule on `WARNING` would fire on every
+  start.
 
 ## The shape this repository should take
 
@@ -301,8 +337,10 @@ already keeps and is lost on recreate, so nothing needs to be mounted for it.
   `SEARCH_UNMET_CUTOFF`. Every removal job off, including `remove_orphans`
   until the manual-drop question is answered.
 - **A verification that reads the log, not the health status.** An `OK |` line
-  per configured instance since the last start, and a stable `RestartCount`.
-  Without it, a rotated API key is a silent outage.
+  per configured instance since the last start, and no refusal line after it.
+  Without it, a key that is wrong at start is a silent outage.
+- **No library mount, ever**, since that alone would switch on
+  `detect_deletions`.
 - **`depends_on` the arrs with `condition: service_healthy`.** Their
   healthchecks probe `/ping` over HTTP and do mean something. Without the
   condition, a converge that recreates the project can start Decluttarr ahead
@@ -311,7 +349,9 @@ already keeps and is lost on recreate, so nothing needs to be mounted for it.
   be searched and nothing else.
 - **`MIN_DAYS_BETWEEN_SEARCHES` and `MAX_CONCURRENT_SEARCHES` chosen from the
   indexers' limits**, and not left at the defaults by omission.
-- **A CPU ceiling in `platform_container_cpu_budget`.**
+- **A CPU ceiling:** `cpus:` in `services/arr/compose.yml`, and
+  `container_cpus` in `tests/expected/arr.yml`. `platform_container_cpu_budget`
+  sizes the shared cpuset and is not changed by a container.
 
 ## What remains unsettled
 
