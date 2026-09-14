@@ -1440,9 +1440,23 @@ EOF
         "$idempotence_status" >&2
       exit 1
     fi
-    # Must also require failed=0: a run that changed nothing because it died
-    # early is not idempotent, and an earlier version of this check passed on it.
-    if grep -qE 'changed=0 ' /tmp/second.txt && grep -qE 'failed=0 ' /tmp/second.txt; then
+    # The same parser run_enabled_idempotence uses, and for the reason two greps
+    # could not be made into one: they matched anywhere in the file, never had to
+    # describe the same line, and never looked at `unreachable` at all. A task
+    # that merely PRINTS `changed=0 failed=0` satisfied both of them -- so a recap
+    # reading `changed=118` passed, and so did one reading `unreachable=3`.
+    #
+    # This is phase 2 of the `full` and `idempotence-*` lanes, whose whole purpose
+    # is proving idempotence, and it was the loosest assertion in the harness. The
+    # strict parser has been one file away since it was written for the
+    # per-service lanes: exactly one recap, exactly one line naming the target,
+    # and changed/unreachable/failed all zero, with tests/integration_suite_test.sh
+    # driving eight cases through it -- including one named "task-output false
+    # match before failed recap", which is precisely the miss above.
+    #
+    # The comment this replaces recorded that the check had already been widened
+    # once, to require failed=0, without anybody reaching for the parser.
+    if enabled_idempotence_recap_is_clean /tmp/second.txt; then
       printf 'IDEMPOTENT: second run changed nothing\n'
     else
       printf 'NOT IDEMPOTENT: second run reported changes\n' >&2
