@@ -397,7 +397,7 @@ end
 # comment or a when: expression is not evidence of task ordering. The validating task's own
 # deployment_target_extra_paths necessarily name the runtime roots, so it is excluded from
 # the first-use search rather than compared against itself.
-%w[ntfy beszel dozzle audiobookshelf komga jellyfin immich
+%w[beszel dozzle audiobookshelf komga jellyfin immich
    paperless_ngx].each do |service_name|
   # Read through static_role_tasks, not main.yml. A role that is one stage per file
   # keeps only an index in main.yml, and both halves of this check then read false:
@@ -556,7 +556,7 @@ integration_evidence = controller +
   CONTROLLER_SYMLINK_TARGET_UNCHANGED SYMLINK_BESZEL_COMPOSE_REFUSED
   FRESH_ROOT_OK SYMLINK_DOCKER_ROOT_REFUSED SYMLINK_DEPLOY_ROOT_REFUSED SYMLINK_RELEASES_REFUSED
   SYMLINK_RUNTIME_REFUSED SYMLINK_ROOT_ANCESTOR_REFUSED
-  SYMLINK_PREFLIGHT_PROBE_REFUSED SYMLINK_NTFY_COMPOSE_REFUSED
+  SYMLINK_PREFLIGHT_PROBE_REFUSED
   EXISTING_PREFLIGHT_PROBE_REFUSED EXISTING_PREFLIGHT_PROBE_PRESERVED
   INTERRUPTED_PREFLIGHT_PROBE_RECLAIMED
   SYMLINK_ESCAPE_STATE_UNCHANGED

@@ -40,7 +40,7 @@ test_cleanup_service_registry() {
     exit 1
   }
 
-  for expected_cleanup_project in ntfy beszel dozzle audiobookshelf komga jellyfin \
+  for expected_cleanup_project in beszel dozzle audiobookshelf komga jellyfin \
     immich paperless nextcloud arr downloaders; do
     cleanup_project_registered=false
     for registered_cleanup_project in $cleanup_sandbox_projects; do
@@ -55,7 +55,7 @@ test_cleanup_service_registry() {
   done
 
   for expected_cleanup_service in radarr sonarr prowlarr bazarr sabnzbd unpackerr \
-    ntfy beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy \
+    beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy \
     dozzle dozzle-alert-relay dozzle-socket-proxy audiobookshelf komga jellyfin \
     immich-server immich-machine-learning immich-redis immich-postgres \
     paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \

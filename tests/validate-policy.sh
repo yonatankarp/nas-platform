@@ -55,8 +55,8 @@ policy_shard=${1:-}
 # a line from a partition removes a check from the gate and makes the gate
 # *faster*, with nothing else in the repository to notice.
 #
-# The partition balances COST, which is why the shard counts below are 57, 55
-# and 63 rather than a third each. Those are today's counts, read off
+# The partition balances COST, which is why the shard counts below are 57, 56
+# and 64 rather than a third each. Those are today's counts, read off
 # tests/gate_manifest_coverage_test.rb's own summary line rather than
 # remembered: the sentence said 51, 52 and 61 while the file held 53, 57 and 61,
 # and merging #547's Vaultwarden checks in beside #548's AdGuard ones moved it
@@ -276,7 +276,6 @@ ruby tests/komga_library_reconciliation_test.rb
 ruby tests/komga_contract_test.rb --self-test
 ruby tests/audiobookshelf_contract_test.rb --self-test
 ruby tests/immich_smart_search_retry_test.rb
-ruby tests/ntfy_verify_execution_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
 ruby tests/acquisition_configarr_field_coverage_test.rb
 ruby tests/bazarr_provider_schema_test.rb --self-test
