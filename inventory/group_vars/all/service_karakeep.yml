@@ -2,27 +2,25 @@
 # karakeep: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault_karakeep.yml.
 
-# KARAKEEP IS DARK. #551 lands the whole stack with this false and turning it on
-# is a separate, deliberate change. roles/karakeep/defaults/main.yml is false as
-# well; that default is the floor under this decision, not a copy of it.
+# KARAKEEP IS ON. #551 landed the whole stack with this false and its second
+# chunk turned it on. roles/karakeep/defaults/main.yml stays false: that default
+# is the floor under this decision, not a copy of it.
 #
-# WHAT THE FLIP WILL DO. Dark, the poller installs services/karakeep/ into the
-# release, host_prep creates both directories below (the nas_storage loop is
-# ungated) and the role renders its runtime .env -- nothing else. Turned on, the
-# first converge pulls three images, starts the stack with signups closed,
-# finds that the vault administrator cannot sign in, reopens signups with the
-# application published on 127.0.0.1 only, registers the administrator, and
-# closes the door again before the role yields. Setting it back to false
-# converges the project to `state: absent`.
+# WHAT THE COMMIT THAT SET THIS TRUE DID ON THE NAS, once, within five minutes of
+# the merge: the first converge pulls three images, starts the stack with signups
+# closed, finds that the vault administrator cannot sign in, reopens signups with
+# the application published on 127.0.0.1 only, registers the administrator, and
+# closes the door again before the role yields. Every later converge signs in and
+# skips all of that. Setting it back to false converges the project to
+# `state: absent`; the data root survives, so turning it on again meets the
+# existing administrator and never opens the door.
 #
-# THE FLIP HAS OBLIGATIONS THIS CHANGE DELIBERATELY DOES NOT DISCHARGE, and
-# tests/deployment_gate_coverage_test.rb refuses the flip until they are:
-# `integration_karakeep_deployment_enabled` must be deleted from
-# tests/integration_controller.sh (while dark it is what lets the karakeep lane
-# converge the stack at all), the lane must gain its
-# `run_play --tags karakeep -e karakeep_deployment_enabled=false` step, and the
-# Mac lifecycle must account for the service.
-karakeep_deployment_enabled: false
+# The obligations tests/deployment_gate_coverage_test.rb holds a lit gate to were
+# paid in the same change: the integration narrowing is gone, so every lane
+# converges what this says; the karakeep lane converges the disabled path with
+# `-e karakeep_deployment_enabled=false`; and the Mac lifecycle accounts for the
+# service.
+karakeep_deployment_enabled: true
 
 # The administrator's login identity. Not a credential -- the password is
 # vault_karakeep_admin_password -- and not a mailbox either: no SMTP is
