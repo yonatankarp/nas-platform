@@ -555,9 +555,11 @@ and a platform that changes rarely is exactly the one whose expired entries
 would otherwise sit there forever.
 
 Failures are sent to Pushover's Alerts application at priority 1, through a
-protected curl config holding that application's token, as HTML: the commit
-links to its page on GitHub, the notification opens the CI run that released the
-revision, and the attempt log's path is in the body. Only a message Pushover
+protected curl config holding that application's token, as HTML: the title
+alone says what failed, and the body leads with it, then lists the revision
+linked to its page on GitHub, the CI run that released it, when and how long,
+and the attempt log's path, then says whether the next poll retries it. The
+notification's button opens that CI run. Only a message Pushover
 accepts counts as sent. One it refuses prints the vault key names to fix --
 never a value -- and neither a refusal nor an unanswered request changes the
 poll's exit code or its recorded state.
@@ -659,12 +661,12 @@ whole budget from 03:37 on a Sunday still holds the lock when the 04:00 image
 prune has waited its fifteen minutes, so that week's prune is skipped.
 
 Each check pages on its own: a failure publishes once to the Alerts application
-at priority 1 (`Verify failed`, which also opens the CI run that released the
-deployed revision when GitHub answers, or `RAID arrays degraded`) and a recovery
+at priority 1 (`🔴 Verify failed`, which also opens the CI run that released the
+deployed revision when GitHub answers, or `🟠 RAID degraded`) and a recovery
 once to the same application at priority -1. The array run shares `verify.yml`'s setup -- Docker modules,
 vault, GPU, Compose files -- so when it fails without the array check's own
-mismatch message in its log it pages `RAID array check could not run` instead,
-and its return is `RAID array check runs again` rather than a recovery; an unchanged result publishes nothing. The last results live
+mismatch message in its log it pages `❔ RAID check could not run` instead,
+and its return is `🟢 RAID check running again` rather than `🟢 RAID healthy`; an unchanged result publishes nothing. The last results live
 in `state/verify-verdict` and `state/verify-verdict-mdraid`, each written only
 once its notice was delivered, so an undelivered one is retried on the next run. A failing verification never touches
 the deployment record and never holds back a poll.
