@@ -1,7 +1,7 @@
 ---
-# The operator switch, OFF here and in inventory. This default is the floor under
-# the decision inventory/group_vars/all/service_karakeep.yml makes, not a copy of
-# it: a caller with no inventory converges the project to `state: absent`.
+# The operator switch, OFF here and ON in inventory. This default is the floor
+# under the decision inventory/group_vars/all/service_karakeep.yml makes, not a
+# copy of it: a caller with no inventory converges the project to `state: absent`.
 # tests/deployment_gate_coverage_test.rb requires it false. The gate lives inside
 # the role rather than on the site.yml entry so the deployment_bundle re-include
 # and the deployment report still run when it is off.

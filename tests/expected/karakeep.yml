@@ -5,6 +5,7 @@ container_cpus:
   chrome: 1.5
   meilisearch: 1.0
 vault_keys:
+  - vault_karakeep_admin_email
   - vault_karakeep_admin_password
   - vault_karakeep_meili_master_key
   - vault_karakeep_nextauth_secret

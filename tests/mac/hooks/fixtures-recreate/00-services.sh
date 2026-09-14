@@ -95,4 +95,5 @@ mac_recreate_and_reassert nextcloud nextcloud nextcloud 'nextcloud cron db cache
 mac_assert_service_coverage fixtures-recreate 00-services.sh "$mac_recreated" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-vaultwarden=it has no contract suite of its own to reassert after a recreate; its store is a single SQLite database on one bind mount and the verification play is what reads the server back'
+vaultwarden=it has no contract suite of its own to reassert after a recreate; its store is a single SQLite database on one bind mount and the verification play is what reads the server back
+karakeep=it has no contract suite of its own to reassert after a recreate; its administrator lives in db.db on one bind mount and the verification play is what signs back in as it'

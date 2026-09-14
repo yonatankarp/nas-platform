@@ -36,12 +36,14 @@ argument_specs:
       karakeep_compose_project_name:
         type: str
         required: false
-      # Not credentials: the administrator's login identity. Nonsecret policy
-      # lives in inventory/group_vars/all/service_karakeep.yml.
+      # The administrator's display name, nonsecret policy in
+      # inventory/group_vars/all/service_karakeep.yml.
       karakeep_admin_name:
         type: str
         required: true
-      karakeep_admin_email:
+      # The administrator's login identity, kept in the vault like every other
+      # service's.
+      vault_karakeep_admin_email:
         type: str
         required: true
       vault_karakeep_nextauth_secret:
