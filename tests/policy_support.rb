@@ -350,11 +350,11 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   # The obvious alternative -- walk every *.yml under the role's tasks/ tree --
   # is wrong, and quietly so. `role_has_verification?` below is checked by ten
   # mutation rows in tests/policy_manifest_test.rb that replace
-  # roles/ntfy/tasks/main.yml wholesale with a file that verifies nothing and
-  # require the failure to be reported. ntfy reaches subscription.yml and
-  # managed_users.yml through include_tasks, so a
-  # directory walk would let one of those satisfy the check on behalf of the
-  # mutant, and all ten rows would pass while proving nothing. Following the
+  # roles/vaultwarden/tasks/main.yml wholesale with a file that verifies nothing
+  # and require the failure to be reported. vaultwarden's verification lives in
+  # tasks/verify.yml, which the replaced main.yml imported, so a directory walk
+  # would find that file and let it satisfy the check on behalf of the mutant,
+  # and all ten rows would pass while proving nothing. Following the
   # imports says exactly what Ansible would run as one file, and nothing else.
   #
   # +aliases+ is passed through to every file the assembly reads, so a caller

@@ -105,7 +105,7 @@ def with_controller_repository
     FileUtils.mkdir_p(File.join(repository, "services", "media"))
     File.write(File.join(repository, "services", "media", "compose.yml"),
                "image: #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n" \
-               "image: #{PREVIOUS_IMAGES.dig('ntfy', 'ntfy')}\n")
+               "image: #{PREVIOUS_IMAGES.dig('pinchflat', 'pinchflat')}\n")
     run.call("add", "services")
     run.call("commit", "-qm", "fix: pin jellyfin 10.11.0")
     introducing = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
@@ -177,7 +177,7 @@ def check_delivery_form(failures, label, request, priority, token:, extras: {})
   check(failures, form["priority"] == priority,
         "#{label} must be sent at Pushover priority #{priority}, got #{form['priority'].inspect}")
   check(failures, (form.keys & %w[topic tags]).empty?,
-        "#{label} must carry no ntfy-only field: #{form.keys.inspect}")
+        "#{label} must carry no topic or tags field, which Pushover does not read: #{form.keys.inspect}")
   check(failures, form.slice("html", "ttl") == extras,
         "#{label} must send exactly #{extras.inspect} of html and ttl, got #{form.slice('html', 'ttl').inspect}")
   check(failures, !form["message"].to_s.strip.empty? && !form["title"].to_s.strip.empty?,
@@ -186,11 +186,11 @@ end
 
 PREVIOUS_IMAGES = {
   "jellyfin" => { "jellyfin" => "docker.io/jellyfin/jellyfin:10.10.3#{DIGEST_A}" },
-  "ntfy" => { "ntfy" => "docker.io/binwiederhier/ntfy:v2.28.0#{DIGEST_A}" }
+  "pinchflat" => { "pinchflat" => "ghcr.io/kieraneglin/pinchflat:v2.28.0#{DIGEST_A}" }
 }.freeze
 CURRENT_IMAGES = {
   "jellyfin" => { "jellyfin" => "docker.io/jellyfin/jellyfin:10.11.0#{DIGEST_B}" },
-  "ntfy" => { "ntfy" => "docker.io/binwiederhier/ntfy:v2.28.0#{DIGEST_A}" }
+  "pinchflat" => { "pinchflat" => "ghcr.io/kieraneglin/pinchflat:v2.28.0#{DIGEST_A}" }
 }.freeze
 
 # A Renovate batch in miniature, sized so both halves overrun Pushover's limits

@@ -13,10 +13,9 @@
 #
 # WHY A SWEEP RATHER THAN A HELPER THE CONTRACT PROGRAMS CALL. The obvious place
 # for these properties is each service's own contract program, the way
-# tests/contracts/bindery-static.rb holds them for Bindery. Two of the twelve
-# subjects cannot be reached that way at all: **ntfy has no contract program**
-# -- no row in tests/contracts/registry.yml, no tests/contracts/ntfy-*.rb, and
-# tests/deployment_gate_coverage_test.rb records why it needs none -- and
+# tests/contracts/bindery-static.rb holds them for Bindery. Some subjects cannot
+# be reached that way at all: **vaultwarden and karakeep have no contract
+# program** -- no row in tests/contracts/registry.yml -- and
 # Dozzle's static half is tests/contracts/dozzle-stack.rb, which is not shaped
 # like the *-static.rb family. A guard that eleven roles carry and the twelfth
 # escapes is the exemption-list shape this repository keeps deleting. A sweep
@@ -33,9 +32,9 @@
 # is a second thing to keep true:
 #
 #   - that each role registers its Compose results and names every one of them in
-#     its ntfy deployment report. tests/policy_test.rb sweeps that over every
+#     its deployment report. tests/policy_test.rb sweeps that over every
 #     role with a `state: present` task, so the force-recreate is caught there --
-#     a successful self-repair reports `changed` and ntfy cannot tell it from an
+#     a successful self-repair reports `changed` and the report cannot tell it from an
 #     ordinary changed deploy, which is forced rather than chosen.
 #   - that the deploying role is the one that resolves its own service name and
 #     renders its own .env. tests/policy_deployment_test.rb owns that, and it is
@@ -63,17 +62,18 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The twelve, pinned in both directions rather than only counted. A derived
+# The subjects, pinned in both directions rather than only counted. A derived
 # subject list that quietly empties passes every property vacuously, and a floor
 # alone cannot tell "Komga was removed" from "Komga stopped matching the
 # selector".
 EXPECTED_SUBJECTS = %w[
   arr audiobookshelf bindery downloaders dozzle jellyfin karakeep
-  kapowarr komga ntfy pinchflat seerr trailarr vaultwarden
+  kapowarr komga pinchflat seerr trailarr vaultwarden
 ].freeze
-# the twelve single-`up` roles of #537, plus vaultwarden (#547) and karakeep
-# (#551); adguard was the fourteenth until #577 removed the service
-SUBJECT_FLOOR = 14
+# the eleven of #537's twelve single-`up` roles still deployed, plus vaultwarden
+# (#547) and karakeep (#551); adguard was the fourteenth until #577 removed the
+# service, and #558 removed the twelfth of #537's
+SUBJECT_FLOOR = 13
 
 # The roles that deploy Compose and are deliberately NOT subjects. Each answers
 # "which services may be force-recreated with --no-deps, and at which phase?"
@@ -411,7 +411,7 @@ MUTATIONS = [
   },
   {
     label: "the conditional force-recreate",
-    role: "ntfy",
+    role: "vaultwarden",
     expects: "not conditional on a container actually being stuck",
     plant: lambda do |tasks|
       recreate_task(tasks).delete("when")

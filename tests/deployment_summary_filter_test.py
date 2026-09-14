@@ -51,7 +51,7 @@ previous = manifest(
             "immich-server": "ghcr.io/immich-app/immich-server:v1.121.0" + DIGEST_A,
             "immich-machine-learning": "ghcr.io/immich-app/immich-ml:v1.121.0" + DIGEST_A,
         },
-        "ntfy": {"ntfy": "docker.io/binwiederhier/ntfy:v2.27.0" + DIGEST_A},
+        "pinchflat": {"pinchflat": "ghcr.io/kieraneglin/pinchflat:v2.27.0" + DIGEST_A},
         "retired": {"retired": "docker.io/library/retired:1.0.0" + DIGEST_A},
     }
 )
@@ -62,7 +62,7 @@ current = manifest(
             "immich-server": "ghcr.io/immich-app/immich-server:v1.122.0" + DIGEST_B,
             "immich-machine-learning": "ghcr.io/immich-app/immich-ml:v1.121.0" + DIGEST_A,
         },
-        "ntfy": {"ntfy": "docker.io/binwiederhier/ntfy:v2.27.0" + DIGEST_B},
+        "pinchflat": {"pinchflat": "ghcr.io/kieraneglin/pinchflat:v2.27.0" + DIGEST_B},
         "komga": {"komga": "docker.io/gotson/komga:1.19.0" + DIGEST_A},
     }
 )
@@ -78,8 +78,8 @@ assert changes == [
      "reference": "docker.io/jellyfin/jellyfin:10.11.0" + DIGEST_B},
     {"name": "komga", "kind": "added", "to": "1.19.0",
      "reference": "docker.io/gotson/komga:1.19.0" + DIGEST_A},
-    {"name": "ntfy", "kind": "repinned", "to": "v2.27.0",
-     "reference": "docker.io/binwiederhier/ntfy:v2.27.0" + DIGEST_B},
+    {"name": "pinchflat", "kind": "repinned", "to": "v2.27.0",
+     "reference": "ghcr.io/kieraneglin/pinchflat:v2.27.0" + DIGEST_B},
     {"name": "retired", "kind": "removed", "from": "1.0.0"},
 ], changes
 
@@ -87,7 +87,7 @@ assert lines_of(changes) == [
     "immich/immich-server v1.121.0 → v1.122.0",
     "jellyfin 10.10.3 → 10.11.0",
     "komga 1.19.0 (new)",
-    "ntfy v2.27.0 (repinned)",
+    "pinchflat v2.27.0 (repinned)",
     "retired 1.0.0 (removed)",
 ]
 
@@ -96,9 +96,9 @@ assert changes_of(current, current) == []
 assert lines_of([]) == []
 
 # A first install has no previous manifest at all.
-first_install = changes_of(None, manifest({"ntfy": {"ntfy": "docker.io/x/ntfy:v2.27.0" + DIGEST_A}}))
+first_install = changes_of(None, manifest({"pinchflat": {"pinchflat": "docker.io/x/pinchflat:v2.27.0" + DIGEST_A}}))
 assert first_install == [
-    {"name": "ntfy", "kind": "added", "to": "v2.27.0", "reference": "docker.io/x/ntfy:v2.27.0" + DIGEST_A}
+    {"name": "pinchflat", "kind": "added", "to": "v2.27.0", "reference": "docker.io/x/pinchflat:v2.27.0" + DIGEST_A}
 ]
 
 # The plain summary's title filter went with the plain summary (#558 stage 4a).
@@ -136,7 +136,7 @@ assert document == {
          "commit": SHA_I},
         {"name": "jellyfin", "kind": "updated", "from": "10.10.3", "to": "10.11.0", "commit": SHA_J},
         {"name": "komga", "kind": "added", "from": None, "to": "1.19.0", "commit": None},
-        {"name": "ntfy", "kind": "repinned", "from": None, "to": "v2.27.0", "commit": None},
+        {"name": "pinchflat", "kind": "repinned", "from": None, "to": "v2.27.0", "commit": None},
         {"name": "retired", "kind": "removed", "from": "1.0.0", "to": None, "commit": None},
     ],
     "commits": [{"sha": SHA_J, "subject": "fix: pin jellyfin 10.11.0"}],

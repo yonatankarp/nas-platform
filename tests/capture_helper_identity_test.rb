@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
-# Four checks carry their own copy of capture3_with_timeout and its helpers:
-# tests/immich_configured_password_test.rb, tests/ntfy_verify_execution_test.rb,
+# Three checks carry their own copy of capture3_with_timeout and its helpers:
+# tests/immich_configured_password_test.rb,
 # tests/beszel_password_preservation_test.rb and
 # tests/audiobookshelf_initial_scan_behavior_test.rb. Per-file copies are this
 # repository's idiom and the reason is sound -- a shared helper would be another
@@ -22,9 +22,9 @@
 # pull request body, and nothing carried it into the next change.
 #
 # This is that comparison, as a check. It extracts a declared list of regions
-# from each of the four files and asserts exactly one distinct digest per region.
+# from each of the three files and asserts exactly one distinct digest per region.
 #
-# WHY THE REGION LIST IS DECLARED rather than inferred. The four are not
+# WHY THE REGION LIST IS DECLARED rather than inferred. The three are not
 # identical everywhere and must not be: immich_configured_password_test.rb
 # carries the canonical-copy docstring above capture3_with_timeout, and
 # audiobookshelf_initial_scan_behavior_test.rb carries a different explanatory
@@ -38,8 +38,8 @@
 # audiobookshelf_initial_scan_behavior_test.rb both carry verbatim above
 # capture3_with_timeout and the other two do not carry at all. That is a
 # two-file property, not a four-way one, and folding it in here would mean
-# either declaring a region that two of the four cannot satisfy or weakening the
-# comparison from "all four" to "whoever has it". Adding a two-file region is a
+# either declaring a region that some of the three cannot satisfy or weakening the
+# comparison from "all three" to "whoever has it". Adding a two-file region is a
 # separate decision from this one.
 #
 # WHY A FLOOR AND AN EXACT COUNT, both. A digest comparison over an empty set
@@ -66,10 +66,10 @@ require_relative "policy_support"
 
 include TestScaffold
 
-# The four copies, in the order they were reconciled.
+# The three copies, in the order they were reconciled; a fourth went with the
+# service #558 removed.
 FIXTURE_FILES = %w[
   tests/immich_configured_password_test.rb
-  tests/ntfy_verify_execution_test.rb
   tests/beszel_password_preservation_test.rb
   tests/audiobookshelf_initial_scan_behavior_test.rb
 ].freeze
@@ -136,9 +136,9 @@ REGIONS = [
 
 # Stated rather than derived, so a deleted file or region narrows the comparison
 # loudly instead of leaving a smaller one green.
-EXPECTED_FILES = 4
+EXPECTED_FILES = 3
 EXPECTED_REGIONS = 5
-EXPECTED_EXTRACTIONS = 20
+EXPECTED_EXTRACTIONS = 15
 
 failures = []
 
@@ -226,7 +226,7 @@ FIXTURE_FILES.each do |relative|
     # The parser's half. A definition must be the file's only one of that name
     # and must close on the region's own last line: an `end` scan that ran past
     # the real end to a later column-0 `end` would still digest consistently
-    # across four files, and only this catches it. Lines between the region's
+    # across three files, and only this catches it. Lines between the region's
     # start and the definition are required to be comments, which is what makes
     # a comment-prefixed region a comment plus a definition rather than an
     # arbitrary span.
@@ -291,8 +291,8 @@ check(failures, extractions.length == EXPECTED_EXTRACTIONS,
       "#{EXPECTED_REGIONS} regions), #{extractions.length} succeeded; the comparison below " \
       "covers less than it claims")
 
-# The comparison itself. Four copies can split two against two, so there is no
-# majority to name: print every file's digest and span for the region that
+# The comparison itself. Copies can split without a clear majority to name,
+# so there is none to trust: print every file's digest and span for the region that
 # differs, and the reader sees the partition without redoing the extraction.
 REGIONS.each do |region|
   name = region.fetch("name")
@@ -309,7 +309,7 @@ REGIONS.each do |region|
     detail = found.map do |relative, extraction|
       "#{relative} lines #{extraction.fetch('span')} #{extraction.fetch('digest')[0, 16]}"
     end
-    failures << "region #{name.inspect} has #{digests.length} distinct copies across the four " \
+    failures << "region #{name.inspect} has #{digests.length} distinct copies across the " \
                 "fixtures, expected one: #{detail.join('; ')}"
   else
     failures << "region #{name.inspect} was extracted from #{found.length} of " \
@@ -317,5 +317,5 @@ REGIONS.each do |region|
   end
 end
 
-report(failures, "capture helper identity: the shared surface is byte-identical across all four copies",
+report(failures, "capture helper identity: the shared surface is byte-identical across all three copies",
        "capture helper identity violation(s)")

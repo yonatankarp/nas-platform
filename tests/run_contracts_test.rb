@@ -20,7 +20,7 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
     FileUtils.mkdir_p(services_root)
     manifest ||= YAML.dump(
       "services" => [
-        { "name" => "ntfy", "status" => "implemented" },
+        { "name" => "komga", "status" => "implemented" },
         { "name" => "paperless-ngx", "status" => "planned" }
       ]
     )
@@ -68,15 +68,15 @@ def run_registry(registry:, contracts: {}, mode: "--validate-only", env: {}, man
 end
 
 registry = YAML.dump(
-  "contracts" => [{ "service" => "ntfy", "path" => "tests/contracts/ntfy.sh" }]
+  "contracts" => [{ "service" => "komga", "path" => "tests/contracts/komga.sh" }]
 )
 
 output, status = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => <<~'SH'
+    "komga.sh" => <<~'SH'
       #!/bin/sh
-      endpoint=http://127.0.0.1/ntfy/health
+      endpoint=http://127.0.0.1/komga/health
       probe() {
         printf '%s\n' "$endpoint" >/dev/null
       }
@@ -92,14 +92,14 @@ marker_contract = <<~'SH'
 SH
 output, status, marker = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => marker_contract },
+  contracts: { "komga.sh" => marker_contract },
   mode: nil
 ) { |root| File.exist?(File.join(root, "contract-ran.txt")) }
 check(failures, status.success? && !marker, "default mode must validate without execution")
 
 output, status, marker = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => marker_contract },
+  contracts: { "komga.sh" => marker_contract },
   mode: "--execute"
 ) do |root|
   marker = File.join(root, "contract-ran.txt")
@@ -121,7 +121,7 @@ abi_contract = <<~'SH'
 SH
 output, status, markers = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => abi_contract },
+  contracts: { "komga.sh" => abi_contract },
   mode: "--execute"
 ) do |root|
   File.read(File.join(root, "reports", "abi-markers.txt"))
@@ -132,7 +132,7 @@ check(failures, status.success? && markers.lines.length == 7 && markers.lines.al
 secret_abi_value = "/tmp/ABI_SECRET_VALUE"
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\ntrue\n" },
+  contracts: { "komga.sh" => "#!/bin/sh\ntrue\n" },
   mode: "--execute",
   contract_abi: false,
   env: { "PLATFORM_DOCKER_ROOT" => secret_abi_value }
@@ -143,7 +143,7 @@ check(failures, !status.success? && output.include?("contract environment ABI") 
 
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\nif then\n" }
+  contracts: { "komga.sh" => "#!/bin/sh\nif then\n" }
 )
 check(failures, !status.success? && output.include?("shell syntax"),
       "syntax-invalid contract was not rejected clearly")
@@ -154,7 +154,7 @@ check(failures, !status.success? && output.include?("shell syntax"),
 # only when an integration run reaches it.
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\ndef broken(\nRUBY\n" }
+  contracts: { "komga.sh" => "#!/bin/sh\nruby - <<'RUBY'\ndef broken(\nRUBY\n" }
 )
 check(failures, !status.success? && output.include?("embedded Ruby block 1 has invalid syntax"),
       "contract with syntax-invalid embedded Ruby was not rejected clearly")
@@ -163,7 +163,7 @@ check(failures, !status.success? && output.include?("embedded Ruby block 1 has i
 # has to reject broken bodies without rejecting working contracts.
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" }
+  contracts: { "komga.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" }
 )
 check(failures, status.success?,
       "contract with valid embedded Ruby was rejected: #{output.lines.first&.strip}")
@@ -188,7 +188,7 @@ sibling_contract = <<~'SH'
   set -eu
   printf 'caller-stdin\n' > "$PLATFORM_REPORT_ROOT/caller-stdin.txt"
   {
-    ruby -rjson tests/contracts/ntfy_probe.rb alpha beta </dev/null
+    ruby -rjson tests/contracts/komga_probe.rb alpha beta </dev/null
     read -r survivor
     printf '%s\n' "$survivor" >> "$PLATFORM_REPORT_ROOT/probe.txt"
   } < "$PLATFORM_REPORT_ROOT/caller-stdin.txt"
@@ -196,8 +196,8 @@ SH
 output, status, probe = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => sibling_contract,
-    "ntfy_probe.rb" => { content: sibling_probe, mode: 0o644 }
+    "komga.sh" => sibling_contract,
+    "komga_probe.rb" => { content: sibling_probe, mode: 0o644 }
   },
   mode: "--execute"
 ) do |root|
@@ -217,8 +217,8 @@ check(failures, status.success? && probe == "alpha,beta\ncaller-stdin\n",
 output, status, probe = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => sibling_contract.sub(" </dev/null", ""),
-    "ntfy_probe.rb" => { content: sibling_probe, mode: 0o644 }
+    "komga.sh" => sibling_contract.sub(" </dev/null", ""),
+    "komga_probe.rb" => { content: sibling_probe, mode: 0o644 }
   },
   mode: "--execute"
 ) do |root|
@@ -232,12 +232,12 @@ check(failures, !status.success? && output.include?("contract failed") && !probe
 output, status = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_static.rb \"$1\" </dev/null\n",
-    "ntfy_static.rb" => "def broken(\n"
+    "komga.sh" => "#!/bin/sh\nruby tests/contracts/komga_static.rb \"$1\" </dev/null\n",
+    "komga_static.rb" => "def broken(\n"
   }
 )
 check(failures, !status.success? &&
-                output.include?("tests/contracts/ntfy_static.rb: sibling Ruby program has invalid syntax"),
+                output.include?("tests/contracts/komga_static.rb: sibling Ruby program has invalid syntax"),
       "contract with a syntax-invalid sibling Ruby program was not rejected clearly")
 
 # Both shapes are legal at once, which is what makes the extraction incremental:
@@ -245,9 +245,9 @@ check(failures, !status.success? &&
 output, status = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" \
-                 "ruby -ryaml tests/contracts/ntfy_static.rb \"$1\" </dev/null\n",
-    "ntfy_static.rb" => "puts ARGV.inspect\n"
+    "komga.sh" => "#!/bin/sh\nruby - <<'RUBY'\nputs \"ok\"\nRUBY\n" \
+                 "ruby -ryaml tests/contracts/komga_static.rb \"$1\" </dev/null\n",
+    "komga_static.rb" => "puts ARGV.inspect\n"
   }
 )
 check(failures, status.success?,
@@ -257,18 +257,18 @@ check(failures, status.success?,
 # in an extracted invocation looks like.
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_absent.rb </dev/null\n" }
+  contracts: { "komga.sh" => "#!/bin/sh\nruby tests/contracts/komga_absent.rb </dev/null\n" }
 )
 check(failures, !status.success? &&
-                output.include?("sibling Ruby program tests/contracts/ntfy_absent.rb is missing"),
+                output.include?("sibling Ruby program tests/contracts/komga_absent.rb is missing"),
       "contract naming an absent sibling Ruby program was accepted")
 
 output, status = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => "#!/bin/sh\nruby tests/contracts/ntfy_static.rb </dev/null\n",
-    "ntfy_probe.rb" => "puts 1\n",
-    "ntfy_static.rb" => { symlink: "ntfy_probe.rb" }
+    "komga.sh" => "#!/bin/sh\nruby tests/contracts/komga_static.rb </dev/null\n",
+    "komga_probe.rb" => "puts 1\n",
+    "komga_static.rb" => { symlink: "komga_probe.rb" }
   }
 )
 check(failures, !status.success? && output.include?("nonempty regular non-symlink file"),
@@ -281,7 +281,7 @@ check(failures, !status.success? && output.include?("nonempty regular non-symlin
 output, status = run_registry(
   registry: registry,
   contracts: {
-    "ntfy.sh" => "#!/bin/sh\ntrue\n",
+    "komga.sh" => "#!/bin/sh\ntrue\n",
     "support/helper.rb" => { content: "def dangling(\n", mode: 0o644 }
   }
 )
@@ -294,7 +294,7 @@ check(failures, !status.success? &&
 # contract that was already legal has to stay legal.
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\n# see tests/contracts/ntfy_retired.rb\nexec true\n" }
+  contracts: { "komga.sh" => "#!/bin/sh\n# see tests/contracts/komga_retired.rb\nexec true\n" }
 )
 check(failures, status.success?,
       "contract with neither a heredoc nor a sibling Ruby program was rejected: " \
@@ -302,7 +302,7 @@ check(failures, status.success?,
 
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\necho SECRET_STDOUT\necho SECRET_STDERR >&2\nexit 7\n" },
+  contracts: { "komga.sh" => "#!/bin/sh\necho SECRET_STDOUT\necho SECRET_STDERR >&2\nexit 7\n" },
   mode: "--execute"
 )
 check(failures, !status.success? && output.include?("contract failed") &&
@@ -311,7 +311,7 @@ check(failures, !status.success? && output.include?("contract failed") &&
 
 output, status, descendant = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\nsleep 30 &\necho $! > descendant.pid\nwait\n" },
+  contracts: { "komga.sh" => "#!/bin/sh\nsleep 30 &\necho $! > descendant.pid\nwait\n" },
   mode: "--execute",
   env: { "CONTRACT_TIMEOUT_SECONDS" => "0.2" }
 ) do |root|
@@ -341,7 +341,7 @@ output, status = run_registry(
   registry: registry,
   contracts: {
     "shared.sh" => "#!/bin/sh\ntrue\n",
-    "ntfy.sh" => { symlink: "shared.sh" }
+    "komga.sh" => { symlink: "shared.sh" }
   }
 )
 check(failures, !status.success? && output.include?("regular non-symlink file"),
@@ -350,9 +350,9 @@ check(failures, !status.success? && output.include?("regular non-symlink file"),
 duplicate_registry = <<~YAML
   ---
   contracts:
-    - service: ntfy
+    - service: komga
       service: beszel
-      path: tests/contracts/ntfy.sh
+      path: tests/contracts/komga.sh
 YAML
 output, status = run_registry(registry: duplicate_registry)
 check(failures, !status.success? && output.include?("duplicate mapping key service"),
@@ -374,7 +374,7 @@ check(failures, !status.success? && output.include?("implemented or accepted"),
       "planned service contract was accepted")
 
 wrong_path_registry = YAML.dump(
-  "contracts" => [{ "service" => "ntfy", "path" => "tests/contracts/wrong.sh" }]
+  "contracts" => [{ "service" => "komga", "path" => "tests/contracts/wrong.sh" }]
 )
 output, status = run_registry(
   registry: wrong_path_registry,
@@ -395,7 +395,7 @@ check(failures, !status.success? && output.include?("not declared in manifest"),
 
 output, status = run_registry(
   registry: registry,
-  contracts: { "ntfy.sh" => "#!/bin/sh\ntrue\n" },
+  contracts: { "komga.sh" => "#!/bin/sh\ntrue\n" },
   mode: "--execute",
   env: { "CONTRACT_TIMEOUT_SECONDS" => "unbounded" }
 )
@@ -404,7 +404,7 @@ check(failures, !status.success? && output.include?("CONTRACT_TIMEOUT_SECONDS"),
 
 sentinel_path = nil
 traversal_registry = YAML.dump(
-  "contracts" => [{ "service" => "ntfy", "path" => "../sentinel-contract.sh" }]
+  "contracts" => [{ "service" => "komga", "path" => "../sentinel-contract.sh" }]
 )
 output, status, sentinel = run_registry(
   registry: traversal_registry,

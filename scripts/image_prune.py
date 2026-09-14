@@ -137,7 +137,7 @@ def load_config(path: str | os.PathLike[str]) -> Config:
             # Never a refusal, and checked before the non-empty and absolute
             # rules below. The install play copies this script before it renders
             # the file, so a prune started in that window, or after a failed
-            # render, reads an ntfy-era configuration naming no Pushover config.
+            # render, reads a pre-Pushover configuration naming no Pushover config.
             # Refusing it would stop the prune itself; reading it as "cannot
             # publish" costs that run's notification and one stderr line.
             raw = payload.get(field.name)

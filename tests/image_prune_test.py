@@ -204,18 +204,18 @@ class ConfigTest(PruneTestCase):
             with self.assertRaises(image_prune.ConfigurationError, msg=overrides):
                 image_prune.load_config(path)
 
-    def test_an_ntfy_era_configuration_loads_and_cannot_publish(self):
+    def test_a_pre_pushover_configuration_loads_and_cannot_publish(self):
         # The install play copies this script before it renders its
-        # configuration, so a prune in that window reads the ntfy-era file
+        # configuration, so a prune in that window reads the pre-Pushover file
         # (#327). It must prune, not refuse: one stderr line, nothing published.
         payload = self.config_payload(
-            ntfy_curl_config=str(self.root / ".config/nas-platform/ntfy-prune.curl"),
-            ntfy_topic_critical="nas-critical",
-            ntfy_topic_deployment="nas-deployment",
+            retired_curl_config=str(self.root / ".config/nas-platform/retired-prune.curl"),
+            retired_topic_critical="nas-critical",
+            retired_topic_deployment="nas-deployment",
         )
         payload.pop("pushover_alerts_curl_config")
         payload.pop("pushover_containers_curl_config")
-        path = self.root / "ntfy-era.json"
+        path = self.root / "pre-pushover.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         stderr = io.StringIO()
         with contextlib.redirect_stderr(stderr):

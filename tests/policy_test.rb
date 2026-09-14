@@ -245,18 +245,23 @@ check(failures, !File.exist?(retired_service) && !File.symlink?(retired_service)
       "retired service directory must be absent")
 
 # tests/contracts/beszel-runtime.rb, not the wrapper: #147 moved the contract's
-# runtime body out of a `<<'RUBY'` heredoc into that file, and all three subjects
-# below -- the captured message ID, the anti-replay comparison and the absence of
-# a timestamp-based poll -- travelled with it. The negated conjunct matters most
-# here: "iso8601" matches nothing today, which makes it satisfied rather than
-# vacuous, and left reading the 54-line wrapper it could never match again.
+# runtime body out of a `<<'RUBY'` heredoc into that file. The proof hands the
+# hub a plain-http generic:// webhook at a recorder the contract opens, and it
+# must require both halves: the hub's own `err: false`, and a recorded POST that
+# carries Beszel's test message. Either alone passes a hub that never sent
+# anything. It used to poll a disposable topic history after a captured message
+# ID; #558 removed that server, and a recorder opened per run holds nothing from
+# before it existed, so there is no baseline left to capture.
 beszel_contract_path = File.join(ROOT, "tests", "contracts", "beszel-runtime.rb")
 beszel_contract = File.file?(beszel_contract_path) ? File.read(beszel_contract_path) : ""
 check(failures,
-      beszel_contract.include?('since: baseline_id') &&
-        beszel_contract.include?('message["id"] != baseline_id') &&
-        !beszel_contract.include?("iso8601"),
-      "Beszel notification proof must poll after a captured ntfy message ID")
+      beszel_contract.include?('generic://') &&
+        beszel_contract.include?('disabletls=yes') &&
+        beszel_contract.include?('This is a notification from Beszel.') &&
+        beszel_contract.include?('notification["err"] == false') &&
+        beszel_contract.include?('record["body"].include?') &&
+        !beszel_contract.include?("baseline_id"),
+      "Beszel notification proof must require a recorded POST carrying Beszel's test message, not only err: false")
 
 %w[
   ruby\ tests/beszel_telemetry_probe_test.rb
@@ -328,7 +333,7 @@ check(failures,
         mac_run.include?('. "$mac_repo_dir/tests/sandbox_cleanup.sh"') &&
         mac_run.include?("diagnostic_project=$project_name-$diagnostic_kind") &&
         mac_run.include?('"label=com.docker.compose.project=$project_name-$diagnostic_kind"') &&
-        %w[beszel ntfy dozzle audiobookshelf nextcloud].all? do |name|
+        %w[beszel dozzle audiobookshelf nextcloud].all? do |name|
           mac_lib_roster.include?(name) && mac_cleanup_projects.include?(name)
         end,
       "Mac runner must export dynamic project/port facts and isolate every Compose project")
@@ -388,10 +393,11 @@ PLATFORM_INVENTORIES.each do |inventory_name, (host_group, host_name, connection
           "inventory/#{inventory_name} must define #{coordinate}")
   end
   # The transport coordinate and the client-facing coordinate are different
-  # audiences. ntfy hashes platform_public_host into the topic it registers with
-  # its upstream push server, so a value inherited from the SSH address routes
-  # notifications to a topic no device subscribes to, with nothing to observe:
-  # deployment succeeds, the server is healthy, and no notification arrives.
+  # audiences. platform_public_host is the address clients are handed -- Beszel's
+  # APP_URL, Vaultwarden's DOMAIN, Nextcloud's trusted domain -- so a value
+  # inherited from the SSH address hands every client an address it may not
+  # reach, with nothing to observe: deployment succeeds, the servers are healthy,
+  # and the links they send point somewhere else.
   # The endpoint guard above can only see emptiness, and an inherited value is
   # not empty, which is how a coordinate can be non-empty without being chosen.
   # So the audience split is enforced on the expression itself: this coordinate
@@ -515,7 +521,7 @@ _sys_path_stdout, sys_path_stderr, sys_path_status = Open3.capture3(
 check(failures, sys_path_status.success?,
       "filter plugins must reach shared code without mutating sys.path: #{sys_path_stderr.strip}")
 
-%w[ntfy beszel].each do |role_name|
+%w[beszel].each do |role_name|
   role_options = YAML.safe_load_file(
     File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
   ).dig("argument_specs", "main", "options")
@@ -905,7 +911,7 @@ check(failures, capability_names.sort == managed_user_service_names.sort,
       "(missing: #{(managed_user_service_names - capability_names).join(', ')}; " \
       "unknown: #{(capability_names - managed_user_service_names).join(', ')})")
 
-%w[ntfy beszel].each do |name|
+%w[beszel].each do |name|
   entry = manifest_entries.find { |service| service.is_a?(Hash) && service["name"] == name }
   check(failures, entry && IMPLEMENTED_STATUSES.include?(entry["status"]),
         "#{name}: status must be implemented or accepted")
@@ -1534,7 +1540,7 @@ end
 # every host. That floor is right for the NAS, whose canonical compose.yml files
 # carry no tag at all, and wrong for both disposable lanes: a host at 2.18.0
 # passes preflight and then dies on the first override it cannot parse, which is
-# ntfy rather than whatever anybody was changing.
+# beszel rather than whatever anybody was changing.
 #
 # The tags are found as text, and that is the point rather than an economy.
 # Psych resolves an unrecognised tag away without complaint, so the loop above --
@@ -2017,22 +2023,6 @@ if publish_task
         "deployment report must leave the verdict to its assert, or an unreachable Pushover fails the converge")
 end
 
-# Compose interpolation runs against the newly published bundle while the
-# on-disk .env can still be the previous deployment's. Any compose invocation
-# that precedes its role's env render must supply the required variables itself.
-ntfy_tasks_path = File.join(ROOT, "roles/ntfy/tasks/main.yml")
-ntfy_tasks = File.exist?(ntfy_tasks_path) ? YAML.safe_load_file(ntfy_tasks_path) : []
-ntfy_listing = ntfy_tasks.find do |task|
-  task.dig("community.docker.docker_compose_v2_run", "argv")&.include?("list")
-end
-# Assert the property when the task is present. Its existence is another
-# check's business, and claiming it here fires on unrelated role mutations.
-check(failures,
-      ntfy_listing.nil? ||
-        ntfy_listing.dig("environment", "PLATFORM_CONTAINER_CPUSET").to_s.include?("platform_effective_container_cpuset"),
-      "the ntfy user listing must supply PLATFORM_CONTAINER_CPUSET, which its " \
-      "role does not render until later")
-
 # /System/Info/Public answers 503 while Jellyfin initializes, and the preceding
 # wait polls a different endpoint that can succeed earlier.
 #
@@ -2482,7 +2472,7 @@ end
 # at the first blank line yields two lines for every one of these, so each floor
 # is set well above that and below the current length, leaving room for prose.
 #
-# Six since #558 stage 3 moved both scripts from ntfy's Markdown to Pushover's
+# Six since #558 stage 3 moved both scripts from Markdown to Pushover's
 # HTML: markdown_escape went, and html_escape, fit_message and pushover_verdict
 # came -- the escape, the whole-line bound on a message, and the reading of
 # Pushover's answer that decides whether a state record may move. The floor
@@ -2513,7 +2503,7 @@ duplicated_scripts.each do |path|
             RETIRED_SCRIPT_NAMES
   check(failures, retired.empty?,
         "scripts/#{File.basename(path)} still defines #{retired.inspect}, retired when both " \
-        "scripts moved from ntfy's Markdown to Pushover's HTML (#558); html_escape is the " \
+        "scripts moved from Markdown to Pushover's HTML (#558); html_escape is the " \
         "escape now, and a leftover copy is one nothing else compares")
 end
 
@@ -2585,7 +2575,7 @@ check(failures, unlisted_identical.empty?,
 # byte-for-byte; MARKDOWN_PATTERN, the character class it escapes with, is
 # byte-identical in all three copies and was referenced by no test at all. Cut
 # to r"([\\`*])" in one script, both markdown_escape bodies left untouched,
-# policy_test.rb reported all properties holding and the pruner's ntfy
+# policy_test.rb reported all properties holding and the pruner's
 # notification would have shipped unescaped _ * [ ] # | > while the deploy
 # poller's did not -- with the identity check on the consumer reporting the two
 # copies identical. NOTIFICATION_TIMEOUT_SECONDS = 10 is the same class in two

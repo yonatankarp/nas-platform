@@ -18,7 +18,6 @@ include TestScaffold
 
 ROLE_TASKS = File.join(ROOT, "roles/production_auto_deploy/tasks/main.yml")
 POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
-TOKEN = "tk_#{'r' * 29}"
 # One sentinel per Pushover credential, each distinct, and each carrying the two
 # characters a curl config quotes -- a double quote and a backslash -- so a
 # rendered config is proved to escape them and to hold only its own application's
@@ -33,11 +32,6 @@ PUSHOVER_CREDENTIALS = {
 }.freeze
 PUBLIC_HOST = "100.64.0.1"
 CALLBACK_HOST = "10.88.0.1"
-# A sentinel rather than the deployed port, and 2586 specifically is not it: the
-# value this role used to fall back to would pass a render that stopped reading
-# the variable at all (#402). ntfy.curl still reads it, for a poller process
-# running the previous revision.
-SENTINEL_PORT = 28_517
 TIMEOUT_SECONDS = 300
 # Sentinels again, on a domain that never resolves: rendering them proves the
 # configuration reads the vault variables, and the installed poller the suite
@@ -73,26 +67,11 @@ tasks = YAML.safe_load_file(ROLE_TASKS)
 
 # --- structural contract -----------------------------------------------------
 
-notifier_tasks = tasks.select do |task|
-  task.dig("ansible.builtin.template", "src") == "ntfy.curl.j2"
-end
-check(failures, notifier_tasks.length == 1,
-      "the role must render ntfy.curl exactly once")
-check(failures, notifier_tasks.all? { |task| task["no_log"] == true },
-      "the ntfy.curl task must set no_log so the token never reaches a log")
-# Kept rendered until stage 4 of #558, and never removed before then: the install
-# play runs inside a tick of the poller it replaces, and that process reports the
-# end of its own tick through ntfy.curl (#327). Any task naming the file with
-# state: absent is the removal, whichever module it uses.
-ntfy_removals = tasks.select do |task|
-  task.values.any? do |arguments|
-    arguments.is_a?(Hash) && arguments["state"].to_s == "absent" &&
-      arguments.values.any? { |value| value.to_s.match?(/notifier_path|ntfy\.curl/) }
-  end
-end
-check(failures, ntfy_removals.empty?,
-      "no task may remove ntfy.curl before stage 4 of #558: a poller process still running " \
-      "the previous revision reports through it, found #{ntfy_removals.map { |task| task['name'] }.inspect}")
+# #558 removed ntfy, so the role renders no ntfy.curl any more. The file a
+# previous installation left in the config root is the operator's to delete.
+check(failures, tasks.none? { |task| task.dig("ansible.builtin.template", "src").to_s.include?("ntfy") } &&
+                !File.exist?(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2")),
+      "the role must render no ntfy.curl: #558 removed the service it published to")
 
 # One protected curl config per Pushover application, rendered by one looped
 # task under no_log, each naming only its own application's token.
@@ -341,7 +320,7 @@ check(failures, leaked_into_site.empty?,
       "every converge and quarantines the revision, so it belongs to verify.yml alone")
 # Planted in memory: the shapes a hand edit would take, including the
 # ansible.legacy spellings that --list-tasks also passes, since both are dynamic.
-ntfy_main = File.join(ROOT, "roles/ntfy/tasks/main.yml")
+beszel_main = File.join(ROOT, "roles/beszel/tasks/main.yml")
 {
   "host_prep's main.yml, include_tasks" =>
     [host_prep_main, { "name" => "Planted", "ansible.builtin.include_tasks" => "verify_mdraid.yml" }],
@@ -351,8 +330,8 @@ ntfy_main = File.join(ROOT, "roles/ntfy/tasks/main.yml")
     ] }],
   "host_prep's main.yml, ansible.legacy.include_tasks" =>
     [host_prep_main, { "name" => "Planted", "ansible.legacy.include_tasks" => "verify_mdraid.yml" }],
-  "ntfy's main.yml, ansible.legacy.include_role in a block" =>
-    [ntfy_main, { "name" => "Planted", "block" => [
+  "beszel's main.yml, ansible.legacy.include_role in a block" =>
+    [beszel_main, { "name" => "Planted", "block" => [
       { "name" => "Planted",
         "ansible.legacy.include_role" => { "name" => "host_prep", "tasks_from" => "verify_mdraid" } }
     ] }]
@@ -451,42 +430,6 @@ end
         "the poller invokes #{relative}, which must exist")
 end
 
-# The notifier must derive the port rather than restating it, and must address
-# the ntfy root. ntfy only parses a JSON publish document posted to the root; a
-# document posted to /<topic> is delivered as literal JSON text, which is how
-# deploy alerts became unreadable. Inspect the url line itself: a comment
-# mentioning ntfy_port must not satisfy this check, or the guard passes while
-# the value is hardcoded.
-notifier = File.read(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2"))
-notifier_url = notifier.lines.find { |line| line.start_with?("url") }.to_s
-check(failures, notifier_url.include?("ntfy_port"),
-      "the ntfy.curl url must derive its port from ntfy_port, found: #{notifier_url.strip}")
-check(failures, notifier_url.match?(%r{/"\s*$}),
-      "the ntfy.curl url must address the ntfy root so the topic travels in " \
-      "the body, found: #{notifier_url.strip}")
-check(failures, !notifier_url.include?("ntfy_topic"),
-      "the ntfy.curl url must not carry a topic, found: #{notifier_url.strip}")
-check(failures, notifier_url.include?("127.0.0.1"),
-      "the ntfy.curl url must stay on loopback, found: #{notifier_url.strip}")
-
-# The deployer is its own publisher. Borrowing dozzle's token would give a
-# leaked deploy token dozzle's rights, which is exactly what per-publisher
-# identities exist to prevent.
-#
-# A curl config has its own grammar, so it is read as the directives it declares
-# rather than as substrings of the file. curl sends every header directive it is
-# given, so "carries the deploy token" and "does not carry dozzle's" were both
-# satisfied by a file that presented two Authorization headers; and both were
-# satisfied by a token named only in the comment block above.
-notifier_directives = notifier.lines.filter_map do |line|
-  key, separator, value = line.strip.partition(" = ")
-  [key, value] unless separator.empty?
-end
-check(failures,
-      notifier_directives.select { |key, value| key == "header" && value.start_with?('"Authorization:') } ==
-        [["header", '"Authorization: Bearer {{ vault_ntfy_deploy_token }}"']],
-      "the ntfy.curl config must present exactly the deploy publisher's own bearer token")
-
 # The Pushover curl config's own grammar, read as the directives it declares
 # rather than as substrings: curl sends every form-string it is given, so a
 # config naming the token twice presents two tokens, and a token named only in
@@ -533,9 +476,8 @@ PUSHOVER_CREDENTIALS.each_key do |variable|
 end
 
 # Read off the rendered document's own keys rather than the file's bytes: the
-# template is one Jinja mapping literal. No ntfy key may come back into it -- a
-# poller reading one would publish nowhere -- and the two Pushover keys must name
-# the notifier list rather than restate a path.
+# template is one Jinja mapping literal. The Pushover keys must name the notifier
+# list rather than restate a path.
 POLLER_CONFIG_TEMPLATE = File.join(ROOT, "roles/production_auto_deploy/templates/config.json.j2")
 PRUNE_CONFIG_TEMPLATE = File.join(ROOT, "roles/image_prune/templates/config.json.j2")
 
@@ -553,8 +495,6 @@ end
 [["the poller", POLLER_CONFIG_TEMPLATE, "production_auto_deploy", %w[alerts deployments]],
  ["the prune", PRUNE_CONFIG_TEMPLATE, "image_prune", %w[alerts containers]]].each do |label, template, prefix, apps|
   bindings = template_bindings(template)
-  check(failures, bindings.keys.grep(/\Antfy_/).empty?,
-        "#{label} configuration must bind no ntfy key since #558 stage 3, found #{bindings.keys.grep(/\Antfy_/).inspect}")
   check(failures, bindings.keys.count { |key| key.include?("pushover_") } == apps.length,
         "#{label} configuration must bind exactly #{apps.inspect}'s curl configs, found " \
         "#{bindings.keys.grep(/pushover_/).inspect}")
@@ -564,49 +504,6 @@ end
           "#{label} configuration must bind pushover_#{app}_curl_config to #{prefix}_pushover_notifiers[#{index}].path, " \
           "found #{bindings.select { |key, _| key.include?('pushover') }.inspect}")
   end
-end
-
-# The same fallback anywhere else is the same defect waiting for a second
-# publisher outside the ntfy role's play. Screened over the declarations that
-# render, with a floor, so an expression list that goes empty cannot pass.
-#
-# The port is screened by the same rule and for the same structural reason, but
-# not for the same consequence, and the two must not be conflated: a stale topic
-# mis-authorises a publish that ntfy swallows, where a stale port is a refused
-# connection nobody can miss. The port is here because the two configuration
-# templates below read it in a play the ntfy role is absent from, so a literal
-# default was the operative value there rather than a fallback (#402).
-#
-# One screen, two floors. A single floor over the merged set would pass on port
-# readers alone if every topic reader disappeared, which is exactly how a
-# dynamic subject list goes quiet.
-NTFY_SUBJECTS = {
-  "topic" => {
-    reads: /ntfy_[a-z_]*topic/,
-    fallback: /ntfy_[a-z_]*topic[[:space:]]*\|[[:space:]]*default\(/,
-    reason: "the name is also the ACL grant, so a stale default publishes where " \
-            "the account may not write"
-  },
-  "port" => {
-    reads: /ntfy_port/,
-    fallback: /ntfy_port[[:space:]]*\|[[:space:]]*default\(/,
-    reason: "the literal is the operative value in a play the ntfy role is absent " \
-            "from, so a port changed in the inventory leaves that publisher behind"
-  }
-}.freeze
-NTFY_DECLARATION_FILES =
-  Dir.glob(File.join(ROOT, "roles/*/{defaults,vars,templates,tasks,handlers,meta}/*"))
-     .select { |path| File.file?(path) }
-
-NTFY_SUBJECTS.each do |subject, screen|
-  readers = NTFY_DECLARATION_FILES.select { |path| File.read(path).match?(screen[:reads]) }
-  fallback_readers = readers.select { |path| File.read(path).match?(screen[:fallback]) }
-  check(failures, readers.length >= 2,
-        "at least two role declarations must read an ntfy #{subject} variable, found " \
-        "#{readers.length}")
-  check(failures, fallback_readers.empty?,
-        "an ntfy #{subject} must never be read through a fallback; #{screen[:reason]}: " \
-        "#{fallback_readers.map { |path| path.delete_prefix("#{ROOT}/") }.inspect}")
 end
 
 # --- real role run -----------------------------------------------------------
@@ -668,17 +565,11 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     ansible, "-i", inventory, play,
     "--skip-tags", "production_auto_deploy_cron",
     "-e", "production_auto_deploy_home=#{home}",
-    "-e", "vault_ntfy_deploy_token=#{TOKEN}",
     "-e", "vault_healthchecks_poller_ping_url=#{POLLER_PING_URL}",
     "-e", "vault_healthchecks_verify_ping_url=#{VERIFY_PING_URL}",
     # JSON, because the sentinels carry a quote and a backslash that key=value
     # parsing would take apart.
     "-e", JSON.generate(PUSHOVER_CREDENTIALS),
-    # Supplied the way the platform supplies it -- an inventory variable the role
-    # declares required -- rather than defaulted inside the role. This synthetic
-    # inventory is not inventory/local.yml, so nothing here would define it
-    # otherwise, which is the point.
-    "-e", "ntfy_port=#{SENTINEL_PORT}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
     "-e", "production_auto_deploy_external_scheduler=true",
@@ -768,8 +659,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
             !config.key?("periodic_verify_tags"),
           "hourly_only_verify_tags must render as #{HOURLY_ONLY_VERIFY_TAGS.join(',')} with no " \
           "periodic_verify_tags beside it, got #{config.slice('hourly_only_verify_tags', 'periodic_verify_tags').inspect}")
-    check(failures, config.values.none? { |value| ([TOKEN] + PUSHOVER_CREDENTIALS.values).any? { |secret| value.to_s.include?(secret) } },
-          "the poller configuration must never contain the ntfy token or a Pushover credential")
+    check(failures, config.values.none? { |value| PUSHOVER_CREDENTIALS.values.any? { |secret| value.to_s.include?(secret) } },
+          "the poller configuration must never contain a Pushover credential")
     check(failures, PUSHOVER_CREDENTIALS.values.none? { |secret| output.include?(secret) },
           "the role's own output must never print a Pushover credential")
     check(failures, config["healthchecks_poller_ping_url"] == POLLER_PING_URL &&
@@ -791,20 +682,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "platform_callback_host must be inherited from the inventory too, got " \
           "#{config['platform_callback_host'].inspect}")
 
-    # Still rendered, unchanged, for a poller process running the previous revision.
-    notifier = File.join(config_root, "ntfy.curl")
-    check(failures, File.file?(notifier) && (File.stat(notifier).mode & 0o777) == 0o600,
-          "ntfy.curl must still be rendered, at mode 0600, until stage 4 of #558")
-    # Read once and guarded: an unrendered file must be reported by the check
-    # above, not crash this suite before it prints what failed.
-    notifier_body = File.file?(notifier) ? File.read(notifier) : ""
-    check(failures, notifier_body.include?(TOKEN),
-          "ntfy.curl must carry the publisher token")
-    # Rendered against a sentinel port, so a template that stopped reading the
-    # variable and restated 2586 is caught rather than agreeing by accident.
-    check(failures, notifier_body.include?("127.0.0.1:#{SENTINEL_PORT}/"),
-          "ntfy.curl must address the declared ntfy port, got: " \
-          "#{notifier_body.lines.grep(/^url/).join.strip}")
+    check(failures, !File.exist?(File.join(config_root, "ntfy.curl")),
+          "the role must not render ntfy.curl since #558 removed ntfy")
 
     poller = File.join(home, ".local/share/nas-platform/poller/production_auto_deploy.py")
     check(failures, (File.stat(poller).mode & 0o777) == 0o700, "the poller must be mode 0700")
@@ -814,7 +693,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     launcher_body = File.read(launcher)
     check(failures, launcher_body.include?(poller), "the launcher must exec the installed poller")
     check(failures, launcher_body.include?(config_path), "the launcher must pass the config path")
-    check(failures, !launcher_body.include?(TOKEN), "the launcher must not contain the token")
+    check(failures, PUSHOVER_CREDENTIALS.values.none? { |secret| launcher_body.include?(secret) },
+          "the launcher must not contain a Pushover credential")
 
     status_output, status_result = Open3.capture2e(
       { "PATH" => ENV.fetch("PATH", "") }, launcher, "--status"
@@ -842,7 +722,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "a fresh installation's --verify must skip and exit 0: #{verify_output}")
   end
 
-  # And the refusal, which is what a fallback removed: with no port or Pushover
+  # And the refusal, which is what a fallback removed: with no Pushover
   # credential declared the role must stop and name each variable rather than
   # install a poller that cannot publish. Check mode is enough because the
   # argument spec is validated before the role's first task.
@@ -850,8 +730,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   index = 0
   while index < arguments.length
     if arguments[index] == "-e" &&
-       (arguments[index + 1].to_s.start_with?("ntfy_port=") ||
-        arguments[index + 1] == JSON.generate(PUSHOVER_CREDENTIALS))
+       arguments[index + 1] == JSON.generate(PUSHOVER_CREDENTIALS)
       index += 2
       next
     end
@@ -871,9 +750,9 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        (%w[ntfy_port vault_pushover_alerts_token vault_pushover_deployments_token
+        (%w[vault_pushover_alerts_token vault_pushover_deployments_token
             vault_pushover_user_key] - missing_arguments).empty?,
-        "the role must refuse to install when no port or Pushover credential is declared, naming " \
+        "the role must refuse to install when no Pushover credential is declared, naming " \
         "each missing variable, found #{missing_arguments.inspect} in: " \
         "#{refusal_output.lines.last(8).join}")
 end
