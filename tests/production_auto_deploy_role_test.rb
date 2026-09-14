@@ -19,16 +19,24 @@ include TestScaffold
 ROLE_TASKS = File.join(ROOT, "roles/production_auto_deploy/tasks/main.yml")
 POLLER_SOURCE = File.join(ROOT, "scripts/production_auto_deploy.py")
 TOKEN = "tk_#{'r' * 29}"
+# One sentinel per Pushover credential, each distinct, and each carrying the two
+# characters a curl config quotes -- a double quote and a backslash -- so a
+# rendered config is proved to escape them and to hold only its own application's
+# token. The schema gives neither value a pattern, so neither is assumed absent.
+PUSHOVER_ALERTS_TOKEN = 'sentinel-alerts-"token\\one'
+PUSHOVER_DEPLOYMENTS_TOKEN = 'sentinel-deployments-"token\\two'
+PUSHOVER_USER_KEY = 'sentinel-user-"key\\three'
+PUSHOVER_CREDENTIALS = {
+  "vault_pushover_alerts_token" => PUSHOVER_ALERTS_TOKEN,
+  "vault_pushover_deployments_token" => PUSHOVER_DEPLOYMENTS_TOKEN,
+  "vault_pushover_user_key" => PUSHOVER_USER_KEY
+}.freeze
 PUBLIC_HOST = "100.64.0.1"
 CALLBACK_HOST = "10.88.0.1"
-# Deliberately not the deployed topics: rendering with names the repository
-# never contains is what proves the configuration reads the declared variables
-# rather than a literal that happens to agree with them today.
-SENTINEL_CRITICAL = "sentinel-critical"
-SENTINEL_DEPLOYMENT = "sentinel-deployment"
-# The port is a sentinel for the same reason, and 2586 specifically is not
-# it: the value this role used to fall back to would pass a render that
-# stopped reading the variable at all (#402).
+# A sentinel rather than the deployed port, and 2586 specifically is not it: the
+# value this role used to fall back to would pass a render that stopped reading
+# the variable at all (#402). ntfy.curl still reads it, for a poller process
+# running the previous revision.
 SENTINEL_PORT = 28_517
 TIMEOUT_SECONDS = 300
 # Sentinels again, on a domain that never resolves: rendering them proves the
@@ -42,9 +50,9 @@ CONFIG_KEYS = %w[
   github_api_base
   healthchecks_poller_ping_url healthchecks_verify_ping_url hourly_only_verify_tags
   log_retention_days log_root
-  ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment
   platform_callback_host platform_nas_address
-  platform_public_host repository repository_url state_root tool_path
+  platform_public_host pushover_alerts_curl_config pushover_deployments_curl_config
+  repository repository_url state_root tool_path
   vault_password_file verify_tags workflow workflow_name
 ].freeze
 
@@ -72,6 +80,28 @@ check(failures, notifier_tasks.length == 1,
       "the role must render ntfy.curl exactly once")
 check(failures, notifier_tasks.all? { |task| task["no_log"] == true },
       "the ntfy.curl task must set no_log so the token never reaches a log")
+# Kept rendered until stage 4 of #558, and never removed before then: the install
+# play runs inside a tick of the poller it replaces, and that process reports the
+# end of its own tick through ntfy.curl (#327). Any task naming the file with
+# state: absent is the removal, whichever module it uses.
+ntfy_removals = tasks.select do |task|
+  task.values.any? do |arguments|
+    arguments.is_a?(Hash) && arguments["state"].to_s == "absent" &&
+      arguments.values.any? { |value| value.to_s.match?(/notifier_path|ntfy\.curl/) }
+  end
+end
+check(failures, ntfy_removals.empty?,
+      "no task may remove ntfy.curl before stage 4 of #558: a poller process still running " \
+      "the previous revision reports through it, found #{ntfy_removals.map { |task| task['name'] }.inspect}")
+
+# One protected curl config per Pushover application, rendered by one looped
+# task under no_log, each naming only its own application's token.
+pushover_tasks = tasks.select do |task|
+  task.dig("ansible.builtin.template", "src") == "pushover.curl.j2"
+end
+check(failures, pushover_tasks.length == 1 &&
+        pushover_tasks.all? { |task| task["no_log"] == true && task.dig("ansible.builtin.template", "mode") == "0600" },
+      "the role must render pushover.curl.j2 exactly once, at mode 0600, with no_log")
 # deployer.json carries the healthchecks.io ping URLs since #606, and a template
 # task without no_log prints its diff under --check --diff.
 config_tasks = tasks.select do |task|
@@ -457,50 +487,77 @@ check(failures,
         [["header", '"Authorization: Bearer {{ vault_ntfy_deploy_token }}"']],
       "the ntfy.curl config must present exactly the deploy publisher's own bearer token")
 
-# Because the poller publishes as `deploy` and nothing else, every topic its
-# configuration names has to be one the deploy publisher is granted. The two
-# sides used to be pinned to the same literal independently -- the template
-# through `ntfy_topic | default('nas-critical')`, in a play that does not list
-# the ntfy role and where the fallback was therefore the operative value -- so
-# renaming a topic moved the grant and left the poller posting where the account
-# could no longer write, silently (#345). This compares the declarations rather
-# than the values: a value comparison passes on a template that stopped reading
-# the variable at all, which is exactly the defect.
-publishers = YAML.safe_load_file(File.join(ROOT, "roles/ntfy/defaults/main.yml"))
-              .fetch("ntfy_publishers")
-deploy_grant = publishers.find { |publisher| publisher["name"] == "deploy" }.to_h.fetch("topics", "")
-granted_variables = deploy_grant.scan(/ntfy_[a-z_]*topic/).uniq
-check(failures, granted_variables.length >= 2,
-      "the deploy publisher's grant must name at least two topic variables, found " \
-      "#{granted_variables.inspect} in #{deploy_grant.inspect}")
+# The Pushover curl config's own grammar, read as the directives it declares
+# rather than as substrings: curl sends every form-string it is given, so a
+# config naming the token twice presents two tokens, and a token named only in
+# the comment block would satisfy a substring check while the directive read a
+# literal.
+pushover_template = File.read(File.join(ROOT, "roles/production_auto_deploy/templates/pushover.curl.j2"))
+pushover_directives = pushover_template.lines.filter_map do |line|
+  key, separator, value = line.strip.partition(" = ")
+  [key, value] unless separator.empty?
+end
+check(failures,
+      pushover_directives.select { |key, value| key == "form-string" && value.start_with?('"token=') }
+        .map(&:last) == ['"token={{ lookup(\'ansible.builtin.vars\', item.token_variable) | ' \
+                         'replace(\'\\\\\', \'\\\\\\\\\') | replace(\'"\', \'\\\\"\') }}"'],
+      "the pushover.curl config must present exactly one token, its own application's, read " \
+      "by name and escaped")
+check(failures,
+      pushover_directives.select { |key, value| key == "form-string" && value.start_with?('"user=') }.length == 1 &&
+        pushover_directives.map(&:first).sort == %w[form-string form-string url],
+      "the pushover.curl config must declare exactly a url, the user key and one token")
+check(failures,
+      pushover_directives.find { |key, _| key == "url" }.to_a.last.to_s ==
+        '"{{ production_auto_deploy_pushover_api_url }}"',
+      "the pushover.curl url must read production_auto_deploy_pushover_api_url")
+
+# Which token each config carries is the defaults' list, and the poller routes
+# by position in it: Alerts first, Deployments second. Stated rather than
+# derived, and each named variable must be one the role declares required, so a
+# config cannot read a credential from a variable this play never validates --
+# the #345 shape, a coupling to a declaration the play cannot see, on the
+# Pushover subject that replaced the topics.
+notifiers = defaults.fetch("production_auto_deploy_pushover_notifiers", [])
+check(failures,
+      notifiers.map { |notifier| [File.basename(notifier["path"].to_s), notifier["token_variable"]] } ==
+        [["pushover-alerts.curl", "vault_pushover_alerts_token"],
+         ["pushover-deployments.curl", "vault_pushover_deployments_token"]],
+      "production_auto_deploy_pushover_notifiers must be the Alerts then the Deployments config, " \
+      "each with its own token variable, found #{notifiers.inspect}")
+spec_options = YAML.safe_load_file(File.join(ROOT, "roles/production_auto_deploy/meta/argument_specs.yml"))
+                   .dig("argument_specs", "main", "options")
+PUSHOVER_CREDENTIALS.each_key do |variable|
+  check(failures, spec_options.dig(variable, "required") == true,
+        "#{variable} must be declared required in the role's argument spec")
+end
 
 # Read off the rendered document's own keys rather than the file's bytes: the
-# template is one Jinja mapping literal, so the expression a key is bound to is
-# the thing that decides where the poller publishes.
+# template is one Jinja mapping literal. No ntfy key may come back into it -- a
+# poller reading one would publish nowhere -- and the two Pushover keys must name
+# the notifier list rather than restate a path.
 POLLER_CONFIG_TEMPLATE = File.join(ROOT, "roles/production_auto_deploy/templates/config.json.j2")
 PRUNE_CONFIG_TEMPLATE = File.join(ROOT, "roles/image_prune/templates/config.json.j2")
 
-def topic_expressions(template_path)
+def template_bindings(template_path)
   File.readlines(template_path).filter_map do |line|
     key, separator, expression = line.strip.partition(":")
     next if separator.empty?
-    key = key.delete("'")
-    [key, expression.strip.delete_suffix(",")] if key.start_with?("ntfy_topic_")
+
+    [key.delete("'"), expression.strip.delete_suffix(",")]
   end.to_h
 end
 
-[["the poller", POLLER_CONFIG_TEMPLATE], ["the prune", PRUNE_CONFIG_TEMPLATE]].each do |label, template|
-  expressions = topic_expressions(template)
-  check(failures, expressions.keys.sort == %w[ntfy_topic_critical ntfy_topic_deployment],
-        "#{label} configuration must bind exactly the two topic keys, found #{expressions.keys.inspect}")
-  expressions.each do |key, expression|
-    check(failures, !expression.include?("default("),
-          "#{label} must read #{key} from the declared variable, not from a fallback " \
-          "this play cannot see: #{expression.inspect}")
-    named = expression.scan(/ntfy_[a-z_]*topic/).uniq
-    check(failures, named.length == 1 && granted_variables.include?(named.first),
-          "#{label}'s #{key} must name a topic variable the deploy publisher is " \
-          "granted, found #{expression.inspect} against #{granted_variables.inspect}")
+[["the poller", POLLER_CONFIG_TEMPLATE, "production_auto_deploy"],
+ ["the prune", PRUNE_CONFIG_TEMPLATE, "image_prune"]].each do |label, template, prefix|
+  bindings = template_bindings(template)
+  check(failures, bindings.keys.grep(/\Antfy_/).empty?,
+        "#{label} configuration must bind no ntfy key since #558 stage 3, found #{bindings.keys.grep(/\Antfy_/).inspect}")
+  %w[alerts deployments].each_with_index do |app, index|
+    check(failures, bindings["'pushover_#{app}_curl_config'"] == "#{prefix}_pushover_notifiers[#{index}].path" ||
+                    bindings["pushover_#{app}_curl_config"] == "#{prefix}_pushover_notifiers[#{index}].path",
+          "#{label} configuration must bind pushover_#{app}_curl_config to #{prefix}_pushover_notifiers[#{index}].path, " \
+          "found #{bindings.select { |key, _| key.include?('pushover') }.inspect}")
   end
 end
 
@@ -609,12 +666,13 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
     "-e", "vault_healthchecks_poller_ping_url=#{POLLER_PING_URL}",
     "-e", "vault_healthchecks_verify_ping_url=#{VERIFY_PING_URL}",
-    # The topics are supplied the way the platform supplies them -- as inventory
-    # variables the role declares required -- rather than defaulted inside the
-    # role. This synthetic inventory is not inventory/local.yml, so nothing here
-    # would define them otherwise, which is the point.
-    "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
-    "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
+    # JSON, because the sentinels carry a quote and a backslash that key=value
+    # parsing would take apart.
+    "-e", JSON.generate(PUSHOVER_CREDENTIALS),
+    # Supplied the way the platform supplies it -- an inventory variable the role
+    # declares required -- rather than defaulted inside the role. This synthetic
+    # inventory is not inventory/local.yml, so nothing here would define it
+    # otherwise, which is the point.
     "-e", "ntfy_port=#{SENTINEL_PORT}",
     # The cron tag is skipped so the suite never writes a developer's crontab;
     # declare external scheduling so the matching precondition is skipped too.
@@ -652,14 +710,26 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     check(failures, config["ansible_locale"].to_s.downcase.include?("utf"),
           "ansible_locale must be a UTF-8 locale, got #{config['ansible_locale'].inspect}")
 
-    # The rendered half of the coupling checked above: the declared topics reach
-    # the file the poller reads. A template that stopped consulting them renders
-    # the deployed names here and the sentinels catch it.
-    check(failures, config["ntfy_topic_critical"] == SENTINEL_CRITICAL &&
-                    config["ntfy_topic_deployment"] == SENTINEL_DEPLOYMENT,
-          "the configuration must render the declared topics, got " \
-          "#{config['ntfy_topic_critical'].inspect} and " \
-          "#{config['ntfy_topic_deployment'].inspect}")
+    # The rendered half of the coupling checked above: each Pushover config is
+    # 0600, is the one the configuration names, and carries its own application's
+    # token -- escaped -- and no other, beside the user key.
+    escape = ->(value) { value.gsub("\\") { "\\\\" }.gsub('"') { '\\"' } }
+    { "alerts" => PUSHOVER_ALERTS_TOKEN, "deployments" => PUSHOVER_DEPLOYMENTS_TOKEN }.each do |app, token|
+      path = File.join(config_root, "pushover-#{app}.curl")
+      check(failures, config["pushover_#{app}_curl_config"] == path,
+            "pushover_#{app}_curl_config must name #{path}, got #{config["pushover_#{app}_curl_config"].inspect}")
+      next check(failures, false, "#{path} was not rendered") unless File.file?(path)
+
+      rendered = File.read(path)
+      check(failures, (File.stat(path).mode & 0o777) == 0o600, "pushover-#{app}.curl must be mode 0600")
+      others = PUSHOVER_CREDENTIALS.values - [token, PUSHOVER_USER_KEY]
+      check(failures,
+            rendered.lines.grep(/\Aform-string = "token=/) == ["form-string = \"token=#{escape.call(token)}\"\n"] &&
+              rendered.lines.grep(/\Aform-string = "user=/) == ["form-string = \"user=#{escape.call(PUSHOVER_USER_KEY)}\"\n"] &&
+              others.none? { |other| rendered.include?(escape.call(other)) },
+            "pushover-#{app}.curl must carry its own token and the user key, escaped, and no other " \
+            "application's token")
+    end
 
     # The poller runs with a narrow PATH from cron, so the installer must record
     # where the tools really are rather than assuming /usr/bin.
@@ -693,8 +763,10 @@ Dir.mktmpdir("auto-deploy-role") do |root|
             !config.key?("periodic_verify_tags"),
           "hourly_only_verify_tags must render as #{HOURLY_ONLY_VERIFY_TAGS.join(',')} with no " \
           "periodic_verify_tags beside it, got #{config.slice('hourly_only_verify_tags', 'periodic_verify_tags').inspect}")
-    check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
-          "the poller configuration must never contain the ntfy token")
+    check(failures, config.values.none? { |value| ([TOKEN] + PUSHOVER_CREDENTIALS.values).any? { |secret| value.to_s.include?(secret) } },
+          "the poller configuration must never contain the ntfy token or a Pushover credential")
+    check(failures, PUSHOVER_CREDENTIALS.values.none? { |secret| output.include?(secret) },
+          "the role's own output must never print a Pushover credential")
     check(failures, config["healthchecks_poller_ping_url"] == POLLER_PING_URL &&
                     config["healthchecks_verify_ping_url"] == VERIFY_PING_URL,
           "the configuration must render the vault's ping URLs, got " \
@@ -702,8 +774,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "#{config['healthchecks_verify_ping_url'].inspect}")
     check(failures, !output.include?(POLLER_PING_URL) && !output.include?(VERIFY_PING_URL),
           "the role's own output must never print a ping URL")
-    # ntfy hashes the public host into the mobile push topic, so collapsing it
-    # onto the LAN address silently publishes where nothing is subscribed.
+    # The address clients use and the LAN address are different facts, so
+    # collapsing one onto the other hands the plays an address devices do not use.
     check(failures, config["platform_public_host"] == PUBLIC_HOST,
           "platform_public_host must be inherited from the inventory variable " \
           "every other role reads, with no second -e, got " \
@@ -714,9 +786,10 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "platform_callback_host must be inherited from the inventory too, got " \
           "#{config['platform_callback_host'].inspect}")
 
+    # Still rendered, unchanged, for a poller process running the previous revision.
     notifier = File.join(config_root, "ntfy.curl")
-    check(failures, (File.stat(notifier).mode & 0o777) == 0o600,
-          "ntfy.curl must be mode 0600")
+    check(failures, File.file?(notifier) && (File.stat(notifier).mode & 0o777) == 0o600,
+          "ntfy.curl must still be rendered, at mode 0600, until stage 4 of #558")
     check(failures, File.read(notifier).include?(TOKEN),
           "ntfy.curl must carry the publisher token")
     # Rendered against a sentinel port, so a template that stopped reading the
@@ -749,6 +822,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     check(failures, status_output.include?("could not resolve"),
           "--status must degrade gracefully when the branch cannot be reached: " \
           "#{status_output}")
+    check(failures, !status_output.include?("nothing can be published"),
+          "the installed poller must find both Pushover configs its configuration names: #{status_output}")
 
     # The hourly entry calls the installed poller, so the installed poller has
     # to accept the mode -- and verify nothing before anything has deployed.
@@ -759,16 +834,16 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "a fresh installation's --verify must skip and exit 0: #{verify_output}")
   end
 
-  # And the refusal, which is what a fallback removed: with no topic declared the
-  # role must stop and name the variable rather than install a poller pointed at
-  # a topic the deploy account may not hold. Check mode is enough because the
+  # And the refusal, which is what a fallback removed: with no port or Pushover
+  # credential declared the role must stop and name each variable rather than
+  # install a poller that cannot publish. Check mode is enough because the
   # argument spec is validated before the role's first task.
   undeclared = []
   index = 0
   while index < arguments.length
     if arguments[index] == "-e" &&
-       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=",
-                                             "ntfy_port=")
+       (arguments[index + 1].to_s.start_with?("ntfy_port=") ||
+        arguments[index + 1] == JSON.generate(PUSHOVER_CREDENTIALS))
       index += 2
       next
     end
@@ -788,8 +863,9 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        (%w[ntfy_topic ntfy_deployment_topic ntfy_port] - missing_arguments).empty?,
-        "the role must refuse to install when no topic or port is declared, naming " \
+        (%w[ntfy_port vault_pushover_alerts_token vault_pushover_deployments_token
+            vault_pushover_user_key] - missing_arguments).empty?,
+        "the role must refuse to install when no port or Pushover credential is declared, naming " \
         "each missing variable, found #{missing_arguments.inspect} in: " \
         "#{refusal_output.lines.last(8).join}")
 end

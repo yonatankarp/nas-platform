@@ -3016,15 +3016,29 @@ end
 # identical executable bodies for as long as the guard existed and were watched
 # by nothing (#423), so this row drifts one of them by a single docstring word:
 # the divergence a docstring-stripping comparison would have waved through, and
-# the reason the definitions are held identical as raw text instead.
+# the reason the definitions are held identical as raw text instead. Drifted on
+# html_escape since #558 stage 3 retired markdown_escape, which this row used to
+# drift: the same one-word docstring change, on the escape that replaced it.
 expect_failure(failures, "duplicated helper docstring diverged",
-               "every script must define markdown_escape identically",
+               "every script must define html_escape identically",
                detected_by: %i[policy]) do |root|
   path = File.join(root, "scripts", "image_prune.py")
   File.write(path, File.read(path).sub(
-    "Escape one value for ntfy's markdown rendering, bounded like the relay.",
-    "Escape one value for ntfy's markdown rendering, bounded like the relay's."
+    "Bound one value, then make it inert markup for Pushover's html=1.",
+    "Bound one value, then make it inert markup for Pushover's html=1 field."
   ))
+end
+
+# A retired helper kept by one script. Neither derived stanza can see it -- one
+# needs both scripts to define the name, the other a byte-identical pair -- so
+# policy_test.rb refuses the retired names outright, and this row is the leftover
+# they exist for: markdown_escape restored to the prune alone.
+expect_failure(failures, "retired markdown_escape left behind in one script",
+               "scripts/image_prune.py still defines [\"markdown_escape\"]",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "scripts", "image_prune.py")
+  File.write(path, "#{File.read(path)}\n\ndef markdown_escape(value: str, maximum: int = 256) -> str:\n" \
+                   "    return value[:maximum]\n")
 end
 
 # Which helpers must match is stated, and a stated list fails open -- that is
@@ -3043,17 +3057,16 @@ expect_failure(failures, "fresh duplicate helper left unlisted",
 end
 
 # The same rule one level down, on the pinned function's own input. #515's own
-# probe, planted rather than described: MARKDOWN_PATTERN cut from fifteen
-# metacharacters to three, with both markdown_escape bodies left byte-identical.
-# Before the check this row proves, the policy set reported all properties
-# holding and the pruner's ntfy notification would have shipped unescaped
-# _ * [ ] # | > while the deploy poller's did not -- the identity guard on the
-# consumer saying the copies agreed the whole time.
-expect_failure(failures, "escaping character class diverged",
-               "every copy site must spell MARKDOWN_PATTERN identically",
+# probe was MARKDOWN_PATTERN cut from fifteen metacharacters to three with both
+# markdown_escape bodies left byte-identical; since #558 stage 3 the pinned input
+# is html_escape's result bound, so the plant raises it in one script with both
+# html_escape bodies untouched -- a prune message that can overrun Pushover's cap
+# while the identity guard on the consumer says the copies agree.
+expect_failure(failures, "escaped field bound diverged",
+               "every copy site must spell MAX_ESCAPED_FIELD_CHARACTERS identically",
                detected_by: %i[policy]) do |root|
   mutate_text(root, "scripts/image_prune.py",
-              /^MARKDOWN_PATTERN = .*$/, 'MARKDOWN_PATTERN = re.compile(r"([\\\\`*])")')
+              /^MAX_ESCAPED_FIELD_CHARACTERS = .*$/, "MAX_ESCAPED_FIELD_CHARACTERS = 768")
 end
 
 # The other direction on the same table: a copy site that stops carrying the
@@ -3061,14 +3074,13 @@ end
 # disappears changes the contract as much as one that diverges, and a floor of
 # two would let a site drop it in silence.
 #
-# Planted on image_prune.py rather than on the relay since #558. The relay
-# publishes HTML to Pushover now and escapes with html.escape, so it carries no
-# character class of its own and is no longer a site of this constant: the table
-# names two sites, and this row plants the disappearance of one of them.
-expect_failure(failures, "escaping character class dropped by a copy site",
+# Planted on MAX_TITLE_CHARACTERS in image_prune.py since #558 stage 3 retired
+# MARKDOWN_PATTERN, the constant this row used to drop: the cap is a site of all
+# three copy programs now, and this row plants the disappearance of one of them.
+expect_failure(failures, "Pushover title cap dropped by a copy site",
                "A copy that disappeared is as much a change to this contract as one that diverged",
                detected_by: %i[policy]) do |root|
-  mutate_text(root, "scripts/image_prune.py", /^MARKDOWN_PATTERN = .*\n/, "")
+  mutate_text(root, "scripts/image_prune.py", /^MAX_TITLE_CHARACTERS = .*\n/, "")
 end
 
 # The hole the reduce(:&) tripwire above could not reach: it needs BOTH

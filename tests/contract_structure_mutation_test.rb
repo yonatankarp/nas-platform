@@ -432,6 +432,7 @@ BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
 COMPOSE_METADATA_BEHAVIOR = "tests/compose_metadata_filter_test.yml"
 AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
 AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
+AUTO_DEPLOY_PUSHOVER_NOTIFIER = "roles/production_auto_deploy/templates/pushover.curl.j2"
 
 SUITES.each_key do |suite|
   ROWS << lambda do |collected|
@@ -1699,6 +1700,19 @@ check_rejected(
     "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n" \
     "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n"]],
   "the ntfy.curl config must present exactly the deploy publisher's own bearer token"
+)
+
+# The same shape on the Pushover configs that replaced it in #558 stage 3: curl
+# sends every form-string it is given, so a second token line is a second token
+# on one request -- and a rendered file carrying its own token twice still
+# contains it, which is all a substring check would ask.
+check_rejected(
+  :auto_deploy, "a duplicated Pushover token form-string",
+  [[AUTO_DEPLOY_PUSHOVER_NOTIFIER,
+    "form-string = \"token=",
+    "form-string = \"token={{ vault_pushover_alerts_token }}\"\nform-string = \"token="]],
+  "the pushover.curl config must present exactly one token, its own application's, read " \
+  "by name and escaped"
 )
 
 in_parallel_cases(failures, ROWS) { |row, collected| row.call(collected) }
