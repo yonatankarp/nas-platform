@@ -75,7 +75,8 @@ kapowarr_volume_folder_migration_allowed: false
 # nothing -- so this mapping is the whole of what a converge writes, and a key
 # absent from it is left exactly as the application holds it.
 #
-# Every value here is Kapowarr v1.3.1's own default except volume_folder_naming
+# Every value here is Kapowarr's own default, unchanged from v1.3.1 to v1.3.2,
+# except volume_folder_naming
 # and download_folder, which the comments on those two keys explain. Staying on
 # the application's defaults is deliberate: a converge reverts whatever was changed
 # in the web interface without inventing an opinion the platform does not hold.
@@ -173,13 +174,21 @@ kapowarr_settings:
   seeding_handling: copy
   date_type: cover_date
 
-# Kapowarr refuses a subset of its download services and accepts only a
-# permutation of every service the deployed version knows, so preference cannot
-# be declared as a short list. It is declared here as a partial ordering
-# instead: the services named below are placed first, in this order, and every
-# other service the deployed version reports keeps its relative order behind
-# them. A Kapowarr release that adds or renames a service therefore lands at the
-# end of the order rather than failing the converge on a rejected permutation.
+# The order Kapowarr's GetComics indexer tries download services in. Since
+# v1.3.2 it is that indexer's gc_service_preference rather than a global setting
+# (#671), and the rule that shapes this declaration moved with it: Kapowarr
+# refuses a subset of its download services and accepts only a permutation of
+# every service the deployed version knows, so preference cannot be declared as
+# a short list. It is declared here as a partial ordering instead: the services
+# named below are placed first, in this order, and every other service the
+# deployed version reports keeps its relative order behind them. A Kapowarr
+# release that adds or renames a service therefore lands at the end of the order
+# rather than failing the converge on a rejected permutation.
+#
+# The list is v1.3.2's own default order, which is what keeps the indexer write
+# -- the one request that reaches getcomics.org -- off every converge of a fresh
+# or migrated Kapowarr. Reordering it here is expressing an opinion, and the
+# converge that applies it needs getcomics.org reachable.
 kapowarr_service_preference:
   - Mega
   - MediaFire

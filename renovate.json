@@ -125,7 +125,8 @@
         "ghcr.io/paperless-ngx/paperless-ngx",
         "docker.io/library/nextcloud",
         "ghcr.io/karakeep-app/karakeep",
-        "docker.io/getmeili/meilisearch"
+        "docker.io/getmeili/meilisearch",
+        "docker.io/mrcas/kapowarr"
       ],
       "matchUpdateTypes": [
         "major",

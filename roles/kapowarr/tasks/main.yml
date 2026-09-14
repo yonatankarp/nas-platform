@@ -46,6 +46,21 @@
     dest: "{{ platform_runtime_dir }}/services/kapowarr/.env"
     mode: "0600"
 
+# Before Compose, because recreating the container from an older image is the
+# act being refused. Kapowarr migrates its own SQLite store on start and the
+# migration is one-way: v1.3.2 takes a v1.3.1 store from database version 45 to
+# 51 (#671), the #511 shape roles/bindery carries the long form of. The five
+# paths this reads are the ones the containment re-include at the top of this
+# file already declared through deployment_target_service.
+- name: Refuse a Kapowarr image older than the store on disk
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: kapowarr
+    image_downgrade_guard_compose_service: kapowarr
+    image_downgrade_guard_project_name: "{{ kapowarr_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ kapowarr_config_host_path }}"
+
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
 # terms of the container state Docker reports or re-raises it unchanged.
@@ -435,9 +450,9 @@
     fail_msg: >-
       The declared Kapowarr settings must name no credential and must not carry
       service_preference. Credentials read back masked and can never match, and
-      the service order is validated as a permutation of the deployed version's
-      own service list, so it is declared as a partial ordering in
-      kapowarr_service_preference instead.
+      since v1.3.2 the service order is not a setting at all: it lives on the
+      GetComics indexer and is declared as a partial ordering in
+      kapowarr_service_preference instead (#671).
 
 # Redacted: the request carries the application API key in its query string.
 - name: Read the deployed Kapowarr application settings
@@ -451,22 +466,13 @@
   check_mode: false
   no_log: true
 
-# The declared service order is applied over the deployed one rather than
-# replacing it. Kapowarr refuses anything but a permutation of every service it
-# knows, so a service this version has and the declaration does not must keep
-# its place at the end instead of being dropped -- otherwise the next upstream
-# release that adds one fails the converge on a rejected permutation.
+# The settings declaration is submitted as declared. Until v1.3.2 this fact also
+# merged the service order into it; that key is gone from the settings interface
+# (a PUT naming it answers 400 KeyNotFound) and the order is reconciled on the
+# GetComics indexer below.
 - name: Resolve the declared Kapowarr application settings
   ansible.builtin.set_fact:
-    kapowarr_settings_declared: >-
-      {{ kapowarr_settings | combine({
-           'service_preference':
-             (kapowarr_service_preference
-              | select('in', kapowarr_settings_deployed.json.result.service_preference)
-              | list)
-             + (kapowarr_settings_deployed.json.result.service_preference
-                | reject('in', kapowarr_service_preference) | list),
-         }) }}
+    kapowarr_settings_declared: "{{ kapowarr_settings }}"
 
 # Every declared pair the application already holds verbatim is converged, so
 # the difference is the declared pairs that are not among the deployed ones. The
@@ -505,6 +511,114 @@
   when:
     - not ansible_check_mode
     - kapowarr_settings_drift_keys | length > 0
+  changed_when: true
+  no_log: true
+
+# Kapowarr v1.3.2 moved the download service order out of the settings interface
+# and onto the GetComics indexer record, as gc_service_preference: migration 47
+# copies the old global value into that record and deletes the config row (#671).
+# Redacted: the request carries the application API key in its query string.
+- name: Read the deployed Kapowarr indexers
+  ansible.builtin.uri:
+    url: "{{ kapowarr_api }}/api/indexers?api_key={{ kapowarr_settings_api_key }}"
+    method: GET
+    status_code: [200]
+    return_content: true
+  register: kapowarr_indexers
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Identified by client_type, which the application registers and no request can
+# change; the title is editable through the same interface the write uses.
+- name: Resolve the Kapowarr GetComics indexer
+  ansible.builtin.set_fact:
+    kapowarr_getcomics_indexers: >-
+      {{ kapowarr_indexers.json.result | default([])
+         | selectattr('client_type', 'defined')
+         | selectattr('client_type', 'equalto', 'GetComics') | list }}
+
+# Kapowarr creates exactly one GetComics indexer on first start, migration 47
+# creates exactly one on upgrade, and a second is refused with
+# AddingIndexerForbidden. So none means it was deleted in the web interface, and
+# more than one means the database was edited outside the application. Both are
+# refused rather than repaired: recreating the record would make this platform
+# own its title, URL and enabled flag, which it does not declare, and choosing
+# between two would be a guess.
+- name: Refuse a Kapowarr without exactly one GetComics indexer
+  ansible.builtin.assert:
+    that:
+      - kapowarr_getcomics_indexers | length == 1
+    fail_msg: >-
+      Kapowarr holds {{ kapowarr_getcomics_indexers | length }} GetComics indexers, and this
+      platform declares the download service order on exactly one.
+      {{ 'Add the GetComics indexer back under Settings, Indexers in the web interface, then rerun.'
+         if kapowarr_getcomics_indexers | length == 0 else
+         'Kapowarr refuses to add a second one, so its database was edited outside the application;
+         delete all but one under Settings, Indexers, then rerun.' }}
+      No indexer was changed.
+
+# The declared order is applied over the deployed one exactly as it was over the
+# v1.3.1 setting, because the rule that shaped it survived the move: the indexer
+# interface still accepts only a permutation of every service the deployed
+# version knows, and refuses a two-service list and a list naming an unknown
+# service alike with 400 InvalidKeyValue, measured against v1.3.2. A declared
+# service this version does not know drops out, and one it knows that the
+# declaration does not name keeps its place behind the declared ones. A record
+# holding no order at all is merged over the declaration itself, so the write
+# submits the declared list and the application's own validation decides it.
+- name: Resolve the declared Kapowarr download service order
+  vars:
+    kapowarr_service_order_base: >-
+      {{ kapowarr_getcomics_indexers[0].gc_service_preference
+         if kapowarr_getcomics_indexers[0].gc_service_preference | default([], true) | length > 0
+         else kapowarr_service_preference }}
+  ansible.builtin.set_fact:
+    kapowarr_service_preference_deployed: >-
+      {{ kapowarr_getcomics_indexers[0].gc_service_preference | default([], true) }}
+    kapowarr_service_preference_declared: >-
+      {{ (kapowarr_service_preference | select('in', kapowarr_service_order_base) | list)
+         + (kapowarr_service_order_base | reject('in', kapowarr_service_preference) | list) }}
+
+- name: Report the planned Kapowarr download service order
+  ansible.builtin.debug:
+    msg: >-
+      The Kapowarr GetComics indexer orders its download services
+      {{ kapowarr_service_preference_deployed | join(', ') }}; a live run would declare
+      {{ kapowarr_service_preference_declared | join(', ') }}.
+  when:
+    - ansible_check_mode
+    - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
+
+# The indexer interface is NOT a partial merge, unlike the settings one: the
+# route reads every indexer field out of the body and refuses a missing title,
+# enabled flag or URL. So the write restates the record it read with only the
+# order replaced -- the fields this platform does not declare go back exactly as
+# the application holds them, and the route ignores the read-only ones.
+#
+# This write is the role's one third-party dependency, which is why it matters
+# when it runs. Kapowarr tests an indexer before it stores it --
+# GetComicsIndexer.test() fetches the record's URL and requires the page to say
+# GetComics -- so with getcomics.org unreachable the write fails with 400
+# ClientNotWorking after about eight seconds, measured from a container with no
+# network. It is gated on drift, and a fresh v1.3.2 and one migrated from v1.3.1
+# both already hold the declared order, so a converged host never issues it: it
+# runs only after the order was changed in the web interface, and then fails
+# loudly rather than half-applying.
+# Redacted: the request carries the application API key in its query string.
+- name: Declare the Kapowarr download service order on the GetComics indexer
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/indexers/{{ kapowarr_getcomics_indexers[0].id }}?api_key={{ kapowarr_settings_api_key }}
+    method: PUT
+    body_format: json
+    body: >-
+      {{ kapowarr_getcomics_indexers[0]
+         | combine({'gc_service_preference': kapowarr_service_preference_declared}) }}
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
   changed_when: true
   no_log: true
 
@@ -843,6 +957,38 @@
   check_mode: false
   no_log: true
 
+# The download service order, read where v1.3.2 keeps it: on the GetComics
+# indexer rather than in the settings (#671).
+# Redacted: the request carries the application API key the login returned.
+- name: Verify the Kapowarr GetComics indexer
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.uri:
+    url: >-
+      {{ kapowarr_api }}/api/indexers?api_key={{
+         kapowarr_verify_identity.json.result.api_key | default('') }}
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: kapowarr_verify_indexers
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# Normalized for the reason the volume list below is: an unauthorized Kapowarr
+# answers a mapping where the list was, and the assertion reads the status.
+- name: Resolve the Kapowarr GetComics indexers reported for verification
+  tags: [platform_verify_kapowarr]
+  ansible.builtin.set_fact:
+    kapowarr_verify_getcomics_indexers: >-
+      {{ (kapowarr_verify_indexers.json.result
+          if (kapowarr_verify_indexers.json.result | default(none)) is sequence
+             and (kapowarr_verify_indexers.json.result | default(none)) is not mapping
+             and (kapowarr_verify_indexers.json.result | default(none)) is not string
+          else [])
+         | select('mapping') | selectattr('client_type', 'defined')
+         | selectattr('client_type', 'equalto', 'GetComics') | list }}
+
 # The mode condition is what now carries the refusal, and that is a change in
 # kind rather than a tightening: this playbook used to establish empirically,
 # against the running instance, that an anonymous caller is refused, and now
@@ -876,17 +1022,21 @@
         (kapowarr_verify_settings.json.result | default({}) | dict2items |
          selectattr('key', 'in', kapowarr_settings.keys() | list) | items2dict)
         == kapowarr_settings
+      # The order conditions index the one record, so they follow the conditions
+      # that prove there is one: assert stops at the first that is false.
+      - kapowarr_verify_indexers.status | default(0) | int == 200
+      - kapowarr_verify_getcomics_indexers | length == 1
+      - kapowarr_verify_getcomics_indexers[0].gc_service_preference | default([], true) | length > 0
       - >-
-        ((kapowarr_verify_settings.json.result | default({})).service_preference
-         | default([]) | select('in', kapowarr_service_preference) | list)
-        == (kapowarr_service_preference |
-            select('in', (kapowarr_verify_settings.json.result | default({})).service_preference
-                         | default([])) | list)
+        (kapowarr_verify_getcomics_indexers[0].gc_service_preference
+         | select('in', kapowarr_service_preference) | list)
+        == (kapowarr_service_preference
+            | select('in', kapowarr_verify_getcomics_indexers[0].gc_service_preference) | list)
     fail_msg: >-
       Kapowarr is unreachable, or it no longer accepts exactly the vault-authored
       administrator, refuses everyone else, owns exactly the declared comics
-      library root, and holds the declared application settings in the declared
-      service order.
+      library root, holds the declared application settings, and holds exactly
+      one GetComics indexer in the declared download service order.
 
 # The library's folder shape is verified rather than only migrated, because the
 # defect this repairs is not a one-off: a volume added while a hand-edited

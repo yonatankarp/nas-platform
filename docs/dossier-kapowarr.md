@@ -7,6 +7,11 @@ a virgin container against an empty `/comics` mount. Read
 first: **Confirmed** was executed, **Inferred** was reasoned, **Unverified**
 was not settled.
 
+The pin is **v1.3.2** since #671. Everything below was established against
+v1.3.1 unless it says otherwise;
+[The v1.3.2 upgrade](#the-v132-upgrade-moves-the-service-order-onto-the-getcomics-indexer)
+records what that release changed and was measured against both images.
+
 Every transcript below was captured under the mount layout this platform ran
 until #264 — the comics library bound at `/comics` and staging at
 `/app/temp_downloads` — and the container paths in them are quoted as they were
@@ -93,6 +98,12 @@ value fails the whole task, which is the correct and loud outcome.
 
 ## `service_preference` must be a complete permutation
 
+**Since v1.3.2 this is no longer a setting** — it is `gc_service_preference` on
+the GetComics indexer, and
+[The v1.3.2 upgrade](#the-v132-upgrade-moves-the-service-order-onto-the-getcomics-indexer)
+below is what changed. The rule this section establishes moved with it and still
+holds there. The transcript is v1.3.1's.
+
 The one genuine trap in the settings surface, and it would not be found by
 reading the value back and assuming a list means a list.
 
@@ -115,6 +126,86 @@ a `400` with no obvious cause. The safe shape is to read the deployed
 the permutation that results — so the declaration says "these first, the rest in
 whatever order the application already had" and an upstream addition lands at
 the end instead of failing.
+
+## The v1.3.2 upgrade moves the service order onto the GetComics indexer
+
+#671. Read from upstream's `V1.3.1...V1.3.2` (git tags are uppercase) and measured
+against both pinned images, fresh and upgraded. It changes four things this
+platform depends on.
+
+**The global setting is gone.** `backend/internals/settings.py` drops
+`service_preference`, and `PUT /api/settings {"service_preference": [...]}` now
+answers `400 KeyNotFound`. Confirmed. The order is `gc_service_preference` on the
+GetComics record in the new `indexer_clients` table, reached through
+`frontend/api.py`'s `/api/indexers` routes:
+
+```
+GET /api/indexers → [{"id": 1, "enabled": true, "download_type": 1,
+                      "client_type": "GetComics", "title": "GetComics",
+                      "url": "https://getcomics.org",
+                      "gc_service_preference": ["Mega", "MediaFire", "WeTransfer",
+                                                "Pixeldrain", "GetComics",
+                                                "GetComics (torrent)"],
+                      "gc_avoid_large_downloads": false, "required_tokens": [...]}]
+```
+
+Confirmed on a fresh v1.3.2, which creates exactly that record on first start
+(`on_first_startup` in `backend/internals/db_migration.py`) with the order of the
+`GCDownloadService` enum — the order `kapowarr_service_preference` declares. The
+GetComics client registers with `allow_multiple_instances=False`, so a second
+`POST /api/indexers` is `400 AddingIndexerForbidden`, and `client_type` rather than
+the editable `title` is what identifies it. Confirmed.
+
+**The indexer write is not a partial merge, and it reaches getcomics.org.**
+`PUT /api/indexers/<id>` builds its input from every indexer field, so a missing
+one arrives as `null`: a body carrying only the order is `400 InvalidKeyValue
+{"key": "title"}`. Confirmed. `_validate_indexer_data()` in
+`backend/implementations/indexer_client_manager.py` keeps the permutation rule
+above — `["GetComics", "Mega"]` and a list naming an unknown `Torbox` are both
+`400 InvalidKeyValue`, the whole reversed permutation is `200`. Confirmed. And
+`update_indexer()` calls the client's `test()` before it stores anything, which for
+GetComics fetches the record's URL and requires the page to contain `GetComics`:
+from a container with no network the same valid write answered `400
+ClientNotWorking {"reason": "connection_error"}` after 8.04 seconds. Confirmed. That
+is the third-party dependency this role refuses for `comicvine_api_key`, so
+`roles/kapowarr` restates the record it read with only the order replaced, gates
+the write on drift, and — because a fresh and a migrated Kapowarr both already hold
+the declared order — never issues it on a converged host. A deleted GetComics
+indexer, or two, is refused rather than recreated or guessed between.
+
+**The migration is one-way.** A v1.3.1 store holding
+`["GetComics", "Pixeldrain", "Mega", "MediaFire", "WeTransfer", "GetComics
+(torrent)"]` started under v1.3.2 logged database versions 46 through 51 in turn,
+and the GetComics indexer then held that same order: migration 47 copies the
+config row into the new record and deletes the row. Confirmed. Nothing in v1.3.1
+knows the new schema, so `services/kapowarr/compose.yml` says so beside the pin,
+`renovate.json` withholds Kapowarr's version bumps from automerge, and
+`roles/image_downgrade_guard` refuses a pin older than one that has already run.
+The migration took no backup of its own — the database directory held only
+`Kapowarr.db` and its WAL pair afterwards. Confirmed.
+
+**Database backups land in the database directory, and that is left alone.**
+v1.3.2 adds `db_backup_folder` and `db_backup_amount` (default 3), and a
+`backup_db` task every Monday at 00:00 that writes
+`Kapowarr_YYYY_MM_DD_HH_MM.db` with `VACUUM INTO` and deletes the oldest past the
+amount (`backend/internals/db_backup_import.py`). `set_db_location()` defaults the
+folder to the database's own, which reads back as `/app/db` — the bind of
+`{{ nas_docker_root }}/kapowarr/config`, already `recovery: critical` in
+`nas_storage_kapowarr`. Confirmed. Three weekly copies of a critical store inside
+the directory a restore of that store already covers are in the right recovery
+class and add at most three database-sized files, so `kapowarr_settings` declares
+neither key. Declaring the folder would also cost a trailing separator, because
+`__format_value()` force-suffixes it the way it does `download_folder`, while the
+default reads back without one.
+
+**Search changed from a daily sweep to a half-hourly feed.** `TASK_INTERVALS` in
+`backend/features/tasks.py` is now cron schedules: `update_all` hourly,
+`backup_db` weekly, and `rss_sync` at `0,30 * * * *`, which reads the GetComics
+sitemap for posts since the last sync (`discover()` on the indexer). The
+24-hour `search_all` is gone and migration 50 deletes its schedule, so a volume
+added with a backlog is no longer searched in full overnight; that takes a manual
+"Search Monitored" in the web interface. Read from source, not run: this platform
+configures no schedule either way.
 
 ## Reading settings back masks the credentials
 
@@ -467,7 +558,8 @@ currently set by hand on first login or left at the application's default:
   directory, sees a coherent library.
 - `volume_padding`, `issue_padding`, `long_special_version`,
   `replace_illegal_characters`, `rename_downloaded_files`
-- `service_preference` (subject to the permutation rule above),
+- `service_preference` (subject to the permutation rule above, and on the
+  GetComics indexer rather than in `PUT /api/settings` since v1.3.2),
   `format_preference`, `convert`, `extract_issue_ranges`
 - `download_folder`, `concurrent_direct_downloads`, `failing_download_timeout`,
   `delete_completed_downloads`, `seeding_handling`
@@ -568,13 +660,23 @@ curl -s -X PUT "http://127.0.0.1:15656/api/settings?api_key=$K" \
   -H 'Content-Type: application/json' -d '{"volume_padding":3}' -o /dev/null
 curl -s "http://127.0.0.1:15656/api/settings?api_key=$K" -o after.json
 
-# the permutation rule
+# the permutation rule, against v1.3.1's settings interface
 curl -s -X PUT "http://127.0.0.1:15656/api/settings?api_key=$K" \
   -H 'Content-Type: application/json' \
   -d '{"service_preference":["GetComics","Pixeldrain"]}'          # 400
 curl -s -X PUT "http://127.0.0.1:15656/api/settings?api_key=$K" \
   -H 'Content-Type: application/json' \
   -d '{"service_preference":["GetComics","Pixeldrain","Mega","MediaFire","WeTransfer","GetComics (torrent)"]}'
+
+# the same rule against v1.3.2, where the order is on the GetComics indexer. The
+# body restates the whole record, and the 200 needs getcomics.org reachable.
+curl -s "http://127.0.0.1:15656/api/indexers?api_key=$K"
+curl -s -X PUT "http://127.0.0.1:15656/api/indexers/1?api_key=$K" \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"title":"GetComics","url":"https://getcomics.org","gc_avoid_large_downloads":false,"gc_service_preference":["GetComics","Mega"]}'   # 400
+curl -s -X PUT "http://127.0.0.1:15656/api/indexers/1?api_key=$K" \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"title":"GetComics","url":"https://getcomics.org","gc_avoid_large_downloads":false,"gc_service_preference":["GetComics (torrent)","GetComics","Pixeldrain","WeTransfer","MediaFire","Mega"]}'
 
 # the identity, before and after
 curl -s http://127.0.0.1:15656/api/public                          # method 0

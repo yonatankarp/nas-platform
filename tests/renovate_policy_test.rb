@@ -102,21 +102,26 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   # MEILI_UPGRADE_DB tells it to, and one-way either way. Both pins live in the
   # one Karakeep stack.
   "ghcr.io/karakeep-app/karakeep" => "karakeep",
-  "docker.io/getmeili/meilisearch" => "karakeep"
+  "docker.io/getmeili/meilisearch" => "karakeep",
+  # #671: Kapowarr v1.3.2 migrated a v1.3.1 store from database version 45 to
+  # 51 on start. It was absent from this set, so a green bump would have
+  # automerged that migration; only a red lane stopped it.
+  "docker.io/mrcas/kapowarr" => "kapowarr"
 }.freeze
 # A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Six is what the tree documents --
+# every loop below and reports a pass. Seven is what the tree documents --
 # roles/bindery/tasks/pre_upgrade_backup.yml, services/immich/compose.yml,
-# services/paperless-ngx/compose.yml and services/nextcloud/compose.yml each say
-# their application migrates its own store on start and refuses to go back, and
-# services/karakeep/compose.yml says it of both the application and Meilisearch.
+# services/paperless-ngx/compose.yml, services/nextcloud/compose.yml and
+# services/kapowarr/compose.yml each say their application migrates its own store
+# on start and refuses to go back, and services/karakeep/compose.yml says it of
+# both the application and Meilisearch.
 #
 # Vaultwarden was a fifth from #547. It migrates its store too, but an older
 # image still starts on a newer store, so its minors and patches automerge and
 # only its majors are withheld; services/vaultwarden/compose.yml carries the
 # evidence, and the rows after the Gotenberg tripwire below pin both halves.
-check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 6,
-      "the self-migrating application set must name six images, not " \
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 7,
+      "the self-migrating application set must name seven images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
 
 SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|

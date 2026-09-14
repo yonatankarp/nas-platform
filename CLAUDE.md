@@ -260,7 +260,7 @@ the key, so the simplest override is one that omits it.
 can run several isolated copies of the platform side by side.
 
 **A pin is not freely reversible where the container migrates its own store.**
-Bindery, Immich, Paperless-ngx and Nextcloud each apply their own schema
+Bindery, Immich, Paperless-ngx, Nextcloud and Kapowarr each apply their own schema
 migrations when they start, and each documents it beside its `image:`. That
 makes a version bump one-way: the newer image writes a schema the older one
 declines to open, and it declines *inside the container*, so the symptom is a
@@ -283,9 +283,9 @@ reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions
 rather than schema versions because the schema lives in a store only the
 application can open; the role names the three routes to the real version and
-why each was rejected. Bindery is its only caller today, and the role takes the
-manifest directory, the Compose service key and the project name as arguments so
-the other three can adopt it unchanged.
+why each was rejected. Bindery and Kapowarr (#671) are its callers today, and the
+role takes the manifest directory, the Compose service key and the project name
+as arguments so the other three can adopt it unchanged.
 
 **Container CPU policy.** Production containers are pinned to logical CPUs `0-2`
 of four, each with a workload-specific 0.5–3.0 CPU ceiling. Ansible derives and
