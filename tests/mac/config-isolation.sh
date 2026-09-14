@@ -51,6 +51,7 @@ render() {
     PUSHOVER_TOKEN=test-pushover-token PUSHOVER_USER_KEY=test-pushover-user-key \
     ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
     ALERT_DAILY_GLOBAL_CEILING=200 \
+    PUSHOVER_ALERTS_TOKEN=test-pushover-alerts-token BESZEL_LINK_BASE=http://127.0.0.1:8090 \
     docker compose --project-name "$base_name-dozzle" \
       -f "$repo_dir/services/dozzle/compose.yml" \
       -f "$repo_dir/services/dozzle/compose.mac.yml" config --format json \

@@ -1654,6 +1654,8 @@ def recorder_failures
       "ALERT_DAILY_CONTAINER_CEILING" => "10",
       "ALERT_DAILY_OOM_CONTAINER_CEILING" => "25",
       "ALERT_DAILY_GLOBAL_CEILING" => "200",
+      "PUSHOVER_ALERTS_TOKEN" => "test-pushover-alerts-token",
+      "BESZEL_LINK_BASE" => "http://127.0.0.1:8090",
       "ALERT_STATE_PATH" => File.join(state_directory, "alert-relay.json"),
       "PYTHONDONTWRITEBYTECODE" => "1"
     }

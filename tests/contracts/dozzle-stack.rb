@@ -49,6 +49,8 @@ abort "Dozzle contract failed: alert relay environment differs" unless
     "PUSHOVER_API_URL" => "${PUSHOVER_API_URL:?}",
     "ALERT_RELAY_LINK_BASE" => "${ALERT_RELAY_LINK_BASE:?}",
     "PUSHOVER_TOKEN" => "${PUSHOVER_TOKEN:?}",
+    "PUSHOVER_ALERTS_TOKEN" => "${PUSHOVER_ALERTS_TOKEN:?}",
+    "BESZEL_LINK_BASE" => "${BESZEL_LINK_BASE:?}",
     "PUSHOVER_USER_KEY" => "${PUSHOVER_USER_KEY:?}",
     "ALERT_DAILY_CONTAINER_CEILING" => "${ALERT_DAILY_CONTAINER_CEILING:?}",
     "ALERT_DAILY_OOM_CONTAINER_CEILING" => "${ALERT_DAILY_OOM_CONTAINER_CEILING:?}",
@@ -172,6 +174,7 @@ abort "Dozzle contract failed: environment does not render the single relay list
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
   env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}") &&
+  env_template.include?("PUSHOVER_ALERTS_TOKEN={{ vault_pushover_alerts_token }}") &&
   env_template.include?("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}")
 
 # The publish endpoint is a variable in every layer it passes through, and that
@@ -189,6 +192,11 @@ abort "Dozzle contract failed: the relay publish endpoint is not redirectable" u
 # The tap-through link goes to the address clients already reach Dozzle at, from
 # the two values that define it, rather than a literal host a lane or a rename
 # would leave pointing somewhere else.
+# A Beszel alert's button opens only Beszel's own app URL, the shared inventory
+# value roles/beszel renders as APP_URL, never a literal or a Dozzle default.
+abort "Dozzle contract failed: the Beszel link base is not Beszel's app URL" unless
+  env_template.include?("BESZEL_LINK_BASE={{ beszel_app_url }}")
+
 abort "Dozzle contract failed: the alert link is not built from the public host and Dozzle port" unless
   env_template.include?("ALERT_RELAY_LINK_BASE={{ dozzle_alert_relay_link_base }}") &&
   relay_defaults.include?(%(dozzle_alert_relay_link_base: "http://{{ platform_public_host }}:{{ dozzle_port }}"\n))
