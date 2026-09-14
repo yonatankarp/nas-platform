@@ -348,32 +348,58 @@ check(failures, unparsed_yaml.empty?,
 # quote, a `mv` and a `: >` each printed `15 of 17 ... 2 dark` and exited 0 --
 # so the refusal is stated over the path as well as over the parse.
 #
-# NAMED AS A LITERAL, in a file that derives everything else, for the same
-# reason INTEGRATION_CONTROLLER is one 250 lines below: it is a fixed path this
-# check's conclusions rest on, and its absence has to fail rather than narrow a
-# subject list. Flooring the inventory scan instead would be wrong rather than
-# merely blunt -- `inventory_gates` being empty for a gate is a LEGITIMATE state
-# by this file's own reasoning (the role default must ship `false` precisely so
-# that dark-by-deletion works, and `overrides.empty?` is handled as a resolution
+# DERIVED, NOT NAMED, and that is the correction #635 made. This was the literal
+# `inventory/group_vars/all/main.yml` until #602 split that file into one
+# service_<role>.yml per service and took both gates with it. The literal kept
+# passing and kept refusing -- over a file that, from that merge on, declared no
+# gate at all and could be emptied with no effect on anything below. Measured on
+# the split tree before the fix: gutting service_vaultwarden.yml or
+# service_nextcloud.yml, each of which holds a live gate, printed `16 of 17 ... 1
+# dark` and exited 0, while gutting main.yml still failed loudly. The guard fired
+# only for the file that could no longer cause the failure.
+#
+# So the subject is every file a gate could live in, derived from the manifest
+# the same way the rest of this check derives its subjects. A literal cannot
+# survive a file being renamed out from under it, and this one did not.
+#
+# Flooring the inventory scan instead would still be wrong rather than merely
+# blunt -- `inventory_gates` being empty for a gate is a LEGITIMATE state by this
+# file's own reasoning (the role default must ship `false` precisely so that
+# dark-by-deletion works, and `overrides.empty?` is handled as a resolution
 # rather than as a fault), so a floor there would fight the idiom the rest of
 # this file exists to protect. And GATE_VARIABLE_FLOOR does not reach any of
 # this: it counts gate NAMES, and the role defaults alone supply both of them,
 # so the count stays at 2 while every value has silently become `false`. It
 # guards the subject list's size and not its truth.
 #
-# WHAT THIS PROVES IS NARROW, deliberately: that the file parsed and is not
-# gutted. It does not prove the file declares the gates, because that is the
-# floor rejected in the paragraph above.
-DECISION_FILE = File.join("inventory", "group_vars", "all", "main.yml")
-# The accumulator is thrown away: the inventory scan above has already recorded
-# this path if it failed to parse, and reporting it twice would name it twice.
-decision_document = load_plain_yaml(File.join(ROOT, DECISION_FILE), [])
-check(failures, decision_document.is_a?(Hash) && !decision_document.empty?,
-      "#{DECISION_FILE} is where every deployment decision on this platform is made and won, " \
-      "and it parsed to an empty #{decision_document.class} -- missing, empty or holding " \
-      "nothing. Every gate then resolves from its role default, which this check requires to " \
-      "ship OFF, so every stack reads as dark and every requirement below holds for nobody. " \
-      "Fix the file and re-run: nothing else this run reports about a gate can be trusted")
+# WHAT THIS PROVES IS NARROW, deliberately: that each file parsed and is not
+# gutted. It does not prove any of them declares a gate, because that is the
+# floor rejected in the paragraph above -- a service with no gate is the normal
+# case, and its file still has to survive so that a gate landing there later is
+# read rather than silently missed.
+#
+# main.yml stays in the set. It no longer holds a gate, but the scan above still
+# sweeps it for one, and it is still the file the composition and the interpreter
+# floors live in.
+DECISION_FILES = ["main.yml"]
+                 .concat(role_of.values.compact.uniq.sort.map { |role| "service_#{role}.yml" })
+                 .map { |name| File.join("inventory", "group_vars", "all", name) }
+# No floor of its own: the list is derived from role_of, which IMPLEMENTED_FLOOR
+# already refuses to let collapse. A second number here would be one more thing
+# that has to be bumped when a service is added, and this file has enough of
+# those.
+DECISION_FILES.each do |relative|
+  # The accumulator is thrown away: the inventory scan above has already recorded
+  # this path if it failed to parse, and reporting it twice would name it twice.
+  decision_document = load_plain_yaml(File.join(ROOT, relative), [])
+  check(failures, decision_document.is_a?(Hash) && !decision_document.empty?,
+        "#{relative} is one of the files a deployment decision on this platform is made and " \
+        "won in, and it parsed to an empty #{decision_document.class} -- missing, empty or " \
+        "holding nothing. Any gate it declared then resolves from its role default, which this " \
+        "check requires to ship OFF, so that stack reads as dark and every requirement below " \
+        "holds for it vacuously. Fix the file and re-run: nothing else this run reports about " \
+        "a gate can be trusted")
+end
 
 gate_names = (role_gates.keys + inventory_gates.keys).uniq.sort
 check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
@@ -401,9 +427,9 @@ gate_names.each do |name|
   # AND IT MUST BE DECLARED OFF. A role default is what a caller gets with no
   # inventory at all, so this line is the FLOOR under the deployment decision
   # rather than a mirror of it: the decision lives in
-  # inventory/group_vars/all/main.yml, which wins on every run any playbook here
-  # makes, and turning it back off there must not leave the stack converging on
-  # the strength of a role default nobody edited.
+  # inventory/group_vars/all/service_<role>.yml, which wins on every run any
+  # playbook here makes, and turning it back off there must not leave the stack
+  # converging on the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
   # it in full -- nextcloud, vaultwarden, karakeep and ntfy are the four gates
@@ -422,7 +448,8 @@ gate_names.each do |name|
   check(failures, declaration.nil? || declaration["value"] == false,
         "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
         "and a role default must ship the gate OFF. It is the floor under the deployment " \
-        "decision, not a copy of it: inventory/group_vars/all/main.yml is where the decision " \
+        "decision, not a copy of it: inventory/group_vars/all/service_#{prefix}.yml is where " \
+        "the decision " \
         "is made and won, and a true default means a caller with no inventory -- or an " \
         "inventory that turned the stack back off -- converges the stack anyway. Set it false " \
         "here and leave inventory to say what this platform runs")
