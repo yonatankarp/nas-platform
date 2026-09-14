@@ -214,7 +214,7 @@ CASES = [
              "Self.DNSName and PLATFORM_PUBLIC_HOST is a raw environment " \
              "lookup, so an operator's capitalisation must not make the stage " \
              "re-place an identical front -- which would converge and page " \
-             "through ntfy every five minutes, forever, with nothing wrong",
+             "through Pushover every five minutes, forever, with nothing wrong",
     "run" => { state: :fronted, public_host: SHOUTY_NAME }, "ok" => true, "mutations" => [] },
   { "name" => "recorded_key_variant",
     "why" => "the other side of the same normalisation. tailscaled is believed " \

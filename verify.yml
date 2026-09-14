@@ -59,8 +59,6 @@
           tags: [platform_verify_mdraid]
       tags: [never, platform_verify_mdraid]
   roles:
-    - role: ntfy
-      tags: [never]
     - role: beszel
       tags: [never]
     - role: dozzle

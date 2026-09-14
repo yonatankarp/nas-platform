@@ -49,7 +49,6 @@ verify_dozzle_labels immich immich-server "$(mac_container_name immich-server)" 
   database "$(mac_container_name immich-postgres)"
 verify_dozzle_labels '' jellyfin "$(mac_container_name jellyfin)"
 verify_dozzle_labels '' komga "$(mac_container_name komga)"
-verify_dozzle_labels '' ntfy "$(mac_container_name ntfy)"
 verify_dozzle_labels paperless broker "$(mac_container_name paperless-redis)" \
   db "$(mac_container_name paperless-postgres)" \
   webserver "$(mac_container_name paperless-webserver)" \

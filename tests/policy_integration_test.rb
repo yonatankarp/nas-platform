@@ -461,14 +461,13 @@ check(failures,
 # deriving its project is caught here rather than by a leaked sandbox container.
 namespaced_projects, namespaced_error, namespaced_status = Open3.capture3(
   "ansible", "localhost", "-i", "localhost,", "-c", "local", "-m", "debug",
-  "-a", "msg={{ platform_media_control_network }}|{{ ntfy_compose_project_name }}|" \
+  "-a", "msg={{ platform_media_control_network }}|" \
         "{{ beszel_compose_project_name }}|{{ dozzle_compose_project_name }}|" \
         "{{ audiobookshelf_compose_project_name }}|{{ komga_compose_project_name }}|" \
         "{{ jellyfin_compose_project_name }}|{{ immich_compose_project_name }}|" \
         "{{ paperless_compose_project_name }}|{{ arr_compose_project_name }}|" \
         "{{ downloaders_compose_project_name }}",
   "-e", "@inventory/group_vars/all/main.yml",
-  "-e", "@roles/ntfy/defaults/main.yml",
   "-e", "@roles/beszel/vars/main.yml",
   "-e", "@roles/dozzle/defaults/main.yml",
   "-e", "@roles/audiobookshelf/defaults/main.yml",
@@ -482,7 +481,7 @@ namespaced_projects, namespaced_error, namespaced_status = Open3.capture3(
   chdir: ROOT
 )
 expected_namespaced = %w[
-  media-control ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless
+  media-control beszel dozzle audiobookshelf komga jellyfin immich paperless
   arr downloaders
 ].map { |suffix| "#{namespace}-#{suffix}" }.join("|")
 check(failures,
@@ -504,8 +503,7 @@ check(failures,
         ) &&
         contract_environment.include?(%(PLATFORM_CONTRACT_VAULT_FILE="$vault_file")) &&
         !controller.include?("sandbox-vault.yml") &&
-        !controller.include?("random_password()") &&
-        !controller.include?("ntfy_token()"),
+        !controller.include?("random_password()"),
       "integration must consume the ephemeral encrypted vault without duplicate secret authoring")
 check(failures,
       controller.include?('/repo/tests/mac/generate-immich-fixture-vars.rb') &&

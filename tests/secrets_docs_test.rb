@@ -128,7 +128,7 @@ check(failures,
       "canonical secrets guide must document foundation shape and uniqueness")
 
 managed_user_services = %w[
-  audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless_ngx
+  audiobookshelf beszel dozzle immich jellyfin komga paperless_ngx
 ]
 managed_users = vault_example.keys.grep(/\Avault_managed_/)
 check(failures,
@@ -174,8 +174,8 @@ required_commands_by_section = {
   ],
   "## Individual secret recipes" => [
     "openssl rand -base64 48",
-    "user hash",
-    "token generate",
+    "--entrypoint php",
+    "PASSWORD_BCRYPT",
     "ssh-keygen"
   ]
 }
@@ -445,7 +445,7 @@ required_auto_deploy_guidance = {
     "state that a failing play is never retried automatically",
   /newer.*successful.*SHA.*proceed/im => "allow a newer successful SHA after a failure",
   /optionally disable SSH/i => "describe optional SSH disablement after bootstrap",
-  # Pushover since #558 stage 3, when the poller stopped publishing to ntfy.
+  # Pushover since #558 stage 3, when the poller moved its notices there.
   /protected.*logs.*Pushover/im => "describe protected logs and Pushover outcomes",
   # The design no longer keeps immutable release directories; the boundary is
   # now services, application data, and the retained attempt logs.

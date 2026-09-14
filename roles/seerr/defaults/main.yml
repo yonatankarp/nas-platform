@@ -11,7 +11,7 @@ seerr_config_host_path: "{{ nas_docker_root }}/seerr/config"
 
 # Where the operator reaches this service. Seerr embeds it in every notification
 # it sends, so a wrong value produces links nobody can follow. Same shape as
-# ntfy's and Beszel's own external addresses.
+# Beszel's own external address.
 seerr_application_url: "http://{{ platform_public_host }}:{{ seerr_port }}"
 
 # Seerr addresses Jellyfin, Radarr and Sonarr by their Compose service alias on

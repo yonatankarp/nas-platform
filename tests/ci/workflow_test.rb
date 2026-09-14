@@ -95,7 +95,7 @@ IDEMPOTENCE_SHARD_SUITES = %w[
 INTEGRATION_SUITES = (FULL_RUN_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
 CLASSIFIER_OUTPUTS = %w[static docs vault reconciliation suites selected_tags].freeze
-SAMPLE_TAGS = "host_prep,deployment_bundle,ntfy,beszel"
+SAMPLE_TAGS = "host_prep,deployment_bundle,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
   "Validate shell syntax",

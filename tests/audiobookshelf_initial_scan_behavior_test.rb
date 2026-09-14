@@ -74,8 +74,7 @@ end
 # (IOError)" rather than as a deadline, and the ansible child outlives the check
 # because nothing signals it. Only wait_thread.value is wrapped here, the
 # readers are ours, and the process group is killed on the way out -- the shape
-# the sibling fixtures in tests/ntfy_verify_execution_test.rb,
-# tests/immich_configured_password_test.rb and
+# the sibling fixtures in tests/immich_configured_password_test.rb and
 # tests/beszel_password_preservation_test.rb already carry.
 #
 # Every join on the timeout path is bounded, and must stay bounded. A reader

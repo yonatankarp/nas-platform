@@ -108,7 +108,7 @@ class PollerTestCase(unittest.TestCase):
             "platform_callback_host": "192.168.0.139",
             "github_api_base": "https://api.github.com",
             "log_retention_days": 30,
-            "verify_tags": "platform_verify_ntfy,platform_verify_beszel",
+            "verify_tags": "platform_verify_beszel,platform_verify_dozzle",
             "hourly_only_verify_tags": "platform_verify_mdraid",
             "git_path": "/usr/local/bin/git",
             "curl_path": "/usr/bin/curl",
@@ -176,7 +176,7 @@ class ConfigTest(PollerTestCase):
     def test_load_config_reads_the_hourly_only_tags_separately(self):
         config = self.loaded_config()
 
-        self.assertEqual(config.verify_tags, "platform_verify_ntfy,platform_verify_beszel")
+        self.assertEqual(config.verify_tags, "platform_verify_beszel,platform_verify_dozzle")
         self.assertEqual(config.hourly_only_verify_tags, "platform_verify_mdraid")
 
     def test_a_configuration_from_an_older_template_has_no_hourly_only_tags(self):
@@ -186,7 +186,7 @@ class ConfigTest(PollerTestCase):
         # periodic_verify_tags restates the deploy list and must not be read as
         # hourly-only, or the services would verify twice under the array's record.
         for extra in ({}, {"periodic_verify_tags": (
-                "platform_verify_ntfy,platform_verify_beszel,platform_verify_mdraid")}):
+                "platform_verify_beszel,platform_verify_dozzle,platform_verify_mdraid")}):
             with self.subTest(extra=extra):
                 payload = self.config_payload(**extra)
                 payload.pop("hourly_only_verify_tags")
@@ -195,7 +195,7 @@ class ConfigTest(PollerTestCase):
                 config = production_auto_deploy.load_config(self.config_path)
 
                 self.assertEqual(config.hourly_only_verify_tags, "")
-                self.assertEqual(config.verify_tags, "platform_verify_ntfy,platform_verify_beszel")
+                self.assertEqual(config.verify_tags, "platform_verify_beszel,platform_verify_dozzle")
 
     def test_a_configuration_without_ping_urls_loads_with_no_ping(self):
         # Every configuration an installer before #606 wrote, and the one this
@@ -206,16 +206,16 @@ class ConfigTest(PollerTestCase):
         self.assertEqual(config.healthchecks_poller_ping_url, "")
         self.assertEqual(config.healthchecks_verify_ping_url, "")
 
-    def test_an_ntfy_era_configuration_loads_and_cannot_publish(self):
+    def test_a_pre_pushover_configuration_loads_and_cannot_publish(self):
         # The install play copies this poller before it renders deployer.json, so
-        # the first tick after the move to Pushover reads the file the ntfy-era
+        # the first tick after the move to Pushover reads the file the pre-Pushover
         # template wrote (#327). Refusing it would stop every deployment with
         # nothing able to heal the host: it loads, says so in one stderr line,
         # and publishes nothing.
         payload = self.config_payload(
-            ntfy_curl_config=str(self.root / ".config/nas-platform/ntfy.curl"),
-            ntfy_topic_critical="nas-critical",
-            ntfy_topic_deployment="nas-deployment",
+            retired_curl_config=str(self.root / ".config/nas-platform/retired.curl"),
+            retired_topic_critical="nas-critical",
+            retired_topic_deployment="nas-deployment",
         )
         payload.pop("pushover_alerts_curl_config")
         payload.pop("pushover_deployments_curl_config")
@@ -1111,7 +1111,7 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertIn("verify.yml", tagged[0])
         self.assertEqual(
             tagged[0][tagged[0].index("--tags") + 1],
-            "platform_verify_ntfy,platform_verify_beszel",
+            "platform_verify_beszel,platform_verify_dozzle",
         )
 
     def test_a_deployments_verify_play_never_carries_the_hourly_only_tags(self):
@@ -1128,7 +1128,7 @@ class DeployTest(DeployHarness, PollerTestCase):
                 *production_auto_deploy._vault_arguments(config),
                 "verify.yml",
                 "--tags",
-                "platform_verify_ntfy,platform_verify_beszel",
+                "platform_verify_beszel,platform_verify_dozzle",
             ],
         )
         self.assertNotIn("platform_verify_mdraid", " ".join(verify_call))
@@ -2038,7 +2038,7 @@ class PollBlindnessTest(PollerTestCase):
         def fake_notify(_config, app, fields):
             published.append(dict(fields, app=app))
             # `delivered` is what the real publish() reports when curl cannot
-            # reach ntfy: attempted, not received. The distinction is the whole
+            # reach Pushover: attempted, not received. The distinction is the whole
             # point of the alarm path, so it is a parameter of the fake rather
             # than an always-true stub.
             return delivered
@@ -2199,10 +2199,10 @@ class PollBlindnessTest(PollerTestCase):
             (config.state_root / "blind-polls").read_text(encoding="ascii").strip(), "0"
         )
 
-    def test_an_inherited_ntfy_era_outage_gets_exactly_one_pushover_recovery(self):
-        """The one message an ntfy-era state directory may cost (#558).
+    def test_an_inherited_pre_pushover_outage_gets_exactly_one_pushover_recovery(self):
+        """The one message a pre-Pushover state directory may cost (#558).
 
-        An outage the ntfy poller announced leaves a count past the threshold
+        An outage the earlier poller announced leaves a count past the threshold
         and an announced marker. The first Pushover poll that sees main again
         closes it, once, quietly, on the Alerts app; a still-blind one repeats
         nothing.
@@ -2559,8 +2559,8 @@ class PollCiRefusalTest(PollerTestCase):
         self.assertEqual(published, [])
         self.assertEqual(production_auto_deploy.read_ci_refusal(config), recorded)
 
-    def test_an_ntfy_era_refusal_record_is_not_announced_again(self):
-        """The marker format is transport-agnostic, so a refusal the ntfy poller
+    def test_a_pre_pushover_refusal_record_is_not_announced_again(self):
+        """The marker format is transport-agnostic, so a refusal the earlier poller
         announced is not repeated by the first Pushover poll (#558)."""
 
         config = self.loaded_config()
@@ -3800,7 +3800,7 @@ class VerifyTest(PollerTestCase):
         # Before #618, and as #618's template wrote it: neither may run the
         # services twice or touch the array's record.
         for extra in ({}, {"periodic_verify_tags": (
-                "platform_verify_ntfy,platform_verify_beszel,platform_verify_mdraid")}):
+                "platform_verify_beszel,platform_verify_dozzle,platform_verify_mdraid")}):
             with self.subTest(extra=extra):
                 payload = self.config_payload(
                     git_path=self.git, curl_path=str(self.curl), **extra
@@ -3814,7 +3814,7 @@ class VerifyTest(PollerTestCase):
 
                 self.assertEqual(code, 1)
                 (run,) = self.playbook_runs()
-                self.assertEqual(run["argv"][-1], "platform_verify_ntfy,platform_verify_beszel")
+                self.assertEqual(run["argv"][-1], "platform_verify_beszel,platform_verify_dozzle")
                 (page,) = self.pages()
                 self.assertIn("Verify failed", page["title"])
                 self.assertFalse(
@@ -4131,8 +4131,8 @@ class VerifyTest(PollerTestCase):
         self.assertIn("verify notification failed", output)
         self.assertFalse((self.config.state_root / "verify-verdict").exists())
 
-    def test_an_inherited_ntfy_era_failure_recovers_once_on_pushover(self):
-        """A failure the ntfy poller recorded is closed by the first Pushover pass (#558)."""
+    def test_an_inherited_pre_pushover_failure_recovers_once_on_pushover(self):
+        """A failure the earlier poller recorded is closed by the first Pushover pass (#558)."""
 
         self.mark_deployed()
         (self.config.state_root / "verify-verdict").write_text(

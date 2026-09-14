@@ -48,8 +48,8 @@ vaultwarden_url: "http://127.0.0.1:{{ vaultwarden_port }}"
 # THE ORIGIN CLIENTS SEE, DERIVED RATHER THAN RESTATED. Tailscale Serve
 # terminates TLS on 443 in front of vaultwarden_url above, so the origin carries
 # the https scheme and no port. platform_public_host is the one coordinate this
-# platform states per inventory for exactly this audience -- roles/ntfy,
-# roles/seerr, roles/beszel and roles/nextcloud all build their published URLs
+# platform states per inventory for exactly this audience -- roles/seerr,
+# roles/beszel and roles/nextcloud all build their published URLs
 # from it -- so restating the name here would be a second copy nothing keeps in
 # agreement with the first.
 #

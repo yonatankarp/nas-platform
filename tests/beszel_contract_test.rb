@@ -8,8 +8,7 @@
 # the only thing that ever executed the static half was
 # `tests/contracts/beszel.sh static`; the only thing that ever executed the
 # 314-line runtime half was the beszel integration lane or the Mac proof, both
-# of which need Docker, a converged PocketBase hub, a disposable ntfy and a real
-# vault; and the fixture half was reachable only through
+# of which need Docker, a converged PocketBase hub and a real vault; and the fixture half was reachable only through
 # tests/beszel_telemetry_probe_test.rb. A contract that passes says nothing
 # about which of its assertions still bite. All three are files now, so each
 # assertion can be moved on its own.
@@ -27,9 +26,9 @@
 #   tests/beszel_telemetry_probe_test.rb; what is new here is the program's
 #   argument contract and the fact that it needs no vault environment at all.
 #
-#   Runtime -- Beszel's own PocketBase API and a disposable ntfy served from two
-#   HTTP fixtures, with `ansible-vault` stubbed on PATH, driving every mode the
-#   program dispatches. None of this had any test at all before the cut.
+#   Runtime -- Beszel's own PocketBase API served from an HTTP fixture that also
+#   delivers the test notification to the program's recorder, with
+#   `ansible-vault` stubbed on PATH, driving every mode the program dispatches. None of this had any test at all before the cut.
 #
 #   Wrapper -- tests/contracts/beszel.sh is what turns a mode into an
 #   invocation. Its rows prove the mode guard, the three-argument requirement of
@@ -59,6 +58,7 @@
 require "etc"
 require "fileutils"
 require "json"
+require "net/http"
 require "open3"
 require "rbconfig"
 require "shellwords"
@@ -881,29 +881,27 @@ end
 # Runtime layer
 # ---------------------------------------------------------------------------
 #
-# Beszel's own PocketBase API and a disposable ntfy, modelled closely enough
-# that every mode the runtime program dispatches reaches its own sentence. Two
-# HTTP fixtures, nested, because the program talks to two services on two ports
-# and the ntfy port is part of the URL the notification proof sends.
+# Beszel's own PocketBase API, modelled closely enough that every mode the
+# runtime program dispatches reaches its own sentence. One HTTP fixture: the
+# notification proof's other end is a recorder inside the program itself, and
+# this hub delivers to it the way the real one does.
 #
-# Two webhook shapes, and they are no longer the same value. The *managed*
-# webhook -- the one roles/beszel converges and the verify and drift modes
-# compare against -- is Pushover, built from the vault pair and never delivered
-# through here. The *notification proof* still sends an ntfy URL of its own,
-# because a proof that ended at a real Pushover account cannot run in a test
-# lane; what it demonstrates is the hub's shoutrrr dispatch working end to end,
-# not that the stored Pushover URL is deliverable. The runtime program says the
-# same thing beside each of the two.
+# Two webhook shapes, and they are not the same value. The *managed* webhook --
+# the one roles/beszel converges and the verify and drift modes compare against
+# -- is Pushover, built from the vault pair and never delivered through here.
+# The *notification proof* sends a shoutrrr generic URL of its own, because a
+# proof that ended at a real Pushover account cannot run in a test lane; what it
+# demonstrates is the hub's shoutrrr dispatch working end to end, not that the
+# stored Pushover URL is deliverable. The runtime program says the same thing
+# beside each of the two.
 
 SUPER_EMAIL = "beszel-super@example.invalid"
 SUPER_PASSWORD = "beszel-contract-superuser-password"
 APP_EMAIL = "beszel-app@example.invalid"
 APP_PASSWORD = "beszel-contract-app-password"
 UNIVERSAL_TOKEN = "33333333-3333-4333-a333-333333333333"
-NTFY_TOKEN = "beszel-contract-ntfy-token"
 PUSHOVER_TOKEN = "beszel-contract-pushover-token"
 PUSHOVER_USER_KEY = "beszel-contract-pushover-user-key"
-NTFY_ADMIN = %w[ntfy-admin ntfy-contract-admin-password].freeze
 ADMIN_TOKEN = "beszel-contract-admin-token"
 APP_TOKEN = "beszel-contract-app-session-token"
 SYSTEM_NAME = "ASUSTOR-AS6704T"
@@ -945,11 +943,8 @@ VAULT = {
   "vault_beszel_app_user_email" => APP_EMAIL,
   "vault_beszel_app_user_password" => APP_PASSWORD,
   "vault_beszel_universal_token" => UNIVERSAL_TOKEN,
-  "vault_ntfy_beszel_token" => NTFY_TOKEN,
   "vault_pushover_alerts_token" => PUSHOVER_TOKEN,
-  "vault_pushover_user_key" => PUSHOVER_USER_KEY,
-  "vault_ntfy_admin_user" => NTFY_ADMIN.fetch(0),
-  "vault_ntfy_admin_password" => NTFY_ADMIN.fetch(1)
+  "vault_pushover_user_key" => PUSHOVER_USER_KEY
 }.freeze
 
 # What roles/beszel stores, and what the verify and drift modes compare the
@@ -959,10 +954,34 @@ def expected_webhook
   "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/?priority=1"
 end
 
-# What the notification proof sends instead, which is a different question --
-# see the two-shapes paragraph above.
-def expected_notification_url(state)
-  "ntfy://:#{NTFY_TOKEN}@#{CALLBACK_HOST}:#{state.fetch(:ntfy_port)}/nas-critical?scheme=http"
+# What the hub does with the URL the notification proof sends instead, which is
+# a different question -- see the two-shapes paragraph above. Modelled on Beszel
+# 0.19.0's SendShoutrrrAlert and the generic service of the shoutrrr v0.19.0 it
+# vendors, as far as a program can get the URL wrong: any scheme but `generic`
+# is not this service, a missing `disabletls` sends https to a plain listener,
+# and only CALLBACK_HOST resolves -- standing in for the address a container
+# reaches the Docker host on -- so a URL naming loopback or any other host
+# fails the dial rather than reaching the recorder by accident. The port and
+# path are used as given. Each failure comes back as the string a real hub puts
+# in `err`; nil is a delivery. It runs on the fixture's one serving thread, which
+# is what a real hub does too (it sends before it answers); the two-second
+# timeouts are what bound a recorder that never answers.
+def deliver_test_notification(url, state)
+  uri = URI(url.to_s)
+  return "unknown service" unless uri.scheme == "generic"
+  return "tls: first record does not look like a TLS handshake" unless
+    %w[true 1 yes y].include?(URI.decode_www_form(uri.query.to_s).to_h["disabletls"].to_s.downcase)
+  return "dial tcp: lookup #{uri.host}: no such host" unless uri.host == CALLBACK_HOST
+
+  # No template, so the body is the message as Beszel built it: the title
+  # prepended, the app URL appended.
+  body = state.fetch(:delivered_text, "Test Alert\n\n#{DELIVERED_MESSAGE}\n\nhttp://beszel.example.invalid")
+  response = Net::HTTP.start("127.0.0.1", uri.port, open_timeout: 2, read_timeout: 2) do |http|
+    http.post(uri.path.empty? ? "/" : uri.path, body, "Content-Type" => "text/plain")
+  end
+  "server returned unexpected response status code: #{response.code}" if response.code.to_i >= 400
+rescue URI::InvalidURIError, SystemCallError, Timeout::Error => error
+  "sending HTTP request: #{error.class}"
 end
 
 def converged_state
@@ -976,9 +995,7 @@ def converged_state
     alerts: MANAGED_ALERTS.map.with_index do |(name, (value, duration)), index|
       { "id" => "alert-#{index}", "user" => "app-user", "system" => "managed-system",
         "name" => name, "value" => value, "min" => duration }
-    end,
-    ntfy: [],
-    ntfy_sequence: 0
+    end
   }
 end
 
@@ -1039,11 +1056,9 @@ def hub_responder(state)
       next [401, JSON.generate("message" => "unauthorized")] unless authorized
       next [200, state.fetch(:notification_body)] if state.key?(:notification_body)
 
-      state[:notification_url] = payload["url"]
-      unless state.fetch(:notification_never_delivers, false)
-        publish(state, "nas-critical", DELIVERED_MESSAGE)
-      end
-      next [200, JSON.generate("err" => state.fetch(:notification_err, false))]
+      failure = deliver_test_notification(payload["url"], state) unless
+        state.fetch(:notification_never_delivers, false)
+      next [200, JSON.generate("err" => state.fetch(:notification_err, failure || false))]
     end
 
     next [401, JSON.generate("message" => "unauthorized")] unless authorized
@@ -1090,46 +1105,6 @@ def hub_responder(state)
   end
 end
 
-def publish(state, topic, message)
-  state[:ntfy_sequence] = state.fetch(:ntfy_sequence) + 1
-  state.fetch(:ntfy) << { "id" => "message-#{state.fetch(:ntfy_sequence)}",
-                          "event" => "message", "topic" => topic, "message" => message }
-end
-
-def ntfy_responder(state)
-  lambda do |method, target, headers, body|
-    expected = "Basic #{[NTFY_ADMIN.join(':')].pack('m0')}"
-    next [401, "unauthorized"] unless headers.fetch("authorization", "") == expected
-
-    path, query = target.split("?", 2)
-    params = query ? URI.decode_www_form(query).to_h : {}
-    if method == "POST" && path == "/"
-      payload = JSON.parse(body)
-      publish(state, payload.fetch("topic"), payload.fetch("message"))
-      next [200, JSON.generate("id" => "published")]
-    end
-    if method == "GET" && path == "/nas-critical/json"
-      # The text helper's own status guard is only reachable through this read:
-      # the publish above it goes through the JSON helper.
-      next [state.fetch(:ntfy_read_status), "boom"] if state.key?(:ntfy_read_status)
-      next [200, state.fetch(:ntfy_body)] if state.key?(:ntfy_body)
-
-      messages = state.fetch(:ntfy).select { |entry| entry.fetch("topic") == "nas-critical" }
-      since = params["since"]
-      selected = if since == "latest"
-                   messages.last(1)
-                 elsif since
-                   index = messages.index { |entry| entry.fetch("id") == since }
-                   index ? messages[(index + 1)..] : messages
-                 else
-                   messages
-                 end
-      next [200, "#{selected.map { |entry| JSON.generate(entry) }.join("\n")}\n"]
-    end
-    [500, "unexpected #{method} #{target}"]
-  end
-end
-
 def write_stub(directory, name, body)
   path = File.join(directory, name)
   File.write(path, body)
@@ -1164,7 +1139,6 @@ def run_runtime(program, mode, state, paths, extra_env: {})
     "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => paths.fetch(:password),
     "PLATFORM_REPORT_ROOT" => paths.fetch(:report),
     "PLATFORM_BESZEL_PORT" => state.fetch(:hub_port).to_s,
-    "PLATFORM_NTFY_PORT" => state.fetch(:ntfy_port).to_s,
     "PLATFORM_KIND" => state.fetch(:platform_kind, "nas"),
     "PLATFORM_CALLBACK_HOST" => CALLBACK_HOST
   }.merge(extra_env)
@@ -1417,21 +1391,14 @@ RUNTIME_ROWS = [
         state.fetch(:systems).length == 1
     } },
   # --- notify ------------------------------------------------------------
+  # The delivering hub is what judges the URL: deliver_test_notification refuses
+  # a wrong scheme, a missing plain-http selection or a host other than the
+  # callback, and a wrong port refuses the connection. Each lands in `err`.
   { name: "the notification proof against a delivering hub", mode: "notify",
-    expects: nil,
-    after: lambda { |_paths, collected, state|
-      collected << "runtime: notify did not send the vault-derived webhook URL" unless
-        state[:notification_url] == expected_notification_url(state)
-    } },
+    expects: nil },
   { name: "an application identity the vault does not hold", mode: "notify",
     state: { vault: VAULT.merge("vault_beszel_app_user_password" => "wrong") },
     expects: "POST /api/collections/users/auth-with-password returned HTTP 400" },
-  { name: "a disposable ntfy that keeps no message history", mode: "notify",
-    state: { ntfy_body: "\n" },
-    expects: "disposable ntfy has no baseline message for anti-replay polling" },
-  { name: "a disposable ntfy whose history read fails", mode: "notify",
-    state: { ntfy_read_status: 500 },
-    expects: "GET /nas-critical/json returned HTTP 500" },
   { name: "a hub that reports the notification failed", mode: "notify",
     state: { notification_err: true },
     expects: "Beszel test notification reported delivery failure" },
@@ -1439,17 +1406,25 @@ RUNTIME_ROWS = [
     state: { notification_body: "not json at all" },
     expects: "returned malformed JSON" },
   {
-    # The anti-replay poll itself: the hub reports success but nothing arrives,
-    # so the loop runs to its deadline and refuses. Like the telemetry row
-    # above, what is asserted is termination and the sentence, not the number:
-    # the program's default of fifteen seconds is a real ntfy's delivery budget
+    # The recorder poll itself: the hub reports success but nothing arrives, so
+    # the loop runs to its deadline and refuses. Like the telemetry row above,
+    # what is asserted is termination and the sentence, not the number: the
+    # program's default of fifteen seconds is the deployment's delivery budget
     # and stays the default. Four seconds is four passes through the same
     # one-second sleep and the same refusal, and it keeps this row from becoming
     # the floor the telemetry row stopped being (#485).
-    name: "a notification that never reaches the disposable ntfy", mode: "notify",
+    name: "a notification that never reaches the recorder", mode: "notify",
     state: { notification_never_delivers: true },
     env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
-    expects: "Beszel test notification did not reach disposable ntfy"
+    expects: "Beszel test notification did not reach the contract's recorder"
+  },
+  {
+    # Something reached the recorder, but not Beszel's test message: a POST is
+    # not proof of this notification. Sits out the same short deadline.
+    name: "a delivery that does not carry Beszel's test message", mode: "notify",
+    state: { delivered_text: "Test Alert\n\nsomething else entirely" },
+    env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
+    expects: "Beszel test notification did not reach the contract's recorder"
   }
 ].freeze
 
@@ -1461,7 +1436,7 @@ def prepare_state(row)
   state
 end
 
-# Fills in everything that cannot be known until the two loopback ports are
+# Fills in everything that cannot be known until the hub's loopback port is
 # bound: the managed webhook URL, and the telemetry status override the
 # responder reads.
 def finalize_state(state)
@@ -1486,42 +1461,38 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
       end
       with_http_fixture(lambda { |hub_port|
         state[:hub_port] = hub_port
-        with_http_fixture(lambda { |ntfy_port|
-          state[:ntfy_port] = ntfy_port
-          finalize_state(state)
-          if row.fetch(:drift_first, false)
-            _out, err, drifted = run_runtime(program, "drift", state, paths)
-            collected << "#{label}: the drift this row builds on failed: #{err.strip}" unless
-              drifted.success?
-            row[:mutate_after_drift]&.call(state)
-          end
-          if row.fetch(:wrong_owner_first, false)
-            _out, err, seeded = run_runtime(program, "wrong-owner", state, paths)
-            collected << "#{label}: the wrong-owner install this row builds on failed: " \
-                         "#{err.strip}" unless seeded.success?
-          end
-          # Only the judged invocation takes the row's environment. The two
-          # pre-runs above install a fixture rather than being measured, and
-          # neither reaches a deadline, so widening the override to them would
-          # claim a property no row asserts.
-          stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths,
-                                               extra_env: row.fetch(:env, {}))
-          collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
-                                 prefix: DIAGNOSTIC_PREFIX))
-          # Every credential this fixture holds, checked against every byte the
-          # program printed. Beszel's data directory is secret-bearing and the
-          # program decrypts a vault in memory; a diagnostic that echoed one
-          # would be a leak, and the program's own scrub of the decrypted YAML
-          # is what keeps that from happening.
-          output = stdout + stderr
-          [SUPER_PASSWORD, APP_PASSWORD, UNIVERSAL_TOKEN, NTFY_TOKEN,
-           PUSHOVER_TOKEN, PUSHOVER_USER_KEY,
-           NTFY_ADMIN.fetch(1)].each do |secret|
-            collected << "#{label}: the diagnostic echoed a credential" if output.include?(secret)
-          end
-          after = row[:after]
-          after&.call(paths, collected, state)
-        }, &ntfy_responder(state))
+        finalize_state(state)
+        if row.fetch(:drift_first, false)
+          _out, err, drifted = run_runtime(program, "drift", state, paths)
+          collected << "#{label}: the drift this row builds on failed: #{err.strip}" unless
+            drifted.success?
+          row[:mutate_after_drift]&.call(state)
+        end
+        if row.fetch(:wrong_owner_first, false)
+          _out, err, seeded = run_runtime(program, "wrong-owner", state, paths)
+          collected << "#{label}: the wrong-owner install this row builds on failed: " \
+                       "#{err.strip}" unless seeded.success?
+        end
+        # Only the judged invocation takes the row's environment. The two
+        # pre-runs above install a fixture rather than being measured, and
+        # neither reaches a deadline, so widening the override to them would
+        # claim a property no row asserts.
+        stdout, stderr, status = run_runtime(program, row.fetch(:mode), state, paths,
+                                             extra_env: row.fetch(:env, {}))
+        collected.concat(judge(label, row.fetch(:expects), stdout, stderr, status,
+                               prefix: DIAGNOSTIC_PREFIX))
+        # Every credential this fixture holds, checked against every byte the
+        # program printed. Beszel's data directory is secret-bearing and the
+        # program decrypts a vault in memory; a diagnostic that echoed one
+        # would be a leak, and the program's own scrub of the decrypted YAML
+        # is what keeps that from happening.
+        output = stdout + stderr
+        [SUPER_PASSWORD, APP_PASSWORD, UNIVERSAL_TOKEN,
+         PUSHOVER_TOKEN, PUSHOVER_USER_KEY].each do |secret|
+          collected << "#{label}: the diagnostic echoed a credential" if output.include?(secret)
+        end
+        after = row[:after]
+        after&.call(paths, collected, state)
       }, &hub_responder(state))
     end
   end
@@ -2263,11 +2234,9 @@ RUNTIME_MUTATIONS = [
     rows: ["an identity read that is not JSON"],
     detects: "refused for the wrong reason" },
   {
-    # Two live copies of the same sentence, one in the JSON helper and one in
-    # the text helper, so each is scoped by the line below it rather than
-    # planted twice. An unscoped sub would have hit whichever came first and
-    # left the other guard in place, and the rows would still have gone red --
-    # for the wrong reason. Reported by --self-test's own count assertion.
+    # Scoped by the line below it. It was one of two live copies of the same
+    # sentence until the text helper went with the topic readback it served, and
+    # the scope still costs nothing if a second copy ever returns.
     label: "the expected status check in the JSON helper",
     from: "fail_contract(\"\#{method.upcase} \#{uri.path} returned HTTP \#{response.code}\") unless expected.include?(response.code.to_i)\n" \
           "  response.body.to_s.empty?",
@@ -2277,12 +2246,6 @@ RUNTIME_MUTATIONS = [
            "an application identity the vault does not hold"],
     detects: "refused for the wrong reason"
   },
-  { label: "the expected status check in the text helper",
-    from: "fail_contract(\"\#{method.upcase} \#{uri.path} returned HTTP \#{response.code}\") unless expected.include?(response.code.to_i)\n" \
-          "  response.body\n",
-    to: "nil unless expected.include?(response.code.to_i)\n  response.body\n",
-    rows: ["a disposable ntfy whose history read fails"],
-    detects: "refused for the wrong reason" },
   { label: "the exact-record absence check",
     from: 'fail_contract("#{description} is absent") if records.empty?',
     to: "nil if records.empty?",
@@ -2391,31 +2354,53 @@ RUNTIME_MUTATIONS = [
     to: "    nil",
     rows: ["the removal of a wrong-owner fixture"],
     detects: "removal left the evidence artifact behind" },
-  { label: "the anti-replay baseline requirement",
-    from: 'fail_contract("disposable ntfy has no baseline message for anti-replay polling") unless baseline_id',
-    to: "nil unless baseline_id",
-    rows: ["a disposable ntfy that keeps no message history"],
-    detects: "refused for the wrong reason" },
   { label: "the delivery failure check",
     from: 'fail_contract("Beszel test notification reported delivery failure") unless notification["err"] == false',
     to: 'nil unless notification["err"] == false',
     rows: ["a hub that reports the notification failed"],
     detects: "accepted what it must refuse" },
-  { label: "the anti-replay poll deadline",
-    from: 'fail_contract("Beszel test notification did not reach disposable ntfy") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline',
+  { label: "the recorder poll deadline",
+    from: %(fail_contract("Beszel test notification did not reach the contract's recorder") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline),
     to: "nil if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline",
     rows: [],
-    # Deliberately unplanted. Removing the deadline turns the anti-replay loop
+    # Deliberately unplanted. Removing the deadline turns the recorder loop
     # into an unbounded poll, so the row would hang rather than report -- which
     # is #310's ${VAR:?}-to-:= lesson in a different shape. The deadline is
-    # asserted by the row above it instead, which reaches this sentence.
+    # asserted by the two rows that reach this sentence instead.
     skip: "removing the deadline makes the row hang rather than fail"
   },
+  { label: "the recorder requirement",
+    from: %(break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") }),
+    to: "break",
+    rows: ["a notification that never reaches the recorder",
+           "a delivery that does not carry Beszel's test message"] },
+  { label: "the test message match",
+    from: %(record["body"].include?("This is a notification from Beszel.")),
+    to: "true",
+    rows: ["a delivery that does not carry Beszel's test message"] },
+  # The URL's parts, each planted where the delivering hub must refuse it. Each
+  # must land on the `err` refusal by name: "expected success" alone would also
+  # count a plant that broke the program before it ever sent the URL.
   { label: "the notification URL the proof sends",
-    from: 'body: { url: expected_url })',
-    to: 'body: { url: "ntfy://elsewhere.invalid" })',
+    from: "body: { url: notification_url })",
+    to: 'body: { url: "generic://elsewhere.invalid/beszel-contract?disabletls=yes" })',
     rows: ["the notification proof against a delivering hub"],
-    detects: "runtime: notify did not send the vault-derived webhook URL" }
+    detects: "Beszel test notification reported delivery failure" },
+  { label: "the plain-http selection",
+    from: "/beszel-contract?disabletls=yes\"",
+    to: "/beszel-contract\"",
+    rows: ["the notification proof against a delivering hub"],
+    detects: "Beszel test notification reported delivery failure" },
+  { label: "the callback host in the URL",
+    from: 'generic://#{CALLBACK_HOST}:',
+    to: "generic://127.0.0.1:",
+    rows: ["the notification proof against a delivering hub"],
+    detects: "Beszel test notification reported delivery failure" },
+  { label: "the recorder port in the URL",
+    from: ':#{recorder.addr[1]}/beszel-contract',
+    to: ":1/beszel-contract",
+    rows: ["the notification proof against a delivering hub"],
+    detects: "Beszel test notification reported delivery failure" }
 ].freeze
 
 # One plant per direction the budget arrangement can revert in, because the

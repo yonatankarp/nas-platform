@@ -36,7 +36,7 @@ SUITES_PATH = File.join(REPO_ROOT, "tests/ci/suites.conf")
 # --tags whatsoever and belongs to no shard; the shared prerequisites are named
 # because they are the shards' floor rather than their content.
 ALWAYS_TAGS = %w[always preflight].freeze
-SHARED_PREREQUISITE_TAGS = %w[host_prep deployment_bundle ntfy].freeze
+SHARED_PREREQUISITE_TAGS = %w[host_prep deployment_bundle].freeze
 # A stated number, for the reason tests/gate_manifest_coverage_test.rb states one:
 # a partition that should hold five shards and holds one satisfies every
 # non-emptiness test there is.
@@ -126,7 +126,7 @@ if ARGV.include?("--self-test")
   # deleting a tag from a shard rather than by editing the universe, because that
   # is the direction a rebalance actually goes wrong in.
   # Anchored to the shard rows by name. The first three plants were written as
-  # bare substring edits -- ",immich\n", ",komga\n", "ntfy,beszel" -- and every
+  # bare substring edits -- ",immich\n", ",komga\n" and one on the beszel row -- and every
   # one of them landed on the *service* row of the same name, which appears
   # earlier in the file, so `sub` mangled a row this checker does not read and the
   # self-test reported three defects undetected. That is the failure this
@@ -148,7 +148,7 @@ if ARGV.include?("--self-test")
     }],
     ["a shard omits a shared prerequisite", lambda {
       [site_source,
-       edit_shard.call(suites_source, "idempotence-5") { |t| t.sub("ntfy,", "") }]
+       edit_shard.call(suites_source, "idempotence-5") { |t| t.sub("deployment_bundle,", "") }]
     }],
     ["a shard is deleted outright", lambda {
       [site_source,

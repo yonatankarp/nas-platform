@@ -838,8 +838,8 @@ ensure_cleanup_image
 # network of an acquisition stack and of the pre-existing stacks, plus the
 # production media-control bridge, which carries the platform purpose label under
 # another project.
-unrelated_container_names='radarr sabnzbd ntfy dozzle_socket_proxy immich_postgres paperless_webserver'
-unrelated_network_names='arr_default downloaders_default immich_default ntfy_default'
+unrelated_container_names='radarr sabnzbd beszel dozzle_socket_proxy immich_postgres paperless_webserver'
+unrelated_network_names='arr_default downloaders_default immich_default beszel_default'
 new_sandbox
 unrelated_container_ids=
 unrelated_network_ids=

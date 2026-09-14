@@ -8,7 +8,7 @@
 # request-line and header parse, the content-length body read, and the teardown
 # that has to hand a crash in that thread back to the main thread. The copies
 # drifted — tests/paperless_mail_reconciliation_test.rb and
-# tests/ntfy_verify_execution_test.rb had both dropped the explicit
+# a since-removed verification test had both dropped the explicit
 # propagation, leaving the crash to Thread#join re-raising it — which stops
 # holding the moment that join is bounded or the thread is killed, as they are
 # here.

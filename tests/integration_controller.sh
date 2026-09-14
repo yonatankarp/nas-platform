@@ -215,7 +215,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       printf 'DIRTY_REFUSAL_TARGET_UNCHANGED\n'
     }
 
-    printf '%s\n' dirty >> "$controller_test_dir/services/ntfy/compose.yml"
+    printf '%s\n' dirty >> "$controller_test_dir/services/beszel/compose.yml"
     assert_dirty_refused DIRTY_TRACKED_REFUSED \
       'Controller checkout differs from Git HEAD' \
       -e platform_kind=nas -e platform_compose_kind=nas
@@ -240,7 +240,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       -e platform_kind=nas -e platform_compose_kind=nas
     git -C "$controller_test_dir" checkout -q -- .
 
-    printf '%s\n' dirty >> "$controller_test_dir/services/ntfy/compose.yml"
+    printf '%s\n' dirty >> "$controller_test_dir/services/beszel/compose.yml"
     assert_dirty_refused DIRTY_PRODUCTION_BYPASS_REFUSED \
       'requires explicit deployment_bundle_test_mode' \
       -e platform_kind=nas \
@@ -270,26 +270,6 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         integration_media_usenet_enabled=true
         integration_media_adopt_existing=true
         ;;
-    esac
-
-    # NTFY'S GATE IS NARROWED THE OTHER WAY, FOR TWO CONTRACTS THAT STILL READ IT.
-    # #558 stage 4a turns ntfy off in inventory, and every lane converges that --
-    # except the two whose runtime contracts still talk to the platform's ntfy:
-    # tests/contracts/beszel-runtime.rb's notify mode sends a Beszel test
-    # notification to it with the ntfy admin pair and polls /nas-critical/json,
-    # and tests/contracts/dozzle-runtime.rb asserts the dozzle publisher's ntfy
-    # token is refused a read of nas-critical and nas-containers, an ntfy ACL
-    # property. `full` runs both through run_contracts.rb --execute. Everywhere
-    # else -- komga's teardown proof, smoke, the idempotence shards -- converges
-    # inventory's false, which is what the NAS runs. Set on every lane, and passed
-    # by run_play and run_verification alike, so all three phases of a lane agree.
-    #
-    # #558 STAGE 4C DELETES THIS BLOCK, THE MATCHING LINES IN
-    # tests/integration_controller_lib.sh AND BOTH CONTRACT CHECKS TOGETHER.
-    # tests/ntfy_verify_execution_test.rb pins the arm to exactly these suites.
-    integration_ntfy_deployment_enabled=false
-    case $INTEGRATION_SUITE in
-      beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;
     esac
 
     # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
@@ -466,7 +446,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
 
     runtime_service_root="$sandbox/symlink-runtime-service/Docker"
     runtime_service_outside="$sandbox/symlink-outside/runtime-service"
-    runtime_service_link="$runtime_service_root/nas-platform/runtime/services/ntfy"
+    runtime_service_link="$runtime_service_root/nas-platform/runtime/services/beszel"
     runtime_service_pointer="$runtime_service_root/nas-platform/current"
     mkdir -p "$runtime_service_root/nas-platform/runtime/services" \
       "$runtime_service_root/nas-platform/releases/$old_release" \
@@ -555,11 +535,11 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     fi
     printf 'INTERRUPTED_PREFLIGHT_PROBE_RECLAIMED\n'
 
-    if [ "$(cat "$stale_deploy_root/current/services/ntfy/compose.yml")" = \
+    if [ "$(cat "$stale_deploy_root/current/services/beszel/compose.yml")" = \
          legacy-current-compose ] && \
-       [ "$(cat "$stale_release_dir/services/ntfy/compose.yml")" = \
+       [ "$(cat "$stale_release_dir/services/beszel/compose.yml")" = \
          stale-same-sha-compose ] && \
-       [ -f "$stale_release_dir/services/ntfy/compose.mac.yml" ] && \
+       [ -f "$stale_release_dir/services/beszel/compose.mac.yml" ] && \
        [ -f "$stale_release_dir/services/undeclared/compose.yml" ]; then
       printf 'STALE_ROOT_SEEDED\n'
     else
@@ -571,15 +551,15 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     stale_current="$stale_deploy_root/current"
     if [ ! -L "$stale_current" ] || \
        [ "$(readlink "$stale_current")" != "$stale_release_dir" ] || \
-       ! cmp -s /repo/services/ntfy/compose.yml \
-         "$stale_release_dir/services/ntfy/compose.yml" || \
-       [ "$(sha256sum /repo/services/ntfy/compose.yml | cut -d' ' -f1)" != \
-         "$(sha256sum "$stale_release_dir/services/ntfy/compose.yml" | cut -d' ' -f1)" ]; then
+       ! cmp -s /repo/services/beszel/compose.yml \
+         "$stale_release_dir/services/beszel/compose.yml" || \
+       [ "$(sha256sum /repo/services/beszel/compose.yml | cut -d' ' -f1)" != \
+         "$(sha256sum "$stale_release_dir/services/beszel/compose.yml" | cut -d' ' -f1)" ]; then
       printf 'STALE BUNDLE WAS NOT REPLACED EXACTLY\n' >&2
       exit 1
     fi
     printf 'STALE_BUNDLE_REPLACED\n'
-    if [ -e "$stale_release_dir/services/ntfy/compose.mac.yml" ] || \
+    if [ -e "$stale_release_dir/services/beszel/compose.mac.yml" ] || \
        [ -e "$stale_release_dir/services/undeclared" ]; then
       printf 'STALE TARGET-ONLY CONTENT SURVIVED\n' >&2
       exit 1
@@ -709,8 +689,8 @@ EOF
     printf 'FRESH_ROOT_OK: clean deployment root converged\n'
 
     if cmp -s \
-      /repo/services/ntfy/compose.yml \
-      "$sandbox/volume1/Docker/nas-platform/current/services/ntfy/compose.yml"; then
+      /repo/services/beszel/compose.yml \
+      "$sandbox/volume1/Docker/nas-platform/current/services/beszel/compose.yml"; then
       printf 'BUNDLE OWNED: target compose matches controller source\n'
     else
       printf 'BUNDLE STALE: target compose does not match controller source\n' >&2
@@ -838,7 +818,7 @@ EOF
 
     # Bundle drift and symlink refusal are properties of deployment_bundle and of
     # the target validator in the always-tagged pre_tasks, not of any one service:
-    # ntfy, beszel and audiobookshelf are only the vehicles. Every suite used to
+    # beszel and audiobookshelf are only the vehicles. Every suite used to
     # re-prove them, six playbook invocations for 3m37s, on five critical paths at
     # once. foundation owns them now because it already exists to prove deployment
     # integrity and converges deployment_bundle alone, so it is the cheapest place
@@ -877,13 +857,12 @@ EOF
       chmod 0644 "$selective_compose"
     }
 
-    assert_selective_compose_refused ntfy SYMLINK_NTFY_COMPOSE_REFUSED
     assert_selective_compose_refused beszel SYMLINK_BESZEL_COMPOSE_REFUSED
     assert_selective_compose_refused audiobookshelf SYMLINK_AUDIOBOOKSHELF_COMPOSE_REFUSED
 
     assert_active_drift_refused() {
       evidence=$1
-      active_compose="$active_release_dir/services/ntfy/compose.yml"
+      active_compose="$active_release_dir/services/beszel/compose.yml"
       current_pointer="$sandbox/volume1/Docker/nas-platform/current"
       before_checksum=$(sha256sum "$active_compose" | cut -d' ' -f1)
       before_mode=$(stat -c %a "$active_compose")
@@ -908,18 +887,18 @@ EOF
       printf 'ACTIVE_DRIFT_PRESERVED\n'
     }
 
-    printf '%s\n' drift >> "$active_release_dir/services/ntfy/compose.yml"
+    printf '%s\n' drift >> "$active_release_dir/services/beszel/compose.yml"
     assert_active_drift_refused ACTIVE_BYTE_DRIFT_REFUSED
-    cp /repo/services/ntfy/compose.yml "$active_release_dir/services/ntfy/compose.yml"
-    chmod 0644 "$active_release_dir/services/ntfy/compose.yml"
+    cp /repo/services/beszel/compose.yml "$active_release_dir/services/beszel/compose.yml"
+    chmod 0644 "$active_release_dir/services/beszel/compose.yml"
 
-    chmod 0755 "$active_release_dir/services/ntfy/compose.yml"
+    chmod 0755 "$active_release_dir/services/beszel/compose.yml"
     assert_active_drift_refused ACTIVE_MODE_DRIFT_REFUSED
-    chmod 0644 "$active_release_dir/services/ntfy/compose.yml"
+    chmod 0644 "$active_release_dir/services/beszel/compose.yml"
 
-    chown 123:456 "$active_release_dir/services/ntfy/compose.yml"
+    chown 123:456 "$active_release_dir/services/beszel/compose.yml"
     assert_active_drift_refused ACTIVE_OWNERSHIP_DRIFT_REFUSED
-    chown 0:0 "$active_release_dir/services/ntfy/compose.yml"
+    chown 0:0 "$active_release_dir/services/beszel/compose.yml"
     fi
 
     # foundation converges deployment_bundle and nothing else, so there are no
@@ -1259,55 +1238,6 @@ EOF
       if [ $INTEGRATION_SUITE = komga ]; then
         run_komga_contract run
 
-        # NTFY'S TEARDOWN, EXERCISED RATHER THAN ASSUMED (#558 stage 4a). Inventory
-        # turns ntfy off, so every lane already converges the disabled branch --
-        # but against a sandbox that never ran ntfy, where there is nothing to
-        # stop. What production does once is the TRANSITION: a running ntfy, then
-        # a converge with the switch off. That is what this proves, once, in this
-        # lane. One lane and not all, because the branch does not depend on which
-        # other services converged beside it; komga because its lane starts no
-        # ntfy-imaged fixture and no Dozzle relay, so nothing else can be the
-        # container this reads or be paged by the stop.
-        #
-        # Up first with the switch on, and the container has to be THERE, or the
-        # assertions below pass over a deployment that never happened.
-        run_play --tags ntfy -e ntfy_deployment_enabled=true
-        if ! docker ps --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
-          printf '%s\n' \
-            'the ntfy container is not running, so the teardown below proves nothing' >&2
-          exit 1
-        fi
-        ntfy_container_id=$(docker inspect --format '{{.Id}}' $integration_project_namespace-ntfy)
-        ntfy_teardown_since=$(date +%s)
-        # No trailing override: run_play passes this lane's
-        # integration_ntfy_deployment_enabled, which is false here -- the value
-        # inventory holds and the NAS converges.
-        run_play --tags ntfy
-        ntfy_teardown_until=$(date +%s)
-        if docker ps -a --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
-          printf '%s\n' \
-            'ntfy_deployment_enabled=false left the ntfy container in place' >&2
-          exit 1
-        fi
-        # GRACEFULLY. Dozzle's "Unexpected exit" rule excludes 0 and 143 and pages
-        # on 137, which is what a SIGKILL -- a stop that outran its grace period,
-        # or a kill -- produces. The container is gone, so its exit code is read
-        # from the daemon's own die event for that container id.
-        ntfy_exit_code=$(docker events --since $ntfy_teardown_since \
-          --until $((ntfy_teardown_until + 1)) \
-          --filter container=$ntfy_container_id --filter event=die \
-          --format '{{index .Actor.Attributes "exitCode"}}' | tail -n 1)
-        case $ntfy_exit_code in
-          0|143) ;;
-          *)
-            printf 'the ntfy teardown stopped the container with exit code "%s", not 0 or 143\n' \
-              "$ntfy_exit_code" >&2
-            exit 1
-            ;;
-        esac
-        printf 'NTFY_TEARDOWN_VERIFIED exit=%s\n' "$ntfy_exit_code"
       fi
     fi
 

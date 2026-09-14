@@ -21,7 +21,7 @@ STATUSES = %w[running passed failed].freeze
 REDACTION = "[REDACTED]"
 SAFE_DIAGNOSTIC = /\A[A-Za-z0-9][A-Za-z0-9_.-]*\z/
 ROOT_KEYS = %w[
-  schema lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+  schema lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port dozzle_port audiobookshelf_port komga_port
   jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
   pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port
   nextcloud_port vaultwarden_port karakeep_port
@@ -111,7 +111,7 @@ def validate_input(input)
   end
   raise "input project_name is unsafe" unless input["project_name"].match?(/\Anas-platform-mac-[a-z0-9.-]+\z/)
   service_port_fields = %w[
-    beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    beszel_port dozzle_port audiobookshelf_port komga_port
     jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
     pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port
     nextcloud_port vaultwarden_port karakeep_port
@@ -233,7 +233,7 @@ end
 def markdown_report(report)
   lines = ["# Mac platform proof report", ""]
   %w[
-    lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port ntfy_port dozzle_port audiobookshelf_port komga_port
+    lane proof_platform platform_kind platform_compose_kind callback_host sandbox_id project_name beszel_port dozzle_port audiobookshelf_port komga_port
     jellyfin_port immich_port paperless_port radarr_port sonarr_port prowlarr_port bazarr_port sabnzbd_port
     pinchflat_port kapowarr_port bindery_port trailarr_port seerr_port
     nextcloud_port vaultwarden_port karakeep_port
@@ -347,7 +347,6 @@ def initialize_input(path, options)
     "sandbox_id" => options.fetch(:sandbox_id),
     "project_name" => options.fetch(:project_name),
     "beszel_port" => options.fetch(:beszel_port),
-    "ntfy_port" => options.fetch(:ntfy_port),
     "dozzle_port" => options.fetch(:dozzle_port),
     "audiobookshelf_port" => options.fetch(:audiobookshelf_port),
     "komga_port" => options.fetch(:komga_port),
@@ -441,7 +440,6 @@ def self_test
       "sandbox_id" => "nas-platform-mac.Abc123",
       "project_name" => "nas-platform-mac-abc123",
       "beszel_port" => 38_090,
-      "ntfy_port" => 32_586,
       "dozzle_port" => 38_080,
       "audiobookshelf_port" => 33_378,
       "komga_port" => 35_600,
@@ -674,7 +672,6 @@ parser = OptionParser.new do |opts|
   opts.on("--sandbox-id ID") { |value| options[:sandbox_id] = value }
   opts.on("--project-name NAME") { |value| options[:project_name] = value }
   opts.on("--beszel-port PORT", Integer) { |value| options[:beszel_port] = value }
-  opts.on("--ntfy-port PORT", Integer) { |value| options[:ntfy_port] = value }
   opts.on("--dozzle-port PORT", Integer) { |value| options[:dozzle_port] = value }
   opts.on("--audiobookshelf-port PORT", Integer) { |value| options[:audiobookshelf_port] = value }
   opts.on("--komga-port PORT", Integer) { |value| options[:komga_port] = value }

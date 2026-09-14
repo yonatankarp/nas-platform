@@ -10,7 +10,7 @@ This repository manages service configuration and containers. It does **not**
 back up photos, media, databases, or other application data. Back up the NAS
 and confirm that the backup can be restored before a production migration.
 
-The active service projects are ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
+The active service projects are Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Arr, downloaders, Kapowarr, and Pinchflat. The
 production retirement checkpoint has passed and the former metadata manager's
 repository declarations are gone; its preserved application state remains
@@ -80,8 +80,8 @@ if a prerequisite is missing.
 ### Prove it safely on a Mac
 
 Follow the [disposable Mac walkthrough](getting-started-mac.md). It creates an
-isolated Docker Desktop deployment, verifies alert wiring to its own ntfy
-instance, tests convergence and recovery, and emits a sanitized report. It
+isolated Docker Desktop deployment, verifies alert wiring against local
+recorders, tests convergence and recovery, and emits a sanitized report. It
 never copies production application data and never contacts the NAS.
 
 ### Prepare the physical NAS

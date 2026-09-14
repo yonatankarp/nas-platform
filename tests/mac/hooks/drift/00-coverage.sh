@@ -48,7 +48,6 @@ mac_drift_coverage_neutral_hooks='15-media-acquisition-foundation.sh'
 mac_assert_service_coverage drift 00-coverage.sh '' \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-ntfy=no hand edit to its own provisioning is reproduced here; the ntfy-facing state this lane drifts is the Dozzle dispatcher record, which 20-dozzle.sh drifts and requires verification to refuse
 vaultwarden=the hand edit worth reproducing is a config.json written by the admin panel this platform never opens, and the converge REFUSES that file rather than repairing it, so a drift hook would be asserting a failed converge rather than a repaired one
 karakeep=the one hand edit worth reproducing is opening its signup door, and that lives in the environment the converge renders rather than in state the application writes, so a drift hook would only prove a template renders; the platform_verify_karakeep tasks refuse an open door on every run' \
   "$mac_drift_hooks" "$mac_drift_coverage_neutral_hooks"

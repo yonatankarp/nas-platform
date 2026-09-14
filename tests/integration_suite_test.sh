@@ -349,25 +349,25 @@ explicit_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=true \
 assert_output 'suite=foundation tags=deployment_bundle playbook=site.yml scenarios=true' \
   --describe-suite foundation
 assert_output \
-  'suite=arr tags=host_prep,deployment_bundle,ntfy,arr playbook=site.yml scenarios=true' \
+  'suite=arr tags=host_prep,deployment_bundle,arr playbook=site.yml scenarios=true' \
   --describe-suite arr
 assert_output \
-  'suite=downloaders tags=host_prep,deployment_bundle,ntfy,arr,downloaders playbook=site.yml scenarios=true' \
+  'suite=downloaders tags=host_prep,deployment_bundle,arr,downloaders playbook=site.yml scenarios=true' \
   --describe-suite downloaders
 assert_output \
-  'suite=bindery tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery playbook=site.yml scenarios=true' \
+  'suite=bindery tags=host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery playbook=site.yml scenarios=true' \
   --describe-suite bindery
 assert_output \
-  'suite=kapowarr tags=host_prep,deployment_bundle,ntfy,kapowarr playbook=site.yml scenarios=true' \
+  'suite=kapowarr tags=host_prep,deployment_bundle,kapowarr playbook=site.yml scenarios=true' \
   --describe-suite kapowarr
 assert_output \
-  'suite=pinchflat tags=host_prep,deployment_bundle,ntfy,pinchflat playbook=site.yml scenarios=true' \
+  'suite=pinchflat tags=host_prep,deployment_bundle,pinchflat playbook=site.yml scenarios=true' \
   --describe-suite pinchflat
 assert_output \
-  'suite=trailarr tags=host_prep,deployment_bundle,ntfy,arr,trailarr playbook=site.yml scenarios=true' \
+  'suite=trailarr tags=host_prep,deployment_bundle,arr,trailarr playbook=site.yml scenarios=true' \
   --describe-suite trailarr
 assert_output \
-  'suite=seerr tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr playbook=site.yml scenarios=true' \
+  'suite=seerr tags=host_prep,deployment_bundle,arr,jellyfin,seerr playbook=site.yml scenarios=true' \
   --describe-suite seerr
 # The acquisition catalog is fully implemented, so the shared foundation's own
 # runtime proof lives in the last project's lane rather than in a lane of its
@@ -417,34 +417,34 @@ if acquisition_runtime_contract_holds "$acquisition_runtime_mutant" \
   printf '%s\n' 'acquisition runtime contract accepts removal of real verifier execution' >&2
   exit 1
 fi
-assert_output 'suite=beszel tags=host_prep,deployment_bundle,ntfy,beszel playbook=site.yml scenarios=true' \
+assert_output 'suite=beszel tags=host_prep,deployment_bundle,beszel playbook=site.yml scenarios=true' \
   --describe-suite beszel
-assert_output 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' \
+assert_output 'suite=dozzle tags=host_prep,deployment_bundle,dozzle playbook=site.yml scenarios=true' \
   --describe-suite dozzle
-assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,ntfy,audiobookshelf playbook=site.yml scenarios=true' \
+assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
   --describe-suite audiobookshelf
-assert_output 'suite=komga tags=host_prep,deployment_bundle,ntfy,komga playbook=site.yml scenarios=true' \
+assert_output 'suite=komga tags=host_prep,deployment_bundle,komga playbook=site.yml scenarios=true' \
   --describe-suite komga
-assert_output 'suite=jellyfin tags=host_prep,deployment_bundle,ntfy,jellyfin playbook=site.yml scenarios=true' \
+assert_output 'suite=jellyfin tags=host_prep,deployment_bundle,jellyfin playbook=site.yml scenarios=true' \
   --describe-suite jellyfin
-assert_output 'suite=immich tags=host_prep,deployment_bundle,ntfy,immich playbook=site.yml scenarios=true' \
+assert_output 'suite=immich tags=host_prep,deployment_bundle,immich playbook=site.yml scenarios=true' \
   --describe-suite immich
-assert_output 'suite=paperless tags=host_prep,deployment_bundle,ntfy,paperless playbook=site.yml scenarios=true' \
+assert_output 'suite=paperless tags=host_prep,deployment_bundle,paperless playbook=site.yml scenarios=true' \
   --describe-suite paperless
-assert_output 'suite=nextcloud tags=host_prep,deployment_bundle,ntfy,nextcloud playbook=site.yml scenarios=true' \
+assert_output 'suite=nextcloud tags=host_prep,deployment_bundle,nextcloud playbook=site.yml scenarios=true' \
   --describe-suite nextcloud
-assert_output 'suite=vaultwarden tags=host_prep,deployment_bundle,ntfy,vaultwarden playbook=site.yml scenarios=true' \
+assert_output 'suite=vaultwarden tags=host_prep,deployment_bundle,vaultwarden playbook=site.yml scenarios=true' \
   --describe-suite vaultwarden
-assert_output 'suite=karakeep tags=host_prep,deployment_bundle,ntfy,karakeep playbook=site.yml scenarios=true' \
+assert_output 'suite=karakeep tags=host_prep,deployment_bundle,karakeep playbook=site.yml scenarios=true' \
   --describe-suite karakeep
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
 
-assert_output 'suite=smoke tags=host_prep,deployment_bundle,ntfy,beszel playbook=custom.yml scenarios=true' \
-  --describe-suite smoke --tags host_prep,deployment_bundle,ntfy,beszel custom.yml
+assert_output 'suite=smoke tags=host_prep,deployment_bundle,beszel playbook=custom.yml scenarios=true' \
+  --describe-suite smoke --tags host_prep,deployment_bundle,beszel custom.yml
 assert_output 'suite=smoke tags= playbook=site.yml scenarios=true' \
   --describe-suite smoke --tags ''
-assert_output 'suite=idempotence-check tags=host_prep,deployment_bundle,ntfy playbook=site.yml scenarios=true' \
-  --describe-suite idempotence-check --tags host_prep,deployment_bundle,ntfy
+assert_output 'suite=idempotence-check tags=host_prep,deployment_bundle playbook=site.yml scenarios=true' \
+  --describe-suite idempotence-check --tags host_prep,deployment_bundle
 assert_output 'suite=idempotence-check tags= playbook=site.yml scenarios=true' \
   --describe-suite idempotence-check
 
@@ -458,7 +458,7 @@ actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
 [ "$actual" = 'suite=full tags= playbook=custom.yml scenarios=false' ]
 actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
   INTEGRATION_DESCRIBE_ONLY=1 "$integration" --suite dozzle)
-[ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,ntfy,dozzle playbook=site.yml scenarios=true' ]
+[ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,dozzle playbook=site.yml scenarios=true' ]
 
 # Dispatch crosses the Docker boundary as quoted argv/environment rather than
 # being interpolated into the runner program.
@@ -727,22 +727,22 @@ fi
 assert_rejected 'unknown integration suite: unknown' --suite unknown
 assert_rejected 'unknown integration suite: media' --suite media
 assert_rejected 'unknown integration suite: <missing>' --suite
-assert_rejected 'unknown integration suite: <missing>' --suite --tags ntfy
+assert_rejected 'unknown integration suite: <missing>' --suite --tags beszel
 assert_rejected 'unknown integration suite: <missing>' --describe-suite
 assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
-assert_rejected 'invalid integration tags: ntfy,,beszel' \
-  --suite smoke --tags ntfy,,beszel
+assert_rejected 'invalid integration tags: komga,,beszel' \
+  --suite smoke --tags komga,,beszel
 for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep full; do
   assert_rejected "integration suite $suite does not accept --tags" \
-    --suite "$suite" --tags ntfy
+    --suite "$suite" --tags beszel
 done
 assert_rejected 'integration suite foundation does not accept --tags' \
-  --suite foundation custom.yml --tags ntfy
+  --suite foundation custom.yml --tags beszel
 assert_rejected 'integration suite options must precede the playbook' \
   --suite smoke custom.yml --tags 'Bad;touch'
 assert_rejected 'integration suite options must precede the playbook' \
-  --suite smoke custom.yml --tags=ntfy
+  --suite smoke custom.yml --tags=beszel
 assert_rejected 'unexpected integration suite argument: --check' \
   --suite smoke custom.yml --check
 
@@ -1007,7 +1007,7 @@ assert_retry_after_sleep() {
 # cost gigabytes of runner disk for images the run never starts.
 run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] || prepull_fail "an answering registry failed the pre-pull ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images beszel; } | sort -u)"
 if grep -qxF "$runner_image" "$pull_log"; then
   prepull_fail 'the beszel suite still spent a Docker Hub pull on the controller'
 fi
@@ -1022,9 +1022,9 @@ fi
 # unless a width of one can still be observed as one: a rendezvous that never
 # blocked would report the number in flight as one whatever the harness did.
 #
-# The beszel suite is five service images, so a width of four is one full batch
-# and one straggler, and the straggler is what makes the peak the batch rather
-# than the whole enumeration.
+# The paperless suite is five service images, so a width of four is one full
+# batch and one straggler, and the straggler is what makes the peak the batch
+# rather than the whole enumeration.
 run_prepull_concurrency() {
   rm -rf "$concurrency_dir"
   mkdir -p "$concurrency_dir"
@@ -1033,7 +1033,7 @@ run_prepull_concurrency() {
     PREPULL_CONCURRENCY_DIR=$concurrency_dir \
     PREPULL_CONCURRENCY_EXPECT=$2 \
     PREPULL_CONCURRENCY_LOG=$concurrency_log \
-    run_prepull 0 4 --suite beszel
+    run_prepull 0 4 --suite paperless
   [ "$prepull_status" -eq 0 ] ||
     prepull_fail "the width $1 pre-pull failed ($prepull_status)"
   concurrency_peak=$(sort -rn "$concurrency_log" | head -1)
@@ -1044,12 +1044,12 @@ run_prepull_concurrency() {
 run_prepull_concurrency 4 4
 [ "$concurrency_peak" -eq 4 ] ||
   prepull_fail "the pre-pull held $concurrency_peak image(s) in flight at width 4"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images paperless-ngx; } | sort -u)"
 
 run_prepull_concurrency 1 2
 [ "$concurrency_peak" -eq 1 ] ||
   prepull_fail "a width of 1 still held $concurrency_peak image(s) in flight"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images beszel; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images paperless-ngx; } | sort -u)"
 
 # A malformed or oversized width is floored and capped like every other budget
 # here, rather than becoming an unbounded fan-out at a registry.
@@ -1073,21 +1073,27 @@ unset PREPULL_WIDTH PREPULL_CONCURRENCY_DIR PREPULL_CONCURRENCY_EXPECT \
 beszel_refuse_prefix=ghcr.io/henrygd/beszel/
 compose_images beszel | grep -q "^$beszel_refuse_prefix" ||
   prepull_fail "no beszel image starts with $beszel_refuse_prefix any more"
+# The paperless suite is five images, which sort as tika, gotenberg, postgres and
+# valkey ahead of the application itself, so a refusal aimed at tika lands in the
+# first batch of four and paperless-ngx is the straggler.
+paperless_refuse_prefix=docker.io/apache/tika:
+compose_images paperless-ngx | grep -q "^$paperless_refuse_prefix" ||
+  prepull_fail "no paperless image starts with $paperless_refuse_prefix any more"
 
 # A service image the registry refuses past its budget fails the suite, and the
 # diagnostic reaches the log through the per-image capture rather than being
 # swallowed with the child that produced it.
-PREPULL_REFUSE_PREFIX=$beszel_refuse_prefix run_prepull 9 2 --suite beszel
+PREPULL_REFUSE_PREFIX=$paperless_refuse_prefix run_prepull 9 2 --suite paperless
 [ "$prepull_status" -ne 0 ] ||
   prepull_fail 'a refused service image produced a successful pre-pull'
 grep -qF 'toomanyrequests: retry-after:' "$prepull_output" ||
   prepull_fail "the concurrent pre-pull swallowed its child's diagnostic"
-grep -qF 'could not pull ghcr.io/henrygd/beszel/' "$prepull_output" ||
+grep -qF 'could not pull docker.io/apache/tika:' "$prepull_output" ||
   prepull_fail "the concurrent pre-pull did not name the image it gave up on"
 # Bounded overshoot, not none: the batch carrying the refusal finishes, and no
 # later batch is launched. Five service images at a width of four is one full
 # batch and one straggler, so the straggler must never be pulled.
-if grep -q 'socket-proxy' "$pull_log"; then
+if grep -q 'paperless-ngx/paperless-ngx' "$pull_log"; then
   prepull_fail 'the pre-pull launched a batch after one carrying a refusal'
 fi
 unset PREPULL_REFUSE_PREFIX
@@ -1132,8 +1138,8 @@ rmdir "$interrupt_tmp"
 # services/<dir>/compose.yml aborted the enumeration's subshell under set -e,
 # sort still succeeded on whatever had been listed, and every image after the gap
 # was left to be pulled inside docker_compose_v2 -- the registry refusal this
-# whole ladder exists to absorb. The fixture removes beszel's compose.yml, which
-# the beszel suite enumerates after ntfy's, so a truncation is observable.
+# whole ladder exists to absorb. The fixture removes trailarr's compose.yml, which
+# the trailarr suite enumerates after arr's, so a truncation is observable.
 mkdir -p "$truncated_repo/tests/ci" "$truncated_tmp"
 cp "$integration" "$truncated_repo/tests/integration.sh"
 # The runner reads its suite table from tests/ci/suites.conf. The fixture is
@@ -1145,7 +1151,7 @@ cp "$repo_dir/tests/ci/suites.conf" "$truncated_repo/tests/ci/suites.conf"
 cp "$repo_dir/tests/integration.Dockerfile" "$truncated_repo/tests/integration.Dockerfile"
 cp "$repo_dir/requirements.yml" "$truncated_repo/requirements.yml"
 cp -R "$repo_dir/services" "$truncated_repo/services"
-rm "$truncated_repo/services/beszel/compose.yml"
+rm "$truncated_repo/services/trailarr/compose.yml"
 : > "$pull_log"
 : > "$sleep_log"
 : > "$prepull_output"
@@ -1160,14 +1166,14 @@ TMPDIR=$truncated_tmp \
   INTEGRATION_IMAGE_PULL_ATTEMPTS=4 \
   INTEGRATION_IMAGE_PULL_DELAY=1 \
   INTEGRATION_IMAGE_PULL_MAX_DELAY=60 \
-  "$truncated_repo/tests/integration.sh" --suite beszel \
+  "$truncated_repo/tests/integration.sh" --suite trailarr \
   >"$prepull_output" 2>&1 || prepull_status=$?
 [ "$prepull_status" -ne 0 ] ||
   prepull_fail 'a truncated image enumeration produced a successful pre-pull'
-grep -qF 'could not enumerate the images the beszel suite needs' \
+grep -qF 'could not enumerate the images the trailarr suite needs' \
   "$prepull_output" ||
   prepull_fail "truncated enumeration reported no diagnostic: $(cat "$prepull_output")"
-if grep -qF "$(compose_images ntfy)" "$pull_log"; then
+if grep -qF "$(compose_images arr)" "$pull_log"; then
   prepull_fail 'a truncated enumeration still pre-pulled from a partial list'
 fi
 if find "$truncated_tmp" -name 'nas-platform-prepull.*' -print | grep -q .; then
@@ -1179,24 +1185,24 @@ fi
 run_prepull 0 4 --suite paperless
 [ "$prepull_status" -eq 0 ] || prepull_fail "the paperless pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images paperless-ngx; } | sort -u)"
+  "$({ compose_images paperless-ngx; } | sort -u)"
 
 # Three unique images rather than four: the application and its cron sidecar pin
 # one identical image, which compose_images de-duplicates and
 # tests/contracts/nextcloud-static.rb requires.
 run_prepull 0 4 --suite nextcloud
 [ "$prepull_status" -eq 0 ] || prepull_fail "the nextcloud pre-pull failed ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images nextcloud; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images nextcloud; } | sort -u)"
 
-# Two images: the sink and the password manager, which is a single container.
+# One image: the password manager, which is a single container.
 run_prepull 0 4 --suite vaultwarden
 [ "$prepull_status" -eq 0 ] || prepull_fail "the vaultwarden pre-pull failed ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images vaultwarden; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images vaultwarden; } | sort -u)"
 
-# Four images: the sink, and Karakeep's application, chrome and Meilisearch.
+# Three images: Karakeep's application, chrome and Meilisearch.
 run_prepull 0 4 --suite karakeep
 [ "$prepull_status" -eq 0 ] || prepull_fail "the karakeep pre-pull failed ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images karakeep; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images karakeep; } | sort -u)"
 
 # An untagged smoke run converges everything, so every service directory in the
 # tree must be reachable from the harness map. A directory the map forgot shows up
@@ -1214,9 +1220,9 @@ grep -qxF "$runner_image" "$pull_log" ||
   prepull_fail "the untagged smoke pre-pull skipped the alert relay image"
 
 # CI narrows smoke to the changed service, and the pre-pull has to narrow with it.
-run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,ntfy,immich
+run_prepull 0 4 --suite smoke --tags host_prep,deployment_bundle,immich
 [ "$prepull_status" -eq 0 ] || prepull_fail "the tagged smoke pre-pull failed ($prepull_status)"
-assert_toolchain_pull_set "$({ compose_images ntfy; compose_images immich; } | sort -u)"
+assert_toolchain_pull_set "$({ compose_images immich; } | sort -u)"
 
 # Everything from here to the acquisition suites below is about the retry ladder
 # itself -- its backoff arithmetic, its ceilings and its budget -- rather than
@@ -1342,13 +1348,13 @@ unset PREPULL_TOOLCHAIN
 run_prepull 0 4 --suite bindery
 [ "$prepull_status" -eq 0 ] || prepull_fail "bindery pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; compose_images downloaders;
+  "$({ compose_images arr; compose_images downloaders;
        compose_images audiobookshelf; compose_images bindery; } | sort -u)"
 
 run_prepull 0 4 --suite trailarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "trailarr pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; compose_images trailarr; } | sort -u)"
+  "$({ compose_images arr; compose_images trailarr; } | sort -u)"
 
 # Audiobookshelf is in this set and not in the lane's tags on purpose: the lane
 # converges the shared foundation's reader prerequisites as well as its own
@@ -1356,27 +1362,27 @@ assert_toolchain_pull_set \
 run_prepull 0 4 --suite seerr
 [ "$prepull_status" -eq 0 ] || prepull_fail "seerr pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; compose_images audiobookshelf; compose_images jellyfin; compose_images seerr; } | sort -u)"
+  "$({ compose_images arr; compose_images audiobookshelf; compose_images jellyfin; compose_images seerr; } | sort -u)"
 
 run_prepull 0 4 --suite kapowarr
 [ "$prepull_status" -eq 0 ] || prepull_fail "kapowarr pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images kapowarr; } | sort -u)"
+  "$({ compose_images kapowarr; } | sort -u)"
 
 run_prepull 0 4 --suite pinchflat
 [ "$prepull_status" -eq 0 ] || prepull_fail "pinchflat pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images pinchflat; } | sort -u)"
+  "$({ compose_images pinchflat; } | sort -u)"
 
 run_prepull 0 4 --suite arr
 [ "$prepull_status" -eq 0 ] || prepull_fail "arr pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; } | sort -u)"
+  "$({ compose_images arr; } | sort -u)"
 
 run_prepull 0 4 --suite downloaders
 [ "$prepull_status" -eq 0 ] || prepull_fail "downloaders pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set \
-  "$({ compose_images ntfy; compose_images arr; compose_images downloaders; } | sort -u)"
+  "$({ compose_images arr; compose_images downloaders; } | sort -u)"
 
 # A registry that refuses more times than the budget allows must fail, and must
 # not go on pulling the rest: under a rate limit the remaining pulls would only
@@ -1485,7 +1491,7 @@ PREPULL_TOOLCHAIN=off run_prepull 0 4 --suite beszel
 [ "$prepull_status" -eq 0 ] ||
   prepull_fail "the disabled toolchain failed the pre-pull ($prepull_status)"
 assert_pull_set \
-  "$({ printf '%s\n' "$runner_image"; compose_images ntfy; compose_images beszel; } | sort -u)"
+  "$({ printf '%s\n' "$runner_image"; compose_images beszel; } | sort -u)"
 
 # Counterexample: the stub must be able to fail a pre-pull at all, otherwise every
 # assertion above is vacuous.

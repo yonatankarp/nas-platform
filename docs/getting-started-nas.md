@@ -4,8 +4,8 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-eighteen implemented service projects are Audiobookshelf, Beszel, Bindery,
-Dozzle, Immich, Jellyfin, Kapowarr, Karakeep, Komga, Nextcloud, ntfy, Paperless-ngx,
+seventeen implemented service projects are Audiobookshelf, Beszel, Bindery,
+Dozzle, Immich, Jellyfin, Kapowarr, Karakeep, Komga, Nextcloud, Paperless-ngx,
 Pinchflat, Seerr, Trailarr, Vaultwarden, and the Arr and downloader projects,
 which this host runs because it enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
@@ -135,9 +135,10 @@ templating the connection, naming the variable, instead of quietly connecting to
 a host literally named `nas` as your own login name. `PLATFORM_PUBLIC_HOST` is
 required and separate
 from the SSH address: it is the address clients use to reach published services,
-and ntfy hashes it into the topic it registers for mobile push, so it must be
-the address your devices actually use. Leaving it unset now fails preflight
-instead of silently publishing to a topic nothing subscribes to.
+and it is the address the services hand to clients -- Beszel's links,
+Vaultwarden's domain, Nextcloud's trusted domain -- so it must be the address
+your devices actually use. Leaving it unset now fails preflight instead of
+silently handing clients an address they do not use.
 `PLATFORM_CALLBACK_HOST` is only needed when containers must reach the host at
 a different address than the SSH one.
 
@@ -213,19 +214,18 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for seventeen of the eighteen implemented service projects; the
-eighteenth, ntfy, is dark. ntfy's switch was turned off in #558 stage 4a, once
-every publisher had moved to Pushover, so a converge takes that project to
-`state: absent` and there is no ntfy credential left to check; stage 4c removes
-the code once the container is confirmed gone. None of the other three gated
-services carries a gated-off caveat any more: Nextcloud's switch was flipped in
-#500 — and #501 removed Seafile, which it replaced as this platform's file-sync
-service — Vaultwarden's after #547 landed the stack dark, and Karakeep's after
-#551 did the same. Karakeep's first converge registers the vault administrator
-itself, so its check is an ordinary sign-in with `vault_karakeep_admin_email`
-and the vault password. A failure there is not repaired by a later converge:
-when that identity no longer signs in and an account already exists, the
-converge refuses by name before it ever opens signups. Vaultwarden is the one whose credential check is not a
+unchanged for all seventeen implemented service projects. ntfy, the alerting
+sink, was switched off in #558 stage 4a once every publisher had moved to
+Pushover, and stage 4c removed it, so it has no credential left to check. None
+of the three gated services carries a gated-off caveat any more: Nextcloud's
+switch was flipped in #500 — and #501 removed Seafile, which it replaced as this
+platform's file-sync service — Vaultwarden's after #547 landed the stack dark,
+and Karakeep's after #551 did the same. Karakeep's first converge registers the
+vault administrator itself, so its check is an ordinary sign-in with
+`vault_karakeep_admin_email` and the vault password. A failure there is not
+repaired by a later converge: when that identity no longer signs in and an
+account already exists, the converge refuses by name before it ever opens
+signups. Vaultwarden is the one whose credential check is not a
 credential check: it is the only service here that holds no vault-authored
 identity, because master passwords are user-owned and the server never learns
 them, so what there is to check is the door — that registration answers as the
@@ -237,9 +237,8 @@ scope — does not exist on this network. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations.
-Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
-webhook is Pushover, and since the Dozzle alert relay moved, every container
-alert is too. They are separate Pushover applications on one account: Beszel
+Beszel's notification webhook is Pushover, and so is every container alert the
+Dozzle alert relay sends. They are separate Pushover applications on one account: Beszel
 sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
 the per-service deployment reports and the image prune's reclaim with
 Containers, each release's one message with Deployments, the deployment poller's and the
@@ -287,9 +286,9 @@ never directory listings, ACL dumps containing private account details, or
 secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 [what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
-ntfy is off on this host since #558 stage 4a, so none of its topics exist any
-more and nothing a human needs ever landed on them after the move. Beszel's threshold breaches, every container alert the Dozzle relay sends,
-and every notice from the deployment poller and the image prune are Pushover's.
+Every notice this platform sends is Pushover's: Beszel's threshold breaches,
+every container alert the Dozzle relay sends, and every notice from the
+deployment poller and the image prune.
 
 What should get you out of your chair reaches Pushover's Alerts application at
 priority 1, which rings through quiet hours: a failed deployment, a revision CI
@@ -302,23 +301,7 @@ one — go to the Containers application, where an out-of-memory kill is an
 emergency message that re-alerts until you acknowledge it. The image prune's
 reclaim is a routine record on the Containers application at priority -1, and
 expires after a week; the Deployments application carries one message per
-release and nothing else. `nas-critical` and `nas-deployment` had no publisher left
-before ntfy was turned off, which is why turning it off lost nothing.
-
-`nas-containers` has no publisher left. It existed so recoveries could be muted
-separately from `nas-critical`, which Pushover expresses on the message itself;
-the topic and the dozzle account's grant to it are still provisioned and are
-tidied up separately from the relay that used to write to them.
-
-A fourth topic, `nas-verification`, exists only for the provisioning proof:
-every publisher token publishes there once per converge to prove it can still
-write. It is deliberately absent from the topic list a managed user may declare
-access to, so no account can subscribe and no device is notified. Refusing the
-cache is not a substitute — ntfy forwards a poll request to its upstream push
-server for every message once `upstream-base-url` is set, carrying the message
-id alone, and the phone then fetches the body from your server. An uncached
-proof therefore arrived as an empty "New message", once per publisher, on every
-converge.
+release and nothing else.
 
 A service reports its own deployment through Pushover's Containers application
 at priority -1, a badge with no sound — `♻️ Komga recreated` — only when
@@ -331,7 +314,7 @@ A service the run left running unchanged says nothing. It used to report
 `already current` so that silence could not be mistaken for a service that was
 never deployed, but a release usually moves one image: fifteen services then
 published fifteen messages of which fourteen carried no information, and the
-topic stopped being read. The run-level summary below already answers "did a
+channel stopped being read. The run-level summary below already answers "did a
 deployment happen, and what did it move", so the per-service report is now the
 detail behind it rather than a roll call. Reports and summaries together cost
 Pushover's monthly quota in the order of hundreds of messages.
@@ -350,8 +333,8 @@ converged. Who sends it depends on who ran the play. Under the deployment
 poller, `site.yml` writes it as JSON beside the poller's state and publishes
 nothing, and the poller sends a richer message once verification has passed too
 (see [automatic deployment](#automatic-deployment-from-the-nas)). An operator's
-`nas-platform-deploy --converge`, or a run from a workstation, publishes it
-itself as plain text. Either way a release gets exactly one. Pushover caps a
+`nas-platform-deploy --converge`, or a run from a workstation, sends no summary
+since #558 stage 4a; the per-service notices above still fire. Pushover caps a
 title at 250 characters and a message at 1024, so a long summary is cut with a
 trailing `…` rather than refused. A report or summary Pushover authoritatively
 refuses — a 4xx carrying its own `status: 0`, which is what a revoked or
@@ -359,21 +342,6 @@ mistyped token or user key produces — fails the run there rather than going un
 an alert is missed. Anything that is not such an answer — Pushover unreachable,
 a 5xx, the monthly quota exhausted, a proxy's page — is reported as unverified
 delivery and fails nothing, because the services have already converged.
-
-Message bodies only appear on iOS when the phone can reach the ntfy server named
-by `PLATFORM_PUBLIC_HOST` — over Tailscale, a VPN, or the LAN. That is the same
-poll-request mechanism described above: off-network, every message shows as
-"New message" regardless of what it says.
-
-Each publisher may write only to the topics it reports on, so a leaked Beszel
-token cannot reach either record topic, and a leaked deploy token cannot write
-to `nas-containers`.
-
-ntfy runs `deny-all`, so a reading account sees only the topics named in its
-own `vault_managed_ntfy_users[].access` list, and the role subscribes it to
-exactly those. Adding a topic to the platform therefore does not reach a phone
-until that account's ACL names it; a topic left out is a 403, not a quiet
-omission.
 
 ## Automatic deployment from the NAS
 
@@ -429,9 +397,9 @@ ansible-galaxy collection install -r requirements.yml
 
 `PLATFORM_PUBLIC_HOST` is the name your devices actually use to reach published
 services. On a Tailscale network that is the machine's tailnet domain name rather
-than an address. ntfy hashes it into
-the mobile push topic, so setting it to the LAN address publishes where nothing
-is subscribed and reports no error. The installer requires it explicitly rather
+than an address. The services hand it to clients, so setting it to the LAN
+address gives devices off the LAN links they cannot follow, and nothing reports
+an error. The installer requires it explicitly rather
 than defaulting it.
 
 Place the vault password provider at the fixed protected path described in
@@ -459,7 +427,7 @@ ansible-playbook -i inventory/local.yml site.yml \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 
 ansible-playbook -i inventory/local.yml verify.yml \
-  --tags platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep \
+  --tags platform_verify_media_acquisition_foundation,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep \
   --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
 ```
 

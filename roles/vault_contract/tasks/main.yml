@@ -1,5 +1,5 @@
 ---
-# The eight lists are group_vars in their own right, each authored in its
+# The seven lists are group_vars in their own right, each authored in its
 # service's vault_<role>.yml, and argument validation has already required every
 # one of them. What it cannot say is that there is no ninth: a leftover
 # vault_managed_users from an un-migrated vault, or a misspelt list, would load,
@@ -21,11 +21,11 @@
          | difference(['vault_managed_audiobookshelf_users', 'vault_managed_beszel_users',
                        'vault_managed_dozzle_users', 'vault_managed_immich_users',
                        'vault_managed_jellyfin_users', 'vault_managed_komga_users',
-                       'vault_managed_ntfy_users', 'vault_managed_paperless_ngx_users'])
+                       'vault_managed_paperless_ngx_users'])
          | sort }}
   no_log: true
 
-# Assembled inward from the eight lists, keyed by service. The filter rejects a
+# Assembled inward from the seven lists, keyed by service. The filter rejects a
 # mapping whose keys differ from its rule table, so a list dropped from here is
 # reported rather than silently left unvalidated.
 - name: Resolve managed-user vault schema violations
@@ -37,11 +37,8 @@
           'immich': vault_managed_immich_users,
           'jellyfin': vault_managed_jellyfin_users,
           'komga': vault_managed_komga_users,
-          'ntfy': vault_managed_ntfy_users,
           'paperless_ngx': vault_managed_paperless_ngx_users} |
-         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,
-                                    vault_ntfy_deploy_token, vault_ntfy_seerr_token],
-                                   vault_contract_reserved_identities) }}
+         vault_managed_user_errors(vault_contract_reserved_identities) }}
   vars:
     # The administrator of each service that has a managed-user list, plus the
     # usernames the platform publishes under. A managed user claiming one of
@@ -63,7 +60,6 @@
       immich: ["{{ vault_immich_admin_email }}"]
       jellyfin: ["{{ vault_jellyfin_admin_username }}"]
       komga: ["{{ vault_komga_admin_email }}"]
-      ntfy: ["{{ vault_ntfy_admin_user }}", dozzle, beszel, deploy, seerr]
       paperless_ngx: ["{{ vault_paperless_admin_username }}"]
   no_log: true
 
@@ -167,17 +163,6 @@
           'vault_trailarr_admin_password': vault_trailarr_admin_password,
           'vault_trailarr_admin_password_hash': vault_trailarr_admin_password_hash,
           'vault_seerr_api_key': vault_seerr_api_key,
-          'vault_ntfy_admin_user': vault_ntfy_admin_user,
-          'vault_ntfy_admin_password': vault_ntfy_admin_password,
-          'vault_ntfy_admin_password_hash': vault_ntfy_admin_password_hash,
-          'vault_ntfy_dozzle_password_hash': vault_ntfy_dozzle_password_hash,
-          'vault_ntfy_beszel_password_hash': vault_ntfy_beszel_password_hash,
-          'vault_ntfy_deploy_password_hash': vault_ntfy_deploy_password_hash,
-          'vault_ntfy_dozzle_token': vault_ntfy_dozzle_token,
-          'vault_ntfy_beszel_token': vault_ntfy_beszel_token,
-          'vault_ntfy_deploy_token': vault_ntfy_deploy_token,
-          'vault_ntfy_seerr_password_hash': vault_ntfy_seerr_password_hash,
-          'vault_ntfy_seerr_token': vault_ntfy_seerr_token,
           'vault_pushover_alerts_token': vault_pushover_alerts_token,
           'vault_pushover_containers_token': vault_pushover_containers_token,
           'vault_pushover_deployments_token': vault_pushover_deployments_token,

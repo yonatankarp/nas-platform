@@ -46,7 +46,8 @@ argument_specs:
         description: >-
           Extra hostnames Nextcloud must answer for, such as a mesh VPN name.
           Its own list rather than a second value folded into
-          platform_public_host, which roles/ntfy also builds its topic from.
+          platform_public_host, which Beszel, Seerr and Vaultwarden build their
+          published addresses from.
       nextcloud_disabled_apps:
         type: list
         elements: str

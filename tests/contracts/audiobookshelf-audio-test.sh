@@ -34,7 +34,6 @@ preseed_output=$(
   PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
   PLATFORM_REPORT_ROOT="$test_root/reports" \
   PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
-  PLATFORM_NTFY_PORT=18080 \
   PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
     "$mac_preconverge_hook" 2>&1
 ) || preseed_status=$?
@@ -84,7 +83,6 @@ second_preseed_output=$(
   PLATFORM_FIXTURE_ROOT="$test_root/fixtures" \
   PLATFORM_REPORT_ROOT="$test_root/reports" \
   PLATFORM_PROJECT_NAME=audiobookshelf-audio-test \
-  PLATFORM_NTFY_PORT=18080 \
   PLATFORM_AUDIOBOOKSHELF_PORT=13378 \
     "$mac_preconverge_hook" 2>&1
 )

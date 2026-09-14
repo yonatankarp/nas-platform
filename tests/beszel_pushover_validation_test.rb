@@ -140,7 +140,7 @@ if missing.empty?
   # that let the task through to an endpoint that happened to answer. Zero
   # requests is the property, not zero failures.
   {
-    "the beszel CI lane's own tag string" => "host_prep,deployment_bundle,ntfy,beszel",
+    "the beszel CI lane's own tag string" => "host_prep,deployment_bundle,beszel",
     "the role tag alone" => "beszel",
     "the group tag the role also carries" => "monitoring"
   }.each do |label, tags|

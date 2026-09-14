@@ -31,10 +31,10 @@ require "open3"
 require "tmpdir"
 
 PROGRAM = File.join(__dir__, "read-integration-ports.rb")
-ROSTER = %w[beszel ntfy dozzle audiobookshelf].freeze
-VALID = { "schema" => 1, "beszel_port" => 38_090, "ntfy_port" => 32_586,
+ROSTER = %w[beszel komga dozzle audiobookshelf].freeze
+VALID = { "schema" => 1, "beszel_port" => 38_090, "komga_port" => 35_600,
           "dozzle_port" => 38_080, "audiobookshelf_port" => 33_378 }.freeze
-EXPECTED_LINE = "38090 32586 38080 33378\n".freeze
+EXPECTED_LINE = "38090 35600 38080 33378\n".freeze
 
 def with_sandbox
   Dir.mktmpdir("nas-platform-ports-test.") do |raw|
@@ -113,23 +113,23 @@ BEHAVIOUR = {
      :refuse]
   end,
   "refuses a roster the document does not cover" => lambda do |root, repository|
-    document = VALID.reject { |key, _| key == "ntfy_port" }
+    document = VALID.reject { |key, _| key == "komga_port" }
     [[write_input(File.join(root, "ports.json"), document), repository, *ROSTER], :refuse]
   end,
   "refuses a port that is not an integer" => lambda do |root, repository|
-    document = VALID.merge("ntfy_port" => "32586")
+    document = VALID.merge("komga_port" => "35600")
     [[write_input(File.join(root, "ports.json"), document), repository, *ROSTER], :refuse]
   end,
   "refuses a privileged port" => lambda do |root, repository|
-    [[write_input(File.join(root, "ports.json"), VALID.merge("ntfy_port" => 80)), repository,
+    [[write_input(File.join(root, "ports.json"), VALID.merge("komga_port" => 80)), repository,
       *ROSTER], :refuse]
   end,
   "refuses a port above the range" => lambda do |root, repository|
-    document = VALID.merge("ntfy_port" => 70_000)
+    document = VALID.merge("komga_port" => 70_000)
     [[write_input(File.join(root, "ports.json"), document), repository, *ROSTER], :refuse]
   end,
   "refuses two services sharing a port" => lambda do |root, repository|
-    document = VALID.merge("ntfy_port" => 38_090)
+    document = VALID.merge("komga_port" => 38_090)
     [[write_input(File.join(root, "ports.json"), document), repository, *ROSTER], :refuse]
   end
 }.freeze

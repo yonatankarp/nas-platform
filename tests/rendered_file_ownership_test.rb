@@ -92,9 +92,9 @@ PLATFORM_UID_ENVIRONMENT = "${NAS_UID:?}"
 # scope the moment it does render into /data.
 EXPECTED_IDENTITY_SERVICES = %w[
   arr audiobookshelf bindery downloaders dozzle jellyfin kapowarr komga
-  ntfy paperless-ngx pinchflat seerr trailarr vaultwarden
+  paperless-ngx pinchflat seerr trailarr vaultwarden
 ].freeze
-IDENTITY_FLOOR = 14
+IDENTITY_FLOOR = 13
 # Every rendered file the rule reaches today, counted off this sweep's own
 # summary line rather than reasoned about. Held as a floor for the same reason
 # every other list here is: a selector that stops matching reports success. It

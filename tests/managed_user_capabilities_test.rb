@@ -87,15 +87,6 @@ EXPECTED_SERVICES = {
       "reconcile" => "api/v2/users/{id}"
     }
   ),
-  "ntfy" => MULTI_USER_DEFAULTS.merge(
-    "mode" => "declarative_environment",
-    "interfaces" => {
-      "list" => "NTFY_AUTH_USERS and ntfy user list",
-      "create" => "NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS",
-      "authenticate" => "Basic authentication",
-      "reconcile" => "NTFY_AUTH_USERS/NTFY_AUTH_ACCESS/NTFY_AUTH_TOKENS"
-    }
-  ),
   "paperless-ngx" => MULTI_USER_DEFAULTS.merge(
     "mode" => "django_cli",
     "interfaces" => {
@@ -277,7 +268,7 @@ end
 
 def self_test
   validate_capabilities
-  assert_failure("missing service", mutate_matrix { |matrix| matrix["services"].delete("ntfy") }, "service entries differ")
+  assert_failure("missing service", mutate_matrix { |matrix| matrix["services"].delete("paperless-ngx") }, "service entries differ")
   assert_failure("extra service", mutate_matrix { |matrix| matrix["services"]["extra"] = {} }, "service entries differ")
   assert_failure("wrong mode", mutate_matrix { |matrix| matrix["services"]["dozzle"]["mode"] = "api" }, "dozzle contract differs")
   assert_failure("missing interface", mutate_matrix { |matrix| matrix["services"]["komga"]["interfaces"].delete("authenticate") }, "komga contract differs")

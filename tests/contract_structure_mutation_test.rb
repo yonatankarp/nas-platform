@@ -431,7 +431,6 @@ BUNDLE_TARGET = "roles/deployment_bundle/tasks/target.yml"
 BUNDLE_MANIFEST_TEMPLATE = "roles/deployment_bundle/templates/manifest.yml.j2"
 COMPOSE_METADATA_BEHAVIOR = "tests/compose_metadata_filter_test.yml"
 AUTO_DEPLOY_ROLE = "roles/production_auto_deploy/tasks/main.yml"
-AUTO_DEPLOY_NOTIFIER = "roles/production_auto_deploy/templates/ntfy.curl.j2"
 AUTO_DEPLOY_PUSHOVER_NOTIFIER = "roles/production_auto_deploy/templates/pushover.curl.j2"
 
 SUITES.each_key do |suite|
@@ -1140,18 +1139,7 @@ check_rejected(
   :dozzle, "a dispatcher header that borrows another publisher's token",
   [[DOZZLE_DEFAULTS,
     "Bearer {{ vault_dozzle_alert_relay_token }}",
-    "Bearer {{ vault_ntfy_deploy_token }}"]],
-  "managed dispatcher authorization differs"
-)
-
-# The regression #172 closed, planted rather than described: the header goes
-# back to naming the ntfy publish credential, which is what put that token at
-# rest in Dozzle's /data volume and in its API responses.
-check_rejected(
-  :dozzle, "a dispatcher header that goes back to the ntfy publish token",
-  [[DOZZLE_DEFAULTS,
-    "Bearer {{ vault_dozzle_alert_relay_token }}",
-    "Bearer {{ vault_ntfy_dozzle_token }}"]],
+    "Bearer {{ vault_pushover_containers_token }}"]],
   "managed dispatcher authorization differs"
 )
 
@@ -1159,10 +1147,10 @@ check_rejected(
 # environment file is where both credentials are named side by side, so it is
 # where one name standing in for both is visible at all.
 check_rejected(
-  :dozzle, "a relay secret that is the ntfy publish token again",
+  :dozzle, "a relay secret that borrows the Pushover application token",
   [[DOZZLE_ENV,
     "ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}",
-    "ALERT_RELAY_TOKEN={{ vault_ntfy_dozzle_token }}"]],
+    "ALERT_RELAY_TOKEN={{ vault_pushover_containers_token }}"]],
   "the relay secret is not a credential of its own"
 )
 
@@ -1422,7 +1410,7 @@ check_accepted(
 
 check_rejected(
   :policy_mac, "a converging role added to verify.yml",
-  [[VERIFY_PLAY, "  roles:\n    - role: ntfy\n", "  roles:\n    - role: host_prep\n    - role: ntfy\n"]],
+  [[VERIFY_PLAY, "  roles:\n    - role: beszel\n", "  roles:\n    - role: host_prep\n    - role: beszel\n"]],
   "Mac verification must not deploy or converge services"
 )
 
@@ -1461,14 +1449,6 @@ check_rejected(
     "      komga: [\"{{ vault_komga_admin_email }}\"]\n",
     "      # komga: [\"{{ vault_komga_admin_email }}\"]\n      komga: []\n"]],
   "vault contract validation is missing vault_komga_admin_email"
-)
-
-check_rejected(
-  :managed_users_vault, "an ntfy publisher token dropped from the ownership check",
-  [[VAULT_CONTRACT,
-    "         vault_managed_user_errors([vault_ntfy_dozzle_token, vault_ntfy_beszel_token,\n",
-    "         vault_managed_user_errors([vault_ntfy_dozzle_token,\n"]],
-  "vault contract must enforce global ntfy token uniqueness and publisher separation"
 )
 
 # --- Downloader Phase 1 Usenet ownership ---------------------------------------
@@ -1688,21 +1668,7 @@ check_rejected(
   "the role must verify the controller virtualenv before installing"
 )
 
-# curl sends every header directive it is given, so two Authorization directives
-# are two credentials presented on one request. The old pair named one variable to
-# require and one to forbid, and neither said anything about how many times the
-# required one appears; the rendered-artifact check two dozen lines below cannot
-# see it either, because a file carrying the token twice still contains it.
-check_rejected(
-  :auto_deploy, "a duplicated Authorization directive",
-  [[AUTO_DEPLOY_NOTIFIER,
-    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n",
-    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n" \
-    "header = \"Authorization: Bearer {{ vault_ntfy_deploy_token }}\"\n"]],
-  "the ntfy.curl config must present exactly the deploy publisher's own bearer token"
-)
-
-# The same shape on the Pushover configs that replaced it in #558 stage 3: curl
+# The Pushover configs carry a duplicated-directive guard of their own: curl
 # sends every form-string it is given, so a second token line is a second token
 # on one request -- and a rendered file carrying its own token twice still
 # contains it, which is all a substring check would ask.

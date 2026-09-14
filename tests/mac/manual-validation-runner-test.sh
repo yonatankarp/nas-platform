@@ -124,9 +124,6 @@ vault_jellyfin_opensubtitles_username: opensubtitles-user
 vault_jellyfin_opensubtitles_password: OPENSUBTITLES-PASSWORD-DO-NOT-LEAK
 vault_komga_admin_email: komga-admin@example.invalid
 vault_komga_admin_password: KOMGA-PASSWORD-DO-NOT-LEAK
-vault_ntfy_admin_user: ntfy-admin
-vault_ntfy_admin_password: NTFY-PASSWORD-DO-NOT-LEAK
-vault_ntfy_dozzle_token: tk_DO_NOT_LEAK_DOZZLE
 vault_paperless_admin_username: paperless-admin
 vault_paperless_admin_password: PAPERLESS-PASSWORD-DO-NOT-LEAK
 vault_managed_audiobookshelf_users:
@@ -147,9 +144,6 @@ vault_managed_jellyfin_users:
 vault_managed_komga_users:
   - email: komga-reader@example.invalid
     password: KOMGA-READER-PASSWORD-DO-NOT-LEAK
-vault_managed_ntfy_users:
-  - username: ntfy-reader
-    password: NTFY-READER-PASSWORD-DO-NOT-LEAK
 vault_managed_paperless_ngx_users:
   - username: paperless-reader
     password: PAPERLESS-READER-PASSWORD-DO-NOT-LEAK
@@ -182,9 +176,6 @@ services:
     compose_files: []
     images: {}
   - name: komga
-    compose_files: []
-    images: {}
-  - name: ntfy
     compose_files: []
     images: {}
 YAML
@@ -344,7 +335,7 @@ if grep -Eq 'idempotence|drift|recreate|persistence|cleanup' "$phase_log"; then
   fail 'manual run executed a phase after verify'
 fi
 
-service_port_fields='audiobookshelf:audiobookshelf_port beszel:beszel_port dozzle:dozzle_port immich:immich_port jellyfin:jellyfin_port komga:komga_port ntfy:ntfy_port paperless-ngx:paperless_port'
+service_port_fields='audiobookshelf:audiobookshelf_port beszel:beszel_port dozzle:dozzle_port immich:immich_port jellyfin:jellyfin_port komga:komga_port paperless-ngx:paperless_port'
 for service_field in $service_port_fields; do
   service=${service_field%%:*}
   field=${service_field#*:}
@@ -382,7 +373,7 @@ PLATFORM_TEST_VAULT_VIEW_FAILURE=false
 active_deployment_root=$sandbox/service-data/docker/nas-platform
 active_manifest=$active_deployment_root/current/manifest.yml
 for missing_service in \
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
+    audiobookshelf beszel dozzle immich jellyfin komga paperless-ngx; do
   ruby -ryaml - "$deployed_manifest" "$active_manifest" "$missing_service" <<'RUBY'
 source, destination, missing = ARGV
 manifest = YAML.safe_load_file(source, aliases: false)
@@ -412,7 +403,7 @@ for username in \
   audio-admin audio-reader beszel-admin@example.invalid beszel-reader@example.invalid \
   dozzle-admin dozzle-reader immich-admin@example.invalid immich-reader@example.invalid \
   jellyfin-admin jellyfin-reader komga-admin@example.invalid komga-reader@example.invalid \
-  ntfy-admin ntfy-reader paperless-admin paperless-reader; do
+  paperless-admin paperless-reader; do
   grep -F "$username" "$manual_output" >/dev/null ||
     fail "handoff omitted username $username"
 done
@@ -443,7 +434,7 @@ for secret in \
   VAULT-PASSWORD-DO-NOT-LEAK AUDIO-PASSWORD-DO-NOT-LEAK BESZEL-PASSWORD-DO-NOT-LEAK \
   DOZZLE-PASSWORD-DO-NOT-LEAK IMMICH-PASSWORD-DO-NOT-LEAK \
   JELLYFIN-PASSWORD-DO-NOT-LEAK KOMGA-PASSWORD-DO-NOT-LEAK \
-  NTFY-PASSWORD-DO-NOT-LEAK tk_DO_NOT_LEAK_DOZZLE PAPERLESS-PASSWORD-DO-NOT-LEAK \
+  PAPERLESS-PASSWORD-DO-NOT-LEAK \
   OPENSUBTITLES-PASSWORD-DO-NOT-LEAK READER-PASSWORD-DO-NOT-LEAK; do
   if grep -R -F "$secret" "$manual_output" "$report_root" "$fixture_repo/services/manifest.yml" \
       >/dev/null 2>&1; then

@@ -114,9 +114,9 @@ end
 # row and a planted write in a real pooled case came back clean.
 #
 # Dropping nested tables altogether is the other wrong answer: a name first
-# assigned inside a nested block genuinely is case-local -- `_mutant_rendered`
-# inside `with_ntfy_task_removed do |...|` is one -- and both rows are in the
-# self-test so neither fix can be traded for the other.
+# assigned inside a nested block genuinely is case-local -- `mutant_status`
+# inside `Dir.mktmpdir("nas-platform-filter-mutant-") do |directory|` is one --
+# and both rows are in the self-test so neither fix can be traded for the other.
 def escaping_in(node, tables, found)
   return unless node.is_a?(RubyVM::AbstractSyntaxTree::Node)
 
@@ -264,14 +264,16 @@ if ARGV == ["--self-test"]
     ],
     # The other side of that rule, and the reason it cannot simply drop nested
     # tables: a name first assigned inside a nested block IS case-local, and
-    # `_mutant_rendered` in config_managed_users_test.rb is exactly that.
+    # `mutant_status` in config_managed_users_test.rb's filter mutations is
+    # exactly that.
     "a name first assigned inside a nested block" => [
       <<~RUBY, nil
         cases = []
         cases << lambda do |collected|
-          with_ntfy_task_removed(name) do |mutant_path, found|
-            _mutant_rendered, _mutant_output, mutant_status = run_fixture(mutant_path)
-            check(collected, mutant_status.success?, "did not escape")
+          Dir.mktmpdir("x") do |directory|
+            mutated_source = mutate(directory)
+            _stdout, _stderr, mutant_status = run_fixture(mutated_source)
+            check(collected, !mutant_status.success?, "did not reject")
           end
         end
       RUBY

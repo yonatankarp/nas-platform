@@ -20,8 +20,6 @@ require "json"
 directory = ARGV.fetch(0)
 first_beszel = JSON.parse(File.read(File.join(directory, "first-beszel.json")))
 second_beszel = JSON.parse(File.read(File.join(directory, "second-beszel.json")))
-first_ntfy = JSON.parse(File.read(File.join(directory, "first-ntfy.json")))
-second_ntfy = JSON.parse(File.read(File.join(directory, "second-ntfy.json")))
 first_dozzle = JSON.parse(File.read(File.join(directory, "first-dozzle.json")))
 second_dozzle = JSON.parse(File.read(File.join(directory, "second-dozzle.json")))
 first_audiobookshelf = JSON.parse(File.read(File.join(directory, "first-audiobookshelf.json")))
@@ -77,7 +75,6 @@ end
 
 [
   [first_beszel, second_beszel, "Beszel"],
-  [first_ntfy, second_ntfy, "ntfy"],
   [first_dozzle, second_dozzle, "Dozzle"],
   [first_audiobookshelf, second_audiobookshelf, "Audiobookshelf"],
   [first_komga, second_komga, "Komga"],
@@ -91,7 +88,6 @@ end
 end
 
 raise "Beszel project namespaces collide" if first_beszel["name"] == second_beszel["name"]
-raise "ntfy project namespaces collide" if first_ntfy["name"] == second_ntfy["name"]
 raise "Dozzle project namespaces collide" if first_dozzle["name"] == second_dozzle["name"]
 raise "Audiobookshelf project namespaces collide" if first_audiobookshelf["name"] == second_audiobookshelf["name"]
 raise "Komga project namespaces collide" if first_komga["name"] == second_komga["name"]
@@ -102,8 +98,6 @@ first_beszel.fetch("services").each_key do |service|
   raise "Beszel #{service} container name is absent" unless first_name && second_name
   raise "Beszel #{service} container names collide" if first_name == second_name
 end
-raise "ntfy container names collide" if first_ntfy.dig("services", "ntfy", "container_name") ==
-                                        second_ntfy.dig("services", "ntfy", "container_name")
 first_dozzle.fetch("services").each_key do |service|
   first_name = first_dozzle.dig("services", service, "container_name")
   second_name = second_dozzle.dig("services", service, "container_name")
@@ -111,7 +105,6 @@ first_dozzle.fetch("services").each_key do |service|
   raise "Dozzle #{service} container names collide" if first_name == second_name
 end
 raise "Beszel published ports collide" if published(first_beszel, "hub") == published(second_beszel, "hub")
-raise "ntfy published ports collide" if published(first_ntfy, "ntfy") == published(second_ntfy, "ntfy")
 raise "Dozzle published ports collide" if published(first_dozzle, "dozzle") == published(second_dozzle, "dozzle")
 raise "Audiobookshelf container names collide" if
   first_audiobookshelf.dig("services", "audiobookshelf", "container_name") ==
