@@ -90,109 +90,259 @@
     - ansible_check_mode
     - kapowarr_upgrade_pending | bool
 
-# Stopped rather than removed, and `recreate: never` for the reason
-# roles/vaultwarden measured: without it the module first brings the service up
-# to the release's definition -- replacing the container with one created from
-# the new pin -- and a failed copy would then no longer read as a pending upgrade
-# on the next converge.
-- name: Stop Kapowarr before copying the store it is about to migrate
-  community.docker.docker_compose_v2:
-    project_src: "{{ platform_current_dir }}/services/kapowarr"
-    project_name: "{{ kapowarr_compose_project_name }}"
-    files: "{{ platform_service_compose_files['kapowarr'] }}"
-    env_files: ["{{ platform_runtime_dir }}/services/kapowarr/.env"]
-    services: [kapowarr]
-    state: stopped
-    recreate: never
+# Before the stop, so the one refusal that has no copy to take costs no downtime.
+# The rescue below reads the store again before it starts anything, for the same
+# reason: with Kapowarr.db gone the old image creates a fresh empty store, the
+# next converge copies that, and the upgrade runs over nothing the operator
+# recognises.
+- name: Read the Kapowarr store before stopping the container that holds it
+  ansible.builtin.stat:
+    path: "{{ kapowarr_config_host_path }}/Kapowarr.db"
+  register: kapowarr_store_stat
   when:
     - not ansible_check_mode
     - kapowarr_upgrade_pending | bool
 
-# The set is read rather than listed, so a stop that left a log with content in
-# it is copied with that log and a closed store is copied alone. Not recursive:
-# v1.3.2's own backups beside it (Kapowarr_YYYY_MM_DD_HH_MM.db) are not the
-# store, and this directory is not one of them either -- Kapowarr's rotation
-# matches only that dated name, so it never prunes Kapowarr.db here.
-- name: Read the Kapowarr store files this copy must carry
-  ansible.builtin.find:
-    paths: "{{ kapowarr_config_host_path }}"
-    patterns:
-      - Kapowarr.db
-      - Kapowarr.db-wal
-      - Kapowarr.db-shm
-    file_type: file
-  register: kapowarr_store_files
-  when:
-    - not ansible_check_mode
-    - kapowarr_upgrade_pending | bool
-
-- name: Require the Kapowarr pre-upgrade copy to have taken the store
+- name: Require a Kapowarr store for the pre-upgrade copy to take
   ansible.builtin.assert:
     that:
-      - >-
-        'Kapowarr.db' in (kapowarr_store_files.files | default([])
-                          | map(attribute='path') | map('basename') | list)
+      - kapowarr_store_stat.stat.isreg | default(false)
     fail_msg: >-
-      No Kapowarr.db was found under {{ kapowarr_config_host_path }} on a host
+      No regular file Kapowarr.db was found under {{ kapowarr_config_host_path }} on a host
       whose Kapowarr container reports the image {{ kapowarr_deployed_image }},
       so this run has a store it cannot copy and an upgrade to
       {{ kapowarr_pinned_image }} that would migrate it. The upgrade is refused
-      rather than performed unprotected. KAPOWARR IS STOPPED AND STAYS STOPPED
-      until this is resolved: find out what is in {{ kapowarr_config_host_path }}
-      before converging again.
-    success_msg: >-
-      The Kapowarr store is present and is copied into
-      {{ kapowarr_pre_upgrade_backup_path }} before this run upgrades to
-      {{ kapowarr_pinned_image }}.
+      rather than performed unprotected, and this run stopped nothing. Find out
+      what is in {{ kapowarr_config_host_path }} before converging again.
   when:
     - not ansible_check_mode
     - kapowarr_upgrade_pending | bool
 
-# Ownership is set where the platform owns it, the host_prep and roles/dozzle
-# form: on the NAS, or where Linux ownership is managed. Elsewhere -- Docker
-# Desktop, where a non-root controller cannot chown -- the file keeps the
-# account that wrote it, and the modes still hold. Measured: an unconditional
-# owner failed there with "chown failed" after the container had stopped.
-- name: Create the Kapowarr pre-upgrade copy directory
-  ansible.builtin.file:
-    path: "{{ kapowarr_pre_upgrade_backup_path }}"
-    state: directory
-    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
-    mode: "0700"
-  when:
-    - not ansible_check_mode
-    - kapowarr_upgrade_pending | bool
+# THE STOP AND THE COPY ARE ONE UNIT, because a stop that is not followed by a
+# completed copy used to leave Kapowarr down: every task after it refused, the
+# container stayed `exited`, and every later converge failed at the same task
+# with changed=0 until someone repaired the path by hand -- measured by planting
+# a file where pre-upgrade-backup/ belongs. The rescue starts the container this
+# block stopped, on the image it was created from, and still fails the run: an
+# upgrade without a completed copy is never taken. The rescue is reachable only
+# from a failed task inside the block, so a converged host and --check never see
+# it.
+- name: Copy the Kapowarr store aside, starting the old container again if the copy fails
+  block:
+    # Stopped rather than removed, and `recreate: never` for the reason
+    # roles/vaultwarden measured: without it the module first brings the service
+    # up to the release's definition -- replacing the container with one created
+    # from the new pin -- and a failed copy would then no longer read as a
+    # pending upgrade on the next converge.
+    - name: Stop Kapowarr before copying the store it is about to migrate
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/kapowarr"
+        project_name: "{{ kapowarr_compose_project_name }}"
+        files: "{{ platform_service_compose_files['kapowarr'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/kapowarr/.env"]
+        services: [kapowarr]
+        state: stopped
+        recreate: never
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
 
-# ansible.builtin.copy moves each file into place atomically, so an interrupted
-# run leaves whole files rather than truncated ones. 0600, because the store
-# holds every credential Kapowarr keeps, the ComicVine key among them.
-- name: Copy the Kapowarr store aside before the pinned upgrade
-  ansible.builtin.copy:
-    src: "{{ item.path }}"
-    dest: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item.path | basename }}"
-    remote_src: true
-    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
-    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
-    mode: "0600"
-  loop: "{{ kapowarr_store_files.files | default([]) }}"
-  loop_control:
-    label: "{{ item.path | basename }}"
-  when:
-    - not ansible_check_mode
-    - kapowarr_upgrade_pending | bool
+    # The set is read rather than listed, so a stop that left a log with content
+    # in it is copied with that log and a closed store is copied alone. Not
+    # recursive: v1.3.2's own backups beside it (Kapowarr_YYYY_MM_DD_HH_MM.db)
+    # are not the store, and this directory is not one of them either --
+    # Kapowarr's rotation matches only that dated name, so it never prunes
+    # Kapowarr.db here.
+    - name: Read the Kapowarr store files this copy must carry
+      ansible.builtin.find:
+        paths: "{{ kapowarr_config_host_path }}"
+        patterns:
+          - Kapowarr.db
+          - Kapowarr.db-wal
+          - Kapowarr.db-shm
+        file_type: file
+      register: kapowarr_store_files
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
 
-# One generation: a log the previous copy carried and this one did not would sit
-# beside a fresh Kapowarr.db as a directory that looks like one store and is two.
-- name: Remove Kapowarr pre-upgrade copies this run did not write
-  ansible.builtin.file:
-    path: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item }}"
-    state: absent
-  loop:
-    - Kapowarr.db-wal
-    - Kapowarr.db-shm
-  when:
-    - not ansible_check_mode
-    - kapowarr_upgrade_pending | bool
-    - item not in (kapowarr_store_files.files | default([])
-                   | map(attribute='path') | map('basename') | list)
+    - name: Require the Kapowarr pre-upgrade copy to have taken the store
+      ansible.builtin.assert:
+        that:
+          - >-
+            'Kapowarr.db' in (kapowarr_store_files.files | default([])
+                              | map(attribute='path') | map('basename') | list)
+        fail_msg: >-
+          Kapowarr.db was present under {{ kapowarr_config_host_path }} before
+          the stop and cannot be read there after it -- it is missing or unreadable --
+          so the copy has nothing to take.
+        success_msg: >-
+          The Kapowarr store is present and is copied into
+          {{ kapowarr_pre_upgrade_backup_path }} before this run upgrades to
+          {{ kapowarr_pinned_image }}.
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
+
+    # Ownership is set where the platform owns it, the host_prep and roles/dozzle
+    # form: on the NAS, or where Linux ownership is managed. Elsewhere -- Docker
+    # Desktop, where a non-root controller cannot chown -- the file keeps the
+    # account that wrote it, and the modes still hold. Measured: an unconditional
+    # owner failed there with "chown failed" after the container had stopped.
+    - name: Create the Kapowarr pre-upgrade copy directory
+      ansible.builtin.file:
+        path: "{{ kapowarr_pre_upgrade_backup_path }}"
+        state: directory
+        owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+        group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+        mode: "0700"
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
+
+    # ansible.builtin.copy moves each file into place atomically, so an
+    # interrupted run leaves whole files rather than truncated ones. 0600,
+    # because the store holds every credential Kapowarr keeps, the ComicVine key
+    # among them.
+    - name: Copy the Kapowarr store aside before the pinned upgrade
+      ansible.builtin.copy:
+        src: "{{ item.path }}"
+        dest: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item.path | basename }}"
+        remote_src: true
+        owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+        group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+        mode: "0600"
+      loop: "{{ kapowarr_store_files.files | default([]) }}"
+      loop_control:
+        label: "{{ item.path | basename }}"
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
+
+    # One generation: a log the previous copy carried and this one did not would
+    # sit beside a fresh Kapowarr.db as a directory that looks like one store and
+    # is two.
+    - name: Remove Kapowarr pre-upgrade copies this run did not write
+      ansible.builtin.file:
+        path: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item }}"
+        state: absent
+      loop:
+        - Kapowarr.db-wal
+        - Kapowarr.db-shm
+      when:
+        - not ansible_check_mode
+        - kapowarr_upgrade_pending | bool
+        - item not in (kapowarr_store_files.files | default([])
+                       | map(attribute='path') | map('basename') | list)
+  rescue:
+    # First, before anything else can rebind them. The path is the one the failed
+    # task was acting on: the copy directory or file for the tasks that write, the
+    # store directory for the two that read it, the project for the stop.
+    - name: Record where the Kapowarr pre-upgrade copy failed
+      ansible.builtin.set_fact:
+        kapowarr_pre_upgrade_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
+        kapowarr_pre_upgrade_failed_message: >-
+          {{ (ansible_failed_result.msg | default('no message', true) ~ ' '
+              ~ (ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
+                 | selectattr('failed') | map(attribute='msg') | select('defined') | unique | join(' ')))
+             | trim | regex_replace('[. ]+$', '') }}
+        kapowarr_pre_upgrade_failed_path: >-
+          {{ (platform_current_dir ~ '/services/kapowarr')
+             if (ansible_failed_task.action | default('')) is search('docker_compose_v2')
+             else kapowarr_config_host_path
+             if (ansible_failed_task.action | default('')) is search('find|assert')
+             else (ansible_failed_result.path | default(kapowarr_pre_upgrade_backup_path, true)) }}
+
+    # THE STORE IS READ AGAIN BEFORE ANYTHING STARTS. The check ahead of the stop
+    # proves the store was there then; a store lost after the stop -- the failure
+    # the in-block assertion names -- is not covered by it. Starting the old image
+    # over a missing Kapowarr.db creates a fresh empty one, the next converge's check
+    # finds that file, copies it and upgrades over it with a green run: measured
+    # by deleting the store as the container exited. So only a regular file counts:
+    # a dangling symlink and a directory both report `exists`, and the old image
+    # started over either one runs on a store it creates somewhere else (measured).
+    # `failed_when: false` because stat fails outright on a permission error rather
+    # than reporting absence, and a rescue that fails here never reaches its
+    # verdict; an unreadable store reads as not a regular file and is not started
+    # over.
+    - name: Read whether the Kapowarr store is still there to start over
+      ansible.builtin.stat:
+        path: "{{ kapowarr_config_host_path }}/Kapowarr.db"
+      register: kapowarr_pre_upgrade_store_after
+      failed_when: false
+
+    # `recreate: never` again, for the reason the stop carries it: `up` without it
+    # replaces the stopped container with one on the new pin, which both starts
+    # the migration this block exists to protect and makes the next converge read
+    # the new image as deployed and skip the copy. With it the module starts the
+    # existing container and nothing else -- measured: the stopped container came
+    # back `Up` on the image it was created from, with the same container ID.
+    - name: Start Kapowarr again on the image it was running
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/kapowarr"
+        project_name: "{{ kapowarr_compose_project_name }}"
+        files: "{{ platform_service_compose_files['kapowarr'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/kapowarr/.env"]
+        services: [kapowarr]
+        state: present
+        recreate: never
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: kapowarr_pre_upgrade_restart
+      # Tolerated rather than redacted from the verdict: `is failed` below is what
+      # tells a container that came back healthy from one that is crash-looping,
+      # which a running-state read taken the moment `up` returns cannot (measured).
+      ignore_errors: true
+      when: kapowarr_pre_upgrade_store_after.stat.isreg | default(false)
+
+    # What Docker reports rather than what the module claimed. The same container
+    # ID running is the old image running, because a container never changes its
+    # image -- and it is also what a stop that itself failed leaves behind.
+    - name: Read whether the Kapowarr container this run stopped is running again
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - ls
+          - --quiet
+          - --filter
+          - "label=com.docker.compose.project={{ kapowarr_compose_project_name }}"
+          - --filter
+          - label=com.docker.compose.service=kapowarr
+          - --filter
+          - status=running
+      register: kapowarr_pre_upgrade_running
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse the Kapowarr upgrade the pre-upgrade copy could not protect
+      ansible.builtin.fail:
+        msg: >-
+          The Kapowarr pre-upgrade copy failed at "{{ kapowarr_pre_upgrade_failed_task }}"
+          on {{ kapowarr_pre_upgrade_failed_path }}: {{ kapowarr_pre_upgrade_failed_message }}.
+          The upgrade from {{ kapowarr_deployed_image }} to {{ kapowarr_pinned_image }} was not performed.
+          {{ kapowarr_pre_upgrade_outcome }}
+      vars:
+        # Running again means the same container ID is running and the start that
+        # put it there waited out its health check. A start skipped because the
+        # store was not a regular file still reads as running when the stop itself
+        # failed and never took the container down.
+        kapowarr_pre_upgrade_running_again: >-
+          {{ ((kapowarr_pre_upgrade_running.stdout_lines | default([])
+               | select('in', kapowarr_backup_container_ids.stdout_lines) | list | length > 0)
+              and not (kapowarr_pre_upgrade_restart is failed)) }}
+        kapowarr_pre_upgrade_outcome: >-
+          {{ ('Kapowarr is running on its old image, ' ~ kapowarr_deployed_image ~ '. Repair '
+               ~ kapowarr_pre_upgrade_failed_path ~ ' and converge again; the next run takes the copy'
+               ~ ' and then performs the upgrade.')
+             if (kapowarr_pre_upgrade_running_again | bool)
+             else ('KAPOWARR IS STOPPED, and was deliberately not started again: '
+                   ~ kapowarr_config_host_path ~ '/Kapowarr.db is missing, unreadable or not a regular file, and the old'
+                   ~ ' image would create a fresh empty store there, which the next converge would copy and'
+                   ~ ' upgrade over. Put the store back, then converge again.')
+             if (kapowarr_pre_upgrade_restart is skipped)
+             else ('KAPOWARR IS NOT SERVING: it was started again on its old image but did not become healthy'
+                   ~ ' within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
+                   ~ (kapowarr_pre_upgrade_restart.msg | default('no message', true)) ~ '), so it is stopped or'
+                   ~ ' crash-looping. Read its container log, repair ' ~ kapowarr_pre_upgrade_failed_path
+                   ~ ' and converge again.') }}
