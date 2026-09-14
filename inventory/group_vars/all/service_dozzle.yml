@@ -7,6 +7,15 @@
 # vault_dozzle.yml, and that encrypted file is its only source. vault_contract
 # requires it, so a vault without it is refused by name before any mutation.
 
+# The one home for the alert relay's listener port, and shared inventory rather
+# than a roles/dozzle default because Beszel converges before Dozzle and must
+# name the same relay: a role default is in scope only inside its own role. None
+# of its consumers may carry their own copy: the relay process and the Compose
+# healthcheck both read it as ALERT_RELAY_PORT out of the rendered environment
+# file, and the managed dispatcher URL interpolates it directly. The relay
+# publishes no host port, so this is a container-internal port only.
+dozzle_alert_relay_port: 8081
+
 nas_storage_dozzle:
   # Dozzle authentication and notification configuration.
   - path: "{{ nas_docker_root }}/dozzle/data"

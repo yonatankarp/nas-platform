@@ -51,6 +51,23 @@
           tags: [platform_verify_media_acquisition_foundation]
       tags: [never, platform_verify_media_acquisition_foundation]
 
+    # Once per consumer, so either service's verify proves the bridge it needs.
+    - name: Verify the alert relay bridge Beszel's hub sends over
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_alert_relay_network
+        apply:
+          tags: [platform_verify_beszel]
+      tags: [never, platform_verify_beszel]
+
+    - name: Verify the alert relay bridge Dozzle's alert relay listens on
+      ansible.builtin.include_role:
+        name: host_prep
+        tasks_from: verify_alert_relay_network
+        apply:
+          tags: [platform_verify_dozzle]
+      tags: [never, platform_verify_dozzle]
+
     - name: Verify mdraid arrays against the declared healthy baseline
       ansible.builtin.include_role:
         name: host_prep

@@ -37,6 +37,7 @@ compose=$repo_dir/services/dozzle/compose.yml
 relay_script=$repo_dir/services/dozzle/alert_relay.py
 role=$repo_dir/roles/dozzle/tasks/main.yml
 defaults=$repo_dir/roles/dozzle/defaults/main.yml
+service_vars=$repo_dir/inventory/group_vars/all/service_dozzle.yml
 env_template=$repo_dir/roles/dozzle/templates/env.j2
 deployment_inputs=$repo_dir/roles/deployment_bundle/tasks/inputs.yml
 deployment_bundle=$repo_dir/roles/deployment_bundle/tasks/main.yml
@@ -73,6 +74,7 @@ render_group_contract() {
   rendered=$(env \
     PLATFORM_PROJECT_NAME=dozzle-contract PLATFORM_CONTAINER_CPUSET=0-2 \
     PLATFORM_MEDIA_NETWORK=dozzle-contract-media-control \
+    PLATFORM_ALERT_RELAY_NETWORK=dozzle-contract-alert-relay \
     PLATFORM_DOCKER_ROOT=/tmp/dozzle-contract/docker \
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT=/tmp/dozzle-contract/docker/dozzle/data \
     NAS_DOCKER_ROOT=/tmp/dozzle-contract/docker \
@@ -90,6 +92,7 @@ render_group_contract() {
     PUSHOVER_TOKEN=contract-pushover-token PUSHOVER_USER_KEY=contract-pushover-user-key \
     ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
     ALERT_DAILY_GLOBAL_CEILING=200 \
+    PUSHOVER_ALERTS_TOKEN=test-pushover-alerts-token BESZEL_LINK_BASE=http://127.0.0.1:8090 \
     AUDIOBOOKSHELF_HOST_PORT=33378 \
     AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
     AUDIOBOOKSHELF_METADATA_PATH=/tmp/dozzle-contract/audiobookshelf-metadata \
@@ -252,7 +255,7 @@ ruby -ryaml "$stack_program" "$compose" "$role" "$env_template" \
   "$deployment_inputs" "$deployment_bundle" "$defaults" </dev/null
 
 ruby -ryaml "$alerts_program" "$defaults" "$role" "$integration" "$mac_drift" \
-  "$mac_verify" "$mac_verify_labels" "$mode" </dev/null
+  "$mac_verify" "$mac_verify_labels" "$service_vars" "$mode" </dev/null
 
 [ "$mode" = static ] && { printf '%s\n' 'Dozzle static contract passed'; exit 0; }
 
@@ -273,13 +276,13 @@ esac
 # in tests/integration_controller_lib.sh and in tests/mac/lib.sh, and
 # tests/dozzle_contract_test.rb refuses the three disagreeing.
 : "${PLATFORM_DOZZLE_PUSHOVER_PORT:=32587}"
-PLATFORM_CONTRACT_DOZZLE_DEFAULTS=$defaults
+PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS=$service_vars
 # The notify mode's throwaway containers are started from the alert relay's
 # image for one reason only: a lane that converged Dozzle has already pulled it.
 # That is true of the deployed pin and of nothing else, so the pin is read out
 # of the deployment rather than restated here.
 PLATFORM_CONTRACT_DOZZLE_COMPOSE=$compose
-export PLATFORM_DOZZLE_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
+export PLATFORM_DOZZLE_PORT PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS
 export PLATFORM_DOZZLE_PUSHOVER_PORT
 export PLATFORM_CONTRACT_DOZZLE_COMPOSE
 

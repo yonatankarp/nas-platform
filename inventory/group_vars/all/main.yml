@@ -19,6 +19,11 @@ platform_current_dir: "{{ platform_deploy_root }}/current"
 platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
 platform_media_control_network: >-
   {{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}
+# The bridge Beszel's hub reaches the Dozzle alert relay over. host_prep creates
+# it, as it does media-control, because two Compose projects share it and
+# neither may own it.
+platform_alert_relay_network: >-
+  {{ (platform_project_name ~ '-alert-relay') if platform_project_name | default('') | length > 0 else 'alert-relay' }}
 
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"

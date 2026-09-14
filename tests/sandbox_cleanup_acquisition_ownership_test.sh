@@ -321,7 +321,7 @@ preflight_project_cleanup_targets() {
         preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-${preflight_kind}_$preflight_network\$"
       done
     done
-    preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-media-control\$"
+    preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-media-control\$ --filter name=^$preflight_namespace-alert-relay\$"
 
     # shellcheck disable=SC2086 # The filters are whitespace-free by construction.
     preflight_ids=$(docker_backend ps -aq --no-trunc $preflight_container_filters) ||
@@ -372,16 +372,18 @@ preflight_project_cleanup_targets() {
       done
     done
 
-    preflight_ids=$(docker_backend network ls -q --no-trunc \
-      --filter label=nas.platform.purpose=media-control \
-      --filter "label=nas.platform.project=$preflight_namespace") ||
-      fail "could not inspect labelled media-control networks: $preflight_namespace"
-    for preflight_id in $preflight_ids; do
-      preflight_name=$(docker_backend network inspect "$preflight_id" \
-        --format '{{.Name}}') ||
-        fail "could not inspect media-control network ID: $preflight_id"
-      record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
-        fail "refusing to collide with media-control network: $preflight_name"
+    for preflight_purpose in media-control alert-relay; do
+      preflight_ids=$(docker_backend network ls -q --no-trunc \
+        --filter label=nas.platform.purpose=$preflight_purpose \
+        --filter "label=nas.platform.project=$preflight_namespace") ||
+        fail "could not inspect labelled $preflight_purpose networks: $preflight_namespace"
+      for preflight_id in $preflight_ids; do
+        preflight_name=$(docker_backend network inspect "$preflight_id" \
+          --format '{{.Name}}') ||
+          fail "could not inspect $preflight_purpose network ID: $preflight_id"
+        record_contains "$created_network_records" "$preflight_id" "$preflight_name" ||
+          fail "refusing to collide with $preflight_purpose network: $preflight_name"
+      done
     done
   done
 }
@@ -909,6 +911,10 @@ create_network "$fixture_media_network" \
   --label nas.platform.purpose=media-control \
   --label "nas.platform.project=$fixture_namespace"
 owned_network_ids="$owned_network_ids $created_network_id"
+create_network "$fixture_namespace-alert-relay" \
+  --label nas.platform.purpose=alert-relay \
+  --label "nas.platform.project=$fixture_namespace"
+owned_network_ids="$owned_network_ids $created_network_id"
 
 run_cleanup
 release_sandbox_after_cleanup
@@ -1114,43 +1120,47 @@ done
 # namespace-derived name, bridge driver, and exactly two platform labels all
 # match. A wrong project, an extra label, and a labelled network under another
 # name each refuse before anything is deleted.
-for media_mismatch in project extra-label unexpected-name; do
-  new_sandbox
-  case $media_mismatch in
-    project)
-      media_refusal_target=$fixture_media_network
-      create_network "$fixture_media_network" \
-        --label nas.platform.purpose=media-control \
-        --label nas.platform.project=somebody-else
-      ;;
-    extra-label)
-      media_refusal_target=$fixture_media_network
-      create_network "$fixture_media_network" \
-        --label nas.platform.purpose=media-control \
-        --label "nas.platform.project=$fixture_namespace" \
-        --label nas.platform.extra=unexpected
-      ;;
-    unexpected-name)
-      media_refusal_target=$fixture_media_network
-      create_network "$fixture_media_network-copy" \
-        --label nas.platform.purpose=media-control \
-        --label "nas.platform.project=$fixture_namespace"
-      ;;
-  esac
-  mismatched_network_id=$created_network_id
-  create_container "$fixture_namespace-radarr" \
-    --label "com.docker.compose.project=$fixture_arr_project" \
-    --label com.docker.compose.service=radarr
-  atomic_peer_container_id=$created_container_id
+for bridge_purpose in media-control alert-relay; do
+  for media_mismatch in project extra-label unexpected-name; do
+    new_sandbox
+    # After new_sandbox, which is what derives this run's namespace.
+    bridge_network=$fixture_namespace-$bridge_purpose
+    case $media_mismatch in
+      project)
+        media_refusal_target=$bridge_network
+        create_network "$bridge_network" \
+          --label nas.platform.purpose=$bridge_purpose \
+          --label nas.platform.project=somebody-else
+        ;;
+      extra-label)
+        media_refusal_target=$bridge_network
+        create_network "$bridge_network" \
+          --label nas.platform.purpose=$bridge_purpose \
+          --label "nas.platform.project=$fixture_namespace" \
+          --label nas.platform.extra=unexpected
+        ;;
+      unexpected-name)
+        media_refusal_target=$bridge_network
+        create_network "$bridge_network-copy" \
+          --label nas.platform.purpose=$bridge_purpose \
+          --label "nas.platform.project=$fixture_namespace"
+        ;;
+    esac
+    mismatched_network_id=$created_network_id
+    create_container "$fixture_namespace-radarr" \
+      --label "com.docker.compose.project=$fixture_arr_project" \
+      --label com.docker.compose.service=radarr
+    atomic_peer_container_id=$created_container_id
 
-  expect_cleanup_refusal "media-control $media_mismatch" \
-    "$media_refusal_target" network
-  require_network_unchanged "$mismatched_network_id" "media-control $media_mismatch"
-  require_container_unchanged \
-    "$atomic_peer_container_id" "media-control atomic-peer service"
-  "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
-  "$real_docker" network rm "$mismatched_network_id" >/dev/null
-  release_owned_refused_sandbox
+    expect_cleanup_refusal "$bridge_purpose $media_mismatch" \
+      "$media_refusal_target" network
+    require_network_unchanged "$mismatched_network_id" "$bridge_purpose $media_mismatch"
+    require_container_unchanged \
+      "$atomic_peer_container_id" "$bridge_purpose atomic-peer service"
+    "$real_docker" rm -f "$atomic_peer_container_id" >/dev/null
+    "$real_docker" network rm "$mismatched_network_id" >/dev/null
+    release_owned_refused_sandbox
+  done
 done
 
 # A generated Configarr name outside the exact project is not owned by this

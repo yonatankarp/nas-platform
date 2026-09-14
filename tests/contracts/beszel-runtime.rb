@@ -110,9 +110,26 @@ def read_recorded_request(socket)
   length = Integer(headers.fetch("content-length", "0"), 10)
   body = length.positive? ? socket.read(length).to_s : ""
   socket.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-  { "method" => request_line.split(" ", 3)[0], "body" => body }
+  { "method" => request_line.split(" ", 3)[0], "headers" => headers, "body" => body }
 rescue StandardError
   nil
+end
+
+# What the Dozzle alert relay's /beszel route requires, and the double encoding
+# that has to survive to reach it: template=json makes shoutrrr's generic service
+# send exactly {"message","title"} as JSON, and the percent-encoded
+# @Authorization query key becomes the header after Beszel has decoded and
+# re-encoded the whole query to add $title (SendShoutrrrAlert). Proved against a
+# real 0.19.0 hub, never read off the source alone.
+def relay_envelope?(record)
+  body = begin
+    JSON.parse(record["body"])
+  rescue JSON::ParserError
+    nil
+  end
+  record["headers"]["authorization"] == "Bearer sentinel" &&
+    record["headers"]["content-type"].to_s.start_with?("application/json") &&
+    body.is_a?(Hash) && body.keys.sort == %w[message title] && body["title"] == "Test Alert"
 end
 
 def endpoint(base, path)
@@ -301,12 +318,14 @@ when "notify"
   #
   # The URL form is read from the pinned sources rather than guessed. Beszel
   # 0.19.0 vendors nicholas-fedor/shoutrrr v0.19.0, whose generic service POSTs
-  # over https unless `disabletls` is set (generic_config.go: WebhookURL), sends
-  # the message as a text/plain body when no template is given, and returns an
-  # error for a dial failure or a status of 400 or more -- which the hub reports
-  # as a string in `err` (internal/alerts/alerts_api.go: SendTestNotification).
-  # Without a template Beszel prepends the title "Test Alert" and appends its
-  # app URL, so the body is matched on the message it carries rather than whole.
+  # over https unless `disabletls` is set (generic_config.go: WebhookURL), and
+  # returns an error for a dial failure or a status of 400 or more -- which the
+  # hub reports as a string in `err` (internal/alerts/alerts_api.go:
+  # SendTestNotification). The URL carries template=json and an @Authorization
+  # header because that is the form PR-B points Beszel at the alert relay with:
+  # the recorder requires the bearer header and the two-key JSON envelope, so
+  # this mode proves the transport the relay depends on. The message is matched
+  # on Beszel's test text rather than whole, because the hub appends its app URL.
   # A wrong host, port or scheme therefore fails at `err`, and a hub that says
   # it sent without sending fails at the recorder.
   begin
@@ -323,7 +342,7 @@ when "notify"
       socket.close rescue nil
     end
   end
-  notification_url = "generic://#{CALLBACK_HOST}:#{recorder.addr[1]}/beszel-contract?disabletls=yes"
+  notification_url = "generic://#{CALLBACK_HOST}:#{recorder.addr[1]}/beszel-contract?disabletls=yes&template=json&@Authorization=Bearer%20sentinel"
   notification = request("post", endpoint(HUB, "/api/beszel/test-notification"),
                          token: app_auth.fetch("token"), body: { url: notification_url })
   fail_contract("Beszel test notification reported delivery failure") unless notification["err"] == false
@@ -332,7 +351,7 @@ when "notify"
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS
   loop do
     received << recorded.pop until recorded.empty?
-    break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") }
+    break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") && relay_envelope?(record) }
     fail_contract("Beszel test notification did not reach the contract's recorder") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
     sleep 1
   end
