@@ -1,7 +1,7 @@
 ---
 # The single operator switch. Inventory sets it, and
-# inventory/group_vars/all/main.yml is where the deployment decision is made and
-# explained. The gate lives inside the role rather than on the site.yml entry,
+# inventory/group_vars/all/service_vaultwarden.yml is where the deployment decision
+# is made and explained. The gate lives inside the role rather than on the site.yml entry,
 # because a `when:` there would also skip the deployment_bundle re-include that
 # revalidates the paths this role touches and the deployment report that says
 # whether anything moved.
@@ -9,7 +9,8 @@
 # FALSE HERE WHILE THE PLATFORM RUNS IT, AND THE ASYMMETRY IS THE POINT. This
 # line is the FLOOR under the deployment decision rather than a copy of it. The
 # decision is `vaultwarden_deployment_enabled: true` in
-# inventory/group_vars/all/main.yml, which wins on every run any playbook in this
+# inventory/group_vars/all/service_vaultwarden.yml, which wins on every run any
+# playbook in this
 # repository makes; what a role default decides is only what a caller with NO
 # inventory gets, and for this service that caller would otherwise stand up a
 # password manager whose registration door is deliberately open. nextcloud ships
@@ -78,7 +79,8 @@ vaultwarden_domain: "https://{{ platform_public_host | lower }}"
 # SIGNUPS_ALLOWED=false, and /admin answers 200 serving only its own "the admin
 # panel is disabled" body. The platform's decision, its cost and the alternative
 # it rejected (open once, create the account, close again) are recorded in
-# inventory/group_vars/all/main.yml, which is where a nonsecret policy value
+# inventory/group_vars/all/service_vaultwarden.yml, which is where a nonsecret
+# policy value
 # belongs. THIS DEFAULT SHIPS THE DOOR SHUT, for the same reason
 # vaultwarden_deployment_enabled above ships the stack off: a role default is
 # what a caller with no inventory gets, and the one thing that caller must not
@@ -119,7 +121,8 @@ vaultwarden_invitations_allowed: true
 
 # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log, attachments/,
 # sends/ and rsa_key.pem. recovery: critical in
-# inventory/group_vars/all/main.yml -- see the declaration there for what is and
+# inventory/group_vars/all/service_vaultwarden.yml -- see the declaration there for
+# what is and
 # is not recoverable from it.
 vaultwarden_data_host_path: "{{ nas_docker_root }}/vaultwarden/data"
 

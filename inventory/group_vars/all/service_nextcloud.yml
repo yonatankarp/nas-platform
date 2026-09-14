@@ -1,6 +1,6 @@
 ---
 # nextcloud: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_nextcloud.yml.
 
 # The one operator switch that deploys Nextcloud, and it is now on. #500 added
 # this stack as the file-sync service replacing Seafile, which ran beside it for

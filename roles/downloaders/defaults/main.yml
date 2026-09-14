@@ -13,7 +13,8 @@ media_usenet_enabled: false
 media_acquisition_adopt_existing_libraries: false
 
 # Whether an operator has declared a Usenet provider at all. An undeclared one is
-# a valid state: `inventory/group_vars/all/main.yml` carries an empty host and an
+# a valid state: `inventory/group_vars/all/service_downloaders.yml` carries an empty
+# host and an
 # empty credential pair, and the vault wins over the pair, so the host is what
 # says which of the two states this target is in.
 #

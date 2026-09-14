@@ -409,8 +409,8 @@
       converged, nothing is written under {{ vaultwarden_data_host_path }}, and
       no listener is placed on this host's port {{ vaultwarden_port }}. Set
       vaultwarden_deployment_enabled to true in
-      inventory/group_vars/all/main.yml and merge; the auto-deploy poller brings
-      the stack up on its next five-minute tick.
+      inventory/group_vars/all/service_vaultwarden.yml and merge; the auto-deploy
+      poller brings the stack up on its next five-minute tick.
   when: not vaultwarden_deployment_enabled | bool
 
 # THE SECOND HALF OF THE SAME GUARD, AND IT WATCHES THE CONSEQUENCE RATHER THAN

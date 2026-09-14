@@ -1,6 +1,6 @@
 ---
 # beszel: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_beszel.yml.
 
 # Shared inventory rather than roles/beszel defaults, because roles/dozzle reads
 # the app URL too: the alert relay gives a Beszel alert its "Open in Beszel"

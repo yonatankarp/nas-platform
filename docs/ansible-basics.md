@@ -17,8 +17,9 @@ does not need to run in a container. See
 An **inventory** defines hosts, groups, connection type, and coordinates. This
 project has `local.yml`, `remote.yml`, and `mac.yml` inventories. Values shared
 by every platform live in
-[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml),
-while machine capabilities live under `nas_hosts` or `mac_hosts`. See
+[`inventory/group_vars/all/main.yml`](../inventory/group_vars/all/main.yml) and
+each service's own settings in `service_<role>.yml` beside it, while machine
+capabilities live under `nas_hosts` or `mac_hosts`. See
 [How to build your inventory](https://docs.ansible.com/ansible/latest/inventory_guide/intro_inventory.html)
 and [Using variables](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_variables.html).
 

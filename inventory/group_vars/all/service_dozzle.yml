@@ -1,6 +1,6 @@
 ---
 # dozzle: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_dozzle.yml.
 
 # vault_dozzle_alert_relay_token has no default here. It used to be derived from
 # another service's publish token; since #558 the operator authors it in

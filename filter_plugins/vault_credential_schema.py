@@ -308,8 +308,8 @@ CREDENTIAL_RULES = {
 # The Usenet provider account belongs to a paid third-party subscription, so a
 # target that has not bought one has nothing to declare. That is a valid state,
 # the same one an empty `media_arr_indexers` describes, and
-# `inventory/group_vars/all/main.yml` expresses it by declaring both of these as
-# empty strings so the vault can win over them without the contract losing a
+# `inventory/group_vars/all/service_downloaders.yml` expresses it by declaring both
+# of these as empty strings so the vault can win over them without the contract losing a
 # required key.
 #
 # The group is all-or-nothing on purpose: the rules are suppressed only when both

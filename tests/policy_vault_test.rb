@@ -1158,5 +1158,46 @@ expected_vault_roles.each do |role|
         "CREDENTIAL_FREE_SERVICES if it genuinely holds no credential")
 end
 
+# Where the next editor is told to put a secret. Every implemented service has a
+# service_<role>.yml beside its vault file, and its header names the file that
+# holds that service's credentials. Sixteen of them named bare `vault.yml`
+# instead -- the single file #612 retired and the check at the top of this script
+# hard-fails on -- so the geography a reader is handed was the pre-split one, in
+# the file they are about to edit (#650).
+#
+# The seventeenth is why this is a check rather than one sweep. service_karakeep.yml
+# was written after the split and names vault_karakeep.yml correctly, so the
+# stale text was not something every file had: it was something every file
+# written *before* the split had, and the next service would have been right by
+# accident or wrong by copy depending on which sibling its author opened. Derived
+# from services/manifest.yml in both directions so a promotion cannot skip it.
+#
+# `vault.yml.example` is the one legitimate mention of the retired name: it is a
+# real committed file and the shape those per-service vaults take, so the
+# refusal below matches the bare name only when `.example` does not follow it.
+service_settings_roles = manifest_entries.filter_map do |entry|
+  entry["role"] if entry.is_a?(Hash) && entry["status"] == "implemented"
+end.compact.sort
+service_settings_roles.each do |role|
+  relative = File.join("inventory", "group_vars", "all", "service_#{role}.yml")
+  path = File.join(ROOT, relative)
+  unless File.file?(path)
+    check(failures, false,
+          "#{relative} is missing: every implemented service declares its non-secret " \
+          "settings and the storage it owns in its own file")
+    next
+  end
+
+  body = File.read(path)
+  check(failures, body.include?("vault_#{role}.yml"),
+        "#{relative} does not name vault_#{role}.yml: its header tells the next editor " \
+        "where this service's secrets live, and that is the file roles/vault_contract " \
+        "reads them from")
+  check(failures, !body.match?(/vault\.yml(?!\.example)/),
+        "#{relative} names the retired bare vault.yml: #612 split it into one " \
+        "vault_<role>.yml per service, and a committed vault.yml fails this script " \
+        "at the encryption check above")
+end
+
 
 report(failures, "vault policy: all properties hold", "vault policy violation(s)")
