@@ -143,8 +143,6 @@
 
 - name: Resolve the reconciled Dozzle users document
   ansible.builtin.set_fact:
-    dozzle_reconciled_users: >-
-      {{ dozzle_unmanaged_users | combine(dozzle_desired_users) }}
     dozzle_reconciled_document: >-
       {{ dozzle_existing_document |
          combine({'users': dozzle_unmanaged_users | combine(dozzle_desired_users)}) }}

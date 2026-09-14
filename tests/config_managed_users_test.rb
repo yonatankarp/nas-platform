@@ -100,7 +100,11 @@ STRUCTURAL_PROPERTIES = {
   "Dozzle unmanaged preservation" => lambda do |context|
     preserve = named_task(context.fetch(:dozzle), "Preserve unmanaged Dozzle users verbatim")
     reconcile = named_task(context.fetch(:dozzle), "Resolve the reconciled Dozzle users document")
-    merged = reconcile&.dig("ansible.builtin.set_fact", "dozzle_reconciled_users").to_s
+    # `dozzle_reconciled_document` is the fact `templates/users.yml.j2` renders,
+    # so it is the one this asserts the merge on. A second fact carrying the
+    # same expression and nothing reading it was what this used to read (#645):
+    # the assertion held while the value that reaches the file went unexamined.
+    merged = reconcile&.dig("ansible.builtin.set_fact", "dozzle_reconciled_document").to_s
     !preserve.nil? && preserve["loop"] == "{{ dozzle_existing_users | dict2items }}" &&
       # Without this `when` the loop would also copy the managed identities back
       # over their reconciled values.
