@@ -25,9 +25,9 @@ failures = []
 # caller passes none, and tests/ci/classify_changes.rb derives its lanes, its CI
 # matrix and its tag plans from the same rows. There is no second copy to
 # reconcile, so what is checked here is the table itself. Every lane but the
-# planned acquisition foundations must name the alerting sink, because a suite
-# that leaves ntfy out now fails at the service's deployment report rather than
-# at anything the suite is about.
+# planned acquisition foundations must name ntfy, whose gated-off teardown every
+# lane converges until #558 stage 4c removes the role (it was the alerting sink,
+# and the deployment reports it carried moved to roles/deployment_bundle).
 integration_path = File.join(ROOT, "tests", "integration.sh")
 suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
@@ -85,7 +85,7 @@ unless suite_rows.empty?
     next if planned_acquisition_lanes.include?(suite)
 
     check(failures, tags.include?("ntfy"),
-          "service lane #{suite} must converge ntfy: its role reports its deployment there")
+          "service lane #{suite} must converge ntfy: its gated-off teardown runs on every lane until #558 stage 4c")
   end
 
   planned_acquisition_lanes.each do |lane|

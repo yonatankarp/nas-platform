@@ -69,8 +69,9 @@
     - role: deployment_bundle
       tags: [deployment_bundle]
 
-    # ntfy first: it is the sink every monitor publishes to, and its tokens are
-    # the values the other services are configured with.
+    # ntfy first, from when it was the sink every monitor published to. It is off
+    # since #558 stage 4a -- every publisher sends through Pushover -- so this
+    # entry now converges its `state: absent` teardown; stage 4c removes it.
     - role: ntfy
       tags: [ntfy, monitoring]
 

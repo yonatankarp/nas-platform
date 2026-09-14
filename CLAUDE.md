@@ -104,10 +104,11 @@ idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
-converges `ntfy` as well; it is not a lane of its own. The deployment reports
-that tag used to be converged for now go to Pushover, but their tasks still live
-in `roles/ntfy` until #558 retires the role, which is what keeps a change to
-them routed to exactly the lanes that run them. The harness runs Ansible
+converges `ntfy` as well; it is not a lane of its own. Since #558 stage 4a that
+converges ntfy's gated-off branch, `state: absent`, and the komga lane is the one
+that brings ntfy up and proves the teardown stops it gracefully. The deployment
+reports ntfy's role used to carry live in `roles/deployment_bundle` now, whose
+changes fall open to every lane. The harness runs Ansible
 inside a pinned Linux container against a disposable sandbox so the plays meet a
 real `/proc/mounts`, real numeric uid/gid and a real Docker socket. It asserts
 three properties: the run converges, a second run changes nothing, and

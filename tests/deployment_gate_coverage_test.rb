@@ -22,9 +22,9 @@
 # tests/ci/classify_changes_test.rb's harness-closure check, and it was
 # incidental: it fires because tests/expected/nextcloud.yml is reached from a
 # contract, so a service with no contract escapes it. ntfy is the control that
-# proves so -- it is implemented, deployed on every lane, and
-# `ClassifyChanges.suites(classify(["tests/expected/ntfy.yml"]))` is `[]` today
-# with every check green.
+# proved so -- it was implemented, deployed on every lane, and
+# `ClassifyChanges.suites(classify(["tests/expected/ntfy.yml"]))` was `[]` with
+# every check green. (#558 stage 4a has since turned ntfy's own gate off.)
 #
 # THE SUBJECT IS THE GATE, NOT THE MANIFEST, and that distinction is the whole
 # design. Requiring a lane of every implemented service would forbid the
@@ -43,9 +43,9 @@
 #      means "CI has deployed this and watched it come up": tests/integration.sh
 #      asserts of every lane that the run converges, that a second run changes
 #      nothing, and that --check --diff works. Membership is by *tag* rather than
-#      by a lane of its own, because ntfy has no lane and needs none -- every
-#      service lane converges it, since each service role reports its deployment
-#      there. Deriving the requirement from the tags rather than from lane names
+#      by a lane of its own, because ntfy never had a lane and needed none -- every
+#      service lane converged it, since each service role reported its deployment
+#      there until #558 moved the reports and turned ntfy off. Deriving the requirement from the tags rather than from lane names
 #      is what lets ntfy pass without an exemption list, and an exemption list is
 #      the defect this file exists to remove.
 #
