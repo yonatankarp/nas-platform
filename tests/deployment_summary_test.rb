@@ -237,6 +237,13 @@ with_controller_repository do |directory, repository, previous, current, introdu
   read_summary = lambda do
     File.exist?(summary_path) ? JSON.parse(File.read(summary_path)) : nil
   end
+  # Every poller row counts its own requests, so a publish that leaked past the
+  # variable is named here rather than aborting the file in the probe.
+  check_unpublished = lambda do |label, requests|
+    check(failures, requests.empty?,
+          "#{label}: deployment_summary.yml published although the poller asked for the summary; " \
+          "the release would be announced twice: #{requests.map { |r| r.dig('form', 'title') }.inspect}")
+  end
 
   with_http_probe(nil) do |port, requests|
     _stdout, stderr, status = run_summary(
@@ -245,9 +252,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
     )
     check(failures, status.success?,
           "poller deployment summary fixture failed: #{stderr.lines.last&.strip}")
-    check(failures, requests.empty?,
-          "deployment_summary.yml published although the poller asked for the summary; the " \
-          "release would be announced twice: #{requests.map { |r| r.dig('form', 'title') }.inspect}")
+    check_unpublished.call("a moved release", requests)
     check(failures, File.exist?(summary_path) && (File.stat(summary_path).mode & 0o777) == 0o600,
           "the poller's summary must be written at mode 0600")
     check(failures, read_summary.call == {
@@ -269,10 +274,11 @@ with_controller_repository do |directory, repository, previous, current, introdu
    ["check mode", { "deployment_bundle_previous_release_id" => previous }, ["--check"]],
    ["a selective converge", {}, []]].each do |label, overrides, arguments|
     FileUtils.rm_f(summary_path)
-    with_http_probe(0) do |port, _requests|
+    with_http_probe(nil) do |port, requests|
       _stdout, stderr, status = run_summary(base.call(port, overrides), *arguments,
                                             environment: poller_environment)
       check(failures, status.success?, "#{label} poller summary fixture failed: #{stderr.lines.last&.strip}")
+      check_unpublished.call(label, requests)
     end
     check(failures, !File.exist?(summary_path), "#{label} must write no poller summary")
   end
@@ -280,12 +286,13 @@ with_controller_repository do |directory, repository, previous, current, introdu
   # A first install names no predecessor, has no Git range to read, and so no
   # commit for any image.
   FileUtils.rm_f(summary_path)
-  with_http_probe(0) do |port, _requests|
+  with_http_probe(nil) do |port, requests|
     _stdout, stderr, status = run_summary(
       base.call(port, "deployment_bundle_previous_release_id" => ""), environment: poller_environment
     )
     check(failures, status.success?,
           "first-install poller summary fixture failed: #{stderr.lines.last&.strip}")
+    check_unpublished.call("a first install", requests)
   end
   first = read_summary.call || {}
   check(failures, first["previous"] == "" && first["commits"] == [] &&
