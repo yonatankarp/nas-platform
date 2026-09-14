@@ -982,11 +982,27 @@ def deliver_test_notification(url, state)
     %w[true 1 yes y].include?(URI.decode_www_form(uri.query.to_s).to_h["disabletls"].to_s.downcase)
   return "dial tcp: lookup #{uri.host}: no such host" unless uri.host == CALLBACK_HOST
 
-  # No template, so the body is the message as Beszel built it: the title
-  # prepended, the app URL appended.
-  body = state.fetch(:delivered_text, "Test Alert\n\n#{DELIVERED_MESSAGE}\n\nhttp://beszel.example.invalid")
+  # Measured against a real 0.19.0 hub: with template=json the body is exactly
+  # {"message","title"} as application/json, the message being Beszel's text
+  # with its app URL appended, and every @key query parameter becomes a header
+  # with its percent-encoding undone. Without a template the title is prepended
+  # to a text/plain body instead.
+  params = URI.decode_www_form(uri.query.to_s)
+  headers = params.select { |key, _value| key.start_with?("@") }
+                  .to_h { |key, value| [key.delete_prefix("@"), value] }
+  headers.delete("Authorization") if state.fetch(:delivered_without_authorization, false)
+  message = "#{state.fetch(:delivered_message, DELIVERED_MESSAGE)}\n\nhttp://beszel.example.invalid"
+  if params.to_h["template"] == "json"
+    envelope = { "message" => message, "title" => "Test Alert" }
+    envelope["priority"] = "2" if state.fetch(:delivered_extra_key, false)
+    body = JSON.generate(envelope)
+    headers["Content-Type"] = "application/json"
+  else
+    body = "Test Alert\n\n#{message}"
+    headers["Content-Type"] = "text/plain"
+  end
   response = Net::HTTP.start("127.0.0.1", uri.port, open_timeout: 2, read_timeout: 2) do |http|
-    http.post(uri.path.empty? ? "/" : uri.path, body, "Content-Type" => "text/plain")
+    http.post(uri.path.empty? ? "/" : uri.path, body, headers)
   end
   "server returned unexpected response status code: #{response.code}" if response.code.to_i >= 400
 rescue URI::InvalidURIError, SystemCallError, Timeout::Error => error
@@ -1431,7 +1447,23 @@ RUNTIME_ROWS = [
     # Something reached the recorder, but not Beszel's test message: a POST is
     # not proof of this notification. Sits out the same short deadline.
     name: "a delivery that does not carry Beszel's test message", mode: "notify",
-    state: { delivered_text: "Test Alert\n\nsomething else entirely" },
+    state: { delivered_message: "something else entirely" },
+    env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
+    expects: "Beszel test notification did not reach the contract's recorder"
+  },
+  {
+    # The transport the Dozzle alert relay's /beszel route depends on: a
+    # delivery that lost the bearer header would be refused there with 401.
+    name: "a delivery without the relay's bearer header", mode: "notify",
+    state: { delivered_without_authorization: true },
+    env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
+    expects: "Beszel test notification did not reach the contract's recorder"
+  },
+  {
+    # And one that is not exactly the two-key envelope, which the relay refuses
+    # with 400.
+    name: "a delivery that is not the relay's two-key JSON envelope", mode: "notify",
+    state: { delivered_extra_key: true },
     env: { "PLATFORM_BESZEL_NOTIFICATION_POLL_TIMEOUT_SECONDS" => "4" },
     expects: "Beszel test notification did not reach the contract's recorder"
   }
@@ -2379,10 +2411,17 @@ RUNTIME_MUTATIONS = [
     skip: "removing the deadline makes the row hang rather than fail"
   },
   { label: "the recorder requirement",
-    from: %(break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") }),
+    from: %(break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") && relay_envelope?(record) }),
     to: "break",
     rows: ["a notification that never reaches the recorder",
-           "a delivery that does not carry Beszel's test message"] },
+           "a delivery that does not carry Beszel's test message",
+           "a delivery without the relay's bearer header",
+           "a delivery that is not the relay's two-key JSON envelope"] },
+  { label: "the relay transport requirement",
+    from: %( && relay_envelope?(record) }),
+    to: " }",
+    rows: ["a delivery without the relay's bearer header",
+           "a delivery that is not the relay's two-key JSON envelope"] },
   { label: "the test message match",
     from: %(record["body"].include?("This is a notification from Beszel.")),
     to: "true",
@@ -2396,8 +2435,8 @@ RUNTIME_MUTATIONS = [
     rows: ["the notification proof against a delivering hub"],
     detects: "Beszel test notification reported delivery failure" },
   { label: "the plain-http selection",
-    from: "/beszel-contract?disabletls=yes\"",
-    to: "/beszel-contract\"",
+    from: "/beszel-contract?disabletls=yes&",
+    to: "/beszel-contract?",
     rows: ["the notification proof against a delivering hub"],
     detects: "Beszel test notification reported delivery failure" },
   { label: "the callback host in the URL",
