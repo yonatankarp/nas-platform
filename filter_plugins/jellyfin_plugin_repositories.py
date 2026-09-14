@@ -22,13 +22,18 @@ Parity with the loops it replaces, verified by differential on ansible-core
   module stringifies too. The role asserts `item.Url is string` on the current
   repositories immediately before calling in, so that coercion is the behaviour
   of a path the role has already closed, not a new tolerance.
-* The retired list is compared against the *normalized* URL but is itself used
-  raw, exactly as the `when:` condition did. Normalizing it here would newly
-  retire a repository whose declared URL differs only in case or trailing slash.
-  Its list-ness is enforced, which the `when:` condition never did: `in` against
-  a string is Python's substring test, so a scalar retired URL silently retired
-  every repository whose URL it contained. That is a refusal, not a normalization
-  — the raw comparison of the members themselves is unchanged.
+* Both sides of the retired comparison are normalized, which is the one place
+  this module departs from the `when:` condition it replaces. That condition
+  compared the raw retired list against the *normalized* URL, and so did this
+  module until #648: a retired entry differing only in case or in a trailing
+  slash matched nothing and the run reported success — a guard that validates
+  rather than refuses. It held only because the single default value happens to
+  be already normalized, so normalizing the retired list retires nothing new
+  today while making the declaration mean what it reads as. The asymmetry was the
+  anomaly rather than the rule: the same function normalizes the declared URLs
+  eight lines further down. Its list-ness is enforced as well, which the `when:`
+  condition never did: `in` against a string is Python's substring test, so a
+  scalar retired URL silently retired every repository whose URL it contained.
 * `combine` with the default `recursive=false` is a shallow overlay in which the
   desired keys win and every unrelated key on the current record survives, so
   the merge is `{**raw, **desired}` and not a replacement.
@@ -115,11 +120,18 @@ def jellyfin_merged_repositories(inventory, desired, retired):
     """Overlay the declared repositories onto the reported ones.
 
     `inventory` is the output of `jellyfin_normalized_repositories`, `desired` the
-    declared list, and `retired` the raw retired-URL list.
+    declared list, and `retired` the raw retired-URL list, which is normalized
+    here so that it is compared like for like against the inventory's own
+    normalized URLs (#648).
     """
     entries = _require_sequence(inventory, "the Jellyfin repository inventory")
     declared = _require_sequence(desired, "declared Jellyfin plugin repositories")
-    retired = _require_sequence(retired, "retired Jellyfin plugin repository URLs")
+    retired = {
+        _normalized_url(url)
+        for url in _require_sequence(
+            retired, "retired Jellyfin plugin repository URLs"
+        )
+    }
     keyed = jellyfin_repositories_by_url(declared)
 
     merged = []

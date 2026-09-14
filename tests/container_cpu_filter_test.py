@@ -82,6 +82,22 @@ assert errors == [
     "worker: effective CPU set is 0-3, expected 0-2",
 ]
 
+# Docker returns `"Labels": null` for an image declaring none, and `"HostConfig":
+# null` in some inspect shapes. `.get(key, {})` substitutes only for an absent
+# key, so each of these reached `None.get` and raised AttributeError — a raw
+# traceback out of a preflight task, where every other malformed input here is
+# refused by name (#648).
+for null_shape in [
+    {"Config": {"Labels": None}, "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 3_000_000_000}},
+    {"Config": None, "HostConfig": {"CpusetCpus": "0-2", "NanoCpus": 3_000_000_000}},
+    {"Config": {"Labels": {"com.docker.compose.service": "server"}}, "HostConfig": None},
+]:
+    require_rejected(verify_runtime, compose_services, [null_shape], ["server"], "0-2")
+
+# An absent key still reads as an empty mapping, which is what it did before: a
+# container with no labels at all is an unknown service, not a crash.
+require_rejected(verify_runtime, compose_services, [{}], ["server"], "0-2")
+
 require_rejected(verify_runtime, [], inspections, ["server", "worker"], "0-2")
 require_rejected(verify_runtime, compose_services, [], ["server", "worker"], "0-2")
 require_rejected(verify_runtime, compose_services, inspections, [], "0-2")
