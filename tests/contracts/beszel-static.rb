@@ -74,9 +74,17 @@ refuse("telemetry polling timeout differs") unless
 # so a URL still naming pushover:// would ring every recovery again. A URL
 # without the header is refused by the relay with 401, and one carrying a
 # Pushover token instead would put a publishing credential in Beszel's database.
-# Every one of those is a different string, so equality is the whole check.
+# Equality is the whole check. The three refusals before it only name which of
+# those defects it is.
+notification_url = defaults["beszel_notification_url"].to_s.strip
+refuse("notification webhook still sends to pushover:// directly instead of through the relay") if
+  notification_url.start_with?("pushover://")
+refuse("notification webhook carries no @Authorization header for the relay") unless
+  notification_url.include?("&@Authorization=")
+refuse("notification webhook does not authenticate with vault_dozzle_alert_relay_token") unless
+  notification_url.include?("('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode")
 refuse("notification webhook is not the alert relay's /beszel route with the relay token") unless
-  defaults["beszel_notification_url"].to_s.strip ==
+  notification_url ==
     "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json" \
     "&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}"
 # The diagnostic's scheme label has to match the managed URL's scheme. Left on

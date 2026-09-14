@@ -238,7 +238,7 @@ STATIC_ROWS = [
                   "  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}",
                   "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1")
     },
-    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+    expects: "notification webhook still sends to pushover:// directly instead of through the relay"
   },
   {
     # The relay answers /alerts with Dozzle's envelope rules, so Beszel's
@@ -258,7 +258,7 @@ STATIC_ROWS = [
                   "vault_dozzle_alert_relay_token) | urlencode",
                   "vault_pushover_containers_token) | urlencode")
     },
-    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+    expects: "notification webhook does not authenticate with vault_dozzle_alert_relay_token"
   },
   {
     # No bearer header: the relay refuses every Beszel alert with 401.
@@ -267,7 +267,7 @@ STATIC_ROWS = [
       mutate_text(root, "roles/beszel/defaults/main.yml",
                   "&@Authorization={{\n  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}", "")
     },
-    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+    expects: "notification webhook carries no @Authorization header for the relay"
   },
   {
     # #598's shape: the diagnostic reports [REDACTED] for the correct webhook.
