@@ -165,7 +165,7 @@ LOCK_OWNER_ENVIRONMENT = "PLATFORM_DEPLOYMENT_LOCK_OWNER"
 # Where site.yml writes what a release shipped, for announce_release (#558).
 # deploy() alone exports it: the manifests and the Git history are read inside
 # the play, and this script has no YAML parser. An operator's --converge never
-# carries it, so site.yml publishes its own plain summary there instead.
+# carries it, so site.yml writes no summary and nothing announces that release.
 SUMMARY_PATH_ENVIRONMENT = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 # The GitHub API is called anonymously: sixty requests an hour per address, of
 # which the five-minute poll spends twelve. A Renovate batch can move dozens of
@@ -1287,7 +1287,7 @@ def deploy(config: Config, sha: str, log) -> bool:
     """
 
     # Here and nowhere else: verify.yml shares _ansible_environment, and an
-    # operator's converge must keep the plain summary site.yml publishes itself.
+    # operator's converge must never make site.yml write a summary nothing reads.
     environment = _ansible_environment(config) | {
         SUMMARY_PATH_ENVIRONMENT: str(_summary_path(config))
     }
@@ -1462,7 +1462,7 @@ def pushover_verdict(returncode: int, output: bytes) -> str:
     way (#423). Prose true of only one script goes in a comment above the def,
     which that comparison does not read.
 
-    The same verdict as roles/ntfy/tasks/pushover_publish.yml (#598): 200 with
+    The same verdict as roles/deployment_bundle/tasks/pushover_publish.yml (#598): 200 with
     an integer status of 1 is accepted, a 4xx other than 429 with an integer
     status of 0 is refused, and everything else -- no answer, a proxy's page, a
     quota 429, a status of "0" or true -- is unanswered, which is not a refusal.

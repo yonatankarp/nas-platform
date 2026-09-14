@@ -4,8 +4,8 @@ This path targets a fresh production installation. Complete the
 [disposable Mac proof](getting-started-mac.md), protect any media already on the
 NAS, and confirm every required service is `implemented` or `accepted` in
 [`services/manifest.yml`](../services/manifest.yml) before installation. The
-seventeen implemented service projects are Audiobookshelf, Beszel, Bindery,
-Dozzle, Immich, Jellyfin, Kapowarr, Komga, Nextcloud, ntfy, Paperless-ngx,
+eighteen implemented service projects are Audiobookshelf, Beszel, Bindery,
+Dozzle, Immich, Jellyfin, Kapowarr, Karakeep, Komga, Nextcloud, ntfy, Paperless-ngx,
 Pinchflat, Seerr, Trailarr, Vaultwarden, and the Arr and downloader projects,
 which this host runs because it enables Usenet. The
 production retirement checkpoint has passed and the retired metadata manager
@@ -213,9 +213,13 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for all seventeen of the implemented service projects this host
-converges. Neither of the two gated services carries a gated-off caveat any
-more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
+unchanged for sixteen of the eighteen implemented service projects; the other
+two, Karakeep and ntfy, are dark. Karakeep landed dark in #551 and has nothing
+deployed to check yet. ntfy's switch was turned off in #558 stage 4a, once
+every publisher had moved to Pushover, so a converge takes that project to
+`state: absent` and there is no ntfy credential left to check; stage 4c removes
+the code once the container is confirmed gone. Neither of the other two gated
+services carries a gated-off caveat any more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
 it replaced as this platform's file-sync service — and Vaultwarden's after #547
 landed the stack dark. Vaultwarden is the one whose credential check is not a
 credential check: it is the only service here that holds no vault-authored
@@ -279,9 +283,8 @@ never directory listings, ACL dumps containing private account details, or
 secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 [what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
-The platform still provisions three ntfy topics for humans, severity first then
-subject, plus one nobody reads, but nothing a human needs lands on them any
-more. Beszel's threshold breaches, every container alert the Dozzle relay sends,
+ntfy is off on this host since #558 stage 4a, so none of its topics exist any
+more and nothing a human needs ever landed on them after the move. Beszel's threshold breaches, every container alert the Dozzle relay sends,
 and every notice from the deployment poller and the image prune are Pushover's.
 
 What should get you out of your chair reaches Pushover's Alerts application at
@@ -295,8 +298,8 @@ one — go to the Containers application, where an out-of-memory kill is an
 emergency message that re-alerts until you acknowledge it. The image prune's
 reclaim is a routine record on the Containers application at priority -1, and
 expires after a week; the Deployments application carries one message per
-release and nothing else. `nas-critical` and `nas-deployment` have no publisher left
-and stay provisioned only until ntfy is removed.
+release and nothing else. `nas-critical` and `nas-deployment` had no publisher left
+before ntfy was turned off, which is why turning it off lost nothing.
 
 `nas-containers` has no publisher left. It existed so recoveries could be muted
 separately from `nas-critical`, which Pushover expresses on the message itself;
@@ -314,7 +317,7 @@ proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
 A service reports its own deployment through Pushover's Containers application
-at priority -1, a badge with no sound — `Komga deployed (recreated)` — only when
+at priority -1, a badge with no sound — `♻️ Komga recreated` — only when
 Compose actually replaced its containers, and the message expires from the
 device after a day. The controller sends it with the Containers application's
 token and the account's user key, so no service needs a credential of its own

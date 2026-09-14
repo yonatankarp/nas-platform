@@ -527,7 +527,7 @@ if failures.empty?
   # changed result the report does not read is a converge that moved something
   # and said nothing.
   named = role_tasks(root, "report")
-          .filter_map { |task| task.dig("vars", "ntfy_deployment_report_changed") }
+          .filter_map { |task| task.dig("vars", "deployment_report_changed") }
           .join(" ").scan(/\bnextcloud_[a-z0-9_]+\b/).uniq
   movers = ROLE_TASK_FILES.flat_map { |file| role_tasks(root, file) }
                           .select { |task| task["register"] && task["changed_when"].to_s != "false" }

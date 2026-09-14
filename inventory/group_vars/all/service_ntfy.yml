@@ -2,6 +2,25 @@
 # ntfy: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault.yml.
 
+# NTFY IS OFF (#558 stage 4a). Every publisher -- the Dozzle relay, Beszel, Seerr,
+# the deployment reports, the poller and the image prune -- sends through
+# Pushover now, so nothing on this platform reads this server. Off, roles/ntfy
+# converges the Compose project to `state: absent`: the container stops,
+# gracefully, and port 2586 is released. Nothing else of it is provisioned.
+#
+# THIS IS THE FIRST OF TWO CHANGES, and the order is #577's. The teardown is a
+# task in the role, so deleting the role first would leave ntfy running with
+# nothing in this repository describing it. Stage 4c deletes the role, the vault
+# keys and everything below, once `docker ps -a --filter
+# label=com.docker.compose.project=ntfy` on the NAS shows nothing. The data under
+# {{ nas_docker_root }}/ntfy stays until then, and the operator removes it after.
+#
+# The role default is false as well, and that is a floor rather than a mirror;
+# roles/ntfy/defaults/main.yml says why. tests/ntfy_verify_execution_test.rb pins
+# this line false, so the stack cannot come back on by a one-line edit that no
+# check reads.
+ntfy_deployment_enabled: false
+
 # The two ntfy topics read by a play that does not run the ntfy role, and the
 # reason they are here rather than in roles/ntfy/defaults/main.yml: role defaults
 # are play-scoped, and install-production-auto-deploy.yml lists

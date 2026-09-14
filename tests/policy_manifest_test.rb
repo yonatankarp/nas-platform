@@ -1745,7 +1745,7 @@ end
 #
 # Among those three the choice is arbitrary, and saying so is more honest than
 # inventing a discriminator: kapowarr, pinchflat and vaultwarden each declare
-# two registered Compose deployments and one deployment_report include, measured,
+# two registered Compose deployments and one deployment report include, measured,
 # so the structure the last two rows need does not separate them. The only mild
 # preference is that kapowarr and pinchflat carry a single task file, so the
 # shell-out row appends to the only file the role has, where vaultwarden has six.
@@ -1836,7 +1836,7 @@ expect_failure(failures, "role deploys without reporting it",
   mutate_yaml_file(root, "roles/kapowarr/tasks/main.yml") do |tasks|
     tasks.reject! do |task|
       task.is_a?(Hash) &&
-        task.dig("ansible.builtin.include_role", "tasks_from") == "deployment_report"
+        task.dig("ansible.builtin.include_role", "tasks_from") == "report"
     end
   end
 end

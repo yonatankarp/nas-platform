@@ -266,6 +266,18 @@ build_stub_bin() {
 log_invocation ansible-playbook "$@"
 printf 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE=%s]\n' \
   "${ANSIBLE_VAULT_PASSWORD_FILE-<unset>}" >> "${CONTROLLER_STUB_LOG:?}"
+# ntfy's teardown scenario (#558 stage 4a) reads the container back through
+# docker, so the play it runs is what decides whether one exists: a converge with
+# the switch on brings it up, and a converge of the ntfy tag without it tears it
+# down, exactly as inventory's `false` does on a real lane. Two cases break that
+# on purpose, so each of the scenario's guards meets the state it exists for: a
+# container that never came up, and one that survived its teardown.
+case " $* " in
+  *" ntfy_deployment_enabled=true "*)
+    [ "${CASE_NTFY_NEVER_UP-}" = true ] || : > "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
+  *" --tags ntfy "*)
+    [ "${CASE_NTFY_SURVIVES-}" = true ] || rm -f "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
+esac
 printf 'PLAY RECAP *********************************************************************\n'
 printf 'nas : ok=9 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
 STUB
@@ -279,7 +291,26 @@ printf '%s\n' 'decrypted_fixture_input: true'
 STUB
   } > "$stub_bin/ansible-vault"
 
-  for stub_name in ansible-galaxy apk pip docker sha256sum stat; do
+  # docker answers the three reads the ntfy teardown scenario makes: which
+  # containers exist, the container's id, and the exit code its die event
+  # recorded -- 143 unless a case asks for the SIGKILL the scenario must refuse.
+  {
+    stub_preamble
+    cat <<'STUB'
+log_invocation docker "$@"
+case $1 in
+  ps)
+    if [ -e "${CONTROLLER_STUB_LOG:?}.ntfy-up" ]; then
+      printf '%s-ntfy\n' "${CONTROLLER_PROJECT_NAMESPACE:?}"
+    fi
+    ;;
+  inspect) printf '%s\n' ntfy-fixture-container-id ;;
+  events) printf '%s\n' "${CASE_NTFY_EXIT_CODE-143}" ;;
+esac
+STUB
+  } > "$stub_bin/docker"
+
+  for stub_name in ansible-galaxy apk pip sha256sum stat; do
     {
       stub_preamble
       cat <<STUB
@@ -373,6 +404,7 @@ run_controller() {
 
   build_sandbox
   : > "$stub_log"
+  rm -f "$stub_log.ntfy-up"
   # The controller writes phase 2's output to a literal /tmp/second.txt. A file
   # left by an earlier case would let a planted defect that removes the second
   # play go undetected, so it is removed rather than trusted.
@@ -720,6 +752,69 @@ case_komga() {
   expect_log 'contract komga argv=[seed]'
   expect_log 'contract komga argv=[run]'
   expect_log_order 'contract komga argv=[seed]' 'contract komga argv=[run]'
+  # ntfy's teardown: up with the switch on, then inventory's off, then the exit
+  # code read from the die event of that container.
+  expect_log 'ansible-playbook argv=[-i][inventory/local.yml]'
+  expect_log '[--tags][ntfy][-e][ntfy_deployment_enabled=true]'
+  expect_log_order '[--tags][ntfy][-e][ntfy_deployment_enabled=true]' 'docker argv=[inspect]'
+  expect_log '[--filter][container=ntfy-fixture-container-id][--filter][event=die]'
+  expect_output 'NTFY_TEARDOWN_VERIFIED exit=143'
+  # Every komga converge asks for inventory's off; only the scenario's own
+  # trailing -e turns ntfy on, so the teardown converge after it is a real off.
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=false]'
+  expect_no_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+}
+
+# A teardown that stopped ntfy with SIGKILL is what pages the household through
+# Dozzle's "Unexpected exit" rule, so the lane must refuse it.
+case_komga_ntfy_killed() {
+  CASE_NTFY_EXIT_CODE=137
+  export CASE_NTFY_EXIT_CODE
+  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  unset CASE_NTFY_EXIT_CODE
+  expect_status 1
+  expect_output 'the ntfy teardown stopped the container with exit code "137", not 0 or 143'
+}
+
+# The running guard. A teardown over a container that never started stops
+# nothing, and every later assertion would pass over it.
+case_komga_ntfy_never_up() {
+  CASE_NTFY_NEVER_UP=true
+  export CASE_NTFY_NEVER_UP
+  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  unset CASE_NTFY_NEVER_UP
+  expect_status 1
+  expect_output 'the ntfy container is not running, so the teardown below proves nothing'
+  expect_no_log 'docker argv=[events]'
+}
+
+# The gone guard. A container that survived the teardown must fail the lane
+# before its exit code is ever read.
+case_komga_ntfy_survives() {
+  CASE_NTFY_SURVIVES=true
+  export CASE_NTFY_SURVIVES
+  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  unset CASE_NTFY_SURVIVES
+  expect_status 1
+  expect_output 'ntfy_deployment_enabled=false left the ntfy container in place'
+  expect_no_log 'docker argv=[events]'
+}
+
+# ntfy stays on for the two lanes whose contracts still read it (#558 stage 4a),
+# in every play the lane runs. Scenarios are off, so this observes the lane's own
+# converge argv without reaching contracts the checkout does not stub.
+case_dozzle_ntfy_override() {
+  run_controller dozzle host_prep,deployment_bundle,ntfy,dozzle false true site.yml
+  expect_status 0
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_no_log '[-e][ntfy_deployment_enabled=false]'
+}
+
+case_beszel_ntfy_override() {
+  run_controller beszel host_prep,deployment_bundle,ntfy,beszel false true site.yml
+  expect_status 0
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_no_log '[-e][ntfy_deployment_enabled=false]'
 }
 
 # The smoke lane stops after the converge, and is the cheapest place to observe
@@ -854,7 +949,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga toolchain_install \
+    downloaders bindery seerr jellyfin komga komga_ntfy_killed komga_ntfy_never_up \
+    komga_ntfy_survives dozzle_ntfy_override beszel_ntfy_override toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -958,6 +1054,28 @@ plant 'Jellyfin owning contract dropped' jellyfin program \
   'run_jellyfin_contract run' ':' 1
 plant 'Komga fixture seed dropped' komga program \
   'run_komga_contract seed' ':' 1
+plant 'ntfy teardown converge dropped' komga program \
+  'run_play --tags ntfy$' ':' 1 regexp
+plant 'ntfy teardown exit code check dropped' komga_ntfy_killed program \
+  '0|143) ;;' '*) ;;' 1
+# Each guard neutralised by short-circuiting its condition, which leaves the
+# block in place but unable to fire -- the form a careless edit takes. \x27 is a
+# single quote inside the Ruby pattern, which a shell single-quoted string cannot
+# carry.
+plant 'ntfy override missing for dozzle' dozzle_ntfy_override program \
+  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
+  'beszel|full) integration_ntfy_deployment_enabled=true ;;' 1
+plant 'ntfy override leaks into komga' komga program \
+  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
+  'beszel|dozzle|komga|full) integration_ntfy_deployment_enabled=true ;;' 1
+plant 'ntfy running guard (container not running before the teardown) disabled' \
+  komga_ntfy_never_up program \
+  "if ! docker ps --format '{{.Names}}' |" \
+  "if false && ! docker ps --format '{{.Names}}' |" 1
+plant 'ntfy gone guard (container left in place after the teardown) disabled' \
+  komga_ntfy_survives program \
+  'if (docker ps -a --format \x27\{\{\.Names\}\}\x27 \|\n +grep -Eq \x27\^\x27\$integration_project_namespace\x27-ntfy\$\x27; then)' \
+  'if false && \1' 1 regexp
 plant 'docker_container_info runtime support not installed' toolchain_install \
   program '"requests==$requests_version"' '"requests-not-installed"' 1
 

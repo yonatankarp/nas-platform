@@ -5,6 +5,15 @@
 # it previously provisioned once they leave the configuration, and refuses to
 # change a provisioned token through its own API, which enforces the sole-owner
 # model at the server rather than only in Ansible.
+#
+# THE GATE IS ntfy_deployment_enabled, AND IT IS OFF (#558 stage 4a). Every
+# publisher moved to Pushover, so nothing needs this server any more. Off, the
+# role tears the Compose project down and does nothing else: no provisioning, no
+# users or tokens, no render, no verification. It lives inside the role rather
+# than on the site.yml entry for the reason roles/nextcloud gives: a `when:`
+# there would also skip the deployment_bundle re-include below and the report.
+# The teardown is a task in this role, so the role has to deploy and run once
+# with the switch off before #558 stage 4c may delete it.
 - name: Revalidate deployment paths before ntfy runtime use
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -24,7 +33,61 @@
     that:
       - ntfy_state_root == (nas_docker_root ~ '/ntfy/data')
 
+# EVERY COMPOSE INVOCATION NEEDS THIS FILE, THE TEARDOWN INCLUDED, for the reason
+# roles/vaultwarden/tasks/deploy.yml measured: services/ntfy/compose.yml
+# interpolates ${NAS_UID:?} and its siblings, and Compose refuses `state: absent`
+# exactly as it refuses `state: present` without them. The render is gated off
+# with the rest of provisioning, so absent means this platform never deployed
+# ntfy on this host -- a fresh sandbox, or a --check against a host that never
+# ran it -- and there is nothing to tear down. On the NAS the file is the one the
+# last enabled converge wrote.
+- name: Read whether an ntfy runtime environment exists on this host
+  ansible.builtin.stat:
+    path: "{{ platform_runtime_dir }}/services/ntfy/.env"
+    follow: false
+  register: ntfy_runtime_env
+  changed_when: false
+  check_mode: false
+  when: not ntfy_deployment_enabled | bool
+
+# `state: absent` rather than a skipped deployment, so switching the gate off
+# stops the container instead of leaving one running that nothing claims.
+# remove_orphans reaches containers an earlier Compose file declared.
+#
+# A GRACEFUL STOP, AND IT HAS TO STAY ONE. `down` sends the image's stop signal
+# and waits the Compose file's stop_grace_period (30s) before it kills; init:
+# true is what forwards that signal to ntfy rather than to a PID 1 that ignores
+# it. Dozzle's "Unexpected exit" rule excludes exit 0 and 143 and pages on 137,
+# so a kill here -- a `timeout:` on this task, a docker kill -- would page the
+# household through the one alert path this change leaves running. No `timeout`
+# key, therefore: tests/ntfy_verify_execution_test.rb refuses one, and the komga
+# lane in tests/integration_controller.sh measures the exit code.
+- name: Stop the disabled ntfy project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/ntfy"
+    project_name: "{{ ntfy_compose_project_name }}"
+    files: "{{ platform_service_compose_files['ntfy'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/ntfy/.env"]
+    state: absent
+    remove_orphans: true
+  register: ntfy_teardown
+  when:
+    - not ntfy_deployment_enabled | bool
+    - ntfy_runtime_env.stat.exists
+
+- name: Report the disabled ntfy deployment
+  ansible.builtin.debug:
+    msg: >-
+      ntfy_deployment_enabled is false, so the ntfy Compose project
+      {{ ntfy_compose_project_name }} is torn down rather than converged, and no
+      users, tokens or runtime environment are provisioned.
+      {{ '' if ntfy_runtime_env.stat.exists else 'No runtime environment was ever rendered on this host, so there was no project to tear down.' }}
+      Every publisher sends through Pushover since #558; the role itself is
+      removed in stage 4c once the container is confirmed gone.
+  when: not ntfy_deployment_enabled | bool
+
 - name: Inspect existing ntfy declarative ownership and users
+  when: ntfy_deployment_enabled | bool
   block:
     - name: Inspect the prior ntfy runtime environment
       ansible.builtin.stat:
@@ -87,6 +150,7 @@
     fail_msg: >-
       Existing ntfy authentication state has no declarative ownership record.
       Restore the reviewed prior runtime environment before managing users.
+  when: ntfy_deployment_enabled | bool
 
 - name: List authoritative existing ntfy users
   community.docker.docker_compose_v2_run:
@@ -109,6 +173,7 @@
     tty: false
   register: ntfy_existing_user_list
   when:
+    - ntfy_deployment_enabled | bool
     - ntfy_auth_database_stat.stat.exists
     - not ansible_check_mode
   failed_when: false
@@ -130,6 +195,7 @@
     fail_msg: >-
       Existing ntfy users could not be listed authoritatively; no configuration
       was changed. Restore runtime access to the auth database and retry.
+  when: ntfy_deployment_enabled | bool
 
 - name: Resolve authoritative existing ntfy users
   ansible.builtin.set_fact:
@@ -141,6 +207,7 @@
          (not ansible_check_mode and
           ntfy_existing_user_list.rc | default(1) | int == 0) }}
   no_log: true
+  when: ntfy_deployment_enabled | bool
 
 - name: Report deferred authoritative ntfy inspection in check mode
   ansible.builtin.debug:
@@ -148,6 +215,7 @@
       Existing ntfy identities require authoritative inspection during a normal
       convergence; check mode will not create a one-off probe container.
   when:
+    - ntfy_deployment_enabled | bool
     - ansible_check_mode
     - ntfy_auth_database_stat.stat.exists
   changed_when: false
@@ -156,6 +224,7 @@
   ansible.builtin.include_tasks: managed_users.yml
   vars:
     ntfy_managed_users_phase: provision
+  when: ntfy_deployment_enabled | bool
 
 - name: Render the ntfy environment
   ansible.builtin.template:
@@ -163,6 +232,7 @@
     dest: "{{ platform_runtime_dir }}/services/ntfy/.env"
     mode: "0600"
   no_log: true
+  when: ntfy_deployment_enabled | bool
 
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
@@ -172,6 +242,7 @@
 # the long form of this argument; #509 built the mechanism and #537 wired the
 # remaining eleven single-`up` roles into it.
 - name: Deploy ntfy, catching a container that runs but never serves
+  when: ntfy_deployment_enabled | bool
   block:
     - name: Deploy ntfy
       community.docker.docker_compose_v2:
@@ -210,6 +281,7 @@
     container_health_deploy_failure_message: >-
       {{ ntfy_deploy_failure_message | default('') }}
     container_health_refuse: false
+  when: ntfy_deployment_enabled | bool
 
 # EXACTLY ONE force-recreate, of only the services Docker says are stuck.
 # FORCED, because `up -d` against an unchanged specification keeps the same
@@ -222,6 +294,7 @@
 # looping for a reason a recreate cannot fix never goes green and never becomes
 # an invisible retry loop.
 - name: Recreate an ntfy container that runs but never serves
+  when: ntfy_deployment_enabled | bool
   block:
     - name: Force-recreate the stuck ntfy services
       community.docker.docker_compose_v2:
@@ -254,6 +327,7 @@
   ansible.builtin.set_fact:
     ntfy_recreate_spent: >-
       {{ container_health_stuck_services | default([]) | length > 0 }}
+  when: ntfy_deployment_enabled | bool
 
 - name: Report the ntfy wedged-container recovery check mode defers
   ansible.builtin.debug:
@@ -264,7 +338,9 @@
       with no dependencies, and fail naming that retry if any of them came back
       stuck. Compose's dry run starts nothing and does not wait on container
       health, so check mode cannot reach that path and recreates nothing.
-  when: ansible_check_mode
+  when:
+    - ntfy_deployment_enabled | bool
+    - ansible_check_mode
 
 # The verdict. Nothing stuck here means the recreate worked, or that there was
 # never anything to repair; either way the run continues. Anything still stuck
@@ -278,6 +354,7 @@
     container_health_deploy_failure_message: >-
       {{ ntfy_recreate_failure_message | default('') }}
     container_health_retried: "{{ ntfy_recreate_spent }}"
+  when: ntfy_deployment_enabled | bool
 
 - name: Verify ntfy effective container CPU policy
   ansible.builtin.include_role:
@@ -285,6 +362,7 @@
   vars:
     container_cpu_service_name: ntfy
     container_cpu_project_name: "{{ ntfy_compose_project_name }}"
+  when: ntfy_deployment_enabled | bool
 
 - name: Wait for ntfy to report healthy
   ansible.builtin.uri:
@@ -294,24 +372,29 @@
   until: ntfy_health.json.healthy | default(false)
   retries: "{{ platform_readiness_retries }}"
   delay: "{{ platform_readiness_delay }}"
+  when: ntfy_deployment_enabled | bool
 
 - name: Synchronize managed ntfy account subscriptions
   ansible.builtin.include_tasks: managed_users.yml
   vars:
     ntfy_managed_users_phase: subscription_sync
-  when: not ansible_check_mode
+  when:
+    - ntfy_deployment_enabled | bool
+    - not ansible_check_mode
 
 - name: Report the ntfy deployment
-  ansible.builtin.include_tasks: deployment_report.yml
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: ntfy
+    deployment_report_service: ntfy
     # Both Compose results, because a force-recreate that repaired a wedged
     # container changed the deployment as surely as the deploy above did, and a
     # report gated on the deploy alone would say nothing on the one converge an
     # operator most wants to hear about. It is registered even when skipped, and
     # `default({})` covers the paths that never reach it at all.
-    ntfy_deployment_report_changed: >-
-      {{ (ntfy_deploy is changed)
+    deployment_report_changed: >-
+      {{ ((ntfy_deploy | default({})) is changed)
          or ((ntfy_wedged_recreate | default({})) is changed) }}
 
 - name: Verify managed ntfy users and declared access
@@ -322,7 +405,9 @@
   vars:
     ntfy_managed_users_phase: verify
   tags: [platform_verify_ntfy]
-  when: not ansible_check_mode
+  when:
+    - ntfy_deployment_enabled | bool
+    - not ansible_check_mode
 
 # Proving provisioning took effect matters more than proving a file was written:
 # an unescaped or malformed hash leaves the server running with the alerting
@@ -332,6 +417,7 @@
   ansible.builtin.uri:
     url: "http://127.0.0.1:{{ ntfy_port }}/{{ ntfy_topic }}/json?poll=1"
     status_code: [403]
+  when: ntfy_deployment_enabled | bool
 
 # Publishing is the only proof a publisher token actually works: the write-only
 # check below reads with the same token and expects 403, which an invalid token
@@ -371,6 +457,7 @@
     label: "{{ item.name }}"
   changed_when: false
   no_log: true
+  when: ntfy_deployment_enabled | bool
 
 - name: Verify publisher tokens cannot read, proving the write-only ACL applied
   tags: [platform_verify_ntfy]
@@ -383,3 +470,14 @@
   loop_control:
     label: "{{ item.name }}"
   no_log: true
+  when: ntfy_deployment_enabled | bool
+
+- name: Report the ntfy verification the deployment gate skips
+  tags: [platform_verify_ntfy]
+  ansible.builtin.debug:
+    msg: >-
+      ntfy_deployment_enabled is false, so there is no ntfy server on this host
+      to verify. The project converges to `state: absent` rather than being
+      skipped, so this is a host with no ntfy rather than one whose ntfy went
+      unchecked.
+  when: not ntfy_deployment_enabled | bool

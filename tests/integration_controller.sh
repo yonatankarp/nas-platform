@@ -290,6 +290,26 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       karakeep) integration_karakeep_deployment_enabled=true ;;
     esac
 
+    # NTFY'S GATE IS NARROWED THE OTHER WAY, FOR TWO CONTRACTS THAT STILL READ IT.
+    # #558 stage 4a turns ntfy off in inventory, and every lane converges that --
+    # except the two whose runtime contracts still talk to the platform's ntfy:
+    # tests/contracts/beszel-runtime.rb's notify mode sends a Beszel test
+    # notification to it with the ntfy admin pair and polls /nas-critical/json,
+    # and tests/contracts/dozzle-runtime.rb asserts the dozzle publisher's ntfy
+    # token is refused a read of nas-critical and nas-containers, an ntfy ACL
+    # property. `full` runs both through run_contracts.rb --execute. Everywhere
+    # else -- komga's teardown proof, smoke, the idempotence shards -- converges
+    # inventory's false, which is what the NAS runs. Set on every lane, and passed
+    # by run_play and run_verification alike, so all three phases of a lane agree.
+    #
+    # #558 STAGE 4C DELETES THIS BLOCK, THE MATCHING LINES IN
+    # tests/integration_controller_lib.sh AND BOTH CONTRACT CHECKS TOGETHER.
+    # tests/ntfy_verify_execution_test.rb pins the arm to exactly these suites.
+    integration_ntfy_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;
+    esac
+
     # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
     # #500 landed the stack dark, so this block set the gate per suite and turned
     # it on for `nextcloud` and `full` alone -- correct while
@@ -1256,6 +1276,56 @@ EOF
       run_komga_contract seed
       if [ $INTEGRATION_SUITE = komga ]; then
         run_komga_contract run
+
+        # NTFY'S TEARDOWN, EXERCISED RATHER THAN ASSUMED (#558 stage 4a). Inventory
+        # turns ntfy off, so every lane already converges the disabled branch --
+        # but against a sandbox that never ran ntfy, where there is nothing to
+        # stop. What production does once is the TRANSITION: a running ntfy, then
+        # a converge with the switch off. That is what this proves, once, in this
+        # lane. One lane and not all, because the branch does not depend on which
+        # other services converged beside it; komga because its lane starts no
+        # ntfy-imaged fixture and no Dozzle relay, so nothing else can be the
+        # container this reads or be paged by the stop.
+        #
+        # Up first with the switch on, and the container has to be THERE, or the
+        # assertions below pass over a deployment that never happened.
+        run_play --tags ntfy -e ntfy_deployment_enabled=true
+        if ! docker ps --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
+          printf '%s\n' \
+            'the ntfy container is not running, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        ntfy_container_id=$(docker inspect --format '{{.Id}}' $integration_project_namespace-ntfy)
+        ntfy_teardown_since=$(date +%s)
+        # No trailing override: run_play passes this lane's
+        # integration_ntfy_deployment_enabled, which is false here -- the value
+        # inventory holds and the NAS converges.
+        run_play --tags ntfy
+        ntfy_teardown_until=$(date +%s)
+        if docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
+          printf '%s\n' \
+            'ntfy_deployment_enabled=false left the ntfy container in place' >&2
+          exit 1
+        fi
+        # GRACEFULLY. Dozzle's "Unexpected exit" rule excludes 0 and 143 and pages
+        # on 137, which is what a SIGKILL -- a stop that outran its grace period,
+        # or a kill -- produces. The container is gone, so its exit code is read
+        # from the daemon's own die event for that container id.
+        ntfy_exit_code=$(docker events --since $ntfy_teardown_since \
+          --until $((ntfy_teardown_until + 1)) \
+          --filter container=$ntfy_container_id --filter event=die \
+          --format '{{index .Actor.Attributes "exitCode"}}' | tail -n 1)
+        case $ntfy_exit_code in
+          0|143) ;;
+          *)
+            printf 'the ntfy teardown stopped the container with exit code "%s", not 0 or 143\n' \
+              "$ntfy_exit_code" >&2
+            exit 1
+            ;;
+        esac
+        printf 'NTFY_TEARDOWN_VERIFIED exit=%s\n' "$ntfy_exit_code"
       fi
     fi
 

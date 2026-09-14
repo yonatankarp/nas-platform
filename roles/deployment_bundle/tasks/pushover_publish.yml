@@ -1,25 +1,23 @@
 ---
-# Delivers one deployment notification -- a per-service report or the run's
-# summary -- to Pushover. Both callers include this file, so the delivery and
-# its failure semantics are stated once.
+# Delivers one deployment notification -- a per-service report -- to Pushover.
+# The run summary was its second caller until #558 stage 4a; the delivery and
+# its failure semantics stay stated once, here, rather than inside report.yml.
 #
-# It lives in roles/ntfy although it no longer touches ntfy, and that is a stated
-# leftover rather than an oversight: every other deploying role includes the
-# report by that role name and entry point, and moving the files is stage 3
-# of #558, which deletes the role. Until then the location also keeps CI routing
-# right, because a change under roles/ntfy/ selects exactly the lanes that run
-# these reports.
+# It lives in roles/deployment_bundle beside report.yml since #558 stage 4a moved
+# both out of roles/ntfy. A change under roles/deployment_bundle/ falls open to
+# every lane and every idempotence shard, which is wider than the lanes that run
+# a report but never narrower.
 #
 # WHICH APPLICATION SENDS IT is the caller's choice, by vault key NAME rather
-# than by value: ntfy_pushover_token_variable names the vault variable holding
-# the application token (vault_pushover_containers_token for a service report,
-# vault_pushover_deployments_token for the run summary), and the value is read
+# than by value: deployment_pushover_token_variable names the vault variable holding
+# the application token (vault_pushover_containers_token for a service report),
+# and the value is read
 # through the vars lookup below. The name is what lets a refusal say which
 # token to fix without the value ever reaching a message.
 #
-# ntfy_pushover_ttl and ntfy_pushover_html are optional and omitted from the form
+# deployment_pushover_ttl and deployment_pushover_html are optional and omitted from the form
 # when unset. With html set the caller owns escaping: every interpolated value in
-# ntfy_pushover_message must already be HTML-escaped and short enough that the
+# deployment_pushover_message must already be HTML-escaped and short enough that the
 # 1024 cut below never fires, because a cut can split an entity or a tag.
 #
 # THE VERDICT FOLLOWS roles/beszel/tasks/configure.yml (#598). An authoritative
@@ -36,23 +34,23 @@
 # leeway lets a string run five characters past the length it was given.
 - name: Publish the deployment notification to Pushover
   ansible.builtin.uri:
-    url: "{{ ntfy_deployment_pushover_api_url }}"
+    url: "{{ deployment_pushover_api_url }}"
     method: POST
     body_format: form-urlencoded
     body:
-      token: "{{ lookup('ansible.builtin.vars', ntfy_pushover_token_variable) }}"
+      token: "{{ lookup('ansible.builtin.vars', deployment_pushover_token_variable) }}"
       user: "{{ vault_pushover_user_key }}"
-      title: "{{ ntfy_pushover_title | truncate(250, false, '…', 0) }}"
-      message: "{{ ntfy_pushover_message | truncate(1024, false, '…', 0) }}"
-      priority: "{{ ntfy_pushover_priority }}"
-      ttl: "{{ ntfy_pushover_ttl | default(omit) }}"
-      html: "{{ ntfy_pushover_html | default(omit) }}"
+      title: "{{ deployment_pushover_title | truncate(250, false, '…', 0) }}"
+      message: "{{ deployment_pushover_message | truncate(1024, false, '…', 0) }}"
+      priority: "{{ deployment_pushover_priority }}"
+      ttl: "{{ deployment_pushover_ttl | default(omit) }}"
+      html: "{{ deployment_pushover_html | default(omit) }}"
     # Pushover's two real answers. The verdict is the tasks below, not this list:
     # failed_when replaces the module's own, and uri parses a JSON body whatever
     # the status, so a 403 still registers what Pushover said.
     status_code: [200, 400]
     timeout: 10
-  register: ntfy_pushover_delivery
+  register: deployment_pushover_delivery
   # Without this line a DNS failure, a timeout or a 5xx fails the run.
   failed_when: false
   # Publishing is not host state, and the converge-every-run model asserts a
@@ -80,9 +78,9 @@
 # status of false, true or "0" is no verdict.
 - name: Summarize the Pushover answer without the credentials it carried
   ansible.builtin.set_fact:
-    ntfy_pushover_verdict: >-
-      {%- set code = ntfy_pushover_delivery.status | default(-1) | int -%}
-      {%- set body = ntfy_pushover_delivery.json | default(none) -%}
+    deployment_pushover_verdict: >-
+      {%- set code = deployment_pushover_delivery.status | default(-1) | int -%}
+      {%- set body = deployment_pushover_delivery.json | default(none) -%}
       {%- set answer = body.get('status') if body is mapping else none -%}
       {%- set answer = answer if answer is integer else none -%}
       {%- if code == 200 and answer == 1 -%}accepted{%- elif 400 <= code <= 499
@@ -95,10 +93,10 @@
 - name: Report that Pushover did not answer, which is not a refusal
   ansible.builtin.debug:
     msg: >-
-      Pushover did not answer "{{ ntfy_pushover_title }}", so its delivery is
+      Pushover did not answer "{{ deployment_pushover_title }}", so its delivery is
       unverified this run. This is not a refusal and is not a failure; the
       deployment itself converged.
-  when: ntfy_pushover_verdict == 'unanswered'
+  when: deployment_pushover_verdict == 'unanswered'
 
 # Redacted because the fail_msg names the vault keys to fix, which
 # tests/policy_vault_test.rb requires; no_log still lets the fail_msg through,
@@ -106,10 +104,10 @@
 - name: Refuse a deployment notification Pushover rejected
   ansible.builtin.assert:
     that:
-      - ntfy_pushover_verdict != 'refused'
+      - deployment_pushover_verdict != 'refused'
     fail_msg: >-
       Pushover refused the deployment notification. Check
-      {{ ntfy_pushover_token_variable }} against its application's own page at
+      {{ deployment_pushover_token_variable }} against its application's own page at
       pushover.net and vault_pushover_user_key against the account dashboard; a
       token regenerated
       in the console has to be re-authored in vault. The services in this run

@@ -197,11 +197,11 @@
 
 - name: Report the Beszel deployment
   ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: Beszel
-    ntfy_deployment_report_changed: "{{ beszel_deploy is changed }}"
+    deployment_report_service: Beszel
+    deployment_report_changed: "{{ beszel_deploy is changed }}"
 
 - name: Verify Beszel effective container CPU policy
   ansible.builtin.include_role:

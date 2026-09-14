@@ -27,7 +27,7 @@ module PolicySupport
   # the prefix rule and buy nothing. The Pushover keys are the second kind -- one
   # user key and four application tokens of an account at a third party, each
   # token pushed into whichever publishers use that application (Beszel, the
-  # Dozzle relay and the ntfy role's deployment reports, the run summary, Seerr),
+  # Dozzle relay, the deployment reports, the deployment poller, Seerr),
   # so they are named here rather than under any one service. The healthchecks.io
   # ping URLs are the same kind with no service at all: the deployment poller
   # reports to them, and it is installed by its own play rather than listed in
@@ -351,8 +351,8 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   # is wrong, and quietly so. `role_has_verification?` below is checked by ten
   # mutation rows in tests/policy_manifest_test.rb that replace
   # roles/ntfy/tasks/main.yml wholesale with a file that verifies nothing and
-  # require the failure to be reported. ntfy reaches subscription.yml,
-  # managed_users.yml and deployment_summary.yml through include_tasks, so a
+  # require the failure to be reported. ntfy reaches subscription.yml and
+  # managed_users.yml through include_tasks, so a
   # directory walk would let one of those satisfy the check on behalf of the
   # mutant, and all ten rows would pass while proving nothing. Following the
   # imports says exactly what Ansible would run as one file, and nothing else.

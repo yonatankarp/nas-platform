@@ -163,16 +163,16 @@
 
 - name: Report the Kapowarr deployment
   ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: Kapowarr
+    deployment_report_service: Kapowarr
     # Both Compose results, because a force-recreate that repaired a wedged
     # container changed the deployment as surely as the deploy above did, and a
     # report gated on the deploy alone would say nothing on the one converge an
     # operator most wants to hear about. It is registered even when skipped, and
     # `default({})` covers the paths that never reach it at all.
-    ntfy_deployment_report_changed: >-
+    deployment_report_changed: >-
       {{ (kapowarr_deploy is changed)
          or ((kapowarr_wedged_recreate | default({})) is changed) }}
 

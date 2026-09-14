@@ -19,3 +19,38 @@ deployment_bundle_lock_path: >-
 # the inventory, and empty for a bare ansible-playbook, which holds nothing.
 deployment_bundle_lock_owner: >-
   {{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_LOCK_OWNER') }}
+
+# Where the per-service reports are delivered: Pushover's message API, with the
+# Containers application token and the account's user key. The run summary is
+# not delivered from here at all; the poller announces it. A variable rather than a literal
+# so that no test lane reaches the household's real devices: every site.yml
+# caller under tests/ points it at an address where nothing listens, and
+# tests/deployment_summary_test.rb refuses a caller that does not.
+deployment_pushover_api_url: https://api.pushover.net/1/messages.json
+
+# What counts as a deployment, for both the per-service reports and the
+# run-level summary: a run that moved the release. The two must agree, or a
+# service would report a deployment the summary denies happened.
+#
+# previous is published as a fact by deployment_bundle before it moves the
+# deployment pointer. Empty means a first install, where every image really is
+# new; absent means the bundle never ran — a selective converge — where the
+# release did not move and there is nothing to report.
+deployment_previous_release: >-
+  {{ deployment_bundle_previous_release_id
+     if deployment_bundle_previous_release_id is defined
+     else platform_release_id }}
+deployment_release_moved: >-
+  {{ deployment_previous_release != platform_release_id }}
+# The controller checkout, which is the only place the Git history exists. The
+# target holds releases, not a repository.
+deployment_summary_checkout: "{{ playbook_dir }}"
+deployment_summary_changes: []
+deployment_summary_commits: []
+# Where the deployment poller wants this run's summary, from the environment it
+# runs site.yml in (#558). Set, the summary is written there as JSON and the
+# poller sends one message once verify.yml passes. Empty -- an operator
+# --converge, a workstation run, a poller older than the variable -- nothing is
+# written and nothing is sent (stage 4a removed the plain summary). A tolerated input,
+# like PLATFORM_DEPLOYMENT_LOCK_OWNER: site.yml depends on nothing that sets it.
+deployment_summary_path: "{{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_SUMMARY_PATH') }}"

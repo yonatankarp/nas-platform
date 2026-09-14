@@ -313,11 +313,11 @@
 
 - name: Report the Immich deployment
   ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: Immich
-    ntfy_deployment_report_changed: "{{ (immich_data_deploy is changed) or (immich_deploy is changed) }}"
+    deployment_report_service: Immich
+    deployment_report_changed: "{{ (immich_data_deploy is changed) or (immich_deploy is changed) }}"
 
 - name: Verify Immich effective container CPU policy
   ansible.builtin.include_role:
