@@ -38,6 +38,26 @@
 # the state of the other fifty-six.
 set -eu
 
+# The checks read this repository's own files, and 135 characters of CLAUDE.md
+# alone are non-ASCII. Ruby takes its default external encoding from the locale,
+# so on a machine whose locale is not UTF-8 -- an unset LANG, or one naming a
+# locale the image never generated -- File.read hands back US-ASCII and the first
+# regex over it raises `invalid byte sequence in US-ASCII`. Measured before this
+# line: 24 of the 79 ruby checks in the manifest died that way, policy_test.rb
+# and policy_ci_test.rb among them, naming a regex instead of a violation. CI is
+# UTF-8 and never saw it, which is exactly why it needed stating here rather than
+# being left to the environment.
+#
+# RUBYOPT rather than LC_ALL=C.UTF-8, which was the first fix and was wrong on
+# the one platform that would have needed it most: C.UTF-8 is not a locale macOS
+# has, so setting it there leaves default_external at US-ASCII and the checks
+# keep dying, silently and in the same way. This sets the encoding Ruby actually
+# reads, on every platform, and perturbs nothing else in the environment -- the
+# python and shell checks in this manifest are unaffected either way, since
+# Python coerces the C locale to UTF-8 itself.
+RUBYOPT="${RUBYOPT:+$RUBYOPT }-EUTF-8"
+export RUBYOPT
+
 if [ "$#" -gt 1 ]; then
   printf 'usage: %s [SHARD]\n' "$0" >&2
   exit 2
