@@ -1209,6 +1209,16 @@ repository vault remains encrypted:
   devices (see the Pushover entry above). The Jellyfin token is the one worth naming: Seerr's access to
   Jellyfin survives independently of the Jellyfin administrator password and is
   not revoked by rotating it.
+- Karakeep's `db.db` in its data root, which belongs in this class rather than
+  merely in the `critical` recovery class that root already carries: it holds
+  every account's bcrypt password hash and every API key a user has issued. How
+  those keys are stored at rest has not been verified against the pin, so treat
+  them as readable. It holds no sessions -- they are JWTs signed with the
+  `NEXTAUTH_SECRET` in the service's `.env`, and a sign-in writes nothing -- so
+  a copy of the database mints no login by itself. The archived pages, assets and
+  screenshots beside it, and the Meilisearch index in its own root, are user
+  data rather than credentials; a page archived from behind a login can still
+  show whatever that page showed.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See

@@ -1070,7 +1070,11 @@ pre-upgrade backup is a copy of that database beside it), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the
-user's own documents), and application
+user's own documents), Karakeep's `db.db` in its data root (every account's
+bcrypt password hash and every API key a user has issued, whose at-rest form is
+unverified against the pin; it holds no sessions, which are JWTs signed with the
+`NEXTAUTH_SECRET` in its `.env`, and the archived pages, assets and screenshots
+beside it are user data rather than credentials), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 
