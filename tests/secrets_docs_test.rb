@@ -637,17 +637,48 @@ check(failures,
 
 install_section = markdown_section(secrets_guide, "## Install reviewed vault for NAS")
 install_shell_blocks = shell_code_fences(install_section)
-install_guard_block = install_shell_blocks.find { |block| block.include?("install -m 600") }
-check(failures, install_guard_block&.include?("[ -e inventory/group_vars/all/vault.yml ]"),
-      "NAS install guard must reject an existing vault destination")
-check(failures, install_guard_block&.include?("[ -L inventory/group_vars/all/vault.yml ]"),
-      "NAS install guard must reject a symlink vault destination")
+# WHAT THESE THREE REPLACED, AND WHY THEY ARE THE INVERSE. Until #651 this
+# section installed the reviewed external vault at
+# inventory/group_vars/all/vault.yml with `install -m 600`, and these checks
+# pinned that: the destination guard, its symlink half, and the chmod that
+# followed. The per-service split (#611, #612) retired that path --
+# policy_vault_test.rb fails on a committed one, and an untracked one still
+# competes with the eighteen per-service files that are in the checkout either
+# way, which group_vars resolves by load order and reports to nobody. So the
+# guide's own next paragraph already said not to do what the block above it
+# instructed. The requirement was never "install one file"; it was that the
+# reviewed ciphertext reaches the repository by a stated route and that the
+# retired path is refused, so that is what is pinned now, in both directions:
+# the section must not instruct an install there, and it must name the
+# per-service destination.
 check(failures,
-      install_section.include?("Git preserves only the executable bit") &&
+      install_shell_blocks.none? do |block|
+        normalized_shell(block).match?(/install .*inventory\/group_vars\/all\/vault\.yml/)
+      end,
+      "NAS install workflow must not install a single-file vault at " \
+      "inventory/group_vars/all/vault.yml, which the vault policy refuses committed and " \
+      "which competes with the per-service files untracked")
+check(failures,
+      install_shell_blocks.any? do |block|
+        block.include?("[ -e inventory/group_vars/all/vault.yml ]") &&
+          block.include?("[ -L inventory/group_vars/all/vault.yml ]")
+      end,
+      "NAS install workflow must refuse a retired single-file vault, regular or symlink")
+check(failures,
+      install_section.include?("inventory/group_vars/all/vault_<role>.yml") &&
         install_shell_blocks.any? do |block|
-          shell_block?(block, "chmod 600 inventory/group_vars/all/vault.yml")
+          shell_block?(block, "ansible-vault edit", "inventory/group_vars/all/vault_<role>.yml")
+        end &&
+        install_shell_blocks.any? do |block|
+          shell_block?(block, "ansible-vault create", "inventory/group_vars/all/vault_<role>.yml")
         end,
-      "repository vault workflow must restore mode 0600 after Git materializes the file")
+      "NAS install workflow must author the reviewed credentials into the per-service " \
+      "vault files, with an editor command for an existing file and a create command for " \
+      "a replaced one")
+check(failures,
+      install_section.match?(/Commit the per-service encrypted files/),
+      "NAS install workflow must say the per-service files are committed, which is what " \
+      "lets the poller converge them from the checkout")
 
 brand_new_platform = guide_lines.index("## Brand-new platform starter")
 existing_deployment_recovery = guide_lines.index("## Existing deployment recovery")

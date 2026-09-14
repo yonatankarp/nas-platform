@@ -155,7 +155,7 @@ Creation is not blindly duplicating, either. A second identical media-profile
 POST returns `200` with the form re-rendered and `has already been taken` in the
 body, and the row count stays at 1. Confirmed. So the name is unique and a
 repeat is refused rather than doubled — better than
-[what the four planned projects do](service-dossiers.md#what-the-four-have-in-common),
+[what the four acquisition subjects do](service-dossiers.md#what-the-four-have-in-common),
 where nothing is create-if-absent.
 
 So why not do it? Because **writes work and reads do not**. There is no JSON
