@@ -115,11 +115,40 @@ services:
       # platform_public_host and refuses a value whose host is a bare IPv4
       # literal, because a LAN address here produces precisely that breakage.
       DOMAIN: ${VAULTWARDEN_DOMAIN:?}
-      # Registration is closed and invitation is the only route in. There is no
-      # SMTP configured on this platform, so an invitation is completed by hand
-      # rather than by mail; INVITATIONS_ALLOWED still governs whether an
-      # organization owner may issue one at all.
+      # REGISTRATION IS OPEN, BY DECISION AND NOT BY OVERSIGHT.
+      # inventory/group_vars/all/service_vaultwarden.yml sets
+      # vaultwarden_signups_allowed true and carries the argument in full; the
+      # role default is false and group_vars wins on every run, so this is the
+      # platform's one service that hands an account to anyone who asks.
+      #
+      # A CLOSED DOOR HERE WOULD HAVE NO ROUTE IN AT ALL. There is no /admin
+      # panel -- see the block below for why, and for what its config.json would
+      # cost -- and no SMTP, so nothing can create the first account and nothing
+      # can deliver an invitation that would. A fresh database behind a closed
+      # door is a password manager nobody can ever log in to.
+      #
+      # WHAT MAKES THAT SAFE IS NOT THIS LINE. It is the `127.0.0.1:8086:8086`
+      # publication about twenty lines above: nothing off the host reaches the
+      # listener, Tailscale Serve is the only route to the registration page,
+      # and the tailnet is therefore the whole of the control -- anything that
+      # joins it can register here, which is the cost, stated. This service
+      # shipped as a wildcard publication and took an uninvited registration
+      # from a LAN address (#547), so the binding is not a detail: restoring it
+      # restores an open password manager on the LAN.
+      #
+      # roles/vaultwarden/tasks/verify.yml knocks on the door on every converge
+      # and asserts the answer matches WHICHEVER value is declared, in both
+      # directions, so a deployment that publishes this service more widely can
+      # set that variable false and have the change proved rather than merely
+      # pushed. tests/media_acquisition_foundation_test.rb pins the loopback
+      # publication above in both directions. Neither of them reads this
+      # comment, which is why it said the opposite of the deployed value from
+      # #547 until #649.
       SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:?}
+      # True, and independent of the door above rather than an alternative to
+      # it: invitation is how an ORGANIZATION OWNER adds a member, not a route a
+      # stranger can take. With no SMTP on this platform the invitation is
+      # completed by hand rather than by mail.
       INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:?}
       #
       # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE, AND THAT IS
