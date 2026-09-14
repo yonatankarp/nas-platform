@@ -299,10 +299,10 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
   --list-suites
 
-for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full; do
+for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done
@@ -435,6 +435,8 @@ assert_output 'suite=nextcloud tags=host_prep,deployment_bundle,ntfy,nextcloud p
   --describe-suite nextcloud
 assert_output 'suite=vaultwarden tags=host_prep,deployment_bundle,ntfy,vaultwarden playbook=site.yml scenarios=true' \
   --describe-suite vaultwarden
+assert_output 'suite=karakeep tags=host_prep,deployment_bundle,ntfy,karakeep playbook=site.yml scenarios=true' \
+  --describe-suite karakeep
 assert_output 'suite=full tags= playbook=site.yml scenarios=true' --describe-suite full
 
 assert_output 'suite=smoke tags=host_prep,deployment_bundle,ntfy,beszel playbook=custom.yml scenarios=true' \
@@ -731,7 +733,7 @@ assert_rejected 'missing value for --tags' --suite smoke --tags
 assert_rejected 'invalid integration tags: Bad' --suite smoke --tags Bad
 assert_rejected 'invalid integration tags: ntfy,,beszel' \
   --suite smoke --tags ntfy,,beszel
-for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden full; do
+for suite in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep full; do
   assert_rejected "integration suite $suite does not accept --tags" \
     --suite "$suite" --tags ntfy
 done
@@ -1190,6 +1192,11 @@ assert_toolchain_pull_set "$({ compose_images ntfy; compose_images nextcloud; } 
 run_prepull 0 4 --suite vaultwarden
 [ "$prepull_status" -eq 0 ] || prepull_fail "the vaultwarden pre-pull failed ($prepull_status)"
 assert_toolchain_pull_set "$({ compose_images ntfy; compose_images vaultwarden; } | sort -u)"
+
+# Four images: the sink, and Karakeep's application, chrome and Meilisearch.
+run_prepull 0 4 --suite karakeep
+[ "$prepull_status" -eq 0 ] || prepull_fail "the karakeep pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set "$({ compose_images ntfy; compose_images karakeep; } | sort -u)"
 
 # An untagged smoke run converges everything, so every service directory in the
 # tree must be reachable from the harness map. A directory the map forgot shows up

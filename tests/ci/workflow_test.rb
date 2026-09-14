@@ -78,7 +78,7 @@ RECONCILIATION_EXTRA_INPUTS = %w[
 # The suites the matrix dispatches, in the order a full run enumerates them.
 FULL_RUN_SUITES = %w[
   foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
-  dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden
+  dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
   idempotence-check
 ].freeze
 # The five shards that decompose the untagged idempotence lane. They are not in
