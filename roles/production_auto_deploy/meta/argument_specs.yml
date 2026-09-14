@@ -3,16 +3,34 @@ argument_specs:
   main:
     short_description: Install the NAS production deployment poller
     description:
-      - Installs the poller, its non-secret configuration, the protected ntfy
-        publisher configuration, a five-minute polling cron entry and an
-        hourly verification cron entry.
+      - Installs the poller, its protected configuration, one protected
+        Pushover publisher configuration per application, the ntfy publisher
+        configuration a previous poller still reads, a five-minute polling
+        cron entry and an hourly verification cron entry.
     options:
       platform_kind:
         description: Platform discriminator; the role accepts only nas.
         type: str
         required: true
       vault_ntfy_deploy_token:
-        description: The deployer's own least-privilege write-only ntfy token.
+        description: >-
+          The deployer's own least-privilege write-only ntfy token, still
+          rendered into ntfy.curl for a poller process running the previous
+          revision; removed with ntfy in stage 4 of #558.
+        type: str
+        required: true
+      vault_pushover_alerts_token:
+        description: >-
+          Token of the Pushover Alerts application, which the poller sends a
+          failed deployment, a CI refusal, blindness and verify verdicts to.
+        type: str
+        required: true
+      vault_pushover_deployments_token:
+        description: Token of the Pushover Deployments application.
+        type: str
+        required: true
+      vault_pushover_user_key:
+        description: The Pushover user key every application delivers to.
         type: str
         required: true
       vault_healthchecks_poller_ping_url:
@@ -30,27 +48,12 @@ argument_specs:
         required: true
       ntfy_port:
         description: >-
-          Port the poller reaches ntfy on. Required rather than defaulted
-          for the reason the topics are: this play does not run the ntfy
-          role, so a default here would be the operative value rather
-          than a fallback and a port changed in the inventory would leave
-          the poller addressing the old one (#402). Declared in
-          inventory/group_vars/all/main.yml.
+          Port the ntfy.curl a previous poller still reads addresses. Required
+          rather than defaulted: this play does not run the ntfy role, so a
+          default here would be the operative value rather than a fallback and
+          a port changed in the inventory would leave that file addressing the
+          old one (#402). Declared in inventory/group_vars/all/main.yml.
         type: int
-        required: true
-      ntfy_topic:
-        description: >-
-          Topic the poller publishes a failure to. Required rather than
-          defaulted: this play does not run the ntfy role, so a default here
-          would silently outlive a rename of the ACL grant that authorises it
-          (#345). Declared in inventory/group_vars/all/main.yml.
-        type: str
-        required: true
-      ntfy_deployment_topic:
-        description: >-
-          Topic the poller publishes a successful deployment to, required for
-          the same reason and declared in the same place.
-        type: str
         required: true
       production_auto_deploy_home:
         description: Real home of the dedicated non-root deployment account.
@@ -73,6 +76,15 @@ argument_specs:
       production_auto_deploy_github_api_base:
         description: HTTPS base URL of the GitHub API.
         type: str
+      production_auto_deploy_pushover_api_url:
+        description: Pushover message API the protected curl configs address.
+        type: str
+      production_auto_deploy_pushover_notifiers:
+        description: >-
+          The Alerts then the Deployments Pushover curl config, each a path and
+          the name of the vault variable holding that application's token.
+        type: list
+        elements: dict
       production_auto_deploy_nas_address:
         description: LAN address of the NAS itself.
         type: str

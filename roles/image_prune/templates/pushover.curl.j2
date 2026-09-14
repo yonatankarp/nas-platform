@@ -1,0 +1,12 @@
+{# One Pushover application's protected curl config, rendered once per
+   application from the loop in tasks/main.yml. It carries that application's
+   token and the shared user key, and nothing else's, so the prune's argv holds
+   only the message. form-string rather than form: a value is never read as a
+   file. The schema has no pattern for either value, so a backslash or a double
+   quote is escaped rather than trusted to be absent.
+
+   Its own files rather than the poller's: two roles rendering one path would
+   each claim the other's change on every converge. #}
+url = "{{ image_prune_pushover_api_url }}"
+form-string = "user={{ vault_pushover_user_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
+form-string = "token={{ lookup('ansible.builtin.vars', item.token_variable) | replace('\\', '\\\\') | replace('"', '\\"') }}"
