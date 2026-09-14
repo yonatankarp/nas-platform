@@ -107,8 +107,14 @@
         | default(false) | bool
     fail_msg: >-
       Karakeep did not verify. Sign-in {{ karakeep_verify_login.status | default('none') }}
-      (401: the vault administrator no longer signs in); connection check
-      {{ karakeep_verify_connections.status | default('none') }} with search
+      (401 means the vault administrator no longer signs in: its password was
+      rotated in the vault or changed in the interface); connection check
+      {{ karakeep_verify_connections.status | default('none') }} (403 means the
+      vault identity signs in but is not an administrator: the administrator
+      email in the vault was changed after deployment, and a second, non-admin
+      account now holds the vault password -- sign in as the original
+      administrator and compare the account list in the administrator settings
+      with the email the vault holds) with search
       {{ (karakeep_verify_connections.json | default({})).result.data.json.searchEngine
          | default('unread') }} and browser
       {{ (karakeep_verify_connections.json | default({})).result.data.json.browser
