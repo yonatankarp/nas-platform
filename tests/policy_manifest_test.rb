@@ -2962,7 +2962,14 @@ expect_failure(failures, "media library leaves removed from storage",
   # so emptying only media_libraries.yml leaves the staging paths covering the
   # mount and the plant stops biting.
   Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
-    next if File.basename(file) == "vault.yml"
+    # Every vault artifact, not the one filename this used to name. #611/#612
+    # split vault.yml into one vault_<role>.yml per service, and #636 put all
+    # eighteen of them into BASE_FIXTURE_PATHS because policy_vault_test.rb now
+    # requires them to exist. They are encrypted, so they parse to a String
+    # rather than a mapping, and the block below would call `each` on it with
+    # two parameters. The name-based skip was correct for as long as the sandbox
+    # carried no vault file at all, which is what hid it.
+    next if File.basename(file).match?(/\Avault(?:_[a-z0-9_]+)?\.yml\z/)
 
     relative = File.join("inventory", "group_vars", "all", File.basename(file))
     mutate_yaml_file(root, relative) do |inventory|
