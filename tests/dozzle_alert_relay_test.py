@@ -45,6 +45,14 @@ LINK_BASE = "http://nas.tailnet.example:8080"
 CONTAINER_CEILING = 3
 OOM_CONTAINER_CEILING = 5
 GLOBAL_CEILING = 9
+# The instant every in-process case runs at unless it patches `utc_now` itself.
+# The fixtures carry fixed 2026-08-15 timestamps, and the relay prunes healthy
+# entries older than HEALTHY_RETENTION against its clock, so a case left on the
+# real clock changed verdict the moment that clock passed 2026-09-14T01:22Z --
+# four cases went red on every branch at once. Pinned shortly after the latest
+# fixture, so no case depends on the date it happens to run on, and so the
+# budget day a case expects cannot straddle a real midnight either.
+FIXED_NOW = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
 # The listener port the deployment declares today, in roles/dozzle/defaults.
 # Nothing here depends on the number staying current: these tests only need a
 # port that differs from any literal the relay itself could have kept, so a
@@ -209,6 +217,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.addCleanup(self.stop_server, self.pushover, self.pushover_thread)
 
         self.relay_module = load_relay_module()
+        # A case that patches utc_now itself nests inside this and wins.
+        clock = mock.patch.object(self.relay_module, "utc_now", return_value=FIXED_NOW)
+        clock.start()
+        self.addCleanup(clock.stop)
         self.config = self.relay_module.Config.from_mapping(self.environment())
         self.relay = self.relay_module.create_server(("127.0.0.1", 0), self.config)
         self.relay_thread = threading.Thread(target=self.relay.serve_forever, daemon=True)
@@ -235,7 +247,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
     @staticmethod
     def today(now=None):
         """The day key the relay derives, spelled the way the relay spells it."""
-        moment = now or datetime.now(timezone.utc)
+        moment = now or FIXED_NOW
         return f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}"
 
     def budget(self, count=0, containers=(), notified=False, day=None):
@@ -2106,7 +2118,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         bounded, budget, _document = self.relay_module.bounded_state(
             {},
             {"day": self.today(), "count": 50, "notified": False, "containers": entries},
-            datetime.now(timezone.utc),
+            FIXED_NOW,
         )
         self.assertEqual(bounded, {})
         self.assertEqual(len(budget["containers"]), self.relay_module.MAX_BUDGET_ENTRIES)
@@ -2122,7 +2134,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         _bounded, budget, _document = self.relay_module.bounded_state(
             {},
             {"day": self.today(), "count": 50, "notified": False, "containers": crowded},
-            datetime.now(timezone.utc),
+            FIXED_NOW,
         )
         self.assertEqual(len(budget["containers"]), self.relay_module.MAX_BUDGET_ENTRIES)
         # The count-9 latch is still there; five count-1 counters went instead.
