@@ -176,6 +176,10 @@
         status_code: "{{ range(100, 600) | list }}"
         return_content: true
       register: karakeep_bootstrap_signup
+      # A refused connection is status -1, outside the accepted range, and would
+      # fail here with nothing but a redacted result. Tolerated so the assertion
+      # after the close is what fails, naming the status.
+      failed_when: false
       changed_when: karakeep_bootstrap_signup.status | default(0) | int == 200
       no_log: true
   always:
