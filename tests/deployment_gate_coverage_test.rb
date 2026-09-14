@@ -151,8 +151,9 @@ ROOT = File.expand_path("..", __dir__)
 # side was picked. Every number below is therefore read off the merged tree
 # rather than carried over from either. Re-read this whole block when a service
 # is added, removed, gated or ungated, and re-derive rather than reason: the
-# summary line at the foot of this file prints four of the eight live counts, and
-# the other four are one instrumented run away.
+# summary line at the foot of this file prints three of the eight floored counts
+# (implemented, gate variables, subjects; `dark` has no floor), and the other five
+# are one instrumented run away.
 #
 # THE THIRD TIME, AND IT WAS THE SAME MERGE AGAIN. #547's second chunk rebased
 # onto the AdGuard flip above, and neither side's numbers were right for the
@@ -312,7 +313,8 @@ Dir[File.join(ROOT, "inventory", "**", "*.yml")].sort.each do |path|
     inventory_gates[key] << { "value" => value, "path" => path.delete_prefix("#{ROOT}/") }
   end
 end
-# EITHER OF THE TWO REFUSALS BELOW INVALIDATES THE REST OF THIS REPORT, and that
+# ANY REFUSAL FROM HERE DOWN TO THE DECISION-FILE FLOOR INVALIDATES THE REST OF
+# THIS REPORT, and that
 # is stated rather than structured away. `check` accumulates -- it does not raise
 # and does not return -- because reporting every violation in one run is this
 # gate's design, so once a gate's file is unusable every property after this
@@ -353,9 +355,13 @@ check_floor(failures, gate_names.length, GATE_VARIABLE_FLOOR,
 # and exited 0, gutting service_nextcloud.yml the same, and gutting main.yml
 # failed loudly over a file whose emptiness had become harmless to this check.
 # A literal can drift from the thing it guards without anything noticing; a
-# path built from the gate's own prefix cannot, because the prefix IS the role
-# name and the role's inventory file is service_<role>.yml by this repository's
-# layout. The loop is over `gate_names`, the union of both homes, so a gate whose
+# path built from the gate's own prefix cannot drift from the FILE, because the
+# prefix IS the role name and the role's inventory file is service_<role>.yml by
+# this repository's layout. It can still drift from the DECISION: nothing here
+# refuses a gate set in some other inventory file, so a gate moved into main.yml
+# is guarded by nothing and gutting main.yml then passes again (measured, #635).
+# Closing that is one assertion over `inventory_gates[name]`'s paths and is left
+# for a follow-up. The loop is over `gate_names`, the union of both homes, so a gate whose
 # inventory file is gutted is still a subject through its role default and its
 # file is still asked for.
 #
@@ -389,13 +395,15 @@ gate_names.each do |name|
   decision_file = decision_file_for(name[GATE_KEY, 1])
   # The accumulator is thrown away: the inventory scan above has already
   # recorded this path if it failed to parse, and reporting it twice would name
-  # it twice.
+  # it twice in that list. The refusal below still fires for an unparseable
+  # file, because `nil` is what it parsed to; the message says so.
   decision_document = load_plain_yaml(File.join(ROOT, decision_file), [])
   survived = decision_document.is_a?(Hash) && !decision_document.empty?
   parsed_decision_files << decision_file if survived
   check(failures, survived,
         "#{decision_file} is where the deployment decision for #{name} is made and won, and it " \
-        "parsed to an empty #{decision_document.class} -- missing, empty or holding nothing. " \
+        "parsed to an empty #{decision_document.class} -- missing, empty, holding nothing, or " \
+        "unparseable and named as such above. " \
         "The gate then resolves from its role default, which this check requires to ship OFF, " \
         "so the stack reads as dark and every requirement below holds for nobody it would " \
         "otherwise have reached. Fix the file and re-run: nothing else this run reports about " \
@@ -432,8 +440,8 @@ gate_names.each do |name|
   # converging on the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
-  # it in full -- nextcloud and vaultwarden are the two gates that exist, and
-  # both ship false -- and because the harm is worst exactly where a per-service
+  # it in full -- nextcloud, vaultwarden and karakeep are the three gates that
+  # exist, and all ship false -- and because the harm is worst exactly where a per-service
   # check is most likely to be missing. AdGuard used to be the only one carrying
   # its own assertion, in tests/contracts/adguard-static.rb, and #577 removed
   # that contract with the service; neither survivor has a static contract to
