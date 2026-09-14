@@ -2842,20 +2842,35 @@ def main(argv=None) -> int:
         # pings /fail on each. That is the intent rather than a gap: a failure
         # that persists on the box is paged there, through Pushover, and --status
         # names the revision; these external checks exist to hear the NAS or
-        # the poller being gone, which nothing on the box can report. An
-        # unhandled raise leaves `outcome` False: a tick that did not finish.
-        # An EligibilityError pings plain: GitHub could not be read, but the
-        # poller is alive and deciding, and sustained blindness already pages
-        # on-box after BLIND_POLL_THRESHOLD polls, where a /fail here would page
-        # off-box on a single GitHub blip. A manual --retry-failed pings
-        # nothing, so it cannot vouch for a dead cron. ping_healthchecks never
-        # raises, so this `finally` changes no exception, exit code or message.
+        # the poller being gone, which nothing on the box can report. A raise
+        # that is not caught below leaves `outcome` False: a tick that did not
+        # finish. An OSError is caught, and leaves it False as well (#658): a
+        # state or log directory the installer owns is missing or unwritable,
+        # so nothing was deployed and the tick pings /fail -- only the report
+        # changes, from a traceback to the sentence below. An EligibilityError
+        # pings plain: GitHub could not be read, but the poller is alive and
+        # deciding, and sustained blindness already pages on-box after
+        # BLIND_POLL_THRESHOLD polls, where a /fail here would page off-box on a
+        # single GitHub blip. A manual --retry-failed pings nothing, so it
+        # cannot vouch for a dead cron. ping_healthchecks never raises, so this
+        # `finally` changes no exception, exit code or message.
         outcome = False
         try:
             outcome = poll(config, retry_sha=retry_sha)
         except EligibilityError:
             outcome = None
             raise
+        except OSError as error:
+            # A private directory the installer owns is missing or unwritable.
+            # Cron keeps only the most recent output, so this has to read as a
+            # sentence rather than as a traceback a week after the fact. The
+            # --verify branch above and scripts/image_prune.py report the same
+            # class the same way; this was the branch that ran every five
+            # minutes and did not (#658). `outcome` stays False, so the
+            # `finally` still pings /fail for the tick.
+            print(f"production auto-deploy: {error.filename or 'a managed path'} is unusable",
+                  file=sys.stderr)
+            return 1
         finally:
             if mode == "poll":
                 ping_healthchecks(config, config.healthchecks_poller_ping_url,

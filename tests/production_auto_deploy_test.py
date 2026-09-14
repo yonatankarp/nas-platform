@@ -4770,6 +4770,25 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
         self.assertIs(raised.exception, error)
         self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
+    def test_an_unusable_state_directory_is_a_sentence_and_still_pings_fail(self):
+        # Not a mock: deployment_lock opens state_root/deployment.lock before
+        # anything else, so a state_root the installer never created is a real
+        # OSError out of poll(). Cron keeps only the most recent output, and
+        # --verify and the prune already report this class as a sentence; the
+        # branch that runs every five minutes reported it as a traceback (#658).
+        missing = self.root / ".local/share/nas-platform/absent-state"
+        self.configure(state_root=str(missing))
+
+        code, output = self.main("--poll")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            output.strip(),
+            f"production auto-deploy: {missing / 'deployment.lock'} is unusable",
+        )
+        self.assertNotIn("Traceback", output)
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+
     def test_an_unusable_configuration_cannot_ping_and_is_left_to_the_grace_period(self):
         # The URL lives in the file that could not be trusted, so there is
         # nothing to ping; the silence is what the check alerts on.
