@@ -1638,14 +1638,14 @@ end
 end
 
 expect_failure(failures, "contract syntax error", "vaultwarden: implemented service has no automated verification",
-               detected_by: %i[policy]) do |root|
+               detected_by: %i[policy mac]) do |root|
   File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
   write_contract(root, "vaultwarden", "#!/bin/sh\nif then\ncurl --fail http://127.0.0.1/vaultwarden\n")
   register_contract(root, "vaultwarden")
 end
 
 expect_failure(failures, "symlink contract", "vaultwarden: implemented service has no automated verification",
-               detected_by: %i[policy]) do |root|
+               detected_by: %i[policy mac]) do |root|
   File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
   contracts = File.join(root, "tests", "contracts")
   FileUtils.mkdir_p(contracts)
@@ -1695,7 +1695,7 @@ end
 # reason. It is a rename-shaped defect reached by a different road, not
 # an incidental overlap.
 expect_failure(failures, "symlink role directory", "trailarr: role must be a real directory within roles",
-               detected_by: %i[policy integration deployment vault]) do |root|
+               detected_by: %i[policy deployment vault]) do |root|
   path = File.join(root, "roles", "trailarr")
   FileUtils.rm_r(path)
   File.symlink("beszel", path)
