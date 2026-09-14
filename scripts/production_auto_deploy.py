@@ -951,6 +951,31 @@ def deployment_lock(config: Config, holder: str = "poll") -> Iterator[bool]:
         os.close(descriptor)
 
 
+def deployment_lock_held(config: Config) -> bool:
+    """Whether somebody holds the deployment lock, asked without becoming its holder.
+
+    For --status, which must stay read-only: the file is opened read-only so an
+    absent one is never created, no holder record is written, and a free lock is
+    released here rather than at close so the poller's own next tick cannot see
+    this read as a deployment. The same probe as
+    roles/deployment_bundle/files/probe_deployment_lock.py.
+    """
+
+    try:
+        descriptor = os.open(lock_path(config), os.O_RDONLY)
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return True
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return False
+    finally:
+        os.close(descriptor)
+
+
 def _tooling_bin(config: Config) -> Path:
     """The controller virtualenv the operator guide creates in the checkout."""
 
@@ -2168,7 +2193,7 @@ def verify(config: Config) -> bool | None:
         return all(results)
 
 
-def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
+def _next_poll_verdict(config: Config) -> tuple[str, str]:
     """Explain what the next poll would do, without doing any of it.
 
     Silence is the normal outcome of a poll, so an operator otherwise cannot
@@ -2193,9 +2218,21 @@ def _next_poll_verdict(config: Config, state: dict) -> tuple[str, str]:
         )
     if selection.attempted is not None:
         stopped = selection.attempted
-        successful = state["last_successful"]
+        # poll() records the attempt before it deploys, so attempted-and-not-
+        # successful is also what a deployment in progress looks like: on
+        # 2026-09-13 this reported a converging revision as failed and offered
+        # --retry-failed against it. The flock is the liveness truth. State is
+        # read after the probe, so a deployment that finished during the CI
+        # query above reads as deployed rather than as failed.
+        held = deployment_lock_held(config)
+        successful = read_state(config)["last_successful"]
         if successful is not None and successful["sha"] == stopped:
             return head, f"nothing to do: {stopped[:9]} is deployed"
+        if held:
+            return head, (
+                f"in progress: {stopped[:9]} "
+                f"(holder {_holder_description(read_lock_holder(config))})"
+            )
         return head, (
             f"nothing to do: {stopped[:9]} was already attempted and failed. "
             f"Retry it explicitly with --retry-failed {stopped}"
@@ -2240,7 +2277,7 @@ def print_status(config: Config) -> None:
     for sha in attempted:
         marker = " (successful)" if successful and successful["sha"] == sha else ""
         print(f"  {sha}{marker}")
-    head, verdict = _next_poll_verdict(config, state)
+    head, verdict = _next_poll_verdict(config)
     print(f"current {config.branch}: {head}")
     print(f"next poll: {verdict}")
 
