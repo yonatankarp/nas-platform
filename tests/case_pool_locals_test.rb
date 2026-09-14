@@ -3,7 +3,7 @@
 
 # Every case the pool drives owns every name it assigns.
 #
-# `tests/case_pool_support.rb` and the fourteen contract tests' own copies run a
+# `tests/case_pool_support.rb`, which every pooled check has shared since #637, runs a
 # check's independent cases in threads. A case appends its findings to a private
 # list and the lists are concatenated in written order, so nothing is shared --
 # unless a case assigns a local that lives in an enclosing scope, in which case

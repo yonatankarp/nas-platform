@@ -713,17 +713,19 @@ read with the caveat that occurrence paid for: the totals are sums of contended
 wall times, so they cannot separate a gate bound by its **total** work from a
 gate waiting on **one** item. Ask a suspect check's CPU column first, per the
 occurrence above — it costs two runs. Vary the width when you need to confirm it
-— `POLICY_JOBS` for the gate's own pool, `CASE_POOL_WORKERS` or a check's own
-`*_CASE_WORKERS` for a check's — and a cost that does not move when the width
-does is a wait, not work. There is nothing to parallelise in a wait: find the
+— `POLICY_JOBS` for the gate's own pool and `CASE_POOL_WORKERS` for a check's
+— and a cost that does not move when the width does is a wait, not work. Each
+pooled check used to resolve a `*_CASE_WORKERS` of its own; #637 retired those
+along with the fourteen private pools that read them, so there is one knob. There is nothing to parallelise in a wait: find the
 timeout and let the harness shorten it. For the
 work half, run the cases through a worker pool — `in_parallel_cases` in
-`tests/media_acquisition_reconciliation_support.rb` is the pattern and its
-comment records why the worker count must never exceed the core count;
-`tests/case_pool_support.rb` is the copy the checks converted for #319 share,
-joined by `tests/config_managed_users_test.rb` in #488. The fourteen contract
-tests still carry their own copies, so a change there is still one careful change
-per file.
+`tests/case_pool_support.rb` is the one copy, and its comment records why the
+worker count must never exceed the core count. The pattern started in
+`tests/media_acquisition_reconciliation_support.rb`; the checks converted for
+#319 shared it, `tests/config_managed_users_test.rb` joined in #488, and #637
+moved the last fourteen -- so a change to the pool is now one change rather than
+fifteen. That mattered twice: #514's fix and `POLICY_JOBS=1` had both reached
+only the shared copy.
 
 Two consequences worth keeping:
 

@@ -22,7 +22,6 @@
 #
 # Run with --self-test to plant a regression in each program and in the wrapper.
 
-require "etc"
 require "fileutils"
 require "json"
 require "open3"
@@ -31,6 +30,7 @@ require "shellwords"
 require "tmpdir"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "http_fixture_support"
 require_relative "policy_support"
 
@@ -77,35 +77,6 @@ FIXTURE_FILES = %w[
   tests/policy_support.rb
 ].freeze
 
-CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("TRAILARR_CONTRACT_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }
-)
-
-def in_parallel_cases(failures, items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.each { |item| yield item, failures } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        local = []
-        yield item, local
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.each { |index| failures.concat(collected.fetch(index)) }
-end
 
 def build_fixture_repository(root)
   FIXTURE_FILES.each do |relative|

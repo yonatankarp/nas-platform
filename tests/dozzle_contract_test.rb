@@ -52,7 +52,6 @@
 # above detect it.
 
 require "digest"
-require "etc"
 require "fileutils"
 require "json"
 require "net/http"
@@ -63,6 +62,7 @@ require "tmpdir"
 require "uri"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -156,46 +156,6 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
 # finds a copy there and nothing looks wrong. The wrapper layer plants an
 # impostor at those paths inside the inspected tree instead.
 
-# Runs independent cases through a worker pool, capped at the core count. The
-# same shape and the same reasoning as in_parallel_cases in
-# tests/media_acquisition_reconciliation_support.rb: a check that spawns a
-# subprocess per case, serially, becomes the floor for the whole policy gate, and
-# oversubscribing a four-core CI runner trades wall time for contention. Never
-# more workers than cores.
-CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("DOZZLE_CONTRACT_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }, 10
-)
-
-def in_parallel_cases(items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.flat_map { |item| yield item } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        # A row whose fixture edit raises is a broken row, not a crashed suite.
-        local = begin
-          yield item
-        rescue StandardError => error
-          ["#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: fixture raised " \
-           "#{error.class}: #{error.message}"]
-        end
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.flat_map { |index| collected.fetch(index) }
-end
 
 # Substitutes text and asserts its own match count. Several literals planted here
 # occur more than once in the file they are planted in, so a plain sub can hit
@@ -386,7 +346,7 @@ GROUP_RENDER_ROWS = [
 ].freeze
 
 def group_render_failures(program = GROUP_RENDER_PROGRAM, rows = GROUP_RENDER_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     stdout, stderr, status = Open3.capture3(
       { "DOZZLE_RENDERED_COMPOSE" => JSON.generate(row.fetch(:config).call) },
       *GROUP_RENDER_COMMAND, program,
@@ -434,7 +394,7 @@ LABEL_ROWS = [
 ].freeze
 
 def labels_failures(program = LABELS_PROGRAM, rows = LABEL_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -743,7 +703,7 @@ STACK_ROWS = [
 ].freeze
 
 def stack_failures(program = STACK_PROGRAM, rows = STACK_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -927,7 +887,7 @@ ALERTS_ROWS = [
 ].freeze
 
 def alerts_failures(program = ALERTS_PROGRAM, rows = ALERTS_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -1001,7 +961,7 @@ PLANNED_ROWS = [
 ].freeze
 
 def planned_failures(program = PLANNED_OUTPUT_PROGRAM, rows = PLANNED_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     Dir.mktmpdir("nas-platform-dozzle-planned.") do |directory|
       argv = [*PLANNED_COMMAND, program, row.fetch(:mode)]
       case row.fetch(:body)
@@ -1372,7 +1332,7 @@ RUNTIME_ROWS = [
 ].freeze
 
 def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_runtime_stub(row.fetch(:state), relay_port: row.fetch(:relay_port, 8081)) do |env, root, _state|
       if row[:report_root] == :symlink
         link = File.join(root, "reports-link")
@@ -2511,7 +2471,7 @@ if ARGV.include?("--self-test")
   # convention: a plant whose rows report a different sentence than expected is
   # information about the program, and finding them one interpreter run at a time
   # costs a run per plant.
-  problems = in_parallel_cases(PROGRAM_MUTATIONS) do |mutation|
+  problems = in_parallel_case_results(PROGRAM_MUTATIONS) do |mutation|
     with_mutant(mutation) do |mutant|
       rows = mutation.fetch(:rows)
       caught = case mutation.fetch(:program)
