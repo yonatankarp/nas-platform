@@ -6,10 +6,9 @@ cleanup_sandbox_image=docker.io/library/python:3.14-alpine@sha256:c6ead215bfd31f
 # ownership labels and then matched against the exact namespaced identity
 # Compose gives them. A container that merely shares a production name is
 # therefore never a cleanup target, and is left untouched.
-cleanup_sandbox_projects='ntfy beszel dozzle audiobookshelf komga jellyfin immich paperless'
+cleanup_sandbox_projects='beszel dozzle audiobookshelf komga jellyfin immich paperless'
 cleanup_sandbox_projects="$cleanup_sandbox_projects arr downloaders bindery kapowarr pinchflat trailarr"
 cleanup_sandbox_projects="$cleanup_sandbox_projects seerr nextcloud vaultwarden karakeep"
-cleanup_sandbox_ntfy_services='ntfy'
 cleanup_sandbox_beszel_services='beszel beszel-agent-intel beszel-agent-portable beszel-socket-proxy'
 cleanup_sandbox_dozzle_services='dozzle dozzle-alert-relay dozzle-socket-proxy'
 cleanup_sandbox_audiobookshelf_services='audiobookshelf'
@@ -70,7 +69,6 @@ cleanup_sandbox_contents() {
 
 cleanup_sandbox_project_services() {
   case $1 in
-    ntfy) cleanup_project_services=$cleanup_sandbox_ntfy_services ;;
     beszel) cleanup_project_services=$cleanup_sandbox_beszel_services ;;
     dozzle) cleanup_project_services=$cleanup_sandbox_dozzle_services ;;
     audiobookshelf) cleanup_project_services=$cleanup_sandbox_audiobookshelf_services ;;
@@ -103,7 +101,7 @@ cleanup_sandbox_project_services() {
 cleanup_sandbox_project_networks() {
   case $1 in
     karakeep) cleanup_project_networks='default browser search' ;;
-    ntfy | beszel | dozzle | audiobookshelf | komga | jellyfin | immich | paperless | \
+    beszel | dozzle | audiobookshelf | komga | jellyfin | immich | paperless | \
       arr | downloaders | bindery | kapowarr | pinchflat | trailarr | seerr | \
       nextcloud | vaultwarden)
       cleanup_project_networks=default

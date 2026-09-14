@@ -30,6 +30,8 @@ print; no value is ever put in a message.
 import importlib.util
 from pathlib import Path
 
+from ansible.errors import AnsibleFilterError
+
 
 # Filter plugins cannot import module_utils/ by name, and putting the repository
 # root on sys.path to reach it would shadow site-packages with library/, roles/,
@@ -77,19 +79,28 @@ POLICY_LABEL = "jellyfin_encoding_policy"
 
 
 def _field(errors, path, value, kind):
-    if kind is BOOLEAN:
+    # `==` rather than `is`, and an `else` that refuses: the kinds are module-level
+    # string literals, so CPython interning made identity work, and an unmatched
+    # kind fell off the end validating nothing at all. A table entry naming a kind
+    # this function does not implement is a mistake in the table, not a field the
+    # schema declines to check, so it raises the way its siblings do (#648).
+    if kind == BOOLEAN:
         if not _GUARDS.is_boolean(value):
             errors.append(f"{path}: must be a boolean")
-    elif kind is STRING:
+    elif kind == STRING:
         if not _GUARDS.is_string(value):
             errors.append(f"{path}: must be a string")
-    elif kind is STRING_LIST:
+    elif kind == STRING_LIST:
         if not _GUARDS.is_list(value):
             errors.append(f"{path}: must be a list")
             return
         for index, element in enumerate(value):
             if not _GUARDS.is_string(element):
                 errors.append(f"{path}[{index}]: must be a string")
+    else:
+        # Safe to name: every kind reaching here is a literal from FIELDS, never
+        # a value Jellyfin returned.
+        raise AnsibleFilterError(f"{path}: unknown field kind {kind!r}")
 
 
 def _encoding(errors, label, value):

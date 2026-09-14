@@ -28,10 +28,11 @@ per transport, so a host that has not been through it cannot be activated by a
 merge, and an accepted one cannot be switched off unnoticed.
 
 Provider and preference choices are credentials, and go where every other
-credential on this platform goes:
+credential on this platform goes: the encrypted vault file of the service that
+reads them, which for all three of these is the Arr stack's.
 
 ```sh
-ansible-vault edit inventory/group_vars/all/vault.yml
+ansible-vault edit inventory/group_vars/all/vault_arr.yml
 ```
 
 ```yaml
@@ -40,10 +41,12 @@ media_bazarr_languages: []
 media_bazarr_providers: []
 ```
 
-`group_vars/all/main.yml` carries the same three names as empty lists, which is
-what starts the applications without unattended acquisition on a target that has
-declared nothing. Ansible loads both files and the vault wins, so a declaration
-here overrides that default without removing it.
+`inventory/group_vars/all/service_arr.yml` carries the same three names as empty
+lists, in plaintext, which is what starts the applications without unattended
+acquisition on a target that has declared nothing. That file is not where a real
+declaration goes: Ansible loads every file in `inventory/group_vars/all/` and the
+one loaded later wins, so the vault file above overrides the empty default
+without removing it, and the values stay encrypted.
 
 Replace the empty lists only with values reviewed for this target.
 [Bazarr provider schemas](bazarr-providers.md) records the exact keys the

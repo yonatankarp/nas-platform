@@ -53,8 +53,8 @@ beszel_alerts:
 
 # Shoutrrr URL. Built from the Alerts application token and the user key in vault,
 # so the value Beszel stores is authored in one place rather than copied between
-# two web interfaces -- the same property the ntfy form had, over a transport
-# that reaches a phone without the NAS being reachable from it. Pushover itself
+# two web interfaces, over a transport that reaches a phone without the NAS
+# being reachable from it. Pushover itself
 # takes only the application token and the user key, which are this URL's
 # password and host and are what the two vault values are. The `shoutrrr` user
 # component is a filler the library reads and discards: `pushover://:token@userkey/`

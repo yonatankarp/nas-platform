@@ -196,7 +196,6 @@ EXPECTED_IMPLEMENTED_PORTS = [
   ["jellyfin", "jellyfin", "0.0.0.0", 8096, 8096, "tcp"],
   ["kapowarr", "kapowarr", "0.0.0.0", 5656, 5656, "tcp"],
   ["komga", "komga", "0.0.0.0", 25_600, 25_600, "tcp"],
-  ["ntfy", "ntfy", "0.0.0.0", 2586, 80, "tcp"],
   ["paperless-ngx", "webserver", "0.0.0.0", 8000, 8000, "tcp"],
   ["pinchflat", "pinchflat", "0.0.0.0", 8945, 8945, "tcp"],
   ["nextcloud", "nextcloud", "0.0.0.0", 8084, 80, "tcp"],
@@ -922,7 +921,7 @@ failures << "verify.yml must select the standalone media acquisition verifier by
 mac_verify_source = File.read(File.join(ROOT, "tests", "mac", "verify.sh"))
 mac_lib_source = File.read(File.join(ROOT, "tests", "mac", "lib.sh"))
 expected_mac_verify_hooks = %w[
-  10-beszel.sh 15-media-acquisition-foundation.sh 15-ntfy.sh 20-dozzle.sh
+  10-beszel.sh 15-media-acquisition-foundation.sh 20-dozzle.sh
 ]
 failures << "Mac verification must dispatch the exact infrastructure hook roster" unless
   expected_mac_verify_hooks.all? { |hook| mac_lib_source.include?(hook) } &&

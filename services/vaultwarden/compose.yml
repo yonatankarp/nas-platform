@@ -115,11 +115,27 @@ services:
       # platform_public_host and refuses a value whose host is a bare IPv4
       # literal, because a LAN address here produces precisely that breakage.
       DOMAIN: ${VAULTWARDEN_DOMAIN:?}
-      # Registration is closed and invitation is the only route in. There is no
-      # SMTP configured on this platform, so an invitation is completed by hand
-      # rather than by mail; INVITATIONS_ALLOWED still governs whether an
-      # organization owner may issue one at all.
+      # REGISTRATION IS OPEN, and that is a decision rather than an oversight.
+      # inventory/group_vars/all/service_vaultwarden.yml sets it true and
+      # carries the argument; the role default ships false and group_vars wins.
+      # Closed, this stack would have no route to a first account at all --
+      # there is no /admin panel (see below) and no SMTP, so nothing could
+      # create one and nothing could deliver an invitation that would.
+      #
+      # What contains that is not this line but the `127.0.0.1:8086:8086`
+      # publication twenty lines above: Tailscale Serve is the only route to the
+      # registration page, so the tailnet is the whole of the control. This
+      # service shipped as a wildcard and took an uninvited registration from a
+      # LAN address (#547) -- restoring that binding restores an open password
+      # manager on the LAN.
+      #
+      # roles/vaultwarden/tasks/verify.yml proves the observed door against
+      # whichever value is declared, in both directions, on every converge.
       SIGNUPS_ALLOWED: ${VAULTWARDEN_SIGNUPS_ALLOWED:?}
+      # True, and independent of the door above rather than an alternative to
+      # it: invitation is how an ORGANIZATION OWNER adds a member, not a route a
+      # stranger can take. With no SMTP on this platform the invitation is
+      # completed by hand rather than by mail.
       INVITATIONS_ALLOWED: ${VAULTWARDEN_INVITATIONS_ALLOWED:?}
       #
       # NEITHER ADMIN_TOKEN NOR DISABLE_ADMIN_TOKEN APPEARS HERE, AND THAT IS

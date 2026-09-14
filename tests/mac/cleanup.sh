@@ -36,7 +36,7 @@ mac_owned_project_labels() {
     printf '%s-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
   for mac_label_suffix in \
-    audiobookshelf beszel dozzle immich jellyfin komga ntfy paperless-ngx; do
+    audiobookshelf beszel dozzle immich jellyfin komga paperless-ngx; do
     printf '%s-legacy-%s\n' "$mac_label_project" "$mac_label_suffix"
   done
 }

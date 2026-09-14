@@ -49,11 +49,6 @@ mac_verify=$repo_dir/tests/mac/hooks/verify/20-dozzle.sh
 # Both are read out of the tree under inspection: the hook for the inspection it
 # performs, the program for the labels it names.
 mac_verify_labels=$repo_dir/tests/mac/hooks/verify/20-dozzle-labels.rb
-# The notify mode's throwaway containers are started from the ntfy image for one
-# reason only: the platform already pulled it. That is true of the deployed pin
-# and of nothing else, so the pin is read out of the deployment rather than
-# restated here.
-ntfy_compose=$repo_dir/services/ntfy/compose.yml
 
 fail_contract() {
   printf 'Dozzle contract failed: %s\n' "$1" >&2
@@ -68,7 +63,6 @@ relay_probe_port=53081
 
 [ -f "$compose" ] || fail_contract 'services/dozzle/compose.yml is absent'
 [ -f "$relay_script" ] || fail_contract 'services/dozzle/alert_relay.py is absent'
-[ -f "$ntfy_compose" ] || fail_contract 'services/ntfy/compose.yml is absent'
 [ -f "$role" ] || fail_contract 'roles/dozzle/tasks/main.yml is absent'
 
 render_group_contract() {
@@ -89,16 +83,13 @@ render_group_contract() {
     NAS_UID=1000 NAS_GID=100 \
     BESZEL_APP_URL=http://127.0.0.1:8090 BESZEL_SYSTEM_NAME=contract \
     BESZEL_AGENT_KEY=contract BESZEL_AGENT_TOKEN=contract BESZEL_HOST_PORT=38090 \
-    DOZZLE_HOST_PORT=38080 NTFY_HOST_PORT=32586 NTFY_BASE_URL=http://127.0.0.1:32586 \
+    DOZZLE_HOST_PORT=38080 \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     ALERT_RELAY_TOKEN=contract-relay-token ALERT_RELAY_PORT="$relay_probe_port" \
     PUSHOVER_API_URL=http://127.0.0.1:1/1/messages.json ALERT_RELAY_LINK_BASE=http://127.0.0.1:38080 \
     PUSHOVER_TOKEN=contract-pushover-token PUSHOVER_USER_KEY=contract-pushover-user-key \
     ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
     ALERT_DAILY_GLOBAL_CEILING=200 \
-    NTFY_PUBLISH_URL=http://host.docker.internal:32586/ \
-    NTFY_TOPIC=nas-critical NTFY_CONTAINERS_TOPIC=nas-containers NTFY_TOKEN=contract-ntfy-token \
-    NTFY_AUTH_USERS= NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= \
     AUDIOBOOKSHELF_HOST_PORT=33378 \
     AUDIOBOOKSHELF_CONFIG_PATH=/tmp/dozzle-contract/audiobookshelf-config \
     AUDIOBOOKSHELF_METADATA_PATH=/tmp/dozzle-contract/audiobookshelf-metadata \
@@ -169,7 +160,6 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/jellyfin/compose.yml" \
     "$repo_dir/services/komga/compose.yml" \
     "$repo_dir/services/nextcloud/compose.yml" \
-    "$repo_dir/services/ntfy/compose.yml" \
     "$repo_dir/services/paperless-ngx/compose.yml" </dev/null
   render_group_variants beszel beszel
   render_group_variants dozzle dozzle
@@ -179,7 +169,6 @@ if [ "$mode" = static ]; then
   render_group_variants audiobookshelf ""
   render_group_variants jellyfin ""
   render_group_variants komga ""
-  render_group_variants ntfy ""
 fi
 
 ruby -ryaml "$stack_program" "$compose" "$role" "$env_template" \
@@ -200,7 +189,6 @@ esac
 : "${PLATFORM_CONTRACT_VAULT_PASSWORD_FILE:?}"
 : "${PLATFORM_REPORT_ROOT:?}"
 : "${PLATFORM_DOZZLE_PORT:=8080}"
-: "${PLATFORM_NTFY_PORT:=2586}"
 # The port the notify mode's Pushover recorder listens on, and the one every
 # lane redirects dozzle_pushover_api_url at. The number has to agree with the
 # lane that converged the relay, because the endpoint is rendered into the
@@ -209,9 +197,13 @@ esac
 # tests/dozzle_contract_test.rb refuses the three disagreeing.
 : "${PLATFORM_DOZZLE_PUSHOVER_PORT:=32587}"
 PLATFORM_CONTRACT_DOZZLE_DEFAULTS=$defaults
-PLATFORM_CONTRACT_NTFY_COMPOSE=$ntfy_compose
-export PLATFORM_DOZZLE_PORT PLATFORM_NTFY_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
+# The notify mode's throwaway containers are started from the alert relay's
+# image for one reason only: a lane that converged Dozzle has already pulled it.
+# That is true of the deployed pin and of nothing else, so the pin is read out
+# of the deployment rather than restated here.
+PLATFORM_CONTRACT_DOZZLE_COMPOSE=$compose
+export PLATFORM_DOZZLE_PORT PLATFORM_CONTRACT_DOZZLE_DEFAULTS
 export PLATFORM_DOZZLE_PUSHOVER_PORT
-export PLATFORM_CONTRACT_NTFY_COMPOSE
+export PLATFORM_CONTRACT_DOZZLE_COMPOSE
 
 exec ruby "$runtime_program" "$mode" "$@" </dev/null

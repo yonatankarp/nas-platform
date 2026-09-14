@@ -59,12 +59,11 @@ COMPANION_LANES = {
   "audiobookshelf" => %w[bindery],
   "jellyfin" => %w[seerr]
 }.freeze
-# The tags every tagged lane carries to converge the shared inert foundation and
-# the alerting sink. They are not lane dependencies: host_prep and
-# deployment_bundle already fall open to every lane, and ntfy is routed by
-# NTFY_LANES, both pinned above. The cross-lane derivation below skips them for
+# The tags every tagged lane carries to converge the shared inert foundation.
+# They are not lane dependencies: host_prep and deployment_bundle already fall
+# open to every lane, pinned above. The cross-lane derivation below skips them for
 # that reason rather than for convenience.
-SHARED_TAGS = %w[host_prep deployment_bundle ntfy].freeze
+SHARED_TAGS = %w[host_prep deployment_bundle].freeze
 # The cross-lane dependencies visible in tests/ci/suites.conf that are
 # deliberately *not* routed, with the reason. #349 asked the question and this is
 # the answer: the arr lane converges and asserts arr's own state and the
@@ -84,14 +83,6 @@ RECONCILIATION_OWNED_PATHS = %w[
   tests/media_acquisition_reconciliation_core_test.rb
   tests/media_acquisition_reconciliation_bazarr_test.rb
   tests/media_acquisition_reconciliation_configarr_test.rb
-].freeze
-# The alerting sink is deployed by every lane that carries the ntfy tag and by
-# no other. Stated rather than imported for the same reason: widening the
-# classifier's own list must fail here.
-NTFY_LANES = %w[
-  static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke
-  beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
-  idempotence_check
 ].freeze
 failures = []
 
@@ -185,8 +176,6 @@ if defined?(ClassifyChanges)
     ["scripts/production_auto_deploy.py"] => %w[static],
     ["tests/media_acquisition_foundation_test.rb"] =>
       ["static", "reconciliation", *ACQUISITION_LANES, "idempotence_check"],
-    ["roles/ntfy/tasks/main.yml"] => NTFY_LANES,
-    ["services/ntfy/compose.yml"] => NTFY_LANES,
     # One leg of every job, not one leg of every suite (#395). The derivation at
     # the end of this file is what keeps that claim true as the workflow grows;
     # this row is what makes a quiet widening or narrowing of it visible.
@@ -399,22 +388,22 @@ if defined?(ClassifyChanges)
   end
 
   {
-    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,beszel",
-    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,dozzle",
+    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel",
+    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,dozzle",
     # Same shape as the Jellyfin row below: the bindery lane comes first in
     # suites.conf row order and its tags are a superset of Audiobookshelf's own,
     # so the Audiobookshelf plan is Bindery's plan.
     "roles/audiobookshelf/tasks/main.yml" =>
-      "host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery",
-    "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,komga",
+      "host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery",
+    "roles/komga/tasks/main.yml" => "host_prep,deployment_bundle,komga",
     # The seerr lane comes first in suites.conf row order and its tags are a
     # superset of Jellyfin's own, so the Jellyfin plan is Seerr's plan.
-    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr",
-    "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,immich",
-    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,paperless",
-    "roles/nextcloud/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,nextcloud",
-    "roles/vaultwarden/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,vaultwarden",
-    "roles/karakeep/tasks/main.yml" => "host_prep,deployment_bundle,ntfy,karakeep"
+    "roles/jellyfin/tasks/main.yml" => "host_prep,deployment_bundle,arr,jellyfin,seerr",
+    "roles/immich/tasks/main.yml" => "host_prep,deployment_bundle,immich",
+    "roles/paperless_ngx/tasks/main.yml" => "host_prep,deployment_bundle,paperless",
+    "roles/nextcloud/tasks/main.yml" => "host_prep,deployment_bundle,nextcloud",
+    "roles/vaultwarden/tasks/main.yml" => "host_prep,deployment_bundle,vaultwarden",
+    "roles/karakeep/tasks/main.yml" => "host_prep,deployment_bundle,karakeep"
   }.each do |path, expected_tags|
     service_output = StringIO.new
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
@@ -458,7 +447,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["smoke","beszel","dozzle","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,beszel,dozzle
+    selected_tags=host_prep,deployment_bundle,beszel,dozzle
   OUTPUT
   check(failures, io.string == expected_output,
         "GitHub output or prerequisite tag ordering was incorrect: #{io.string.inspect}")
@@ -590,7 +579,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["smoke","paperless","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,paperless
+    selected_tags=host_prep,deployment_bundle,paperless
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
@@ -636,7 +625,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["bindery","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery
+    selected_tags=host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery
   OUTPUT
         "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
 
@@ -676,7 +665,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["kapowarr","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,kapowarr
+    selected_tags=host_prep,deployment_bundle,kapowarr
   OUTPUT
         "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
 
@@ -716,7 +705,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["pinchflat","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,pinchflat
+    selected_tags=host_prep,deployment_bundle,pinchflat
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
@@ -760,7 +749,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["trailarr","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,arr,trailarr
+    selected_tags=host_prep,deployment_bundle,arr,trailarr
   OUTPUT
         "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
 
@@ -804,7 +793,7 @@ if defined?(ClassifyChanges)
     idempotence_5=false
     idempotence_6=false
     suites=["seerr","idempotence-check"]
-    selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr
+    selected_tags=host_prep,deployment_bundle,arr,jellyfin,seerr
   OUTPUT
         "Seerr-only output must retain its exact tag plan: #{seerr_output.string.inspect}")
 
@@ -841,7 +830,7 @@ if defined?(ClassifyChanges)
   )
   check(failures,
         acquisition_output.string.end_with?(
-          "selected_tags=host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr\n"
+          "selected_tags=host_prep,deployment_bundle,arr,jellyfin,seerr\n"
         ),
         "an acquisition foundation contract must route to its own project's lane")
   check(failures, !acquisition_output.string.downcase.include?("tmm"),

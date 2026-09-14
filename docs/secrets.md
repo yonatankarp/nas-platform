@@ -10,11 +10,12 @@ history, logs, tickets, or pull requests. Do not paste them into diagnostic
 output.
 
 Phase 1 provider/indexer fields and Bazarr preferences are credentials, and
-belong in the vault beside every other credential. `group_vars/all/main.yml`
-carries them as empty lists so a target that has declared nothing starts without
-unattended acquisition; a declaration in the vault overrides that. Never commit
-a plaintext provider configuration or place its fields directly on the command
-line.
+belong in the Arr service's vault file beside every other credential.
+`inventory/group_vars/all/service_arr.yml` carries them as empty lists so a
+target that has declared nothing starts without unattended acquisition; a
+declaration in `inventory/group_vars/all/vault_arr.yml` is loaded after that
+file and overrides it. Never commit a plaintext provider configuration or place
+its fields directly on the command line.
 
 They were previously kept in an encrypted file outside the repository. Nothing
 was gained by it: the vault is encrypted with 384 random bits that never enter
@@ -186,7 +187,7 @@ unset -f generate_brand_new_secrets
 ```
 
 The generator creates independent passwords, matching clear-password/bcrypt
-pairs where both forms are required, distinct ntfy integration tokens, distinct
+pairs where both forms are required, distinct
 32-character lowercase hexadecimal acquisition-service API keys, a permanent
 Beszel universal token, an Ed25519 public/private keypair, and a Paperless
 Django secret key. The Radarr, Sonarr, Prowlarr, Bazarr, and SABnzbd
@@ -369,12 +370,14 @@ command arguments.
 
 ### Password and bcrypt-hash pairs
 
-Read the repository's pinned ntfy image directly from its Compose YAML, without
-evaluating the runtime environment interpolation in the rest of that file, then
-use ntfy's own interactive password hasher:
+Read the repository's pinned Nextcloud image directly from its Compose YAML,
+without evaluating the runtime environment interpolation in the rest of that
+file, then use that image's PHP interpreter as the bcrypt hasher. The image is
+used only for `password_hash` with `PASSWORD_BCRYPT`, which is exactly what
+`generate-secrets.yml` runs:
 
 ```sh
-resolve_ntfy_image() {
+resolve_hasher_image() {
   .venv/bin/python - <<'PY'
 import sys
 from pathlib import Path
@@ -382,86 +385,49 @@ from pathlib import Path
 import yaml
 
 try:
-    document = yaml.safe_load(Path("services/ntfy/compose.yml").read_text())
-    image = document["services"]["ntfy"]["image"]
+    document = yaml.safe_load(Path("services/nextcloud/compose.yml").read_text())
+    image = document["services"]["nextcloud"]["image"]
 except (OSError, KeyError, TypeError, yaml.YAMLError):
-    print("STOP: could not read the pinned ntfy image", file=sys.stderr)
+    print("STOP: could not read the pinned Nextcloud image", file=sys.stderr)
     raise SystemExit(1)
 
 if not isinstance(image, str) or not image.strip():
-    print("STOP: the pinned ntfy image is empty or invalid", file=sys.stderr)
+    print("STOP: the pinned Nextcloud image is empty or invalid", file=sys.stderr)
     raise SystemExit(1)
 
 print(image.strip())
 PY
 }
 
-if platform_ntfy_image=$(resolve_ntfy_image) && \
-   [ -n "$platform_ntfy_image" ]; then
-  docker run --rm -it "$platform_ntfy_image" user hash
+if platform_hasher_image=$(resolve_hasher_image) && \
+   [ -n "$platform_hasher_image" ]; then
+  printf 'Password to hash: ' >&2
+  stty -echo
+  IFS= read -r platform_clear_password
+  stty echo
+  printf '\n' >&2
+  printf '%s\n' "$platform_clear_password" |
+    docker run --rm -i --entrypoint php "$platform_hasher_image" \
+      -r 'echo password_hash(rtrim(fgets(STDIN), "\n"), PASSWORD_BCRYPT), "\n";'
+  unset platform_clear_password
 else
-  printf 'STOP: pinned ntfy image was not resolved; hasher did not run\n' >&2
+  printf 'STOP: pinned Nextcloud image was not resolved; hasher did not run\n' >&2
 fi
-unset platform_ntfy_image
-unset -f resolve_ntfy_image
+unset platform_hasher_image
+unset -f resolve_hasher_image
 ```
 
-The command runs one interactive prompt sequence and requires the same password
-to be entered twice. Run it separately for each clear-password/hash pair. ntfy
-declarative configuration requires bcrypt hashes, and the Dozzle protected users
-file also requires bcrypt. The clear administrator passwords remain necessary
-for login and verification. Never replace only one side of a deployed
-clear-password and hash pair.
+The password is read without echo and reaches the container on standard input,
+so it is never in the command line, the process list or shell history; `printf`
+is a shell builtin, so piping it spawns no process carrying the value. The output
+is a 60-character `$2y$` bcrypt, the same family `htpasswd -B` writes. Run the
+recipe separately for each clear-password/hash pair. Dozzle's protected users
+file and Trailarr's `WEBUI_PASSWORD` both require bcrypt. The clear
+administrator passwords remain necessary for login and verification. Never
+replace only one side of a deployed clear-password and hash pair.
 
-The pinned ntfy hasher is intentionally used for Dozzle too, so both services
-receive bcrypt values produced by the same repository-controlled tool. Do not
-put the clear password in the command or redirect the interactive exchange to
-a log.
-
-### ntfy integration tokens
-
-Resolve that same pinned image directly from the Compose YAML and ask ntfy to
-generate a token:
-
-```sh
-resolve_ntfy_image() {
-  .venv/bin/python - <<'PY'
-import sys
-from pathlib import Path
-
-import yaml
-
-try:
-    document = yaml.safe_load(Path("services/ntfy/compose.yml").read_text())
-    image = document["services"]["ntfy"]["image"]
-except (OSError, KeyError, TypeError, yaml.YAMLError):
-    print("STOP: could not read the pinned ntfy image", file=sys.stderr)
-    raise SystemExit(1)
-
-if not isinstance(image, str) or not image.strip():
-    print("STOP: the pinned ntfy image is empty or invalid", file=sys.stderr)
-    raise SystemExit(1)
-
-print(image.strip())
-PY
-}
-
-if platform_ntfy_image=$(resolve_ntfy_image) && \
-   [ -n "$platform_ntfy_image" ]; then
-  docker run --rm "$platform_ntfy_image" token generate
-else
-  printf 'STOP: pinned ntfy image was not resolved; token generator did not run\n' >&2
-fi
-unset platform_ntfy_image
-unset -f resolve_ntfy_image
-```
-
-For a fresh platform, run the recipe three times: once each for the Dozzle,
-Beszel, and deployment-poller integrations. All three tokens must be distinct. The command
-displays each token, so transfer its output immediately to the encrypted editor
-and password manager without putting it in shell history, logs, or chat.
-Existing deployments must recover both deployed tokens from their authoritative
-sources instead of generating replacements.
+Do not put the clear password in the command, and do not redirect the exchange
+to a log.
 
 ### Beszel token and Ed25519 keypair
 
@@ -665,7 +631,7 @@ environment setup block from the starter before handling any private material,
 and stop if it reports `STOP`. Do not run any of the starter's generation
 blocks. Collect the existing private values from the password manager,
 the deployed Compose environment and configuration, application and
-database configuration, ntfy, Beszel, and Paperless. Copy identities, hashes,
+database configuration, Beszel, and Paperless. Copy identities, hashes,
 tokens, database values, keys, and external integrations exactly; do not
 normalize, rotate, or regenerate them. A missing deployed value is a stop
 condition: recover it or resolve the migration source before proceeding.
@@ -688,7 +654,7 @@ Use `inventory/group_vars/all/vault.yml.example` as the schema, never as a
 source of values. Every key below is required.
 
 - Audiobookshelf: `vault_audiobookshelf_admin_username`, `vault_audiobookshelf_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager; preserve the pair unchanged.
-- Dozzle: `vault_dozzle_admin_username`, `vault_dozzle_admin_password`, `vault_dozzle_admin_password_hash`, `vault_dozzle_alert_relay_token`. Recover the administrator identity and clear password from the password manager/current Dozzle login, and recover its stored bcrypt hash from the deployed protected users file or the deployed Compose configuration. The clear password and hash must be the matching pair for that login; do not replace one independently. The hash is a 60-character bcrypt value: a `$2a$`, `$2b$`, or `$2y$` marker, a two-digit cost, and the bcrypt payload. The alert relay token is the shared secret Dozzle presents to the alert relay, 64 lowercase hexadecimal characters, and it is the one key here that a vault may omit entirely rather than declare empty. It is not read back from anywhere: `inventory/group_vars/all/main.yml` derives a working value from the ntfy Dozzle publish token listed further down, so a vault that never declared it converges unchanged, and a value declared in the vault wins over that derivation. Recover it from the deployed Dozzle dispatcher's `Authorization: Bearer` header or the relay's `ALERT_RELAY_TOKEN` if the vault declared one; otherwise leave it out and let the derivation supply it. The 64-zero stand-in in the example file is refused by the credential contract, the way the OpenSubtitles and ComicVine stand-ins are and unlike the other zero-filled placeholders here: it is a value that would otherwise work, because both ends of this secret are configured by the platform from this one entry, so a copied example would deploy a published secret in silence. Declare one only to rotate the relay independently of ntfy, and mint it with `openssl rand -hex 32` rather than reusing any ntfy token: Dozzle persists this value in its `/data` volume and serves it back in cleartext over its own API, which is why it stopped being the ntfy publish token in the first place (#172).
+- Dozzle: `vault_dozzle_admin_username`, `vault_dozzle_admin_password`, `vault_dozzle_admin_password_hash`, `vault_dozzle_alert_relay_token`. Recover the administrator identity and clear password from the password manager/current Dozzle login, and recover its stored bcrypt hash from the deployed protected users file or the deployed Compose configuration. The clear password and hash must be the matching pair for that login; do not replace one independently. The hash is a 60-character bcrypt value: a `$2a$`, `$2b$`, or `$2y$` marker, a two-digit cost, and the bcrypt payload. The alert relay token is the shared secret Dozzle presents to the alert relay, 64 lowercase hexadecimal characters, and it is required: the vault is its only source, nothing derives it, and a vault that omits it is refused by the credential contract, which names the key. It is not read back from anywhere. Recover it from the deployed Dozzle dispatcher's `Authorization: Bearer` header or the relay's `ALERT_RELAY_TOKEN`, which hold the same value. The 64-zero stand-in in the example file is refused by the credential contract, the way the OpenSubtitles and ComicVine stand-ins are and unlike the other zero-filled placeholders here: it is a value that would otherwise work, because both ends of this secret are configured by the platform from this one entry, so a copied example would deploy a published secret in silence. Mint a new one with `openssl rand -hex 32` only for a brand-new platform or a deliberate rotation; converging configures both ends from the new value. Keep it a credential of its own and never reuse another token for it: Dozzle persists this value in its `/data` volume and serves it back in cleartext over its own API, so whatever it holds is disclosed to anyone who can read that volume or that API (#172).
 - Immich: `vault_immich_admin_email`, `vault_immich_admin_password`, `vault_immich_db_name`, `vault_immich_db_username`, `vault_immich_db_password`. Recover the administrator identity from the current application and password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack, checking them against the database that owns the existing data. The email must contain a nonempty local and domain part. Database identifiers must start with a letter or underscore and then contain only letters, digits, underscores, or hyphens.
 - Jellyfin: `vault_jellyfin_admin_username`, `vault_jellyfin_admin_password`, `vault_jellyfin_opensubtitles_username`, `vault_jellyfin_opensubtitles_password`. The managed administrator username is exactly `Yonatan`; recover its matching password from the password manager. Recover the existing OpenSubtitles account credentials from the password manager or deployed Jellyfin plugin configuration. Preserve both credential pairs unchanged; the example and generated plaintext placeholders are not valid deployment values.
 - Komga: `vault_komga_admin_email`, `vault_komga_admin_password`. Recover the deployed administrator identity from the current application and its matching password from the password manager. The email must contain a nonempty local and domain part.
@@ -700,15 +666,14 @@ source of values. Every key below is required.
 - Trailarr: `vault_trailarr_api_key`, `vault_trailarr_admin_username`, `vault_trailarr_admin_password`, `vault_trailarr_admin_password_hash`. Recover the deployed administrator identity and its matching clear password from the password manager, and the hash from the deployed Compose environment or the application's own `/config/.env`; recover the API key from the same two places. Preserve the quadruple unchanged, and keep the password and the hash a matching pair. The hash is the value actually pushed: Trailarr compares `WEBUI_PASSWORD` with `bcrypt.checkpw` directly and nothing hashes it, so a clear password in that field does not fail loudly, it makes login permanently impossible. The clear password exists so an operator and the service contract can log in. The hash has the bcrypt shape described above; the API key is a 32-character lowercase hexadecimal string, and a key shorter than 32 characters is silently replaced by a random one. Left unmanaged, Trailarr accepts a published default administrator whose hash is a literal in its own source, and hands a full write session — download, delete, rename, and declare new connections — over the same Movies and Series trees Radarr and Sonarr own, to anyone who can reach the port. Rotating any of these in vault alone is not enough on a deployed Trailarr: the application's own `/config/.env` is sourced over the container environment at every start, so the platform reconciles that file and restarts the service, and a value changed there by hand is what the running process would otherwise keep.
 - Seerr: `vault_seerr_api_key`. Recover the service-owned API key from the deployed application's `settings.json`, under `main.apiKey`, or from the password manager. Preserve it unchanged. It is a 32-character lowercase hexadecimal string, distinct from the four Arr API keys and from SABnzbd's, Bindery's and Trailarr's. Seerr has **no administrator password of its own** and needs none: its owner row is created with a Jellyfin user type and no local password at all, from the Jellyfin administrator identity recorded above, and the second household identity is the single managed Jellyfin user. Rotating the Jellyfin password rotates both Seerr identities; there is nothing else to recover here. This key is genuinely one-way — the application reads `API_KEY` on every start, takes it on a virgin configuration, and overwrites a stored value that has drifted — so a key rotated inside the web interface is replaced by this one at the next container start and never has to be read back. Losing it costs nothing but a rotation; what cannot be replaced is `db/db.sqlite3`, because the existence of user row 1 is the only thing that closes Seerr's anonymous takeover window.
 - Pinchflat: `vault_pinchflat_admin_username`, `vault_pinchflat_admin_password`. Recover the deployed basic-authentication identity and its matching password from the password manager and the deployed Compose environment. Preserve the pair unchanged. This is Pinchflat's only access control: with either half empty the application serves its web interface, which queues and deletes YouTube library media, to anyone who can reach the port.
-- ntfy: `vault_ntfy_admin_user`, `vault_ntfy_admin_password`, `vault_ntfy_admin_password_hash`, `vault_ntfy_dozzle_password_hash`, `vault_ntfy_dozzle_token`, `vault_ntfy_beszel_password_hash`, `vault_ntfy_beszel_token`, `vault_ntfy_deploy_password_hash`, `vault_ntfy_deploy_token`, `vault_ntfy_seerr_password_hash`, `vault_ntfy_seerr_token`. Recover the administrator name and clear password from the password manager/current login, and recover the administrator hash, integration-user hashes, and access tokens from the deployed ntfy configuration and authentication data. The administrator password and hash must be the matching deployed pair. Preserve each Dozzle, Beszel, deploy or Seerr hash with that same integration identity's token; do not infer a clear password from a hash or create a replacement token. Each hash has the bcrypt shape described above. Each access token is `tk_` followed by 29 lowercase letters or digits, and the Dozzle, Beszel, deploy and Seerr tokens must all be distinct.
-- Pushover: `vault_pushover_user_key`, `vault_pushover_alerts_token`, `vault_pushover_containers_token`, `vault_pushover_deployments_token`, `vault_pushover_media_token`. This is one account at a third party, pushover.net, holding four applications, and none of these values is generated here. The user key is the account's own and is shared by all four; each token belongs to exactly one application, and each application is a separate channel on the phone with its own sound, quiet-hours treatment and history. Alerts carries host and platform problems: `roles/beszel` builds its notification webhook from it at priority 1, and the deployment poller and the weekly image prune send their failures there at priority 1 and the recoveries that close them at -1, through protected curl configs `roles/production_auto_deploy` and `roles/image_prune` render. Containers carries container lifecycle: `roles/dozzle` renders it into the alert relay's environment, and the per-service deployment reports in `roles/ntfy` POST with it from the controller at priority -1, as the weekly image prune does its reclaim at priority -1, which expires after a week. Deployments carries one message per release at priority 0, and nothing else: the deployment poller sends it through its protected curl config once a release has deployed and verified, and an operator's converge, which no poller follows, has `roles/ntfy` send a plain run summary instead. Media carries request events: `roles/seerr` stores it in Seerr's own Pushover agent, which sends from inside that container. Recover the user key from the account's dashboard, where it is displayed, and each token from its own application's page under that account; the password manager is the other place to look. A token that cannot be found can be regenerated from its application's page, which invalidates only that application's old token and every client configured with it. Preserve the values unchanged otherwise. All five are 30-character opaque strings, and the four tokens must all be distinct: a token pasted under a second key would deliver that publisher's messages through the wrong application with every check passing, because Pushover accepts the token either way. The credential contract checks only that each is present and is not its documented stand-in, because this repository cannot vouch for the format Pushover issues and a guessed shape rule would refuse a real value on every five-minute poller tick, with the fix locked inside the encrypted vault. The stand-ins in the example file and in the generated plaintext are refused for the reason the OpenSubtitles and ComicVine ones are: a publisher holding one sends messages Pushover rejects, and nothing on this platform observes the rejection. No single service owns these keys, which is why they are pinned in `GLOBAL_VAULT_KEYS` in `tests/policy_support.rb` rather than in a per-service expectations file, and why they live in `inventory/group_vars/all/vault_pushover.yml`. What losing each costs: the user key silences all four applications at once; the Alerts token silences Beszel's host threshold alerts and every poller and prune alert, which the poller reports on stderr naming the key rather than failing a deployment; the Containers token silences every container alert and the prune's reclaim notice, and fails the converge at the first recreated service's report, once Pushover refuses it; the Deployments token silences the poller's release messages, which it reports on stderr naming the key rather than failing anything, and fails an operator's converge at the run summary, after every service has already deployed; the Media token silences request events, which Seerr only logs. Beszel's credential check, which the poller runs once per deployed revision, asks Pushover about every token against the user key and names the one it refuses. Regenerating the affected token from its application's page, re-authoring it in the Pushover vault file named above and converging is the whole recovery, since nothing here is read back from any consumer.
+- Pushover: `vault_pushover_user_key`, `vault_pushover_alerts_token`, `vault_pushover_containers_token`, `vault_pushover_deployments_token`, `vault_pushover_media_token`. This is one account at a third party, pushover.net, holding four applications, and none of these values is generated here. The user key is the account's own and is shared by all four; each token belongs to exactly one application, and each application is a separate channel on the phone with its own sound, quiet-hours treatment and history. Alerts carries host and platform problems: `roles/beszel` builds its notification webhook from it at priority 1, and the deployment poller and the weekly image prune send their failures there at priority 1 and the recoveries that close them at -1, through protected curl configs `roles/production_auto_deploy` and `roles/image_prune` render. Containers carries container lifecycle: `roles/dozzle` renders it into the alert relay's environment, and the per-service deployment reports in `roles/deployment_bundle` POST with it from the controller at priority -1, as the weekly image prune does its reclaim at priority -1, which expires after a week. Deployments carries one message per release at priority 0, and nothing else: the deployment poller sends it through its protected curl config once a release has deployed and verified. An operator's converge, which no poller follows, sends no Deployments message. Media carries request events: `roles/seerr` stores it in Seerr's own Pushover agent, which sends from inside that container. Recover the user key from the account's dashboard, where it is displayed, and each token from its own application's page under that account; the password manager is the other place to look. A token that cannot be found can be regenerated from its application's page, which invalidates only that application's old token and every client configured with it. Preserve the values unchanged otherwise. All five are 30-character opaque strings, and the four tokens must all be distinct: a token pasted under a second key would deliver that publisher's messages through the wrong application with every check passing, because Pushover accepts the token either way. The credential contract checks only that each is present and is not its documented stand-in, because this repository cannot vouch for the format Pushover issues and a guessed shape rule would refuse a real value on every five-minute poller tick, with the fix locked inside the encrypted vault. The stand-ins in the example file and in the generated plaintext are refused for the reason the OpenSubtitles and ComicVine ones are: a publisher holding one sends messages Pushover rejects, and nothing on this platform observes the rejection. No single service owns these keys, which is why they are pinned in `GLOBAL_VAULT_KEYS` in `tests/policy_support.rb` rather than in a per-service expectations file, and why they live in `inventory/group_vars/all/vault_pushover.yml`. What losing each costs: the user key silences all four applications at once; the Alerts token silences Beszel's host threshold alerts and every poller and prune alert, which the poller reports on stderr naming the key rather than failing a deployment; the Containers token silences every container alert and the prune's reclaim notice, and fails the converge at the first recreated service's report, once Pushover refuses it; the Deployments token silences the poller's release messages, which it reports on stderr naming the key rather than failing anything; the Media token silences request events, which Seerr only logs. Beszel's credential check, which the poller runs once per deployed revision, asks Pushover about every token against the user key and names the one it refuses. Regenerating the affected token from its application's page, re-authoring it in the Pushover vault file named above and converging is the whole recovery, since nothing here is read back from any consumer.
 - Healthchecks: `vault_healthchecks_poller_ping_url`, `vault_healthchecks_verify_ping_url`. This is an account at a third party, healthchecks.io, and neither value is generated here. Each is the ping URL of one check under that account, shown on that check's own page: the first is the deployment poller's tick heartbeat, a check with a period of 5 minutes and a grace of 15; the second is the hourly verify verdict, a period of 1 hour and a grace of 2. Recover them from the account or the password manager; a check whose URL cannot be recovered is replaced by creating a new one with the same period and grace and converging. The token in each path is that check's whole authentication, so anyone holding it can mark the check up or down, which is why the rendered poller configuration carrying both is secret-bearing. The credential contract checks only that each is an https URL and that the two differ -- the documented stand-ins are not URLs, so that rule is what refuses them: healthchecks.io also serves slug paths and custom ping domains, and a guessed host or path rule would refuse a real URL on every five-minute poller tick, with the fix locked inside the encrypted vault. They must differ because one URL in both places collapses the tick heartbeat into the verify verdict, and every tick would then vouch for a verify that had stopped running. The pair belongs to no service -- `roles/production_auto_deploy` renders both into `deployer.json` -- so it is pinned in `GLOBAL_VAULT_KEYS` in `tests/policy_support.rb`, beside the Pushover keys. Losing it costs only the external alerts: the poller reads a missing or unusable URL as no ping, never as a reason to stop deploying, and both checks then alert on that silence.
 - Beszel: `vault_beszel_superuser_email`, `vault_beszel_superuser_password`, `vault_beszel_app_user_email`, `vault_beszel_app_user_password`, `vault_beszel_agent_key`, `vault_beszel_universal_token`, `vault_beszel_hub_private_key`. Recover both deployed hub identities from the current Beszel hub and their matching passwords from the password manager. Recover the universal token and public agent key from the deployed agent configuration, and recover the matching OpenSSH Ed25519 private key from the hub's protected key file. If the agent's public value is unavailable, derive its public half from the recovered private key as described above; if both sources exist, compare them. Never regenerate or replace the pair. Both emails need nonempty local and domain parts. The universal token must be a lowercase RFC 4122 UUID. The agent key contains exactly two whitespace-separated fields, the `ssh-ed25519` type and its base64 public key, with no comment.
 - Paperless: `vault_paperless_admin_username`, `vault_paperless_admin_password`, `vault_paperless_admin_email`, `vault_paperless_db_name`, `vault_paperless_db_username`, `vault_paperless_db_password`, `vault_paperless_django_secret_key`, `vault_paperless_gmail_account`, `vault_paperless_gmail_app_password`. Recover the administrator identity from the current Paperless application and its password from the password manager. Recover the database name, user, and password together from the deployed Compose environment and database stack; recover the Django signing key from the deployed application/Compose environment. Recover the Gmail account from the current Paperless mail configuration, and recover the matching Gmail app password from the password manager or protected deployed mail configuration. The names of the two mail objects are not credentials and are not recovered from here: `paperless_mail_account_name` and `paperless_mail_rule_name` label the account and rule this platform creates rather than authorising access to either, so they are operator policy in `inventory/group_vars/all/main.yml`, in plain sight and in version control. A recovery that restores this entry and finds them absent has restored a vault that cannot deploy Paperless, and the role's argument validation will name the missing one. Use the Google account only to confirm the named account and existing app-password registration; do not create a replacement. Preserve these as one deployed identity set. The email fields need nonempty local and domain parts; database identifiers follow the Immich rules. The Gmail credential must be an app password for the named account, handled according to [Google's app-password guidance](https://support.google.com/accounts/answer/185833), not the normal account password.
 - Nextcloud: `vault_nextcloud_admin_username`, `vault_nextcloud_admin_password`, `vault_nextcloud_db_name`, `vault_nextcloud_db_username`, `vault_nextcloud_db_password`, `vault_nextcloud_cache_password`. Recover the administrator identity from the deployed instance's user list and its matching password from the password manager; recover the database name, user and that user's password together from the deployed Compose environment, checking them against the cluster that owns the existing data. Recover the cache password from the same deployed environment. Preserve these as one deployed identity set. The database name and user follow the Immich identifier rules; the remaining four are opaque strings that must simply be present. **Unlike Seafile's, none of these is fixed permanently by the first converge, and that is a deliberate property of how the stack is built rather than a difference in the software.** Nextcloud's entrypoint consumes every install-time variable only while the volume holds no `version.php`, exactly as Seafile's does; what differs is that `roles/nextcloud` pushes the three database values on every read as `NC_db*` environment overrides, which Nextcloud consults before `config.php` and never writes back, and rebuilds the cache credential from the environment at every start. So rotating any of those four in the vault and converging is enough. The administrator password is the one with no environment path -- it is a row in `oc_users`, not a system setting -- so the role presents the vault value to `ocs/v2.php/cloud/user` and runs `occ user:resetpassword` only when the server answers 401. That is a repair rather than a push, and it means a rotated value takes effect on the next converge but drops every session and app token derived from the old one. **There is one setting here that genuinely cannot be repaired, and it is not a credential.** `NC_setup_create_db_user` must be false on the very first converge: without it Nextcloud's installer sees that the account it was given can create roles -- the Postgres image always grants `POSTGRES_USER` superuser -- discards it, and mints an `oc_admin` of its own with a generated password that is written into `config.php` and exists nowhere else. Recovering from that state means reading that password out of `config.php`, resetting the two system values with `occ config:system:set` and dropping the stray role by hand. `services/nextcloud/compose.yml` carries the full reasoning beside the variable. `config.php` is why Nextcloud's data root is on the runtime plaintext list in the security boundary: it holds the database password, the instance secret and the cache password in clear at mode 0640. Like every other published service here Nextcloud is plain HTTP -- nothing on this platform terminates TLS -- so the administrator password, every session cookie and the file content itself are readable to anything that can observe the traffic on the LAN; a client arriving over the mesh VPN is already encrypted by that transport. Treat a Nextcloud login made across a network you do not trust as a disclosed password.
 - Karakeep: `vault_karakeep_admin_email`, `vault_karakeep_nextauth_secret`, `vault_karakeep_meili_master_key`, `vault_karakeep_admin_password`. Recover the administrator email from the password manager, or from the account list in the running instance's administrator settings, and preserve it exactly: it is the login identity the first converge registered, and no converge renames it, so a changed value fails the next converge the same way a rotated password does. It is never mailed, because no SMTP is configured, but it must still be an address Karakeep accepts, in lowercase: a dotted domain ending in letters (`admin@nas` is refused by Karakeep on every converge), no leading dot or doubled dot in the local part, and no surrounding whitespace. Lowercase because Karakeep stores the address exactly as given and signs in case-sensitively, so a value that differs from the registered account only in case would register a second account. The other three are generated by this platform as 64 lowercase hexadecimal characters (`openssl rand -hex 32`); none belongs to a third party. Recover the first two from the deployed Compose environment (`NEXTAUTH_SECRET`, `MEILI_MASTER_KEY`) and preserve them unchanged. Rotating the session secret signs every browser and extension out; rotating the Meilisearch master key is harmless to data, because the index is `recovery: cache` and Karakeep rebuilds it. Recover the administrator password from the password manager. **It is registered once, not pushed:** Karakeep makes its first registered account the administrator and has no environment seeding, so `roles/karakeep` registers that email with this password on the converge that first starts the stack, with signups opened only while the application is published on 127.0.0.1, and closes them again before the role yields. Nothing resets it afterwards. If it is rotated here, or changed in the interface, the next converge's sign-in probe answers 401, the role counts Karakeep's accounts read-only, finds the existing one, and refuses without ever opening signups; nothing is repaired or registered, so change it back in one place or the other. Karakeep is plain HTTP like every published service here except Vaultwarden, so this password and every session cookie are readable to anything observing LAN traffic.
 - Vaultwarden: **no keys at all, and that is the design rather than an omission.** Every other entry above is a credential this platform authors and pushes outward. A password manager is the one service where that must not happen: master passwords are user-owned by construction, the server never learns them, and that zero-knowledge property is the entire reason to run it. So there is nothing here to recover, nothing to preserve unchanged, and `roles/vault_contract` must never grow a key for a master password. `tests/expected/vaultwarden.yml` therefore pins an empty key list — the only one on the platform that an implemented service is allowed — which `CREDENTIAL_FREE_SERVICES` in `tests/policy_support.rb` admits by name and in both directions — a service listed there that later *gains* a key fails as loudly as one that lost its last, so the exemption cannot quietly stop applying. See [The first value this platform deliberately does not own](#the-first-value-this-platform-deliberately-does-not-own) below.
-- Managed application users: one list per service, eight in all, each documented below under the variable that holds it and authored in that service's own vault file. Validation requires all eight and refuses any other variable whose name begins with vault_managed_, so a list left behind in a retired single mapping or a misspelt name fails the contract instead of going unread. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user; ntfy entries differ from the Dozzle and Beszel publishers.
+- Managed application users: one list per service, seven in all, each documented below under the variable that holds it and authored in that service's own vault file. Validation requires all seven and refuses any other variable whose name begins with vault_managed_, so a list left behind in a retired single mapping or a misspelt name fails the contract instead of going unread. Identity comparisons trim surrounding whitespace and ignore case. Every list entry needs a non-empty preserved password, must be unique within its service, and must not duplicate that service's primary administrator. Beszel entries also differ from the primary Beszel application user.
 
 ### The first value this platform deliberately does not own
 
@@ -873,33 +838,6 @@ Authored as `vault_managed_komga_users` in `inventory/group_vars/all/vault_komga
 credential; and `roles` is a non-empty unique list drawn from `ADMIN`,
 `FILE_DOWNLOAD`, `PAGE_STREAMING`, `KOBO_SYNC`, and `KOREADER_SYNC`. The administrator
 identity remains under the separate primary credential contract.
-
-#### ntfy managed users
-
-Authored as `vault_managed_ntfy_users` in `inventory/group_vars/all/vault_ntfy.yml`, beside that service's own credentials.
-`username` is the login identity; `password` is its preserved clear credential;
-`password_hash` is the matching bcrypt value; `role` is exactly `user` because
-managed entries are interactive nonadministrative accounts; `access` is a list
-of exact literal `topic` and `permission` mappings; and
-`tokens` is a unique list of owned `tk_` tokens, which may be empty. Supported
-permissions are `read-only`, `write-only`, `read-write`, and `deny`. Managed
-topics use only letters, digits, `_`, and `-`, with a maximum of 64 characters;
-wildcards, URL separators, whitespace, commas, and colons are not supported by
-this exact verifier. Usernames follow ntfy's native letters, digits, `_`, `-`,
-`.`, `+`, and `@` contract. Publisher and administrator identities remain under
-their separate noninteractive and primary-credential contracts. Managed
-identities cannot duplicate the administrator or the Dozzle, Beszel, and deploy
-publishers. The role treats the
-prior rendered ntfy `.env` as the declarative ownership record and confirms
-database identities with the pinned `ntfy user list` command before rendering a
-replacement. An owned identity must retain its exact prior hash; a same-name
-database identity outside that record is refused for automatic adoption. A
-server-config identity absent from that record is also refused, preventing ntfy
-from deleting state outside reviewed ownership. Removing an identity already
-present in the prior ownership record remains an explicit declarative removal
-from the reviewed desired configuration. If an existing authentication database
-has no prior ownership record, restore reviewed migration evidence instead of
-regenerating credentials.
 
 #### paperless_ngx managed users
 
@@ -1167,10 +1105,11 @@ repository vault remains encrypted:
   header in cleartext over the same API. What that header carries is the alert
   relay's own shared secret, so a copy of Dozzle's data directory is a copy of
   that secret and the whole directory stays classified here; the relay holds
-  the same value in its container environment, alongside the ntfy publish token
-  it needs to publish. Since #172 the two are different credentials: what
-  Dozzle stores and serves back authorizes nothing but a POST to the relay, and
-  the ntfy publish token is no longer reachable from anything Dozzle persists.
+  the same value in its container environment, alongside the Pushover
+  Containers token it needs to deliver. Since #172 the two are different
+  credentials: what Dozzle stores and serves back authorizes nothing but a POST
+  to the relay, and the delivery credential is not reachable from anything
+  Dozzle persists.
 - Configuration this platform seeds once and then leaves to the application,
   under the Docker root and mode 0600: SABnzbd's `sabnzbd/config/sabnzbd.ini`
   carries the administrator username, the administrator password, the API key
@@ -1264,50 +1203,110 @@ pass.
 
 ## Install reviewed vault for NAS
 
-Only after validation, private review, and the complete proof pass, copy the
-ciphertext into the repository location for NAS deployment. The destination
-gate prevents `install` from overwriting an existing repository vault. If one
-exists, stop and inspect it; decide explicitly whether to reuse it or back it up
-before beginning a separate replacement procedure.
+Only after validation, private review, and the complete proof pass, author the
+reviewed credentials into the repository. The deployment vault lives there and
+is committed: the NAS poller converges a released revision from a checkout, so a
+credential that is not in the checkout is not deployed.
+
+**The destination is not one file.** The repository carries one encrypted file
+per service under `inventory/group_vars/all/`, plus one for each third-party
+account, and which key belongs in which file is the rule
+[Add a new secret](#add-a-new-secret) already states: a key listed under
+vault_keys in `tests/expected/<service>.yml` belongs in that service's
+`inventory/group_vars/all/vault_<role>.yml` together with its managed-user list,
+the Pushover user key and its four application tokens in
+`inventory/group_vars/all/vault_pushover.yml`, and the healthchecks.io pair in
+`inventory/group_vars/all/vault_healthchecks.yml`.
+
+**Nothing is installed at `inventory/group_vars/all/vault.yml`.** That
+single-file path is retired, and `tests/policy_vault_test.rb` fails on a
+committed one: every key already has a per-service home, so a tracked copy there
+could only duplicate those keys, and Ansible reports no such duplicate — the
+file loaded later wins, silently. An untracked copy at that path is no better
+for the same reason, because the per-service files are in the checkout either
+way. Confirm the path is clear before authoring anything, and move rather than
+merge if it is not:
 
 ```sh
 if [ -e inventory/group_vars/all/vault.yml ] || \
    [ -L inventory/group_vars/all/vault.yml ]; then
-  printf 'STOP: repository vault already exists; inspect or reuse it: %s\n' \
+  printf 'STOP: retired single-file vault competes with the per-service files: %s\n' \
     inventory/group_vars/all/vault.yml >&2
-else
-  install -m 600 "$PLATFORM_VAULT_FILE" inventory/group_vars/all/vault.yml
 fi
 ```
 
-Only when the preceding block installs a new file, check its header and status:
+The reviewed external vault is not installed either. It stays at
+`$PLATFORM_VAULT_FILE`, backed up as recorded above, and remains the authoring
+and proof artifact: the Mac lane's `--vault-file` and the redacted validation's
+`-e @"$PLATFORM_VAULT_FILE"` read it directly, which is why a single external
+file remains valid while a second copy inside `group_vars` is not. The
+repository copy is authored from it one service at a time, through the encrypted
+editor:
 
 ```sh
-IFS= read -r vault_header < inventory/group_vars/all/vault.yml
-case "$vault_header" in
-  '$ANSIBLE_VAULT;'*) printf 'Encrypted repository vault header confirmed\n' ;;
-  *) printf 'STOP: repository vault is not encrypted: %s\n' \
-       inventory/group_vars/all/vault.yml >&2 ;;
-esac
-unset vault_header
-git status --short inventory/group_vars/all/vault.yml
+ansible-vault edit \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  inventory/group_vars/all/vault_<role>.yml
 ```
 
-That single-file vault stays untracked. Do not commit it: repository policy
-refuses a committed `inventory/group_vars/all/vault.yml`, because every key now
-has a home in a per-service vault file and a second copy would silently compete
-with those. Never commit the vault password, plaintext or decrypted vaults,
-rendered environment files, temporary private keys, application/database
-configuration containing secrets, or secret-bearing logs. For an
-existing-deployment recovery, `generate-secrets.yml` remains forbidden.
-
-Git preserves only the executable bit, not owner-only mode `0600`, and an
-untracked file copied or restored by hand can lose that mode just as easily.
-Before using the installed vault, restore its local permissions:
+A brand-new platform has a brand-new vault password, which is not the password
+the committed files were encrypted under, so that editor cannot open them.
+Replace each file instead: remove the one the checkout carries and create it
+again under the new password, the same `ansible-vault create` that
+[Add a new secret](#add-a-new-secret) gives a service with no vault file yet.
+Nothing is lost that the reviewed vault does not already hold.
 
 ```sh
-chmod 600 inventory/group_vars/all/vault.yml
+rm inventory/group_vars/all/vault_<role>.yml
+ansible-vault create \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  inventory/group_vars/all/vault_<role>.yml
 ```
+
+Move each value from the reviewed vault's own editor into the service file's.
+Do not decrypt either vault onto disk, into a terminal, or through a shell
+command to do it. Authoring the files one at a time is what the split costs
+today: the starter generator still writes a single plaintext file, so the
+distribution is the operator's to make.
+
+When every file has been authored, confirm each is encrypted and that the
+working tree holds only those files. The loop prints one line per file and
+nothing on stderr when they all pass, and `git status` is where an untracked
+single-file vault would appear:
+
+```sh
+for platform_vault_path in inventory/group_vars/all/vault_*.yml; do
+  IFS= read -r platform_vault_header < "$platform_vault_path"
+  case "$platform_vault_header" in
+    '$ANSIBLE_VAULT;'*) printf 'encrypted: %s\n' "$platform_vault_path" ;;
+    *) printf 'STOP: not encrypted: %s\n' "$platform_vault_path" >&2 ;;
+  esac
+done
+unset platform_vault_header
+unset platform_vault_path
+git status --short inventory/group_vars/all/
+```
+
+Then validate the whole credential set through an inventory, which is what binds
+group_vars to the play, and run the vault check the policy gate runs:
+
+```sh
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
+ruby tests/policy_vault_test.rb
+```
+
+Commit the per-service encrypted files. They are the one vault artifact that
+belongs in the repository, and committing them is what keeps automatic
+deployment and configured acquisition from being mutually exclusive; their
+ciphertext discloses nothing, for the reason this guide opens with. Git
+materializes them at the mode it preserves, which is correct for ciphertext,
+while owner-only mode 0600 stays the rule for the external vault and the
+password file that are never committed. Never commit the vault password, a
+plaintext or decrypted vault, rendered environment files, plaintext credentials,
+application or database configuration containing secrets, or secret-bearing
+logs. For an existing-deployment recovery, `generate-secrets.yml` remains
+forbidden.
 
 ## Add a new secret
 
@@ -1330,15 +1329,6 @@ contract before editing the encrypted value:
   `tests/generate-ephemeral-vault.sh`. Keep those generator, template, and
   ephemeral-vault changes together so a newly generated platform satisfies the
   same contract.
-- When the value carries a working default in
-  `inventory/group_vars/all/main.yml` rather than being authored in the vault
-  alone, name it in the ephemeral generator's `omittable_credential_keys` as
-  well. Every existing vault omits a key on the converge after it is added, and
-  a fixture that writes it cannot catch a bug about its absence; the generator's
-  `--self-test` validates the omitting vault through the same group_vars layering
-  the poller uses, with the default stripped as a negative control.
-  `tests/policy_vault_test.rb` requires the name, so a default with no way to
-  omit it fails the gate rather than the NAS.
 - Update `docs/secrets.md` with the value's source, format, relationships,
   recovery rule, and any applicable generation recipe.
 
@@ -1510,11 +1500,9 @@ and another pair for the weekly image prune, `pushover-prune-alerts.curl` and
 and carries the Pushover user key and exactly one application's token, so the
 scripts' command lines hold only the message. The prune's are separate paths on
 purpose: one path written by two roles would have each role claim the other's
-change on every converge. `ntfy.curl` and `ntfy-prune.curl` are still rendered
-beside them, mode 0600 and carrying the ntfy deploy token as a bearer header,
-although neither script reads them any more: the install play runs inside a tick
-of the poller it replaces, and that process reports the end of its own tick
-through the file it started with. They go when ntfy does. Alongside them,
+change on every converge. Nothing renders `ntfy.curl` or `ntfy-prune.curl`
+any more; copies an earlier release left in that directory are the operator's
+to delete. Alongside the Pushover configs,
 `image-prune.json` is non-secret configuration and `deployer.json` no longer
 is: since #606 it carries the two healthchecks.io ping URLs, whose path tokens
 are those checks' whole authentication. It is mode 0600 like the curl configs,

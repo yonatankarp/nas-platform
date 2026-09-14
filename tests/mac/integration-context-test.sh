@@ -65,7 +65,7 @@ fi
 # canonical production names must no longer appear.
 integration_names=$(PLATFORM_PROOF_PLATFORM=integration mac_target_container_names proof)
 mac_names=$(PLATFORM_PROOF_PLATFORM=mac mac_target_container_names proof)
-for expected_name in ntfy beszel beszel-agent-intel beszel-agent-portable \
+for expected_name in beszel beszel-agent-intel beszel-agent-portable \
     beszel-socket-proxy dozzle-alert-relay dozzle dozzle-socket-proxy audiobookshelf \
     komga jellyfin immich-server immich-machine-learning immich-redis immich-postgres \
     paperless-redis paperless-postgres paperless-webserver paperless-gotenberg \
@@ -77,7 +77,7 @@ for expected_name in ntfy beszel beszel-agent-intel beszel-agent-portable \
     exit 1
   }
 done
-[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 32 ] || {
+[ "$(printf '%s\n' "$integration_names" | wc -l | tr -d ' ')" -eq 31 ] || {
   printf '%s\n' 'integration-context-error: integration target identity set differs' >&2
   exit 1
 }

@@ -44,7 +44,7 @@ production_auto_deploy_locale_candidates:
   - en_US.utf8
   - C.utf8
 production_auto_deploy_verify_tags: >-
-  platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep
+  platform_verify_media_acquisition_foundation,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep
 # Checks only the hourly --verify run selects, after the deploy list and each in
 # an invocation and verdict record of its own, so neither masks the other. They
 # must never fail a deployment. platform_verify_mdraid is one (#609): a degraded
@@ -62,11 +62,6 @@ production_auto_deploy_state_root: "{{ production_auto_deploy_share_root }}/stat
 production_auto_deploy_log_root: "{{ production_auto_deploy_share_root }}/logs"
 production_auto_deploy_config_root: "{{ production_auto_deploy_home }}/.config/nas-platform"
 production_auto_deploy_config_path: "{{ production_auto_deploy_config_root }}/deployer.json"
-# Rendered, unchanged, until stage 4 of #558 deletes ntfy. The poller no longer
-# reads it, but a poller process started from the previous revision still does:
-# the install play runs inside that process's own tick, and anything it reports
-# afterwards goes through the file it loaded its configuration for (#327).
-production_auto_deploy_notifier_path: "{{ production_auto_deploy_config_root }}/ntfy.curl"
 # One protected curl config per Pushover application, each carrying only its own
 # application's token. The Deployments config has no poller sender until the
 # release message lands; it is rendered now so that change needs no role change.

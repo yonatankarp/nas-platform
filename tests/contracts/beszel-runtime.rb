@@ -1,7 +1,7 @@
 #!/usr/bin/env ruby
 # The runtime half of the Beszel service contract: everything that needs a
-# served PocketBase hub, a disposable ntfy, an encrypted vault and the
-# persisted telemetry the agents write.
+# served PocketBase hub, an encrypted vault and the persisted telemetry the
+# agents write.
 #
 # usage: beszel-runtime.rb MODE
 #
@@ -12,6 +12,7 @@
 require "json"
 require "net/http"
 require "open3"
+require "socket"
 require "uri"
 require "yaml"
 require "timeout"
@@ -19,8 +20,8 @@ require File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "tests/contracts/supp
 
 MODE = ARGV.fetch(0)
 HUB = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
-NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
-# The address Beszel reaches ntfy on is whatever the deployment was told to use,
+# The address the hub container reaches this program's notification recorder on
+# is whatever the deployment was told to use,
 # not the loopback address this contract connects to, and it is not a fixed name:
 # only Docker Desktop supplies host.docker.internal, so a Linux daemon gets an
 # address instead. Follow the precedence inventory/local.yml uses, and fall back
@@ -42,8 +43,8 @@ WRONG_OWNER_EMAIL = "wrong-owner-fixture@example.invalid"
 DUPLICATE_EVIDENCE = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "beszel-duplicate-ids.txt")
 # The two budgets this program can spend waiting, and the only two numbers in it
 # a caller may need to lower. Both defaults are the deployment's: ninety seconds
-# for a real agent to write a 1m telemetry sample, fifteen for a real ntfy to
-# receive a published notification. They are environment inputs for the reason
+# for a real agent to write a 1m telemetry sample, fifteen for the hub's test
+# notification to reach the recorder the notify mode listens with. They are environment inputs for the reason
 # tests/contracts/seerr-runtime.rb's READY_TIMEOUT_SECONDS is (#319): a caller
 # that must reach the refusal these deadlines guard has to sit out the whole
 # budget to get there, and tests/beszel_contract_test.rb has one such row per
@@ -91,16 +92,27 @@ rescue SystemCallError, Timeout::Error => error
   fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
 end
 
-def request_text(method, uri, basic: nil, expected: [200])
-  request = Net::HTTP.const_get(method.capitalize).new(uri)
-  request.basic_auth(*basic) if basic
-  response = Net::HTTP.start(uri.host, uri.port, open_timeout: 5, read_timeout: 15) do |http|
-    http.request(request)
+# Reads one request and answers it, for the notify mode's recorder. Copied from
+# tests/contracts/dozzle-runtime.rb rather than shared, as every contract carries
+# its own: shoutrrr's generic service sends one POST with a Content-Length and a
+# text/plain body, and nothing here has to be a general HTTP implementation.
+def read_recorded_request(socket)
+  request_line = socket.gets
+  return nil if request_line.nil?
+
+  headers = {}
+  while (line = socket.gets)
+    break if line.strip.empty?
+
+    name, value = line.split(":", 2)
+    headers[name.to_s.strip.downcase] = value.to_s.strip
   end
-  fail_contract("#{method.upcase} #{uri.path} returned HTTP #{response.code}") unless expected.include?(response.code.to_i)
-  response.body
-rescue SystemCallError, Timeout::Error => error
-  fail_contract("#{method.upcase} #{uri.path} failed: #{error.class}")
+  length = Integer(headers.fetch("content-length", "0"), 10)
+  body = length.positive? ? socket.read(length).to_s : ""
+  socket.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+  { "method" => request_line.split(" ", 3)[0], "body" => body }
+rescue StandardError
+  nil
 end
 
 def endpoint(base, path)
@@ -272,48 +284,56 @@ when "notify"
   # still prove. Beszel's production webhook is Pushover, and no proof that ends
   # at a real Pushover account can run here: it would leave the platform's
   # notification budget at the mercy of a test loop and would need an account
-  # this harness has no way to hold. So this mode sends an ntfy URL of its own
-  # and asserts it arrives, which demonstrates that the hub's shoutrrr dispatch
-  # works end to end -- authentication, the test-notification route, delivery to
-  # a real listener. It says nothing about whether the stored Pushover URL is
+  # this harness has no way to hold. So this mode hands the hub a shoutrrr
+  # generic webhook pointing at a recorder in this process and asserts the POST
+  # arrives, which demonstrates that the hub's shoutrrr dispatch works end to
+  # end -- authentication, the test-notification route, delivery to a real
+  # listener. It says nothing about whether the stored Pushover URL is
   # deliverable. The verify mode below is what compares the stored value against
   # the vault; nothing anywhere delivers through it.
-  expected_url = "ntfy://:#{vault.fetch('vault_ntfy_beszel_token')}@#{CALLBACK_HOST}:#{NTFY.port}/nas-critical?scheme=http"
-  ntfy_auth = [vault.fetch("vault_ntfy_admin_user"), vault.fetch("vault_ntfy_admin_password")]
-  # The anti-replay poll below anchors on an existing message. It used to get one by
-  # accident: the ntfy role publisher verification left "provisioning verified for
-  # beszel" in this topic history. That publish now refuses caching so a healthy
-  # converge leaves nas-critical empty, which left this contract with no anchor. The
-  # baseline is established here instead of depending on another role side effect.
-  request("post", endpoint(NTFY, "/"), basic: ntfy_auth,
-          body: { topic: "nas-critical", message: "beszel contract anti-replay baseline" })
-  latest = request_text("get", endpoint(NTFY, "/nas-critical/json?poll=1&since=latest"), basic: ntfy_auth)
-  latest_messages = latest.lines.filter_map do |line|
-    JSON.parse(line)
-  rescue JSON::ParserError
-    nil
+  #
+  # The recorder is the dozzle contract's, and reachable for the same reason:
+  # the integration controller runs with --network host and the Mac lane runs
+  # this program on the Mac, so a socket here is a socket on the Docker host.
+  # Its port is chosen at runtime because the URL travels in the request body.
+  # A fresh listener per run is also why no anti-replay baseline is needed any
+  # more: it cannot hold a message from before it existed.
+  #
+  # The URL form is read from the pinned sources rather than guessed. Beszel
+  # 0.19.0 vendors nicholas-fedor/shoutrrr v0.19.0, whose generic service POSTs
+  # over https unless `disabletls` is set (generic_config.go: WebhookURL), sends
+  # the message as a text/plain body when no template is given, and returns an
+  # error for a dial failure or a status of 400 or more -- which the hub reports
+  # as a string in `err` (internal/alerts/alerts_api.go: SendTestNotification).
+  # Without a template Beszel prepends the title "Test Alert" and appends its
+  # app URL, so the body is matched on the message it carries rather than whole.
+  # A wrong host, port or scheme therefore fails at `err`, and a hub that says
+  # it sent without sending fails at the recorder.
+  begin
+    recorder = TCPServer.new("0.0.0.0", 0)
+  rescue SystemCallError => error
+    fail_contract("notification recorder could not listen: #{error.class}")
   end
-  baseline_id = latest_messages.reverse.find { |message| message["event"] == "message" }&.fetch("id", nil)
-  fail_contract("disposable ntfy has no baseline message for anti-replay polling") unless baseline_id
-
+  recorded = Queue.new
+  Thread.new do
+    loop do
+      socket = recorder.accept
+      record = read_recorded_request(socket)
+      recorded << record if record
+      socket.close rescue nil
+    end
+  end
+  notification_url = "generic://#{CALLBACK_HOST}:#{recorder.addr[1]}/beszel-contract?disabletls=yes"
   notification = request("post", endpoint(HUB, "/api/beszel/test-notification"),
-                         token: app_auth.fetch("token"), body: { url: expected_url })
+                         token: app_auth.fetch("token"), body: { url: notification_url })
   fail_contract("Beszel test notification reported delivery failure") unless notification["err"] == false
 
+  received = []
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS
   loop do
-    query = URI.encode_www_form(poll: 1, since: baseline_id)
-    response = request_text("get", endpoint(NTFY, "/nas-critical/json?#{query}"),
-                            basic: ntfy_auth)
-    messages = response.lines.filter_map do |line|
-      JSON.parse(line)
-    rescue JSON::ParserError
-      nil
-    end
-    break if messages.any? do |message|
-      message["id"] != baseline_id && message["message"] == "This is a notification from Beszel."
-    end
-    fail_contract("Beszel test notification did not reach disposable ntfy") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    received << recorded.pop until recorded.empty?
+    break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") }
+    fail_contract("Beszel test notification did not reach the contract's recorder") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
     sleep 1
   end
 else

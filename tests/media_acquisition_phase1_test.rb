@@ -305,8 +305,14 @@ check(failures, !operator_guide.empty?, "Phase 1 operator guide must exist")
 {
   /media_usenet_enabled: true.*inventory\/group_vars\/nas_hosts/m =>
     "guide must name the inventory value that activates a target",
-  /ansible-vault edit inventory\/group_vars\/all\/vault\.yml/ =>
-    "guide must put provider and preference choices in the vault",
+  # The per-service split (#611, #612) retired inventory/group_vars/all/vault.yml,
+  # which this pattern named until #651 -- the three declarations belong in the
+  # vault file of the service that reads them, and every one of them is read by
+  # the Arr roles. The rule is unchanged: the guide must send them to an
+  # encrypted vault file rather than to the plaintext service_arr.yml that
+  # carries the empty defaults.
+  /ansible-vault edit inventory\/group_vars\/all\/vault_arr\.yml/ =>
+    "guide must put provider and preference choices in the Arr service vault file",
   /never enter the repository/i =>
     "guide must say why committing the encrypted vault is safe",
   /media_acquisition_adopt_existing_libraries=true.*one convergence/im =>

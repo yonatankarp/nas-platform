@@ -66,11 +66,9 @@ private keys, password hashes, rendered environment files, or application logs.
       a link, so chrome fetches nothing, and confirm it is still there and
       searchable after recreation. Confirm the administrator settings report
       the search engine and browser connected.
-- [ ] ntfy: confirm anonymous denial and authenticated disposable messages.
-- [ ] Beszel: inspect metrics/thresholds and send a disposable ntfy event by
-      typing that ntfy URL into the test-notification field. Do not test the
-      stored webhook: it is Pushover, and this lane's vault holds stand-ins for
-      the account it names, so it can only refuse.
+- [ ] Beszel: inspect metrics/thresholds. Do not test the stored webhook: it
+      is Pushover, and this lane's vault holds stand-ins for the account it
+      names, so it can only refuse.
 - [ ] Dozzle: inspect logs and event rules; confirm shell/actions/MCP are off.
       Do not send a test alert by hand: the relay publishes to Pushover, this
       lane's vault holds stand-ins for that account, and the lane redirects the

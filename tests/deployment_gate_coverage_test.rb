@@ -7,7 +7,7 @@
 # an integration lane that converges it, a Mac lifecycle that recreates and
 # verifies it -- were held only by pairwise agreement between hand-maintained
 # literals: tests/ci/suites.conf against SERVICE_NAMES in
-# tests/ci/classify_changes.rb, against the LANES/NTFY_LANES/expected-output
+# tests/ci/classify_changes.rb, against the LANES/expected-output
 # blocks in tests/ci/classify_changes_test.rb, against INTEGRATION_SUITES in
 # tests/ci/workflow_test.rb. Every one of those agrees with its neighbour and
 # none of them is anchored to services/manifest.yml, so a service that was never
@@ -21,10 +21,12 @@
 # tests/gate_manifest_coverage_test.rb all green. The one objection came from
 # tests/ci/classify_changes_test.rb's harness-closure check, and it was
 # incidental: it fires because tests/expected/nextcloud.yml is reached from a
-# contract, so a service with no contract escapes it. ntfy is the control that
-# proved so -- it was implemented, deployed on every lane, and
-# `ClassifyChanges.suites(classify(["tests/expected/ntfy.yml"]))` was `[]` with
-# every check green. (#558 stage 4a has since turned ntfy's own gate off.)
+# contract, so a service with no contract escapes it. The alerting sink #558
+# removed was the control that proved so -- implemented, deployed on every lane,
+# and its expectations file classified to no suite with every check green. No
+# live service reproduces that today: vaultwarden and karakeep have no contract
+# but each has a lane that classification reaches, so the hole is argued from
+# that history rather than demonstrated on this tree.
 #
 # THE SUBJECT IS THE GATE, NOT THE MANIFEST, and that distinction is the whole
 # design. Requiring a lane of every implemented service would forbid the
@@ -43,15 +45,16 @@
 #      means "CI has deployed this and watched it come up": tests/integration.sh
 #      asserts of every lane that the run converges, that a second run changes
 #      nothing, and that --check --diff works. Membership is by *tag* rather than
-#      by a lane of its own, because ntfy never had a lane and needed none -- every
-#      service lane converged it, since each service role reported its deployment
-#      there until #558 moved the reports and turned ntfy off. Deriving the requirement from the tags rather than from lane names
-#      is what lets ntfy pass without an exemption list, and an exemption list is
-#      the defect this file exists to remove.
+#      by a lane of its own, because a service every lane converges as a shared
+#      dependency needs no lane of its own -- the alerting sink #558 removed was
+#      one, converged by every service lane until then. Deriving the requirement
+#      from the tags rather than from lane names is what lets such a service pass
+#      without an exemption list, and an exemption list is the defect this file
+#      exists to remove.
 #
 #   2. The Mac lifecycle accounts for it. tests/mac/lib.sh builds every coverage
 #      roster as `mac_registry_services + MAC_UNREGISTERED_SERVICES`, and
-#      MAC_UNREGISTERED_SERVICES is the literal string 'ntfy' with nothing tying
+#      MAC_UNREGISTERED_SERVICES is the literal string 'vaultwarden' with nothing tying
 #      either half to the manifest. Asserting that roster against the gate-on
 #      services closes it in both directions: a gate-on service missing from both
 #      halves fails, and a name in either half that is not an implemented service
@@ -70,8 +73,8 @@
 #     the service roster in both directions already.
 #   - A contract of its own. tests/policy_test.rb requires every implemented
 #     service to carry `role_verification || contract_verification`, and
-#     demanding a registry row specifically would fail ntfy, which has neither a
-#     contract nor any need of one -- and would therefore need the exemption list
+#     demanding a registry row specifically would fail vaultwarden, which has no
+#     contract and verifies in its role -- and would therefore need the exemption list
 #     this file is here to delete. Requirement 2 above reaches the registry
 #     anyway: a gate-on service absent from MAC_UNREGISTERED_SERVICES has to be
 #     registered to satisfy it.
@@ -192,9 +195,7 @@ ROOT = File.expand_path("..", __dir__)
 # count, 3 to 4. SUBJECT_FLOOR moved by its RULE, 18 - 4 = 14, even though 16
 # subjects exist today: it moved because a gate VARIABLE appeared, not because a
 # stack went dark, and the rule is what lets the next gate go dark without a
-# guard fighting it. Do not "correct" it to 15 or 16. ntfy stays in the Mac
-# roster and in every lane's tags because the service is still implemented until
-# stage 4c removes it, at which point every one of these is re-derived again.
+# guard fighting it. Do not "correct" it to 15 or 16.
 #
 # THE SEVENTH TIME WAS KARAKEEP TURNING ON, on top of that. #551's second chunk
 # flipped Karakeep's gate and rebased onto ntfy's, so the numbers were read off
@@ -204,13 +205,23 @@ ROOT = File.expand_path("..", __dir__)
 # because Karakeep joined MAC_UNREGISTERED_SERVICES. SUBJECT_FLOOR stays 14 by
 # its rule, 18 - 4, although 17 subjects converge: a lit gate is not a reason to
 # raise it, for the same reason a dark one was not a reason to lower it.
-IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
-GATE_VARIABLE_FLOOR = 4      # nextcloud, vaultwarden, karakeep and ntfy _deployment_enabled
-SUBJECT_FLOOR = 14           # 18 implemented, of which at most the 4 gated ones may be dark
-MAC_ROSTER_FLOOR = 18         # 15 registered contracts plus ntfy, vaultwarden and karakeep
+#
+# THE EIGHTH TIME IS THE REMOVAL THE SIXTH ANTICIPATED. #558 stage 4c deleted
+# ntfy after Karakeep was lit, and every floor was again set to an impossible
+# value on the merged tree and the check run: 17 implemented, 3 gate variables,
+# 17 subjects, a 17-name Mac roster, 17 tagged rows, 17 lane tags, 31 site tags.
+# IMPLEMENTED_FLOOR, GATE_VARIABLE_FLOOR, MAC_ROSTER_FLOOR and LANE_TAG_FLOOR each
+# fell by one, and SITE_TAG_FLOOR by one because `monitoring` is still Beszel's
+# and Dozzle's. The tagged rows did not move, because ntfy never had a row of its
+# own. SUBJECT_FLOOR did not move either, by its rule: a gate variable and an
+# implemented service left together, and 17 - 3 is the same 14 that 18 - 4 was.
+IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
+GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and karakeep _deployment_enabled
+SUBJECT_FLOOR = 14           # 17 implemented, of which at most the 3 gated ones may be dark
+MAC_ROSTER_FLOOR = 17         # 15 registered contracts plus vaultwarden and karakeep
 TAGGED_LANE_FLOOR = 17        # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 18           # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 32           # the role tags site.yml declares
+LANE_TAG_FLOOR = 17           # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 31           # the role tags site.yml declares
 
 failures = []
 
@@ -441,8 +452,8 @@ gate_names.each do |name|
   # converging on the strength of a role default nobody edited.
   #
   # Stated repo-wide rather than per-service because the tree already satisfies
-  # it in full -- nextcloud, vaultwarden, karakeep and ntfy are the four gates
-  # that exist, and all four ship false -- and because the harm is worst exactly where a per-service
+  # it in full -- nextcloud, vaultwarden and karakeep are the three gates
+  # that exist, and all three ship false -- and because the harm is worst exactly where a per-service
   # check is most likely to be missing. AdGuard used to be the only one carrying
   # its own assertion, in tests/contracts/adguard-static.rb, and #577 removed
   # that contract with the service; neither survivor has a static contract to

@@ -4,10 +4,6 @@
 # recorder the relay publishes at in a lane, and it owns every fixture mode the
 # integration lane and the Mac drift hooks dispatch through.
 #
-# Disposable ntfy is still reached, for one thing only: the dozzle publisher's
-# ntfy account must still be write-only, which is an ntfy ACL rather than
-# anything about the relay's transport. The relay itself no longer touches it.
-#
 # Reads the encrypted vault itself and overwrites the plaintext in place, so
 # nothing it holds reaches a diagnostic, an artifact or the environment. The
 # artifacts it does write under PLATFORM_REPORT_ROOT are opaque API identifiers
@@ -23,7 +19,6 @@ require "yaml"
 
 MODE = ARGV.fetch(0)
 DOZZLE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_DOZZLE_PORT'), 10)}")
-NTFY = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_NTFY_PORT'), 10)}")
 # The address Dozzle dispatches to is whatever the deployment was told to use,
 # not the loopback address this contract connects to, and it is not a fixed name:
 # only Docker Desktop supplies host.docker.internal. Follow the precedence
@@ -52,15 +47,18 @@ def fail_contract(message)
   exit 1
 end
 
-# The throwaway fixtures below run `/bin/sh` under the ntfy image, chosen only
-# because the platform has already pulled it. Restating the pin here would make
-# that false the moment ntfy is bumped -- and Renovate does not read this tree,
-# so nothing would say so. Read the one pin the deployment declares instead.
-def deployed_ntfy_image
-  path = ENV.fetch("PLATFORM_CONTRACT_NTFY_COMPOSE")
-  fail_contract("services/ntfy/compose.yml is unavailable") unless File.file?(path)
-  pin = File.read(path)[%r{^\s*image:\s*(\S+/ntfy:\S+@sha256:[0-9a-f]{64})\s*$}, 1]
-  fail_contract("services/ntfy/compose.yml declares no pinned ntfy image") unless pin
+# The throwaway fixtures below run `/bin/sh` under the alert relay's Alpine
+# Python image, chosen only because a lane that converged Dozzle has already
+# pulled it. Restating the pin here would make that false the moment the relay's
+# image is bumped -- and Renovate does not read this tree, so nothing would say
+# so. Read the one pin the deployment declares instead. The prefix is the one
+# tests/contracts/dozzle-stack.rb requires of the relay, so the match cannot
+# land on the Dozzle or socket-proxy image in the same file.
+def deployed_fixture_image
+  path = ENV.fetch("PLATFORM_CONTRACT_DOZZLE_COMPOSE")
+  fail_contract("services/dozzle/compose.yml is unavailable") unless File.file?(path)
+  pin = File.read(path)[%r{^\s*image:\s*(docker\.io/library/python:\S+@sha256:[0-9a-f]{64})\s*$}, 1]
+  fail_contract("services/dozzle/compose.yml declares no pinned alert relay image") unless pin
   pin
 end
 
@@ -197,7 +195,7 @@ end
 # Pushover account can run in a lane: the messages reach somebody's phone and
 # the API has nothing to read them back from. So the lane redirects
 # dozzle_pushover_api_url at this recorder and the notify mode asserts the form
-# the relay POSTed -- which keeps every property the ntfy readback was proving
+# the relay POSTed -- which keeps every property the earlier readback was proving
 # (the exact presentation, exactly one recovery, no false recovery on a
 # startup-healthy container, and no event envelope leaking into message text)
 # rather than trading them for a transport change.
@@ -207,7 +205,7 @@ end
 # integration harness runs its controller with --network host, and the Mac lane
 # runs this program on the Mac itself, so in both a socket opened here is a
 # socket on the host and a service container reaches it at CALLBACK_HOST -- the
-# same path the relay used to reach disposable ntfy.
+# same path the relay used to reach its earlier disposable server.
 PUSHOVER_RECORDER_PORT = Integer(ENV.fetch("PLATFORM_DOZZLE_PUSHOVER_PORT"), 10)
 PUSHOVER_RECORDER_URL =
   "http://#{CALLBACK_HOST}:#{PUSHOVER_RECORDER_PORT}/1/messages.json".freeze
@@ -602,37 +600,23 @@ fail_contract("managed dispatcher name differs") unless dispatcher["name"] == "n
 fail_contract("managed dispatcher type differs") unless dispatcher["type"] == "webhook"
 fail_contract("managed dispatcher URL differs") unless dispatcher["url"] == expected_url
 fail_contract("managed dispatcher template differs") unless dispatcher["template"] == expected_template
-# Read straight out of the vault rather than through the inventory layer, and
-# that is a trade rather than an oversight (#420). This lane is the only one
-# whose tags guarantee a dozzle converge, and the vault it converges declares
-# this key, so the equality below covers the operator's rotation path: a token
-# authored in the vault beating the derivation in
-# inventory/group_vars/all/main.yml and reaching Dozzle's own dispatcher (#172).
-# One run converges one vault, so teaching this to read the derived value would
-# let the lane cover the omitting state only *instead of* that one -- a trade,
-# not an addition -- and would put a third consumer on a derivation deliberately
-# spelled once.
-#
-# Omission is covered elsewhere, not uncovered. tests/generate-ephemeral-vault.sh
-# --self-test generates a vault that never declares this key and validates it
-# through the real group_vars layering, with a negative control that must refuse
-# by name once the derivation is stripped (#394); tests/policy_vault_test.rb
-# pins the derivation's form and checks its hexdigest against the rule the key
-# carries. #295's warning -- that a fixture supplying a credential cannot catch
-# a bug about its absence -- is answered by that fixture, because it omits. What
-# a converge would add on top is nil: both ends read one bare variable
-# (roles/dozzle/defaults/main.yml and roles/dozzle/templates/env.j2), nothing
-# downstream reads where its value came from, and the `| default(...)` or
-# hoisted fact that would change that fails the expression-text checks in
+# Read straight out of the vault rather than through the inventory layer,
+# because the vault is the relay token's only home: it is authored there and
+# required there, with nothing in inventory deriving it (#558). So the equality
+# below is the operator's rotation path end to end -- the token in the vault
+# reaching Dozzle's own dispatcher (#172). Both ends of the role read one bare
+# variable (roles/dozzle/defaults/main.yml and roles/dozzle/templates/env.j2),
+# and the `| default(...)` or hoisted fact that would put a second source
+# between them fails the expression-text checks in
 # tests/contracts/dozzle-alerts.rb and tests/contracts/dozzle-stack.rb.
 fail_contract("managed dispatcher headers differ") unless
   dispatcher["headers"] == { "Authorization" => "Bearer #{vault.fetch('vault_dozzle_alert_relay_token')}" }
 # The equality above is the whole of it, and deliberately so. A second check for
-# 'and it is not the ntfy publish token' could never fail once this one passed:
-# the vault contract gives the two credentials shapes that cannot collide, so
-# such a check would pass without checking anything. What the header must not be
-# is enforced where it can actually differ -- in the rendered environment file,
-# by tests/contracts/dozzle-stack.rb.
+# 'and it is not some other publisher's token' could never fail once this one
+# passed: an exact equality with the relay's own secret already excludes every
+# other value, so such a check would pass without checking anything. What the
+# header must not be is enforced where it can actually differ -- in the rendered
+# environment file, by tests/contracts/dozzle-stack.rb.
 fail_contract("expected exactly four alert rules") unless rules.length == 4
 
 ALERTS.each do |name, (expression, cooldown)|
@@ -645,15 +629,10 @@ ALERTS.each do |name, (expression, cooldown)|
     rule.dig("dispatcher", "id").to_s == dispatcher["id"].to_s
 end
 
-publisher = vault.fetch("vault_ntfy_dozzle_token")
-%w[nas-critical nas-containers].each do |topic|
-  request("get", endpoint(NTFY, "/#{topic}/json?poll=1"), bearer: publisher, expected: [403])
-end
-
 if MODE == "notify"
   pushover_token = vault.fetch("vault_pushover_containers_token")
   pushover_user_key = vault.fetch("vault_pushover_user_key")
-  image = deployed_ntfy_image
+  image = deployed_fixture_image
   health_fixture = "dozzle_contract_health_#{SecureRandom.hex(6)}"
   startup_fixture = "dozzle_contract_startup_#{SecureRandom.hex(6)}"
   exit_fixture = "dozzle_contract_exit_#{SecureRandom.hex(6)}"
@@ -705,7 +684,7 @@ if MODE == "notify"
       fail_contract("relay published to an endpoint other than the messages API") unless
         unhealthy["path"] == "/1/messages.json" &&
         unhealthy["content_type"].to_s.start_with?("application/x-www-form-urlencoded")
-      # A credential in a header is the ntfy shape carried across, and it would
+      # A credential in a header is the earlier transport's shape carried across, and it would
       # put the application token somewhere nothing on the far end reads.
       fail_contract("relay sent a credential in an Authorization header") unless
         unhealthy["authorization"].nil?
@@ -716,7 +695,7 @@ if MODE == "notify"
         "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
       )
       fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
-      # A recovery is a record, not an emergency. Under ntfy that was a second
+      # A recovery is a record, not an emergency. Under the earlier transport that was a second
       # topic; Pushover says it on the message, so the assertion is the
       # priority rather than the routing.
       recovered, observed = wait_for_pushover(

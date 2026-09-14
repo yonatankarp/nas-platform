@@ -37,13 +37,10 @@ _GUARDS_SPEC.loader.exec_module(_GUARDS)
 
 BCRYPT_HASH = re.compile(r"^\$2[aby]\$[0-9]{2}\$[./A-Za-z0-9]{53}")
 EMAIL = re.compile(r"^[^@ ]+@[^@ ]+$")
-NTFY_USERNAME = re.compile(r"^[-_.+@A-Za-z0-9]+$")
-NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
-NTFY_TOPIC = re.compile(r"^[-_A-Za-z0-9]{1,64}$")
 NONEMPTY = re.compile(r".+")
 
 SERVICES = ("audiobookshelf", "beszel", "dozzle", "immich", "jellyfin",
-            "komga", "ntfy", "paperless_ngx")
+            "komga", "paperless_ngx")
 NONEMPTY_SERVICES = ("immich",)
 
 # Which field carries the identity a service uniques on. The role previously
@@ -56,7 +53,6 @@ IDENTITY_FIELDS = {
     "immich": "email",
     "jellyfin": "username",
     "komga": "email",
-    "ntfy": "username",
     "paperless_ngx": "username",
 }
 
@@ -80,7 +76,6 @@ JELLYFIN_FORBIDDEN_POLICY_FIELDS = (
     "password_confirmation", "token", "access_token", "secret", "credential",
     "api_key", "apikey",
 )
-NTFY_PERMISSIONS = ("read-only", "write-only", "read-write", "deny")
 
 
 def string(errors, path, value, *, pattern=None, trimmed_nonempty=False,
@@ -275,28 +270,6 @@ def _komga(errors, path, entry):
                 allowed=KOMGA_ROLES)
 
 
-def _ntfy(errors, path, entry):
-    if not exact_keys(errors, path, entry, ["username", "password", "password_hash",
-                                            "role", "access", "tokens"]):
-        return
-    string(errors, f"{path}.username", entry["username"], pattern=NTFY_USERNAME)
-    string(errors, f"{path}.password", entry["password"], nonempty=True)
-    string(errors, f"{path}.password_hash", entry["password_hash"], pattern=BCRYPT_HASH)
-    string(errors, f"{path}.role", entry["role"], allowed=("user",))
-    if not _GUARDS.is_list(entry["access"]):
-        errors.append(f"{path}.access: must be a list")
-    else:
-        for index, access in enumerate(entry["access"]):
-            access_path = f"{path}.access[{index}]"
-            if not exact_keys(errors, access_path, access, ["topic", "permission"]):
-                continue
-            string(errors, f"{access_path}.topic", access["topic"], pattern=NTFY_TOPIC)
-            string(errors, f"{access_path}.permission", access["permission"],
-                   allowed=NTFY_PERMISSIONS)
-    string_list(errors, f"{path}.tokens", entry["tokens"], unique=True,
-                item_pattern=NTFY_TOKEN)
-
-
 def _paperless_ngx(errors, path, entry):
     if not exact_keys(errors, path, entry, ["username", "password", "email", "is_active",
                                             "is_staff", "is_superuser", "groups"]):
@@ -322,20 +295,18 @@ ENTRY_VALIDATORS = {
     "immich": _immich,
     "jellyfin": _jellyfin,
     "komga": _komga,
-    "ntfy": _ntfy,
     "paperless_ngx": _paperless_ngx,
 }
 
 
-def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
-                              reserved_identities=None):
+def vault_managed_user_errors(value, reserved_identities=None):
     """Return every schema violation in the managed-user lists, as field paths.
 
     Never includes a value, so the result is safe to print from a `fail_msg`.
     An empty list means the structure satisfies the contract.
 
     `value` maps each service to its `vault_managed_<service>_users` list, as
-    `roles/vault_contract` assembles it from those eight variables.
+    `roles/vault_contract` assembles it from those seven variables.
 
     `reserved_identities` maps a service to the identities a managed user may not
     claim: the service administrator, plus any name the platform owns itself.
@@ -366,7 +337,6 @@ def vault_managed_user_errors(value, reserved_ntfy_tokens=None,
         for index, entry in enumerate(entries):
             validate(errors, f"{service}[{index}]", entry)
 
-    errors.extend(_ntfy_token_ownership(value, reserved_ntfy_tokens))
     errors.extend(_identity_ownership(value, reserved_identities))
     return errors
 
@@ -401,24 +371,6 @@ def _identity_ownership(value, reserved_identities):
             errors.append(f"vault_managed_{service}_users: {len(claimed)} "
                           f"{field} value{'' if len(claimed) == 1 else 's'} "
                           f"reuse a platform-owned identity")
-    return errors
-
-
-def _ntfy_token_ownership(value, reserved_ntfy_tokens):
-    entries = value.get("ntfy")
-    if not _GUARDS.is_list(entries):
-        return []
-    tokens = []
-    for entry in entries:
-        if _GUARDS.is_mapping(entry) and _GUARDS.is_list(entry.get("tokens")):
-            tokens.extend(entry["tokens"])
-    errors = []
-    if len(set(map(str, tokens))) != len(tokens):
-        errors.append("vault_managed_ntfy_users: tokens must be unique across users")
-    reserved = set(map(str, reserved_ntfy_tokens or []))
-    if reserved & set(map(str, tokens)):
-        errors.append("vault_managed_ntfy_users: tokens must not reuse a "
-                      "service-owned token")
     return errors
 
 

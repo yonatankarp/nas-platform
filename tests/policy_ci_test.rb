@@ -25,9 +25,10 @@ failures = []
 # caller passes none, and tests/ci/classify_changes.rb derives its lanes, its CI
 # matrix and its tag plans from the same rows. There is no second copy to
 # reconcile, so what is checked here is the table itself. Every lane but the
-# planned acquisition foundations must name ntfy, whose gated-off teardown every
-# lane converges until #558 stage 4c removes the role (it was the alerting sink,
-# and the deployment reports it carried moved to roles/deployment_bundle).
+# planned acquisition foundations must name host_prep and deployment_bundle, the
+# shared prerequisites every service role needs. The requirement used to name the
+# alerting sink every role reported to; #558 moved the reports into
+# roles/deployment_bundle and removed the sink.
 integration_path = File.join(ROOT, "tests", "integration.sh")
 suite_table_path = File.join(ROOT, "tests", "ci", "suites.conf")
 integration_body = File.file?(integration_path) ? File.read(integration_path) : ""
@@ -62,8 +63,8 @@ suite_tags = suite_rows.to_h { |suite, _kind, tags| [suite, tags] }
 
 # Which acquisition lanes are inert and which converge a real role is a
 # consequence of services/manifest.yml, not a separate fact. It used to be
-# written out here twice -- once to exempt the inert lanes from the ntfy
-# requirement and once to require they ship no image -- so promoting a project
+# written out here twice -- once to exempt the inert lanes from the shared
+# prerequisite requirement and once to require they ship no image -- so promoting a project
 # meant editing two literals in this file that nothing held to the manifest or to
 # each other. The catalog supplies which projects are acquisition projects; the
 # manifest supplies whether each one is built yet.
@@ -84,8 +85,8 @@ unless suite_rows.empty?
     next unless %w[acquisition service].include?(kind)
     next if planned_acquisition_lanes.include?(suite)
 
-    check(failures, tags.include?("ntfy"),
-          "service lane #{suite} must converge ntfy: its gated-off teardown runs on every lane until #558 stage 4c")
+    check(failures, (%w[host_prep deployment_bundle] - tags).empty?,
+          "service lane #{suite} must converge host_prep and deployment_bundle, the shared prerequisites every service role needs")
   end
 
   planned_acquisition_lanes.each do |lane|
@@ -288,7 +289,7 @@ check(failures, !integration_body.match?(/^\s*[a-z][a-z0-9-]*\)\s+fixed_tags=/),
 # convergence, and the roles it converges are the suite's own fixed tags minus the
 # shared infrastructure ones. Both used to be transcribed per suite, so a promoted
 # project silently skipped the phase until someone remembered to add it.
-ACQUISITION_INFRASTRUCTURE_TAGS = %w[host_prep deployment_bundle ntfy media_acquisition_foundation].freeze
+ACQUISITION_INFRASTRUCTURE_TAGS = %w[host_prep deployment_bundle media_acquisition_foundation].freeze
 enabled_idempotence_service_tags = implemented_acquisition_lanes.to_h do |suite|
   [suite, suite_tags.fetch(suite, []) - ACQUISITION_INFRASTRUCTURE_TAGS]
 end

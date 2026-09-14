@@ -35,9 +35,6 @@ def require_rejected(parser, source: str, label: str) -> None:
 
 plugin = load_plugin()
 parse_users = plugin.managed_users_yaml
-parse_env = plugin.managed_user_env
-parse_ntfy_users = plugin.ntfy_auth_users
-parse_ntfy_list = plugin.ntfy_user_list
 
 valid = parse_users(
     """---
@@ -79,54 +76,4 @@ unsafe_documents = {
 for label, source in unsafe_documents.items():
     require_rejected(parse_users, source, label)
 
-environment = parse_env(
-    """# existing runtime state
-NTFY_AUTH_USERS=admin:$$2b$$12$$hash:admin,reader:$$2b$$12$$reader:user
-NTFY_AUTH_ACCESS=reader:nas-critical:read-only
-NTFY_AUTH_TOKENS=
-"""
-)
-assert environment["NTFY_AUTH_USERS"] == (
-    "admin:$$2b$$12$$hash:admin,reader:$$2b$$12$$reader:user"
-)
-require_rejected(parse_env, "NTFY_AUTH_USERS=one\nNTFY_AUTH_USERS=two\n", "duplicate env key")
-require_rejected(parse_env, "not an env assignment\n", "malformed env line")
-
-provisioned = parse_ntfy_users(environment["NTFY_AUTH_USERS"])
-assert provisioned == {
-    "admin": {"username": "admin", "password_hash": "$2b$12$hash", "role": "admin"},
-    "reader": {"username": "reader", "password_hash": "$2b$12$reader", "role": "user"},
-}
-require_rejected(parse_ntfy_users, "reader:hash:user,Reader:hash:user", "normalized ntfy env identity")
-require_rejected(parse_ntfy_users, "reader:hash:owner", "invalid ntfy env role")
-
-listed = parse_ntfy_list(
-    """user * (role: anonymous, tier: none)
-- no access to any (other) topics (server config)
-user admin (role: admin, tier: none, server config)
-- read-write access to all topics (admin role)
-user manual.user (role: user, tier: none)
-- no topic-specific permissions
-"""
-)
-assert listed == {
-    "*": {"username": "*", "role": "anonymous", "provisioned": False},
-    "admin": {"username": "admin", "role": "admin", "provisioned": True},
-    "manual.user": {"username": "manual.user", "role": "user", "provisioned": False},
-}
-require_rejected(parse_ntfy_list, "", "empty ntfy CLI output")
-require_rejected(parse_ntfy_list, "user reader changed format\n", "changed ntfy CLI output")
-require_rejected(
-    parse_ntfy_list,
-    "user * (role: anonymous, tier: none)\n- permissions changed format\n",
-    "changed ntfy CLI permission output",
-)
-require_rejected(
-    parse_ntfy_list,
-    "user * (role: anonymous, tier: none)\n- no permissions\n"
-    "user Reader (role: user, tier: none)\n- no permissions\n"
-    "user reader (role: user, tier: none)\n- no permissions\n",
-    "normalized duplicate ntfy CLI identity",
-)
-
-print("Managed-user state filter: strict YAML, env, and ntfy CLI behavior holds")
+print("Managed-user state filter: strict YAML behavior holds")

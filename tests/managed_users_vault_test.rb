@@ -36,7 +36,6 @@ ENTRY_FIELDS = {
   "immich" => %w[email password name quota_size],
   "jellyfin" => %w[username password policy],
   "komga" => %w[email password roles],
-  "ntfy" => %w[username password password_hash role access tokens],
   "paperless_ngx" => %w[username password email is_active is_staff is_superuser groups]
 }.freeze
 
@@ -47,7 +46,6 @@ IDENTITY_FIELDS = {
   "immich" => "email",
   "jellyfin" => "username",
   "komga" => "email",
-  "ntfy" => "username",
   "paperless_ngx" => "username"
 }.freeze
 
@@ -58,14 +56,10 @@ TEXT_FIELDS = {
   "immich" => %w[email password name],
   "jellyfin" => %w[username password],
   "komga" => %w[email password],
-  "ntfy" => %w[username password password_hash role],
   "paperless_ngx" => %w[username password email]
 }.freeze
 
 BCRYPT = /^\$2[aby]\$\d{2}\$[.\/A-Za-z0-9]{53}$/
-TOKEN = /^tk_[a-z0-9]{29}$/
-NTFY_USERNAME = /^[-_.+@A-Za-z0-9]+$/
-NTFY_LITERAL_TOPIC = /^[-_A-Za-z0-9]{1,64}$/
 
 ARGUMENT_FIELDS = {
   "audiobookshelf" => {
@@ -93,11 +87,6 @@ ARGUMENT_FIELDS = {
   "komga" => {
     "email" => ["str", nil], "password" => ["str", nil],
     "roles" => ["list", "str"]
-  },
-  "ntfy" => {
-    "username" => ["str", nil], "password" => ["str", nil],
-    "password_hash" => ["str", nil], "role" => ["str", nil],
-    "access" => ["list", "dict"], "tokens" => ["list", "str"]
   },
   "paperless_ngx" => {
     "username" => ["str", nil], "password" => ["str", nil],
@@ -269,27 +258,6 @@ managed.fetch("komga", []).each do |entry|
         "komga roles must be supported")
 end
 
-managed.fetch("ntfy", []).each do |entry|
-  next unless entry.is_a?(Hash)
-  check(failures, BCRYPT.match?(entry["password_hash"].to_s),
-        "ntfy password_hash must have bcrypt shape")
-  check(failures, entry["role"] == "user", "ntfy role must be nonadministrative")
-  check(failures, NTFY_USERNAME.match?(entry["username"].to_s),
-        "ntfy username must use native safe characters")
-  access = entry["access"]
-  check(failures,
-        access.is_a?(Array) && access.all? do |rule|
-          rule.is_a?(Hash) && rule.keys.sort == %w[permission topic] &&
-            NTFY_LITERAL_TOPIC.match?(rule["topic"].to_s) &&
-            %w[read-only write-only read-write deny].include?(rule["permission"])
-        end,
-        "ntfy access rules must have supported values")
-  tokens = entry["tokens"]
-  check(failures, tokens.is_a?(Array) && tokens.all? { |token| TOKEN.match?(token.to_s) } &&
-                    tokens.uniq.length == tokens.length,
-        "ntfy tokens must be unique and have supported shape")
-end
-
 managed.fetch("paperless_ngx", []).each do |entry|
   next unless entry.is_a?(Hash)
   %w[is_active is_staff is_superuser].each do |field|
@@ -306,7 +274,6 @@ admin_identities = {
   "immich" => vault["vault_immich_admin_email"],
   "jellyfin" => vault["vault_jellyfin_admin_username"],
   "komga" => vault["vault_komga_admin_email"],
-  "ntfy" => vault["vault_ntfy_admin_user"],
   "paperless_ngx" => vault["vault_paperless_admin_username"]
 }
 admin_identities.each do |service, administrator|
@@ -321,12 +288,6 @@ beszel_identities = managed.fetch("beszel", []).filter_map do |entry|
 end
 check(failures, !beszel_identities.include?(normalized(vault["vault_beszel_app_user_email"])),
       "beszel managed identity must differ from the primary app user")
-
-ntfy_identities = managed.fetch("ntfy", []).filter_map do |entry|
-  normalized(entry["username"]) if entry.is_a?(Hash)
-end
-check(failures, (ntfy_identities & %w[dozzle beszel]).empty?,
-      "ntfy managed identity must differ from publishers")
 
 spec = load_mapping(SPEC_PATH, failures, "vault argument spec")
 spec_options = spec.dig("argument_specs", "main", "options")
@@ -350,12 +311,6 @@ ARGUMENT_FIELDS.each do |service, expected_fields|
     check(failures, valid, "#{service}.#{field} argument type differs")
   end
 end
-access_spec = managed_options.is_a?(Hash) ? managed_options.dig("ntfy", "options", "access") : nil
-access_options = access_spec.is_a?(Hash) ? access_spec["options"] : nil
-check(failures,
-      access_options.is_a?(Hash) && access_options.keys.sort == %w[permission topic] &&
-        access_options.values.all? { |option| option == { "type" => "str", "required" => true } },
-      "ntfy access argument fields must be required strings")
 abs_permissions_spec = managed_options.is_a?(Hash) ?
   managed_options.dig("audiobookshelf", "options", "permissions") : nil
 check(failures,
@@ -372,9 +327,6 @@ check(failures,
 check(failures,
       managed_options.dig("beszel", "options", "verified", "choices") == [true],
       "beszel verified argument must only accept true")
-check(failures,
-      managed_options.dig("ntfy", "options", "role", "choices") == ["user"],
-      "ntfy managed role argument must only accept user")
 immich_fields = managed_options.is_a?(Hash) ?
   managed_options.dig("immich", "options")&.keys&.sort : nil
 check(failures, immich_fields == %w[email name password quota_size],
@@ -413,7 +365,7 @@ reserved_identities = parsed_tasks.filter_map do |task|
 end.first
 reserved_identity_values = Array(reserved_identities&.values).flatten
 
-# The eight lists are group_vars of their own now, authored in each service's
+# The seven lists are group_vars of their own now, authored in each service's
 # vault_<role>.yml, so the role publishes nothing: it assembles them inward into
 # the one mapping the schema filter reads. Each has to be submitted under its own
 # service, because a list the mapping omits is a list nothing validates -- the
@@ -425,7 +377,7 @@ MANAGED_LIST_KEYS.each do |service, key|
   check(failures, submitted_lists.match?(/'#{Regexp.escape(service)}': #{Regexp.escape(key)}\b/),
         "vault contract must submit #{key} for schema validation")
 end
-# The other direction. Argument validation requires the eight names and says
+# The other direction. Argument validation requires the seven names and says
 # nothing about a ninth, so a leftover vault_managed_users from an un-migrated
 # vault, or a misspelt list, would otherwise load, go unread and validate. The
 # floor asks Ansible which vault_managed_ names are in scope and refuses any the
@@ -439,7 +391,7 @@ check(failures,
         MANAGED_LIST_KEYS.values.all? { |key| floor_expression.include?("'#{key}'") } &&
         floor_task.to_h.dig("ansible.builtin.assert", "that").to_a ==
           ["vault_contract_unexpected_managed_lists | length == 0"],
-      "vault contract must refuse vault_managed_ variables outside the eight lists")
+      "vault contract must refuse vault_managed_ variables outside the seven lists")
 floor_position = parsed_tasks.index(floor_task)
 validation_position = parsed_tasks.index do |task|
   task["name"] == "Resolve managed-user vault schema violations"
@@ -475,7 +427,6 @@ required_validation_fragments = [
   "vault_immich_admin_email",
   "vault_jellyfin_admin_username",
   "vault_komga_admin_email",
-  "vault_ntfy_admin_user",
   "vault_paperless_admin_username"
 ]
 required_validation_fragments.each do |fragment|
@@ -495,10 +446,6 @@ end
 check(failures, reserved_identities.is_a?(Hash) &&
                   reserved_identities.keys.sort == ENTRY_FIELDS.keys.sort,
       "vault contract must reserve identities for every managed service")
-%w[dozzle beszel].each do |published|
-  check(failures, Array(reserved_identities&.fetch("ntfy", nil)).include?(published),
-        "ntfy must reserve the #{published} publisher username")
-end
 # Field-level guards moved from Jinja conditions into the schema filter, so they
 # are asserted where they now live. The exhaustive per-field type coverage is in
 # tests/vault_managed_user_schema_test.py, which substitutes an incompatible type
@@ -513,7 +460,6 @@ TEXT_FIELDS.each do |service, fields|
 end
 {
   "Komga roles" => 'string_list(errors, f"{path}.roles"',
-  "ntfy tokens" => 'string_list(errors, f"{path}.tokens"',
   "Paperless groups" => 'string_list(errors, f"{path}.groups"'
 }.each do |label, declaration|
   check(failures, schema_filter_source.include?(declaration),
@@ -521,19 +467,8 @@ end
 end
 check(failures, schema_filter_source.include?('errors.append(f"{path}.policy: every key must be a string")'),
       "Jellyfin policy keys must have runtime string guards")
-check(failures,
-      schema_filter_source.include?('f"{access_path}.topic"') &&
-      schema_filter_source.include?('f"{access_path}.permission"'),
-      "ntfy access fields must have runtime string guards")
 check(failures, schema_filter_source.match?(/in JELLYFIN_FORBIDDEN_POLICY_FIELDS\b/),
       "vault contract must reject secret-bearing Jellyfin policy keys")
-schema_errors_expression = parsed_tasks.filter_map do |task|
-  task.dig("ansible.builtin.set_fact", "vault_contract_schema_errors")
-end.first.to_s
-check(failures, schema_filter_source.include?("_ntfy_token_ownership") &&
-                schema_errors_expression.include?("vault_ntfy_dozzle_token") &&
-                schema_errors_expression.include?("vault_ntfy_beszel_token"),
-      "vault contract must enforce global ntfy token uniqueness and publisher separation")
 # The scalar credential shape rules moved into
 # filter_plugins/vault_credential_schema.py, which reports the offending variable
 # name rather than one generic message for all 49 of them. The role still names
@@ -810,49 +745,11 @@ list_dozzle_name.dig("vault_managed_dozzle_users", 0)["name"] =
 expect_role_rejection(failures, "list Dozzle name", list_dozzle_name,
                       "list-name-sentinel")
 
-list_ntfy_topic = duplicate(runtime_vault)
-list_ntfy_topic.dig("vault_managed_ntfy_users", 0, "access", 0)["topic"] =
-  ["list-topic-sentinel"]
-expect_role_rejection(failures, "list ntfy access topic", list_ntfy_topic,
-                      "list-topic-sentinel")
-
-%w[bad,user bad:user bad/user].each do |username|
-  hostile_username = duplicate(runtime_vault)
-  hostile_username.dig("vault_managed_ntfy_users", 0)["username"] = username
-  expect_role_rejection(failures, "unsafe ntfy username", hostile_username, username)
-end
-
-["bad topic", "bad/topic", "bad*topic", "bad:topic", "bad,topic"].each do |topic|
-  hostile_topic = duplicate(runtime_vault)
-  hostile_topic.dig("vault_managed_ntfy_users", 0, "access", 0)["topic"] = topic
-  expect_role_rejection(failures, "unsafe ntfy literal topic", hostile_topic, topic)
-end
-
-restricted_admin = duplicate(runtime_vault)
-restricted_admin_entry = restricted_admin.dig("vault_managed_ntfy_users", 0)
-restricted_admin_entry["role"] = "admin"
-restricted_admin_entry.dig("access", 0)["permission"] = "read-only"
-expect_role_rejection(failures, "restricted ntfy administrator ACL", restricted_admin,
-                      restricted_admin_entry.dig("access", 0, "topic"))
-
 jellyfin_secret = duplicate(runtime_vault)
 jellyfin_secret.dig("vault_managed_jellyfin_users", 0, "policy")["Password"] =
   "jellyfin-secret-sentinel"
 expect_role_rejection(failures, "secret-bearing Jellyfin policy", jellyfin_secret,
                       "jellyfin-secret-sentinel")
-
-duplicate_token = duplicate(runtime_vault)
-shared_token = "tk_33333333333333333333333333333"
-duplicate_token.dig("vault_managed_ntfy_users", 0, "tokens") << shared_token
-second_ntfy = duplicate(duplicate_token.dig("vault_managed_ntfy_users", 0))
-second_ntfy["username"] = "second-reader-example-invalid"
-duplicate_token.dig("vault_managed_ntfy_users") << second_ntfy
-expect_role_rejection(failures, "cross-user duplicate ntfy token", duplicate_token, shared_token)
-
-publisher_collision = duplicate(runtime_vault)
-publisher_token = publisher_collision.fetch("vault_ntfy_dozzle_token")
-publisher_collision.dig("vault_managed_ntfy_users", 0, "tokens") << publisher_token
-expect_role_rejection(failures, "ntfy publisher token collision", publisher_collision, publisher_token)
 
 expect_role_rejection(
   failures,
@@ -938,5 +835,5 @@ expect_role_rejection(
   "immich_managed_user_preference_overrides" => {}
 )
 
-report(failures, "Managed-user vault: all eight service schemas are valid",
+report(failures, "Managed-user vault: all seven service schemas are valid",
        "managed-user vault violation(s)")

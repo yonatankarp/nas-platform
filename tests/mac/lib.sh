@@ -129,9 +129,9 @@ mac_validate_integration_callback() {
 # nas_compose_minimum is 2.18.0: the floor community.docker.docker_compose_v2
 # documents, asserted by roles/preflight on every host. That is the right floor
 # for the NAS, whose canonical compose.yml files carry no tag at all, and the
-# wrong one here. A Mac at 2.18.0 passed preflight and then died at *ntfy* --
-# the first service, not the one anybody was changing -- on a Compose that
-# cannot parse services/ntfy/compose.mac.yml.
+# wrong one here. A Mac at 2.18.0 passed preflight and then died at the first
+# service it converged, not the one anybody was changing, on a Compose that
+# cannot parse that service's compose.mac.yml.
 #
 # It is requested by the lane rather than written into
 # inventory/group_vars/mac_hosts/main.yml for two reasons, and the first is
@@ -171,15 +171,6 @@ mac_validate_integration_callback() {
 # service. What it bought is worth keeping in mind for the next gated stack:
 # written here rather than inherited, the lane went on converging what it
 # claimed to converge on the day the platform switch was flipped back off.
-#
-# ntfy_deployment_enabled is the third, and it asks for the opposite of what the
-# platform runs. #558 stage 4a turned ntfy off in inventory, and #577's AdGuard
-# flip is the precedent this follows: the lane keeps converging the stack while
-# its role still exists, because tests/mac/hooks/verify/15-ntfy.sh and the
-# recreate table verify a running ntfy and would fail on a torn-down one. Stage
-# 4c deletes the role, the hooks and this request together. The disabled branch
-# is not left unexercised by that: every integration lane converges it, and the
-# komga lane proves it stops a running container gracefully.
 #
 # Vaultwarden needs two of its own, and neither is about this lane's opinion of
 # the service.
@@ -240,7 +231,7 @@ mac_validate_integration_callback() {
 # valid NEXTAUTH_URL host, and its port comes from the roster below.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
-    -e vaultwarden_deployment_enabled=true -e ntfy_deployment_enabled=true \
+    -e vaultwarden_deployment_enabled=true \
     -e karakeep_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
@@ -293,7 +284,7 @@ mac_target_container_names() {
     integration | mac)
       printf '%s\n' "$mac_project-beszel" "$mac_project-beszel-agent-intel" \
         "$mac_project-beszel-agent-portable" "$mac_project-beszel-socket-proxy" \
-        "$mac_project-ntfy" "$mac_project-dozzle-alert-relay" \
+        "$mac_project-dozzle-alert-relay" \
         "$mac_project-dozzle" "$mac_project-dozzle-socket-proxy" \
         "$mac_project-audiobookshelf" "$mac_project-komga" "$mac_project-jellyfin" \
         "$mac_project-immich-server" "$mac_project-immich-machine-learning" \
@@ -340,7 +331,7 @@ mac_target_container_names() {
 # authority on where the service listens. tests/policy_mac_test.rb holds the
 # roster, report.rb's validated field list and report.rb's option parser to that
 # one transformation, and holds it whether or not an entry currently uses it.
-MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
+MAC_SERVICE_PORT_ORDER='beszel dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
 trailarr seerr nextcloud vaultwarden karakeep'
 
@@ -388,34 +379,30 @@ mac_container_name() {
   esac
 }
 
-# The Mac lane covers one service the contract registry does not: ntfy has no
-# contract suite of its own, so tests/contracts/registry.yml never lists it, yet
-# the lane deploys, recreates and verifies it. Coverage accounting keyed only to
-# the registry would report a clean full pass while silently skipping the service
-# whose push-routing bug the contract suites caught, so the addition is named.
-# Vaultwarden is the second, and its reason is a different one: it HAS no
-# contract to register, because it holds no credential a contract could sign in
-# with. Master passwords are user-owned by construction and the server never
+# The Mac lane covers one service the contract registry does not. Coverage
+# accounting keyed only to the registry would report a clean full pass while
+# silently skipping a service the lane deploys, so the addition is named.
+# Vaultwarden is that service: it HAS no contract to register, because it holds
+# no credential a contract could sign in with. Master passwords are user-owned by construction and the server never
 # learns them, which is the entire reason to run it, so what there is to prove is
 # the door -- and roles/vaultwarden/tasks/verify.yml proves it by knocking, which
 # tests/mac/verify.sh runs here through platform_verify_vaultwarden like every
 # other tag. Naming it here is what puts it on the coverage rosters, so the four
 # collapsed hooks have to account for it rather than pass over it in silence.
-# Karakeep is the third, for Vaultwarden's route with a different reason: its
+# Karakeep is the second, for Vaultwarden's route with a different reason: its
 # vault identity is an administrator the converge registers through the API, and
 # roles/karakeep/tasks/verify.yml already signs in as it and requires the search
 # index and browser connected and the signup door closed. A contract would repeat
 # that verification, so tests/mac/verify.sh runs platform_verify_karakeep instead.
-MAC_UNREGISTERED_SERVICES='ntfy vaultwarden karakeep'
+MAC_UNREGISTERED_SERVICES='vaultwarden karakeep'
 
-# Verification keeps four infrastructure-specific hooks ahead of the shared
+# Verification keeps three infrastructure-specific hooks ahead of the shared
 # contract runner. This is the one canonical roster used both by verify.sh for
 # dispatch and by 30-services.sh for exact coverage accounting. The foundation
 # hook verifies infrastructure rather than a registered service, so it is named
 # separately as coverage-neutral instead of being disguised as an exemption.
 MAC_VERIFY_INFRASTRUCTURE_HOOKS='10-beszel.sh
 15-media-acquisition-foundation.sh
-15-ntfy.sh
 20-dozzle.sh'
 MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS='15-media-acquisition-foundation.sh'
 

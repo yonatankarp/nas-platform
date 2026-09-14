@@ -74,7 +74,7 @@ failures = []
 # readable.
 #
 # WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
-# COST, not count. The counts below are 57/55/63 and that asymmetry is the
+# COST, not count. The counts below are 57/56/64 and that asymmetry is the
 # result rather than a defect: #469 drew the partition round robin, which
 # balances count because count is all a partition without a cost table can
 # balance, and by #517 the three shards were 53/54/57 checks carrying a 2.2x
@@ -330,7 +330,6 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/komga_contract_test.rb --self-test
   ruby tests/audiobookshelf_contract_test.rb --self-test
   ruby tests/immich_smart_search_retry_test.rb
-  ruby tests/ntfy_verify_execution_test.rb
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_identity_rules_test.py
   ruby tests/acquisition_configarr_field_coverage_test.rb
   ruby tests/bazarr_provider_schema_test.rb --self-test

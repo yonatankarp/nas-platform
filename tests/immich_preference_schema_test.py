@@ -194,6 +194,25 @@ class ImmichPreferenceSchemaTest(unittest.TestCase):
                 self.assertNotIn(secret, joined,
                                  f"the diagnostic disclosed a key or value: {joined}")
 
+    def test_an_unknown_field_kind_is_refused_rather_than_unchecked(self):
+        """A kind the dispatch does not implement validated nothing, silently.
+
+        The kinds are module-level string literals, so CPython interning made the
+        `is` comparisons work and the missing `else` never bit — but a table entry
+        naming an unimplemented kind passed every value through unread (#648). The
+        refusal names the path and the kind, both module-owned, never a vault key
+        or value.
+        """
+        from ansible.errors import AnsibleFilterError
+        import immich_preference_schema as schema
+
+        secret = "immich-preference-sentinel"
+        with self.assertRaises(AnsibleFilterError) as refused:
+            schema._field([], "profiles[0].albums.whatever", secret, "path", None)
+        message = str(refused.exception)
+        self.assertIn("unknown field kind", message)
+        self.assertNotIn(secret, message)
+
     def test_every_scope_in_the_table_is_reachable(self):
         self.assertEqual(sorted(SCOPES), sorted([
             "albums", "avatar", "cast", "download", "emailNotifications",

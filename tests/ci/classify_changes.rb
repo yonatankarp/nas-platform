@@ -56,10 +56,9 @@ module ClassifyChanges
   IDEMPOTENCE_SHARD_LANES = SUITES.keys.filter do |lane|
     lane.start_with?("idempotence_") && lane != IDEMPOTENCE_LANE
   end.freeze
-  # The tags CI narrows the site to for each lane it selects by tag. Active
-  # services include ntfy because each role publishes its deployment report
-  # there. Planned acquisition suites instead converge only the shared inert
-  # foundation and validate it with their static contract.
+  # The tags CI narrows the site to for each lane it selects by tag. Planned
+  # acquisition suites converge only the shared inert foundation and validate it
+  # with their static contract.
   SERVICE_TAGS = CI_SUITE_ROWS.filter_map do |suite, kind, tags|
     [suite.tr("-", "_"), tags] if %w[acquisition service].include?(kind)
   end.to_h.freeze
@@ -288,12 +287,6 @@ module ClassifyChanges
     tests/media_acquisition_reconciliation_bazarr_test.rb
     tests/media_acquisition_reconciliation_configarr_test.rb
   ].freeze
-  # Every lane whose tags converge ntfy -- its gated-off teardown since #558
-  # stage 4a, and the komga lane's up-then-off proof. The deployment reports it
-  # used to carry moved to roles/deployment_bundle/, which falls open to every
-  # lane. The one remaining acquisition foundation suite converges only the
-  # shared inert foundation and never reaches ntfy, so a change to it cannot.
-  NTFY_LANES = TAGGED_LANES.select { |lane| SERVICE_TAGS.fetch(lane).include?("ntfy") }.freeze
   # The workflow file, which is the one path here whose route is not "the jobs
   # that read it". Nothing reads .github/workflows/ci.yml: it *defines* the jobs
   # every other row is routed to. So what a change to it has to buy is **job
@@ -367,11 +360,6 @@ module ClassifyChanges
       if path == CI_WORKFLOW_ROUTED_PATH
         CI_WORKFLOW_JOB_LANES.each { |lane| selection[lane] = true }
         tagged_lanes << CI_WORKFLOW_SUITE_LANE
-        next
-      end
-
-      if path.start_with?("roles/ntfy/", "services/ntfy/")
-        tagged_lanes.concat(NTFY_LANES)
         next
       end
 

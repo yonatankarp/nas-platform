@@ -52,7 +52,6 @@ from vault_credential_schema import (  # noqa: E402
     JELLYFIN_ADMIN_USERNAME,
     NONEMPTY,
     NOT_PLACEHOLDER,
-    NTFY_TOKEN,
     OPTIONAL_KEY_GROUPS,
     OPENSUBTITLES_PASSWORD_PLACEHOLDERS,
     OPENSUBTITLES_USERNAME_PLACEHOLDERS,
@@ -81,7 +80,6 @@ PATTERN_SAMPLES = {
     DATABASE_IDENTIFIER.pattern: ("platform_db", "platform_db;drop"),
     EMAIL.pattern: ("person@example.invalid", "person@example.invalid with words"),
     KARAKEEP_EMAIL.pattern: ("person@example.invalid", "person@example.invalid\n"),
-    NTFY_TOKEN.pattern: ("tk_" + "a" * 29, "tk_" + "a" * 29 + "x"),
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
@@ -114,11 +112,9 @@ LEGACY_REJECTED = (
     ("vault_immich_admin_email", True),
     ("vault_immich_admin_email", None),
     ("vault_immich_admin_email", 42),
-    ("vault_ntfy_dozzle_token", True),
-    ("vault_ntfy_dozzle_token", None),
-    ("vault_ntfy_dozzle_token", ["tk_" + "a" * 29]),
     ("vault_dozzle_alert_relay_token", True),
     ("vault_dozzle_alert_relay_token", None),
+    ("vault_dozzle_alert_relay_token", ["a" * 64]),
     ("vault_dozzle_admin_password_hash", True),
     ("vault_beszel_agent_key", True),
     ("vault_beszel_universal_token", None),
@@ -134,7 +130,6 @@ MALFORMED = {
     DATABASE_IDENTIFIER.pattern: "9platform",
     EMAIL.pattern: "person.example.invalid",
     KARAKEEP_EMAIL.pattern: "person@nas",
-    NTFY_TOKEN.pattern: "tk_" + "A" * 29,
     SSH_ED25519_PUBLIC_KEY.pattern: "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIA==",
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
@@ -165,7 +160,6 @@ FOUNDATION_KEYS = (
 FOUNDATION_API_KEYS = FOUNDATION_KEYS[0::3]
 FOUNDATION_USERNAMES = FOUNDATION_KEYS[1::3]
 FOUNDATION_PASSWORDS = FOUNDATION_KEYS[2::3]
-NTFY_DISTINCT_KEYS = DISTINCT_KEY_GROUPS[0]
 PUSHOVER_DISTINCT_KEYS = (
     "vault_pushover_alerts_token",
     "vault_pushover_containers_token",
@@ -192,13 +186,9 @@ def _valid_value(key, rules):
         return "a" + format(FOUNDATION_API_KEYS.index(key), "031x")
     if key in FOUNDATION_PASSWORDS:
         return f"foundation-password-{FOUNDATION_PASSWORDS.index(key)}"
-    if key in NTFY_DISTINCT_KEYS:
-        # The four publisher tokens have to differ from each other, so they are
-        # keyed off their position rather than off the shared pattern sample.
-        return "tk_" + "abcdefghijklmnopqrstuvwxyz012"[:28] + str(
-            NTFY_DISTINCT_KEYS.index(key))
     if key in PUSHOVER_DISTINCT_KEYS:
-        # The same reason: four applications, four different tokens.
+        # Four applications, four different tokens, so they are keyed off their
+        # position rather than off a shared sample.
         return f"operator-supplied-pushover-token-{PUSHOVER_DISTINCT_KEYS.index(key)}"
     for kind, argument in rules:
         if kind == PATTERN:
@@ -268,8 +258,7 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_distinct_credential_groups_are_exact(self):
         self.assertEqual(
             DISTINCT_KEY_GROUPS,
-            (NTFY_DISTINCT_KEYS, FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS,
-             PUSHOVER_DISTINCT_KEYS),
+            (FOUNDATION_API_KEYS, FOUNDATION_PASSWORDS, PUSHOVER_DISTINCT_KEYS),
         )
 
     def test_the_two_ping_urls_must_name_different_checks(self):
@@ -599,15 +588,6 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                       errors_for(vault_beszel_hub_private_key="-----BEGIN "
                                                               "RSA KEY-----"))
 
-    def test_the_publisher_tokens_must_all_differ(self):
-        shared = VALID["vault_ntfy_dozzle_token"]
-        for key in NTFY_DISTINCT_KEYS[1:]:
-            with self.subTest(key):
-                errors = errors_for(**{key: shared})
-                self.assertTrue(any("must all differ" in error
-                                    for error in errors),
-                                f"{key} was allowed to duplicate a token")
-
     def test_the_pushover_application_tokens_must_all_differ(self):
         shared = VALID["vault_pushover_alerts_token"]
         for key in PUSHOVER_DISTINCT_KEYS[1:]:
@@ -617,9 +597,9 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                                     for error in errors),
                                 f"{key} was allowed to duplicate a token")
 
-    def test_distinct_publisher_tokens_are_accepted(self):
-        self.assertEqual(len({VALID[key] for key in NTFY_DISTINCT_KEYS}),
-                         len(NTFY_DISTINCT_KEYS))
+    def test_distinct_application_tokens_are_accepted(self):
+        self.assertEqual(len({VALID[key] for key in PUSHOVER_DISTINCT_KEYS}),
+                         len(PUSHOVER_DISTINCT_KEYS))
         self.assertEqual(vault_credential_errors(VALID), [])
 
     def test_no_message_carries_a_value_or_a_comparand(self):

@@ -276,7 +276,7 @@
     # platform_verify_beszel], and naming ANY inherited tag counts as explicitly
     # requesting the task. `--tags beszel` selects them. So does `--tags
     # monitoring`. So does the beszel CI lane, whose tag string is
-    # `host_prep,deployment_bundle,ntfy,beszel` in tests/ci/suites.conf -- which
+    # `host_prep,deployment_bundle,beszel` in tests/ci/suites.conf -- which
     # would have converged with the ephemeral vault, asked Pushover about
     # credentials that were never real, and turned that lane red.
     #

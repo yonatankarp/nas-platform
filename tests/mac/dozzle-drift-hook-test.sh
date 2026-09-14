@@ -136,7 +136,6 @@ case " $* " in
       *-immich-postgres) expected_name=database; expected_group=immich ;;
       *-jellyfin) expected_name=jellyfin; expected_group= ;;
       *-komga) expected_name=komga; expected_group= ;;
-      *-ntfy) expected_name=ntfy; expected_group= ;;
       *-paperless-redis) expected_name=broker; expected_group=paperless ;;
       *-paperless-postgres) expected_name=db; expected_group=paperless ;;
       *-paperless-webserver) expected_name=webserver; expected_group=paperless ;;
@@ -325,7 +324,6 @@ for container in \
   dozzle-hook-test-immich-postgres \
   dozzle-hook-test-jellyfin \
   dozzle-hook-test-komga \
-  dozzle-hook-test-ntfy \
   dozzle-hook-test-paperless-redis \
   dozzle-hook-test-paperless-postgres \
   dozzle-hook-test-paperless-webserver \

@@ -60,7 +60,6 @@ mac_contract_path=$(mac_registry_contract_path "$mac_service")
 : "${PLATFORM_FIXTURE_ROOT:?PLATFORM_FIXTURE_ROOT is required}"
 : "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}"
 : "${PLATFORM_PROJECT_NAME:?PLATFORM_PROJECT_NAME is required}"
-: "${PLATFORM_NTFY_PORT:?PLATFORM_NTFY_PORT is required}"
 
 # run.sh exports PLATFORM_KIND for the lane it is proving, and the Komga contract
 # reads it to tell the integration lane from the Mac one. The two wrappers that

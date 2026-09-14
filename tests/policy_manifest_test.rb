@@ -680,11 +680,11 @@ end
 # reading or writing outside the sandbox, nothing below proves anything.
 expect_fixture_identity_rejection(
   failures, "traversal service name",
-  { "name" => "../../source-sentinel", "role" => "ntfy", "status" => "implemented" }
+  { "name" => "../../source-sentinel", "role" => "beszel", "status" => "implemented" }
 )
 expect_fixture_identity_rejection(
   failures, "traversal role",
-  { "name" => "ntfy", "role" => "../../sandbox-sentinel", "status" => "implemented" }
+  { "name" => "beszel", "role" => "../../sandbox-sentinel", "status" => "implemented" }
 )
 
 expect_failure(failures, "reintroduced legacy source",
@@ -704,9 +704,9 @@ end
   end
 end
 
-expect_failure(failures, "ntfy downgrade", "ntfy: status must be implemented or accepted",
+expect_failure(failures, "beszel downgrade", "beszel: status must be implemented or accepted",
                detected_by: %i[policy ci]) do |root|
-  mutate_manifest(root) { |manifest| service(manifest, "ntfy")["status"] = "planned" }
+  mutate_manifest(root) { |manifest| service(manifest, "beszel")["status"] = "planned" }
 end
 
 expect_failure(failures, "non-string name", "service name must be a string",
@@ -1282,10 +1282,10 @@ expect_failure(failures, "weakened Compose override guard",
   end
 end
 
-expect_failure(failures, "missing ntfy Compose interface",
-               "ntfy argument specs must require platform_compose_kind",
+expect_failure(failures, "missing Beszel Compose interface",
+               "beszel argument specs must require platform_compose_kind",
                detected_by: %i[policy]) do |root|
-  mutate_yaml_file(root, "roles/ntfy/meta/argument_specs.yml") do |spec|
+  mutate_yaml_file(root, "roles/beszel/meta/argument_specs.yml") do |spec|
     spec.dig("argument_specs", "main", "options").delete("platform_compose_kind")
   end
 end
@@ -1499,117 +1499,117 @@ provisioning_task = <<~YAML
       url: http://127.0.0.1/
 YAML
 
-expect_failure(failures, "arbitrary provisioning uri", "ntfy: implemented service has no automated verification",
+expect_failure(failures, "arbitrary provisioning uri", "vaultwarden: implemented service has no automated verification",
                detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
 end
 
 {
   "tagged unrelated uri" => <<~YAML,
     ---
     - name: Verify an unrelated endpoint
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.uri:
         url: http://127.0.0.1/unrelated/
   YAML
   "tagged uri body mention" => <<~YAML,
     ---
     - name: Verify an unrelated endpoint with service text
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.uri:
         url: http://127.0.0.1/unrelated/
-        body: ntfy
+        body: vaultwarden
         status_code: [200]
   YAML
   "tagged literal assertion" => <<~YAML,
     ---
     - name: Verify a literal
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
         that: [true]
   YAML
   "tagged constant service assertion" => <<~YAML,
     ---
     - name: Verify a constant expression
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
-        that: ["'ntfy' == 'ntfy'"]
+        that: ["'vaultwarden' == 'vaultwarden'"]
   YAML
   "tagged undefined service assertion" => <<~YAML,
     ---
     - name: Verify an undefined result
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
-        that: ["ntfy_missing_result.status == 200"]
+        that: ["vaultwarden_missing_result.status == 200"]
   YAML
   "tagged true command" => <<~YAML,
     ---
     - name: Verify a no-op command
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.command: /bin/true
   YAML
   "tagged service command" => <<~YAML,
     ---
     - name: Verify command output
-      tags: [platform_verify_ntfy]
-      ansible.builtin.command: echo ntfy
+      tags: [platform_verify_vaultwarden]
+      ansible.builtin.command: echo vaultwarden
   YAML
   "assert from command register" => <<~YAML,
     ---
     - name: Produce a fake result
-      ansible.builtin.command: echo ntfy
-      register: ntfy_result
+      ansible.builtin.command: echo vaultwarden
+      register: vaultwarden_result
     - name: Verify fake result
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
-        that: ["ntfy_result.stdout == 'ntfy'"]
+        that: ["vaultwarden_result.stdout == 'vaultwarden'"]
   YAML
   "assert self comparison" => <<~YAML
     ---
-    - name: Probe ntfy
+    - name: Probe vaultwarden
       ansible.builtin.uri:
-        url: http://127.0.0.1/{{ ntfy_port }}/health
+        url: http://127.0.0.1/{{ vaultwarden_port }}/health
         status_code: [200]
-      register: ntfy_result
+      register: vaultwarden_result
     - name: Verify a tautology
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
-        that: ["ntfy_result.status == ntfy_result.status"]
+        that: ["vaultwarden_result.status == vaultwarden_result.status"]
   YAML
 }.each do |label, tasks|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+  expect_failure(failures, label, "vaultwarden: implemented service has no automated verification",
                  detected_by: %i[policy]) do |root|
-    File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), tasks)
+    File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), tasks)
   end
 end
 
 expect_success(failures, "assert from registered URI result") do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), <<~YAML)
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), <<~YAML)
     ---
-    - name: Probe ntfy
+    - name: Probe vaultwarden
       ansible.builtin.uri:
-        url: http://127.0.0.1/{{ ntfy_port }}/health
+        url: http://127.0.0.1/{{ vaultwarden_port }}/health
         status_code: [200]
-      register: ntfy_result
+      register: vaultwarden_result
     - name: Verify the observed status
-      tags: [platform_verify_ntfy]
+      tags: [platform_verify_vaultwarden]
       ansible.builtin.assert:
-        that: ["ntfy_result.status == 200"]
+        that: ["vaultwarden_result.status == 200"]
   YAML
 end
 
-expect_failure(failures, "wrong contract path", "ntfy: implemented service has no automated verification",
+expect_failure(failures, "wrong contract path", "vaultwarden: implemented service has no automated verification",
                detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  contract = File.join(root, "services", "ntfy", "contract.yml")
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+  contract = File.join(root, "services", "vaultwarden", "contract.yml")
   File.write(contract, "#!/bin/sh\nexit 1\n")
   File.chmod(0o755, contract)
 end
 
-expect_failure(failures, "empty contract", "ntfy: implemented service has no automated verification",
+expect_failure(failures, "empty contract", "vaultwarden: implemented service has no automated verification",
                detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  contract = File.join(root, "tests", "contracts", "ntfy.sh")
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+  contract = File.join(root, "tests", "contracts", "vaultwarden.sh")
   FileUtils.mkdir_p(File.dirname(contract))
   File.write(contract, "")
   File.chmod(0o755, contract)
@@ -1620,43 +1620,50 @@ end
   "exit one" => "#!/bin/sh\nexit 1\n",
   "standalone false" => "#!/bin/sh\nfalse\n"
 }.each do |label, body|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+  expect_failure(failures, label, "vaultwarden: implemented service has no automated verification",
                  detected_by: %i[policy]) do |root|
-    File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-    write_contract(root, "ntfy", body)
+    File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+    write_contract(root, "vaultwarden", body)
   end
 end
 
 expect_success(failures, "nested verification task") do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), <<~YAML)
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), <<~YAML)
     ---
     - name: Group verification tasks
       block:
         - name: Verify the application endpoint
-          tags: [platform_verify_ntfy]
+          tags: [platform_verify_vaultwarden]
           ansible.builtin.uri:
-            url: http://127.0.0.1/{{ ntfy_port }}/v1/health
+            url: http://127.0.0.1/{{ vaultwarden_port }}/v1/health
             status_code: [200]
   YAML
 end
 
 expect_success(failures, "registered variable contract") do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  write_contract(root, "ntfy", <<~'SH')
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+  write_contract(root, "vaultwarden", <<~'SH')
     #!/bin/sh
-    endpoint=http://127.0.0.1/ntfy/health
+    endpoint=http://127.0.0.1/vaultwarden/health
     probe() {
       curl --fail "$endpoint"
     }
     probe
   SH
-  register_contract(root, "ntfy")
+  register_contract(root, "vaultwarden")
+  # A registered contract owes the Mac runner a per-service arm, which
+  # tests/policy_mac_test.rb requires of every registry entry. The service this
+  # row borrows has none in the real tree, so the arm is planted beside the
+  # registration rather than exempted there: an expect_success row must pass all
+  # eight scripts, and an exemption would outlive the sandbox.
+  mutate_text(root, "tests/mac/run-contract.sh", "case $mac_service in\n",
+              "case $mac_service in\n  vaultwarden)\n    ;;\n")
 end
 
-expect_failure(failures, "unregistered contract", "ntfy: implemented service has no automated verification",
+expect_failure(failures, "unregistered contract", "vaultwarden: implemented service has no automated verification",
                detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  write_contract(root, "ntfy", "#!/bin/sh\nendpoint=/ntfy/health\ncurl --fail \"$endpoint\"\n")
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+  write_contract(root, "vaultwarden", "#!/bin/sh\nendpoint=/vaultwarden/health\ncurl --fail \"$endpoint\"\n")
 end
 
 # A contract counts as verification only when tests/contracts/registry.yml
@@ -1688,16 +1695,16 @@ end
 # 2359". That walker went away with the argument it policed, and the declaration
 # it had made true outlived it, visible only to `--audit`.
 {
-  "assignment registration spoof" => ["tests/integration.sh", "contract=tests/contracts/ntfy.sh\n"],
-  "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/ntfy.sh\n"],
+  "assignment registration spoof" => ["tests/integration.sh", "contract=tests/contracts/vaultwarden.sh\n"],
+  "echo registration spoof" => ["tests/integration.sh", "echo tests/contracts/vaultwarden.sh\n"],
   "controller registration spoof" => ["tests/integration_controller.sh",
-                                      "contract=tests/contracts/ntfy.sh\n"],
-  "YAML name registration spoof" => [".github/workflows/ci.yml", "\nname: tests/contracts/ntfy.sh\n"]
+                                      "contract=tests/contracts/vaultwarden.sh\n"],
+  "YAML name registration spoof" => [".github/workflows/ci.yml", "\nname: tests/contracts/vaultwarden.sh\n"]
 }.each do |label, (relative_harness, registration)|
-  expect_failure(failures, label, "ntfy: implemented service has no automated verification",
+  expect_failure(failures, label, "vaultwarden: implemented service has no automated verification",
                  detected_by: %i[policy]) do |root|
-    File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-    write_contract(root, "ntfy", "#!/bin/sh\ntrue\n")
+    File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+    write_contract(root, "vaultwarden", "#!/bin/sh\ntrue\n")
     harness = File.join(root, relative_harness)
     # Appending to a path that has moved would create the file rather than raise,
     # planting the spoof somewhere nothing reads while the row still passed --
@@ -1709,23 +1716,23 @@ end
   end
 end
 
-expect_failure(failures, "contract syntax error", "ntfy: implemented service has no automated verification",
-               detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
-  write_contract(root, "ntfy", "#!/bin/sh\nif then\ncurl --fail http://127.0.0.1/ntfy\n")
-  register_contract(root, "ntfy")
+expect_failure(failures, "contract syntax error", "vaultwarden: implemented service has no automated verification",
+               detected_by: %i[policy mac]) do |root|
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
+  write_contract(root, "vaultwarden", "#!/bin/sh\nif then\ncurl --fail http://127.0.0.1/vaultwarden\n")
+  register_contract(root, "vaultwarden")
 end
 
-expect_failure(failures, "symlink contract", "ntfy: implemented service has no automated verification",
-               detected_by: %i[policy]) do |root|
-  File.write(File.join(root, "roles", "ntfy", "tasks", "main.yml"), provisioning_task)
+expect_failure(failures, "symlink contract", "vaultwarden: implemented service has no automated verification",
+               detected_by: %i[policy mac]) do |root|
+  File.write(File.join(root, "roles", "vaultwarden", "tasks", "main.yml"), provisioning_task)
   contracts = File.join(root, "tests", "contracts")
   FileUtils.mkdir_p(contracts)
   target = File.join(contracts, "shared.sh")
   File.write(target, "#!/bin/sh\ntrue\n")
   File.chmod(0o755, target)
-  File.symlink("shared.sh", File.join(contracts, "ntfy.sh"))
-  register_contract(root, "ntfy")
+  File.symlink("shared.sh", File.join(contracts, "vaultwarden.sh"))
+  register_contract(root, "vaultwarden")
 end
 
 expect_success(failures, "paperless contract alias") do |root|
@@ -1750,38 +1757,39 @@ expect_failure(failures, "paperless service-name contract", "paperless-ngx: impl
   register_contract(root, "paperless-ngx")
 end
 
-expect_failure(failures, "symlink compose", "ntfy: compose.yml must be a regular file within its service root",
+expect_failure(failures, "symlink compose", "trailarr: compose.yml must be a regular file within its service root",
                detected_by: %i[policy integration]) do |root|
-  path = File.join(root, "services", "ntfy", "compose.yml")
+  path = File.join(root, "services", "trailarr", "compose.yml")
   File.unlink(path)
   File.symlink("../beszel/compose.yml", path)
 end
 
 # vault detects this one too, and for a reason worth stating rather than
-# leaving to the audit to rediscover: replacing roles/ntfy with a symlink to
-# beszel keeps the env.j2 glob at seventeen -- ntfy's slot resolves through the
-# link -- while the file it now yields carries no bcrypt material. So ntfy drops
-# out of policy_vault_test.rb's Compose-escaping sweep and that property starts
-# passing vacuously for it, which is exactly what the sweep's named-roles floor
-# exists to catch. It is a rename-shaped defect reached by a different road, not
+# leaving to the audit to rediscover: replacing roles/trailarr with a symlink to
+# beszel keeps the env.j2 glob's count -- trailarr's slot resolves through the
+# link -- while the file it now yields carries no bcrypt material. So trailarr
+# drops out of policy_vault_test.rb's Compose-escaping sweep and that property
+# starts passing vacuously for it, which is exactly what the sweep's named-roles
+# floor exists to catch. The service #558 removed hosted these rows for the same
+# reason. It is a rename-shaped defect reached by a different road, not
 # an incidental overlap.
-expect_failure(failures, "symlink role directory", "ntfy: role must be a real directory within roles",
-               detected_by: %i[policy integration deployment vault]) do |root|
-  path = File.join(root, "roles", "ntfy")
+expect_failure(failures, "symlink role directory", "trailarr: role must be a real directory within roles",
+               detected_by: %i[policy deployment vault]) do |root|
+  path = File.join(root, "roles", "trailarr")
   FileUtils.rm_r(path)
   File.symlink("beszel", path)
 end
 
-expect_failure(failures, "symlink role meta", "ntfy: argument_specs.yml must be a regular file within its role root",
+expect_failure(failures, "symlink role meta", "trailarr: argument_specs.yml must be a regular file within its role root",
                detected_by: %i[policy]) do |root|
-  path = File.join(root, "roles", "ntfy", "meta", "argument_specs.yml")
+  path = File.join(root, "roles", "trailarr", "meta", "argument_specs.yml")
   File.unlink(path)
   File.symlink("../../beszel/meta/argument_specs.yml", path)
 end
 
-expect_failure(failures, "symlink role tasks", "ntfy: tasks/main.yml must be a regular file within its role root",
+expect_failure(failures, "symlink role tasks", "trailarr: tasks/main.yml must be a regular file within its role root",
                detected_by: %i[policy]) do |root|
-  path = File.join(root, "roles", "ntfy", "tasks", "main.yml")
+  path = File.join(root, "roles", "trailarr", "tasks", "main.yml")
   File.unlink(path)
   File.symlink("../../beszel/tasks/main.yml", path)
 end
@@ -1818,16 +1826,16 @@ end
 # from services/manifest.yml, so no row reads a file the fixture left behind --
 # which admits only kapowarr, nextcloud, pinchflat and vaultwarden; and it has
 # to be mutated by no other row, so no plant here can collide with one, which
-# drops nextcloud and leaves three. ntfy, beszel, deployment_bundle, host_prep,
-# komga, vault_contract and preflight are all already subjects above, several
-# repeatedly.
+# drops nextcloud and vaultwarden and leaves two. vaultwarden, trailarr, beszel,
+# deployment_bundle, host_prep, komga, vault_contract and preflight are all
+# already subjects above, several repeatedly -- vaultwarden since #558 moved the
+# verification rows onto it from the role that removal deleted.
 #
-# Among those three the choice is arbitrary, and saying so is more honest than
-# inventing a discriminator: kapowarr, pinchflat and vaultwarden each declare
-# two registered Compose deployments and one deployment report include, measured,
-# so the structure the last two rows need does not separate them. The only mild
-# preference is that kapowarr and pinchflat carry a single task file, so the
-# shell-out row appends to the only file the role has, where vaultwarden has six.
+# Between those two the choice is arbitrary, and saying so is more honest than
+# inventing a discriminator: kapowarr and pinchflat each declare two registered
+# Compose deployments and one deployment report include, measured, and each
+# carries a single task file, so the structure the last two rows need does not
+# separate them and the shell-out row appends to the only file either role has.
 #
 # None of the six can breach the two floors policy_test.rb gained in #556.
 # Those count role *directories* and role *templates*, and no plant here removes
@@ -2599,8 +2607,7 @@ end
 [
   "Generate passwords",
   "Read the Beszel hub keypair",
-  "Hash the ntfy passwords with ntfy's own hasher",
-  "Generate the ntfy access tokens with ntfy's own generator",
+  "Hash the administrator passwords with the pinned bcrypt hasher",
   "Collect the generated material",
   "Fail loudly if any value did not parse",
   "Write the plaintext vars file for encryption"

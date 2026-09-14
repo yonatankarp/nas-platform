@@ -300,10 +300,9 @@ the collapsed hooks assert their own coverage against
 `tests/contracts/registry.yml` and print an `N of M` line: a service the registry
 knows and no hook runs fails the group instead of being verified one fewer
 without saying so. A service that genuinely has no work in a group needs a named
-exemption in the hook's `mac_assert_service_coverage` call, which is how ntfy,
-the alerting sink with no user data to seed, is accounted for, and how Pinchflat
+exemption in the hook's `mac_assert_service_coverage` call, which is how Pinchflat
 is accounted for in `fixtures-seed`: its only real fixture would be a YouTube
-download, which the lane must not make. The Mac lane also covers ntfy, which the
+download, which the lane must not make. The Mac lane also covers Vaultwarden, which the
 registry does not list because it has no contract of its own;
 `MAC_UNREGISTERED_SERVICES` in `tests/mac/lib.sh` is where such a service is
 named.
@@ -329,7 +328,7 @@ tests/ci/suites.conf               one row: the suite, its kind, and the tags it
                                    the classifier, and --list-suites and the
                                    fixed tags in the runner, all derive from it
 tests/ci/classify_changes.rb       SERVICE_NAMES
-tests/ci/classify_changes_test.rb  the pinned tag plan for the lane, and NTFY_LANES
+tests/ci/classify_changes_test.rb  the pinned tag plan for the lane
 tests/integration.sh               the service/directory table and the fixture
                                    pre-seeding the launcher does before the
                                    controller container starts
@@ -496,7 +495,7 @@ that requires no container by that name to exist. `tests/policy_ci_test.rb` used
 to carry two more such lists; it now derives the planned and implemented
 acquisition lanes from `config/media-acquisition.yml` and the manifest, so the
 status flip alone moves your lane from "must converge only the inert foundation
-tags and ship no service image" to "must converge ntfy, its own role and a second
+tags and ship no service image" to "must converge the shared prerequisites, its own role and a second
 enabled convergence". A greenfield service never touches any of those.
 
 ## Worked example: Navidrome
@@ -547,7 +546,7 @@ In `tests/policy_support.rb`, add the name to `EXPECTED_SERVICES`:
 
 ```ruby
 EXPECTED_SERVICES = %w[
-  audiobookshelf beszel dozzle immich jellyfin komga navidrome ntfy
+  audiobookshelf beszel dozzle immich jellyfin komga navidrome
   paperless-ngx
 ].freeze
 ```
@@ -1100,11 +1099,6 @@ verification wrapper that is anything other than a delegation. `tests/integratio
 the `--describe-suite` line and the exact set of images the lane pre-pulls, so a
 lane that converges a new stack fails there until you say which images it needs.
 
-`tests/ci/classify_changes_test.rb` additionally keeps `NTFY_LANES`: every lane
-whose tags start the alerting sink. If your lane converges `ntfy` — and it does if
-the role publishes a deployment report — add it there as well, in both the
-classifier and the test, which state the list separately on purpose.
-
 ## The Mac lane's port chain
 
 The Mac lifecycle proof runs several isolated copies of the platform, so it cannot
@@ -1225,7 +1219,7 @@ existing value — not as a description of the field.
 
 ### A third-party credential lands in one more place than that
 
-The eleven above are for a credential this platform *generates*. A credential
+The ten above are for a credential this platform *generates*. A credential
 that belongs to somebody else — an account at an external service, the way the
 Open Subtitles pair does — needs a `NOT_PLACEHOLDER` rule in
 `filter_plugins/vault_credential_schema.py`, so the vault contract refuses to

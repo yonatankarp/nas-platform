@@ -4,19 +4,11 @@ argument_specs:
     short_description: Install the NAS production deployment poller
     description:
       - Installs the poller, its protected configuration, one protected
-        Pushover publisher configuration per application, the ntfy publisher
-        configuration a previous poller still reads, a five-minute polling
-        cron entry and an hourly verification cron entry.
+        Pushover publisher configuration per application, a five-minute
+        polling cron entry and an hourly verification cron entry.
     options:
       platform_kind:
         description: Platform discriminator; the role accepts only nas.
-        type: str
-        required: true
-      vault_ntfy_deploy_token:
-        description: >-
-          The deployer's own least-privilege write-only ntfy token, still
-          rendered into ntfy.curl for a poller process running the previous
-          revision; removed with ntfy in stage 4 of #558.
         type: str
         required: true
       vault_pushover_alerts_token:
@@ -45,15 +37,6 @@ argument_specs:
           healthchecks.io ping URL each hourly --verify verdict is reported to
           (#610). Secret for the same reason.
         type: str
-        required: true
-      ntfy_port:
-        description: >-
-          Port the ntfy.curl a previous poller still reads addresses. Required
-          rather than defaulted: this play does not run the ntfy role, so a
-          default here would be the operative value rather than a fallback and
-          a port changed in the inventory would leave that file addressing the
-          old one (#402). Declared in inventory/group_vars/all/main.yml.
-        type: int
         required: true
       production_auto_deploy_home:
         description: Real home of the dedicated non-root deployment account.

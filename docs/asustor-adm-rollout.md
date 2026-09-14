@@ -61,27 +61,31 @@ python -m pip install --upgrade pip
 python -m pip install -r controller-requirements.txt
 ```
 
-Place the credentials. The encrypted vault is committed, so every run reads it
-from the checkout; only the password provider has to be placed by hand:
+Place the credentials. The encrypted vault is committed — one file per service
+under `inventory/group_vars/all/`, plus one per third-party account — so every
+run reads it from the checkout; only the password provider has to be placed by
+hand:
 
 ```sh
 mkdir -p "$HOME/.config/nas-platform" && chmod 700 "$HOME/.config/nas-platform"
 ```
 
 Copy the vault password file to `$HOME/.config/nas-platform/vault-password` and
-`chmod 600` it, then confirm it opens the committed vault before going further:
+`chmod 600` it, then confirm it opens the committed vault before going further.
+Any one of those files proves the password; the output is discarded because
+decrypted credentials do not belong in a terminal:
 
 ```sh
-ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" inventory/group_vars/all/vault.yml | head -3
+ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" inventory/group_vars/all/vault_arr.yml >/dev/null && printf 'vault password opens the committed vault\n'
 ```
 
 Export the environment. `inventory/local.yml` reads these through `lookup('env')`,
 so they are required rather than convenient. `PLATFORM_PUBLIC_HOST` is the
 address your devices use to reach published services. On a Tailscale network
-that is the machine's tailnet domain name, not an address: ntfy hashes this value
-into the topic it registers for mobile push, and the domain is what the devices
-resolve. Setting it to a LAN or tailnet IP publishes to a topic nothing is
-subscribed to, and nothing reports an error:
+that is the machine's tailnet domain name, not an address: the services hand this
+value to clients as their links and domains, and the domain is what the devices
+resolve. Setting it to a LAN or tailnet IP hands them an address they do not
+use, and nothing reports an error:
 
 ```sh
 export PLATFORM_NAS_ADDRESS=<nas-lan-address>
@@ -244,7 +248,7 @@ branch or API that cannot be reached.
 failed attempt, so tailing it after a fix can show the previous failure and look
 like the fix did nothing. Trust the attempt count, not the file's presence.
 
-A successful cycle ends with `last successful: <sha>`, an ntfy notification, and
+A successful cycle ends with `last successful: <sha>`, a Pushover Deployments message, and
 a mode-0600 log. Polling again should print nothing: a revision is attempted at
 most once, which is what stops a broken deployment from repeating every five
 minutes. A failure that never reached the NAS is the one exception -- a lost

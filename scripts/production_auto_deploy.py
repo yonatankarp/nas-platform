@@ -278,7 +278,7 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         if field.name in _PUSHOVER_FIELDS:
             # Never a refusal (#327). The install play copies this script before
             # it renders the file, so the first tick after the move to Pushover
-            # reads a configuration the ntfy-era template wrote, which names no
+            # reads a configuration the pre-Pushover template wrote, which names no
             # Pushover config at all. Refusing it would stop every deployment
             # with nothing able to heal the host; reading it as "cannot publish"
             # costs one tick's notifications and one stderr line.

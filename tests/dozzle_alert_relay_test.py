@@ -117,7 +117,7 @@ class RecordingPushoverHandler(BaseHTTPRequestHandler):
     """Stands in for api.pushover.net and records the form it was POSTed.
 
     The whole request is captured, not only the fields a case looks at: the
-    Authorization header disappeared with the ntfy transport because Pushover
+    Authorization header disappeared with the earlier transport because Pushover
     authenticates by form field, and a case that only read the fields it cared
     about could not say that a header carrying a credential had come back.
     """
@@ -628,7 +628,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     # one line.
                     "path": "/1/messages.json",
                     # Pushover authenticates by form field. A Bearer header here
-                    # would mean the relay had carried the ntfy shape across and
+                    # would mean the relay had carried the earlier shape across and
                     # was leaking a credential into a header nothing reads.
                     "authorization": None,
                     "content_type": "application/x-www-form-urlencoded",
@@ -942,7 +942,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             ("userinfo", "https://user:pass@api.pushover.net/1/messages.json"),
             ("query", "https://api.pushover.net/1/messages.json?token=leak"),
             ("fragment", "https://api.pushover.net/1/messages.json#x"),
-            # A bare root is the ntfy shape, and POSTing a Pushover form at it
+            # A bare root was the earlier shape, and POSTing a Pushover form at it
             # would be a silent misconfiguration rather than a refusal.
             ("root", "https://api.pushover.net/"),
             ("control character", "https://api.pushover.net/1/messages.json\n"),
@@ -1280,7 +1280,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                            "\U0001f552 <b>When</b> 15 Aug 01:22 UTC",
                 "html": "1",
                 # A recovery is a record, not an emergency: a badge and no
-                # sound, which is what the second ntfy topic used to express.
+                # sound, which is what a second topic used to express.
                 "priority": "-1",
                 "url": f"{LINK_BASE}/container/{'b' * 64}",
                 "url_title": "Open in Dozzle",
@@ -1973,7 +1973,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         Nothing in the relay logged anything -- no logging import, no print, no
         stderr, `log_message` a no-op, and /healthz reporting only on the state
         store -- so a rejected alert was answered with 502, not retried by
-        Dozzle, and gone. Against a local ntfy a 4xx was barely reachable;
+        Dozzle, and gone. Against a local server a 4xx was barely reachable;
         against Pushover it is reachable through the 250 and 1024 caps, the
         priority-2 parameters, and credentials that were revoked or mistyped.
         """

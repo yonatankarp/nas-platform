@@ -25,8 +25,8 @@ class DeploymentReleaseCompareTest(unittest.TestCase):
 
     def tree(self, name, *, content=b"compose", mode=0o644):
         root = self.base / name
-        (root / "services" / "ntfy").mkdir(parents=True)
-        target = root / "services" / "ntfy" / "compose.yml"
+        (root / "services" / "beszel").mkdir(parents=True)
+        target = root / "services" / "beszel" / "compose.yml"
         target.write_bytes(content)
         target.chmod(mode)
         return root
@@ -69,15 +69,15 @@ class DeploymentReleaseCompareTest(unittest.TestCase):
     def test_symlink_is_compared_by_target_without_following(self):
         left = self.tree("a")
         right = self.tree("b")
-        for root, destination in ((left, "compose.yml"), (right, "../ntfy/compose.yml")):
+        for root, destination in ((left, "compose.yml"), (right, "../beszel/compose.yml")):
             os.symlink(destination, root / "services" / "link")
         self.assert_differs(left, right, "symlink target change missed")
 
     def test_a_symlink_is_not_resolved_into_its_content(self):
         left = self.tree("a")
         right = self.tree("b")
-        os.symlink("compose.yml", left / "services" / "ntfy" / "alias")
-        (right / "services" / "ntfy" / "alias").write_bytes(b"compose")
+        os.symlink("compose.yml", left / "services" / "beszel" / "alias")
+        (right / "services" / "beszel" / "alias").write_bytes(b"compose")
         self.assert_differs(left, right, "symlink was resolved to its target's content")
 
 

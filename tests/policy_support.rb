@@ -12,14 +12,14 @@ module PolicySupport
   # needed. It lives in this module rather than in one policy script because several
   # of them check different properties of the same roster.
   EXPECTED_SERVICES = %w[
-    audiobookshelf beszel dozzle immich jellyfin komga nextcloud ntfy
+    audiobookshelf beszel dozzle immich jellyfin komga nextcloud
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
     vaultwarden karakeep
   ].freeze
   # Not every vault key belongs to a service; these are platform-wide.
   # expectation_problems below requires every key in a tests/expected/<service>.yml
   # to carry that service's own `vault_<name>_` prefix, so a credential no single
-  # service owns has nowhere else to be pinned. The eight managed-user lists are
+  # service owns has nowhere else to be pinned. The seven managed-user lists are
   # the first kind: each is authored in its own service's vault_<role>.yml, but
   # its name inverts that service's prefix (vault_managed_komga_users, not
   # vault_komga_), and paperless-ngx's carries the role name where its credentials
@@ -36,7 +36,7 @@ module PolicySupport
     vault_managed_audiobookshelf_users vault_managed_beszel_users
     vault_managed_dozzle_users vault_managed_immich_users
     vault_managed_jellyfin_users vault_managed_komga_users
-    vault_managed_ntfy_users vault_managed_paperless_ngx_users
+    vault_managed_paperless_ngx_users
     vault_pushover_alerts_token vault_pushover_containers_token
     vault_pushover_deployments_token vault_pushover_media_token
     vault_pushover_user_key
@@ -350,11 +350,11 @@ IMPLEMENTED_STATUSES = %w[implemented accepted].freeze
   # The obvious alternative -- walk every *.yml under the role's tasks/ tree --
   # is wrong, and quietly so. `role_has_verification?` below is checked by ten
   # mutation rows in tests/policy_manifest_test.rb that replace
-  # roles/ntfy/tasks/main.yml wholesale with a file that verifies nothing and
-  # require the failure to be reported. ntfy reaches subscription.yml and
-  # managed_users.yml through include_tasks, so a
-  # directory walk would let one of those satisfy the check on behalf of the
-  # mutant, and all ten rows would pass while proving nothing. Following the
+  # roles/vaultwarden/tasks/main.yml wholesale with a file that verifies nothing
+  # and require the failure to be reported. vaultwarden's verification lives in
+  # tasks/verify.yml, which the replaced main.yml imported, so a directory walk
+  # would find that file and let it satisfy the check on behalf of the mutant,
+  # and all ten rows would pass while proving nothing. Following the
   # imports says exactly what Ansible would run as one file, and nothing else.
   #
   # +aliases+ is passed through to every file the assembly reads, so a caller

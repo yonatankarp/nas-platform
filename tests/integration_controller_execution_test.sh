@@ -131,7 +131,7 @@ PREAMBLE
 build_checkout() {
   rm -rf "$checkout"
   mkdir -p "$checkout/tests/ci" "$checkout/tests/contracts" "$checkout/tests/mac" \
-    "$checkout/inventory/group_vars/all" "$checkout/services/ntfy"
+    "$checkout/inventory/group_vars/all" "$checkout/services/beszel"
 
   # Read for real: the controller runs the lifecycle producer/consumer out of the
   # checkout, and both the suite roster and the consumer's refusals are theirs.
@@ -140,7 +140,7 @@ build_checkout() {
     "$checkout/tests/integration_lifecycle.sh"
   cp "$repo_dir/tests/ci/suites.conf" "$checkout/tests/ci/suites.conf"
   chmod 0755 "$checkout/tests/integration.sh"
-  cp "$repo_dir/services/ntfy/compose.yml" "$checkout/services/ntfy/compose.yml"
+  cp "$repo_dir/services/beszel/compose.yml" "$checkout/services/beszel/compose.yml"
   cp "$repo_dir/inventory/group_vars/all/main.yml" \
     "$checkout/inventory/group_vars/all/main.yml"
   printf '%s\n' '---' > "$checkout/inventory/local.yml"
@@ -266,18 +266,6 @@ build_stub_bin() {
 log_invocation ansible-playbook "$@"
 printf 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE=%s]\n' \
   "${ANSIBLE_VAULT_PASSWORD_FILE-<unset>}" >> "${CONTROLLER_STUB_LOG:?}"
-# ntfy's teardown scenario (#558 stage 4a) reads the container back through
-# docker, so the play it runs is what decides whether one exists: a converge with
-# the switch on brings it up, and a converge of the ntfy tag without it tears it
-# down, exactly as inventory's `false` does on a real lane. Two cases break that
-# on purpose, so each of the scenario's guards meets the state it exists for: a
-# container that never came up, and one that survived its teardown.
-case " $* " in
-  *" ntfy_deployment_enabled=true "*)
-    [ "${CASE_NTFY_NEVER_UP-}" = true ] || : > "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
-  *" --tags ntfy "*)
-    [ "${CASE_NTFY_SURVIVES-}" = true ] || rm -f "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
-esac
 printf 'PLAY RECAP *********************************************************************\n'
 printf 'nas : ok=9 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
 STUB
@@ -291,26 +279,7 @@ printf '%s\n' 'decrypted_fixture_input: true'
 STUB
   } > "$stub_bin/ansible-vault"
 
-  # docker answers the three reads the ntfy teardown scenario makes: which
-  # containers exist, the container's id, and the exit code its die event
-  # recorded -- 143 unless a case asks for the SIGKILL the scenario must refuse.
-  {
-    stub_preamble
-    cat <<'STUB'
-log_invocation docker "$@"
-case $1 in
-  ps)
-    if [ -e "${CONTROLLER_STUB_LOG:?}.ntfy-up" ]; then
-      printf '%s-ntfy\n' "${CONTROLLER_PROJECT_NAMESPACE:?}"
-    fi
-    ;;
-  inspect) printf '%s\n' ntfy-fixture-container-id ;;
-  events) printf '%s\n' "${CASE_NTFY_EXIT_CODE-143}" ;;
-esac
-STUB
-  } > "$stub_bin/docker"
-
-  for stub_name in ansible-galaxy apk pip sha256sum stat; do
+  for stub_name in ansible-galaxy apk pip docker sha256sum stat; do
     {
       stub_preamble
       cat <<STUB
@@ -328,12 +297,12 @@ build_sandbox() {
     "$sandbox/reports" \
     "$sandbox/fixtures" \
     "$sandbox/volume2" \
-    "$sandbox/volume1/Docker/nas-platform/current/services/ntfy" \
+    "$sandbox/volume1/Docker/nas-platform/current/services/beszel" \
     "$sandbox/volume1/Docker/nas-platform/runtime/services"
-  # The controller compares the target's ntfy compose against the checkout's
+  # The controller compares the target's beszel compose against the checkout's
   # byte for byte. Nothing here converges, so the target copy is seeded.
-  cp "$checkout/services/ntfy/compose.yml" \
-    "$sandbox/volume1/Docker/nas-platform/current/services/ntfy/compose.yml"
+  cp "$checkout/services/beszel/compose.yml" \
+    "$sandbox/volume1/Docker/nas-platform/current/services/beszel/compose.yml"
   # Reset per run, not once: the controller installs the ephemeral vault it
   # generated here, and a copy left over from the previous run would make a
   # planted defect that skips the install look like a pass. A case that needs
@@ -350,7 +319,7 @@ build_sandbox() {
   # A committed per-service vault, which the controller must remove for the
   # same reason: it would be decrypted with the ephemeral password.
   printf '%s\n' 'committed-operator-vault' \
-    > "$checkout/inventory/group_vars/all/vault_ntfy.yml"
+    > "$checkout/inventory/group_vars/all/vault_beszel.yml"
 }
 
 # ---------------------------------------------------------------------------
@@ -404,7 +373,6 @@ run_controller() {
 
   build_sandbox
   : > "$stub_log"
-  rm -f "$stub_log.ntfy-up"
   # The controller writes phase 2's output to a literal /tmp/second.txt. A file
   # left by an earlier case would let a planted defect that removes the second
   # play go undetected, so it is removed rather than trusted.
@@ -528,17 +496,17 @@ expect_only_disposable_project_names() {
 # harness's other two promises -- a second run that changes nothing and a
 # working --check --diff -- without entering a single service scenario.
 case_idempotence_check() {
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   expect_status 0
 
   # The three plays the harness exists to run, in order, each carrying the tags
   # the launcher chose as one argv word.
   expect_log_count 'ansible-playbook argv=' 3
-  expect_log_count '[--tags][host_prep,deployment_bundle,ntfy]' 3
+  expect_log_count '[--tags][host_prep,deployment_bundle]' 3
   expect_log_count '[--check][--diff]' 1
   expect_log 'ansible-playbook argv=[-i][inventory/local.yml][--vault-password-file][{sandbox}/nas-platform-vault.000000/password][-e][@{sandbox}/nas-platform-vault.000000/vault.yml]'
-  expect_log '[site.yml][--tags][host_prep,deployment_bundle,ntfy][--check][--diff]'
+  expect_log '[site.yml][--tags][host_prep,deployment_bundle][--check][--diff]'
   expect_output '=== phase 2: asserting idempotence ==='
   expect_output '=== phase 3: asserting --check --diff works ==='
   expect_output 'IDEMPOTENT: second run changed nothing'
@@ -558,7 +526,7 @@ case_idempotence_check() {
        '$ANSIBLE_VAULT;1.1;AES256' ]; then
     fail 'the checkout vault was not replaced by the generated ephemeral vault'
   fi
-  if [ -e "$checkout/inventory/group_vars/all/vault_ntfy.yml" ]; then
+  if [ -e "$checkout/inventory/group_vars/all/vault_beszel.yml" ]; then
     fail 'a committed per-service vault was left beside the ephemeral vault'
   fi
   expect_only_disposable_project_names
@@ -571,11 +539,11 @@ case_idempotence_check() {
 # Extra Ansible arguments must survive the two hops from the caller's command
 # line, through the launcher, into every play the controller runs.
 case_extra_arguments() {
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml --limit nas
   expect_status 0
   expect_log_count '[--limit][nas]' 3
-  expect_log '[site.yml][--tags][host_prep,deployment_bundle,ntfy][--limit][nas][--check][--diff]'
+  expect_log '[site.yml][--tags][host_prep,deployment_bundle][--limit][nas][--check][--diff]'
 }
 
 # The untagged shape: the nightly sweep and every `--full` push to `main`. All
@@ -610,7 +578,7 @@ case_empty_tags() {
 # contract, the static contract, a verification-only play, a real second
 # converge for idempotence, and only then check mode.
 case_arr() {
-  run_controller arr host_prep,deployment_bundle,ntfy,arr true true site.yml
+  run_controller arr host_prep,deployment_bundle,arr true true site.yml
   expect_status 0
   expect_log 'collision argv=[live]'
   expect_log 'contract arr argv=[static]'
@@ -636,7 +604,7 @@ case_arr() {
 
 case_downloaders() {
   run_controller downloaders \
-    host_prep,deployment_bundle,ntfy,arr,downloaders true true site.yml
+    host_prep,deployment_bundle,arr,downloaders true true site.yml
   expect_status 0
   expect_log 'contract arr argv=[static]'
   expect_log 'contract downloaders argv=[static]'
@@ -676,7 +644,7 @@ case_downloaders() {
 # failure #274 shipped, and neither lane can report it alone.
 case_bindery() {
   run_controller bindery \
-    host_prep,deployment_bundle,ntfy,arr,downloaders,audiobookshelf,bindery true true site.yml
+    host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery true true site.yml
   expect_status 0
   expect_log 'ephemeral-vault argv=[--undeclared][][--output]'
   expect_log 'contract arr argv=[static]'
@@ -700,7 +668,7 @@ case_bindery() {
 # runtime proof lives in its lane: the static foundation contract, the reader
 # prerequisites converge, and a verification play whose only fact is the tag.
 case_seerr() {
-  run_controller seerr host_prep,deployment_bundle,ntfy,arr,jellyfin,seerr \
+  run_controller seerr host_prep,deployment_bundle,arr,jellyfin,seerr \
     true true site.yml
   expect_status 0
   expect_log 'contract seerr-foundation argv=[static]'
@@ -728,7 +696,7 @@ case_seerr() {
 # that converges them: a seed for every lane that reaches the service, and the
 # full contract only for the lane that owns it.
 case_jellyfin() {
-  run_controller jellyfin host_prep,deployment_bundle,ntfy,jellyfin true true \
+  run_controller jellyfin host_prep,deployment_bundle,jellyfin true true \
     site.yml
   expect_status 0
   expect_log 'contract jellyfin argv=[seed]'
@@ -747,85 +715,18 @@ case_jellyfin() {
 }
 
 case_komga() {
-  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  run_controller komga host_prep,deployment_bundle,komga true true site.yml
   expect_status 0
   expect_log 'contract komga argv=[seed]'
   expect_log 'contract komga argv=[run]'
   expect_log_order 'contract komga argv=[seed]' 'contract komga argv=[run]'
-  # ntfy's teardown: up with the switch on, then inventory's off, then the exit
-  # code read from the die event of that container.
-  expect_log 'ansible-playbook argv=[-i][inventory/local.yml]'
-  expect_log '[--tags][ntfy][-e][ntfy_deployment_enabled=true]'
-  expect_log_order '[--tags][ntfy][-e][ntfy_deployment_enabled=true]' 'docker argv=[inspect]'
-  expect_log '[--filter][container=ntfy-fixture-container-id][--filter][event=die]'
-  expect_output 'NTFY_TEARDOWN_VERIFIED exit=143'
-  # Every komga converge asks for inventory's off; only the scenario's own
-  # trailing -e turns ntfy on, so the teardown converge after it is a real off.
-  # The common argv is told from that trailing pair by the `-e` that always
-  # follows it there and never follows the trailing one, which ends the argv.
-  # It was anchored on Karakeep's narrowing in front of it until #551 turned
-  # Karakeep on and deleted that narrowing.
-  expect_log '[-e][ntfy_deployment_enabled=false][-e]['
-  expect_no_log '[-e][ntfy_deployment_enabled=true][-e]['
-}
-
-# A teardown that stopped ntfy with SIGKILL is what pages the household through
-# Dozzle's "Unexpected exit" rule, so the lane must refuse it.
-case_komga_ntfy_killed() {
-  CASE_NTFY_EXIT_CODE=137
-  export CASE_NTFY_EXIT_CODE
-  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
-  unset CASE_NTFY_EXIT_CODE
-  expect_status 1
-  expect_output 'the ntfy teardown stopped the container with exit code "137", not 0 or 143'
-}
-
-# The running guard. A teardown over a container that never started stops
-# nothing, and every later assertion would pass over it.
-case_komga_ntfy_never_up() {
-  CASE_NTFY_NEVER_UP=true
-  export CASE_NTFY_NEVER_UP
-  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
-  unset CASE_NTFY_NEVER_UP
-  expect_status 1
-  expect_output 'the ntfy container is not running, so the teardown below proves nothing'
-  expect_no_log 'docker argv=[events]'
-}
-
-# The gone guard. A container that survived the teardown must fail the lane
-# before its exit code is ever read.
-case_komga_ntfy_survives() {
-  CASE_NTFY_SURVIVES=true
-  export CASE_NTFY_SURVIVES
-  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
-  unset CASE_NTFY_SURVIVES
-  expect_status 1
-  expect_output 'ntfy_deployment_enabled=false left the ntfy container in place'
-  expect_no_log 'docker argv=[events]'
-}
-
-# ntfy stays on for the two lanes whose contracts still read it (#558 stage 4a),
-# in every play the lane runs. Scenarios are off, so this observes the lane's own
-# converge argv without reaching contracts the checkout does not stub.
-case_dozzle_ntfy_override() {
-  run_controller dozzle host_prep,deployment_bundle,ntfy,dozzle false true site.yml
-  expect_status 0
-  expect_log '[-e][ntfy_deployment_enabled=true][-e]['
-  expect_no_log '[-e][ntfy_deployment_enabled=false]'
-}
-
-case_beszel_ntfy_override() {
-  run_controller beszel host_prep,deployment_bundle,ntfy,beszel false true site.yml
-  expect_status 0
-  expect_log '[-e][ntfy_deployment_enabled=true][-e]['
-  expect_no_log '[-e][ntfy_deployment_enabled=false]'
 }
 
 # The smoke lane stops after the converge, and is the cheapest place to observe
 # the toolchain the controller installs when it is not running from an image
 # that already has it -- the path a developer's first run and a fork's CI take.
 case_toolchain_install() {
-  run_controller smoke host_prep,deployment_bundle,ntfy,beszel true false \
+  run_controller smoke host_prep,deployment_bundle,beszel true false \
     site.yml
   expect_status 0
   expect_log "apk argv=[add][--no-cache][--quiet][docker-cli][docker-cli-compose][git][tar][openssl][apache2-utils][openssh-client][$ruby_package][$curl_package]"
@@ -841,7 +742,7 @@ case_toolchain_install() {
 case_refuses_missing_roots() {
   CASE_UNSET_VARIABLE=CONTROLLER_SANDBOX
   export CASE_UNSET_VARIABLE
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   unset CASE_UNSET_VARIABLE
   expect_nonzero_status
@@ -849,7 +750,7 @@ case_refuses_missing_roots() {
 
   CASE_REPO_DIR=$checkout/elsewhere
   export CASE_REPO_DIR
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   unset CASE_REPO_DIR
   expect_nonzero_status
@@ -865,7 +766,7 @@ case_refuses_missing_roots() {
 case_vault_install_path() {
   CASE_OPERATOR_VAULT=file
   export CASE_OPERATOR_VAULT
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   unset CASE_OPERATOR_VAULT
   expect_status 0
@@ -876,7 +777,7 @@ case_vault_install_path() {
 
   CASE_OPERATOR_VAULT=dangling-symlink
   export CASE_OPERATOR_VAULT
-  run_controller idempotence-check host_prep,deployment_bundle,ntfy true true \
+  run_controller idempotence-check host_prep,deployment_bundle true true \
     site.yml
   unset CASE_OPERATOR_VAULT
   expect_nonzero_status
@@ -896,17 +797,31 @@ case_vault_install_path() {
 # nothing, and an unchecked count is exactly how.
 # ---------------------------------------------------------------------------
 
+# A count mismatch is fatal and says why: the plant's anchor text moved, which
+# is a stale plant rather than a detected defect, and deleting it would silently
+# retire the property it proves. $6 and $7 name the plant and the repository file
+# it anchors in, because the path in $1 is a temporary copy nobody can edit.
 apply_plant() {
   ruby -e '
-    path, pattern, replacement, expected, mode = ARGV
+    path, pattern, replacement, expected, mode, label, source = ARGV
     body = File.read(path)
     needle = mode == "regexp" ? Regexp.new(pattern) : pattern
     count = body.scan(needle).length
     unless count == Integer(expected)
-      abort "plant matched #{count} occurrence(s) of #{pattern.inspect}, expected #{expected}"
+      abort <<~MESSAGE
+        STALE PLANT ANCHOR [plant] #{label}: #{source}
+          pattern (#{mode}): #{pattern.inspect}
+          matched #{count} occurrence(s), expected #{expected}
+        The plant could not be applied because its ANCHOR moved: #{source} no
+        longer contains that text the expected number of times. This abort is
+        about the plant, not the property -- whether the property still holds is
+        what any FAIL lines printed above this one report. Re-anchor the plant on
+        the line of #{source} that now produces the property; never delete it,
+        because a deleted plant leaves its property proved by nothing.
+      MESSAGE
     end
     File.write(path, body.gsub(needle, replacement.gsub("\\n", "\n")))
-  ' "$1" "$2" "$3" "$4" "$5"
+  ' "$1" "$2" "$3" "$4" "$5" "$6" "$7"
 }
 
 # label, the case that must fail, program|library, pattern, replacement,
@@ -920,8 +835,10 @@ plant() {
   cp "$pristine_program" "$planted_program"
   cp "$pristine_library" "$planted_library"
   case $plant_file in
-    program) apply_plant "$planted_program" "$4" "$5" "$6" "${7:-literal}" ;;
-    library) apply_plant "$planted_library" "$4" "$5" "$6" "${7:-literal}" ;;
+    program) apply_plant "$planted_program" "$4" "$5" "$6" "${7:-literal}" \
+      "$plant_label" tests/integration_controller.sh ;;
+    library) apply_plant "$planted_library" "$4" "$5" "$6" "${7:-literal}" \
+      "$plant_label" tests/integration_controller_lib.sh ;;
     *) printf 'unknown plant target: %s\n' "$plant_file" >&2; exit 1 ;;
   esac
   relocate_program "$planted_program" \
@@ -953,8 +870,7 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga komga_ntfy_killed komga_ntfy_never_up \
-    komga_ntfy_survives dozzle_ntfy_override beszel_ntfy_override toolchain_install \
+    downloaders bindery seerr jellyfin komga toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -1058,28 +974,6 @@ plant 'Jellyfin owning contract dropped' jellyfin program \
   'run_jellyfin_contract run' ':' 1
 plant 'Komga fixture seed dropped' komga program \
   'run_komga_contract seed' ':' 1
-plant 'ntfy teardown converge dropped' komga program \
-  'run_play --tags ntfy$' ':' 1 regexp
-plant 'ntfy teardown exit code check dropped' komga_ntfy_killed program \
-  '0|143) ;;' '*) ;;' 1
-# Each guard neutralised by short-circuiting its condition, which leaves the
-# block in place but unable to fire -- the form a careless edit takes. \x27 is a
-# single quote inside the Ruby pattern, which a shell single-quoted string cannot
-# carry.
-plant 'ntfy override missing for dozzle' dozzle_ntfy_override program \
-  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
-  'beszel|full) integration_ntfy_deployment_enabled=true ;;' 1
-plant 'ntfy override leaks into komga' komga program \
-  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
-  'beszel|dozzle|komga|full) integration_ntfy_deployment_enabled=true ;;' 1
-plant 'ntfy running guard (container not running before the teardown) disabled' \
-  komga_ntfy_never_up program \
-  "if ! docker ps --format '{{.Names}}' |" \
-  "if false && ! docker ps --format '{{.Names}}' |" 1
-plant 'ntfy gone guard (container left in place after the teardown) disabled' \
-  komga_ntfy_survives program \
-  'if (docker ps -a --format \x27\{\{\.Names\}\}\x27 \|\n +grep -Eq \x27\^\x27\$integration_project_namespace\x27-ntfy\$\x27; then)' \
-  'if false && \1' 1 regexp
 plant 'docker_container_info runtime support not installed' toolchain_install \
   program '"requests==$requests_version"' '"requests-not-installed"' 1
 

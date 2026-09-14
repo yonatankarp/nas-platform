@@ -297,7 +297,6 @@ fi
 # tests/policy_ci_test.rb asserts this covers every implemented service exactly
 # once and names only real site.yml tags, so it cannot drift from the manifest.
 service_image_sources='
-ntfy ntfy
 beszel beszel
 dozzle dozzle
 audiobookshelf audiobookshelf
@@ -1030,18 +1029,18 @@ test ! -e "$sandbox/volume1/Docker/nas-platform"
 stale_docker_root="$sandbox/stale-root/Docker"
 stale_deploy_root="$stale_docker_root/nas-platform"
 stale_release_dir="$stale_deploy_root/releases/$expected_release_id"
-mkdir -p "$stale_deploy_root/current/services/ntfy" \
-  "$stale_release_dir/services/ntfy" \
+mkdir -p "$stale_deploy_root/current/services/beszel" \
+  "$stale_release_dir/services/beszel" \
   "$stale_release_dir/services/undeclared"
 printf '%s\n' legacy-current-compose > \
-  "$stale_deploy_root/current/services/ntfy/compose.yml"
+  "$stale_deploy_root/current/services/beszel/compose.yml"
 printf '%s\n' stale-same-sha-compose > \
-  "$stale_release_dir/services/ntfy/compose.yml"
+  "$stale_release_dir/services/beszel/compose.yml"
 # A platform override the integration bundle never renders: the run deploys the
 # canonical and integration files, so a Mac override left in the release is
 # target-only content that convergence must delete.
 printf '%s\n' target-only-override > \
-  "$stale_release_dir/services/ntfy/compose.mac.yml"
+  "$stale_release_dir/services/beszel/compose.mac.yml"
 printf '%s\n' undeclared-service > \
   "$stale_release_dir/services/undeclared/compose.yml"
 
@@ -1215,9 +1214,9 @@ controller_test_dir="$sandbox/controller-checkout"
 controller_test_playbook="$controller_test_dir/dirty-controller-test.yml"
 controller_test_target="$sandbox/dirty-controller-target"
 controller_test_sentinel="$sandbox/dirty-controller-sentinel"
-mkdir -p "$controller_test_dir/services/ntfy" "$controller_test_dir/roles"
+mkdir -p "$controller_test_dir/services/beszel" "$controller_test_dir/roles"
 cp "$repo_dir/services/manifest.yml" "$controller_test_dir/services/manifest.yml"
-cp "$repo_dir/services/ntfy/compose.yml" "$controller_test_dir/services/ntfy/compose.yml"
+cp "$repo_dir/services/beszel/compose.yml" "$controller_test_dir/services/beszel/compose.yml"
 cp -R "$repo_dir/roles/deployment_bundle" "$controller_test_dir/roles/"
 cat > "$controller_test_playbook" <<EOF
 ---

@@ -86,7 +86,6 @@ BASE_FIXTURE_PATHS = %w[
   roles/production_auto_deploy/tasks/main.yml
   roles/production_auto_deploy/templates/config.json.j2
   roles/production_auto_deploy/templates/nas-platform-deploy.j2
-  roles/production_auto_deploy/templates/ntfy.curl.j2
   roles/beszel/tasks/alert.yml
   roles/deployment_bundle/tasks/report.yml
   roles/deployment_bundle/tasks/summary.yml
@@ -123,7 +122,6 @@ BASE_FIXTURE_PATHS = %w[
   tests/host_prep_integration_writer_test.rb
   tests/media_acquisition_foundation_verifier_test.rb
   tests/managed_user_state_filter_test.py
-  tests/ntfy_verify_execution_test.rb
   tests/komga_library_reconciliation_test.rb
   tests/paperless_mail_reconciliation_test.rb
   tests/media_acquisition_reconciliation_core_test.rb
@@ -191,7 +189,7 @@ BASE_FIXTURE_PATHS = %w[
 ].freeze
 EXPECTED_FIXTURE_ROLES = {
   "audiobookshelf" => "audiobookshelf", "beszel" => "beszel", "dozzle" => "dozzle",
-  "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga", "ntfy" => "ntfy",
+  "immich" => "immich", "jellyfin" => "jellyfin", "komga" => "komga",
   "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",
   "bindery" => "bindery", "kapowarr" => "kapowarr", "pinchflat" => "pinchflat",
   "trailarr" => "trailarr", "seerr" => "seerr", "nextcloud" => "nextcloud",
@@ -237,14 +235,10 @@ EXPECTED_FIXTURE_ROLES = {
 # changes what the rows that replace a role's main.yml with a stub can see: with
 # managed_users.yml present, policy_test.rb's phase-gate check finds a gated file
 # whose caller the stub removed, and four expect_success rows fail on a mutation
-# they never made -- measured, not predicted:
-#
-#   FAIL assert from registered URI result: tests/policy_test.rb: FAIL
-#     roles/ntfy/tasks/managed_users.yml: declares ntfy_managed_users_phase phases
-#     provision, subscription_sync, verify but its callers pass none
-#
-# One line, wrapped here: since #443 an entry is `<label>: <script>: <diagnostic>`,
-# one per failing script, and this is the first of the four rows' entries.
+# they never made -- measured, not predicted, on a role #558 has since removed,
+# whose managed_users.yml declared three phases: the diagnostic was policy_test.rb
+# reporting that file's phases with "its callers pass none", the first of the
+# four rows' entries.
 #
 # Enumerated from the role rather than stated, which is the opposite of the rule
 # BASE_FIXTURE_PATHS states below, and deliberately so. That rule exists so a policy
