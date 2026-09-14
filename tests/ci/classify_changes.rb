@@ -339,7 +339,9 @@ module ClassifyChanges
   # would narrow what they run rather than widen it.
   VAULT_ROUTED_PATTERN = %r{\Ainventory/group_vars/all/vault(?:_[a-z0-9_]+)?\.yml\z}
   CI_WORKFLOW_JOB_LANES = %w[docs vault reconciliation].freeze
-  CI_WORKFLOW_SUITE_LANE = "beszel"
+  # komga rather than beszel, which it was until beszel gained dozzle as a
+  # companion: one representative leg should cost one leg.
+  CI_WORKFLOW_SUITE_LANE = "komga"
 
   module_function
 

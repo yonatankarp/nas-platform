@@ -234,7 +234,8 @@ STATIC_ROWS = [
     name: "a notification webhook still sending to Pushover directly",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/defaults/main.yml",
-                  "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}",
+                  "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{\n" \
+                  "  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}",
                   "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1")
     },
     expects: "notification webhook is not the alert relay's /beszel route with the relay token"
@@ -264,7 +265,7 @@ STATIC_ROWS = [
     name: "a notification webhook without the Authorization header",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/defaults/main.yml",
-                  "&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}", "")
+                  "&@Authorization={{\n  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}", "")
     },
     expects: "notification webhook is not the alert relay's /beszel route with the relay token"
   },

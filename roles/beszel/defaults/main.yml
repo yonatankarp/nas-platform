@@ -87,8 +87,12 @@ beszel_alerts:
 # emergency priority the shoutrrr fork cannot send is still reachable only
 # through the relay. Revert this value to go back to the direct URL. Nothing
 # else has to be reverted with it: the relay keeps serving /beszel.
+#
+# Broken after `{{` for line length. Folding puts its one space inside the
+# braces, where Jinja ignores it, so the value is the one unbroken string.
 beszel_notification_url: >-
-  generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}
+  generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{
+  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}
 
 # Pushover's own credential check, which is the only thing on this platform that
 # can tell a working notification chain from a stored string. Pushover documents
