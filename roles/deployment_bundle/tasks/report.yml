@@ -55,8 +55,9 @@
       <b>{{ deployment_report_service | truncate(128, true, '', 0) | escape }}</b> was <font color="#2e7d32">recreated</font> by Compose
 
       🔖 <b>Release</b> <font color="#9e9e9e">{{ platform_release_id[:12] | escape }}</font>
-      🕒 <b>When</b> <font color="#9e9e9e">{{ now(utc=true, fmt='%d %b %H:%M UTC') | escape }}</font>{{ deployment_report_details if deployment_report_announced else '' }}
+      🕒 <b>When</b> <font color="#9e9e9e">{{ deployment_report_when | escape }}</font>{{ deployment_report_details if deployment_report_announced else '' }}
     deployment_pushover_html: 1
+    deployment_report_when: "{{ now(utc=true, fmt='%d %b %H:%M UTC') }}"
     deployment_report_announced: >-
       {{ deployment_summary_path | length > 0 and deployment_release_moved | bool }}
     deployment_report_details: "\n\n<i>Details are in the Deployments message for this release.</i>"
