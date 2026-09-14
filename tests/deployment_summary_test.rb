@@ -266,6 +266,17 @@ with_controller_repository do |directory, repository, previous, current, introdu
     written = File.read(summary_path)
     check(failures, TOKENS.values.none? { |secret| written.include?(secret) } && !written.include?(USER_KEY),
           "the poller's summary must carry no Pushover credential")
+    # The contract has two halves in two languages, and each suite asserts its
+    # own copy of the shape. This is the one place they meet: the poller's own
+    # reader must accept exactly what this play just wrote, or a drift on either
+    # side sends nothing with both suites green. The poller is stdlib-only.
+    reader = "import pathlib, sys; sys.path.insert(0, sys.argv[1]); import production_auto_deploy as p; " \
+             "p.read_release_summary(pathlib.Path(sys.argv[2]), sys.argv[3])"
+    refusal, accepted = Open3.capture2e("python3", "-B", "-c", reader, File.join(ROOT, "scripts"),
+                                        summary_path, current)
+    check(failures, accepted.success?,
+          "scripts/production_auto_deploy.py refuses the summary deployment_summary.yml just wrote, " \
+          "so the poller would announce nothing: #{refusal.lines.last&.strip}")
   end
 
   # Nothing moved, a review, or a selective converge: nothing to announce, and no

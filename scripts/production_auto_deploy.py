@@ -1678,7 +1678,7 @@ def render_release(
         url = f"https://github.com/{config.repository}/commit/{release}"
         revisions = release[:7]
     footer = f'⏱️ {duration} · <font color="{COLOR_GREY}">{revisions}</font>'
-    fields = {
+    return {
         "title": _release_title(summary),
         "message": _release_message(
             [_release_image_line(image, links) for image in summary["images"]], commit_lines, footer
@@ -1687,10 +1687,6 @@ def render_release(
         "url": url,
         "url_title": "View changes on GitHub",
     }
-    with contextlib.suppress(ValueError):
-        moment = datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-        fields["timestamp"] = str(int(moment.timestamp()))
-    return fields
 
 
 def announce_release(config: Config, candidate: str, started: str, finished: str) -> None:

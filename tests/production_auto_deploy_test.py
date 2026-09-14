@@ -2825,7 +2825,7 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
         self.assertEqual(form["url"],
                          f"https://github.com/yonatankarp/nas-platform/compare/{OTHER_SHA}...{MAIN_SHA}")
         self.assertEqual(form["url_title"], "View changes on GitHub")
-        self.assertRegex(form["timestamp"], r"\A[0-9]{10}\Z")
+        self.assertEqual(set(form), {"title", "message", "priority", "url", "url_title", "html"})
         # Two image commits, each asked about once; the removed image has none.
         self.assertEqual(sorted(seen), sorted(
             f"https://api.github.com/repos/yonatankarp/nas-platform/commits/{sha}/pulls"
