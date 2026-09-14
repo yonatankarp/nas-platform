@@ -69,11 +69,18 @@ current = manifest(
 )
 
 changes = changes_of(previous, current)
+# The full pinned reference is what the summary's Git pickaxe searches for, so an
+# image the release runs carries it verbatim, digest included, and a removed one
+# carries none: there is nothing in the release to find.
 assert changes == [
-    {"name": "immich/immich-server", "kind": "updated", "from": "v1.121.0", "to": "v1.122.0"},
-    {"name": "jellyfin", "kind": "updated", "from": "10.10.3", "to": "10.11.0"},
-    {"name": "komga", "kind": "added", "to": "1.19.0"},
-    {"name": "ntfy", "kind": "repinned", "to": "v2.27.0"},
+    {"name": "immich/immich-server", "kind": "updated", "from": "v1.121.0", "to": "v1.122.0",
+     "reference": "ghcr.io/immich-app/immich-server:v1.122.0" + DIGEST_B},
+    {"name": "jellyfin", "kind": "updated", "from": "10.10.3", "to": "10.11.0",
+     "reference": "docker.io/jellyfin/jellyfin:10.11.0" + DIGEST_B},
+    {"name": "komga", "kind": "added", "to": "1.19.0",
+     "reference": "docker.io/gotson/komga:1.19.0" + DIGEST_A},
+    {"name": "ntfy", "kind": "repinned", "to": "v2.27.0",
+     "reference": "docker.io/binwiederhier/ntfy:v2.27.0" + DIGEST_B},
     {"name": "retired", "kind": "removed", "from": "1.0.0"},
 ], changes
 
@@ -91,7 +98,9 @@ assert lines_of([]) == []
 
 # A first install has no previous manifest at all.
 first_install = changes_of(None, manifest({"ntfy": {"ntfy": "docker.io/x/ntfy:v2.27.0" + DIGEST_A}}))
-assert first_install == [{"name": "ntfy", "kind": "added", "to": "v2.27.0"}]
+assert first_install == [
+    {"name": "ntfy", "kind": "added", "to": "v2.27.0", "reference": "docker.io/x/ntfy:v2.27.0" + DIGEST_A}
+]
 
 # The title names services, deduplicated across a service's own containers.
 assert headline_of(changes, []) == "NAS deployed: immich, jellyfin, komga +2"
@@ -107,7 +116,9 @@ untagged = changes_of(
     manifest({"beszel": {"beszel": "docker.io/henrygd/beszel" + DIGEST_A}}),
     manifest({"beszel": {"beszel": "docker.io/henrygd/beszel" + DIGEST_B}}),
 )
-assert untagged == [{"name": "beszel", "kind": "repinned", "to": "untagged"}]
+assert untagged == [
+    {"name": "beszel", "kind": "repinned", "to": "untagged", "reference": "docker.io/henrygd/beszel" + DIGEST_B}
+]
 
 require_rejected(changes_of, "not-a-manifest", current)
 require_rejected(changes_of, {"services": {"jellyfin": {}}}, current)

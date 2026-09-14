@@ -74,6 +74,10 @@ def deployment_image_changes(previous_manifest, current_manifest):
     A repin — same readable tag, different digest — is reported as its own kind,
     because "nothing changed" and "the same tag now resolves elsewhere" are
     different answers to what shipped.
+
+    Every image the release now runs carries its full pinned `reference`, which
+    is the literal a Git pickaxe finds in the commit that introduced it. A
+    removed image has nothing in the release to find, so it carries none.
     """
     previous = _images(_require_manifest(previous_manifest, "previous"))
     current = _images(_require_manifest(current_manifest, "current"))
@@ -88,7 +92,7 @@ def deployment_image_changes(previous_manifest, current_manifest):
                 continue
             label = _label(service, container)
             if was is None:
-                changes.append({"name": label, "kind": "added", "to": _version(now)})
+                changes.append({"name": label, "kind": "added", "to": _version(now), "reference": now})
             elif now is None:
                 changes.append({"name": label, "kind": "removed", "from": _version(was)})
             elif _version(was) != _version(now):
@@ -98,10 +102,13 @@ def deployment_image_changes(previous_manifest, current_manifest):
                         "kind": "updated",
                         "from": _version(was),
                         "to": _version(now),
+                        "reference": now,
                     }
                 )
             else:
-                changes.append({"name": label, "kind": "repinned", "to": _version(now)})
+                changes.append(
+                    {"name": label, "kind": "repinned", "to": _version(now), "reference": now}
+                )
     return changes
 
 
