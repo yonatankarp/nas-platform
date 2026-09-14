@@ -2382,20 +2382,28 @@ unless controller_source.nil?
   # and 4 SC2068 unquoted expansions, and one SC2070 -- `[ -n $VAR ]`, which
   # tests true on an empty value. That SC2070 was not cosmetic: it was the whole
   # of the bug that ran the nightly's idempotence and check-mode phases over 88
-  # of 1495 tasks, so it is fixed and its exclusion is gone. The other two codes
-  # remain pre-existing and stay excluded. Pinned here because an exclusion list
-  # that may quietly grow is a check that quietly stops running -- and dropping a
-  # code from it, as this change does, must cost an edit here rather than pass
-  # unremarked.
+  # of 1495 tasks. The other two codes were left excluded as pre-existing, and
+  # by #640 that exclusion was covering 66 SC2086 and 5 SC2068 sites -- one of
+  # them the same class of defect as the SC2070: `[ $before != $after ]` over
+  # checksums read through a pipeline, which on an unreadable file collapses to
+  # a degenerate `[` and routes a drift guard to the WRONG BRANCH. Measured: with
+  # the .env removed between the two reads -- the exact mutation that guard
+  # exists to catch -- the old form printed BESZEL_DRIFTED_CHECK_PRESERVED_STATE
+  # and exited 0.
+  #
+  # So the list is now empty and the licence is per-line: the one deliberate
+  # word-splitting site carries its own `# shellcheck disable=SC2086`. Still
+  # pinned, because an exclusion list that may quietly grow is a check that
+  # quietly stops running -- and a code returning to it must cost an edit here
+  # rather than pass unremarked.
   manifest = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
   controller_check = manifest.lines.map(&:chomp).find do |line|
     line.end_with?(" tests/integration_controller.sh")
   end
   check(failures, controller_check ==
-        "shellcheck --shell=sh -x --exclude=SC2068,SC2086 " \
-        "tests/integration_controller.sh",
+        "shellcheck --shell=sh -x tests/integration_controller.sh",
         "tests/validate-policy.sh: the integration controller must be " \
-        "shellchecked excluding exactly SC2068,SC2086, not " \
+        "shellchecked with no --exclude at all, not " \
         "#{controller_check.inspect}")
 end
 
