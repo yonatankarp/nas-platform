@@ -781,7 +781,9 @@ STATIC_ROWS = [
         unit = find_task(document) { |task| task.key?("rescue") }
         start = unit["rescue"].find { |task| task.key?("community.docker.docker_compose_v2") }
         second = Marshal.load(Marshal.dump(start))
-        second.delete("when")
+        # Gated like every other task of the copy, so only the always check can
+        # name it.
+        second["when"] = ["not ansible_check_mode", "kapowarr_upgrade_pending | bool"]
         unit["always"] = [second]
       end
     },
