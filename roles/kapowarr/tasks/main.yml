@@ -677,9 +677,12 @@
       {{ kapowarr_getcomics_indexers[0]
          | combine({'gc_service_preference': kapowarr_service_preference_declared}) }}
     status_code: "{{ range(100, 600) | list }}"
-    # Bounded above Kapowarr's own 30-second request timeout, so a slow but
-    # healthy getcomics.org still completes, and below an unbounded wait. A
-    # healthy write measured 0.16-0.26s.
+    # Bounded above one attempt of Kapowarr's own test -- 30s to connect and 30s
+    # to read -- so a slow but healthy getcomics.org still completes, and short
+    # of Kapowarr's retries, which it spends in full before it answers
+    # ClientNotWorking. Measured with getcomics.org blackholed: five rounds about
+    # 32s apart, 2m42s in all, so this request gives up first and reports -1.
+    # A healthy write measured 0.16-0.26s.
     timeout: 75
   register: kapowarr_service_order_write
   when:
