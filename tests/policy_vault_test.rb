@@ -383,44 +383,68 @@ check(failures, unswept_bcrypt_roles.empty?,
       "#{unswept_bcrypt_roles.join(', ')}: bcrypt material reaches .env here, but the sweep no "\
       "longer matches this role and the Compose escaping property passes vacuously for it")
 
-# AND PER LINE, OVER EVERY VAULT VALUE, which the assertion above cannot say: it
-# asks whether the template contains the escape ANYWHERE, so a file that escapes
-# one value and not the next reads as compliant. That is not hypothetical --
-# roles/trailarr/templates/env.j2 escaped its bcrypt hash on one line while the
-# username directly above it went out raw, and this sweep called the file clean
-# (#642).
+# AND PER LINE, FOR EVERY CREDENTIAL WHOSE SHAPE ADMITS A `$`, which the
+# assertion above cannot say: it asks whether a template contains the escape
+# ANYWHERE, so a file that escapes one value and not the next reads as compliant.
+# That is not hypothetical -- roles/trailarr/templates/env.j2 escaped its bcrypt
+# hash on line 27 and rendered the username on line 26 raw, under a 14-line
+# header comment explaining the very property it was breaking, and this sweep
+# called the file clean (#642).
 #
-# Stated over every vault value rather than only the ones whose schema admits a
-# `$`, because this file cannot see a credential's shape and that shape moves
-# whenever filter_plugins/vault_credential_schema.py does. Doubling a `$` that is
-# not there is a no-op, so the uniform rule costs nothing at render time and
-# removes a per-credential judgement nobody was making. Five renders were raw
-# when this landed: the pinchflat pair, which services/pinchflat/compose.yml
-# calls that service's only access control, the two Pushover keys, and trailarr's
-# username.
-VAULT_ENV_RENDER = /\A[A-Z0-9_]+=\{\{\s*vault_[a-z0-9_]+\b/
-swept_vault_renders = 0
+# THE SUBJECT IS DERIVED FROM THE SCHEMA rather than listed, and that is the
+# whole value of this check. A hand-list is a second statement of which
+# credentials are free-form, and it goes stale the moment a shape moves -- the
+# first attempt at this fix carried one, and it was wrong within minutes: it
+# un-escaped vault_trailarr_admin_password_hash, the one value in the tree that
+# most obviously must be escaped. filter_plugins/vault_credential_schema.py
+# already says which credentials are pattern-constrained, so a credential that
+# gains or loses a pattern moves in and out of this subject on its own.
+#
+# A credential with no PATTERN rule may hold any non-empty string, `$` included.
+# One with a pattern -- HEX_32, UUID, DATABASE_IDENTIFIER, BCRYPT_HASH -- either
+# cannot contain `$` or, in bcrypt's case, always does and is covered by the
+# per-file rule above as well.
+credential_specs = File.read(File.join(ROOT, "filter_plugins", "vault_credential_schema.py"))
+                       .scan(/^\s{4}"(vault_[a-z0-9_]+)":\s*\((.*?)\),\n(?=\s{4}"|\s*\})/m)
+check_floor(failures, credential_specs.length, 50, "vault credential specs parsed from the schema")
+#
+# BCRYPT_HASH joins them from the other side: it is pattern-constrained, but the
+# pattern is `^\$2[aby]\$...`, so such a value ALWAYS contains `$` and is the one
+# credential that cannot survive going out raw. The per-file rule above is not
+# enough to hold it -- measured, by un-escaping
+# roles/trailarr/templates/env.j2's hash while leaving the username beside it
+# escaped: the file still contained `replace`, so the file-level assertion passed
+# and nothing said a word.
+must_escape_credentials = credential_specs.reject { |_key, body|
+  body.include?("PATTERN") && !body.include?("BCRYPT_HASH")
+}.map(&:first)
+check_floor(failures, must_escape_credentials.length, 30,
+            "vault credentials whose value may contain $")
+
+ENV_RENDER = /\A([A-Z0-9_]+)=\{\{\s*(vault_[a-z0-9_]+)\b(.*)\z/m
+swept_free_form_renders = 0
 env_templates.each do |template|
   File.readlines(template).each_with_index do |line, index|
-    next unless line.match?(VAULT_ENV_RENDER)
+    match = line.match(ENV_RENDER)
+    next unless match && must_escape_credentials.include?(match[2])
 
-    swept_vault_renders += 1
-    check(failures, line.include?("replace('$', '$$')"),
-          "#{template}:#{index + 1}: #{line.strip} renders a vault value into a Compose env " \
-          "file without | replace('$', '$$'). Compose interpolates $ here and TRUNCATES an " \
-          "unescaped value rather than refusing it, so the container starts on a credential " \
-          "the vault does not hold")
+    swept_free_form_renders += 1
+    check(failures, match[3].include?("replace('$', '$$')"),
+          "#{template}:#{index + 1}: #{match[1]} renders #{match[2]}, whose schema admits any " \
+          "non-empty value including one containing $, into a Compose env file without " \
+          "| replace('$', '$$'). Compose interpolates $ here and TRUNCATES an unescaped value " \
+          "rather than refusing it, so the container starts on a credential the vault does not " \
+          "hold")
   end
 end
-# Floored for the reason the two lists above are: a template syntax change or a
-# renamed prefix empties the match, and the property then holds for nobody while
-# every line still passes. Measured today: 35 renders across 11 of the 17 roles
-# that render an .env -- arr 4, beszel 2, bindery 1, downloaders 3, dozzle 3,
-# immich 3, nextcloud 6, paperless_ngx 7, pinchflat 2, seerr 1, trailarr 3.
-# Twenty is chosen against the bands rather than by feel, the way the floor of
-# ten above is: a collapse leaves zero or a handful, while retiring even the two
-# largest contributors lands at 22.
-check_floor(failures, swept_vault_renders, 20, "vault values rendered into role env.j2 templates")
+# Floored for the reason the two lists above are: a template syntax change, a
+# renamed prefix or a schema the regex above stops matching empties the subject,
+# and the property then holds for nobody while every line still passes. Thirteen
+# free-form credentials reach an .env today, across dozzle, immich, nextcloud,
+# paperless_ngx, pinchflat and trailarr. Eight is chosen against the bands the
+# way the floor of ten above is: a collapse leaves zero, while retiring the two
+# largest contributors lands at nine.
+check_floor(failures, swept_free_form_renders, 8, "free-form vault credentials rendered into .env")
 
 # The vault example is the documented contract; drift means an operator follows it
 # and ends up with a vault missing keys the roles require.
