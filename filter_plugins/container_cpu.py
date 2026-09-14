@@ -80,9 +80,23 @@ def platform_container_cpu_runtime_errors(
     for inspection in inspections:
         if not isinstance(inspection, dict):
             raise AnsibleFilterError("runtime CPU inspection entry must be a mapping")
-        service = inspection.get("Config", {}).get("Labels", {}).get(
-            "com.docker.compose.service"
-        )
+        # Docker reports `"Labels": null` for an image that declares none, and
+        # `"HostConfig": null` in some inspect shapes. `.get(key, {})` substitutes
+        # only for an *absent* key, so a null one reached `None.get` and raised
+        # AttributeError — a raw traceback where every other malformed input to
+        # this filter is refused by name (#648). An absent key still reads as an
+        # empty mapping, which is what it did before.
+        config = inspection.get("Config", {})
+        if not _GUARDS.is_mapping(config):
+            raise AnsibleFilterError(
+                "runtime CPU inspection entry has no container configuration"
+            )
+        labels = config.get("Labels", {})
+        if not _GUARDS.is_mapping(labels):
+            raise AnsibleFilterError(
+                "runtime CPU inspection entry has no container labels"
+            )
+        service = labels.get("com.docker.compose.service")
         if not isinstance(service, str) or service not in expected or service in seen:
             raise AnsibleFilterError(
                 "runtime CPU inspection has an unknown or duplicate service"
@@ -90,6 +104,10 @@ def platform_container_cpu_runtime_errors(
         seen.add(service)
         expected_nano = _expected_nanocpus(service, compose_services[service])
         host_config = inspection.get("HostConfig", {})
+        if not _GUARDS.is_mapping(host_config):
+            raise AnsibleFilterError(
+                f"{service}: runtime CPU inspection entry has no host configuration"
+            )
         actual_set = host_config.get("CpusetCpus")
         actual_nano = host_config.get("NanoCpus")
         if actual_set != expected_cpuset:

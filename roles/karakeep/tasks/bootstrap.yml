@@ -110,12 +110,16 @@
 # printed 0 on an empty store and 1 after one registration.
 #
 # THIS COUPLES TO KARAKEEP'S TABLE NAME. A release that renames `user` makes the
-# query raise `no such table` and exit non-zero, which fails this task by rc
-# rather than reading 0; the assertion below also refuses anything that is not a
-# non-negative integer, and refuses a count of 0 beside a vault administrator who
-# signs in. The karakeep lane is what proves the coupling still holds on the pin:
-# its first converge reads 0 and registers the administrator, and its second
-# signs in and must read 1.
+# query raise `no such table` and exit non-zero. This task tolerates that
+# (`failed_when: false`) only so the assertion straight after it can refuse by rc
+# AND say which failure it was -- the module refusing before it ran, the
+# container gone, or the query failing -- where a failed_when could print only
+# that an expression was true. A count that did not exit 0 is never read as 0.
+# The assertion after that also refuses anything that is not a non-negative
+# integer, and refuses a count of 0 beside a vault administrator who signs in.
+# The karakeep lane is what proves the coupling still holds on the pin: its first
+# converge reads 0 and registers the administrator, and its second signs in and
+# must read 1.
 #
 # Only when the application answered the probe with 200 or 401, which is what
 # proves the container is up; under --check on a host that never ran Karakeep
@@ -137,9 +141,48 @@
         process.stdout.write(String(db.prepare('SELECT COUNT(*) AS n FROM "user"').get().n));
         db.close();
   register: karakeep_account_count
-  failed_when: (karakeep_account_count.rc | default(1) | int) != 0
+  failed_when: false
   changed_when: false
   check_mode: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - (karakeep_bootstrap_probe.status | default(0) | int) in [200, 401]
+
+# The rc default is 1, not 0: a module that refuses before it runs anything sets
+# no rc, and that must refuse too. fail_msg is templated before the assertion is
+# decided (#536), so it renders on the passing path as well and is built only
+# from expressions that cannot fail: every field defaulted, no subscripts. It
+# names no vault value -- the administrator email is deliberately never rendered.
+- name: Require the Karakeep account count to have run to completion
+  ansible.builtin.assert:
+    that:
+      - (karakeep_account_count.rc | default(1) | int) == 0
+    fail_msg: >-
+      The read-only count of Karakeep's accounts did not complete (rc
+      {{ karakeep_account_count.rc | default('none, the command never ran') }}).
+      {{ ('The exec never reached the container: the project directory, a Compose
+      file or the .env it names is missing, so the release or runtime directory is
+      not what deployment_bundle installed.'
+      if karakeep_account_count.rc is not defined
+      or (karakeep_account_count.stderr | default('', true) | string) is search('env file', ignorecase=true) else
+      ('The application container stopped, was killed or was paused between the
+      sign-in probe and this count.'
+      if (karakeep_account_count.stderr | default('', true) | string) is search('not running|is paused', ignorecase=true) else
+      'The query itself failed inside the container -- most likely a Karakeep
+      release renamed the `user` table or moved the database; check it against
+      the pinned image.')) }}
+      Signups were NOT opened, nothing was registered, and a count that did not
+      complete is never treated as 0. It reported:
+      {{ (karakeep_account_count_output | select('search', 'Error') | first)
+      | default(karakeep_account_count_output | first | default(''), true) | truncate(200) }}
+  # Node prints an exception's source location before its `SqliteError: ...`
+  # line, so the first line naming an Error is preferred over the first line.
+  vars:
+    karakeep_account_count_output: >-
+      {{ ((karakeep_account_count.stderr | default('', true) | string | trim)
+      or (karakeep_account_count.msg | default('', true) | string | trim)
+      or 'nothing').splitlines() }}
   when:
     - karakeep_deployment_enabled | bool
     - karakeep_runtime_env.stat.exists

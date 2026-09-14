@@ -3,7 +3,7 @@
 
 The cases here are the ones a differential against the `set_fact` loops these
 filters replaced found interesting: normalization by case, whitespace and
-trailing slash; the retired list being compared raw against a normalized URL;
+trailing slash; the retired list, which is normalized on both sides since #648;
 the overlay preserving keys Jellyfin reports and this platform does not declare;
 and the merged ordering, which decides whether the role POSTs a replacement
 collection at all.
@@ -104,14 +104,19 @@ assert merged_from(inventory_of([third_party, stable]), declared, retired) == [
     intro,
 ]
 
-# A retired repository is dropped, and the comparison normalizes only the
-# reported URL: a retired entry that differs by case or by a trailing slash from
-# what Jellyfin reports does not retire anything.
+# A retired repository is dropped, and both sides of that comparison are
+# normalized (#648). Until then only the reported URL was, so a retired entry
+# differing by case or by a trailing slash retired nothing and reported success;
+# the two asserts below are the ones that pinned that defect, flipped.
 listed_retired = {"Name": "Old Stable", "Url": RETIRED_URL.upper()}
 assert merged_from(inventory_of([listed_retired]), [], retired) == []
-assert merged_from(inventory_of([{"Name": "Old", "Url": RETIRED_URL}]), [], [RETIRED_URL + "/"]) == [
-    {"Name": "Old", "Url": RETIRED_URL}
-]
+old_stable = {"Name": "Old", "Url": RETIRED_URL}
+assert merged_from(inventory_of([old_stable]), [], [RETIRED_URL + "/"]) == []
+assert merged_from(inventory_of([old_stable]), [], [RETIRED_URL.upper()]) == []
+assert merged_from(inventory_of([old_stable]), [], ["  " + RETIRED_URL + "//  "]) == []
+# Normalization is not a substring test: a URL that merely contains a reported
+# one still retires nothing.
+assert merged_from(inventory_of([old_stable]), [], [RETIRED_URL + "?x"]) == [old_stable]
 
 # A declared repository that normalizes onto a retired URL is dropped when
 # Jellyfin already lists it and appended when it does not. Preserved from the

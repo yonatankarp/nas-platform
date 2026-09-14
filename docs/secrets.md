@@ -10,11 +10,12 @@ history, logs, tickets, or pull requests. Do not paste them into diagnostic
 output.
 
 Phase 1 provider/indexer fields and Bazarr preferences are credentials, and
-belong in the vault beside every other credential. `group_vars/all/main.yml`
-carries them as empty lists so a target that has declared nothing starts without
-unattended acquisition; a declaration in the vault overrides that. Never commit
-a plaintext provider configuration or place its fields directly on the command
-line.
+belong in the Arr service's vault file beside every other credential.
+`inventory/group_vars/all/service_arr.yml` carries them as empty lists so a
+target that has declared nothing starts without unattended acquisition; a
+declaration in `inventory/group_vars/all/vault_arr.yml` is loaded after that
+file and overrides it. Never commit a plaintext provider configuration or place
+its fields directly on the command line.
 
 They were previously kept in an encrypted file outside the repository. Nothing
 was gained by it: the vault is encrypted with 384 random bits that never enter
@@ -1202,50 +1203,110 @@ pass.
 
 ## Install reviewed vault for NAS
 
-Only after validation, private review, and the complete proof pass, copy the
-ciphertext into the repository location for NAS deployment. The destination
-gate prevents `install` from overwriting an existing repository vault. If one
-exists, stop and inspect it; decide explicitly whether to reuse it or back it up
-before beginning a separate replacement procedure.
+Only after validation, private review, and the complete proof pass, author the
+reviewed credentials into the repository. The deployment vault lives there and
+is committed: the NAS poller converges a released revision from a checkout, so a
+credential that is not in the checkout is not deployed.
+
+**The destination is not one file.** The repository carries one encrypted file
+per service under `inventory/group_vars/all/`, plus one for each third-party
+account, and which key belongs in which file is the rule
+[Add a new secret](#add-a-new-secret) already states: a key listed under
+vault_keys in `tests/expected/<service>.yml` belongs in that service's
+`inventory/group_vars/all/vault_<role>.yml` together with its managed-user list,
+the Pushover user key and its four application tokens in
+`inventory/group_vars/all/vault_pushover.yml`, and the healthchecks.io pair in
+`inventory/group_vars/all/vault_healthchecks.yml`.
+
+**Nothing is installed at `inventory/group_vars/all/vault.yml`.** That
+single-file path is retired, and `tests/policy_vault_test.rb` fails on a
+committed one: every key already has a per-service home, so a tracked copy there
+could only duplicate those keys, and Ansible reports no such duplicate — the
+file loaded later wins, silently. An untracked copy at that path is no better
+for the same reason, because the per-service files are in the checkout either
+way. Confirm the path is clear before authoring anything, and move rather than
+merge if it is not:
 
 ```sh
 if [ -e inventory/group_vars/all/vault.yml ] || \
    [ -L inventory/group_vars/all/vault.yml ]; then
-  printf 'STOP: repository vault already exists; inspect or reuse it: %s\n' \
+  printf 'STOP: retired single-file vault competes with the per-service files: %s\n' \
     inventory/group_vars/all/vault.yml >&2
-else
-  install -m 600 "$PLATFORM_VAULT_FILE" inventory/group_vars/all/vault.yml
 fi
 ```
 
-Only when the preceding block installs a new file, check its header and status:
+The reviewed external vault is not installed either. It stays at
+`$PLATFORM_VAULT_FILE`, backed up as recorded above, and remains the authoring
+and proof artifact: the Mac lane's `--vault-file` and the redacted validation's
+`-e @"$PLATFORM_VAULT_FILE"` read it directly, which is why a single external
+file remains valid while a second copy inside `group_vars` is not. The
+repository copy is authored from it one service at a time, through the encrypted
+editor:
 
 ```sh
-IFS= read -r vault_header < inventory/group_vars/all/vault.yml
-case "$vault_header" in
-  '$ANSIBLE_VAULT;'*) printf 'Encrypted repository vault header confirmed\n' ;;
-  *) printf 'STOP: repository vault is not encrypted: %s\n' \
-       inventory/group_vars/all/vault.yml >&2 ;;
-esac
-unset vault_header
-git status --short inventory/group_vars/all/vault.yml
+ansible-vault edit \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  inventory/group_vars/all/vault_<role>.yml
 ```
 
-That single-file vault stays untracked. Do not commit it: repository policy
-refuses a committed `inventory/group_vars/all/vault.yml`, because every key now
-has a home in a per-service vault file and a second copy would silently compete
-with those. Never commit the vault password, plaintext or decrypted vaults,
-rendered environment files, temporary private keys, application/database
-configuration containing secrets, or secret-bearing logs. For an
-existing-deployment recovery, `generate-secrets.yml` remains forbidden.
-
-Git preserves only the executable bit, not owner-only mode `0600`, and an
-untracked file copied or restored by hand can lose that mode just as easily.
-Before using the installed vault, restore its local permissions:
+A brand-new platform has a brand-new vault password, which is not the password
+the committed files were encrypted under, so that editor cannot open them.
+Replace each file instead: remove the one the checkout carries and create it
+again under the new password, the same `ansible-vault create` that
+[Add a new secret](#add-a-new-secret) gives a service with no vault file yet.
+Nothing is lost that the reviewed vault does not already hold.
 
 ```sh
-chmod 600 inventory/group_vars/all/vault.yml
+rm inventory/group_vars/all/vault_<role>.yml
+ansible-vault create \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE" \
+  inventory/group_vars/all/vault_<role>.yml
 ```
+
+Move each value from the reviewed vault's own editor into the service file's.
+Do not decrypt either vault onto disk, into a terminal, or through a shell
+command to do it. Authoring the files one at a time is what the split costs
+today: the starter generator still writes a single plaintext file, so the
+distribution is the operator's to make.
+
+When every file has been authored, confirm each is encrypted and that the
+working tree holds only those files. The loop prints one line per file and
+nothing on stderr when they all pass, and `git status` is where an untracked
+single-file vault would appear:
+
+```sh
+for platform_vault_path in inventory/group_vars/all/vault_*.yml; do
+  IFS= read -r platform_vault_header < "$platform_vault_path"
+  case "$platform_vault_header" in
+    '$ANSIBLE_VAULT;'*) printf 'encrypted: %s\n' "$platform_vault_path" ;;
+    *) printf 'STOP: not encrypted: %s\n' "$platform_vault_path" >&2 ;;
+  esac
+done
+unset platform_vault_header
+unset platform_vault_path
+git status --short inventory/group_vars/all/
+```
+
+Then validate the whole credential set through an inventory, which is what binds
+group_vars to the play, and run the vault check the policy gate runs:
+
+```sh
+ansible-playbook -i inventory/local.yml validate-vault.yml \
+  --vault-password-file "$PLATFORM_VAULT_PASSWORD_FILE"
+ruby tests/policy_vault_test.rb
+```
+
+Commit the per-service encrypted files. They are the one vault artifact that
+belongs in the repository, and committing them is what keeps automatic
+deployment and configured acquisition from being mutually exclusive; their
+ciphertext discloses nothing, for the reason this guide opens with. Git
+materializes them at the mode it preserves, which is correct for ciphertext,
+while owner-only mode 0600 stays the rule for the external vault and the
+password file that are never committed. Never commit the vault password, a
+plaintext or decrypted vault, rendered environment files, plaintext credentials,
+application or database configuration containing secrets, or secret-bearing
+logs. For an existing-deployment recovery, `generate-secrets.yml` remains
+forbidden.
 
 ## Add a new secret
 

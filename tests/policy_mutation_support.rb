@@ -9,6 +9,18 @@
 # BASE_FIXTURE_PATHS is deliberately stated rather than derived from the repository:
 # a sandbox built from whatever happens to be on disk would stop proving that a
 # policy check reads the file it claims to read.
+#
+# The eighteen vault_<role>.yml files are here because tests/policy_vault_test.rb
+# stopped merely globbing them and started REQUIRING one per implemented service
+# (#636). Before that the glob found nothing in a sandbox and the loop ran zero
+# times, so their absence cost nothing; a requirement reads that same absence as
+# the violation it exists to catch. The symptom was the documented one and worth
+# recognising rather than rediscovering: five expect_success rows went red at
+# once, every one of them reporting `vault_arr.yml is missing` -- not one check
+# failing, but every row that expects a clean tree failing identically.
+#
+# Adding a service therefore adds a line here too. That is the price of stating
+# the list, and it is the same price docs/adding-a-service.md already charges.
 
 require "fileutils"
 require "open3"
@@ -50,6 +62,24 @@ BASE_FIXTURE_PATHS = %w[
   inventory/group_vars/all/media_libraries.yml
   inventory/group_vars/all/media_acquisition.yml
   inventory/group_vars/all/vault.yml.example
+  inventory/group_vars/all/vault_arr.yml
+  inventory/group_vars/all/vault_audiobookshelf.yml
+  inventory/group_vars/all/vault_beszel.yml
+  inventory/group_vars/all/vault_bindery.yml
+  inventory/group_vars/all/vault_downloaders.yml
+  inventory/group_vars/all/vault_dozzle.yml
+  inventory/group_vars/all/vault_healthchecks.yml
+  inventory/group_vars/all/vault_immich.yml
+  inventory/group_vars/all/vault_jellyfin.yml
+  inventory/group_vars/all/vault_kapowarr.yml
+  inventory/group_vars/all/vault_karakeep.yml
+  inventory/group_vars/all/vault_komga.yml
+  inventory/group_vars/all/vault_nextcloud.yml
+  inventory/group_vars/all/vault_paperless_ngx.yml
+  inventory/group_vars/all/vault_pinchflat.yml
+  inventory/group_vars/all/vault_pushover.yml
+  inventory/group_vars/all/vault_seerr.yml
+  inventory/group_vars/all/vault_trailarr.yml
   inventory/group_vars/mac_hosts/main.yml
   inventory/group_vars/nas_hosts/main.yml
   inventory/local.yml

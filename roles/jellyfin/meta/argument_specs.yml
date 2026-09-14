@@ -68,10 +68,11 @@ argument_specs:
         type: list
         elements: dict
         required: false
-      # Compared raw against the normalized URL of every repository Jellyfin
-      # reports, by jellyfin_merged_repositories. A scalar here is a substring
-      # test rather than list membership, which the filter now refuses and this
-      # declaration stops one layer earlier.
+      # Normalized by jellyfin_merged_repositories and compared against the
+      # normalized URL of every repository Jellyfin reports, so a trailing slash
+      # or an uppercase host here retires what it names (#648). A scalar is a
+      # substring test rather than list membership, which the filter refuses and
+      # this declaration stops one layer earlier.
       jellyfin_retired_plugin_repository_urls:
         type: list
         elements: str
