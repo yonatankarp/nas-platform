@@ -195,9 +195,12 @@
     # report gated on the deploy alone would say nothing on the one converge an
     # operator most wants to hear about. It is registered even when skipped, and
     # `default({})` covers the paths that never reach it at all.
+    # The pre-upgrade copy's rescue start is named for completeness: that path
+    # fails the run before this report, so it never decides the verdict here.
     deployment_report_changed: >-
       {{ (kapowarr_deploy is changed)
-         or ((kapowarr_wedged_recreate | default({})) is changed) }}
+         or ((kapowarr_wedged_recreate | default({})) is changed)
+         or ((kapowarr_pre_upgrade_restart | default({})) is changed) }}
 
 - name: Verify Kapowarr effective container CPU policy
   ansible.builtin.include_role:
