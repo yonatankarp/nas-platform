@@ -92,7 +92,7 @@ ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The nine base Compose files the labels program is handed, in the wrapper's
+# The eight base Compose files the labels program is handed, in the wrapper's
 # order. Stated here so a row can break exactly one of them and so the wrapper
 # layer can assert the list has not drifted from the wrapper's own invocation.
 BASE_COMPOSE_FILES = %w[
@@ -103,7 +103,6 @@ BASE_COMPOSE_FILES = %w[
   services/jellyfin/compose.yml
   services/komga/compose.yml
   services/nextcloud/compose.yml
-  services/ntfy/compose.yml
   services/paperless-ngx/compose.yml
 ].freeze
 
@@ -256,8 +255,8 @@ GROUP_RENDER_ROWS = [
     config: -> { dozzle_render }, expects: nil },
   { name: "an intact grouped render", stack: "beszel", group: "beszel", variant: "mac",
     config: -> { grouped_render("beszel") }, expects: nil },
-  { name: "an intact single-container render", stack: "ntfy", group: "", variant: "integration",
-    config: -> { single_render("ntfy") }, expects: nil },
+  { name: "an intact single-container render", stack: "komga", group: "", variant: "integration",
+    config: -> { single_render("komga") }, expects: nil },
   {
     # The behavioural assertion: the render is driven with a port the repository
     # never contains, so a copy of the number anywhere in the alert-relay service
@@ -334,24 +333,24 @@ GROUP_RENDER_ROWS = [
     expects: "dozzle base socket-proxy name label differs"
   },
   {
-    name: "a single-container stack that gained a group", stack: "ntfy", group: "",
+    name: "a single-container stack that gained a group", stack: "komga", group: "",
     variant: "base",
     config: lambda {
-      config = single_render("ntfy")
-      config["services"]["ntfy"]["labels"]["dev.dozzle.group"] = "ntfy"
+      config = single_render("komga")
+      config["services"]["komga"]["labels"]["dev.dozzle.group"] = "komga"
       config
     },
-    expects: "ntfy base ntfy left Running Containers grouping"
+    expects: "komga base komga left Running Containers grouping"
   },
   {
-    name: "a single-container stack that gained a container", stack: "ntfy", group: "",
+    name: "a single-container stack that gained a container", stack: "komga", group: "",
     variant: "base",
     config: lambda {
-      config = single_render("ntfy")
+      config = single_render("komga")
       config["services"]["sidecar"] = { "labels" => { "dev.dozzle.name" => "sidecar" } }
       config
     },
-    expects: "ntfy base must remain a single-container stack"
+    expects: "komga base must remain a single-container stack"
   },
   {
     name: "a grouped stack collapsed to one container", stack: "beszel", group: "beszel",
@@ -421,7 +420,7 @@ LABEL_ROWS = [
   },
   {
     name: "a base Compose file that no longer parses",
-    edit: lambda { |root| edit_text(root, "services/ntfy/compose.yml") { |source|
+    edit: lambda { |root| edit_text(root, "services/jellyfin/compose.yml") { |source|
       substitute(source, "services:\n", "services:\n  \tbroken: [\n")
     } },
     expects: "base Compose label YAML is invalid"
@@ -783,12 +782,12 @@ ALERTS_ROWS = [
     expects: "relay listener port is not a single declared TCP port"
   },
   {
-    name: "a dispatcher pointed straight at ntfy", mode: "verify",
+    name: "a dispatcher pointed straight at the publisher", mode: "verify",
     argument: "roles/dozzle/defaults/main.yml",
     edit: lambda { |root|
       edit_yaml_text(root, "roles/dozzle/defaults/main.yml",
                      "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n",
-                     "  url: http://ntfy:80/nas-critical\n")
+                     "  url: https://api.pushover.net/1/messages.json\n")
     },
     expects: "managed dispatcher must target only the private alert relay"
   },
@@ -803,13 +802,13 @@ ALERTS_ROWS = [
     expects: "managed dispatcher authorization differs"
   },
   {
-    name: "a dispatcher that went back to an ntfy envelope", mode: "verify",
+    name: "a dispatcher that went back to a presentation envelope", mode: "verify",
     argument: "roles/dozzle/defaults/main.yml",
     edit: lambda { |root|
       edit_yaml_text(root, "roles/dozzle/defaults/main.yml",
-                     "    {{ {'version': 1,\n", "    {{ {'topic': 'nas-critical',\n        'version': 1,\n")
+                     "    {{ {'version': 1,\n", "    {{ {'title': '{{ .Container.Name }}',\n        'version': 1,\n")
     },
-    expects: "managed dispatcher retains an ntfy presentation envelope"
+    expects: "managed dispatcher retains a presentation envelope"
   },
   {
     name: "a dispatcher missing the container identity", mode: "verify",
@@ -1028,18 +1027,15 @@ end
 # --- runtime layer ----------------------------------------------------------
 #
 # The live half, against a stub notification API and a stub `ansible-vault`. Not
-# a replacement for the dozzle integration lane -- there is no relay, no ntfy and
-# no Docker event here -- but the assertions the lane's `verify` phase makes on
+# a replacement for the dozzle integration lane -- there is no relay, no Pushover
+# recorder and no Docker event here -- but the assertions the lane's `verify` phase makes on
 # what the API reports back are the ones this contract exists for, and until this
 # file none of them could be run without a converged stack.
 
 VAULT_FIXTURE = {
   "vault_dozzle_admin_username" => "dozzle-contract-admin",
   "vault_dozzle_admin_password" => "dozzle-contract-secret",
-  "vault_ntfy_dozzle_token" => "tk_dozzlecontractpublish",
-  "vault_dozzle_alert_relay_token" => "7f3c" * 16,
-  "vault_ntfy_admin_user" => "ntfy-contract-admin",
-  "vault_ntfy_admin_password" => "ntfy-contract-secret"
+  "vault_dozzle_alert_relay_token" => "7f3c" * 16
 }.freeze
 
 EXPECTED_TEMPLATE = JSON.generate(
@@ -1091,12 +1087,10 @@ class StubApi
   end
 
   def start
-    %i[dozzle ntfy].each do |role|
-      server = TCPServer.new("127.0.0.1", 0)
-      @servers[role] = server
-      @threads << Thread.new { serve(role, server) }
-    end
-    [@servers.fetch(:dozzle).addr[1], @servers.fetch(:ntfy).addr[1]]
+    server = TCPServer.new("127.0.0.1", 0)
+    @servers[:dozzle] = server
+    @threads << Thread.new { serve(server) }
+    server.addr[1]
   end
 
   def stop
@@ -1106,7 +1100,7 @@ class StubApi
 
   private
 
-  def serve(role, server)
+  def serve(server)
     loop do
       socket = begin
         server.accept
@@ -1114,7 +1108,7 @@ class StubApi
         break
       end
       begin
-        handle(role, socket)
+        handle(socket)
       rescue StandardError
         nil
       ensure
@@ -1123,7 +1117,7 @@ class StubApi
     end
   end
 
-  def handle(role, socket)
+  def handle(socket)
     request_line = socket.gets
     return unless request_line
 
@@ -1135,7 +1129,7 @@ class StubApi
     end
     length = headers.fetch("content-length", "0").to_i
     body = length.positive? ? socket.read(length) : ""
-    status, content_type, payload, extra = route(role, method, target, headers, body)
+    status, content_type, payload, extra = route(method, target, headers, body)
     socket.write("HTTP/1.1 #{status} X\r\n")
     Array(extra).each { |header| socket.write("#{header}\r\n") }
     socket.write("Content-Type: #{content_type}\r\n") if content_type
@@ -1145,9 +1139,7 @@ class StubApi
 
   JSON_TYPE = "application/json"
 
-  def route(role, method, target, headers, body)
-    return ntfy_route(headers) if role == :ntfy
-
+  def route(method, target, headers, body)
     path = target.split("?", 2).first
     return token_route(body) if method == "POST" && path == "/api/token"
 
@@ -1195,10 +1187,6 @@ class StubApi
     extra = @state.fetch(:set_cookie, true) ? ["Set-Cookie: dozzle-session=abc; Path=/"] : []
     [200, JSON_TYPE, JSON.generate("ok" => true), extra]
   end
-
-  def ntfy_route(_headers)
-    [@state.fetch(:ntfy_status, 403), JSON_TYPE, JSON.generate("error" => "forbidden"), nil]
-  end
 end
 
 require "cgi"
@@ -1216,7 +1204,7 @@ STUB
 def with_runtime_stub(state, relay_port: 8081)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
   stub = StubApi.new(merged)
-  dozzle_port, ntfy_port = stub.start
+  dozzle_port = stub.start
   Dir.mktmpdir("nas-platform-dozzle-runtime.") do |raw|
     root = File.realpath(raw)
     reports = File.join(root, "reports")
@@ -1233,7 +1221,6 @@ def with_runtime_stub(state, relay_port: 8081)
       "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
       "DOZZLE_STUB_VAULT" => vault,
       "PLATFORM_DOZZLE_PORT" => dozzle_port.to_s,
-      "PLATFORM_NTFY_PORT" => ntfy_port.to_s,
       # The wrapper exports this in every mode, so these direct invocations
       # supply it in every mode too. Deliberately a port nothing here binds:
       # none of these rows reaches the notify mode, and a row that started to
@@ -1279,11 +1266,6 @@ RUNTIME_ROWS = [
     expects: "vault credential did not receive an authentication cookie"
   },
   {
-    name: "a publish token that can also read a topic", mode: "verify",
-    state: { ntfy_status: 200 },
-    expects: "GET /nas-critical/json returned HTTP 200"
-  },
-  {
     name: "a second managed dispatcher", mode: "verify",
     state: { dispatchers: [desired_dispatcher, desired_dispatcher.merge("id" => "disp02")] },
     expects: "expected exactly one dispatcher"
@@ -1295,7 +1277,7 @@ RUNTIME_ROWS = [
   },
   {
     name: "a dispatcher that is no longer a webhook", mode: "verify",
-    state: { dispatchers: [desired_dispatcher.merge("type" => "ntfy")] },
+    state: { dispatchers: [desired_dispatcher.merge("type" => "pushover")] },
     expects: "managed dispatcher type differs"
   },
   {
@@ -1498,7 +1480,7 @@ WRAPPER_PROGRAM_SOURCES = {
 RENDERED_STACKS = {
   "beszel" => "beszel", "dozzle" => "dozzle", "paperless-ngx" => "paperless",
   "immich" => "immich", "nextcloud" => "nextcloud",
-  "audiobookshelf" => "", "jellyfin" => "", "komga" => "", "ntfy" => ""
+  "audiobookshelf" => "", "jellyfin" => "", "komga" => ""
 }.freeze
 
 def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
@@ -2218,7 +2200,7 @@ PROGRAM_MUTATIONS = [
     program: :alerts,
     from: "  dispatcher.fetch(\"url\") == \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n",
     to: "  true\n",
-    rows: ["a dispatcher pointed straight at ntfy"]
+    rows: ["a dispatcher pointed straight at the publisher"]
   },
   {
     label: "the dispatcher authorization check",
@@ -2229,12 +2211,12 @@ PROGRAM_MUTATIONS = [
     rows: ["a dispatcher that stopped carrying its token"]
   },
   {
-    label: "the ntfy envelope rejection",
+    label: "the presentation envelope rejection",
     program: :alerts,
     from: "  %w[topic title message priority tags markdown].any? " \
           "{ |field| template_source.include?(\"'#{'#'}{field}'\") }\n",
     to: "  false\n",
-    rows: ["a dispatcher that went back to an ntfy envelope"]
+    rows: ["a dispatcher that went back to a presentation envelope"]
   },
   {
     label: "the exact template field scan",
@@ -2424,14 +2406,6 @@ PROGRAM_MUTATIONS = [
     from: "  fail_contract(\"#{'#'}{name} rule differs\") unless rule[\"enabled\"] == true &&\n",
     to: "  fail_contract(\"#{'#'}{name} rule differs\") unless true ||\n",
     rows: ["a disabled alert rule", "a rule wired to another dispatcher"]
-  },
-  {
-    label: "the write-only publish token check",
-    program: :runtime,
-    from: "  request(\"get\", endpoint(NTFY, \"/#{'#'}{topic}/json?poll=1\"), " \
-          "bearer: publisher, expected: [403])\n",
-    to: "",
-    rows: ["a publish token that can also read a topic"]
   },
   {
     label: "the report root safety check",

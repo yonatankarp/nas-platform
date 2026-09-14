@@ -41,10 +41,10 @@ abort "Dozzle contract failed: managed dispatcher must target only the private a
 # posts to. A second check for the same variable anywhere in the defaults file
 # could only ever pass when this one already had.
 #
-# The variable is deliberately not vault_ntfy_dozzle_token. Dozzle persists this
-# header in its own /data volume and serves it back in cleartext over its API,
-# so naming the ntfy publish credential here would store a second copy of it at
-# rest in a place the relay never needed it (#172).
+# The variable is deliberately the relay's own secret and no other credential.
+# Dozzle persists this header in its own /data volume and serves it back in
+# cleartext over its API, so naming a publish credential here would store a
+# second copy of it at rest in a place the relay never needed it (#172).
 abort "Dozzle contract failed: managed dispatcher authorization differs" unless
   dispatcher.fetch("headers") == {"Authorization" => "Bearer {{ vault_dozzle_alert_relay_token }}"}
 expected_template_fields = {
@@ -59,7 +59,11 @@ expected_template_fields = {
   "timestamp" => '.Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00`'
 }
 template_source = dispatcher.fetch("template")
-abort "Dozzle contract failed: managed dispatcher retains an ntfy presentation envelope" if
+# The relay owns presentation; the dispatcher hands it an event envelope and
+# nothing a notification service would render. These field names are the
+# presentation shape Dozzle was once pointed at directly, and a template that
+# grows one of them back is presenting past the relay.
+abort "Dozzle contract failed: managed dispatcher retains a presentation envelope" if
   %w[topic title message priority tags markdown].any? { |field| template_source.include?("'#{field}'") }
 expected_template_fields.each do |field, expression|
   abort "Dozzle contract failed: managed dispatcher is missing exact #{field}" unless

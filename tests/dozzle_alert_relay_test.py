@@ -942,7 +942,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             ("userinfo", "https://user:pass@api.pushover.net/1/messages.json"),
             ("query", "https://api.pushover.net/1/messages.json?token=leak"),
             ("fragment", "https://api.pushover.net/1/messages.json#x"),
-            # A bare root is the ntfy shape, and POSTing a Pushover form at it
+            # A bare root was the ntfy shape, and POSTing a Pushover form at it
             # would be a silent misconfiguration rather than a refusal.
             ("root", "https://api.pushover.net/"),
             ("control character", "https://api.pushover.net/1/messages.json\n"),

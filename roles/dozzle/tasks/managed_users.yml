@@ -38,7 +38,7 @@
   no_log: true
 
 # `notifications` is the whole grant, and it is not optional: this identity is
-# the one the role authenticates as to reconcile the ntfy dispatcher and the
+# the one the role authenticates as to reconcile the managed dispatcher and the
 # alert rules, and Dozzle v10.7.5 put every `/api/notifications` route behind
 # that role. It used to be `none`, which reached those routes because they were
 # ungated. Deliberately still withheld are `shell`, `actions` and `download` --

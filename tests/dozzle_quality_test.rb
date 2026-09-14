@@ -34,7 +34,6 @@ BASE_COMPOSE_FILES = %w[
   services/immich/compose.yml
   services/jellyfin/compose.yml
   services/komga/compose.yml
-  services/ntfy/compose.yml
   services/paperless-ngx/compose.yml
 ].freeze
 failures = []
@@ -264,11 +263,12 @@ name_mutations = [
 ].freeze
 
 relay_mutations = [
-  ["direct ntfy topic publishing", "roles/dozzle/defaults/main.yml",
-   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: http://ntfy:80/nas-critical\n",
+  ["direct publisher endpoint publishing", "roles/dozzle/defaults/main.yml",
+   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n",
+   "  url: https://api.pushover.net/1/messages.json\n",
    "managed dispatcher must target only the private alert relay"],
-  ["direct ntfy root publishing", "roles/dozzle/defaults/main.yml",
-   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: http://ntfy:80/\n",
+  ["direct publisher root publishing", "roles/dozzle/defaults/main.yml",
+   "  url: \"http://alert-relay:{{ dozzle_alert_relay_port }}/alerts\"\n", "  url: https://api.pushover.net/\n",
    "managed dispatcher must target only the private alert relay"],
   ["missing relay authorization", "roles/dozzle/defaults/main.yml",
    "  headers:\n    Authorization: \"Bearer {{ vault_dozzle_alert_relay_token }}\"\n",

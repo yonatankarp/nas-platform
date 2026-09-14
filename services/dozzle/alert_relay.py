@@ -1885,9 +1885,10 @@ def serve_until_stopped(server):
     What this does not cover is the interpreter's own start-up, before main()
     blocks anything: a stop arriving there still meets PID 1 with no
     disposition and is discarded, and the container is SIGKILLed for 137.
-    `init: true` would close it, and was not taken -- services/ntfy/compose.yml
-    records this platform's rule for that key, which is that an init shim is for
-    an application that never reaps what it forks, and this relay forks nothing.
+    `init: true` would close it, and was not taken: this platform's rule for that
+    key is that an init shim is for a PID 1 that never reaps what it forks or
+    cannot act on a stop signal at all, and this relay forks nothing and takes
+    its stop signals itself.
     The window is interpreter start-up wide and a recreation stops a container
     that has been running for hours, so nothing this platform does can land in
     it; a stop aimed at a relay that is itself restarting could.

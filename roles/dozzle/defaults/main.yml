@@ -63,13 +63,12 @@ dozzle_dispatcher:
   # selectattr on it -- and :463 creates a dispatcher when nothing matches. So a
   # new name matches nothing, the old dispatcher is orphaned with the relay's
   # bearer token still in it, a second is created beside it, and
-  # tests/contracts/dozzle-runtime.rb:140 fails on finding two where it asserts
+  # tests/contracts/dozzle-runtime.rb:138 fails on finding two where it asserts
   # exactly one.
   #
   # Renaming it is therefore a migration -- delete the old dispatcher through
-  # Dozzle's API, then converge -- and belongs with the rest of the ntfy
-  # vestiges in a later stage of #558, not in the change that moved the
-  # transport.
+  # Dozzle's API, then converge -- and belongs in a change of its own, not in
+  # the ones that moved the transport and retired ntfy (#558).
   name: ntfy nas-critical
   type: webhook
   url: "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
