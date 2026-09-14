@@ -173,9 +173,15 @@ abort "Dozzle contract failed: environment does not render the single relay list
 # different vault credentials rather than the same one twice.
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
-  env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}") &&
-  env_template.include?("PUSHOVER_ALERTS_TOKEN={{ vault_pushover_alerts_token }}") &&
-  env_template.include?("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}")
+  env_template.include?(
+    "PUSHOVER_TOKEN={{ vault_pushover_containers_token | replace('$', '$$') }}"
+  ) &&
+  env_template.include?(
+    "PUSHOVER_ALERTS_TOKEN={{ vault_pushover_alerts_token | replace('$', '$$') }}"
+  ) &&
+  env_template.include?(
+    "PUSHOVER_USER_KEY={{ vault_pushover_user_key | replace('$', '$$') }}"
+  )
 
 # The publish endpoint is a variable in every layer it passes through, and that
 # is a safety property rather than tidiness: a literal here would mean every

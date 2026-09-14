@@ -288,9 +288,16 @@ if failures.empty?
   failures << "Kapowarr must copy its store aside between the downgrade guard and the deployment" unless
     backup_import && guard_index && deploy_index &&
     guard_index < backup_import && backup_import < deploy_index
-  backup_tasks = flatten_tasks(
-    YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml"), aliases: true)
-  )
+  backup_document = YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml"),
+                                        aliases: true)
+  backup_tasks = flatten_tasks(backup_document)
+  # The block that stops the container and copies the store, and its rescue. The
+  # rescue's tasks run only after a failure inside the block, so they are held to
+  # their own properties below rather than to the pending-upgrade gate.
+  backup_unit = Array(backup_document).find do |task|
+    task.is_a?(Hash) && Array(task["block"]).any? { |inner| inner.is_a?(Hash) && inner.key?("ansible.builtin.copy") }
+  end
+  backup_rescue = flatten_tasks(backup_unit&.fetch("rescue", nil))
   pending_fact = backup_tasks.find do |task|
     task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending")
   end.to_s
@@ -298,7 +305,7 @@ if failures.empty?
     pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")
   # A copy on every converge would never report a converged run, and --check
   # must stop and copy nothing.
-  backup_mutations = backup_tasks.select do |task|
+  backup_mutations = (backup_tasks - backup_rescue).select do |task|
     %w[community.docker.docker_compose_v2 ansible.builtin.find ansible.builtin.file ansible.builtin.copy]
       .any? { |name| task.key?(name) }
   end
@@ -325,6 +332,40 @@ if failures.empty?
   failures << "the Kapowarr pre-upgrade copy must be private" unless
     backup_copy && backup_copy.dig("ansible.builtin.copy", "mode") == "0600" &&
     backup_directory && backup_directory.dig("ansible.builtin.file", "mode") == "0700"
+  # A stop with no completed copy after it used to leave Kapowarr exited on every
+  # later converge. The rescue starts the same container again, which is only the
+  # old image under recreate: never, and still fails, so no upgrade is taken
+  # without a copy.
+  rescue_start = backup_rescue.find do |task|
+    start = task["community.docker.docker_compose_v2"]
+    start.is_a?(Hash) && start["state"] == "present" && Array(start["services"]) == ["kapowarr"]
+  end
+  start_index = rescue_start ? backup_rescue.index(rescue_start) : 0
+  failures << "the Kapowarr pre-upgrade copy must start the old container again when it fails" unless
+    backup_unit && Array(backup_unit["block"]).include?(backup_stop) &&
+    backup_unit["always"].nil? &&
+    rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never" &&
+    start_index < backup_rescue.length - 1 &&
+    backup_rescue.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
+    backup_rescue.all? { |task| !task.key?("community.docker.docker_compose_v2") || task.dig("community.docker.docker_compose_v2", "recreate") == "never" }
+  # The check ahead of the stop does not cover a store lost after it, and the old
+  # image started over a missing store creates an empty one that the next
+  # converge copies and upgrades over -- measured. So the rescue reads the store
+  # again first and the start is conditional on exactly that read.
+  # Exactly this shape, because every looser reading was measured to let the
+  # original bug back in: a condition naming the read taken before the stop, an
+  # `or true`, `exists` (true for a directory and a dangling symlink), a read of
+  # the write-ahead log, and a read that fails the rescue on a permission error.
+  rescue_store_read = backup_rescue.find { |task| task.key?("ansible.builtin.stat") }
+  failures << "the Kapowarr pre-upgrade copy must not start the old container over a missing store" unless
+    rescue_start.nil? || (
+      rescue_store_read && backup_rescue.index(rescue_store_read) < start_index &&
+      rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ kapowarr_config_host_path }}/Kapowarr.db" &&
+      rescue_store_read["failed_when"] == false &&
+      Array(rescue_start["when"]) == ["#{rescue_store_read['register']}.stat.isreg | default(false)"]
+    )
+  failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
+    backup_rescue.last&.key?("ansible.builtin.fail")
 
   # Since v1.3.2 the service order is gc_service_preference on the GetComics
   # indexer, not a setting (#671). The indexer read must be a redacted, real,
@@ -356,6 +397,11 @@ if failures.empty?
     indexer_read && indexer_read["failed_when"] == false && indexer_read_assert &&
     indexer_read_assert.dig("ansible.builtin.assert", "fail_msg").to_s.include?("kapowarr_indexers.status") &&
     tasks.index(indexer_read) < tasks.index(indexer_read_assert)
+  # A 200 whose body is not a list of records would otherwise count as zero
+  # GetComics indexers and tell the operator to add one back.
+  failures << "the Kapowarr indexer read must refuse a 200 whose body is not a list of indexers" unless
+    Array(indexer_read_assert&.dig("ansible.builtin.assert", "that")).join(" ")
+      .include?("kapowarr_indexers.json.result | reject('mapping') | list | length == 0")
   # The indexer interface is not a partial merge: it reads every field out of the
   # body and refuses a missing one. A write must restate the record it read,
   # replacing only the order, or it would own fields nothing declares. It reaches
@@ -386,12 +432,20 @@ if failures.empty?
       value.to_s.include?("kapowarr_service_order_write.status")
     end
   end
-  write_message = write_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
+  # The message and the task vars it selects its explanation from.
+  write_message = [write_assert&.dig("ansible.builtin.assert", "fail_msg"),
+                   *Array((write_assert || {})["vars"]&.values)].join(" ")
   failures << "the Kapowarr service order write must fail with its status and the getcomics.org cause" unless
     indexer_write && indexer_write["failed_when"] == false && write_assert &&
     write_message.include?("kapowarr_service_order_write.status") && write_message.include?("ClientNotWorking") &&
     Array(write_assert["when"]).join(" ").include?("kapowarr_service_preference_declared") &&
     tasks.index(indexer_write) < tasks.index(write_assert)
+  # A -1 at the bound is Kapowarr still testing getcomics.org; a shorter one is a
+  # connection to Kapowarr that never reached that test. Anchored on the task's
+  # own timeout, so moving the bound without the message fails here. A missing
+  # assertion is the legible-failure check's to name.
+  failures << "the Kapowarr service order write must tell a refused connection from its own timeout" unless
+    write_assert.nil? || write_message.include?("kapowarr_service_order_write.elapsed | default(0) | int >= #{write_timeout}")
   # None means the indexer was deleted and two means the database was edited
   # outside the application; either is refused, and before the write.
   indexer_refusal = tasks.find do |task|

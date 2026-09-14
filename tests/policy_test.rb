@@ -1957,6 +1957,52 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "role #{name}: deployment report ignores a registered Compose deployment")
 end
 
+# A pre-upgrade copy that stops a container before copying its store must start
+# that container again when the copy fails, on its old image, and only over a store
+# that is still there, and must still fail the run. A stop with nothing after it
+# left the service exited on every later converge, and a start over a store lost
+# after the stop created an empty one the next converge upgraded over -- both
+# measured against roles/kapowarr and roles/vaultwarden. The Kapowarr contract
+# holds the same properties for that role; this is what holds every other.
+pre_upgrade_stops = 0
+Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort.each do |path|
+  name = File.basename(File.dirname(path, 2))
+  document = YAML.safe_load_file(path, aliases: true)
+  stops = ->(task) { task.dig("community.docker.docker_compose_v2", "state") == "stopped" }
+  next unless flatten_tasks(document).any?(&stops)
+
+  pre_upgrade_stops += 1
+  unit = Array(document).find { |task| task.is_a?(Hash) && flatten_tasks(task["block"]).any?(&stops) }
+  rescue_tasks = flatten_tasks(unit&.fetch("rescue", nil))
+  start = rescue_tasks.find { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
+  start_index = start ? rescue_tasks.index(start) : 0
+  check(failures,
+        start && unit["always"].nil? &&
+          rescue_tasks.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
+          rescue_tasks.all? do |task|
+            !task.key?("community.docker.docker_compose_v2") ||
+              task.dig("community.docker.docker_compose_v2", "recreate") == "never"
+          end,
+        "role #{name}: a failed pre-upgrade copy must start the stopped container again, on its old image")
+  # Exactly this shape: the rescue re-reads the path the pre-stop read took,
+  # tolerates that read failing (stat fails on a permission error rather than
+  # reporting absence), and starts only on a regular file from that read -- a
+  # condition naming the pre-stop read, `exists` (true for a directory or a
+  # dangling symlink), or anything looser was measured to let the bug back in.
+  pre_stop_read = Array(document).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.stat") }
+  store_read = rescue_tasks.find { |task| task.key?("ansible.builtin.stat") }
+  check(failures,
+        start.nil? || (store_read && pre_stop_read && rescue_tasks.index(store_read) < start_index &&
+                       store_read.dig("ansible.builtin.stat", "path") ==
+                         pre_stop_read.dig("ansible.builtin.stat", "path") &&
+                       store_read["failed_when"] == false &&
+                       Array(start["when"]) == ["#{store_read['register']}.stat.isreg | default(false)"]),
+        "role #{name}: a failed pre-upgrade copy must not start the old container over a missing store")
+  check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
+        "role #{name}: a failed pre-upgrade copy must still fail the run")
+end
+check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
+
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
 # only outside --check, and the delivery itself must be a redacted, changeless

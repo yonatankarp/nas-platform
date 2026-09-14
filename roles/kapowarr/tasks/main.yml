@@ -195,9 +195,12 @@
     # report gated on the deploy alone would say nothing on the one converge an
     # operator most wants to hear about. It is registered even when skipped, and
     # `default({})` covers the paths that never reach it at all.
+    # The pre-upgrade copy's rescue start is named for completeness: that path
+    # fails the run before this report, so it never decides the verdict here.
     deployment_report_changed: >-
       {{ (kapowarr_deploy is changed)
-         or ((kapowarr_wedged_recreate | default({})) is changed) }}
+         or ((kapowarr_wedged_recreate | default({})) is changed)
+         or ((kapowarr_pre_upgrade_restart | default({})) is changed) }}
 
 - name: Verify Kapowarr effective container CPU policy
   ansible.builtin.include_role:
@@ -544,32 +547,65 @@
   no_log: true
 
 # The verdict on the read, and readable where the read is not: a redacted task
-# that fails says only "censored". It names the status and Kapowarr's own error
-# code and nothing else. Measured bodies carry no secret -- v1.3.1's missing route
-# is `{"error": "NotFound", "result": {}}` -- but the request URL carries the API
-# key, so no part of the request is ever printed.
+# that fails says only "censored". It names the status, Kapowarr's own error code
+# and the one explanation that fits that status, and nothing else. Measured
+# bodies carry no secret -- v1.3.1's missing route is
+# `{"error": "NotFound", "result": {}}` -- but the request URL carries the API
+# key, so no part of the request is ever printed, and neither is the module's
+# msg, which on a failed connection can quote that URL.
+#
+# A 200 is not enough on its own. A body that is not JSON, or JSON whose result
+# is not a list of records, would otherwise fall through to the GetComics count
+# below as zero indexers and blame the operator for deleting one.
 - name: Require a Kapowarr indexer read the role can act on
   ansible.builtin.assert:
     that:
       - >-
         kapowarr_indexers.status | default(0) | int == 200
         or (ansible_check_mode and kapowarr_indexers.status | default(0) | int == 404)
+      - >-
+        kapowarr_indexers.status | default(0) | int != 200
+        or ((kapowarr_indexers.json | default(none)) is mapping
+            and (kapowarr_indexers.json.result | default(none)) is sequence
+            and (kapowarr_indexers.json.result | default(none)) is not mapping
+            and (kapowarr_indexers.json.result | default(none)) is not string
+            and kapowarr_indexers.json.result | reject('mapping') | list | length == 0)
     fail_msg: >-
       Kapowarr answered GET /api/indexers with status
-      {{ kapowarr_indexers.status | default('none') }}
-      ({{ (kapowarr_indexers.json | default({})).error | default('no error code', true) }}).
-      {{ kapowarr_indexers_missing if kapowarr_indexers.status | default(0) | int == 404
-         else kapowarr_indexers_unreadable }}
+      {{ kapowarr_indexers.status | default('none') }} ({{ kapowarr_indexers_error }}).
+      {{ kapowarr_indexers_explanation }} No indexer was changed.
+  # The expressions live here rather than in the message: a folded scalar keeps
+  # the line break around any more-indented line, which put breaks mid-sentence.
   vars:
+    kapowarr_indexers_error: >-
+      {{ ((kapowarr_indexers.json | default({})) if (kapowarr_indexers.json | default({})) is mapping
+          else {}).error | default('no error code', true) }}
+    kapowarr_indexers_explanation: >-
+      {{ kapowarr_indexers_unusable if kapowarr_indexers.status | default(0) | int == 200
+         else kapowarr_indexers_missing if kapowarr_indexers.status | default(0) | int == 404
+         else kapowarr_indexers_unanswered if kapowarr_indexers.status | default(0) | int == -1
+         else kapowarr_indexers_unauthorized if kapowarr_indexers.status | default(0) | int == 401
+         else kapowarr_indexers_failed }}
+    kapowarr_indexers_unusable: >-
+      The body is not the JSON list of indexer records that route returns, so
+      this run cannot count the GetComics indexers it holds. Check which image
+      the container on port {{ kapowarr_port }} runs and whether something else
+      answers there.
     kapowarr_indexers_missing: >-
       This live run has just deployed the pinned image, which serves that route,
       so the Kapowarr answering on port {{ kapowarr_port }} is not the pinned
       one. Check which image the container runs and whether something else holds
-      the port. No indexer was changed.
-    kapowarr_indexers_unreadable: >-
-      A status of -1 means no answer arrived at all. The API key this run holds
-      came from the login above, so a 401 means Kapowarr rotated it meanwhile.
-      No indexer was changed.
+      the port.
+    kapowarr_indexers_unanswered: >-
+      No answer arrived: the connection to port {{ kapowarr_port }} was refused,
+      dropped or timed out after {{ kapowarr_indexers.elapsed | default('an unknown number of') }}
+      seconds. Check that the Kapowarr container is running.
+    kapowarr_indexers_unauthorized: >-
+      The API key this run holds came from the login above, so Kapowarr rotated
+      it between that login and this read.
+    kapowarr_indexers_failed: >-
+      Kapowarr failed while serving the read rather than refusing it; its own log
+      names the cause.
 
 - name: Report the Kapowarr download service order check mode defers
   ansible.builtin.debug:
@@ -693,9 +729,16 @@
   no_log: true
 
 # Readable, because the write is redacted. It prints the status, Kapowarr's error
-# code and, where Kapowarr gives one, its reason enum -- never the request, which
-# carries the API key, and never the rest of the result, which on InvalidKeyValue
-# echoes the submitted value back.
+# code, where Kapowarr gives one its reason enum, and how long the request took --
+# never the request, which carries the API key, never the module's msg, which on
+# a failed connection can quote that URL, and never the rest of the result, which
+# on InvalidKeyValue echoes the submitted value back.
+#
+# Each status gets only the explanation that fits it. A -1 is two different
+# failures told apart by elapsed, which the uri module reports in whole seconds on
+# every outcome: at the task's timeout (75, above) the request gave up while
+# Kapowarr was still testing getcomics.org, and anything shorter is a connection
+# to Kapowarr itself that was refused or dropped, which never reached that test.
 - name: Require the Kapowarr download service order write to have been stored
   ansible.builtin.assert:
     that:
@@ -703,28 +746,65 @@
     fail_msg: >-
       Kapowarr answered the download service order write on GetComics indexer
       {{ kapowarr_getcomics_indexers[0].id }} with status
-      {{ kapowarr_service_order_write.status | default('none') }}
-      ({{ (kapowarr_service_order_write.json | default({})).error | default('no error code', true) }}{{
+      {{ kapowarr_service_order_write.status | default('none') }} ({{ kapowarr_service_order_write_code }})
+      after {{ kapowarr_service_order_write.elapsed | default('an unknown number of') }} seconds.
+      {{ kapowarr_service_order_explanation }}
+  # The expressions live here rather than in the message: a folded scalar keeps
+  # the line break around any more-indented line, which put breaks mid-sentence.
+  vars:
+    kapowarr_service_order_write_error: >-
+      {{ ((kapowarr_service_order_write.json | default({}))
+          if (kapowarr_service_order_write.json | default({})) is mapping else {}).error | default('') }}
+    kapowarr_service_order_write_code: >-
+      {{ kapowarr_service_order_write_error | default('no error code', true) }}{{
          (', ' ~ kapowarr_service_order_write.json.result.reason)
          if ((kapowarr_service_order_write.json | default({})).result | default({})).reason is defined
-         else '' }}), so the order was not stored.
-      {{ kapowarr_service_order_unreachable
-         if (kapowarr_service_order_write.json | default({})).error | default('') == 'ClientNotWorking'
-            or kapowarr_service_order_write.status | default(0) | int == -1
-         else kapowarr_service_order_refused }}
-  vars:
+         else '' }}
+    kapowarr_service_order_explanation: >-
+      {{ kapowarr_service_order_unreachable if kapowarr_service_order_write_error == 'ClientNotWorking'
+         else kapowarr_service_order_timed_out
+         if kapowarr_service_order_write.status | default(0) | int == -1
+            and kapowarr_service_order_write.elapsed | default(0) | int >= 75
+         else kapowarr_service_order_unanswered if kapowarr_service_order_write.status | default(0) | int == -1
+         else kapowarr_service_order_unauthorized if kapowarr_service_order_write.status | default(0) | int == 401
+         else kapowarr_service_order_refused if kapowarr_service_order_write.status | default(0) | int == 400
+         else kapowarr_service_order_failed }}
+    kapowarr_service_order_retry: >-
+      The write only runs because the order was changed in the web interface, so
+      putting the order back under Settings, Indexers also makes it unnecessary.
+      Until one of those happens every converge stops here, and nothing after
+      Kapowarr in site.yml runs.
     kapowarr_service_order_unreachable: >-
       Kapowarr tests the GetComics indexer against its URL before it stores
       anything, and answers ClientNotWorking when getcomics.org cannot be reached
-      from the NAS; a status of -1 means this request gave up after 75 seconds
-      while that test was still waiting. The write only runs because the order
-      was changed in the web interface. Restore the NAS's reach to getcomics.org
-      and rerun, or put the order back under Settings, Indexers so that no write
-      is needed. Until one of those happens every converge stops here, and
-      nothing after Kapowarr in site.yml runs.
+      from the NAS, so the order was not stored. Restore the NAS's reach to
+      getcomics.org and rerun. {{ kapowarr_service_order_retry }}
+    kapowarr_service_order_timed_out: >-
+      No answer arrived within this request's 75-second bound. Against an
+      unreachable getcomics.org Kapowarr keeps retrying its own test for longer
+      than that, and may still store the order if the test later passes, so rerun:
+      a converge that finds the order stored issues no write. If it times out
+      again, restore the NAS's reach to getcomics.org.
+      {{ kapowarr_service_order_retry }}
+    kapowarr_service_order_unanswered: >-
+      The request ended without an answer before its 75-second bound, so the
+      connection to Kapowarr on port {{ kapowarr_port }} was refused or dropped
+      rather than left waiting on getcomics.org. A refusal at 0 seconds never
+      reached Kapowarr; a later drop cannot say whether Kapowarr received the
+      write, so rerun: a converge that finds the order stored issues no write.
+      Check that the Kapowarr container is running.
+    kapowarr_service_order_unauthorized: >-
+      Kapowarr refused the API key this run took from the login above, so it
+      rotated that key between the login and this write. The order was not stored;
+      rerun.
     kapowarr_service_order_refused: >-
-      Kapowarr validated the order it was sent and refused it. The order sent is
-      kapowarr_service_preference merged over the order the indexer held.
+      Kapowarr validated the order it was sent and refused it, so the order was
+      not stored. The order sent is kapowarr_service_preference merged over the
+      order the indexer held.
+    kapowarr_service_order_failed: >-
+      Kapowarr failed while handling the write rather than refusing what it was
+      sent, so whether the order was stored is not known. Its own log names the
+      cause; rerun once that is resolved.
   when:
     - not ansible_check_mode
     - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
