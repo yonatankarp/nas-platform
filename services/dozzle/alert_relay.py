@@ -176,6 +176,12 @@ CONTAINER_ROUTE = "/container/"
 MAX_LINK_BASE_CHARACTERS = MAX_URL_CHARACTERS - len(CONTAINER_ROUTE) - 64
 URL_TITLE = "Open in Dozzle"
 MAX_URL_TITLE_CHARACTERS = 100
+# The palette scripts/production_auto_deploy.py documents, spelled as it spells
+# it; tests/policy_test.rb holds the copies identical.
+COLOR_GREEN = "#2e7d32"
+COLOR_RED = "#c62828"
+COLOR_AMBER = "#f9a825"
+COLOR_GREY = "#9e9e9e"
 # parse_timestamp counts from 0001-01-01; Pushover's `timestamp` is Unix seconds.
 UNIX_EPOCH_SECONDS = (datetime(1970, 1, 1).toordinal() - 1) * 86_400
 

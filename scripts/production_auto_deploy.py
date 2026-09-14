@@ -147,9 +147,10 @@ SUMMARY_PATH_ENVIRONMENT = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 MAX_PULL_REQUEST_LOOKUPS = 8
 PULL_REQUEST_LOOKUP_BUDGET_SECONDS = 30
 # One palette for styled messages: mid-tones that read on Pushover's light and
-# dark themes alike. Poller-only today, and only the release message uses it;
-# red and amber are there so the failure and degraded messages take the same
-# colours when they are styled, in both scripts and the relay.
+# dark themes alike. Green is recovered, healthy or new; red failed or killed;
+# amber degraded; grey metadata. Spelled identically in scripts/image_prune.py
+# and services/dozzle/alert_relay.py, and tests/policy_test.rb holds the copies
+# identical, so one state reads as one colour whichever program sent it.
 COLOR_GREEN = "#2e7d32"
 COLOR_RED = "#c62828"
 COLOR_AMBER = "#f9a825"

@@ -2654,9 +2654,28 @@ duplicated_constant_sites = {
   "NOTIFICATION_TIMEOUT_SECONDS" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
     "lines" => 1
+  },
+  # The message palette (#558). All four at all three sites rather than only
+  # the colours each program uses today: it is one palette, and a copy that
+  # holds only part of it is where a fifth spelling of "failed" would start.
+  "COLOR_GREEN" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "COLOR_RED" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "COLOR_AMBER" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "COLOR_GREY" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
   }
 }
-check_floor(failures, duplicated_constant_sites.length, 7,
+check_floor(failures, duplicated_constant_sites.length, 11,
             "module-level constants held identical across the copy sites")
 
 duplicated_constant_sites.each do |constant, expectation|
@@ -2716,7 +2735,7 @@ check_floor(failures, shared_across_sites.length, 15,
             "top-level names shared by at least two of the copy sites")
 # And a second floor, on the relay's own participation, for the same reason the
 # Jinja escape scanner above floors its two subject lists separately.
-# Twenty-four of the twenty-seven names that count above come from the two
+# Twenty-eight of the thirty-one names that count above come from the two
 # scripts/*.py files alone, so a subject that stopped reaching
 # services/dozzle/alert_relay.py -- a moved path, an extractor returning nothing
 # for it -- would leave the count comfortably above fifteen while the half of
@@ -2729,10 +2748,12 @@ check_floor(failures, shared_across_sites.length, 15,
 # scripts to Pushover too, measured on that tree: MAX_ESCAPED_FIELD_CHARACTERS,
 # MAX_MESSAGE_CHARACTERS, MAX_TITLE_CHARACTERS, MAX_URL_CHARACTERS,
 # MAX_URL_TITLE_CHARACTERS, TIMESTAMP_PATTERN, html_escape, main, publish and
-# render_notification. The five caps are byte-identical and pinned by name in
-# duplicated_constant_sites; html_escape is a relative and the other four differ
-# on purpose, which is still the mix that makes the relay worth reading. The
-# floor rose with the count rather than being left at four.
+# render_notification. Fourteen since the message palette joined them (#558):
+# COLOR_GREEN, COLOR_RED, COLOR_AMBER and COLOR_GREY. The five caps and the four
+# colours are byte-identical and pinned by name in duplicated_constant_sites;
+# html_escape is a relative and the other four differ on purpose, which is still
+# the mix that makes the relay worth reading. The floor rose with the count
+# rather than being left at four.
 relay_site = "services/dozzle/alert_relay.py"
 check(failures, DUPLICATION_SITES.include?(relay_site),
       "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
@@ -2740,7 +2761,7 @@ check(failures, DUPLICATION_SITES.include?(relay_site),
 relay_shared = (site_names[relay_site] || Set.new).select do |name|
   DUPLICATION_SITES.any? { |relative| relative != relay_site && site_names.fetch(relative).include?(name) }
 end
-check_floor(failures, relay_shared.length, 10,
+check_floor(failures, relay_shared.length, 14,
             "top-level names #{relay_site} shares with a scripts/*.py program")
 listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
 unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|

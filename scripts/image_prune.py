@@ -61,6 +61,12 @@ MAX_MESSAGE_CHARACTERS = 1024
 MAX_TITLE_CHARACTERS = 250
 # A reclaim is a record worth a week on the Containers app and no longer.
 RECLAIMED_TTL_SECONDS = 7 * 24 * 60 * 60
+# The palette scripts/production_auto_deploy.py documents, spelled as it spells
+# it; tests/policy_test.rb holds the copies identical.
+COLOR_GREEN = "#2e7d32"
+COLOR_RED = "#c62828"
+COLOR_AMBER = "#f9a825"
+COLOR_GREY = "#9e9e9e"
 
 
 class ConfigurationError(ValueError):
