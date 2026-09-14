@@ -10,7 +10,7 @@
 # same reason.
 #
 # Two ways out, never both (#558). Under the deployment poller, which alone sets
-# ntfy_deployment_summary_path, the summary is written as JSON and published by
+# deployment_summary_path, the summary is written as JSON and published by
 # nobody here: the poller announces it after verify.yml passes, with links this
 # play cannot build. Everywhere else it is published as plain text, as before.
 # Exactly one message per release either way, whichever side is the older code.
@@ -18,37 +18,37 @@
   atomic_safe_slurp:
     path: "{{ platform_release_dir }}/manifest.yml"
     max_bytes: 1048576
-  register: ntfy_deployment_summary_current_source
+  register: deployment_summary_current_source
   when:
-    - ntfy_deployment_release_moved | bool
+    - deployment_release_moved | bool
     - not ansible_check_mode
 
 - name: Read the manifest of the release this deployment replaced
   atomic_safe_slurp:
     path: >-
-      {{ platform_deploy_root }}/releases/{{ ntfy_deployment_previous_release }}/manifest.yml
+      {{ platform_deploy_root }}/releases/{{ deployment_previous_release }}/manifest.yml
     max_bytes: 1048576
-  register: ntfy_deployment_summary_previous_source
+  register: deployment_summary_previous_source
   when:
-    - ntfy_deployment_release_moved | bool
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
+    - deployment_previous_release is match('^[0-9a-f]{40}$')
 
 # A first install has no previous manifest, and every image in it is genuinely
 # new rather than unchanged.
 - name: Resolve which images the release moved
   ansible.builtin.set_fact:
-    ntfy_deployment_summary_changes: >-
-      {{ ((ntfy_deployment_summary_previous_source.content | b64decode | from_yaml)
-          if (ntfy_deployment_summary_previous_source.exists | default(false)) else none)
-         | deployment_image_changes(ntfy_deployment_summary_current_document) }}
+    deployment_summary_changes: >-
+      {{ ((deployment_summary_previous_source.content | b64decode | from_yaml)
+          if (deployment_summary_previous_source.exists | default(false)) else none)
+         | deployment_image_changes(deployment_summary_current_document) }}
   vars:
-    ntfy_deployment_summary_current_document: >-
-      {{ ntfy_deployment_summary_current_source.content | b64decode | from_yaml }}
+    deployment_summary_current_document: >-
+      {{ deployment_summary_current_source.content | b64decode | from_yaml }}
   when:
-    - ntfy_deployment_release_moved | bool
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
+    - deployment_summary_current_source.exists | default(false)
 
 # Delegated because the Git history lives in the controller checkout, which the
 # target never has. Best effort: a release whose predecessor the checkout no
@@ -58,32 +58,32 @@
     argv:
       - git
       - -C
-      - "{{ ntfy_deployment_summary_checkout }}"
+      - "{{ deployment_summary_checkout }}"
       - log
       - --no-merges
       - --format=%H%x09%s
-      - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
-  register: ntfy_deployment_summary_git_log
+      - "{{ deployment_previous_release }}..{{ platform_release_id }}"
+  register: deployment_summary_git_log
   changed_when: false
   failed_when: false
   check_mode: false
   delegate_to: localhost
   run_once: true
   when:
-    - ntfy_deployment_release_moved | bool
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
-    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
+    - deployment_summary_current_source.exists | default(false)
+    - deployment_previous_release is match('^[0-9a-f]{40}$')
 
 - name: Resolve the commit subjects to report
   ansible.builtin.set_fact:
-    ntfy_deployment_summary_commits: >-
-      {{ (ntfy_deployment_summary_git_log.stdout_lines | default([]))
-         if (ntfy_deployment_summary_git_log.rc | default(1)) == 0 else [] }}
+    deployment_summary_commits: >-
+      {{ (deployment_summary_git_log.stdout_lines | default([]))
+         if (deployment_summary_git_log.rc | default(1)) == 0 else [] }}
   when:
-    - ntfy_deployment_release_moved | bool
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
+    - deployment_summary_current_source.exists | default(false)
 
 # The poller links each image to the pull request that moved it, so it needs
 # the commit that introduced the image's exact pinned reference. A pickaxe on
@@ -98,29 +98,29 @@
     argv:
       - git
       - -C
-      - "{{ ntfy_deployment_summary_checkout }}"
+      - "{{ deployment_summary_checkout }}"
       - log
       - -1
       - --format=%H
       - "-S{{ item.reference }}"
-      - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
+      - "{{ deployment_previous_release }}..{{ platform_release_id }}"
       - --
       - services/
-  loop: "{{ ntfy_deployment_summary_changes }}"
+  loop: "{{ deployment_summary_changes }}"
   loop_control:
     label: "{{ item.name }}"
-  register: ntfy_deployment_summary_image_commits
+  register: deployment_summary_image_commits
   changed_when: false
   failed_when: false
   check_mode: false
   delegate_to: localhost
   run_once: true
   when:
-    - ntfy_deployment_summary_path | length > 0
-    - ntfy_deployment_release_moved | bool
+    - deployment_summary_path | length > 0
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
-    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
+    - deployment_summary_current_source.exists | default(false)
+    - deployment_previous_release is match('^[0-9a-f]{40}$')
     - item.reference is defined
 
 # Beside the poller's other state, which is where the path points, and on the
@@ -135,20 +135,20 @@
 # the cost is this release's message, and the rescue says so.
 - name: Hand the deployment summary to the poller
   when:
-    - ntfy_deployment_summary_path | length > 0
-    - ntfy_deployment_release_moved | bool
+    - deployment_summary_path | length > 0
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
+    - deployment_summary_current_source.exists | default(false)
   block:
     - name: Write the deployment summary for the poller to announce
       ansible.builtin.copy:
         content: >-
-          {{ ntfy_deployment_summary_changes
-             | deployment_summary_document(ntfy_deployment_summary_image_commits.results | default([]),
-                                           ntfy_deployment_summary_commits, platform_release_id,
-                                           ntfy_deployment_previous_release)
+          {{ deployment_summary_changes
+             | deployment_summary_document(deployment_summary_image_commits.results | default([]),
+                                           deployment_summary_commits, platform_release_id,
+                                           deployment_previous_release)
              | to_nice_json }}
-        dest: "{{ ntfy_deployment_summary_path }}"
+        dest: "{{ deployment_summary_path }}"
         mode: "0600"
       delegate_to: localhost
       run_once: true
@@ -156,7 +156,7 @@
     - name: Report that this release will not be announced
       ansible.builtin.debug:
         msg: >-
-          The release summary could not be written to {{ ntfy_deployment_summary_path }},
+          The release summary could not be written to {{ deployment_summary_path }},
           so the deployment poller will not announce this release. This is not a
           deployment failure; the services in this run already converged.
       run_once: true
@@ -170,17 +170,17 @@
 - name: Publish the deployment summary
   ansible.builtin.include_tasks: pushover_publish.yml
   vars:
-    ntfy_pushover_token_variable: vault_pushover_deployments_token
-    ntfy_pushover_title: >-
-      {{ ntfy_deployment_summary_changes
-         | deployment_report_headline(ntfy_deployment_summary_commits) }}
-    ntfy_pushover_message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
-    ntfy_pushover_priority: 0
+    deployment_pushover_token_variable: vault_pushover_deployments_token
+    deployment_pushover_title: >-
+      {{ deployment_summary_changes
+         | deployment_report_headline(deployment_summary_commits) }}
+    deployment_pushover_message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
+    deployment_pushover_priority: 0
   when:
-    - ntfy_deployment_summary_path | length == 0
-    - ntfy_deployment_release_moved | bool
+    - deployment_summary_path | length == 0
+    - deployment_release_moved | bool
     - not ansible_check_mode
-    - ntfy_deployment_summary_current_source.exists | default(false)
+    - deployment_summary_current_source.exists | default(false)
 
 - name: Report the deployment summary withheld by check mode
   ansible.builtin.debug:

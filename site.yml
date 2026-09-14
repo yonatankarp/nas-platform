@@ -176,8 +176,8 @@
     # reports remain the detail behind it.
     - name: Summarize what the run deployed
       ansible.builtin.include_role:
-        name: ntfy
-        tasks_from: deployment_summary
+        name: deployment_bundle
+        tasks_from: summary
         apply:
           tags: [deployment_summary]
       tags: [deployment_summary]

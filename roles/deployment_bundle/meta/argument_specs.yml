@@ -230,3 +230,107 @@ argument_specs:
           --converge and by the poller's own plays. Empty for a bare
           ansible-playbook, which holds no lock. Advisory: it decides only whether
           the concurrency refusal applies, never what containment allows.
+
+  report:
+    short_description: Publish one deployment report for one service
+    description:
+      - Called by every service role after its Compose deployment, so the caller
+        needs no notification endpoint or credential of its own. Delivered
+        through Pushover.
+      - Publishes only when Compose recreated the service. What the whole run
+        deployed is deployment_summary's one message, so an unchanged service
+        has nothing left to add.
+    options:
+      deployment_report_service:
+        type: str
+        required: true
+        description: Service name as it should read in the notification title.
+      deployment_report_changed:
+        type: bool
+        required: true
+        description: >-
+          Whether Compose recreated anything. The whole gate: false publishes
+          nothing.
+      platform_release_id:
+        type: str
+        required: true
+        description: Git SHA of the release the service was deployed from.
+      deployment_pushover_api_url:
+        type: str
+        required: false
+        description: >-
+          Pushover message API the deployment notifications are POSTed to.
+          Every test lane overrides it so nothing reaches real devices.
+      vault_pushover_containers_token:
+        type: str
+        required: true
+        description: Token of the Pushover Containers application the service report is sent with.
+      vault_pushover_user_key:
+        type: str
+        required: true
+        description: Pushover user key the notifications are delivered to.
+
+  summary:
+    short_description: Publish one summary of what the whole run deployed
+    description:
+      - Runs once after every service role, and only when the release moved.
+        Diffs the manifest of the release the deployment replaced against the
+        one it installed, so the message names versions rather than a revision.
+    options:
+      platform_deploy_root:
+        type: str
+        required: true
+      platform_release_dir:
+        type: str
+        required: true
+      platform_release_id:
+        type: str
+        required: true
+        description: Git SHA of the release this run deployed.
+      deployment_previous_release:
+        type: str
+        required: false
+        description: Release the deployment pointer named before this run.
+      deployment_release_moved:
+        type: bool
+        required: false
+        description: Whether the release changed; false publishes nothing.
+      deployment_summary_checkout:
+        type: path
+        required: false
+        description: Controller checkout the commit subjects are read from.
+      deployment_summary_max_commits:
+        type: int
+        required: false
+        description: Commit subjects shown before the body reports a remainder.
+      deployment_summary_changes:
+        type: list
+        elements: dict
+        required: false
+        description: Image movements resolved from the two manifests.
+      deployment_summary_commits:
+        type: list
+        elements: str
+        required: false
+        description: Commits this deployment carries, one SHA-tab-subject line each.
+      deployment_summary_path:
+        type: str
+        required: false
+        description: >-
+          Where the deployment poller wants the summary as JSON, exported as
+          PLATFORM_DEPLOYMENT_SUMMARY_PATH by its own site.yml run. Set, the
+          summary is written there and not published; empty publishes it.
+      deployment_pushover_api_url:
+        type: str
+        required: false
+        description: >-
+          Pushover message API the deployment notifications are POSTed to.
+          Every test lane overrides it so nothing reaches real devices.
+      vault_pushover_deployments_token:
+        type: str
+        required: true
+        description: Token of the Pushover Deployments application the run summary is sent with.
+      vault_pushover_user_key:
+        type: str
+        required: true
+        description: Pushover user key the notifications are delivered to.

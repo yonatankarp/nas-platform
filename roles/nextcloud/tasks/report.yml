@@ -23,11 +23,11 @@
 # its own, and a reader of an undefined name is an error rather than a false.
 - name: Report the Nextcloud deployment
   ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: Nextcloud
-    ntfy_deployment_report_changed: >-
+    deployment_report_service: Nextcloud
+    deployment_report_changed: >-
       {{ (nextcloud_data_deploy is changed) or (nextcloud_deploy is changed) or
          (nextcloud_teardown is changed) or
          ((nextcloud_trusted_domains_repair | default({})) is changed) or

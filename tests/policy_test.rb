@@ -1934,8 +1934,8 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "role #{name}: every Compose deployment must register its result for the deployment report")
 
   reports = tasks.select do |task|
-    task.dig("ansible.builtin.include_role", "tasks_from") == "deployment_report" ||
-      task["ansible.builtin.include_tasks"] == "deployment_report.yml"
+    task.dig("ansible.builtin.include_role", "name") == "deployment_bundle" &&
+      task.dig("ansible.builtin.include_role", "tasks_from") == "report"
   end
   check(failures, reports.length == 1,
         "role #{name}: deploys Compose services but declares #{reports.length} deployment reports, not one")
@@ -1944,24 +1944,24 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
   deployment_reports_declared = true
 
   report_vars = reports.first["vars"] || {}
-  check(failures, report_vars["ntfy_deployment_report_service"].to_s.strip != "",
+  check(failures, report_vars["deployment_report_service"].to_s.strip != "",
         "role #{name}: deployment report names no service")
-  gate = report_vars["ntfy_deployment_report_changed"].to_s
+  gate = report_vars["deployment_report_changed"].to_s
   check(failures, registers.compact.all? { |register| gate.include?(register) },
         "role #{name}: deployment report ignores a registered Compose deployment")
 end
 
 # The report itself must stay a report. Both the per-service report and the run
-# summary deliver through roles/ntfy/tasks/pushover_publish.yml (#558), so the
+# summary deliver through roles/deployment_bundle/tasks/pushover_publish.yml (#558), so the
 # two callers must reach it only outside --check, and the delivery itself must
 # be a redacted, changeless form POST of the caller's application token and the user key to the
 # redirectable endpoint every test lane overrides.
-report_path = File.join(ROOT, "roles/ntfy/tasks/deployment_report.yml")
-summary_path = File.join(ROOT, "roles/ntfy/tasks/deployment_summary.yml")
-publish_path = File.join(ROOT, "roles/ntfy/tasks/pushover_publish.yml")
+report_path = File.join(ROOT, "roles/deployment_bundle/tasks/report.yml")
+summary_path = File.join(ROOT, "roles/deployment_bundle/tasks/summary.yml")
+publish_path = File.join(ROOT, "roles/deployment_bundle/tasks/pushover_publish.yml")
 if deployment_reports_declared
   check(failures, File.file?(report_path),
-        "roles/ntfy/tasks/deployment_report.yml is missing but roles report deployments")
+        "roles/deployment_bundle/tasks/report.yml is missing but roles report deployments")
 end
 { report_path => "deployment report", summary_path => "deployment summary" }.each do |path, label|
   next unless File.file?(path)
@@ -1979,21 +1979,21 @@ end
   # report is container lifecycle, the summary is the release record.
   application_token = { report_path => "vault_pushover_containers_token",
                         summary_path => "vault_pushover_deployments_token" }.fetch(path)
-  check(failures, publish.dig("vars", "ntfy_pushover_token_variable") == application_token,
+  check(failures, publish.dig("vars", "deployment_pushover_token_variable") == application_token,
         "#{label} must send with #{application_token}")
 end
 publish_tasks = File.file?(publish_path) ? YAML.safe_load_file(publish_path, aliases: true) : []
 publish_task = Array(publish_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.uri") }
 check(failures, publish_task || !deployment_reports_declared,
-      "roles/ntfy/tasks/pushover_publish.yml: no uri task publishes the report")
+      "roles/deployment_bundle/tasks/pushover_publish.yml: no uri task publishes the report")
 if publish_task
   request = publish_task.fetch("ansible.builtin.uri")
   body = request["body"].is_a?(Hash) ? request["body"] : {}
-  check(failures, request["url"] == "{{ ntfy_deployment_pushover_api_url }}",
-        "deployment report must POST to ntfy_deployment_pushover_api_url, which the lanes redirect")
+  check(failures, request["url"] == "{{ deployment_pushover_api_url }}",
+        "deployment report must POST to deployment_pushover_api_url, which the lanes redirect")
   check(failures, request["body_format"] == "form-urlencoded",
         "deployment report must be a form POST, which is what Pushover's API reads")
-  check(failures, body["token"] == "{{ lookup('ansible.builtin.vars', ntfy_pushover_token_variable) }}" &&
+  check(failures, body["token"] == "{{ lookup('ansible.builtin.vars', deployment_pushover_token_variable) }}" &&
                   body["user"].to_s.include?("vault_pushover_user_key"),
         "deployment report must publish with the application token its caller names and the vault's user key")
   check(failures, body["title"].to_s.include?("truncate(250") &&

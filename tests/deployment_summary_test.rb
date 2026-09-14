@@ -4,7 +4,7 @@
 # The deployment record is what a human actually reads after a deployment, so
 # what it says — and when it stays silent — is a contract. Two messages make it
 # up: one per-service report, and the run-level summary behind them. Both are
-# delivered to Pushover by roles/ntfy/tasks/pushover_publish.yml, and the second
+# delivered to Pushover by roles/deployment_bundle/tasks/pushover_publish.yml, and the second
 # half of this file runs that delivery against a local fixture speaking
 # Pushover's shapes: an authoritative refusal fails the converge, and nothing
 # that is not an answer does.
@@ -122,28 +122,28 @@ def with_controller_repository
   end
 end
 
-# What deployment_summary.yml says when it cannot hand the poller its summary.
+# What summary.yml says when it cannot hand the poller its summary.
 UNANNOUNCED = "so the deployment poller will not announce this release"
 
 SUMMARY_PATH_VARIABLE = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 
 # Unset unless a row sets it, so a variable in the shell running this file can
 # never turn the plain-summary rows into poller rows.
-def run_ntfy_task(tasks_from, variables, *arguments, environment: { SUMMARY_PATH_VARIABLE => nil })
+def run_bundle_task(tasks_from, variables, *arguments, environment: { SUMMARY_PATH_VARIABLE => nil })
   report = [{
     "name" => "Report the deployment",
-    "ansible.builtin.include_role" => { "name" => "ntfy", "tasks_from" => tasks_from }
+    "ansible.builtin.include_role" => { "name" => "deployment_bundle", "tasks_from" => tasks_from }
   }]
   run_playbook(report, variables, *arguments, environment: environment,
                                               prefix: "nas-platform-deployment-summary-play-")
 end
 
 def run_summary(variables, *arguments, **options)
-  run_ntfy_task("deployment_summary", variables, *arguments, **options)
+  run_bundle_task("summary", variables, *arguments, **options)
 end
 
 def run_report(variables, *arguments)
-  run_ntfy_task("deployment_report", variables, *arguments)
+  run_bundle_task("report", variables, *arguments)
 end
 
 # The form every delivery must be, whichever message it carries. `token` names
@@ -201,8 +201,8 @@ with_controller_repository do |directory, repository, previous, current, introdu
       "platform_deploy_root" => deploy_root,
       "platform_release_dir" => release_dir,
       "platform_release_id" => current,
-      "ntfy_deployment_summary_checkout" => repository,
-      "ntfy_deployment_pushover_api_url" => endpoint(port),
+      "deployment_summary_checkout" => repository,
+      "deployment_pushover_api_url" => endpoint(port),
       "vault_pushover_user_key" => USER_KEY
     }.merge(TOKENS).merge(overrides)
   end
@@ -253,7 +253,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
   # variable is named here rather than aborting the file in the probe.
   check_unpublished = lambda do |label, requests|
     check(failures, requests.empty?,
-          "#{label}: deployment_summary.yml published although the poller asked for the summary; " \
+          "#{label}: summary.yml published although the poller asked for the summary; " \
           "the release would be announced twice: #{requests.map { |r| r.dig('form', 'title') }.inspect}")
   end
 
@@ -294,7 +294,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
     refusal, accepted = Open3.capture2e("python3", "-B", "-c", reader, File.join(ROOT, "scripts"),
                                         summary_path, current)
     check(failures, accepted.success?,
-          "scripts/production_auto_deploy.py refuses the summary deployment_summary.yml just wrote, " \
+          "scripts/production_auto_deploy.py refuses the summary summary.yml just wrote, " \
           "so the poller would announce nothing: #{refusal.lines.last&.strip}")
   end
 
@@ -467,10 +467,10 @@ PREDECESSOR = "d" * 40
 def report_variables(url, overrides)
   {
     "platform_release_id" => RELEASE,
-    "ntfy_deployment_pushover_api_url" => url,
+    "deployment_pushover_api_url" => url,
     "vault_pushover_user_key" => USER_KEY,
-    "ntfy_deployment_report_service" => "Komga",
-    "ntfy_deployment_report_changed" => false
+    "deployment_report_service" => "Komga",
+    "deployment_report_changed" => false
   }.merge(TOKENS).merge(overrides)
 end
 
@@ -487,7 +487,7 @@ end
 
 RECREATED = {
   "deployment_bundle_previous_release_id" => PREDECESSOR,
-  "ntfy_deployment_report_changed" => true
+  "deployment_report_changed" => true
 }.freeze
 
 REPORT_EXTRAS = { "html" => "1", "ttl" => "86400" }.freeze
@@ -507,7 +507,7 @@ end
 # markup, and the title -- which Pushover never parses -- stays as written.
 HOSTILE_SERVICE = %(Paperless & "Tika" <i>'x'</i>)
 check_report(failures, "a service name carrying markup",
-             RECREATED.merge("ntfy_deployment_report_service" => HOSTILE_SERVICE), 1) do |request|
+             RECREATED.merge("deployment_report_service" => HOSTILE_SERVICE), 1) do |request|
   form = request["form"] || {}
   check(failures, form["title"] == "#{HOSTILE_SERVICE} deployed (recreated)",
         "the report title must stay plain text: #{form['title'].inspect}")
@@ -523,7 +523,7 @@ end
 # arrives whole: complete entities, a closed tag, under Pushover's cap, and never
 # reaching the publish task's own cut.
 check_report(failures, "a service name long enough to overrun the message",
-             RECREATED.merge("ntfy_deployment_report_service" => "&" * 300), 1) do |request|
+             RECREATED.merge("deployment_report_service" => "&" * 300), 1) do |request|
   message = (request["form"] || {})["message"].to_s
   check(failures, message.length <= 1024 && !message.include?("…"),
         "an overlong service name must be bounded before escaping, not cut after: #{message.length}")
@@ -544,7 +544,7 @@ check_report(failures, "unmoved release", {
              }, 0)
 check_report(failures, "unmoved release with a recreation", {
                "deployment_bundle_previous_release_id" => RELEASE,
-               "ntfy_deployment_report_changed" => true
+               "deployment_report_changed" => true
              }, 1) do |request|
   check(failures, (request["form"] || {})["title"] == "Komga deployed (recreated)",
         "a recreation outside a release move must still be reported")
@@ -662,17 +662,17 @@ LANE_ENDPOINT = "http://127.0.0.1:1/1/messages.json"
 DEPLOYMENT_ENDPOINT_OVERRIDES = {
   "tests/integration_controller_lib.sh" => [
     /^run_play\(\) \{\n(.*?)^\}/m,
-    /-e ntfy_deployment_pushover_api_url="\$integration_deployment_pushover_api_url"/,
+    /-e deployment_pushover_api_url="\$integration_deployment_pushover_api_url"/,
     /^integration_deployment_pushover_api_url='#{Regexp.escape(LANE_ENDPOINT)}'$/
   ],
   "tests/mac/lib.sh" => [
     /^mac_ansible_playbook\(\) \{\n(.*?)^\}/m,
-    /-e 'ntfy_deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}'/,
+    /-e 'deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}'/,
     nil
   ],
   "tests/contracts/audiobookshelf-runtime.rb" => [
     /^def audiobookshelf_playbook_command\(playbook, tags\)\n(.*?)^end/m,
-    /"-e", "ntfy_deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}"/,
+    /"-e", "deployment_pushover_api_url=#{Regexp.escape(LANE_ENDPOINT)}"/,
     nil
   ]
 }.freeze
@@ -685,7 +685,7 @@ DEPLOYMENT_ENDPOINT_OVERRIDES.each do |relative, (function, argument, value)|
   next unless body
 
   check(failures, body.match?(argument) && (value.nil? || source.match?(value)),
-        "#{relative} converges site.yml without redirecting ntfy_deployment_pushover_api_url " \
+        "#{relative} converges site.yml without redirecting deployment_pushover_api_url " \
         "away from Pushover; every recreated service would notify real devices")
 end
 

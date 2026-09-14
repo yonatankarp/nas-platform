@@ -196,7 +196,7 @@
     # The cost of getting this wrong is not a failure, which is why it needs
     # saying. The lookup misses, the proxy reads empty, the front is re-placed
     # over the identical front, and `vaultwarden_serve_placed is changed` feeds
-    # ntfy_deployment_report_changed -- so the poller converges and pages every
+    # deployment_report_changed -- so the poller converges and pages every
     # five minutes, forever, with nothing ever wrong. Measured against a stub
     # emitting the 1.102.2 shape and varying only case: lowercase export skips
     # the placement and mutates nothing, uppercase export places it on every

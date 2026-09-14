@@ -350,7 +350,7 @@ def pushover_verdict(returncode: int, output: bytes) -> str:
     way (#423). Prose true of only one script goes in a comment above the def,
     which that comparison does not read.
 
-    The same verdict as roles/ntfy/tasks/pushover_publish.yml (#598): 200 with
+    The same verdict as roles/deployment_bundle/tasks/pushover_publish.yml (#598): 200 with
     an integer status of 1 is accepted, a 4xx other than 429 with an integer
     status of 0 is refused, and everything else -- no answer, a proxy's page, a
     quota 429, a status of "0" or true -- is unanswered, which is not a refusal.

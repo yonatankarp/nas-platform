@@ -1,9 +1,9 @@
 {# Read on a phone, away from any checkout: what shipped comes first, and the
    revision last, because it is the only line that needs a computer to be
    useful. Rendered through a lookup, so nothing is written to the target. #}
-{% set shown_commits = ntfy_deployment_summary_commits[:ntfy_deployment_summary_max_commits | int] %}
-{% set remaining_commits = ntfy_deployment_summary_commits | length - shown_commits | length %}
-{% set change_lines = ntfy_deployment_summary_changes | deployment_change_lines %}
+{% set shown_commits = deployment_summary_commits[:deployment_summary_max_commits | int] %}
+{% set remaining_commits = deployment_summary_commits | length - shown_commits | length %}
+{% set change_lines = deployment_summary_changes | deployment_change_lines %}
 {% if change_lines %}
 Images
 {% for line in change_lines %}
@@ -23,4 +23,4 @@ Changes
 {% endif %}
 {% endif %}
 
-{{ platform_release_id[:12] }}{% if ntfy_deployment_previous_release is match('^[0-9a-f]{40}$') %} (was {{ ntfy_deployment_previous_release[:12] }}){% endif %}
+{{ platform_release_id[:12] }}{% if deployment_previous_release is match('^[0-9a-f]{40}$') %} (was {{ deployment_previous_release[:12] }}){% endif %}

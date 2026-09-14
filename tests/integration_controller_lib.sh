@@ -125,7 +125,7 @@ run_play() {
     -e media_acquisition_adopt_existing_libraries="$integration_media_adopt_existing" \
     -e vaultwarden_domain="$integration_vaultwarden_domain" \
     -e dozzle_pushover_api_url="$integration_dozzle_pushover_api_url" \
-    -e ntfy_deployment_pushover_api_url="$integration_deployment_pushover_api_url" \
+    -e deployment_pushover_api_url="$integration_deployment_pushover_api_url" \
     -e nas_compose_minimum=2.24.4 \
     -e deployment_bundle_test_mode=true \
     -e deployment_bundle_allow_dirty_controller=true \

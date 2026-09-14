@@ -16,11 +16,11 @@
 # conditional and a reader of an undefined name is an error rather than a false.
 - name: Report the Vaultwarden deployment
   ansible.builtin.include_role:
-    name: ntfy
-    tasks_from: deployment_report
+    name: deployment_bundle
+    tasks_from: report
   vars:
-    ntfy_deployment_report_service: Vaultwarden
-    ntfy_deployment_report_changed: >-
+    deployment_report_service: Vaultwarden
+    deployment_report_changed: >-
       {{ ((vaultwarden_deploy | default({})) is changed) or
          ((vaultwarden_teardown | default({})) is changed) or
          ((vaultwarden_wedged_recreate | default({})) is changed) or
