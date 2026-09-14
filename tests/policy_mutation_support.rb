@@ -623,11 +623,36 @@ def mutate_manifest(root)
   File.write(path, YAML.dump(manifest))
 end
 
+# YAML.dump writes the parsed document and nothing else, so a round-trip through
+# it deletes every comment the file had. That is invisible until a policy check
+# reads one -- tests/policy_vault_test.rb reads the header of each
+# service_<role>.yml, which names the vault file that service's secrets live in
+# (#650) -- and then the sandbox fails a check for a defect the mutation did not
+# plant and the repository does not have. Preserving the leading comment block
+# keeps the fixture looking like the tree it stands for; comments further down
+# are still lost, which no check reads today and this does not pretend to fix.
+def dump_yaml_preserving_header(path, document)
+  header = []
+  File.foreach(path) do |line|
+    stripped = line.strip
+    next if stripped == "---" && header.empty?
+    # The header block only: the run of comment lines the file opens with, ending
+    # at the first blank line. Comments further down document the key they sit
+    # above, and hoisting them to the top would be worse than losing them.
+    break unless stripped.start_with?("#")
+
+    header << line
+  end
+  body = YAML.dump(document)
+  body = body.sub(/\A---\n/, "---\n#{header.join}\n") unless header.empty?
+  File.write(path, body)
+end
+
 def mutate_yaml_file(root, relative_path)
   path = File.join(root, relative_path)
   document = YAML.safe_load_file(path)
   yield document
-  File.write(path, YAML.dump(document))
+  dump_yaml_preserving_header(path, document)
 end
 
 # Text mutation with the match count asserted, the guard
@@ -1137,5 +1162,9 @@ def implement_paperless(root)
     "mode" => "0755",
     "recovery" => "critical"
   }
-  File.write(storage_path, YAML.dump(storage))
+  if File.exist?(storage_path)
+    dump_yaml_preserving_header(storage_path, storage)
+  else
+    File.write(storage_path, YAML.dump(storage))
+  end
 end
