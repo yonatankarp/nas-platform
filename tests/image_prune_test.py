@@ -450,6 +450,9 @@ class PruneRunTest(PruneTestCase):
         self.assertEqual((send["priority"], send["ttl"], send["html"]), ("-1", "604800", "1"))
         self.assertIn("1.5 GB", send["title"])
         self.assertNotIn("--fail", send["argv"])
+        # --disable first, which is the only place curl honours it: the prune
+        # passes HOME, so without it ~/.curlrc's proxy and headers ride along.
+        self.assertEqual(send["argv"][0], "--disable")
 
     def test_a_week_with_nothing_to_reclaim_stays_quiet(self):
         self.stub("docker", body="echo 'Total reclaimed space: 0B'\nexit 0")
@@ -474,6 +477,7 @@ class PruneRunTest(PruneTestCase):
         for label, answer, named in (
             ("refused", '{"status":0,"errors":["application token is invalid"]}\n400', True),
             ("unanswered", '<html>captive portal</html>\n200', False),
+            ("rate limited", '{"status":0}\n429', False),
         ):
             with self.subTest(label):
                 self.curl_answer.write_text(answer, encoding="utf-8")
@@ -484,6 +488,7 @@ class PruneRunTest(PruneTestCase):
                 self.assertEqual(self.state()["outcome"], "reclaimed")
                 self.assertIn("outcome notification failed", stderr.getvalue())
                 self.assertEqual("vault_pushover_deployments_token" in stderr.getvalue(), named)
+                self.assertEqual("HTTP 429" in stderr.getvalue(), label == "rate limited")
                 self.assertNotIn(sentinel, stderr.getvalue())
                 self.assertTrue(all(sentinel not in " ".join(send["argv"])
                                     for send in self.published()))
@@ -596,6 +601,39 @@ class NotificationTest(PruneTestCase):
         titles = [argument for argument in arguments if argument.startswith("title=")]
         self.assertEqual([len(title) - len("title=") for title in titles],
                          [image_prune.MAX_TITLE_CHARACTERS])
+
+    def test_only_an_integer_status_of_1_is_accepted(self):
+        verdict = image_prune.pushover_verdict
+        self.assertEqual(verdict(0, b'{"status":1}\n200'), "accepted")
+        for output in (b'{"status":"1"}\n200', b'{"status":true}\n200',
+                       b"[" * 200_000 + b"\n200"):
+            with self.subTest(output=output[:20]):
+                self.assertEqual(verdict(0, output), "unanswered")
+
+    def test_publish_never_raises(self):
+        config = self.config()
+        with contextlib.redirect_stderr(io.StringIO()):
+            # A NUL no argv can carry, through the real _run.
+            self.assertFalse(image_prune.publish(
+                config, "alerts", {"title": "a\0b", "message": "m", "priority": 1}))
+            with mock.patch.object(
+                image_prune, "_run",
+                return_value=subprocess.CompletedProcess([], 0, b"[" * 200_000 + b"\n200", b""),
+            ):
+                self.assertFalse(image_prune.publish(
+                    config, "alerts", {"title": "t", "message": "m", "priority": 1}))
+        self.assertEqual(self.published(), [])
+
+    def test_a_message_that_cannot_fit_is_cut_without_emptying_it_or_splitting_markup(self):
+        entities = "&amp;" * 300
+        for lines in (["x" * 5000], ["y" * 1100, "z"], [entities], [entities, "<b>t</b>"],
+                      ["<b>" + "w" * 1030 + "</b>"]):
+            with self.subTest(lines=[line[:12] for line in lines]):
+                message = image_prune.fit_message(lines)
+                self.assertTrue(message)
+                self.assertLessEqual(len(message), image_prune.MAX_MESSAGE_CHARACTERS)
+                self.assertIsNone(HALF_ENTITY.search(message), message[-20:])
+                self.assertEqual(message.count("<b>"), message.count("</b>"))
 
     def test_an_unknown_outcome_is_refused_rather_than_published(self):
         with self.assertRaises(ValueError):

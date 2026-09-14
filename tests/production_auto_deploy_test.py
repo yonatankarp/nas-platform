@@ -1611,6 +1611,9 @@ class PushoverTransportTest(PollerTestCase):
 
         self.assertTrue(delivered)
         self.assertEqual(arguments[0], "/usr/bin/curl")
+        # --disable first, which is the only place curl honours it: without it a
+        # proxy or a header from the account's ~/.curlrc rides along.
+        self.assertEqual(arguments[1], "--disable")
         self.assertEqual(arguments[arguments.index("--config") + 1], str(self.alerts_notifier))
         # No --fail: a 4xx body is the refusal, and --fail would discard it.
         self.assertNotIn("--fail", arguments)
@@ -1699,6 +1702,8 @@ class PushoverTransportTest(PollerTestCase):
             ("200 without a status", 0, b'{"request":"r"}\n200', "unanswered"),
             ("200 with status 0", 0, b'{"status":0}\n200', "unanswered"),
             ('a status of "0"', 0, b'{"status":"0"}\n400', "unanswered"),
+            ('a status of "1"', 0, b'{"status":"1"}\n200', "unanswered"),
+            ("JSON nested past the recursion limit", 0, b"[" * 200_000 + b"\n200", "unanswered"),
             ("a status of true", 0, b'{"status":true}\n200', "unanswered"),
             ("a status of false", 0, b'{"status":false}\n400', "unanswered"),
             ("a proxy page", 0, b"<html>captive portal</html>\n200", "unanswered"),
@@ -1716,6 +1721,42 @@ class PushoverTransportTest(PollerTestCase):
                 self.assertEqual(delivered, expected == "accepted")
                 self.assertEqual("vault_pushover_alerts_token" in self.last_stderr,
                                  expected == "refused")
+                self.assertEqual("HTTP 429" in self.last_stderr, label == "the quota 429")
+
+    def test_a_nul_byte_in_a_field_is_not_sent_and_does_not_raise(self):
+        # Through the real _run: no argv can carry a NUL, and subprocess says so
+        # with a ValueError before curl is ever started.
+        config = self.loaded_config()
+        for field in ("title", "message", "url_title"):
+            with self.subTest(field=field):
+                fields = {"title": "t", "message": "m", "priority": 1,
+                          "url": self.RUN_URL, "url_title": "u"}
+                fields[field] = "before\0after"
+                self.assertFalse(production_auto_deploy.publish(config, "alerts", fields))
+
+    def test_a_message_that_cannot_fit_is_cut_without_emptying_it_or_splitting_markup(self):
+        fit = production_auto_deploy.fit_message
+        limit = production_auto_deploy.MAX_MESSAGE_CHARACTERS
+        # 1024 falls four characters into the 205th "&amp;", so a plain slice
+        # ends on a dangling "&amp".
+        entities = "&amp;" * 300
+        for label, lines in (
+            ("one 5000-character line", ["x" * 5000]),
+            ("an 1100-character line, then a short one", ["y" * 1100, "z"]),
+            ("a first line of &amp; straddling the limit", [entities]),
+            ("that line with a closed tag after it", [entities, "<b>tail</b>"]),
+            ("a tag the limit falls inside", ["<b>" + "w" * 1030 + "</b>"]),
+        ):
+            with self.subTest(label):
+                message = fit(lines)
+                self.assertTrue(message)
+                self.assertLessEqual(len(message), limit)
+                self.assertIsNone(HALF_ENTITY.search(message), message[-20:])
+                self.assertEqual(message.count("<b>"), message.count("</b>"))
+                self.assertNotRegex(message, r"<[^>]*\Z")
+        # Whole lines are still what goes when the first line fits.
+        self.assertEqual(fit(["a" * 1000, "b" * 100]), "a" * 1000)
+        self.assertEqual(fit([]), "")
 
     def test_a_curl_that_cannot_run_is_not_delivered_and_does_not_raise(self):
         config = self.loaded_config()

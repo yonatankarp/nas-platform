@@ -1283,15 +1283,31 @@ def fit_message(lines) -> str:
     way (#423). Prose true of only one script goes in a comment above the def,
     which that comparison does not read.
 
-    Whole lines, never a cut: every line is HTML, and a cut can split an entity
-    or a tag. A message over MAX_MESSAGE_CHARACTERS is refused outright, so a
-    shorter message that lost its last lines is the better failure.
+    Whole lines where it can, because every line is HTML and a cut can split an
+    entity or a tag. A message over MAX_MESSAGE_CHARACTERS is refused outright,
+    and so is an empty one -- which Pushover would blame on the token -- so a
+    first line that does not fit on its own is cut instead: back past any
+    partial tag or entity at the cut, and before any tag the cut left unclosed,
+    with a marker, and never to nothing when there was something to send.
     """
 
     kept = list(lines)
-    while kept and len("\n".join(kept)) > MAX_MESSAGE_CHARACTERS:
+    while len(kept) > 1 and len("\n".join(kept)) > MAX_MESSAGE_CHARACTERS:
         kept.pop()
-    return "\n".join(kept)
+    message = "\n".join(kept)
+    if len(message) <= MAX_MESSAGE_CHARACTERS:
+        return message
+    cut = message[: MAX_MESSAGE_CHARACTERS - 1]
+    cut = re.sub(r"<[^>]*\Z", "", cut)
+    cut = re.sub(r"&[^;<>\s]*\Z", "", cut)
+    unclosed = [
+        opening
+        for opening in re.finditer(r"<(b|i|u|a|font)\b[^>]*>", cut)
+        if f"</{opening.group(1)}>" not in cut[opening.end():]
+    ]
+    if unclosed:
+        cut = cut[: unclosed[0].start()]
+    return f"{cut}\u2026"
 
 
 def pushover_verdict(returncode: int, output: bytes) -> str:
@@ -1316,7 +1332,7 @@ def pushover_verdict(returncode: int, output: bytes) -> str:
     try:
         status = int(code.decode("ascii"))
         answer = json.loads(body.decode("utf-8")).get("status")
-    except (AttributeError, UnicodeError, ValueError):
+    except (AttributeError, UnicodeError, ValueError, RecursionError):
         return "unanswered"
     if type(answer) is not int:
         return "unanswered"
@@ -1465,7 +1481,9 @@ def publish(config: Config, app: str, fields: dict) -> bool:
             timeout=_notification_timeout(),
             env={"PATH": config.tool_path, "LC_ALL": "C"},
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # ValueError is a NUL byte in a field, which no argv can carry: nothing
+        # was sent, and a notice that cannot be sent must not raise either.
         return False
     verdict = pushover_verdict(result.returncode, result.stdout)
     if verdict == "refused":
@@ -1473,6 +1491,12 @@ def publish(config: Config, app: str, fields: dict) -> bool:
             f"production auto-deploy: Pushover refused a message to the {app} "
             f"application; check vault_pushover_{app}_token and "
             "vault_pushover_user_key. Values are not shown.",
+            file=sys.stderr,
+        )
+    elif result.returncode == 0 and result.stdout.rpartition(b"\n")[2].strip() == b"429":
+        print(
+            f"production auto-deploy: Pushover rate-limited a message to the {app} "
+            "application (HTTP 429: its quota is spent); it is retried on a later run.",
             file=sys.stderr,
         )
     return verdict == "accepted"
