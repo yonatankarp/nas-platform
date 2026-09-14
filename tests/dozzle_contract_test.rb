@@ -42,8 +42,11 @@
 #   without a converged stack; the fixture modes that write artifacts are driven
 #   as sequences.
 #
-#   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into up to
-#   twenty-four invocations. Its rows prove every program is reached, that each
+#   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into one
+#   invocation per program plus one render per stack per platform variant, which
+#   is three times whatever services/manifest.yml declares and fifty-one today
+#   (it was twenty-seven, over nine of the seventeen stacks, until #656). Its
+#   rows prove every program is reached, that each
 #   is resolved from the script's own checkout while the tree to inspect is
 #   passed in, that the `-r` preload deliberately still names the inspected tree,
 #   and that none of the six can consume the caller's stdin.
@@ -92,19 +95,36 @@ ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The eight base Compose files the labels program is handed, in the wrapper's
-# order. Stated here so a row can break exactly one of them and so the wrapper
-# layer can assert the list has not drifted from the wrapper's own invocation.
+# The seventeen base Compose files the labels program is handed, in the
+# wrapper's order. Stated here so a row can break exactly one of them and so the
+# wrapper layer can assert the list has not drifted from the wrapper's own
+# invocation, and held against services/manifest.yml below so it cannot go back
+# to naming a subset.
 BASE_COMPOSE_FILES = %w[
+  services/arr/compose.yml
   services/audiobookshelf/compose.yml
   services/beszel/compose.yml
+  services/bindery/compose.yml
+  services/downloaders/compose.yml
   services/dozzle/compose.yml
   services/immich/compose.yml
   services/jellyfin/compose.yml
+  services/kapowarr/compose.yml
   services/komga/compose.yml
   services/nextcloud/compose.yml
   services/paperless-ngx/compose.yml
+  services/pinchflat/compose.yml
+  services/seerr/compose.yml
+  services/trailarr/compose.yml
+  services/vaultwarden/compose.yml
 ].freeze
+
+# The stacks services/manifest.yml declares, read rather than restated. Both
+# lists above and below are held against this in both directions: a subset is
+# how the grouping rule came to be enforced for nine of seventeen stacks, and a
+# hand-maintained list of the services is exactly the sixtieth list nobody edits.
+MANIFEST_SERVICE_NAMES = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+                             .fetch("services").map { |entry| entry.fetch("name") }.sort.freeze
 
 # The six arguments the stack program receives, in the wrapper's order, each
 # with the shell variable the wrapper binds it to. The defaults file joined them
@@ -1411,7 +1431,7 @@ DOCKER_STUB = <<~STUB
   #!/bin/sh
   # Answers `docker compose --project-name dozzle-contract-<stack>-<variant> ... config`
   # with the canned render for that stack, and nothing else. The wrapper renders
-  # twenty-four times in a static run; none of them needs a daemon here.
+  # fifty-one times in a static run; none of them needs a daemon here.
   project=
   for argument in "$@"; do
     case $argument in
@@ -1437,10 +1457,18 @@ WRAPPER_PROGRAM_SOURCES = {
 
 # The stacks the wrapper renders, and the group each is required to carry. Kept
 # here so the wrapper layer can assert the wrapper still renders exactly these.
+# The *set* is not a choice -- it is held against MANIFEST_SERVICE_NAMES in both
+# directions -- but the group each stack carries is, because the manifest does
+# not record one and deriving it from the Compose file being judged would make
+# the expectation agree with whatever it found. An empty string is the
+# expectation that the stack stays single-container and carries no group at all.
 RENDERED_STACKS = {
-  "beszel" => "beszel", "dozzle" => "dozzle", "paperless-ngx" => "paperless",
+  "arr" => "arr", "beszel" => "beszel", "downloaders" => "downloaders",
+  "dozzle" => "dozzle", "paperless-ngx" => "paperless",
   "immich" => "immich", "nextcloud" => "nextcloud",
-  "audiobookshelf" => "", "jellyfin" => "", "komga" => ""
+  "audiobookshelf" => "", "bindery" => "", "jellyfin" => "", "kapowarr" => "",
+  "komga" => "", "ntfy" => "", "pinchflat" => "", "seerr" => "",
+  "trailarr" => "", "vaultwarden" => ""
 }.freeze
 
 def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
@@ -1722,6 +1750,23 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   # and it is the site where following the two-roots convention would be wrong.
   failures << "wrapper: the labels preload must name the inspected tree" unless
     wrapper_source.include?(%(ruby -r"$repo_dir/tests/policy_support.rb" "$labels_program"))
+  # Closed against services/manifest.yml in both directions, which is the half
+  # that was missing until #656: the wrapper rendered nine of seventeen stacks,
+  # so the rule that a multi-container stack groups every one of its containers
+  # was enforced for immich and paperless and unenforced for arr and
+  # downloaders, whose seven containers carried names and no group. A rendered
+  # subset cannot fail for a stack it never renders, and nothing said which
+  # subset it was supposed to be.
+  missing = MANIFEST_SERVICE_NAMES - RENDERED_STACKS.keys
+  surplus = RENDERED_STACKS.keys - MANIFEST_SERVICE_NAMES
+  failures << "wrapper: services/manifest.yml declares #{missing.inspect}, which the " \
+              "wrapper renders for no group at all" unless missing.empty?
+  failures << "wrapper: renders #{surplus.inspect}, which services/manifest.yml does " \
+              "not declare" unless surplus.empty?
+  expected_labelled = MANIFEST_SERVICE_NAMES.map { |name| "services/#{name}/compose.yml" }
+  failures << "wrapper: hands the labels program #{BASE_COMPOSE_FILES.sort.inspect}, not " \
+              "the manifest's own #{expected_labelled.inspect}" unless
+    BASE_COMPOSE_FILES.sort == expected_labelled
   RENDERED_STACKS.each do |stack, group|
     expected = group.empty? ? %(render_group_variants #{stack} "") : "render_group_variants #{stack} #{group}"
     failures << "wrapper: does not render #{stack} expecting group #{group.inspect}" unless
@@ -2479,8 +2524,11 @@ if ARGV.include?("--self-test")
   [
     ["\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\" </dev/null\n",
      "\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\"\n"],
-    ["\"$repo_dir/services/paperless-ngx/compose.yml\" </dev/null\n",
-     "\"$repo_dir/services/paperless-ngx/compose.yml\"\n"],
+    # The labels invocation's redirect sits on its last argument, so the plant
+    # is taken from the list rather than restated: #656 took that list from nine
+    # compose files to seventeen and moved which one is last.
+    ["\"$repo_dir/#{BASE_COMPOSE_FILES.last}\" </dev/null\n",
+     "\"$repo_dir/#{BASE_COMPOSE_FILES.last}\"\n"],
     ["\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\" </dev/null\n",
      "\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\"\n"],
     ["\"$mac_verify\" \"$mac_verify_labels\" \"$mode\" </dev/null\n",
