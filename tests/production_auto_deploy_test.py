@@ -2862,6 +2862,32 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
                 f'{OTHER_SHA[:12]}...{MAIN_SHA[:12]}">{OTHER_SHA[:7]} → {MAIN_SHA[:7]}</a></font>') + r"\Z",
         )
 
+    def test_the_release_is_recorded_before_it_is_announced(self):
+        """The message must be unable to change the outcome, which only holds if
+        last-successful is already written when the send starts."""
+
+        config = self.loaded_config()
+        self.write_summary(config, self.summary())
+        recorded_at_send = []
+
+        def run(arguments, **kwargs):
+            recorded_at_send.append(production_auto_deploy.read_state(config)["last_successful"])
+            return subprocess.CompletedProcess(arguments, 0, ACCEPTED, b"")
+
+        with self.seeing(MAIN_SHA, (self.green_run(MAIN_SHA),)), mock.patch.object(
+            production_auto_deploy, "deploy", return_value=True
+        ), mock.patch.object(production_auto_deploy, "_run", side_effect=run), \
+                self.github(), contextlib.redirect_stderr(io.StringIO()):
+            self.assertTrue(production_auto_deploy.poll(config))
+
+        self.assertEqual(len(recorded_at_send), 1)
+        self.assertIsNotNone(
+            recorded_at_send[0],
+            "announce_release ran before record_success: the release message was sent while "
+            "last-successful still named the previous release",
+        )
+        self.assertEqual(recorded_at_send[0]["sha"], MAIN_SHA)
+
     def test_the_footer_carries_the_duration(self):
         config = self.loaded_config()
         footer = self.render(config, self.summary())["message"].split("\n")[-1]

@@ -100,18 +100,30 @@ def with_controller_repository
     # The pin lands in a Compose file beside an unrelated one, as it does in
     # services/arr/compose.yml, so only a search for the exact reference can
     # name the commit that introduced it.
-    File.write(File.join(repository, "compose.yml"),
+    FileUtils.mkdir_p(File.join(repository, "services", "media"))
+    File.write(File.join(repository, "services", "media", "compose.yml"),
                "image: #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n" \
                "image: #{PREVIOUS_IMAGES.dig('ntfy', 'ntfy')}\n")
-    run.call("add", "compose.yml")
+    run.call("add", "services")
     run.call("commit", "-qm", "fix: pin jellyfin 10.11.0")
     introducing = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
+    # A later document quoting the same pin is the newest commit the reference
+    # appears in, and must not be mistaken for the one that moved the image.
+    FileUtils.mkdir_p(File.join(repository, "docs"))
+    File.write(File.join(repository, "docs", "service-dossiers.md"),
+               "Jellyfin runs #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n")
+    run.call("add", "docs")
+    run.call("commit", "-qm", "docs: record the jellyfin pin")
+    documenting = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
     File.write(File.join(repository, "README"), "third\n")
     run.call("commit", "-qam", "chore(deps): update immich to v1.122.0")
     current = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
-    yield directory, repository, previous, current, introducing
+    yield directory, repository, previous, current, introducing, documenting
   end
 end
+
+# What deployment_summary.yml says when it cannot hand the poller its summary.
+UNANNOUNCED = "so the deployment poller will not announce this release"
 
 SUMMARY_PATH_VARIABLE = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 
@@ -179,7 +191,7 @@ LONG_HEADLINE = "NAS deployed: #{LONG_NAMES.first(3).join(', ')} +37"
 LONG_PREVIOUS = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:1.0.0#{DIGEST_A}" }] }
 LONG_CURRENT = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:2.0.0#{DIGEST_B}" }] }
 
-with_controller_repository do |directory, repository, previous, current, introducing|
+with_controller_repository do |directory, repository, previous, current, introducing, documenting|
   deploy_root = File.join(directory, "deploy")
   write_release(deploy_root, previous, PREVIOUS_IMAGES)
   release_dir = write_release(deploy_root, current, CURRENT_IMAGES)
@@ -246,13 +258,15 @@ with_controller_repository do |directory, repository, previous, current, introdu
   end
 
   with_http_probe(nil) do |port, requests|
-    _stdout, stderr, status = run_summary(
+    stdout, stderr, status = run_summary(
       base.call(port, "deployment_bundle_previous_release_id" => previous),
       environment: poller_environment
     )
     check(failures, status.success?,
           "poller deployment summary fixture failed: #{stderr.lines.last&.strip}")
     check_unpublished.call("a moved release", requests)
+    check(failures, !stdout.include?(UNANNOUNCED),
+          "a summary that was written must not be reported as unannounced")
     check(failures, File.exist?(summary_path) && (File.stat(summary_path).mode & 0o777) == 0o600,
           "the poller's summary must be written at mode 0600")
     check(failures, read_summary.call == {
@@ -260,9 +274,14 @@ with_controller_repository do |directory, repository, previous, current, introdu
       "images" => [{ "name" => "jellyfin", "kind" => "updated", "from" => "10.10.3",
                      "to" => "10.11.0", "commit" => introducing }],
       "commits" => [{ "sha" => current, "subject" => "chore(deps): update immich to v1.122.0" },
+                    { "sha" => documenting, "subject" => "docs: record the jellyfin pin" },
                     { "sha" => introducing, "subject" => "fix: pin jellyfin 10.11.0" }]
     }, "the poller's summary must name each moved image's introducing commit and every commit " \
        "of the release: #{read_summary.call.inspect}")
+    image_commit = read_summary.call.to_h.fetch("images", [{}]).first.to_h["commit"]
+    check(failures, image_commit != documenting,
+          "the image's commit is the later document that quotes its pin, not the Compose change " \
+          "that moved it, so its release-notes link would open the wrong pull request")
     written = File.read(summary_path)
     check(failures, TOKENS.values.none? { |secret| written.include?(secret) } && !written.include?(USER_KEY),
           "the poller's summary must carry no Pushover credential")
@@ -310,6 +329,38 @@ with_controller_repository do |directory, repository, previous, current, introdu
                   first["images"].to_a.map { |image| [image["kind"], image["commit"]] } ==
                     [["added", nil], ["added", nil]],
         "a first install must write an empty previous, no commits and no image commits: #{first.inspect}")
+
+  # A summary that cannot be written is a notification lost, never a deployment
+  # failed: every service has converged by now, and a fatal write would skip
+  # verify and the poller's reinstall. Each case measured fatal before the rescue.
+  read_only = File.join(directory, "read-only")
+  occupied = File.join(directory, "occupied")
+  FileUtils.mkdir_p([read_only, occupied])
+  File.chmod(0o500, read_only)
+  begin
+    [["a missing directory", File.join(directory, "absent", "deployment-summary.json")],
+     ["a read-only directory", File.join(read_only, "deployment-summary.json")],
+     ["a directory in the summary's place", occupied]].each do |label, path|
+      with_http_probe(nil) do |port, requests|
+        stdout, stderr, status = run_summary(
+          base.call(port, "deployment_bundle_previous_release_id" => previous),
+          environment: { SUMMARY_PATH_VARIABLE => path }
+        )
+        output = stdout + stderr
+        check(failures, status.success?,
+              "#{label}: a summary that could not be written failed the converge, which marks the " \
+              "release failed after every service converged: " \
+              "#{output.lines.grep(/fatal|FAILED/).last&.strip}")
+        check_unpublished.call(label, requests)
+        check(failures, stdout.include?(UNANNOUNCED),
+              "#{label}: an unwritten summary must say this release will not be announced")
+        check(failures, TOKENS.values.none? { |secret| output.include?(secret) },
+              "#{label}: reporting an unwritten summary disclosed a Pushover token")
+      end
+    end
+  ensure
+    File.chmod(0o700, read_only)
+  end
 
   # A refused summary names the Deployments token, the one it was sent with.
   with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|

@@ -87,9 +87,12 @@
 
 # The poller links each image to the pull request that moved it, so it needs
 # the commit that introduced the image's exact pinned reference. A pickaxe on
-# the whole reference rather than a path filter, because one Compose file can
-# pin several images (services/arr/compose.yml pins four). Best effort, like the
-# log above: a lookup that finds nothing costs that image its link.
+# the whole reference, because one Compose file can pin several images
+# (services/arr/compose.yml pins four), and only under services/, where every
+# Compose definition lives: a later commit that merely mentions the reference
+# in a document would otherwise be the newest match and take the image's link.
+# Best effort, like the log above: a lookup that finds nothing costs that image
+# its link.
 - name: Find the commit that introduced each image the release runs
   ansible.builtin.command:
     argv:
@@ -101,6 +104,8 @@
       - --format=%H
       - "-S{{ item.reference }}"
       - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
+      - --
+      - services/
   loop: "{{ ntfy_deployment_summary_changes }}"
   loop_control:
     label: "{{ item.name }}"
@@ -122,23 +127,39 @@
 # controller because the poller reads it there; on the NAS the two are one host.
 # It carries versions, SHAs and commit subjects, nothing secret, and is private
 # anyway like every other file in that directory.
-- name: Write the deployment summary for the poller to announce
-  ansible.builtin.copy:
-    content: >-
-      {{ ntfy_deployment_summary_changes
-         | deployment_summary_document(ntfy_deployment_summary_image_commits.results | default([]),
-                                       ntfy_deployment_summary_commits, platform_release_id,
-                                       ntfy_deployment_previous_release)
-         | to_nice_json }}
-    dest: "{{ ntfy_deployment_summary_path }}"
-    mode: "0600"
-  delegate_to: localhost
-  run_once: true
+#
+# A write that fails is rescued, never fatal. By now every service has
+# converged, and failing here would mark the release failed and skip verify and
+# the poller's reinstall -- over a notification input a full or read-only disk
+# refused. The poller already sends nothing for a release with no summary, so
+# the cost is this release's message, and the rescue says so.
+- name: Hand the deployment summary to the poller
   when:
     - ntfy_deployment_summary_path | length > 0
     - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
+  block:
+    - name: Write the deployment summary for the poller to announce
+      ansible.builtin.copy:
+        content: >-
+          {{ ntfy_deployment_summary_changes
+             | deployment_summary_document(ntfy_deployment_summary_image_commits.results | default([]),
+                                           ntfy_deployment_summary_commits, platform_release_id,
+                                           ntfy_deployment_previous_release)
+             | to_nice_json }}
+        dest: "{{ ntfy_deployment_summary_path }}"
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+  rescue:
+    - name: Report that this release will not be announced
+      ansible.builtin.debug:
+        msg: >-
+          The release summary could not be written to {{ ntfy_deployment_summary_path }},
+          so the deployment poller will not announce this release. This is not a
+          deployment failure; the services in this run already converged.
+      run_once: true
 
 # Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
 # 2b. A refused publish fails the converge on purpose, exactly as the
