@@ -123,6 +123,47 @@ render_group_contract() {
     NEXTCLOUD_ADMIN_USERNAME=contract NEXTCLOUD_ADMIN_PASSWORD=contract \
     NEXTCLOUD_TRUSTED_DOMAINS=127.0.0.1 \
     NEXTCLOUD_OVERWRITE_CLI_URL=http://nextcloud.contract.invalid:38084 \
+    MEDIA_ROOT=/tmp/dozzle-contract/media \
+    RADARR_HOST_PORT=37878 RADARR_CONFIG_PATH=/tmp/dozzle-contract/radarr-config \
+    SONARR_HOST_PORT=38989 SONARR_CONFIG_PATH=/tmp/dozzle-contract/sonarr-config \
+    PROWLARR_HOST_PORT=39696 PROWLARR_CONFIG_PATH=/tmp/dozzle-contract/prowlarr-config \
+    BAZARR_HOST_PORT=36767 BAZARR_CONFIG_PATH=/tmp/dozzle-contract/bazarr-config \
+    RADARR_API_KEY=contract SONARR_API_KEY=contract \
+    CONFIGARR_CONFIG_PATH=/tmp/dozzle-contract/configarr-config.yml \
+    CONFIGARR_SECRETS_PATH=/tmp/dozzle-contract/configarr-secrets.yml \
+    CONFIGARR_REPOS_PATH=/tmp/dozzle-contract/configarr-repos \
+    SABNZBD_HOST_PORT=38085 SABNZBD_CONFIG_PATH=/tmp/dozzle-contract/sabnzbd-config \
+    SABNZBD_API_KEY=contract \
+    MEDIA_ACQUISITION_PATH=/tmp/dozzle-contract/media/.acquisition \
+    BOOKS_ACQUISITION_PATH=/tmp/dozzle-contract/books/.acquisition \
+    BINDERY_HOST_PORT=38787 BINDERY_API_KEY=contract \
+    BINDERY_CONFIG_PATH=/tmp/dozzle-contract/bindery-config \
+    BINDERY_BOOKS_PATH=/tmp/dozzle-contract/books \
+    BINDERY_MEDIA_PATH=/tmp/dozzle-contract/media \
+    KAPOWARR_HOST_PORT=35656 KAPOWARR_CONFIG_PATH=/tmp/dozzle-contract/kapowarr-config \
+    KAPOWARR_BOOKS_PATH=/tmp/dozzle-contract/books \
+    KAPOWARR_COMICS_PATH=/tmp/dozzle-contract/comics \
+    KAPOWARR_DOWNLOADS_PATH=/tmp/dozzle-contract/kapowarr-downloads \
+    KARAKEEP_HOST_PORT=33000 KARAKEEP_PUBLISH_ADDRESS=127.0.0.1 \
+    KARAKEEP_DATA_PATH=/tmp/dozzle-contract/karakeep-data \
+    KARAKEEP_MEILISEARCH_PATH=/tmp/dozzle-contract/karakeep-meilisearch \
+    KARAKEEP_MEILI_MASTER_KEY=contract KARAKEEP_NEXTAUTH_SECRET=contract \
+    KARAKEEP_NEXTAUTH_URL=http://127.0.0.1:33000 KARAKEEP_DISABLE_SIGNUPS=true \
+    PINCHFLAT_HOST_PORT=38945 PINCHFLAT_CONFIG_PATH=/tmp/dozzle-contract/pinchflat-config \
+    PINCHFLAT_DOWNLOADS_PATH=/tmp/dozzle-contract/pinchflat-downloads \
+    PINCHFLAT_YTDLP_PATH=/tmp/dozzle-contract/pinchflat-ytdlp \
+    PINCHFLAT_BASIC_AUTH_USERNAME=contract PINCHFLAT_BASIC_AUTH_PASSWORD=contract \
+    SEERR_HOST_PORT=35055 SEERR_API_KEY=contract \
+    SEERR_CONFIG_PATH=/tmp/dozzle-contract/seerr-config \
+    TRAILARR_HOST_PORT=37889 TRAILARR_API_KEY=contract \
+    TRAILARR_CONFIG_PATH=/tmp/dozzle-contract/trailarr-config \
+    TRAILARR_MOVIES_PATH=/tmp/dozzle-contract/media/Movies \
+    TRAILARR_SERIES_PATH=/tmp/dozzle-contract/media/Series \
+    TRAILARR_MONITOR_ENABLED=false TRAILARR_DOWNLOADS_ENABLED=false \
+    TRAILARR_WEBUI_USERNAME=contract TRAILARR_WEBUI_PASSWORD_HASH=contract \
+    VAULTWARDEN_HOST_PORT=38222 VAULTWARDEN_DATA_PATH=/tmp/dozzle-contract/vaultwarden-data \
+    VAULTWARDEN_DOMAIN=http://127.0.0.1:38222 \
+    VAULTWARDEN_SIGNUPS_ALLOWED=true VAULTWARDEN_INVITATIONS_ALLOWED=true \
     USER_ID=1000 GROUP_ID=100 TZ=UTC \
     docker compose --project-name "dozzle-contract-$stack-$variant" "$@" config --format json) ||
     fail_contract "$stack $variant Compose render failed"
@@ -134,6 +175,16 @@ render_group_contract() {
 # Every stack now carries an integration override, so the disposable lane is
 # rendered here rather than named service by service: a new override that
 # breaks the Dozzle grouping cannot slip in unrendered.
+#
+# `docker compose config` renders the default profile only, so a service behind
+# `profiles:` is not part of the document this judges -- configarr, the one such
+# service in the tree, is deliberately outside it. That mirrors the exemption
+# tests/policy_test.rb already makes for a `profiles: [jobs]` service, which
+# owes no Dozzle event identity because it is not a container the Running
+# Containers panel watches; the subject of this rule is exactly the set a
+# converge leaves running. The mirroring is enforced rather than assumed: if
+# Compose ever stopped filtering, configarr would arrive carrying no
+# dev.dozzle.name and the render below would refuse it by name.
 render_group_variants() {
   stack=$1
   expected_group=$2
@@ -153,22 +204,48 @@ if [ "$mode" = static ]; then
   # following the convention and would quietly stop a fixture from being able to
   # break it.
   ruby -r"$repo_dir/tests/policy_support.rb" "$labels_program" \
+    "$repo_dir/services/arr/compose.yml" \
     "$repo_dir/services/audiobookshelf/compose.yml" \
     "$repo_dir/services/beszel/compose.yml" \
+    "$repo_dir/services/bindery/compose.yml" \
+    "$repo_dir/services/downloaders/compose.yml" \
     "$repo_dir/services/dozzle/compose.yml" \
     "$repo_dir/services/immich/compose.yml" \
     "$repo_dir/services/jellyfin/compose.yml" \
+    "$repo_dir/services/kapowarr/compose.yml" \
+    "$repo_dir/services/karakeep/compose.yml" \
     "$repo_dir/services/komga/compose.yml" \
     "$repo_dir/services/nextcloud/compose.yml" \
-    "$repo_dir/services/paperless-ngx/compose.yml" </dev/null
+    "$repo_dir/services/paperless-ngx/compose.yml" \
+    "$repo_dir/services/pinchflat/compose.yml" \
+    "$repo_dir/services/seerr/compose.yml" \
+    "$repo_dir/services/trailarr/compose.yml" \
+    "$repo_dir/services/vaultwarden/compose.yml" </dev/null
+  # Every stack in services/manifest.yml, and nothing short of it. The list was
+  # nine of seventeen until #656, which is how the grouping rule came to hold
+  # for immich and paperless while arr and downloaders -- the other two
+  # multi-container stacks -- carried names and no group at all, their seven
+  # containers loose in the Running Containers panel. A subset renders as a rule
+  # that happens to be true where somebody looked. tests/dozzle_contract_test.rb
+  # holds these against the manifest in both directions, so a stack added there
+  # and not here fails rather than going unrendered.
+  render_group_variants arr arr
   render_group_variants beszel beszel
+  render_group_variants downloaders downloaders
   render_group_variants dozzle dozzle
+  render_group_variants karakeep karakeep
   render_group_variants paperless-ngx paperless
   render_group_variants immich immich
   render_group_variants nextcloud nextcloud
   render_group_variants audiobookshelf ""
+  render_group_variants bindery ""
   render_group_variants jellyfin ""
+  render_group_variants kapowarr ""
   render_group_variants komga ""
+  render_group_variants pinchflat ""
+  render_group_variants seerr ""
+  render_group_variants trailarr ""
+  render_group_variants vaultwarden ""
 fi
 
 ruby -ryaml "$stack_program" "$compose" "$role" "$env_template" \
