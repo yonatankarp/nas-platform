@@ -2062,12 +2062,17 @@ PROGRAM_MUTATIONS = [
   # The ordering half only. An absent guard also fails the subject check below
   # it, so planting the presence half away leaves that row refused by the other
   # sentence -- the same redundancy the drift-assertion note further down records.
+  # Since the pre-upgrade copy (#671) the same row also breaks that copy's own
+  # ordering, which requires the guard ahead of it, so with this check planted
+  # away the row is still refused -- by the copy's sentence. That is the
+  # detection: the row names this check's sentence and gets another.
   {
     label: "the downgrade guard ordering check",
     program: :static,
     from: "guard_index < deploy_index",
     to: "true",
-    rows: ["a downgrade guard that runs after the deployment"]
+    rows: ["a downgrade guard that runs after the deployment"],
+    detects: "refused for the wrong reason"
   },
   {
     label: "the downgrade guard subject check",
