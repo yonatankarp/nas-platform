@@ -18,11 +18,11 @@ argument_specs:
       platform_project_name:
         type: str
         required: false
+        description: Disposable Mac proof namespace; empty preserves canonical NAS naming.
       platform_alert_relay_network:
         type: str
         required: true
         description: External bridge host_prep creates for Beszel's hub to reach the Dozzle alert relay.
-        description: Disposable Mac proof namespace; empty preserves canonical NAS naming.
       platform_public_host:
         type: str
         required: true
