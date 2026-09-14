@@ -196,6 +196,14 @@ vault_nextcloud_db_username: example_nextcloud
 vault_nextcloud_db_password: example-password
 vault_nextcloud_cache_password: example-password
 
+# Karakeep. All three are 64 lowercase hex, generated with `openssl rand -hex 32`.
+# The session-signing secret and the Meilisearch master key are read on every
+# start; the administrator password is registered once, by roles/karakeep's
+# bootstrap, and is not reset from here afterwards.
+vault_karakeep_nextauth_secret: 0000000000000000000000000000000000000000000000000000000000000000
+vault_karakeep_meili_master_key: 1111111111111111111111111111111111111111111111111111111111111111
+vault_karakeep_admin_password: 2222222222222222222222222222222222222222222222222222222222222222
+
 # Synthetic examples only. Recover deployed identities and their matching
 # credentials during migration; do not use these placeholders in production.
 # Each list belongs in its own service's vault_<role>.yml, like that service's

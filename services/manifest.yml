@@ -51,3 +51,6 @@ services:
   - name: vaultwarden
     role: vaultwarden
     status: implemented
+  - name: karakeep
+    role: karakeep
+    status: implemented

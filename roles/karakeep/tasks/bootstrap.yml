@@ -1,0 +1,334 @@
+---
+# THE FIRST ACCOUNT IS THE ADMINISTRATOR, AND THIS FILE MAKES SURE IT IS OURS.
+#
+# Measured against ghcr.io/karakeep-app/karakeep:0.33.2, and read in
+# packages/trpc/models/users.ts (role = userCount === 0 ? "admin" : "user"):
+#
+#   * with DISABLE_SIGNUPS=true and an EMPTY database, POST
+#     /api/trpc/users.create answers 403 "Signups are disabled in server
+#     config". There is no environment seeding of an administrator, so the stack
+#     cannot be started closed and bootstrapped afterwards.
+#   * with DISABLE_SIGNUPS=false the first signup returns role "admin", the next
+#     returns role "user", and a repeat of the first email answers 400 "Email is
+#     already taken".
+#   * DISABLE_SIGNUPS is read once at process start. Recreating the application
+#     with the other value took 4 seconds each way.
+#   * GET /api/trpc/config.clientConfig is unauthenticated and reports the
+#     effective auth.disableSignups, so the door can be read without a login.
+#   * nothing unauthenticated distinguishes "no users" from "wrong password": the
+#     credentials callback answers 401 CredentialsSignin to both. That ambiguity
+#     is resolved by the signup's own answer below rather than by reading the
+#     database.
+#   * an administrator can create further users with signups closed
+#     (admin.createUser), so the door never has to reopen once this has run.
+#
+# So: the stack is always started closed (tasks/deploy.yml). If the vault
+# administrator cannot sign in, the application alone is recreated with signups
+# open AND published on 127.0.0.1 only -- the play on the host can register, the
+# LAN cannot -- the administrator is registered, and the application is recreated
+# closed on the wildcard again. The close runs in `always`, so a failed signup
+# still shuts the door before the run fails. Seerr's is the precedent for doing
+# this in the same play that starts the container rather than later.
+
+- name: Read a Karakeep sign-in token for the bootstrap probe
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/csrf"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_bootstrap_csrf
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+# Redacted: the request carries the administrator password. A NextAuth
+# credentials sign-in rather than apiKeys.exchange, because exchange writes an API
+# key row on every call -- measured, the second call with the same key name
+# answered 500 -- and this probe runs every five minutes. Sessions are JWTs here,
+# so a sign-in writes nothing.
+- name: Probe whether the vault Karakeep administrator can sign in
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/callback/credentials"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      csrfToken: "{{ (karakeep_bootstrap_csrf.json | default({})).csrfToken | default('') }}"
+      email: "{{ karakeep_admin_email }}"
+      password: "{{ vault_karakeep_admin_password }}"
+      json: "true"
+    headers:
+      Cookie: "{{ karakeep_bootstrap_csrf.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_bootstrap_probe
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Resolve the Karakeep bootstrap state
+  ansible.builtin.set_fact:
+    karakeep_needs_bootstrap: "{{ (karakeep_bootstrap_probe.status | default(0) | int) == 401 }}"
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Refuse an unexpected Karakeep sign-in probe result
+  ansible.builtin.assert:
+    that:
+      - (karakeep_bootstrap_probe.status | default(0) | int) in [200, 401]
+    fail_msg: >-
+      The Karakeep sign-in probe answered
+      {{ karakeep_bootstrap_probe.status | default('no status') }}, which is
+      neither 200 (the vault administrator signs in) nor 401 (it does not, or no
+      account exists yet). tasks/deploy.yml waited for /api/health, so the
+      application was serving a moment ago.
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+
+- name: Report the planned Karakeep administrator bootstrap
+  ansible.builtin.debug:
+    msg: >-
+      The vault Karakeep administrator {{ karakeep_admin_email }} does not sign
+      in at {{ karakeep_url }} (probe status
+      {{ karakeep_bootstrap_probe.status | default('none') }}). A live run would
+      recreate the application with signups open and published on 127.0.0.1
+      only, register that account, and recreate it closed on
+      {{ karakeep_publish_address }} again. That cannot be simulated: until an
+      account exists, whoever registers first administers the service.
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - ansible_check_mode
+    - (karakeep_bootstrap_probe.status | default(0) | int) != 200
+
+- name: Register the Karakeep administrator while the listener is on loopback
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool
+  block:
+    - name: Open Karakeep signups for the bootstrap
+      ansible.builtin.set_fact:
+        karakeep_bootstrap_open: true
+
+    - name: Render the Karakeep bootstrap environment
+      ansible.builtin.template:
+        src: env.j2
+        dest: "{{ platform_runtime_dir }}/services/karakeep/.env"
+        mode: "0600"
+      no_log: true
+
+    # The application alone, recreated because its environment changed: chrome
+    # and Meilisearch are untouched and keep running. Not the whole-project
+    # deployment -- that is tasks/deploy.yml, and it is the one
+    # roles/container_health brackets.
+    - name: Recreate Karakeep with signups open on 127.0.0.1 only
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/karakeep"
+        project_name: "{{ karakeep_compose_project_name }}"
+        files: "{{ platform_service_compose_files['karakeep'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/karakeep/.env"]
+        services: [karakeep]
+        dependencies: false
+        recreate: auto
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: karakeep_bootstrap_open_deploy
+
+    - name: Wait for Karakeep to report its signups open
+      ansible.builtin.uri:
+        url: "{{ karakeep_url }}/api/trpc/config.clientConfig"
+        method: GET
+        status_code: "{{ range(100, 600) | list }}"
+        return_content: true
+      register: karakeep_bootstrap_door_open
+      until: >-
+        (karakeep_bootstrap_door_open.json | default({})).result.data.json.auth.disableSignups
+        | default(true) == false
+      retries: "{{ platform_readiness_retries }}"
+      delay: "{{ platform_readiness_delay }}"
+      changed_when: false
+
+    # Redacted: the body carries the administrator password. Accepts every status
+    # so the assertion after the close is what fails, with the reason.
+    - name: Register the vault Karakeep administrator
+      ansible.builtin.uri:
+        url: "{{ karakeep_url }}/api/trpc/users.create"
+        method: POST
+        body_format: json
+        body:
+          json:
+            name: "{{ karakeep_admin_name }}"
+            email: "{{ karakeep_admin_email }}"
+            password: "{{ vault_karakeep_admin_password }}"
+            confirmPassword: "{{ vault_karakeep_admin_password }}"
+        status_code: "{{ range(100, 600) | list }}"
+        return_content: true
+      register: karakeep_bootstrap_signup
+      changed_when: karakeep_bootstrap_signup.status | default(0) | int == 200
+      no_log: true
+  always:
+    - name: Close Karakeep signups after the bootstrap
+      ansible.builtin.set_fact:
+        karakeep_bootstrap_open: false
+
+    - name: Render the closed Karakeep environment again
+      ansible.builtin.template:
+        src: env.j2
+        dest: "{{ platform_runtime_dir }}/services/karakeep/.env"
+        mode: "0600"
+      no_log: true
+
+    - name: Recreate Karakeep with signups closed on its published address
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/karakeep"
+        project_name: "{{ karakeep_compose_project_name }}"
+        files: "{{ platform_service_compose_files['karakeep'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/karakeep/.env"]
+        services: [karakeep]
+        dependencies: false
+        recreate: auto
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: karakeep_bootstrap_close
+
+    - name: Wait for Karakeep to report its signups closed
+      ansible.builtin.uri:
+        url: "{{ karakeep_url }}/api/trpc/config.clientConfig"
+        method: GET
+        status_code: "{{ range(100, 600) | list }}"
+        return_content: true
+      register: karakeep_bootstrap_door_closed
+      until: >-
+        (karakeep_bootstrap_door_closed.json | default({})).result.data.json.auth.disableSignups
+        | default(false) == true
+      retries: "{{ platform_readiness_retries }}"
+      delay: "{{ platform_readiness_delay }}"
+      changed_when: false
+
+# After the close, so a refusal never leaves the door open. The signup's own
+# answer is what separates the two states the sign-in probe could not.
+- name: Require the bootstrap to have registered the vault Karakeep administrator
+  ansible.builtin.assert:
+    that:
+      - karakeep_bootstrap_signup.status | default(0) | int == 200
+      - >-
+        (karakeep_bootstrap_signup.json | default({})).result.data.json.role
+        | default('') == 'admin'
+    fail_msg: >-
+      Karakeep answered the administrator registration with
+      {{ karakeep_bootstrap_signup.status | default('no status') }}
+      {{ (karakeep_bootstrap_signup.json | default({})).error.json.message | default('') }}
+      and role
+      {{ (karakeep_bootstrap_signup.json | default({})).result.data.json.role | default('none') }}.
+      Signups are closed again. "Email is already taken" means an account named
+      {{ karakeep_admin_email }} already exists and the vault administrator
+      password does not sign in to it: the vault value was rotated or the account's
+      password was changed in the interface, and nothing here resets it. A 200
+      with role "user" means another account was registered first and
+      administers this Karakeep; it could only have come from this host while
+      the listener was on 127.0.0.1, or from before this platform managed the
+      data root. Do not re-run hoping for a different answer -- inspect the
+      accounts first.
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool
+
+- name: Read a Karakeep sign-in token for the account census
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/csrf"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_census_csrf
+  changed_when: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool
+
+# Redacted: the request carries the administrator password.
+- name: Sign in as the new Karakeep administrator
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/callback/credentials"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      csrfToken: "{{ (karakeep_census_csrf.json | default({})).csrfToken | default('') }}"
+      email: "{{ karakeep_admin_email }}"
+      password: "{{ vault_karakeep_admin_password }}"
+      json: "true"
+    headers:
+      Cookie: "{{ karakeep_census_csrf.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_census_login
+  changed_when: false
+  no_log: true
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool
+
+# Redacted: the request carries the session cookie.
+- name: Read the Karakeep account list after the bootstrap
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/trpc/users.list"
+    method: GET
+    headers:
+      Cookie: "{{ karakeep_census_login.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_census
+  changed_when: false
+  no_log: true
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool
+
+# The window's own audit. The door was open for the seconds between the two
+# recreates, and the registration above only proves the administrator won; this
+# proves nobody else got in behind it.
+- name: Require the vault administrator to be the only Karakeep account
+  ansible.builtin.assert:
+    that:
+      - karakeep_census_login.status | default(0) | int == 200
+      - karakeep_census.status | default(0) | int == 200
+      - >-
+        (karakeep_census.json | default({})).result.data.json.users | default([])
+        | map(attribute='email') | list == [karakeep_admin_email]
+      - >-
+        (karakeep_census.json | default({})).result.data.json.users | default([])
+        | map(attribute='role') | list == ['admin']
+    fail_msg: >-
+      After the bootstrap the vault administrator signed in with status
+      {{ karakeep_census_login.status | default('none') }} and the account list
+      answered {{ karakeep_census.status | default('none') }} with
+      {{ (karakeep_census.json | default({})).result.data.json.users | default([])
+         | map(attribute='email') | list }}. Signups are closed. Anything other
+      than exactly {{ karakeep_admin_email }} as admin means an account was
+      registered while the door was open; remove it in the administrator
+      interface before trusting this instance.
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
+    - karakeep_needs_bootstrap | bool

@@ -164,6 +164,17 @@ EXPECTED_SERVICES = {
       "reconcile" => "occ user:resetpassword, on an authentication failure only"
     }
   ),
+  # One administrator created through the API on the first converge, and never
+  # reconciled: the reset path needs the session a failed sign-in means we lack.
+  "karakeep" => MULTI_USER_DEFAULTS.merge(
+    "mode" => "api",
+    "interfaces" => {
+      "list" => "api/trpc/users.list",
+      "create" => "api/trpc/users.create, first account only, signups open on loopback",
+      "authenticate" => "api/auth/callback/credentials",
+      "reconcile" => "none; a password that no longer signs in fails the converge"
+    }
+  ),
   # The one row that does not take MULTI_USER_DEFAULTS' company on `mode`, and
   # the deviation is the point: this platform declares no Vaultwarden identity,
   # so `user_owned` is a new mode value rather than a reuse of

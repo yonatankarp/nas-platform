@@ -1,0 +1,14 @@
+---
+# Only container names move, and they are the same strings the Mac override
+# writes -- sandbox cleanup finds these containers by that prefix. The stack's two
+# networks are project-scoped already, and the application keeps its production
+# port, as Nextcloud's does.
+services:
+  karakeep:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep
+
+  chrome:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep-chrome
+
+  meilisearch:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep-meilisearch

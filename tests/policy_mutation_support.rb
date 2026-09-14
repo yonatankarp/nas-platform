@@ -195,7 +195,7 @@ EXPECTED_FIXTURE_ROLES = {
   "paperless-ngx" => "paperless_ngx", "arr" => "arr", "downloaders" => "downloaders",
   "bindery" => "bindery", "kapowarr" => "kapowarr", "pinchflat" => "pinchflat",
   "trailarr" => "trailarr", "seerr" => "seerr", "nextcloud" => "nextcloud",
-  "vaultwarden" => "vaultwarden"
+  "vaultwarden" => "vaultwarden", "karakeep" => "karakeep"
 }.freeze
 
 # Which roles a sandbox therefore holds, and which it does not. Measured rather

@@ -96,20 +96,26 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   "ghcr.io/vavallee/bindery" => "bindery",
   "ghcr.io/immich-app/immich-server" => "immich",
   "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
-  "docker.io/library/nextcloud" => "nextcloud"
+  "docker.io/library/nextcloud" => "nextcloud",
+  # #551: Karakeep runs its drizzle migrations against db.db before it serves,
+  # and Meilisearch refuses an index written by another version. Both pins live
+  # in the one Karakeep stack.
+  "ghcr.io/karakeep-app/karakeep" => "karakeep",
+  "docker.io/getmeili/meilisearch" => "karakeep"
 }.freeze
 # A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Four is what the tree documents --
+# every loop below and reports a pass. Six is what the tree documents --
 # roles/bindery/tasks/pre_upgrade_backup.yml, services/immich/compose.yml,
 # services/paperless-ngx/compose.yml and services/nextcloud/compose.yml each say
-# their application migrates its own store on start and refuses to go back.
+# their application migrates its own store on start and refuses to go back, and
+# services/karakeep/compose.yml says it of both the application and Meilisearch.
 #
 # Vaultwarden was a fifth from #547. It migrates its store too, but an older
 # image still starts on a newer store, so its minors and patches automerge and
 # only its majors are withheld; services/vaultwarden/compose.yml carries the
 # evidence, and the rows after the Gotenberg tripwire below pin both halves.
-check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 4,
-      "the self-migrating application set must name four images, not " \
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 6,
+      "the self-migrating application set must name six images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
 
 SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|

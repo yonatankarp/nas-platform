@@ -1,0 +1,16 @@
+---
+# After the bootstrap, so a converge whose only change was registering the
+# administrator -- two recreates of the application -- is announced. Every term
+# carries a default because each task behind it is conditional.
+- name: Report the Karakeep deployment
+  ansible.builtin.include_role:
+    name: ntfy
+    tasks_from: deployment_report
+  vars:
+    ntfy_deployment_report_service: Karakeep
+    ntfy_deployment_report_changed: >-
+      {{ ((karakeep_deploy | default({})) is changed) or
+         ((karakeep_teardown | default({})) is changed) or
+         ((karakeep_wedged_recreate | default({})) is changed) or
+         ((karakeep_bootstrap_open_deploy | default({})) is changed) or
+         ((karakeep_bootstrap_close | default({})) is changed) }}
