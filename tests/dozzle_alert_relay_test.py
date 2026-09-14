@@ -2883,9 +2883,18 @@ class DozzleAlertRelayTest(unittest.TestCase):
         ("laptop battery above threshold",
          "Battery averaged 64.00% for the previous 5 minutes.",
          "\U0001f7e2 laptop battery back above threshold", -1),
-        # Titles this relay does not parse go out as Beszel wrote them.
-        ("nvme0 S.M.A.R.T. status is healthy \u2705", "The drive reports healthy.",
-         "nvme0 S.M.A.R.T. status is healthy \u2705", -1),
+        # Titles this relay does not parse go out as Beszel wrote them, quiet
+        # when they end in its checkmark. Each is Beszel 0.19.0's own format:
+        # internal/alerts/alerts_systemd.go, alerts_container.go, alerts_smart.go.
+        ("Services recovered on ASUSTOR-AS6704T \u2705",
+         "No services are in the failed state on ASUSTOR-AS6704T.",
+         "Services recovered on ASUSTOR-AS6704T \u2705", -1),
+        ("ASUSTOR-AS6704T containers are healthy \u2705",
+         "ASUSTOR-AS6704T containers are healthy",
+         "ASUSTOR-AS6704T containers are healthy \u2705", -1),
+        ("SMART failure on ASUSTOR-AS6704T: nvme0 \U0001f534",
+         "Disk nvme0 (WDC WD40EFPX) SMART status changed to FAILED",
+         "SMART failure on ASUSTOR-AS6704T: nvme0 \U0001f534", 1),
         ("Test Alert", "This is a notification from Beszel.", "Test Alert", 1),
     )
 
