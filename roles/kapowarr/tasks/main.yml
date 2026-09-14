@@ -61,6 +61,14 @@
     image_downgrade_guard_project_name: "{{ kapowarr_compose_project_name }}"
     image_downgrade_guard_store_description: "{{ kapowarr_config_host_path }}"
 
+# After the downgrade guard and before the deployment, the only window in which
+# either control is worth anything: the guard refuses a pin older than the store,
+# and this copies the store aside so a pin newer than it is reversible at all.
+# Imported rather than included, so --list-tasks expands it and the policy
+# fixture set derived from this role's static imports carries the file.
+- name: Guard the Kapowarr store before a pinned upgrade
+  ansible.builtin.import_tasks: pre_upgrade_backup.yml
+
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
 # terms of the container state Docker reports or re-raises it unchanged.

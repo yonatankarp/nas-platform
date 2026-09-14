@@ -14,6 +14,7 @@ required = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
+  roles/kapowarr/tasks/pre_upgrade_backup.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -277,6 +278,53 @@ if failures.empty?
     guard_vars["image_downgrade_guard_service_name"] == "kapowarr" &&
     guard_vars["image_downgrade_guard_compose_service"] == "kapowarr" &&
     guard_vars["image_downgrade_guard_project_name"] == "{{ kapowarr_compose_project_name }}"
+
+  # The guard refuses going back; the pre-upgrade copy is what makes going back
+  # possible at all. Neither image offers an on-demand backup, so the store is
+  # copied from a stopped container, between the guard and the deployment.
+  backup_import = tasks.index do |task|
+    task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml"
+  end
+  failures << "Kapowarr must copy its store aside between the downgrade guard and the deployment" unless
+    backup_import && guard_index && deploy_index &&
+    guard_index < backup_import && backup_import < deploy_index
+  backup_tasks = flatten_tasks(
+    YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml"), aliases: true)
+  )
+  pending_fact = backup_tasks.find do |task|
+    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending")
+  end.to_s
+  failures << "the Kapowarr pre-upgrade copy must key on the image the container was created from" unless
+    pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")
+  # A copy on every converge would never report a converged run, and --check
+  # must stop and copy nothing.
+  backup_mutations = backup_tasks.select do |task|
+    %w[community.docker.docker_compose_v2 ansible.builtin.find ansible.builtin.file ansible.builtin.copy]
+      .any? { |name| task.key?(name) }
+  end
+  failures << "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check" unless
+    backup_mutations.length >= 5 && backup_mutations.all? do |task|
+      conditions = Array(task["when"]).join(" ")
+      conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")
+    end
+  failures << "the Kapowarr pre-upgrade copy must be reported under --check" unless
+    backup_tasks.any? do |task|
+      conditions = Array(task["when"])
+      task.key?("ansible.builtin.debug") && conditions.include?("ansible_check_mode") &&
+        conditions.join(" ").include?("kapowarr_upgrade_pending")
+    end
+  # Without recreate: never the stop first replaces the container with one on the
+  # new pin, and a failed copy no longer reads as a pending upgrade next time.
+  backup_stop = backup_tasks.find { |task| task.key?("community.docker.docker_compose_v2") }
+  failures << "the Kapowarr pre-upgrade stop must stop the old container rather than recreate it" unless
+    backup_stop && backup_stop.dig("community.docker.docker_compose_v2", "state") == "stopped" &&
+    backup_stop.dig("community.docker.docker_compose_v2", "recreate") == "never"
+  # The copy carries every credential the store holds, the ComicVine key among them.
+  backup_copy = backup_tasks.find { |task| task.key?("ansible.builtin.copy") }
+  backup_directory = backup_tasks.find { |task| task.dig("ansible.builtin.file", "state") == "directory" }
+  failures << "the Kapowarr pre-upgrade copy must be private" unless
+    backup_copy && backup_copy.dig("ansible.builtin.copy", "mode") == "0600" &&
+    backup_directory && backup_directory.dig("ansible.builtin.file", "mode") == "0700"
 
   # Since v1.3.2 the service order is gc_service_preference on the GetComics
   # indexer, not a setting (#671). The indexer read must be a redacted, real,

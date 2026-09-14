@@ -71,6 +71,7 @@ FIXTURE_FILES = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
+  roles/kapowarr/tasks/pre_upgrade_backup.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -565,6 +566,79 @@ STATIC_ROWS = [
       end
     },
     expects: "the Kapowarr downgrade guard must judge Kapowarr's own containers"
+  },
+  {
+    # Neither image takes a copy before its one-way migration, so without this
+    # nothing makes going back possible.
+    name: "no pre-upgrade copy of the store a pinned upgrade migrates",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        document.reject! { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+      end
+    },
+    expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
+  },
+  {
+    name: "a pre-upgrade copy taken after the deployment",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        copy = document.find { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+        document.delete(copy)
+        document.push(copy)
+      end
+    },
+    expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
+  },
+  {
+    name: "an upgrade keyed on something other than the recorded image",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending") }
+          .dig("ansible.builtin.set_fact")["kapowarr_upgrade_pending"] = "{{ kapowarr_pinned_image | length > 0 }}"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must key on the image the container was created from"
+  },
+  {
+    # A copy on every converge never reports a converged run.
+    name: "a pre-upgrade copy that runs on every converge",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("ansible.builtin.copy") }["when"] = ["not ansible_check_mode"]
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check"
+  },
+  {
+    name: "a pre-upgrade copy check mode does not report",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.reject! { |task| task.key?("ansible.builtin.debug") }
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must be reported under --check"
+  },
+  {
+    # Measured on roles/vaultwarden: without recreate: never the stop replaces the
+    # container with one on the new pin before anything is copied.
+    name: "a pre-upgrade stop that recreates the container onto the new pin",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("community.docker.docker_compose_v2") }
+          .fetch("community.docker.docker_compose_v2").delete("recreate")
+      end
+    },
+    expects: "the Kapowarr pre-upgrade stop must stop the old container rather than recreate it"
+  },
+  {
+    # The copy carries the ComicVine key the store holds.
+    name: "a world-readable pre-upgrade copy",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        document.find { |task| task.key?("ansible.builtin.copy") }["ansible.builtin.copy"]["mode"] = "0644"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must be private"
   },
   {
     name: "an indexer read that does not really run under --check",
@@ -2001,6 +2075,51 @@ PROGRAM_MUTATIONS = [
     from: 'guard_vars["image_downgrade_guard_project_name"] == "{{ kapowarr_compose_project_name }}"',
     to: "true",
     rows: ["a downgrade guard pointed at another Compose project"]
+  },
+  # The ordering half of the pre-upgrade copy check only, for the reason the
+  # downgrade guard's plant above gives: an absent import fails the same sentence
+  # through its first term, which no plant of the ordering can remove.
+  {
+    label: "the pre-upgrade copy ordering check",
+    program: :static,
+    from: "guard_index < backup_import && backup_import < deploy_index",
+    to: "true",
+    rows: ["a pre-upgrade copy taken after the deployment"]
+  },
+  {
+    label: "the recorded-image upgrade key check",
+    program: :static,
+    from: 'pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")',
+    to: "true",
+    rows: ["an upgrade keyed on something other than the recorded image"]
+  },
+  {
+    label: "the pending-upgrade-only copy check",
+    program: :static,
+    from: 'conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")',
+    to: "true",
+    rows: ["a pre-upgrade copy that runs on every converge"]
+  },
+  {
+    label: "the check-mode copy report check",
+    program: :static,
+    from: 'task.key?("ansible.builtin.debug") && conditions.include?("ansible_check_mode") &&',
+    to: "true ||",
+    rows: ["a pre-upgrade copy check mode does not report"]
+  },
+  {
+    label: "the non-recreating pre-upgrade stop check",
+    program: :static,
+    from: 'backup_stop.dig("community.docker.docker_compose_v2", "recreate") == "never"',
+    to: "true",
+    rows: ["a pre-upgrade stop that recreates the container onto the new pin"]
+  },
+  {
+    label: "the private pre-upgrade copy check",
+    program: :static,
+    from: 'backup_copy && backup_copy.dig("ansible.builtin.copy", "mode") == "0600" &&',
+    to: "true ||",
+    rows: ["a world-readable pre-upgrade copy"]
   },
   {
     label: "the redacted real indexer read check",

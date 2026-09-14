@@ -56,6 +56,14 @@ kapowarr_comics_host_path: "{{ nas_media_root }}/Books/Comics"
 # external download client added later needs no remote path mapping.
 kapowarr_library_root: /data/books/Comics
 kapowarr_staging_root: /data/books/.acquisition/usenet/comics
+# Where tasks/pre_upgrade_backup.yml copies the store before a pinned upgrade:
+# inside the config bind mount, as roles/vaultwarden and roles/bindery place
+# theirs, because that directory is already declared in nas_storage as
+# recovery: critical, created by host_prep and named by this role's containment
+# check, so the copy needs no declaration of its own. One generation, never
+# rotated. Kapowarr's own v1.3.2 backup rotation cannot prune it: that matches
+# only its dated Kapowarr_YYYY_MM_DD_HH_MM.db name.
+kapowarr_pre_upgrade_backup_path: "{{ kapowarr_config_host_path }}/pre-upgrade-backup"
 kapowarr_compose_project_name: >-
   {{ (platform_project_name ~ '-kapowarr')
      if platform_project_name | default('') | length > 0 else 'kapowarr' }}

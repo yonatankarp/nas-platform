@@ -1066,7 +1066,10 @@ header the platform POSTs in), Beszel's private key, Seerr's mode-0644
 `settings.json` and the `settings.old.json` beside it, Bindery's whole
 configuration root (its SQLite database keeps every credential it holds in
 clear, the Audiobookshelf key it triggers library scans with included, and its
-pre-upgrade backup is a copy of that database beside it), Nextcloud's
+pre-upgrade backup is a copy of that database beside it), Kapowarr's
+configuration root (its SQLite database holds the ComicVine key and the
+administrator's salted hash, and since #671 `pre-upgrade-backup/` beside it holds
+a 0600 copy of that database taken before each pinned upgrade), Nextcloud's
 `config/config.php` inside its data root (the installer writes the database
 password, the instance `secret` and `passwordsalt`, and the cache password into
 it in clear at mode 0640, and it sits in the same `/var/www/html` tree as the

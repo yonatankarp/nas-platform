@@ -1,0 +1,193 @@
+---
+# THE STORE IS COPIED ASIDE BEFORE A PINNED UPGRADE, AND THIS IS NOT A BACKUP.
+#
+# The copy lands under {{ kapowarr_config_host_path }}, on the same disk, inside
+# the directory it is a copy of, so a drive failure takes both. What it buys is
+# the failure #511 recorded: Kapowarr migrates its own SQLite store on start
+# (v1.3.2 took a v1.3.1 store from database version 45 to 51, #671), the older
+# image cannot open what the newer one wrote, and roles/image_downgrade_guard,
+# included just before this, refuses to go back. This is what makes going back
+# possible at all: restore these files, pin the older image, converge.
+# roles/vaultwarden/tasks/pre_upgrade_backup.yml is the precedent and carries
+# the long form of every argument below.
+#
+# WHY A FILE COPY OF A STOPPED CONTAINER. Bindery's application takes a
+# `VACUUM INTO` of its own live store through an API. Kapowarr v1.3.1 has no
+# backup route at all, v1.3.2's own backup runs on a weekly schedule rather than
+# on demand, and neither image ships a sqlite3 binary -- measured. SQLite is not
+# safely copied file by file while it is open, so the container is stopped
+# first, which costs nothing here: an upgrade is pending, so it is about to be
+# recreated anyway. services/kapowarr/compose.yml declares stop_grace_period:
+# 30s so the store is closed rather than left with a log to recover; measured
+# against v1.3.1, a clean stop leaves Kapowarr.db alone with no -wal beside it.
+#
+# IT RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on an actual image change, so a
+# converged host reports no change.
+
+# The pin, read from the parse roles/image_downgrade_guard made moments ago
+# rather than from the release again, so this file adds no second reader of
+# platform_current_dir for tests/release_path_read_test.rb to guard and cannot
+# disagree with the document the guard judged.
+- name: Resolve the Kapowarr image this release pins
+  ansible.builtin.set_fact:
+    kapowarr_pinned_image: "{{ image_downgrade_guard_pinned_image | default('', true) }}"
+
+# Running or not: a stopped container still names a store this host has
+# migrated. A host with no container has no store to protect.
+- name: List the Kapowarr containers this host holds
+  ansible.builtin.command:
+    argv:
+      - docker
+      - container
+      - ls
+      - --all
+      - --quiet
+      - --filter
+      - "label=com.docker.compose.project={{ kapowarr_compose_project_name }}"
+      - --filter
+      - label=com.docker.compose.service=kapowarr
+  register: kapowarr_backup_container_ids
+  changed_when: false
+  check_mode: false
+
+# Redacted: `docker container inspect` returns the container's Env array, which
+# is the rendered .env.
+- name: Inspect the Kapowarr containers this host holds
+  ansible.builtin.command:
+    argv: "{{ ['docker', 'container', 'inspect'] + kapowarr_backup_container_ids.stdout_lines }}"
+  register: kapowarr_backup_inspection
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when: kapowarr_backup_container_ids.stdout_lines | length > 0
+
+# Compose records the image reference it created the container from, digest
+# included, so comparing it with the pin names an upgrade exactly.
+- name: Resolve whether a Kapowarr upgrade is pending
+  ansible.builtin.set_fact:
+    kapowarr_deployed_image: >-
+      {{ (kapowarr_backup_inspection.stdout | default('[]', true) | from_json
+          | map(attribute='Config.Image') | list | first | default('', true)) }}
+
+- name: Resolve the Kapowarr upgrade this converge would perform
+  ansible.builtin.set_fact:
+    kapowarr_upgrade_pending: >-
+      {{ kapowarr_deployed_image | length > 0
+         and kapowarr_pinned_image | length > 0
+         and kapowarr_deployed_image != kapowarr_pinned_image }}
+
+- name: Report the planned Kapowarr pre-upgrade copy
+  ansible.builtin.debug:
+    msg: >-
+      Kapowarr is running {{ kapowarr_deployed_image }} and this release pins
+      {{ kapowarr_pinned_image }}. A live run would stop the container, copy
+      Kapowarr.db and any write-ahead log beside it into
+      {{ kapowarr_pre_upgrade_backup_path }}, and only then start the new image,
+      so that a migration that goes wrong can be undone by restoring those files
+      and pinning the older image. The copy is on this same disk and is not a
+      backup.
+  when:
+    - ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+# Stopped rather than removed, and `recreate: never` for the reason
+# roles/vaultwarden measured: without it the module first brings the service up
+# to the release's definition -- replacing the container with one created from
+# the new pin -- and a failed copy would then no longer read as a pending upgrade
+# on the next converge.
+- name: Stop Kapowarr before copying the store it is about to migrate
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/kapowarr"
+    project_name: "{{ kapowarr_compose_project_name }}"
+    files: "{{ platform_service_compose_files['kapowarr'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/kapowarr/.env"]
+    services: [kapowarr]
+    state: stopped
+    recreate: never
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+# The set is read rather than listed, so a stop that left a log with content in
+# it is copied with that log and a closed store is copied alone. Not recursive:
+# v1.3.2's own backups beside it (Kapowarr_YYYY_MM_DD_HH_MM.db) are not the
+# store, and this directory is not one of them either -- Kapowarr's rotation
+# matches only that dated name, so it never prunes Kapowarr.db here.
+- name: Read the Kapowarr store files this copy must carry
+  ansible.builtin.find:
+    paths: "{{ kapowarr_config_host_path }}"
+    patterns:
+      - Kapowarr.db
+      - Kapowarr.db-wal
+      - Kapowarr.db-shm
+    file_type: file
+  register: kapowarr_store_files
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+- name: Require the Kapowarr pre-upgrade copy to have taken the store
+  ansible.builtin.assert:
+    that:
+      - >-
+        'Kapowarr.db' in (kapowarr_store_files.files | default([])
+                          | map(attribute='path') | map('basename') | list)
+    fail_msg: >-
+      No Kapowarr.db was found under {{ kapowarr_config_host_path }} on a host
+      whose Kapowarr container reports the image {{ kapowarr_deployed_image }},
+      so this run has a store it cannot copy and an upgrade to
+      {{ kapowarr_pinned_image }} that would migrate it. The upgrade is refused
+      rather than performed unprotected. KAPOWARR IS STOPPED AND STAYS STOPPED
+      until this is resolved: find out what is in {{ kapowarr_config_host_path }}
+      before converging again.
+    success_msg: >-
+      The Kapowarr store is present and is copied into
+      {{ kapowarr_pre_upgrade_backup_path }} before this run upgrades to
+      {{ kapowarr_pinned_image }}.
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+- name: Create the Kapowarr pre-upgrade copy directory
+  ansible.builtin.file:
+    path: "{{ kapowarr_pre_upgrade_backup_path }}"
+    state: directory
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0700"
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+# ansible.builtin.copy moves each file into place atomically, so an interrupted
+# run leaves whole files rather than truncated ones. 0600, because the store
+# holds every credential Kapowarr keeps, the ComicVine key among them.
+- name: Copy the Kapowarr store aside before the pinned upgrade
+  ansible.builtin.copy:
+    src: "{{ item.path }}"
+    dest: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item.path | basename }}"
+    remote_src: true
+    owner: "{{ nas_uid }}"
+    group: "{{ nas_gid }}"
+    mode: "0600"
+  loop: "{{ kapowarr_store_files.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path | basename }}"
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+
+# One generation: a log the previous copy carried and this one did not would sit
+# beside a fresh Kapowarr.db as a directory that looks like one store and is two.
+- name: Remove Kapowarr pre-upgrade copies this run did not write
+  ansible.builtin.file:
+    path: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item }}"
+    state: absent
+  loop:
+    - Kapowarr.db-wal
+    - Kapowarr.db-shm
+  when:
+    - not ansible_check_mode
+    - kapowarr_upgrade_pending | bool
+    - item not in (kapowarr_store_files.files | default([])
+                   | map(attribute='path') | map('basename') | list)
