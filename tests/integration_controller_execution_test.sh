@@ -269,10 +269,14 @@ printf 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE=%s]\n' \
 # ntfy's teardown scenario (#558 stage 4a) reads the container back through
 # docker, so the play it runs is what decides whether one exists: a converge with
 # the switch on brings it up, and a converge of the ntfy tag without it tears it
-# down, exactly as inventory's `false` does on a real lane.
+# down, exactly as inventory's `false` does on a real lane. Two cases break that
+# on purpose, so each of the scenario's guards meets the state it exists for: a
+# container that never came up, and one that survived its teardown.
 case " $* " in
-  *" ntfy_deployment_enabled=true "*) : > "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
-  *" --tags ntfy "*) rm -f "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
+  *" ntfy_deployment_enabled=true "*)
+    [ "${CASE_NTFY_NEVER_UP-}" = true ] || : > "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
+  *" --tags ntfy "*)
+    [ "${CASE_NTFY_SURVIVES-}" = true ] || rm -f "${CONTROLLER_STUB_LOG:?}.ntfy-up" ;;
 esac
 printf 'PLAY RECAP *********************************************************************\n'
 printf 'nas : ok=9 changed=0 unreachable=0 failed=0 skipped=0 rescued=0 ignored=0\n'
@@ -768,6 +772,30 @@ case_komga_ntfy_killed() {
   expect_output 'the ntfy teardown stopped the container with exit code "137", not 0 or 143'
 }
 
+# The running guard. A teardown over a container that never started stops
+# nothing, and every later assertion would pass over it.
+case_komga_ntfy_never_up() {
+  CASE_NTFY_NEVER_UP=true
+  export CASE_NTFY_NEVER_UP
+  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  unset CASE_NTFY_NEVER_UP
+  expect_status 1
+  expect_output 'the ntfy container is not running, so the teardown below proves nothing'
+  expect_no_log 'docker argv=[events]'
+}
+
+# The gone guard. A container that survived the teardown must fail the lane
+# before its exit code is ever read.
+case_komga_ntfy_survives() {
+  CASE_NTFY_SURVIVES=true
+  export CASE_NTFY_SURVIVES
+  run_controller komga host_prep,deployment_bundle,ntfy,komga true true site.yml
+  unset CASE_NTFY_SURVIVES
+  expect_status 1
+  expect_output 'ntfy_deployment_enabled=false left the ntfy container in place'
+  expect_no_log 'docker argv=[events]'
+}
+
 # The smoke lane stops after the converge, and is the cheapest place to observe
 # the toolchain the controller installs when it is not running from an image
 # that already has it -- the path a developer's first run and a fork's CI take.
@@ -900,7 +928,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga komga_ntfy_killed toolchain_install \
+    downloaders bindery seerr jellyfin komga komga_ntfy_killed komga_ntfy_never_up \
+    komga_ntfy_survives toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -1008,6 +1037,18 @@ plant 'ntfy teardown converge dropped' komga program \
   'run_play --tags ntfy$' ':' 1 regexp
 plant 'ntfy teardown exit code check dropped' komga_ntfy_killed program \
   '0|143) ;;' '*) ;;' 1
+# Each guard neutralised by short-circuiting its condition, which leaves the
+# block in place but unable to fire -- the form a careless edit takes. \x27 is a
+# single quote inside the Ruby pattern, which a shell single-quoted string cannot
+# carry.
+plant 'ntfy running guard (container not running before the teardown) disabled' \
+  komga_ntfy_never_up program \
+  "if ! docker ps --format '{{.Names}}' |" \
+  "if false && ! docker ps --format '{{.Names}}' |" 1
+plant 'ntfy gone guard (container left in place after the teardown) disabled' \
+  komga_ntfy_survives program \
+  'if (docker ps -a --format \x27\{\{\.Names\}\}\x27 \|\n +grep -Eq \x27\^\x27\$integration_project_namespace\x27-ntfy\$\x27; then)' \
+  'if false && \1' 1 regexp
 plant 'docker_container_info runtime support not installed' toolchain_install \
   program '"requests==$requests_version"' '"requests-not-installed"' 1
 
