@@ -3012,6 +3012,38 @@ expect_failure(failures, "pinned expectations gain an unknown field",
   mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
+# The nas_storage_* prefix rule had no mutation at all, which is how its subject
+# came to include trees Ansible never reads. The pair below is what makes the
+# sweep's subject a stated thing rather than whatever Find walked into: one
+# definition outside inventory/group_vars/all must be refused, and the same
+# definition inside a nested checkout must not be.
+expect_failure(failures, "storage contributor outside group_vars/all",
+               "roles/dozzle/defaults/planted.yml: nas_storage_planted",
+               detected_by: %i[policy]) do |root|
+  File.write(File.join(root, "roles", "dozzle", "defaults", "planted.yml"),
+             YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
+end
+
+# A nested checkout is a different tree and none of its files is in scope for a
+# run of this one. .gitignore anticipates agent worktrees under
+# .claude/worktrees/ and git honours it; the sweep walks the filesystem and did
+# not, so a single `git worktree add` put a second copy of all nineteen
+# contributors into its subject and failed the check naming every one -- 133
+# paths at seven worktrees, none of them a definition Ansible would ever read
+# (#665). The sandbox is no git repository, so this plants the shape rather than
+# a real worktree: a directory holding a `.git` *file* is exactly what a worktree
+# is on disk, and it is what the sweep prunes on. Planting the shape rather than
+# the path name is the point -- a row that created `.claude/worktrees/` and
+# nothing else would pass against a check that merely special-cased that name.
+expect_success(failures, "storage contributor inside a nested checkout") do |root|
+  checkout = File.join(root, ".claude", "worktrees", "agent-0000")
+  contributors = File.join(checkout, "inventory", "group_vars", "all")
+  FileUtils.mkdir_p(contributors)
+  File.write(File.join(checkout, ".git"), "gitdir: /nonexistent/worktrees/agent-0000\n")
+  File.write(File.join(contributors, "service_planted.yml"),
+             YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
+end
+
 # The media library path is written once in a service template and once in
 # nas_storage, and Compose passes the template's copy through as a bind source.
 # Nothing used to compare the two, so these mutations are what keep the new
