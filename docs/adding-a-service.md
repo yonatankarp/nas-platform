@@ -98,7 +98,21 @@ obligations added since, each named here as it lands:
   or exempted there in writing with the reason its deployment is multi-phase or
   computed; it cannot be silently neither.
 
-**So adding a service today changes 59 files.** Keep that arithmetic honest
+- `tests/contracts/dozzle.sh` — the Dozzle render roster (#656). Every stack in
+  `services/manifest.yml` is rendered in its three platform variants and held to
+  the group it must carry, so a promotion adds one `render_group_variants` line
+  and one compose path for the duplicate-label check beside it. That roster was
+  nine of seventeen stacks until #656, which is how `arr` and `downloaders` came
+  to carry Dozzle names and no group at all: a rule cannot fail for a stack it
+  never renders.
+- `tests/dozzle_contract_test.rb` — the same roster restated (#656), as
+  `RENDERED_STACKS` and `BASE_COMPOSE_FILES`. Both are held against
+  `services/manifest.yml` in both directions, so the *set* cannot drift back to
+  a subset; what the promotion still has to decide is the group the new stack
+  carries, which the manifest does not record and which deriving from the
+  Compose file being judged would make agree with whatever it found.
+
+**So adding a service today changes 61 files.** Keep that arithmetic honest
 rather than bumping the total: `tests/docs_links_test.rb` adds the ledger rows
 above to the measured 56, fails if the stated total disagrees, and fails again
 if `CLAUDE.md` quotes anything other than the total. The check cannot tell you an
@@ -109,9 +123,9 @@ total into a named cause.
 
 Only nine of Pinchflat's 56 were new files, and all nine are the service itself
 and its own proof. The other forty-seven are existing files that had to be told
-the platform is one service larger, and the ledger above makes fifty today —
-forty-nine before #537, which is what the sentence should have read once the
-pre-converge roster landed. A handful are wiring and prose; most are
+the platform is one service larger, and the ledger above makes fifty-two today —
+fifty before #656, forty-nine before #537, which is what the sentence should
+have read once the pre-converge roster landed. A handful are wiring and prose; most are
 *registries* — files that pin a list, a count or a literal string describing the
 platform as it currently is, and that fail when it grows without them. Sometimes
 loudly, sometimes with a Ruby stack trace, occasionally not at all.
@@ -710,6 +724,22 @@ The policy test enforces every one of these properties:
   `:?` suffix makes an unset variable fail loudly instead of silently creating a
   relative bind mount. Hardcoding `/volume1/...` is rejected outright, because
   the same file has to run unmodified on the NAS, on a Mac sandbox and in CI.
+
+Every long-running container carries `dev.dozzle.name` equal to its Compose
+service key, and a stack with more than one of them carries `dev.dozzle.group`
+as well, the same value on every container, so Dozzle's Running Containers panel
+shows the stack as one thing instead of as loose containers. A one-shot job
+behind `profiles:` carries neither: `tests/policy_test.rb` exempts it from the
+name rule, and the Dozzle contract never sees it, because `docker compose config`
+renders the default profile only. Then register the stack in
+`tests/contracts/dozzle.sh` — one `render_group_variants <stack> <group>` line,
+`""` for the group if the stack is single-container, plus its `compose.yml` in
+the duplicate-label list above it — and in `RENDERED_STACKS` and
+`BASE_COMPOSE_FILES` in `tests/dozzle_contract_test.rb`, which hold both against
+`services/manifest.yml` in each direction. The registration is not optional
+bookkeeping: the rule is checked against a rendered document, so a stack that is
+not rendered is a stack the rule cannot fail for, which is exactly how `arr` and
+`downloaders` ran for months with Dozzle names and no group at all (#656).
 
 A container that owns state — anything mounting a `recovery: critical` path, or
 writing into the media tree — declares `stop_grace_period` with the reason beside

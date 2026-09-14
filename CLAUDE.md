@@ -452,7 +452,7 @@ always claims a change and cannot simulate itself.
 
 Tasks touching credentials carry `no_log: true`.
 
-Adding a service touches 59 files and is walked end to end in
+Adding a service touches 61 files and is walked end to end in
 [docs/adding-a-service.md](docs/adding-a-service.md) — including the two pinned
 Ruby name lists, the files CI routing must agree on, and the ten places a new
 vault credential lands (`docs/secrets.md` among them, enforced by
@@ -947,7 +947,7 @@ nothing converges it, every shard passes, and the gate goes green *faster*.
 `tests/idempotence_shard_partition_test.rb` derives the tag universe from
 `site.yml`'s own roles and post_tasks and fails on any tag no shard converges, in
 both directions, with a stated shard count under it. It is **derived** rather
-than restated on purpose: adding a service already touches 59 files, and a
+than restated on purpose: adding a service already touches 61 files, and a
 sixtieth list would be the one nobody edits. What it deliberately does *not*
 assert is exclusivity — `arr` appears in more than one shard because seerr reads
 it and jellyfin, so a prerequisite converges wherever it is needed. Duplication
