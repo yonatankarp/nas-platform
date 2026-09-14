@@ -272,8 +272,6 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         ;;
     esac
 
-    esac
-
     # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
     # #500 landed the stack dark, so this block set the gate per suite and turned
     # it on for `nextcloud` and `full` alone -- correct while
