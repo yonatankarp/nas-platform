@@ -32,7 +32,9 @@ ARR_LINT_EXCLUSION_MUTATIONS = (BROAD_ARR_LINT_EXCLUSIONS + %w[
 # are used and that every use is pinned to a full commit SHA rather than a mutable tag;
 # which commit is current is Renovate's job, and restating it here only guarantees that
 # routine action bumps fail this test.
-ALLOWED_ACTION_NAMES = %w[actions/checkout actions/upload-artifact docker/login-action].freeze
+ALLOWED_ACTION_NAMES = %w[
+  actions/checkout actions/setup-python actions/upload-artifact docker/login-action
+].freeze
 CHECKOUT_ACTION_NAME = "actions/checkout"
 LOGIN_ACTION_NAME = "docker/login-action"
 # Registries whose authentication challenge is redeemed with a GitHub credential,
@@ -100,6 +102,7 @@ STATIC_STEP_NAMES = [
   "Check out repository",
   "Validate shell syntax",
   "Install ShellCheck",
+  "Set up Python",
   "Install Ansible tooling",
   "Check policy properties",
   "Check integration sandbox cleanup",
@@ -131,6 +134,7 @@ DOCS_CHECK_COMMANDS = [
 # with itself while disagreeing with the host.
 VAULT_STEP_NAMES = [
   "Check out repository",
+  "Set up Python",
   "Install Ansible tooling",
   "Validate the encrypted vault"
 ].freeze
@@ -595,6 +599,60 @@ toolchain_installs.each do |name, body|
   check(failures, !body.match?(/ansible-(?:core|lint)==/),
         "the #{name} job must not restate a pin controller-requirements.txt already authors")
 end
+
+# The interpreter that venv is built with, held the same way and for the same
+# reason. controller-requirements.txt pins ansible-core 2.21.4, which requires
+# Python 3.12 or newer, and nothing declared that floor: the venv took whatever
+# `python3` the runner image shipped, so the image moving its default -- in
+# either direction -- changed the toolchain CI resolved with nothing failing to
+# say so, and a contributor on 3.11 met the documented install with a resolver
+# wall of text naming no cause (#655).
+#
+# Three properties, and the third is the one that keeps the first two honest.
+# Every job that installs the toolchain sets the interpreter up first, in that
+# order, because a setup-python after the venv is built configures nothing the
+# venv used. The four steps are byte-identical, like the install steps they
+# precede. And none of them names a version: the step reads .python-version, so
+# the floor is authored in one file a bump has to touch, the way the pins are
+# authored in controller-requirements.txt alone.
+PYTHON_SETUP_STEP = "Set up Python"
+PYTHON_VERSION_FILE = ".python-version"
+python_setups = jobs.each_with_object({}) do |(name, job), collected|
+  steps = Array(job["steps"])
+  next unless steps.any? { |step| step.is_a?(Hash) && step["name"] == INSTALL_TOOLCHAIN_STEP }
+
+  collected[name] = steps
+end
+python_setups.each do |name, steps|
+  setup_index = steps.index { |step| step.is_a?(Hash) && step["name"] == PYTHON_SETUP_STEP }
+  install_index = steps.index { |step| step.is_a?(Hash) && step["name"] == INSTALL_TOOLCHAIN_STEP }
+  check(failures, setup_index && setup_index < install_index,
+        "the #{name} job must run #{PYTHON_SETUP_STEP.inspect} before " \
+        "#{INSTALL_TOOLCHAIN_STEP.inspect}: a setup after the venv is built " \
+        "configures an interpreter the venv did not use")
+  next unless setup_index
+
+  step = steps[setup_index]
+  check(failures, step["uses"].to_s.start_with?("actions/setup-python@"),
+        "the #{name} job's #{PYTHON_SETUP_STEP.inspect} must use actions/setup-python, " \
+        "found #{step['uses'].inspect}")
+  check(failures, step.dig("with", "python-version-file") == PYTHON_VERSION_FILE,
+        "the #{name} job's #{PYTHON_SETUP_STEP.inspect} must read #{PYTHON_VERSION_FILE}, " \
+        "not name a version of its own: found #{step.dig('with', 'python-version-file').inspect}")
+  check(failures, !step.fetch("with", {}).key?("python-version"),
+        "the #{name} job's #{PYTHON_SETUP_STEP.inspect} must not restate the version " \
+        "#{PYTHON_VERSION_FILE} already authors")
+end
+python_setup_bodies = python_setups.filter_map do |_name, steps|
+  steps.find { |step| step.is_a?(Hash) && step["name"] == PYTHON_SETUP_STEP }
+end
+check(failures, python_setup_bodies.length == python_setups.length &&
+                python_setup_bodies.uniq.length == 1,
+      "every #{PYTHON_SETUP_STEP.inspect} step must be byte-identical across the " \
+      "#{python_setups.keys.inspect} jobs, found #{python_setup_bodies.uniq.length} versions")
+declared_python = File.read(File.join(ROOT, PYTHON_VERSION_FILE)).strip
+check(failures, declared_python.match?(/\A\d+\.\d+\z/),
+      "#{PYTHON_VERSION_FILE} must name a major.minor series, found #{declared_python.inspect}")
 
 # The controller toolchain is built once per run and published to ghcr.io rather
 # than installed inside every leg. The suites job depends on it so a run that does

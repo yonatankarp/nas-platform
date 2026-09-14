@@ -1098,6 +1098,18 @@ else
                   "moved it, in the ledger's own \"- `path` — why\" form"
     end
   end
+  # The Python floor was stated in this one sentence and enforced nowhere, so a
+  # contributor on 3.11 met the guide's first command with a pip resolver wall of
+  # text naming no cause (#655). .python-version is the enforced copy now -- CI's
+  # four toolchain jobs read it and pyenv reads it -- and this holds the prose to
+  # it, because a floor a bump raises in one place and not the other is the same
+  # defect one release later.
+  declared_python_series = ROOT.join(".python-version").read.strip
+  getting_started = ROOT.join("docs/getting-started-nas.md").read
+  failures << "docs/getting-started-nas.md must state the Python floor as " \
+              "#{declared_python_series}, the series .python-version authors" unless
+    getting_started.include?("Python #{declared_python_series} or newer")
+
   # Deliberately source text. Both subjects are the wording of a comment, which
   # is what a reader of the file sees and what YAML parsing erases; there is no
   # parsed structure that carries it.
