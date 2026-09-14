@@ -209,7 +209,7 @@ mac_validate_integration_callback() {
 # disagreeing.
 #
 # deployment_pushover_api_url for the same account reached a second way:
-# every recreated service's deployment report and the run summary. This lane
+# every recreated service's deployment report. This lane
 # runs with the operator's REAL vault, so without it every converge here would
 # push to the household's devices. A port nothing listens on, because nothing
 # here asserts those notifications; tests/deployment_summary_test.rb refuses

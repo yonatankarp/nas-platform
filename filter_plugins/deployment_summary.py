@@ -136,27 +136,6 @@ def deployment_change_lines(changes):
     return lines
 
 
-def deployment_report_headline(changes, commits):
-    """Return the notification title: what moved, readable on a lock screen."""
-    if not isinstance(commits, list):
-        raise AnsibleFilterError("deployment commit subjects must be a list")
-    deployment_change_lines(changes)
-    names = []
-    for change in changes:
-        name = change["name"].split("/", 1)[0]
-        if name not in names:
-            names.append(name)
-    if names:
-        shown = ", ".join(names[:3])
-        if len(names) > 3:
-            shown = f"{shown} +{len(names) - 3}"
-        return f"NAS deployed: {shown}"
-    if commits:
-        subject = "1 change" if len(commits) == 1 else f"{len(commits)} changes"
-        return f"NAS deployed: {subject}, no image moved"
-    return "NAS deployed: no change"
-
-
 _SHA = re.compile(r"[0-9a-f]{40}")
 
 
@@ -207,6 +186,5 @@ class FilterModule:
         return {
             "deployment_image_changes": deployment_image_changes,
             "deployment_change_lines": deployment_change_lines,
-            "deployment_report_headline": deployment_report_headline,
             "deployment_summary_document": deployment_summary_document,
         }

@@ -3311,7 +3311,7 @@ class ConvergeTest(PollerTestCase):
 
     def test_an_operator_converge_never_hands_site_yml_a_summary_path(self):
         """The handshake's operator row: nothing announces after an operator's
-        command, so site.yml must publish its plain summary -- even when the
+        command, so site.yml must not be handed a summary path -- even when the
         shell that ran the launcher carries the variable."""
 
         record = self.fake_playbook()

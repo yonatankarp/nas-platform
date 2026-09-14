@@ -81,8 +81,8 @@ integration_vaultwarden_domain=https://vaultwarden.integration.invalid
 # exactly what the relay is built to do with an upstream it cannot reach.
 integration_dozzle_pushover_api_url='http://{{ platform_callback_host }}:32587/1/messages.json'
 
-# The same account, reached a second way: roles/ntfy delivers every recreated
-# service's deployment report and the run summary to Pushover from the
+# The same account, reached a second way: roles/deployment_bundle delivers every
+# recreated service's deployment report to Pushover from the
 # controller. Pointed at a port nothing listens on rather than at the recorder
 # above, because no lane asserts what those notifications say, and a refused
 # connection is a non-verdict the tasks report and pass on.

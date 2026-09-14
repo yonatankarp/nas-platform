@@ -24,8 +24,8 @@
   ansible.builtin.include_tasks: pushover_publish.yml
   vars:
     # The Containers application: a recreated container is container
-    # lifecycle, beside the Dozzle relay's alerts, while the run summary goes to
-    # the Deployments application.
+    # lifecycle, beside the Dozzle relay's alerts, while the poller announces
+    # each release in the Deployments application.
     deployment_pushover_token_variable: vault_pushover_containers_token
     # The title is plain text on Pushover's side, so it stays raw. The message
     # is HTML, so every value in it is escaped, and the service name is cut

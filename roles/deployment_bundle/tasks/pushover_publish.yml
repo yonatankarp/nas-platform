@@ -1,7 +1,7 @@
 ---
-# Delivers one deployment notification -- a per-service report or the run's
-# summary -- to Pushover. Both callers include this file, so the delivery and
-# its failure semantics are stated once.
+# Delivers one deployment notification -- a per-service report -- to Pushover.
+# The run summary was its second caller until #558 stage 4a; the delivery and
+# its failure semantics stay stated once, here, rather than inside report.yml.
 #
 # It lives in roles/deployment_bundle beside report.yml since #558 stage 4a moved
 # both out of roles/ntfy. A change under roles/deployment_bundle/ falls open to
@@ -10,8 +10,8 @@
 #
 # WHICH APPLICATION SENDS IT is the caller's choice, by vault key NAME rather
 # than by value: deployment_pushover_token_variable names the vault variable holding
-# the application token (vault_pushover_containers_token for a service report,
-# vault_pushover_deployments_token for the run summary), and the value is read
+# the application token (vault_pushover_containers_token for a service report),
+# and the value is read
 # through the vars lookup below. The name is what lets a refusal say which
 # token to fix without the value ever reaching a message.
 #

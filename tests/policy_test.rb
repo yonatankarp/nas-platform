@@ -1951,11 +1951,16 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "role #{name}: deployment report ignores a registered Compose deployment")
 end
 
-# The report itself must stay a report. Both the per-service report and the run
-# summary deliver through roles/deployment_bundle/tasks/pushover_publish.yml (#558), so the
-# two callers must reach it only outside --check, and the delivery itself must
-# be a redacted, changeless form POST of the caller's application token and the user key to the
+# The report itself must stay a report. The per-service report delivers through
+# roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
+# only outside --check, and the delivery itself must be a redacted, changeless
+# form POST of the caller's application token and the user key to the
 # redirectable endpoint every test lane overrides.
+#
+# The run summary was the second caller until #558 stage 4a removed the plain
+# summary. It is held to the opposite property now: it hands the poller a JSON
+# file and must include the delivery nowhere, because a summary that published
+# again would announce every poller-deployed release twice.
 report_path = File.join(ROOT, "roles/deployment_bundle/tasks/report.yml")
 summary_path = File.join(ROOT, "roles/deployment_bundle/tasks/summary.yml")
 publish_path = File.join(ROOT, "roles/deployment_bundle/tasks/pushover_publish.yml")
@@ -1963,7 +1968,15 @@ if deployment_reports_declared
   check(failures, File.file?(report_path),
         "roles/deployment_bundle/tasks/report.yml is missing but roles report deployments")
 end
-{ report_path => "deployment report", summary_path => "deployment summary" }.each do |path, label|
+if File.file?(summary_path)
+  summary_publish = flatten_tasks(Array(YAML.safe_load_file(summary_path, aliases: true))).find do |task|
+    task.is_a?(Hash) && task.values.any? { |value| value.to_s.include?("pushover_publish") }
+  end
+  check(failures, summary_publish.nil?,
+        "deployment summary includes pushover_publish.yml again (#{summary_publish&.fetch('name', nil).inspect}): " \
+        "the poller announces every release it deploys, so a summary that publishes sends it twice")
+end
+{ report_path => "deployment report" }.each do |path, label|
   next unless File.file?(path)
 
   publish = Array(YAML.safe_load_file(path, aliases: true)).find do |task|
@@ -1976,9 +1989,8 @@ end
   check(failures, Array(publish["when"]).any? { |c| c.to_s.include?("not ansible_check_mode") },
         "#{label} must not publish under --check")
   # Each message belongs to one Pushover application (#558): the per-service
-  # report is container lifecycle, the summary is the release record.
-  application_token = { report_path => "vault_pushover_containers_token",
-                        summary_path => "vault_pushover_deployments_token" }.fetch(path)
+  # report is container lifecycle.
+  application_token = { report_path => "vault_pushover_containers_token" }.fetch(path)
   check(failures, publish.dig("vars", "deployment_pushover_token_variable") == application_token,
         "#{label} must send with #{application_token}")
 end

@@ -40,7 +40,6 @@ def manifest(images):
 plugin = load_plugin()
 changes_of = plugin.deployment_image_changes
 lines_of = plugin.deployment_change_lines
-headline_of = plugin.deployment_report_headline
 
 DIGEST_A = "@sha256:" + "a" * 64
 DIGEST_B = "@sha256:" + "b" * 64
@@ -102,14 +101,9 @@ assert first_install == [
     {"name": "ntfy", "kind": "added", "to": "v2.27.0", "reference": "docker.io/x/ntfy:v2.27.0" + DIGEST_A}
 ]
 
-# The title names services, deduplicated across a service's own containers.
-assert headline_of(changes, []) == "NAS deployed: immich, jellyfin, komga +2"
-assert headline_of(changes[:1], []) == "NAS deployed: immich"
-assert headline_of([], ["fix: correct the Komga library path"]) == (
-    "NAS deployed: 1 change, no image moved"
-)
-assert headline_of([], ["one", "two"]) == "NAS deployed: 2 changes, no image moved"
-assert headline_of([], []) == "NAS deployed: no change"
+# The plain summary's title filter went with the plain summary (#558 stage 4a).
+assert not hasattr(plugin, "deployment_report_headline")
+assert "deployment_report_headline" not in plugin.FilterModule().filters()
 
 # A digest-only pin is still a released change, and an untagged image is named.
 untagged = changes_of(
@@ -159,6 +153,5 @@ require_rejected(changes_of, {"services": [{"name": "x", "images": {"x": 7}}]}, 
 require_rejected(lines_of, "changes")
 require_rejected(lines_of, [{"name": "x", "kind": "unheard-of"}])
 require_rejected(lines_of, [{"kind": "added", "to": "1.0"}])
-require_rejected(headline_of, [], "commits")
 
 print("Deployment report summary behavior passed")

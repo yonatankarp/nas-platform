@@ -1,25 +1,28 @@
 ---
-# One message for the whole run, published after every service has converged.
-# The per-service reports say a service was recreated; this says what shipped —
-# which images moved between which versions, and the commit subjects the release
-# carries — because the reader is usually a phone nowhere near a checkout, where
-# a revision is a lookup they cannot perform.
+# What the whole run shipped, handed to the deployment poller after every service
+# has converged: which images moved between which versions, and the commits the
+# release carries. The per-service reports say a service was recreated; the
+# poller's one Deployments message says what shipped, with links this play
+# cannot build, once verify.yml has passed.
 #
 # Silent unless the release actually moved. A converge that reinstalls the same
 # revision recreated nothing, and the per-service reports stay silent for the
 # same reason.
 #
-# Two ways out, never both (#558). Under the deployment poller, which alone sets
-# deployment_summary_path, the summary is written as JSON and published by
-# nobody here: the poller announces it after verify.yml passes, with links this
-# play cannot build. Everywhere else it is published as plain text, as before.
-# Exactly one message per release either way, whichever side is the older code.
+# ONE WAY OUT, and nothing is ever published here (#558 stage 4a). Only the
+# poller sets deployment_summary_path, and with it unset -- an operator
+# --converge, a workstation run -- this file reads nothing, writes nothing and
+# sends nothing. The plain-text summary it used to publish in that case is gone
+# on purpose: a hand-run deploy gets its per-service Containers notices and no
+# Deployments message. A poller older than the variable (before #633) loses the
+# one summary of the tick that installs its successor, which was accepted.
 - name: Read the installed deployment manifest
   atomic_safe_slurp:
     path: "{{ platform_release_dir }}/manifest.yml"
     max_bytes: 1048576
   register: deployment_summary_current_source
   when:
+    - deployment_summary_path | length > 0
     - deployment_release_moved | bool
     - not ansible_check_mode
 
@@ -30,6 +33,7 @@
     max_bytes: 1048576
   register: deployment_summary_previous_source
   when:
+    - deployment_summary_path | length > 0
     - deployment_release_moved | bool
     - not ansible_check_mode
     - deployment_previous_release is match('^[0-9a-f]{40}$')
@@ -46,6 +50,7 @@
     deployment_summary_current_document: >-
       {{ deployment_summary_current_source.content | b64decode | from_yaml }}
   when:
+    - deployment_summary_path | length > 0
     - deployment_release_moved | bool
     - not ansible_check_mode
     - deployment_summary_current_source.exists | default(false)
@@ -70,6 +75,7 @@
   delegate_to: localhost
   run_once: true
   when:
+    - deployment_summary_path | length > 0
     - deployment_release_moved | bool
     - not ansible_check_mode
     - deployment_summary_current_source.exists | default(false)
@@ -81,6 +87,7 @@
       {{ (deployment_summary_git_log.stdout_lines | default([]))
          if (deployment_summary_git_log.rc | default(1)) == 0 else [] }}
   when:
+    - deployment_summary_path | length > 0
     - deployment_release_moved | bool
     - not ansible_check_mode
     - deployment_summary_current_source.exists | default(false)
@@ -161,31 +168,20 @@
           deployment failure; the services in this run already converged.
       run_once: true
 
-# Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
-# 2b. A refused publish fails the converge on purpose, exactly as the
-# per-service report does; an unreachable Pushover does not. Normal priority,
-# above the quiet per-service detail, and the Deployments application, which
-# carries nothing but one message per release. Plain text, and only when no
-# poller asked for the summary: the poller's richer message replaces this one.
-- name: Publish the deployment summary
-  ansible.builtin.include_tasks: pushover_publish.yml
-  vars:
-    deployment_pushover_token_variable: vault_pushover_deployments_token
-    deployment_pushover_title: >-
-      {{ deployment_summary_changes
-         | deployment_report_headline(deployment_summary_commits) }}
-    deployment_pushover_message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
-    deployment_pushover_priority: 0
-  when:
-    - deployment_summary_path | length == 0
-    - deployment_release_moved | bool
-    - not ansible_check_mode
-    - deployment_summary_current_source.exists | default(false)
-
 - name: Report the deployment summary withheld by check mode
   ansible.builtin.debug:
     msg: >-
-      Check mode publishes and writes no deployment summary; a real run that
-      moves the release sends one Pushover message, or hands it to the
-      deployment poller to send.
+      Check mode writes no deployment summary; a real run under the deployment
+      poller that moves the release hands it to the poller to announce.
   when: ansible_check_mode
+
+- name: Report that no deployment poller asked for a summary
+  ansible.builtin.debug:
+    msg: >-
+      PLATFORM_DEPLOYMENT_SUMMARY_PATH is unset, so no deployment poller asked
+      for this run's summary and none is written or sent. Only the poller
+      announces a release; the per-service Containers notices above are this
+      run's whole record.
+  when:
+    - deployment_summary_path | length == 0
+    - not ansible_check_mode

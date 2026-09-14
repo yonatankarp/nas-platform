@@ -27,7 +27,7 @@ module PolicySupport
   # the prefix rule and buy nothing. The Pushover keys are the second kind -- one
   # user key and four application tokens of an account at a third party, each
   # token pushed into whichever publishers use that application (Beszel, the
-  # Dozzle relay and the ntfy role's deployment reports, the run summary, Seerr),
+  # Dozzle relay, the deployment reports, the deployment poller, Seerr),
   # so they are named here rather than under any one service. The healthchecks.io
   # ping URLs are the same kind with no service at all: the deployment poller
   # reports to them, and it is installed by its own play rather than listed in

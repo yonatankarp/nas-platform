@@ -2,12 +2,14 @@
 # frozen_string_literal: true
 
 # The deployment record is what a human actually reads after a deployment, so
-# what it says — and when it stays silent — is a contract. Two messages make it
-# up: one per-service report, and the run-level summary behind them. Both are
-# delivered to Pushover by roles/deployment_bundle/tasks/pushover_publish.yml, and the second
-# half of this file runs that delivery against a local fixture speaking
-# Pushover's shapes: an authoritative refusal fails the converge, and nothing
-# that is not an answer does.
+# what it says — and when it stays silent — is a contract. Two pieces make it
+# up: one per-service report, delivered to Pushover by
+# roles/deployment_bundle/tasks/pushover_publish.yml, and the run-level summary
+# behind them, which site.yml only ever hands to the deployment poller as JSON
+# (#558 stage 4a removed the plain summary it used to publish). The second half
+# of this file runs the delivery against a local fixture speaking Pushover's
+# shapes: an authoritative refusal fails the converge, and nothing that is not
+# an answer does.
 
 require "fileutils"
 require "json"
@@ -146,6 +148,16 @@ def run_report(variables, *arguments)
   run_bundle_task("report", variables, *arguments)
 end
 
+# The shared delivery on its own. The report bounds its own message before the
+# delivery sees it, so the delivery's cut and its refusal naming are exercised
+# here directly rather than through a caller that can no longer reach them.
+def run_publish(variables, *arguments)
+  run_bundle_task("pushover_publish", variables, *arguments)
+end
+
+# What summary.yml says when no poller asked for the summary.
+UNREQUESTED = "no deployment poller asked for this run's summary"
+
 # The form every delivery must be, whichever message it carries. `token` names
 # the vault variable whose sentinel must arrive; `extras` is the exact set of
 # optional fields (html, ttl) the caller sends, so a field that leaks into the
@@ -182,14 +194,12 @@ CURRENT_IMAGES = {
 }.freeze
 
 # A Renovate batch in miniature, sized so both halves overrun Pushover's limits
-# by construction. The headline is three 77-character names plus "+37", which is
+# by construction. The title is three 77-character names plus "+37", which is
 # 253 characters: past 250, but inside the five characters of leeway Jinja's
 # truncate grants by default, so the row also proves that leeway is off. Forty
 # change lines of about 90 characters put the body past 1024.
 LONG_NAMES = (1..40).map { |index| format("service-%02d-%s", index, "x" * 66) }
 LONG_HEADLINE = "NAS deployed: #{LONG_NAMES.first(3).join(', ')} +37"
-LONG_PREVIOUS = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:1.0.0#{DIGEST_A}" }] }
-LONG_CURRENT = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:2.0.0#{DIGEST_B}" }] }
 
 with_controller_repository do |directory, repository, previous, current, introducing, documenting|
   deploy_root = File.join(directory, "deploy")
@@ -207,34 +217,28 @@ with_controller_repository do |directory, repository, previous, current, introdu
     }.merge(TOKENS).merge(overrides)
   end
 
-  with_http_probe(1) do |port, requests|
-    _stdout, stderr, status = run_summary(
-      base.call(port, "deployment_bundle_previous_release_id" => previous)
-    )
-    check(failures, status.success?,
-          "deployment summary fixture failed: #{stderr.lines.last&.strip}")
-    published = requests.first || {}
-    form = published["form"] || {}
-    message = form["message"].to_s
-    check_delivery_form(failures, "the summary", published, "0",
-                        token: "vault_pushover_deployments_token")
-    check(failures, form["title"] == "NAS deployed: jellyfin",
-          "the summary title must name what moved: #{form['title'].inspect}")
-    check(failures, message.include?("jellyfin 10.10.3 → 10.11.0"),
-          "the summary must state the versions a service moved between")
-    check(failures, !message.include?("ntfy"),
-          "the summary must omit services the release did not move")
-    check(failures, message.include?("fix: pin jellyfin 10.11.0") &&
-                    message.include?("chore(deps): update immich to v1.122.0"),
-          "the summary must carry the commit subjects of the release")
-    check(failures, !message.include?("feat: first release"),
-          "the summary must carry only the commits this deployment adds")
-    check(failures, message.include?(current[0, 12]) && message.include?(previous[0, 12]),
-          "the summary must name the release and the one it replaced")
-    check(failures, message.start_with?("Images\n- ") && message.include?("\n\nChanges\n- "),
-          "the summary must read as plain text lists, not markup: #{message.inspect}")
-    check(failures, !message.include?(introducing) && !message.include?("\t"),
-          "the plain summary must strip the SHA the commit log now carries: #{message.inspect}")
+  # With the variable unset -- an operator converge, a workstation run -- a moved
+  # release publishes nothing and writes nothing (#558 stage 4a). Both halves are
+  # asserted: a request would be the plain summary back, and a file would be a
+  # summary written for a poller that is not there.
+  [["a moved release", previous], ["a first install", ""]].each do |label, predecessor|
+    before = Dir.glob(File.join(directory, "**", "*"), File::FNM_DOTMATCH).sort
+    with_http_probe(nil) do |port, requests|
+      stdout, stderr, status = run_summary(
+        base.call(port, "deployment_bundle_previous_release_id" => predecessor)
+      )
+      check(failures, status.success?,
+            "#{label} without a poller: summary fixture failed: #{stderr.lines.last&.strip}")
+      check(failures, requests.empty?,
+            "#{label} without a poller: the summary published although nothing asked for it, " \
+            "which is the plain summary back: #{requests.map { |r| r.dig('form', 'title') }.inspect}")
+      check(failures, stdout.include?(UNREQUESTED),
+            "#{label} without a poller must say no summary is written or sent")
+    end
+    after = Dir.glob(File.join(directory, "**", "*"), File::FNM_DOTMATCH).sort
+    check(failures, after == before,
+          "#{label} without a poller wrote #{(after - before).inspect}; with the variable unset the " \
+          "summary must write nothing")
   end
 
   # --- the poller's half of the handshake (#558) -----------------------------
@@ -242,7 +246,7 @@ with_controller_repository do |directory, repository, previous, current, introdu
   # The poller alone sets the variable, and with it set this file writes the
   # summary and publishes NOTHING: the poller sends the one message once verify
   # passes. Unset -- an operator converge, or a poller older than the variable --
-  # the rows above publish the plain summary. Either way exactly one message.
+  # the rows above send and write nothing. At most one message either way.
   summary_path = File.join(directory, "state", "deployment-summary.json")
   FileUtils.mkdir_p(File.dirname(summary_path))
   poller_environment = { SUMMARY_PATH_VARIABLE => summary_path }
@@ -362,17 +366,21 @@ with_controller_repository do |directory, repository, previous, current, introdu
     File.chmod(0o700, read_only)
   end
 
-  # A refused summary names the Deployments token, the one it was sent with.
+  # A refusal names the token the caller chose and no other. The summary was the
+  # caller that sent with the Deployments token until stage 4a, so the delivery
+  # is driven with that name directly.
   with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
-    stdout, stderr, status = run_summary(
-      base.call(port, "deployment_bundle_previous_release_id" => previous)
+    stdout, stderr, status = run_publish(
+      base.call(port, "deployment_pushover_token_variable" => "vault_pushover_deployments_token",
+                      "deployment_pushover_title" => "a title", "deployment_pushover_message" => "a message",
+                      "deployment_pushover_priority" => 0)
     )
     output = stdout + stderr
     check(failures, !status.success? && output.include?("Check vault_pushover_deployments_token against") &&
                     !output.include?("vault_pushover_containers_token"),
-          "a refused summary must fail naming vault_pushover_deployments_token and no other token")
+          "a refused delivery must fail naming vault_pushover_deployments_token and no other token")
     check(failures, TOKENS.values.none? { |secret| output.include?(secret) },
-          "a refused summary disclosed a Pushover token")
+          "a refused delivery disclosed a Pushover token")
   end
 
   # A converge that reinstalls the same revision recreated nothing, and the
@@ -393,21 +401,6 @@ with_controller_repository do |directory, repository, previous, current, introdu
           "selective deployment summary fixture failed: #{stderr.lines.last&.strip}")
   end
 
-  # A first install has no predecessor: every image is genuinely new, and the
-  # absent Git range must not fail the run.
-  with_http_probe(1) do |port, requests|
-    _stdout, stderr, status = run_summary(
-      base.call(port, "deployment_bundle_previous_release_id" => "")
-    )
-    check(failures, status.success?,
-          "first-install deployment summary fixture failed: #{stderr.lines.last&.strip}")
-    form = (requests.first || {})["form"] || {}
-    check(failures, form["title"].to_s.start_with?("NAS deployed: jellyfin"),
-          "a first install must report its images as new: #{form['title'].inspect}")
-    check(failures, form["message"].to_s.include?("(new)"),
-          "a first install must mark its images new rather than moved")
-  end
-
   # Check mode reviews a deployment. Publishing during a review would announce
   # a deployment that never happened.
   with_http_probe(0) do |port, _requests|
@@ -422,38 +415,37 @@ with_controller_repository do |directory, repository, previous, current, introdu
   # authoritative refusal that fails the converge after every service already
   # deployed -- so the fixture answers exactly that for an overlong field, and
   # the row proves the cut happened before the request rather than trusting it.
-  long_root = File.join(directory, "deploy-long")
-  write_release(long_root, previous, LONG_PREVIOUS)
-  long_release = write_release(long_root, current, LONG_CURRENT)
-  over_limit = lambda do |form|
-    form["title"].to_s.length > 250 || form["message"].to_s.length > 1024
-  end
+  # Driven through the delivery directly since stage 4a: the plain summary was
+  # the caller whose body was unbounded, and the report bounds its own.
+  expected_lines = LONG_NAMES.map { |name| "- #{name} 1.0.0 → 2.0.0" }.join("\n")
   long_requests = []
   with_http_fixture(lambda { |port|
-    stdout, stderr, status = run_summary(
-      base.call(port, "platform_deploy_root" => long_root, "platform_release_dir" => long_release,
-                      "deployment_bundle_previous_release_id" => previous)
+    stdout, stderr, status = run_publish(
+      base.call(port, "deployment_pushover_token_variable" => "vault_pushover_deployments_token",
+                      "deployment_pushover_title" => LONG_HEADLINE,
+                      "deployment_pushover_message" => "Images\n#{expected_lines}",
+                      "deployment_pushover_priority" => 0)
     )
     check(failures, status.success?,
-          "an overlong summary must be cut, not refused: #{(stdout + stderr).lines.last(3).join.strip}")
+          "an overlong notification must be cut, not refused: #{(stdout + stderr).lines.last(3).join.strip}")
   }) do |_method, _target, _headers, body|
     form = URI.decode_www_form(body).to_h
     long_requests << form
-    over_limit.call(form) ? [400, JSON.generate({ "status" => 0, "errors" => ["too long"] })] : ACCEPTED
+    over_limit = form["title"].to_s.length > 250 || form["message"].to_s.length > 1024
+    over_limit ? [400, JSON.generate({ "status" => 0, "errors" => ["too long"] })] : ACCEPTED
   end
   long_form = long_requests.first || {}
-  expected_lines = LONG_NAMES.map { |name| "- #{name} 1.0.0 → 2.0.0" }.join("\n")
   check(failures, long_requests.length == 1 && expected_lines.length > 1024 &&
                   LONG_HEADLINE.length.between?(251, 255),
         "the overlong row must actually overrun both limits to prove anything")
   check(failures, long_form["title"].to_s.length.between?(1, 250) &&
                   long_form["message"].to_s.length.between?(1, 1024),
-        "an overlong summary must be cut to 250/1024 characters, got " \
+        "an overlong notification must be cut to 250/1024 characters, got " \
         "#{long_form['title'].to_s.length}/#{long_form['message'].to_s.length}")
   check(failures, long_form["message"].to_s.start_with?("Images\n- service-01-") &&
                   long_form["message"].to_s.end_with?("…") &&
                   long_form["title"].to_s.end_with?("…"),
-        "a cut summary must keep its beginning and end with a visible marker")
+        "a cut notification must keep its beginning and end with a visible marker")
 end
 
 # The per-service report is the detail behind the summary, and only a service
@@ -558,8 +550,7 @@ check_report(failures, "check mode", RECREATED, 0, "--check")
 
 # --- what Pushover answers, and what the converge makes of it --------------
 #
-# Run through the report because it is the cheaper caller; the summary includes
-# the same task file. The accepted row is asserted by what it does not say: a
+# Run through the report, the delivery's one caller since #558 stage 4a. The accepted row is asserted by what it does not say: a
 # delivered message is silent, and the non-verdict notice appearing would mean
 # an answer was misread.
 def check_answer(failures, label, output, status, expect_failure:, expect_text:, forbid_text:)
@@ -690,8 +681,8 @@ DEPLOYMENT_ENDPOINT_OVERRIDES.each do |relative, (function, argument, value)|
 end
 
 if failures.empty?
-  puts "Deployment record: only a recreated service reports, one summary says what " \
-       "shipped, and only an authoritative Pushover refusal fails the converge"
+  puts "Deployment record: only a recreated service reports, the summary is handed to the " \
+       "poller and never published, and only an authoritative Pushover refusal fails the converge"
 else
   failures.each { |failure| puts "FAIL #{failure}" }
   puts "#{failures.length} deployment summary violation(s)"

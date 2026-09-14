@@ -20,9 +20,9 @@ deployment_bundle_lock_path: >-
 deployment_bundle_lock_owner: >-
   {{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_LOCK_OWNER') }}
 
-# Where the per-service reports and the run summary are delivered: Pushover's
-# message API, with the Containers application token for a report and the
-# Deployments one for the summary, and the account's user key. A variable rather than a literal
+# Where the per-service reports are delivered: Pushover's message API, with the
+# Containers application token and the account's user key. The run summary is
+# not delivered from here at all; the poller announces it. A variable rather than a literal
 # so that no test lane reaches the household's real devices: every site.yml
 # caller under tests/ points it at an address where nothing listens, and
 # tests/deployment_summary_test.rb refuses a caller that does not.
@@ -45,15 +45,12 @@ deployment_release_moved: >-
 # The controller checkout, which is the only place the Git history exists. The
 # target holds releases, not a repository.
 deployment_summary_checkout: "{{ playbook_dir }}"
-# A lock screen shows a few lines. Beyond this the body says how many were cut
-# rather than scrolling a wall of subjects nobody reads on a phone.
-deployment_summary_max_commits: 8
 deployment_summary_changes: []
 deployment_summary_commits: []
 # Where the deployment poller wants this run's summary, from the environment it
-# runs site.yml in (#558). Set, the summary is written there as JSON and nothing
-# is published: the poller sends a richer message once verify.yml passes. Empty
-# -- an operator --converge, a workstation run, a poller older than the
-# variable -- publishes the plain summary exactly as before. A tolerated input,
+# runs site.yml in (#558). Set, the summary is written there as JSON and the
+# poller sends one message once verify.yml passes. Empty -- an operator
+# --converge, a workstation run, a poller older than the variable -- nothing is
+# written and nothing is sent (stage 4a removed the plain summary). A tolerated input,
 # like PLATFORM_DEPLOYMENT_LOCK_OWNER: site.yml depends on nothing that sets it.
 deployment_summary_path: "{{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_SUMMARY_PATH') }}"
