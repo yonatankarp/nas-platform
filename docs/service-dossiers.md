@@ -15,24 +15,28 @@ promotion is still free to choose differently.
 
 ## Before a promotion
 
-Four projects remain `planned` in
-[`services/manifest.yml`](../services/manifest.yml). These four files are what a
-promotion starts from.
+One subject indexed here has not been promoted, and it is not `planned` either:
+`status: planned` appears nowhere in
+[`services/manifest.yml`](../services/manifest.yml), whose seventeen entries are
+all `implemented`. Gluetun and qBittorrent has no manifest row at all — no role,
+no Compose directory, nothing outside its dossier — so there is nothing for it
+to remain `planned` in, and its dossier is the whole of what a promotion would
+start from.
 
-- [Bindery](dossier-bindery.md) — Phase 2 unit B, ebooks and audiobooks
-- [Trailarr](dossier-trailarr.md) — Phase 3, local trailers
-- [Seerr](dossier-seerr.md) — Phase 4, requests
 - [Gluetun and qBittorrent](dossier-gluetun-qbittorrent.md) — Phase 5, the
   torrent cutover
 
 ## After a promotion
 
-Two projects are `implemented`, and both were promoted before this convention
-existed. Their dossiers ask a different question — not whether to deploy the
-service, but **what the running application holds that Ansible does not own**.
-A deployed service with an unowned configuration surface is the one case where
-this repository stops describing reality, so the surface is worth naming even
-when the answer is that it cannot be closed.
+Five of the acquisition dossiers follow a promotion that happened, and they
+divide by when they were written relative to it.
+
+Two were written *after* their promotion, before this convention existed. They
+ask a different question — not whether to deploy the service, but **what the
+running application holds that Ansible does not own**. A deployed service with
+an unowned configuration surface is the one case where this repository stops
+describing reality, so the surface is worth naming even when the answer is that
+it cannot be closed.
 
 - [Pinchflat](dossier-pinchflat.md) — no configuration API exists at all
 - [Kapowarr](dossier-kapowarr.md) — a complete settings API, mostly unclaimed
@@ -40,13 +44,25 @@ when the answer is that it cannot be closed.
 The two answer that question almost exactly opposite to each other, which is the
 argument for reading them as a pair.
 
+Three were written *before* their promotion and have since been overtaken by it.
+They are post-hoc records now: what the investigation found, and what the
+promotion was free to choose differently.
+
+- [Bindery](dossier-bindery.md) — Phase 2 unit B, ebooks and audiobooks
+- [Trailarr](dossier-trailarr.md) — Phase 3, local trailers
+- [Seerr](dossier-seerr.md) — Phase 4, requests
+
+Read those three against the role that landed rather than as a plan: a dossier
+is evidence about a version of an application, and the promotion is the decision.
+Where the two disagree, the deployed role is what the platform does.
+
 ## Alongside an implementation
 
 Two files were written neither before a promotion nor after one, but across the
 slices that built their service. They ask a third question: **what did building
-this teach that no amount of reading upstream would have**. Both subjects are
-`implemented` in the manifest, and each was deployment-gated off while its
-dossier was written.
+this teach that no amount of reading upstream would have**. Nextcloud is
+`implemented` in the manifest; Seafile was until #501 removed its entry with the
+service. Each was deployment-gated off while its dossier was written.
 
 - [Seafile](dossier-seafile.md) — file sync and share, the sixteenth service and
   the first with a database engine of its own. **Retired**: #501 removed the
@@ -131,8 +147,11 @@ entry. Confirmed for all seven.
 
 ## What the four have in common
 
-These are the findings that repeated, and they are worth knowing before reading
-any single file.
+The four are the acquisition subjects investigated before promotion — Bindery,
+Trailarr, Seerr, and Gluetun with qBittorrent. Three of them have since been
+promoted, so what follows is what the investigations found rather than what the
+roles do today. These are the findings that repeated, and they are worth knowing
+before reading any single file.
 
 **Three of the four hand the administrator account to whoever arrives first.**
 Bindery's `POST /api/v1/auth/setup` is anonymous until a user exists and then

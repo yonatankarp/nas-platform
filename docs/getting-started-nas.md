@@ -110,22 +110,35 @@ Complete the brand-new-platform preparation, private review, validation, and
 Mac-proof portions of the
 [secrets and encrypted-vault guide](secrets.md) before continuing. Then follow
 [Install reviewed vault for NAS](secrets.md#install-reviewed-vault-for-nas)
-exactly once. Its guarded mutation copies only reviewed ciphertext and refuses
-to overwrite an existing repository vault. If a vault already exists, stop and
-inspect it instead of regenerating or overwriting it.
+exactly once. It authors the reviewed credentials into the per-service vault
+files the repository already carries, one per service plus one per third-party
+account, under `inventory/group_vars/all/`. It does not create a repository-wide
+`inventory/group_vars/all/vault.yml`: that single-file path is retired, and
+`tests/policy_vault_test.rb` fails on a committed one. If a per-service file
+already holds something, stop and inspect it instead of regenerating or
+overwriting it.
 
-After that canonical step installs a new vault, or after you explicitly confirm
-that the existing vault is the reviewed artifact to reuse, verify its header and
-repository status without showing its contents:
+After that canonical step, verify every vault file's header and the repository
+status without showing any contents:
 
 ```sh
-head -n 1 inventory/group_vars/all/vault.yml
-git status --short inventory/group_vars/all/vault.yml
+for platform_vault_path in inventory/group_vars/all/vault_*.yml; do
+  IFS= read -r platform_vault_header < "$platform_vault_path"
+  case "$platform_vault_header" in
+    '$ANSIBLE_VAULT;'*) ;;
+    *) printf 'STOP: not encrypted: %s\n' "$platform_vault_path" >&2 ;;
+  esac
+done
+unset platform_vault_header
+unset platform_vault_path
+git status --short inventory/group_vars/all/
 ```
 
-The first line must start with `$ANSIBLE_VAULT;`. The encrypted vault may be
-committed. Never commit its password, a plaintext or decrypted vault, rendered
-`.env` files, plaintext credentials, or private keys.
+Every one of those files must start with `$ANSIBLE_VAULT;`, and the loop prints
+nothing when they all do. The encrypted per-service vault files are committed —
+that is what lets the poller converge them from the checkout. Never commit the
+vault password, a plaintext or decrypted vault, rendered `.env` files, plaintext
+credentials, or private keys.
 
 ## 4. Validate inventory and connectivity
 

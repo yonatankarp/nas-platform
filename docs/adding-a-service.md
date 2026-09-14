@@ -1225,7 +1225,7 @@ existing value — not as a description of the field.
 
 ### A third-party credential lands in one more place than that
 
-The eleven above are for a credential this platform *generates*. A credential
+The ten above are for a credential this platform *generates*. A credential
 that belongs to somebody else — an account at an external service, the way the
 Open Subtitles pair does — needs a `NOT_PLACEHOLDER` rule in
 `filter_plugins/vault_credential_schema.py`, so the vault contract refuses to

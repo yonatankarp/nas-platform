@@ -26,7 +26,7 @@ values, and converge. Providers you do not declare are left alone, including any
 enabled by hand.
 
 ```sh
-ansible-vault edit inventory/group_vars/all/vault.yml
+ansible-vault edit inventory/group_vars/all/vault_arr.yml
 ```
 
 ## Declared form

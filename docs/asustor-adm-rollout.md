@@ -61,18 +61,22 @@ python -m pip install --upgrade pip
 python -m pip install -r controller-requirements.txt
 ```
 
-Place the credentials. The encrypted vault is committed, so every run reads it
-from the checkout; only the password provider has to be placed by hand:
+Place the credentials. The encrypted vault is committed — one file per service
+under `inventory/group_vars/all/`, plus one per third-party account — so every
+run reads it from the checkout; only the password provider has to be placed by
+hand:
 
 ```sh
 mkdir -p "$HOME/.config/nas-platform" && chmod 700 "$HOME/.config/nas-platform"
 ```
 
 Copy the vault password file to `$HOME/.config/nas-platform/vault-password` and
-`chmod 600` it, then confirm it opens the committed vault before going further:
+`chmod 600` it, then confirm it opens the committed vault before going further.
+Any one of those files proves the password; the output is discarded because
+decrypted credentials do not belong in a terminal:
 
 ```sh
-ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" inventory/group_vars/all/vault.yml | head -3
+ansible-vault view --vault-password-file "$HOME/.config/nas-platform/vault-password" inventory/group_vars/all/vault_arr.yml >/dev/null && printf 'vault password opens the committed vault\n'
 ```
 
 Export the environment. `inventory/local.yml` reads these through `lookup('env')`,

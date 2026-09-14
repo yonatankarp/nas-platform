@@ -49,7 +49,7 @@ Repeating an identical `PUT` returns `200` and changes nothing. Confirmed. The
 endpoint is safe to re-send, but it is **not** self-reporting: a no-op write and
 a real write are both `200` with an identical body, so `changed_when` has to
 come from a read-then-decide, exactly as
-[the four planned projects require](service-dossiers.md#what-the-four-have-in-common).
+[the four acquisition subjects require](service-dossiers.md#what-the-four-have-in-common).
 
 ## Validation is strict, typed, and returns the offending key
 
