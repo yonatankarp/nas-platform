@@ -166,9 +166,9 @@
       not what deployment_bundle installed.'
       if karakeep_account_count.rc is not defined
       or (karakeep_account_count.stderr | default('', true) | string) is search('env file', ignorecase=true) else
-      ('The application container stopped or was killed between the sign-in probe
-      and this count.'
-      if (karakeep_account_count.stderr | default('', true) | string) is search('not running', ignorecase=true) else
+      ('The application container stopped, was killed or was paused between the
+      sign-in probe and this count.'
+      if (karakeep_account_count.stderr | default('', true) | string) is search('not running|is paused', ignorecase=true) else
       'The query itself failed inside the container -- most likely a Karakeep
       release renamed the `user` table or moved the database; check it against
       the pinned image.')) }}

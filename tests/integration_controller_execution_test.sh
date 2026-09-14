@@ -812,11 +812,12 @@ apply_plant() {
         STALE PLANT ANCHOR [plant] #{label}: #{source}
           pattern (#{mode}): #{pattern.inspect}
           matched #{count} occurrence(s), expected #{expected}
-        The plant could not be applied because its ANCHOR moved, not because the
-        property broke: #{source} no longer contains that text the expected number
-        of times. This is not a detected defect. Re-anchor the plant on the line
-        of #{source} that now produces the property; never delete it, because a
-        deleted plant leaves its property proved by nothing.
+        The plant could not be applied because its ANCHOR moved: #{source} no
+        longer contains that text the expected number of times. This abort is
+        about the plant, not the property -- whether the property still holds is
+        what any FAIL lines printed above this one report. Re-anchor the plant on
+        the line of #{source} that now produces the property; never delete it,
+        because a deleted plant leaves its property proved by nothing.
       MESSAGE
     end
     File.write(path, body.gsub(needle, replacement.gsub("\\n", "\n")))
