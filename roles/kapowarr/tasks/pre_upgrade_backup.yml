@@ -106,9 +106,9 @@
 - name: Require a Kapowarr store for the pre-upgrade copy to take
   ansible.builtin.assert:
     that:
-      - kapowarr_store_stat.stat.exists | default(false)
+      - kapowarr_store_stat.stat.isreg | default(false)
     fail_msg: >-
-      No Kapowarr.db was found under {{ kapowarr_config_host_path }} on a host
+      No regular file Kapowarr.db was found under {{ kapowarr_config_host_path }} on a host
       whose Kapowarr container reports the image {{ kapowarr_deployed_image }},
       so this run has a store it cannot copy and an upgrade to
       {{ kapowarr_pinned_image }} that would migrate it. The upgrade is refused
@@ -258,12 +258,18 @@
     # the in-block assertion names -- is not covered by it. Starting the old image
     # over a missing Kapowarr.db creates a fresh empty one, the next converge's check
     # finds that file, copies it and upgrades over it with a green run: measured
-    # by deleting the store as the container exited. So a store that is not there
-    # now leaves the container stopped, and the message below says why.
+    # by deleting the store as the container exited. So only a regular file counts:
+    # a dangling symlink and a directory both report `exists`, and the old image
+    # started over either one runs on a store it creates somewhere else (measured).
+    # `failed_when: false` because stat fails outright on a permission error rather
+    # than reporting absence, and a rescue that fails here never reaches its
+    # verdict; an unreadable store reads as not a regular file and is not started
+    # over.
     - name: Read whether the Kapowarr store is still there to start over
       ansible.builtin.stat:
         path: "{{ kapowarr_config_host_path }}/Kapowarr.db"
       register: kapowarr_pre_upgrade_store_after
+      failed_when: false
 
     # `recreate: never` again, for the reason the stop carries it: `up` without it
     # replaces the stopped container with one on the new pin, which both starts
@@ -280,9 +286,14 @@
         services: [kapowarr]
         state: present
         recreate: never
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: kapowarr_pre_upgrade_restart
-      failed_when: false
-      when: kapowarr_pre_upgrade_store_after.stat.exists | default(false)
+      # Tolerated rather than redacted from the verdict: `is failed` below is what
+      # tells a container that came back healthy from one that is crash-looping,
+      # which a running-state read taken the moment `up` returns cannot (measured).
+      ignore_errors: true
+      when: kapowarr_pre_upgrade_store_after.stat.isreg | default(false)
 
     # What Docker reports rather than what the module claimed. The same container
     # ID running is the old image running, because a container never changes its
@@ -312,17 +323,26 @@
           The upgrade from {{ kapowarr_deployed_image }} to {{ kapowarr_pinned_image }} was not performed.
           {{ kapowarr_pre_upgrade_outcome }}
       vars:
+        # Running again means the same container ID is running and the start that
+        # put it there waited out its health check. A start skipped because the
+        # store was not a regular file still reads as running when the stop itself
+        # failed and never took the container down.
+        kapowarr_pre_upgrade_running_again: >-
+          {{ ((kapowarr_pre_upgrade_running.stdout_lines | default([])
+               | select('in', kapowarr_backup_container_ids.stdout_lines) | list | length > 0)
+              and not (kapowarr_pre_upgrade_restart is failed)) }}
         kapowarr_pre_upgrade_outcome: >-
           {{ ('Kapowarr is running on its old image, ' ~ kapowarr_deployed_image ~ '. Repair '
                ~ kapowarr_pre_upgrade_failed_path ~ ' and converge again; the next run takes the copy'
                ~ ' and then performs the upgrade.')
-             if (kapowarr_pre_upgrade_running.stdout_lines | default([])
-                 | select('in', kapowarr_backup_container_ids.stdout_lines) | list | length > 0)
+             if (kapowarr_pre_upgrade_running_again | bool)
              else ('KAPOWARR IS STOPPED, and was deliberately not started again: '
-                   ~ kapowarr_config_host_path ~ '/Kapowarr.db is missing or unreadable, and the old image would'
-                   ~ ' create a fresh empty store there, which the next converge would copy and upgrade'
-                   ~ ' over. Put the store back, then converge again.')
-             if not (kapowarr_pre_upgrade_store_after.stat.exists | default(false))
-             else ('KAPOWARR IS STOPPED: starting it again on its old image did not leave it running ('
-                   ~ (kapowarr_pre_upgrade_restart.msg | default('no message', true)) ~ '). Repair '
-                   ~ kapowarr_pre_upgrade_failed_path ~ ' and converge again.') }}
+                   ~ kapowarr_config_host_path ~ '/Kapowarr.db is missing, unreadable or not a regular file, and the old'
+                   ~ ' image would create a fresh empty store there, which the next converge would copy and'
+                   ~ ' upgrade over. Put the store back, then converge again.')
+             if (kapowarr_pre_upgrade_restart is skipped)
+             else ('KAPOWARR IS NOT SERVING: it was started again on its old image but did not become healthy'
+                   ~ ' within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
+                   ~ (kapowarr_pre_upgrade_restart.msg | default('no message', true)) ~ '), so it is stopped or'
+                   ~ ' crash-looping. Read its container log, repair ' ~ kapowarr_pre_upgrade_failed_path
+                   ~ ' and converge again.') }}

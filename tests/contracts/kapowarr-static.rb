@@ -343,6 +343,7 @@ if failures.empty?
   start_index = rescue_start ? backup_rescue.index(rescue_start) : 0
   failures << "the Kapowarr pre-upgrade copy must start the old container again when it fails" unless
     backup_unit && Array(backup_unit["block"]).include?(backup_stop) &&
+    backup_unit["always"].nil? &&
     rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never" &&
     start_index < backup_rescue.length - 1 &&
     backup_rescue.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
@@ -351,13 +352,17 @@ if failures.empty?
   # image started over a missing store creates an empty one that the next
   # converge copies and upgrades over -- measured. So the rescue reads the store
   # again first and the start is conditional on exactly that read.
-  rescue_store_read = backup_rescue.find do |task|
-    task.dig("ansible.builtin.stat", "path").to_s.include?("Kapowarr.db")
-  end
+  # Exactly this shape, because every looser reading was measured to let the
+  # original bug back in: a condition naming the read taken before the stop, an
+  # `or true`, `exists` (true for a directory and a dangling symlink), a read of
+  # the write-ahead log, and a read that fails the rescue on a permission error.
+  rescue_store_read = backup_rescue.find { |task| task.key?("ansible.builtin.stat") }
   failures << "the Kapowarr pre-upgrade copy must not start the old container over a missing store" unless
     rescue_start.nil? || (
       rescue_store_read && backup_rescue.index(rescue_store_read) < start_index &&
-      Array(rescue_start["when"]).join(" ").include?("#{rescue_store_read['register']}.stat.exists")
+      rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ kapowarr_config_host_path }}/Kapowarr.db" &&
+      rescue_store_read["failed_when"] == false &&
+      Array(rescue_start["when"]) == ["#{rescue_store_read['register']}.stat.isreg | default(false)"]
     )
   failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
     backup_rescue.last&.key?("ansible.builtin.fail")

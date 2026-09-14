@@ -716,6 +716,78 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
   },
   {
+    # The verdict the pre-stop read gave is the one the rescue exists to re-take.
+    name: "a pre-upgrade rescue start gated on the read taken before the stop",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
+          "kapowarr_store_stat.stat.isreg | default(false)"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    name: "a pre-upgrade rescue start gated on a condition that always holds",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
+          "kapowarr_pre_upgrade_store_after.stat.isreg | default(false) or true"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    # Measured: a dangling symlink and a directory both report exists, and the old
+    # image started over either runs on a store it creates elsewhere.
+    name: "a pre-upgrade rescue start that accepts a directory or a dangling symlink",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
+          "kapowarr_pre_upgrade_store_after.stat.exists | default(false)"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    name: "a pre-upgrade rescue store read of the write-ahead log",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("ansible.builtin.stat") }["ansible.builtin.stat"]["path"] =
+          "{{ kapowarr_config_host_path }}/Kapowarr.db-wal"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    # Measured: stat fails outright on a permission error, which ended the rescue
+    # before its verdict and left the service stopped behind "Permission denied".
+    name: "a pre-upgrade rescue store read that aborts the rescue on a permission error",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("ansible.builtin.stat") }.delete("failed_when")
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    name: "a second pre-upgrade start under always",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        unit = find_task(document) { |task| task.key?("rescue") }
+        start = unit["rescue"].find { |task| task.key?("community.docker.docker_compose_v2") }
+        second = Marshal.load(Marshal.dump(start))
+        second.delete("when")
+        unit["always"] = [second]
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
+  },
+  {
     name: "a pre-upgrade rescue start that never runs",
     break: lambda { |root|
       edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
@@ -2269,10 +2341,34 @@ PROGRAM_MUTATIONS = [
   {
     label: "the store-read rescue start condition check",
     program: :static,
-    from: 'Array(rescue_start["when"]).join(" ").include?("#{rescue_store_read[\'register\']}.stat.exists")',
+    from: 'Array(rescue_start["when"]) == ["#{rescue_store_read[\'register\']}.stat.isreg | default(false)"]',
     to: "true",
     rows: ["a pre-upgrade rescue that starts Kapowarr over a missing store",
-           "a pre-upgrade rescue start that never runs"]
+           "a pre-upgrade rescue start that never runs",
+           "a pre-upgrade rescue start gated on the read taken before the stop",
+           "a pre-upgrade rescue start gated on a condition that always holds",
+           "a pre-upgrade rescue start that accepts a directory or a dangling symlink"]
+  },
+  {
+    label: "the rescue store read path check",
+    program: :static,
+    from: 'rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ kapowarr_config_host_path }}/Kapowarr.db" &&',
+    to: "true &&",
+    rows: ["a pre-upgrade rescue store read of the write-ahead log"]
+  },
+  {
+    label: "the tolerated rescue store read check",
+    program: :static,
+    from: 'rescue_store_read["failed_when"] == false &&',
+    to: "true &&",
+    rows: ["a pre-upgrade rescue store read that aborts the rescue on a permission error"]
+  },
+  {
+    label: "the no-start-under-always check",
+    program: :static,
+    from: 'backup_unit["always"].nil? &&',
+    to: "true &&",
+    rows: ["a second pre-upgrade start under always"]
   },
   {
     label: "the redacted real indexer read check",

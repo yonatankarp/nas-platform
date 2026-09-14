@@ -140,9 +140,9 @@
 - name: Require a Vaultwarden store for the pre-upgrade copy to take
   ansible.builtin.assert:
     that:
-      - vaultwarden_store_stat.stat.exists | default(false)
+      - vaultwarden_store_stat.stat.isreg | default(false)
     fail_msg: >-
-      No db.sqlite3 was found under {{ vaultwarden_data_host_path }} on a host
+      No regular file db.sqlite3 was found under {{ vaultwarden_data_host_path }} on a host
       whose Vaultwarden container reports the image
       {{ vaultwarden_deployed_image }}, so this run has a store it cannot copy
       and an upgrade to {{ vaultwarden_pinned_image }} that would migrate it.
@@ -317,12 +317,18 @@
     # the in-block assertion names -- is not covered by it. Starting the old image
     # over a missing db.sqlite3 creates a fresh empty one, the next converge's check
     # finds that file, copies it and upgrades over it with a green run: measured
-    # by deleting the store as the container exited. So a store that is not there
-    # now leaves the container stopped, and the message below says why.
+    # by deleting the store as the container exited. So only a regular file counts:
+    # a dangling symlink and a directory both report `exists`, and the old image
+    # started over either one runs on a store it creates somewhere else (measured).
+    # `failed_when: false` because stat fails outright on a permission error rather
+    # than reporting absence, and a rescue that fails here never reaches its
+    # verdict; an unreadable store reads as not a regular file and is not started
+    # over.
     - name: Read whether the Vaultwarden store is still there to start over
       ansible.builtin.stat:
         path: "{{ vaultwarden_data_host_path }}/db.sqlite3"
       register: vaultwarden_pre_upgrade_store_after
+      failed_when: false
 
     # `recreate: never` again, for the reason the stop carries it: `up` without it
     # replaces the stopped container with one on the new pin, which both starts
@@ -339,9 +345,14 @@
         services: [vaultwarden]
         state: present
         recreate: never
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
       register: vaultwarden_pre_upgrade_restart
-      failed_when: false
-      when: vaultwarden_pre_upgrade_store_after.stat.exists | default(false)
+      # Tolerated rather than redacted from the verdict: `is failed` below is what
+      # tells a container that came back healthy from one that is crash-looping,
+      # which a running-state read taken the moment `up` returns cannot (measured).
+      ignore_errors: true
+      when: vaultwarden_pre_upgrade_store_after.stat.isreg | default(false)
 
     # What Docker reports rather than what the module claimed. The same container
     # ID running is the old image running, because a container never changes its
@@ -371,17 +382,26 @@
           The upgrade from {{ vaultwarden_deployed_image }} to {{ vaultwarden_pinned_image }} was not performed.
           {{ vaultwarden_pre_upgrade_outcome }}
       vars:
+        # Running again means the same container ID is running and the start that
+        # put it there waited out its health check. A start skipped because the
+        # store was not a regular file still reads as running when the stop itself
+        # failed and never took the container down.
+        vaultwarden_pre_upgrade_running_again: >-
+          {{ ((vaultwarden_pre_upgrade_running.stdout_lines | default([])
+               | select('in', vaultwarden_backup_container_ids.stdout_lines) | list | length > 0)
+              and not (vaultwarden_pre_upgrade_restart is failed)) }}
         vaultwarden_pre_upgrade_outcome: >-
           {{ ('Vaultwarden is running on its old image, ' ~ vaultwarden_deployed_image ~ '. Repair '
                ~ vaultwarden_pre_upgrade_failed_path ~ ' and converge again; the next run takes the copy'
                ~ ' and then performs the upgrade.')
-             if (vaultwarden_pre_upgrade_running.stdout_lines | default([])
-                 | select('in', vaultwarden_backup_container_ids.stdout_lines) | list | length > 0)
+             if (vaultwarden_pre_upgrade_running_again | bool)
              else ('VAULTWARDEN IS STOPPED, and was deliberately not started again: '
-                   ~ vaultwarden_data_host_path ~ '/db.sqlite3 is missing or unreadable, and the old image would'
-                   ~ ' create a fresh empty store there, which the next converge would copy and upgrade'
-                   ~ ' over. Put the store back, then converge again.')
-             if not (vaultwarden_pre_upgrade_store_after.stat.exists | default(false))
-             else ('VAULTWARDEN IS STOPPED: starting it again on its old image did not leave it running ('
-                   ~ (vaultwarden_pre_upgrade_restart.msg | default('no message', true)) ~ '). Repair '
-                   ~ vaultwarden_pre_upgrade_failed_path ~ ' and converge again.') }}
+                   ~ vaultwarden_data_host_path ~ '/db.sqlite3 is missing, unreadable or not a regular file, and the old'
+                   ~ ' image would create a fresh empty store there, which the next converge would copy and'
+                   ~ ' upgrade over. Put the store back, then converge again.')
+             if (vaultwarden_pre_upgrade_restart is skipped)
+             else ('VAULTWARDEN IS NOT SERVING: it was started again on its old image but did not become healthy'
+                   ~ ' within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
+                   ~ (vaultwarden_pre_upgrade_restart.msg | default('no message', true)) ~ '), so it is stopped or'
+                   ~ ' crash-looping. Read its container log, repair ' ~ vaultwarden_pre_upgrade_failed_path
+                   ~ ' and converge again.') }}

@@ -1971,15 +1971,26 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort.each 
   start = rescue_tasks.find { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   start_index = start ? rescue_tasks.index(start) : 0
   check(failures,
-        start && rescue_tasks.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
+        start && unit["always"].nil? &&
+          rescue_tasks.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
           rescue_tasks.all? do |task|
             !task.key?("community.docker.docker_compose_v2") ||
               task.dig("community.docker.docker_compose_v2", "recreate") == "never"
           end,
         "role #{name}: a failed pre-upgrade copy must start the stopped container again, on its old image")
+  # Exactly this shape: the rescue re-reads the path the pre-stop read took,
+  # tolerates that read failing (stat fails on a permission error rather than
+  # reporting absence), and starts only on a regular file from that read -- a
+  # condition naming the pre-stop read, `exists` (true for a directory or a
+  # dangling symlink), or anything looser was measured to let the bug back in.
+  pre_stop_read = Array(document).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.stat") }
+  store_read = rescue_tasks.find { |task| task.key?("ansible.builtin.stat") }
   check(failures,
-        start.nil? || (Array(start["when"]).any? &&
-                       Array(start["when"]).all? { |condition| condition.to_s.include?("stat.exists") }),
+        start.nil? || (store_read && pre_stop_read && rescue_tasks.index(store_read) < start_index &&
+                       store_read.dig("ansible.builtin.stat", "path") ==
+                         pre_stop_read.dig("ansible.builtin.stat", "path") &&
+                       store_read["failed_when"] == false &&
+                       Array(start["when"]) == ["#{store_read['register']}.stat.isreg | default(false)"]),
         "role #{name}: a failed pre-upgrade copy must not start the old container over a missing store")
   check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
         "role #{name}: a failed pre-upgrade copy must still fail the run")
