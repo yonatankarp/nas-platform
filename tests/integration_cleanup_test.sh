@@ -92,9 +92,11 @@ test_cleanup_service_registry() {
   done
 
   # Every registered project declares its Compose network keys with default
-  # among them, and every named network a service's compose.yml defines is
+  # among them, and every network a service's compose.yml has Compose create is
   # declared for the project of that name, so a new one cannot land undeclared
-  # and surface only as a refused cleanup at the end of a lane.
+  # and surface only as a refused cleanup at the end of a lane. An external
+  # network is not Compose's to create -- the media-control bridge is host_prep's
+  # and cleanup owns it by its own rule -- so it is not a key.
   for registered_cleanup_project in $cleanup_sandbox_projects; do
     cleanup_sandbox_project_networks "$registered_cleanup_project" || exit 1
     case " $cleanup_project_networks " in
@@ -109,7 +111,10 @@ test_cleanup_service_registry() {
   compose_named_networks=$(ruby -ryaml -e '
     ARGV.sort.each do |path|
       networks = YAML.safe_load_file(path, aliases: true)&.fetch("networks", nil) || {}
-      networks.each_key { |key| puts "#{File.basename(File.dirname(path))} #{key}" }
+      networks.each do |key, definition|
+        next if definition.is_a?(Hash) && definition["external"]
+        puts "#{File.basename(File.dirname(path))} #{key}"
+      end
     end
   ' "$cleanup_sandbox_repo_dir"/services/*/compose.yml) || exit 1
   [ -n "$compose_named_networks" ] || {
@@ -357,7 +362,8 @@ test_named_networks() {
           done
           ;;
         network:inspect)
-          [ "${4-}" = '{{.Name}}|{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.network"}}' ] ||
+          [ "${4-}" = --format ] &&
+            [ "${5-}" = '{{.Name}}|{{index .Labels "com.docker.compose.project"}}|{{index .Labels "com.docker.compose.network"}}' ] ||
             return 99
           for named_row in $named_table; do
             [ "${named_row%%|*}" = "${3-}" ] || continue
