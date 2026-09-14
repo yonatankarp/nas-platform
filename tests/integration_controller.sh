@@ -1474,10 +1474,14 @@ EOF
     if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is karakeep; then
       if [ $INTEGRATION_SUITE = karakeep ]; then
         # The first converge of this lane is the one that bootstraps: an empty
-        # data root, so the vault administrator cannot sign in, and the role
+        # data root, so the vault administrator cannot sign in, the role's
+        # read-only count of Karakeep's `user` table reads 0, and the role
         # registers it with signups open on loopback and closes them again. What
         # follows is the path where there is nothing to bootstrap. The second
-        # converge must sign in, skip the whole bootstrap and change nothing;
+        # converge must sign in and read a count of 1 -- the role refuses a
+        # signed-in administrator beside a count of 0, which is what proves the
+        # count still reads Karakeep's table on this pin -- skip the whole
+        # bootstrap and change nothing;
         # the review must plan nothing; and the verification must find
         # Meilisearch and chrome connected and the door closed.
         run_enabled_idempotence karakeep

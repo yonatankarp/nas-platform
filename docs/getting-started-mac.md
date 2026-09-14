@@ -266,7 +266,8 @@ active service:
   fetches nothing, and confirm it survives recreation and is found by search —
   the note is in `db.db` and the search is Meilisearch, so this checks both
   stores. The administrator password is not repairable: nothing here resets it,
-  and a vault password that no longer signs in fails every converge by name.
+  and a vault password or email that no longer signs in fails every converge by
+  name, without ever reopening the signup door over the existing account.
 
 After the review, produce the report and clean only the validated sandbox:
 

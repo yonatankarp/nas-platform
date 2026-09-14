@@ -8,10 +8,12 @@
 #
 # WHAT THE COMMIT THAT SET THIS TRUE DID ON THE NAS, once, within five minutes of
 # the merge: the first converge pulls three images, starts the stack with signups
-# closed, finds that the vault administrator cannot sign in, reopens signups with
-# the application published on 127.0.0.1 only, registers the administrator, and
-# closes the door again before the role yields. Every later converge signs in and
-# skips all of that. Setting it back to false converges the project to
+# closed, finds that the vault administrator cannot sign in and that Karakeep
+# holds no account, opens signups with the application published on 127.0.0.1
+# only, registers the administrator, and closes the door again before the role
+# yields. Every later converge signs in and skips all of that; one whose vault
+# administrator no longer signs in finds the existing account and refuses without
+# ever opening the door. Setting it back to false converges the project to
 # `state: absent`; the data root survives, so turning it on again meets the
 # existing administrator and never opens the door.
 #
