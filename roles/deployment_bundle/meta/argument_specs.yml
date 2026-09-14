@@ -255,6 +255,16 @@ argument_specs:
         type: str
         required: true
         description: Git SHA of the release the service was deployed from.
+      deployment_summary_path:
+        type: str
+        required: false
+        description: >-
+          The poller's summary path, read only to decide whether the report
+          points at a Deployments message; summary.yml gates on the same value.
+      deployment_release_moved:
+        type: bool
+        required: false
+        description: Whether the release moved; the other half of that decision.
       deployment_pushover_api_url:
         type: str
         required: false

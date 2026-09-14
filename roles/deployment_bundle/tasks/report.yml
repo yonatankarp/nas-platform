@@ -42,15 +42,24 @@
     # ansible_facts.date_time: that is stamped when the play gathered facts,
     # which for the last roles of a full converge is half an hour before the
     # recreation this reports.
+    #
+    # The closing pointer is true only when a Deployments message will exist:
+    # the poller asked for the summary and the release moved. Those are the two
+    # variables summary.yml gates its hand-off on, read here rather than restated,
+    # so the report and the summary cannot disagree. A hand-run converge, or a
+    # recreation outside a release move, ends at the When line. (The summary also
+    # needs the installed manifest to be readable; a release whose manifest is
+    # missing is one no service could have been deployed from.)
     deployment_pushover_title: "♻️ {{ deployment_report_service }} recreated"
     deployment_pushover_message: |-
       <b>{{ deployment_report_service | truncate(128, true, '', 0) | escape }}</b> was <font color="#2e7d32">recreated</font> by Compose
 
       🔖 <b>Release</b> <font color="#9e9e9e">{{ platform_release_id[:12] | escape }}</font>
-      🕒 <b>When</b> <font color="#9e9e9e">{{ now(utc=true, fmt='%d %b %H:%M UTC') | escape }}</font>
-
-      <i>Details are in the Deployments message for this release.</i>
+      🕒 <b>When</b> <font color="#9e9e9e">{{ now(utc=true, fmt='%d %b %H:%M UTC') | escape }}</font>{{ deployment_report_details if deployment_report_announced else '' }}
     deployment_pushover_html: 1
+    deployment_report_announced: >-
+      {{ deployment_summary_path | length > 0 and deployment_release_moved | bool }}
+    deployment_report_details: "\n\n<i>Details are in the Deployments message for this release.</i>"
     # Quiet (a badge, no sound), because this is the per-service detail behind
     # the deployment summary. A day's ttl because it is stale by the next
     # release, and Pushover then removes it from the device by itself.

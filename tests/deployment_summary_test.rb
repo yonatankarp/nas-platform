@@ -144,8 +144,8 @@ def run_summary(variables, *arguments, **options)
   run_bundle_task("summary", variables, *arguments, **options)
 end
 
-def run_report(variables, *arguments)
-  run_bundle_task("report", variables, *arguments)
+def run_report(variables, *arguments, **options)
+  run_bundle_task("report", variables, *arguments, **options)
 end
 
 # The shared delivery on its own. The report bounds its own message before the
@@ -475,20 +475,27 @@ def report_minutes(started, finished)
   end
 end
 
-def report_lines(service, release, started, finished)
+# The closing pointer, present only when the poller asked for the summary and
+# the release moved -- the run that will actually produce a Deployments message.
+DETAILS_LINE = "<i>Details are in the Deployments message for this release.</i>"
+
+def report_lines(service, release, started, finished, details: false)
   lead = "<b>#{service}</b> was <font color=\"#2e7d32\">recreated</font> by Compose"
   release_line = "🔖 <b>Release</b> <font color=\"#9e9e9e\">#{release[0, 12]}</font>"
   report_minutes(started, finished).map do |minute|
-    "#{lead}\n\n#{release_line}\n🕒 <b>When</b> <font color=\"#9e9e9e\">#{minute}</font>\n\n" \
-      "<i>Details are in the Deployments message for this release.</i>"
+    "#{lead}\n\n#{release_line}\n🕒 <b>When</b> <font color=\"#9e9e9e\">#{minute}</font>" \
+      "#{details ? "\n\n#{DETAILS_LINE}" : ''}"
   end
 end
 
-def check_report(failures, label, variables_overrides, expected_count, *arguments)
+POLLER_ASKED = { SUMMARY_PATH_VARIABLE => "/nonexistent/deployment-summary.json" }.freeze
+
+def check_report(failures, label, variables_overrides, expected_count, *arguments,
+                 environment: { SUMMARY_PATH_VARIABLE => nil })
   with_http_probe(expected_count) do |port, requests|
     started = Time.now
     _stdout, stderr, status = run_report(
-      report_variables(endpoint(port), variables_overrides), *arguments
+      report_variables(endpoint(port), variables_overrides), *arguments, environment: environment
     )
     finished = Time.now
     check(failures, status.success?,
@@ -511,8 +518,21 @@ check_report(failures, "recreated", RECREATED, 1) do |request, started, finished
   check(failures, form["title"] == "♻️ Komga recreated",
         "a recreated service must say so in the platform's style: #{form['title'].inspect}")
   check(failures, report_lines("Komga", RELEASE, started, finished).include?(form["message"]),
-        "a recreated service must lead with its bold name and a green verb, then label its release " \
-        "and the UTC minute in grey, then point at the Deployments message: #{form['message'].inspect}")
+        "a hand-run recreation must lead with its bold name and a green verb, then label its release " \
+        "and the UTC minute in grey, and end there: #{form['message'].inspect}")
+  check(failures, !form["message"].to_s.include?(DETAILS_LINE),
+        "a hand-run converge sends no Deployments message, so the report must not point at one: " \
+        "#{form['message'].inspect}")
+end
+
+# Under the poller, on a moved release, the Deployments message will exist, and
+# the report says where the rest of the release is.
+check_report(failures, "recreated under the poller", RECREATED, 1,
+             environment: POLLER_ASKED) do |request, started, finished|
+  form = request["form"] || {}
+  check(failures, report_lines("Komga", RELEASE, started, finished, details: true).include?(form["message"]),
+        "a recreation the poller will announce must end by pointing at the Deployments message: " \
+        "#{form['message'].inspect}")
 end
 
 # The message is HTML, so a service name is text inside markup rather than
@@ -526,9 +546,9 @@ check_report(failures, "a service name carrying markup",
   escaped = "Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;"
   check(failures, report_lines(escaped, RELEASE, started, finished).include?(form["message"]),
         "every value in the report's HTML must be escaped: #{form['message'].inspect}")
-  # Seven elements of its own -- <b> and <font> on each of three lines, and the
-  # closing <i> -- and not one more from the name.
-  check(failures, form["message"].to_s.scan("<").length == 14,
+  # Six elements of its own -- <b> and <font> on each of three lines -- and not
+  # one more from the name.
+  check(failures, form["message"].to_s.scan("<").length == 12,
         "the report's only markup must be its own: #{form['message'].inspect}")
 end
 
@@ -559,9 +579,13 @@ check_report(failures, "unmoved release", {
 check_report(failures, "unmoved release with a recreation", {
                "deployment_bundle_previous_release_id" => RELEASE,
                "deployment_report_changed" => true
-             }, 1) do |request|
-  check(failures, (request["form"] || {})["title"] == "♻️ Komga recreated",
+             }, 1, environment: POLLER_ASKED) do |request, started, finished|
+  form = request["form"] || {}
+  check(failures, form["title"] == "♻️ Komga recreated",
         "a recreation outside a release move must still be reported")
+  check(failures, report_lines("Komga", RELEASE, started, finished).include?(form["message"]),
+        "a recreation outside a release move gets no Deployments message even under the poller, so " \
+        "the report must not point at one: #{form['message'].inspect}")
 end
 
 # A selective converge never rebuilds the bundle, so nothing moved.
