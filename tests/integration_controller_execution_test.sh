@@ -257,9 +257,10 @@ build_stub_bin() {
   rm -rf "$stub_bin"
   mkdir -p "$stub_bin"
 
-  # The recap is what the controller and the launcher library parse: phase 2
-  # requires changed=0 and failed=0, and run_enabled_idempotence requires
-  # exactly one recap naming the target host.
+  # The recap is what the controller and the launcher library parse. Since #638
+  # both go through enabled_idempotence_recap_is_clean, so both require exactly
+  # one recap, exactly one line naming the target host, and changed, unreachable
+  # and failed all zero.
   {
     stub_preamble
     cat <<'STUB'

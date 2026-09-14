@@ -180,7 +180,7 @@ run_enabled_idempotence() {
       'enabled media acquisition convergence did not complete' >&2
     exit 1
   fi
-  if ! enabled_idempotence_recap_is_clean $idempotence_output; then
+  if ! enabled_idempotence_recap_is_clean "$idempotence_output"; then
     cat $idempotence_output >&2
     printf '%s\n' \
       'enabled media acquisition convergence was not idempotent' >&2
