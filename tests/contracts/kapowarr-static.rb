@@ -342,10 +342,10 @@ if failures.empty?
   end
   failures << "the Kapowarr pre-upgrade copy must start the old container again when it fails" unless
     backup_unit && Array(backup_unit["block"]).include?(backup_stop) &&
-    rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never"
-  failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
-    rescue_start && backup_rescue.last&.key?("ansible.builtin.fail") &&
+    rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never" &&
     backup_rescue.index(rescue_start) < backup_rescue.length - 1
+  failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
+    backup_rescue.last&.key?("ansible.builtin.fail")
 
   # Since v1.3.2 the service order is gc_service_preference on the GetComics
   # indexer, not a setting (#671). The indexer read must be a redacted, real,
@@ -420,9 +420,10 @@ if failures.empty?
     tasks.index(indexer_write) < tasks.index(write_assert)
   # A -1 at the bound is Kapowarr still testing getcomics.org; a shorter one is a
   # connection to Kapowarr that never reached that test. Anchored on the task's
-  # own timeout, so moving the bound without the message fails here.
+  # own timeout, so moving the bound without the message fails here. A missing
+  # assertion is the legible-failure check's to name.
   failures << "the Kapowarr service order write must tell a refused connection from its own timeout" unless
-    write_message.include?("kapowarr_service_order_write.elapsed | default(0) | int >= #{write_timeout}")
+    write_assert.nil? || write_message.include?("kapowarr_service_order_write.elapsed | default(0) | int >= #{write_timeout}")
   # None means the indexer was deleted and two means the database was edited
   # outside the application; either is refused, and before the write.
   indexer_refusal = tasks.find do |task|

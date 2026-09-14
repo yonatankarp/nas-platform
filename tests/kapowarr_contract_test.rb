@@ -2193,16 +2193,16 @@ PROGRAM_MUTATIONS = [
   {
     label: "the rescue that starts the old container check",
     program: :static,
-    from: 'rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never"',
-    to: "true",
+    from: 'rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never" &&',
+    to: "true ||",
     rows: ["a pre-upgrade copy whose failure leaves Kapowarr stopped",
            "a pre-upgrade rescue that starts Kapowarr on the new pin"]
   },
   {
     label: "the rescue that still fails the run check",
     program: :static,
-    from: 'rescue_start && backup_rescue.last&.key?("ansible.builtin.fail") &&',
-    to: "true ||",
+    from: 'backup_rescue.last&.key?("ansible.builtin.fail")',
+    to: "true",
     rows: ["a pre-upgrade rescue that lets the upgrade proceed"]
   },
   {
