@@ -455,6 +455,11 @@ example.each do |key, value|
   # quoted in the example because 64 zeros is otherwise a YAML integer, and an
   # operator copying an integer would fail the contract's text rule.
   next if key == "vault_dozzle_alert_relay_token" && value == "0" * 64
+  # Karakeep's three platform-generated 64-hex values, as repeated characters
+  # for the same reason: the contract pins the shape, so a stand-in has to be one.
+  next if key == "vault_karakeep_nextauth_secret" && value == "8" * 64
+  next if key == "vault_karakeep_meili_master_key" && value == "9" * 64
+  next if key == "vault_karakeep_admin_password" && value == "a" * 64
   # ... and it must be the exact value the contract refuses. Pinned below,
   # because the two halves are useless apart: a stand-in the rule does not
   # name is a working secret published in this repository, and a rule naming
