@@ -92,8 +92,8 @@ abort "Audiobookshelf contract failed: managed library must be rooted at /audiob
   defaults.fetch("audiobookshelf_library_folders") == [{ "path" => "/audiobooks" }]
 
 expected_owned_settings = {
-  "storeCoverWithItem" => true,
-  "storeMetadataWithItem" => true,
+  "storeCoverWithItem" => false,
+  "storeMetadataWithItem" => false,
   "sortingIgnorePrefix" => false,
   "scannerParseSubtitle" => true,
   "scannerFindCovers" => true,

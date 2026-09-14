@@ -60,8 +60,8 @@ DESIRED_SETTINGS = {
 }.freeze
 DRIFT_SETTINGS = DESIRED_SETTINGS.merge("disableWatcher" => true).freeze
 OWNED_SERVER_SETTINGS = {
-  "storeCoverWithItem" => true,
-  "storeMetadataWithItem" => true,
+  "storeCoverWithItem" => false,
+  "storeMetadataWithItem" => false,
   "sortingIgnorePrefix" => false,
   "scannerParseSubtitle" => true,
   "scannerFindCovers" => true,
