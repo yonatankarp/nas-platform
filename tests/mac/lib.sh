@@ -172,6 +172,15 @@ mac_validate_integration_callback() {
 # written here rather than inherited, the lane went on converging what it
 # claimed to converge on the day the platform switch was flipped back off.
 #
+# ntfy_deployment_enabled is the third, and it asks for the opposite of what the
+# platform runs. #558 stage 4a turned ntfy off in inventory, and #577's AdGuard
+# flip is the precedent this follows: the lane keeps converging the stack while
+# its role still exists, because tests/mac/hooks/verify/15-ntfy.sh and the
+# recreate table verify a running ntfy and would fail on a torn-down one. Stage
+# 4c deletes the role, the hooks and this request together. The disabled branch
+# is not left unexercised by that: every integration lane converges it, and the
+# komga lane proves it stops a running container gracefully.
+#
 # Vaultwarden needs two of its own, and neither is about this lane's opinion of
 # the service.
 #
@@ -225,7 +234,7 @@ mac_validate_integration_callback() {
 # tests/seerr_contract_test.rb refuses this function losing the line.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
-    -e vaultwarden_deployment_enabled=true \
+    -e vaultwarden_deployment_enabled=true -e ntfy_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e 'deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \

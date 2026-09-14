@@ -1238,6 +1238,54 @@ EOF
       run_komga_contract seed
       if [ $INTEGRATION_SUITE = komga ]; then
         run_komga_contract run
+
+        # NTFY'S TEARDOWN, EXERCISED RATHER THAN ASSUMED (#558 stage 4a). Inventory
+        # turns ntfy off, so every lane already converges the disabled branch --
+        # but against a sandbox that never ran ntfy, where there is nothing to
+        # stop. What production does once is the TRANSITION: a running ntfy, then
+        # a converge with the switch off. That is what this proves, once, in this
+        # lane. One lane and not all, because the branch does not depend on which
+        # other services converged beside it; komga because its lane starts no
+        # ntfy-imaged fixture and no Dozzle relay, so nothing else can be the
+        # container this reads or be paged by the stop.
+        #
+        # Up first with the switch on, and the container has to be THERE, or the
+        # assertions below pass over a deployment that never happened.
+        run_play --tags ntfy -e ntfy_deployment_enabled=true
+        if ! docker ps --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
+          printf '%s\n' \
+            'the ntfy container is not running, so the teardown below proves nothing' >&2
+          exit 1
+        fi
+        ntfy_container_id=$(docker inspect --format '{{.Id}}' $integration_project_namespace-ntfy)
+        ntfy_teardown_since=$(date +%s)
+        # No override: inventory's own `false` is the value the NAS converges.
+        run_play --tags ntfy
+        ntfy_teardown_until=$(date +%s)
+        if docker ps -a --format '{{.Names}}' |
+            grep -Eq '^'$integration_project_namespace'-ntfy$'; then
+          printf '%s\n' \
+            'ntfy_deployment_enabled=false left the ntfy container in place' >&2
+          exit 1
+        fi
+        # GRACEFULLY. Dozzle's "Unexpected exit" rule excludes 0 and 143 and pages
+        # on 137, which is what a SIGKILL -- a stop that outran its grace period,
+        # or a kill -- produces. The container is gone, so its exit code is read
+        # from the daemon's own die event for that container id.
+        ntfy_exit_code=$(docker events --since $ntfy_teardown_since \
+          --until $((ntfy_teardown_until + 1)) \
+          --filter container=$ntfy_container_id --filter event=die \
+          --format '{{index .Actor.Attributes "exitCode"}}' | tail -n 1)
+        case $ntfy_exit_code in
+          0|143) ;;
+          *)
+            printf 'the ntfy teardown stopped the container with exit code "%s", not 0 or 143\n' \
+              "$ntfy_exit_code" >&2
+            exit 1
+            ;;
+        esac
+        printf 'NTFY_TEARDOWN_VERIFIED exit=%s\n' "$ntfy_exit_code"
       fi
     fi
 

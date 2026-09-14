@@ -1,5 +1,15 @@
 ---
 # Non-secret policy. Credentials come from vault.
+
+# The single operator switch, and the floor under it rather than a copy of the
+# decision. inventory/group_vars/all/service_ntfy.yml turns ntfy off (#558 stage
+# 4a); this default is what a caller with no inventory gets, and like every
+# <role>_deployment_enabled default it ships false, which
+# tests/deployment_gate_coverage_test.rb refuses otherwise. The gate lives inside
+# the role rather than on the site.yml entry, because a `when:` there would also
+# skip the deployment_bundle re-include that revalidates the paths this role
+# touches and the report that says whether anything moved.
+ntfy_deployment_enabled: false
 #
 # ntfy_port is deliberately absent from this file for the same reason the two
 # topics below are: it is declared in inventory/group_vars/all/main.yml, because

@@ -197,6 +197,7 @@ def run_authoritative_probe_fixture(
     playbook = [{
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
+        "ntfy_deployment_enabled" => true,
         "ntfy_auth_database_stat" => { "stat" => { "exists" => auth_database_exists } },
         "ntfy_prior_provisioned_users" => {},
         "platform_current_dir" => current,
@@ -389,6 +390,7 @@ if verify_include
     playbook = [{
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
+        "ntfy_deployment_enabled" => true,
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
@@ -419,6 +421,7 @@ if verify_include
     playbook = [{
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
+        "ntfy_deployment_enabled" => true,
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
@@ -441,6 +444,7 @@ if verify_include
     playbook = [{
       "hosts" => "localhost", "gather_facts" => false,
       "vars" => {
+        "ntfy_deployment_enabled" => true,
         "ntfy_account_api" => "http://127.0.0.1:#{port}/v1/account",
         "ntfy_account_subscription_api" => "http://127.0.0.1:#{port}/v1/account/subscription",
         "ntfy_base_url" => "http://127.0.0.1:#{port}",
@@ -532,6 +536,7 @@ end
 probe_playbook = [{
   "hosts" => "localhost", "gather_facts" => false,
   "vars" => {
+    "ntfy_deployment_enabled" => true,
     "ntfy_auth_database_stat" => { "stat" => { "exists" => true } },
     "ntfy_existing_user_list" => {},
     "ntfy_prior_provisioned_users" => {},
@@ -548,6 +553,81 @@ failures << "check-mode authoritative probe fixture failed safely: #{stderr.line
   status.success?
 failures << "check-mode authoritative probe was not skipped" unless
   output.match?(/skipped=1\b/)
+
+# --- the teardown gate (#558 stage 4a) ------------------------------------
+#
+# The previously installed poller passes platform_verify_ntfy on every deploy
+# tick whatever this revision says, so with the gate off the verify include must
+# run and do nothing: no request, no failure.
+if verify_include
+  gated_off_include = Marshal.load(Marshal.dump(verify_include))
+  include_args = gated_off_include["ansible.builtin.include_tasks"]
+  include_args.is_a?(Hash) ? include_args["file"] = NTFY_MANAGED : gated_off_include["ansible.builtin.include_tasks"] = NTFY_MANAGED
+  with_http_recorder do |port, requests|
+    playbook = [{
+      "hosts" => "localhost", "gather_facts" => false,
+      "vars" => { "ntfy_deployment_enabled" => false, "ntfy_port" => port },
+      "tasks" => [gated_off_include]
+    }]
+    _stdout, stderr, status = run_ansible(playbook, "--tags", "platform_verify_ntfy")
+    failures << "the verify tag failed with ntfy_deployment_enabled false: #{stderr.lines.last&.strip}" unless
+      status.success?
+    failures << "the verify tag reached ntfy with ntfy_deployment_enabled false: #{requests.inspect}" unless
+      requests.empty?
+  end
+end
+
+verify_tasks = main_tasks.select { |task| Array(task["tags"]).include?("platform_verify_ntfy") }
+gate_off_report = verify_tasks.find { |task| Array(task["when"]).include?("not ntfy_deployment_enabled | bool") }
+ungated_verify = (verify_tasks - [gate_off_report]).reject do |task|
+  Array(task["when"]).include?("ntfy_deployment_enabled | bool")
+end
+failures << "platform_verify_ntfy tasks run with the gate off, and the previously installed poller still " \
+            "selects that tag on every deploy tick: #{ungated_verify.map { |task| task['name'] }.inspect}" unless
+  !verify_tasks.empty? && ungated_verify.empty?
+failures << "no platform_verify_ntfy task reports the verification the gate skips" unless gate_off_report
+
+# THE STACK STAYS DARK until stage 4c deletes it. Nothing else reads this value:
+# tests/deployment_gate_coverage_test.rb treats a lit gate with a lane as correct.
+inventory_path = File.join(ROOT, "inventory", "group_vars", "all", "service_ntfy.yml")
+inventory = File.file?(inventory_path) ? YAML.safe_load_file(inventory_path) : {}
+failures << "inventory/group_vars/all/service_ntfy.yml must set ntfy_deployment_enabled: false, got " \
+            "#{inventory['ntfy_deployment_enabled'].inspect}: every publisher moved to Pushover (#558) and " \
+            "ntfy stays torn down until stage 4c deletes the role" unless
+  inventory.is_a?(Hash) && inventory["ntfy_deployment_enabled"] == false
+
+# THE TEARDOWN IS A GRACEFUL STOP. `down` waits the Compose file's
+# stop_grace_period and init: true forwards the signal; Dozzle pages on exit 137.
+teardown = main_tasks.find { |task| task["name"] == "Stop the disabled ntfy project" }
+compose_args = teardown && teardown["community.docker.docker_compose_v2"]
+failures << "the ntfy teardown must be a community.docker.docker_compose_v2 `state: absent` gated on " \
+            "`not ntfy_deployment_enabled | bool`, with no `timeout` to cut the grace period short" unless
+  compose_args.is_a?(Hash) && compose_args["state"] == "absent" && !compose_args.key?("timeout") &&
+  Array(teardown["when"]).include?("not ntfy_deployment_enabled | bool")
+failures << "roles/ntfy/tasks/main.yml kills a container: the teardown must stop ntfy gracefully, or " \
+            "Dozzle's unexpected-exit rule pages exit 137" if
+  JSON.generate(main_tasks.map { |task| task.reject { |key, _value| key == "name" } }).match?(/\bkill\b|force_kill/i)
+ntfy_compose = YAML.safe_load_file(File.join(ROOT, "services", "ntfy", "compose.yml"), aliases: true)
+ntfy_service = ntfy_compose.dig("services", "ntfy") || {}
+failures << "services/ntfy/compose.yml must keep `init: true` and a stop_grace_period, which is what " \
+            "makes the teardown a graceful stop" unless
+  ntfy_service["init"] == true && ntfy_service["stop_grace_period"].to_s.match?(/\A\d+s\z/)
+
+# AND IT IS EXERCISED: the komga lane brings ntfy up, converges inventory's off,
+# and reads the die event's exit code.
+controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
+komga_lane = controller[/suite_is komga; then\n(.*?)\n    fi\n/m, 1].to_s
+[
+  "run_play --tags ntfy -e ntfy_deployment_enabled=true",
+  "run_play --tags ntfy\n",
+  "--filter event=die",
+  "0|143) ;;",
+  "NTFY_TEARDOWN_VERIFIED"
+].each do |fragment|
+  failures << "the komga lane in tests/integration_controller.sh no longer carries #{fragment.inspect}, so " \
+              "nothing proves the ntfy teardown stops a running container gracefully" unless
+    komga_lane.include?(fragment)
+end
 
 report(failures, "ntfy verification selection: tags and check mode are non-mutating and complete",
        "ntfy verification selection violation(s)")

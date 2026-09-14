@@ -8,6 +8,12 @@ argument_specs:
       - Renders the environment from vault, deploys the stack, then verifies that
         provisioning took effect rather than only that a file was written.
     options:
+      # Declared bool rather than left to a truthy string. The teardown branch
+      # and the deploy branch are selected by this one value, and a string
+      # "false" is true in Jinja.
+      ntfy_deployment_enabled:
+        type: bool
+        required: true
       platform_compose_kind:
         type: str
         required: true
