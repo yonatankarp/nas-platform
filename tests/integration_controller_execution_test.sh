@@ -761,8 +761,12 @@ case_komga() {
   expect_output 'NTFY_TEARDOWN_VERIFIED exit=143'
   # Every komga converge asks for inventory's off; only the scenario's own
   # trailing -e turns ntfy on, so the teardown converge after it is a real off.
-  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=false]'
-  expect_no_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  # The common argv is told from that trailing pair by the `-e` that always
+  # follows it there and never follows the trailing one, which ends the argv.
+  # It was anchored on Karakeep's narrowing in front of it until #551 turned
+  # Karakeep on and deleted that narrowing.
+  expect_log '[-e][ntfy_deployment_enabled=false][-e]['
+  expect_no_log '[-e][ntfy_deployment_enabled=true][-e]['
 }
 
 # A teardown that stopped ntfy with SIGKILL is what pages the household through
@@ -806,14 +810,14 @@ case_komga_ntfy_survives() {
 case_dozzle_ntfy_override() {
   run_controller dozzle host_prep,deployment_bundle,ntfy,dozzle false true site.yml
   expect_status 0
-  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_log '[-e][ntfy_deployment_enabled=true][-e]['
   expect_no_log '[-e][ntfy_deployment_enabled=false]'
 }
 
 case_beszel_ntfy_override() {
   run_controller beszel host_prep,deployment_bundle,ntfy,beszel false true site.yml
   expect_status 0
-  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_log '[-e][ntfy_deployment_enabled=true][-e]['
   expect_no_log '[-e][ntfy_deployment_enabled=false]'
 }
 
