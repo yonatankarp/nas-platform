@@ -8,7 +8,6 @@ media_torrent_enabled: false
 platform_container_cpu_budget: 0
 platform_project_name: "{{ lookup('env', 'PLATFORM_PROJECT_NAME') }}"
 beszel_port: "{{ lookup('env', 'PLATFORM_BESZEL_PORT') | int }}"
-ntfy_port: "{{ lookup('env', 'PLATFORM_NTFY_PORT') | int }}"
 dozzle_port: "{{ lookup('env', 'PLATFORM_DOZZLE_PORT') | int }}"
 audiobookshelf_port: "{{ lookup('env', 'PLATFORM_AUDIOBOOKSHELF_PORT') | int }}"
 komga_port: "{{ lookup('env', 'PLATFORM_KOMGA_PORT') | int }}"

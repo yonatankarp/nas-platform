@@ -41,7 +41,6 @@ def report_input
     "sandbox_id" => "nas-platform-mac.Report1",
     "project_name" => "nas-platform-mac-report1",
     "beszel_port" => 38_090,
-    "ntfy_port" => 32_586,
     "dozzle_port" => 38_080,
     "audiobookshelf_port" => 33_378,
     "komga_port" => 35_600,

@@ -235,7 +235,7 @@ end
 # and the respelling check below stay, because the rule is what a second port of
 # an existing service will need again and an unexercised rule is cheaper to keep
 # than to rediscover.
-MAC_PORT_ROSTER_FLOOR = 20
+MAC_PORT_ROSTER_FLOOR = 19
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
 check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
                 mac_port_roster.uniq.length == mac_port_roster.length &&
@@ -415,7 +415,7 @@ check(failures, mac_runner.include?("usage: run-contract.sh SERVICE PHASE") &&
 mac_contract_table = mac_runner[/^case \$mac_service in$(.*?)^esac$/m, 1].to_s
 mac_contract_arms = mac_contract_table.scan(/^ {2}([a-z0-9][a-z0-9-]*)\)$/).flatten
 
-# Three services this table has no arm for, each a decision rather than the gap
+# Two services this table has no arm for, each a decision rather than the gap
 # above, so the gap is stated instead of left silent.
 #
 # arr and downloaders are registered contracts whose Phase 1 runtime is
@@ -423,29 +423,22 @@ mac_contract_arms = mac_contract_table.scan(/^ {2}([a-z0-9][a-z0-9-]*)\)$/).flat
 # Nothing dispatches them through this wrapper, so an arm would have to invent an
 # environment no caller ever supplies.
 #
-# ntfy is here for a reason that only exists inside a sandbox, and deleting it as
-# dead weight costs eight minutes to rediscover. ntfy has no contract of its own
-# and is never in the real registry -- tests/mac/lib.sh says so in
-# MAC_UNREGISTERED_SERVICES='ntfy', and the Mac coverage accounting adds it to
-# every group's denominator by hand for exactly that reason. But
-# tests/policy_manifest_test.rb's "registered variable contract" row writes an
-# ntfy contract into a sandbox registry to prove a *different* check, and an
-# expect_success row requires all eight policy scripts to pass on the tree it
-# built. Without this entry that row goes red on a defect it is not testing.
+# A policy mutation row that registers a contract for a service with no arm here
+# needs that service exempted too: an expect_success row requires all eight
+# policy scripts to pass on the tree it built, and this check would fail it on a
+# defect it is not testing.
 MAC_CONTRACT_TABLE_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker " \
            "integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and proved by its " \
-                   "Docker integration suite",
-  "ntfy" => "it has no contract of its own, is named in MAC_UNREGISTERED_SERVICES rather than " \
-            "in the registry, and reaches a registry only inside a policy mutation sandbox"
+                   "Docker integration suite"
 }.freeze
 
 # Held to EXPECTED_SERVICES rather than to the registry, which is the point of
 # the paragraph above read once more: the registry is a file the mutation harness
 # rewrites, so an exemption checked against it would be a standing excuse that a
 # sandbox can grant and revoke. The platform roster is the stable authority, it
-# names all three, and it still refuses the defect this direction exists for --
+# names both, and it still refuses the defect this direction exists for --
 # a service deleted from the platform leaving its excuse behind for the next one
 # to inherit, the same rule MAC_REVIEW_EXEMPTIONS is held to at the end of this
 # file.
@@ -490,7 +483,7 @@ unless mac_contract_arms.empty? || mac_registered_aliases.empty?
 end
 check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("mac_registry_services()") &&
-                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy vaultwarden'"),
+                mac_lib.include?("MAC_UNREGISTERED_SERVICES='vaultwarden'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
 #
 # Drift, the fifth group, never collapsed and does not need to: no two services

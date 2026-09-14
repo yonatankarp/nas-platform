@@ -11,23 +11,22 @@ render() {
   label=$1
   base_name=$2
   beszel_port=$3
-  ntfy_port=$4
-  dozzle_port=$5
-  audiobookshelf_port=$6
-  komga_port=$7
-  jellyfin_port=$8
-  immich_port=$9
-  paperless_port=${10}
-  radarr_port=${11}
-  sonarr_port=${12}
-  prowlarr_port=${13}
-  bazarr_port=${14}
-  sabnzbd_port=${15}
-  pinchflat_port=${16}
-  kapowarr_port=${17}
-  bindery_port=${18}
-  trailarr_port=${19}
-  seerr_port=${20}
+  dozzle_port=$4
+  audiobookshelf_port=$5
+  komga_port=$6
+  jellyfin_port=$7
+  immich_port=$8
+  paperless_port=$9
+  radarr_port=${10}
+  sonarr_port=${11}
+  prowlarr_port=${12}
+  bazarr_port=${13}
+  sabnzbd_port=${14}
+  pinchflat_port=${15}
+  kapowarr_port=${16}
+  bindery_port=${17}
+  trailarr_port=${18}
+  seerr_port=${19}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
@@ -40,15 +39,6 @@ render() {
       -f "$repo_dir/services/beszel/compose.yml" \
       -f "$repo_dir/services/beszel/compose.mac.yml" config --format json \
       > "$temporary_dir/$label-beszel.json"
-
-  env PLATFORM_PROJECT_NAME="$base_name" NTFY_HOST_PORT="$ntfy_port" \
-    NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_UID=1000 NAS_GID=100 \
-    NTFY_BASE_URL="http://127.0.0.1:$ntfy_port" NTFY_AUTH_USERS= \
-    NTFY_AUTH_ACCESS= NTFY_AUTH_TOKENS= TZ=UTC \
-    docker compose --project-name "$base_name-ntfy" \
-      -f "$repo_dir/services/ntfy/compose.yml" \
-      -f "$repo_dir/services/ntfy/compose.mac.yml" config --format json \
-    > "$temporary_dir/$label-ntfy.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" DOZZLE_HOST_PORT="$dozzle_port" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_UID=1000 NAS_GID=100 TZ=UTC \
@@ -215,9 +205,9 @@ render() {
       > "$temporary_dir/$label-seerr.json"
 }
 
-render first nas-platform-mac-first 38090 32586 38080 33378 35600 38096 32283 38000 \
+render first nas-platform-mac-first 38090 38080 33378 35600 38096 32283 38000 \
   37878 38989 36969 36767 38082 38945 35656 38787 37889 35055
-render second nas-platform-mac-second 38091 32587 38081 33379 35601 38097 32284 38001 \
+render second nas-platform-mac-second 38091 38081 33379 35601 38097 32284 38001 \
   37879 38990 36970 36768 38083 38946 35657 38788 37890 35056
 
 # The 219 lines of assertions that used to follow as a `<<'RUBY'` heredoc are

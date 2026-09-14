@@ -102,12 +102,7 @@ printf '%s %s\n' "$1" "$2" >> "${HOOK_LOG:?}"
 STUB
 
   # Hook files the collapsed groups delegate to. Only their names carry meaning
-  # for coverage, except the ntfy verify hook, which the recreate group runs.
-  cat > "$tree/tests/mac/hooks/verify/15-ntfy.sh" <<'STUB'
-#!/bin/sh
-set -eu
-printf '%s\n' 'ntfy verify-hook' >> "${HOOK_LOG:?}"
-STUB
+  # for coverage.
   cat > "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" <<'STUB'
 #!/bin/sh
 exit 0
@@ -147,7 +142,7 @@ printf '%s |%s |%s |%s\n' "$project" "$env_file" "${files# }" "${targets# }" >> 
 STUB
 
   chmod 0755 "$tree/tests/mac/run-contract.sh" "$tree/bin/docker" \
-    "$tree/tests/mac/hooks/verify/15-ntfy.sh" "$tree/tests/mac/hooks/verify/10-beszel.sh" \
+    "$tree/tests/mac/hooks/verify/10-beszel.sh" \
     "$tree/tests/mac/hooks/verify/20-dozzle.sh" \
     "$tree/tests/mac/hooks/verify/15-media-acquisition-foundation.sh" \
     "$tree/tests/mac/hooks/fixtures-persistence/80-paperless.sh"
@@ -219,12 +214,11 @@ expect_log() {
 tree=$fixture/accepted
 build_tree "$tree"
 
-# Every group must account for all sixteen services: the fifteen registered
-# contracts plus ntfy, which has no contract of its own and so is never in the
-# registry.
+# Every group must account for every registered contract plus vaultwarden, which
+# has no contract of its own and so is never in the registry.
 summary=$(run_group "$tree" fixtures-seed 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-seed hooks: covered 17 of 17 registered services (ran 7, delegated 0, exempt 10)'
+  'mac fixtures-seed hooks: covered 16 of 16 registered services (ran 7, delegated 0, exempt 9)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf seed-progress
@@ -235,7 +229,7 @@ paperless seed' 'fixtures-seed'
 
 summary=$(run_group "$tree" fixtures-persistence 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-persistence hooks: covered 17 of 17 registered services (ran 12, delegated 1, exempt 4)'
+  'mac fixtures-persistence hooks: covered 16 of 16 registered services (ran 12, delegated 1, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
 dozzle verify
 audiobookshelf assert-persistence
@@ -251,7 +245,7 @@ nextcloud run' 'fixtures-persistence'
 
 summary=$(run_group "$tree" verify 30-services.sh)
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
+  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 2, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'audiobookshelf run
 komga run
 jellyfin run
@@ -266,9 +260,8 @@ nextcloud run' 'verify'
 
 summary=$(run_group "$tree" fixtures-recreate 00-services.sh)
 expect_summary "$summary" \
-  'mac fixtures-recreate hooks: covered 17 of 17 registered services (ran 14, delegated 0, exempt 3)'
+  'mac fixtures-recreate hooks: covered 16 of 16 registered services (ran 13, delegated 0, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify
-ntfy verify-hook
 dozzle verify
 audiobookshelf run
 komga run
@@ -285,7 +278,6 @@ nextcloud run' 'fixtures-recreate'
 # container set, which no other assertion here would notice going wrong.
 # Paperless is the one service whose bundle directory is not its Mac alias.
 expect_log "$(cat "$tree/log/docker")" 'proof-beszel |runtime/services/beszel/.env |current/services/beszel/compose.yml |hub agent-portable socket-proxy
-proof-ntfy |runtime/services/ntfy/.env |current/services/ntfy/compose.yml |ntfy
 proof-dozzle |runtime/services/dozzle/.env |current/services/dozzle/compose.yml |alert-relay dozzle socket-proxy
 proof-audiobookshelf |runtime/services/audiobookshelf/.env |current/services/audiobookshelf/compose.yml |audiobookshelf
 proof-komga |runtime/services/komga/.env |current/services/komga/compose.yml |komga
@@ -307,7 +299,7 @@ proof-nextcloud |runtime/services/nextcloud/.env |current/services/nextcloud/com
 # entirely from the sibling filenames its roster pins.
 summary=$(run_group "$tree" drift 00-coverage.sh)
 expect_summary "$summary" \
-  'mac drift hooks: covered 17 of 17 registered services (ran 0, delegated 13, exempt 4)'
+  'mac drift hooks: covered 16 of 16 registered services (ran 0, delegated 13, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 
 # Pre-converge is the sixth group and the smallest: one hook, because a service
@@ -318,7 +310,7 @@ expect_log "$(cat "$tree/log/hooks")" '' 'drift'
 # could not ask.
 summary=$(run_group "$tree" pre-converge 00-coverage.sh)
 expect_summary "$summary" \
-  'mac pre-converge hooks: covered 17 of 17 registered services (ran 0, delegated 1, exempt 16)'
+  'mac pre-converge hooks: covered 16 of 16 registered services (ran 0, delegated 1, exempt 15)'
 expect_log "$(cat "$tree/log/hooks")" '' 'pre-converge'
 
 # A drift hook deleted must fail the group. This is the regression the group had
@@ -368,10 +360,9 @@ tree=$fixture/verify-wrapper
 build_verify_tree "$tree"
 summary=$(run_verify_wrapper "$tree")
 expect_summary "$summary" \
-  'mac verify hooks: covered 17 of 17 registered services (ran 11, delegated 3, exempt 3)'
+  'mac verify hooks: covered 16 of 16 registered services (ran 11, delegated 2, exempt 3)'
 expect_log "$(cat "$tree/log/hooks")" 'beszel verify-hook
 media-acquisition-foundation verify-hook
-ntfy verify-hook
 dozzle verify-hook
 audiobookshelf run
 komga run
@@ -449,20 +440,21 @@ if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a table with a service removed'
 fi
 
-# ntfy is the service this is most likely to lose, because the seed and
-# persistence groups legitimately exempt it and only the recreate and verify
-# groups prove it. Dropping its recreate row must fail rather than leave the one
-# service the registry cannot vouch for unproved everywhere.
-tree=$fixture/dropped-ntfy
+# The recreate table is a list of calls rather than a loop, so the seed plant
+# above says nothing about it. Dropping one of its rows must fail the group too.
+# Dozzle is the row planted because, like Beszel, the seed and persistence
+# groups reach it through verify rather than through a phase of its own, so the
+# recreate row is the one place its recreated containers are reasserted.
+tree=$fixture/dropped-recreate-row
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
-prefix = "mac_recreate_and_reassert ntfy "
+prefix = "mac_recreate_and_reassert dozzle "
 lines = File.readlines(path)
-abort "ntfy recreate row is absent" unless lines.count { |line| line.start_with?(prefix) } == 1
+abort "dozzle recreate row is absent" unless lines.count { |line| line.start_with?(prefix) } == 1
 File.write(path, lines.reject { |line| line.start_with?(prefix) }.join)' \
   "$tree/tests/mac/hooks/fixtures-recreate/00-services.sh"
 if run_group "$tree" fixtures-recreate 00-services.sh >/dev/null 2>&1; then
-  fail 'fixtures-recreate accepted a table with ntfy removed'
+  fail 'fixtures-recreate accepted a table with dozzle removed'
 fi
 
 # Delegation is credited from the sibling hook filenames, so deleting the file a
@@ -474,14 +466,15 @@ if run_group "$tree" fixtures-persistence 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-persistence accepted a missing delegated hook'
 fi
 
-# The exemptions are held to the same standard: with neither Mac-only service
-# named any more, the exemptions that name them are stale and must fail.
+# The exemptions are held to the same standard: with the Mac-only service no
+# longer named, the exemptions that name it are stale and must fail. This is
+# also what keeps a one-member list able to fail.
 tree=$fixture/stale-exemption
 build_tree "$tree"
 ruby -e 'path = ARGV.fetch(0)
 source = File.read(path)
-abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'")
-File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'ntfy vaultwarden'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
+abort "Mac-only service list is absent" unless source.include?("MAC_UNREGISTERED_SERVICES='"'"'vaultwarden'"'"'")
+File.write(path, source.sub("MAC_UNREGISTERED_SERVICES='"'"'vaultwarden'"'"'", "MAC_UNREGISTERED_SERVICES="))' \
   "$tree/tests/mac/lib.sh"
 if run_group "$tree" fixtures-seed 00-services.sh >/dev/null 2>&1; then
   fail 'fixtures-seed accepted a stale exemption'

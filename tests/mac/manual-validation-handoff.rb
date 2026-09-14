@@ -19,7 +19,6 @@ PORT_FIELDS = {
   "immich" => "immich_port",
   "jellyfin" => "jellyfin_port",
   "komga" => "komga_port",
-  "ntfy" => "ntfy_port",
   "paperless-ngx" => "paperless_port"
 }.freeze
 PRIMARY_IDENTITIES = {
@@ -29,7 +28,6 @@ PRIMARY_IDENTITIES = {
   "immich" => "vault_immich_admin_email",
   "jellyfin" => "vault_jellyfin_admin_username",
   "komga" => "vault_komga_admin_email",
-  "ntfy" => "vault_ntfy_admin_user",
   "paperless-ngx" => "vault_paperless_admin_username"
 }.freeze
 MANAGED_KEYS = {

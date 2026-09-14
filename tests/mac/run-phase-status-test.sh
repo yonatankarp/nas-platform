@@ -84,7 +84,7 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
 "$mac_test_dir/report.rb" --init "$state_input" --lane fresh \
   --sandbox-id "$(basename -- "$sandbox")" --git-revision "$git_revision" \
   --vault-checksum "$vault_checksum" --project-name "$project_name" \
-  --beszel-port 38090 --ntfy-port 32586 --dozzle-port 38080 \
+  --beszel-port 38090 --dozzle-port 38080 \
   --audiobookshelf-port 33378 --komga-port 35600 \
   --jellyfin-port 38096 \
   --immich-port 32283 --paperless-port 38000 \

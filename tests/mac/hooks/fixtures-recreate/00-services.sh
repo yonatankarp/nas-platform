@@ -41,19 +41,14 @@ EOF
   done
   "$@"
 
-  if [ -n "$mac_recreate_phase" ]; then
-    "$mac_script_dir/run-contract.sh" "$mac_recreate_service" "$mac_recreate_phase"
-  else
-    # ntfy is the one recreated service with no contract suite of its own, so its
-    # verify hook is the reassertion, exactly as 15-ntfy.sh did.
-    "$mac_hook_dir/../verify/15-ntfy.sh"
-  fi
+  # Every recreated row names its phase: run-contract.sh refuses an empty one,
+  # so a row without a contract to reassert with cannot pass in silence.
+  "$mac_script_dir/run-contract.sh" "$mac_recreate_service" "$mac_recreate_phase"
   mac_recreated="$mac_recreated$mac_recreate_service
 "
 }
 
 mac_recreate_and_reassert beszel beszel beszel 'hub agent-portable socket-proxy' verify
-mac_recreate_and_reassert ntfy ntfy ntfy ntfy ''
 mac_recreate_and_reassert dozzle dozzle dozzle 'alert-relay dozzle socket-proxy' verify
 mac_recreate_and_reassert audiobookshelf audiobookshelf audiobookshelf audiobookshelf run
 mac_recreate_and_reassert komga komga komga komga run

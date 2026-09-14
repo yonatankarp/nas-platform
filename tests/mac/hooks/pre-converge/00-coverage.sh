@@ -47,7 +47,6 @@ mac_assert_service_coverage pre-converge 00-coverage.sh '' \
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 beszel=its converge places the hub keypair from the vault and reads nothing off disk; its state is established by the verify phase
 dozzle=its converge renders the users file and the dispatcher record itself and reads nothing off disk; its state is established by the verify phase
-ntfy=its users, ACLs and tokens are declared in the vault and pushed by the converge; there is no fixture to place first
 komga=its converge creates the managed library but does not wait on a scan of its contents, so its media seeds after deploy in fixtures-seed
 jellyfin=its converge creates the managed library and schedules a periodic refresh but does not wait on a scan of its contents, so its media seeds after deploy in fixtures-seed
 immich=its converge creates the managed identities but reads no media, so its fixtures seed after deploy in fixtures-seed
