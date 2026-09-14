@@ -3016,7 +3016,9 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
 
         self.assertLessEqual(len(message), production_auto_deploy.MAX_MESSAGE_CHARACTERS)
         lines = message.split("\n")
-        self.assertTrue(lines[-1].startswith(self.FOOTER) and "/compare/" in lines[-1], lines[-1])
+        self.assertTrue(lines[-1].startswith(self.FOOTER) and "/compare/" in lines[-1],
+                        f"an overflowing release lost its footer, so the body was cut rather "
+                        f"than sized by whole lines; it ends {message[-80:]!r}")
         shown = [line for line in lines if line in whole]
         self.assertEqual(lines[: len(shown) + 2], [self.IMAGES_HEADER, *shown, f"… and {60 - len(shown)} more images"])
         self.assertGreater(len(shown), 0)
@@ -3036,7 +3038,9 @@ class ReleaseAnnouncementTest(PollHarness, PollerTestCase):
                                      .split("\n")[1:4], ""])
         self.assertEqual(lines[5], self.CHANGES_HEADER)
         hidden = [line for line in lines if line.startswith("… and ")]
-        self.assertEqual(len(hidden), 1)
+        self.assertEqual(len(hidden), 1,
+                         "an overflowing release must say how many commits it left out, not be "
+                         f"cut; it ends {lines[-1][-80:]!r}")
         self.assertRegex(hidden[0], r"\A… and \d+ more changes\Z")
         self.assertTrue(lines[-1].startswith(self.FOOTER))
         self.assertLessEqual(len("\n".join(lines)), production_auto_deploy.MAX_MESSAGE_CHARACTERS)
