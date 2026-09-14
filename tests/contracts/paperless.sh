@@ -116,15 +116,22 @@ grep -qF 'wait_healthy(REDIS, WEBSERVER)' "$snapshot_program" ||
   fail_contract 'Paperless restore does not wait for application health'
 grep -qF 'request("delete", "/api/documents/' "$snapshot_program" ||
   fail_contract 'Paperless rollback drill does not destructively test restoration'
+# These two were vacuous while the runtime half shared this file: `grep -F`
+# matches a substring, and the grep line spells its own pattern, so each
+# assertion was satisfied by itself and a planted defect in the runtime code
+# passed. Reading the runtime program instead is what makes them bite.
+#
+# They sit above the static exit rather than inside it (#667). Nothing invokes
+# this contract as `static`: the lane runs `seed` and `assert-persistence`, and
+# run_contracts.rb --execute takes the `run` default. Inside the branch they ran
+# only for a mode nobody passed; here every mode reaches them, which is where
+# every other assertion in this file already was.
+grep -F 'MAIL_PROBE_READ_TIMEOUT = 180' "$runtime_program" >/dev/null ||
+  fail_contract 'runtime Gmail probe timeout constant differs'
+grep -F 'read_timeout: MAIL_PROBE_READ_TIMEOUT' "$runtime_program" >/dev/null ||
+  fail_contract 'runtime Gmail probe lacks its explicit bounded timeout'
+
 if [ "$mode" = static ]; then
-  # These two were vacuous while the runtime half shared this file: `grep -F`
-  # matches a substring, and the grep line spells its own pattern, so each
-  # assertion was satisfied by itself and a planted defect in the runtime code
-  # passed. Reading the runtime program instead is what makes them bite.
-  grep -F 'MAIL_PROBE_READ_TIMEOUT = 180' "$runtime_program" >/dev/null ||
-    fail_contract 'runtime Gmail probe timeout constant differs'
-  grep -F 'read_timeout: MAIL_PROBE_READ_TIMEOUT' "$runtime_program" >/dev/null ||
-    fail_contract 'runtime Gmail probe lacks its explicit bounded timeout'
   printf '%s\n' 'Paperless static contract passed'
   exit 0
 fi

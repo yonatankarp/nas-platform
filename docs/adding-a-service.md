@@ -112,7 +112,17 @@ obligations added since, each named here as it lands:
   carries, which the manifest does not record and which deriving from the
   Compose file being judged would make agree with whatever it found.
 
-**So adding a service today changes 61 files.** Keep that arithmetic honest
+- `tests/policy_integration_test.rb` — which contract reaches its static half,
+  and how (#667). A service that registers a contract with a `static` mode is
+  either named `static` by its integration lane or listed in
+  `STATIC_HALF_RUN_BY_EVERY_MODE` with the reason it needs no such line — the
+  universe is read from `tests/contracts/registry.yml` and the partition is
+  closed in both directions, so it cannot be neither. Most contracts run their
+  static assertions above the runtime half and so take the list; Beszel and
+  Dozzle put theirs inside `if [ "$mode" = static ]` and take the lane line.
+  Until #667 they had neither, and nothing invoked either wrapper in that mode.
+
+**So adding a service today changes 62 files.** Keep that arithmetic honest
 rather than bumping the total: `tests/docs_links_test.rb` adds the ledger rows
 above to the measured 56, fails if the stated total disagrees, and fails again
 if `CLAUDE.md` quotes anything other than the total. The check cannot tell you an
@@ -123,9 +133,9 @@ total into a named cause.
 
 Only nine of Pinchflat's 56 were new files, and all nine are the service itself
 and its own proof. The other forty-seven are existing files that had to be told
-the platform is one service larger, and the ledger above makes fifty-two today —
-fifty before #656, forty-nine before #537, which is what the sentence should
-have read once the pre-converge roster landed. A handful are wiring and prose; most are
+the platform is one service larger, and the ledger above makes fifty-three today —
+fifty-two before #667, fifty before #656, forty-nine before #537, which is what
+the sentence should have read once the pre-converge roster landed. A handful are wiring and prose; most are
 *registries* — files that pin a list, a count or a literal string describing the
 platform as it currently is, and that fail when it grows without them. Sometimes
 loudly, sometimes with a Ruby stack trace, occasionally not at all.
@@ -976,6 +986,22 @@ an empty namespace, the integration override's `${PLATFORM_PROJECT_NAME:?}`
 refuses the deployment, and the run dies before it reaches the refusal under
 test. `tests/policy_integration_test.rb` requires both halves of that
 propagation.
+
+A contract with a `static` mode owes one more line, in one of two places, and
+`tests/policy_integration_test.rb` refuses a contract that has neither. Put the
+static assertions above the runtime half, so every mode executes them and
+`static` is only an early exit after the fact, and add the contract to
+`STATIC_HALF_RUN_BY_EVERY_MODE` there with that as the reason — this is what
+almost every contract here does. Put them inside `if [ "$mode" = static ]`
+instead, and the integration lane must name the mode: `run_<name>_contract
+static`. Beszel and Dozzle are the second shape, and until #667 neither had the
+line, so nothing invoked either wrapper in that mode. For Dozzle that meant no
+real render was ever judged — `tests/dozzle_contract_test.rb` drives static mode
+through a stubbed `docker`, so it asserts the argv the wrapper builds rather
+than the labels `docker compose config` returns — which is how #656 found `arr`
+and `downloaders` carrying no `dev.dozzle.group` at all. `tests/run_contracts.rb --execute` does not close this: it invokes each
+contract with no argument, so a contract whose default mode skips its own static
+branch is run without it.
 
 ### 6. Declare the storage
 
