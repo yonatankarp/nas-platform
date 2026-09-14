@@ -201,7 +201,14 @@ argument_specs:
         type: list
         elements: str
         required: false
-        description: Commit subjects this deployment carries.
+        description: Commits this deployment carries, one SHA-tab-subject line each.
+      ntfy_deployment_summary_path:
+        type: str
+        required: false
+        description: >-
+          Where the deployment poller wants the summary as JSON, exported as
+          PLATFORM_DEPLOYMENT_SUMMARY_PATH by its own site.yml run. Set, the
+          summary is written there and not published; empty publishes it.
       ntfy_deployment_pushover_api_url:
         type: str
         required: false

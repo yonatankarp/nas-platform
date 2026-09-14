@@ -136,6 +136,24 @@ TRANSIENT_FORGIVENESS_LIMIT = 3
 # hand, and the containment guard in the same task file remains the real
 # security control.
 LOCK_OWNER_ENVIRONMENT = "PLATFORM_DEPLOYMENT_LOCK_OWNER"
+# Where site.yml writes what a release shipped, for announce_release (#558).
+# deploy() alone exports it: the manifests and the Git history are read inside
+# the play, and this script has no YAML parser. An operator's --converge never
+# carries it, so site.yml publishes its own plain summary there instead.
+SUMMARY_PATH_ENVIRONMENT = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
+# The GitHub API is called anonymously: sixty requests an hour per address, of
+# which the five-minute poll spends twelve. A Renovate batch can move dozens of
+# images, so release-notes links stop at this many lookups and this budget.
+MAX_PULL_REQUEST_LOOKUPS = 8
+PULL_REQUEST_LOOKUP_BUDGET_SECONDS = 30
+# One palette for styled messages: mid-tones that read on Pushover's light and
+# dark themes alike. Poller-only today, and only the release message uses it;
+# red and amber are there so the failure and degraded messages take the same
+# colours when they are styled, in both scripts and the relay.
+COLOR_GREEN = "#2e7d32"
+COLOR_RED = "#c62828"
+COLOR_AMBER = "#f9a825"
+COLOR_GREY = "#9e9e9e"
 
 
 class ConfigurationError(ValueError):
@@ -472,12 +490,24 @@ def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
             "per_page": str(CI_RUN_PAGE_SIZE),
         }
     )
-    url = (
-        f"{config.github_api_base.rstrip('/')}/repos/{config.repository}"
-        f"/actions/workflows/{config.workflow}/runs?{query}"
-    )
+    payload = _github_get(config, f"actions/workflows/{config.workflow}/runs?{query}")
+    try:
+        runs = payload["workflow_runs"]
+    except (KeyError, TypeError) as error:
+        raise EligibilityError("GitHub response is invalid") from error
+    if not isinstance(runs, list):
+        raise EligibilityError("GitHub response is invalid")
+    return tuple(run for run in runs if isinstance(run, dict))
+
+
+def _github_get(config: Config, path: str, timeout: float = NETWORK_TIMEOUT_SECONDS):
+    """One bounded, anonymous GitHub API read under this repository, parsed as JSON.
+
+    EligibilityError for anything that is not a readable answer.
+    """
+
     request = Request(
-        url,
+        f"{config.github_api_base.rstrip('/')}/repos/{config.repository}/{path}",
         method="GET",
         headers={
             "Accept": "application/vnd.github+json",
@@ -486,20 +516,60 @@ def fetch_ci_runs(config: Config) -> tuple[dict, ...]:
         },
     )
     try:
-        with urlopen(request, timeout=NETWORK_TIMEOUT_SECONDS) as response:
+        with urlopen(request, timeout=timeout) as response:
             body = response.read(MAX_RESPONSE_BYTES + 1)
     except (HTTPError, URLError, HTTPException, OSError, TimeoutError) as error:
         raise EligibilityError("GitHub request failed") from error
     if len(body) > MAX_RESPONSE_BYTES:
         raise EligibilityError("GitHub response is too large")
     try:
-        payload = json.loads(body.decode("utf-8"))
-        runs = payload["workflow_runs"]
-    except (KeyError, TypeError, UnicodeError, ValueError) as error:
+        return json.loads(body.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError) as error:
         raise EligibilityError("GitHub response is invalid") from error
-    if not isinstance(runs, list):
+
+
+def pull_request_url(config: Config, sha: str, timeout: float = NETWORK_TIMEOUT_SECONDS) -> str | None:
+    """The pull request that brought a commit to main, or None if it came without one.
+
+    Renovate merges by rebase, so its commits carry no "(#NNN)" to read a number
+    from; GitHub's commit-to-pull-request index is the only record. Renovate's
+    pull request body carries the upstream release notes, which is why the link
+    is worth a request. EligibilityError when GitHub cannot say.
+    """
+
+    payload = _github_get(config, f"commits/{sha}/pulls", timeout)
+    if not isinstance(payload, list):
         raise EligibilityError("GitHub response is invalid")
-    return tuple(run for run in runs if isinstance(run, dict))
+    for pull in payload:
+        url = pull.get("html_url") if isinstance(pull, dict) else None
+        if isinstance(url, str) and _usable_url(url):
+            return url
+    return None
+
+
+def release_pull_requests(config: Config, shas) -> dict[str, str]:
+    """Pull request links for a release's image commits, within the anonymous budget.
+
+    Each commit is asked about once, at most MAX_PULL_REQUEST_LOOKUPS of them,
+    inside one total deadline. The first failure -- a 403 for a spent rate
+    limit included -- ends the lookups: asking again only spends more of a
+    budget the next poll needs, and the cost is links, never the message.
+    """
+
+    links: dict[str, str] = {}
+    deadline = time.monotonic() + PULL_REQUEST_LOOKUP_BUDGET_SECONDS
+    for sha in list(dict.fromkeys(shas))[:MAX_PULL_REQUEST_LOOKUPS]:
+        remaining = deadline - time.monotonic()
+        try:
+            if remaining <= 0:
+                raise EligibilityError("GitHub lookups ran out of time")
+            url = pull_request_url(config, sha, min(NETWORK_TIMEOUT_SECONDS, remaining))
+        except EligibilityError as error:
+            print(f"production auto-deploy: release notes links omitted: {error}", file=sys.stderr)
+            break
+        if url is not None:
+            links[sha] = url
+    return links
 
 
 def gating_ci_runs(config: Config, sha: str, runs) -> list[dict]:
@@ -1198,7 +1268,11 @@ def deploy(config: Config, sha: str, log) -> bool:
     correctly and does nothing.
     """
 
-    environment = _ansible_environment(config)
+    # Here and nowhere else: verify.yml shares _ansible_environment, and an
+    # operator's converge must keep the plain summary site.yml publishes itself.
+    environment = _ansible_environment(config) | {
+        SUMMARY_PATH_ENVIRONMENT: str(_summary_path(config))
+    }
     try:
         update_checkout(config, sha, log=log)
         sync_tooling(config, log=log)
@@ -1447,6 +1521,200 @@ def notify(
         "alerts",
         render_notification(config, sha, started, finished, log_path, run_url),
     )
+
+
+def _summary_path(config: Config) -> Path:
+    return config.state_root / "deployment-summary.json"
+
+
+_IMAGE_KINDS = frozenset({"updated", "added", "removed", "repinned"})
+
+
+def read_release_summary(path: Path, candidate: str) -> dict:
+    """The summary site.yml wrote for candidate; ValueError when there is none to trust.
+
+    Version 1 and this very release, or nothing: a file left by an earlier
+    release, or by a site.yml that predates the handshake, describes something
+    else. Every field is checked before any of it reaches a message.
+    """
+
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_RESPONSE_BYTES + 1)
+    except FileNotFoundError as error:
+        raise ValueError("site.yml wrote no release summary") from error
+    except OSError as error:
+        raise ValueError("the release summary is unreadable") from error
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("the release summary is too large")
+    summary = json.loads(raw.decode("utf-8"))
+    if not isinstance(summary, dict) or type(summary.get("version")) is not int or summary["version"] != 1:
+        raise ValueError("the release summary is not version 1")
+    if summary.get("release") != candidate:
+        raise ValueError("the release summary describes another release")
+
+    def sha(value) -> bool:
+        return isinstance(value, str) and SHA_PATTERN.fullmatch(value) is not None
+
+    def optional_text(value) -> bool:
+        return value is None or isinstance(value, str)
+
+    images, commits = summary.get("images"), summary.get("commits")
+    if (
+        not (summary.get("previous") == "" or sha(summary.get("previous")))
+        or not isinstance(images, list)
+        or not isinstance(commits, list)
+        or not all(
+            isinstance(image, dict)
+            and isinstance(image.get("name"), str)
+            and image.get("kind") in _IMAGE_KINDS
+            and optional_text(image.get("from"))
+            and optional_text(image.get("to"))
+            and (image.get("commit") is None or sha(image.get("commit")))
+            for image in images
+        )
+        or not all(
+            isinstance(commit, dict) and sha(commit.get("sha")) and isinstance(commit.get("subject"), str)
+            for commit in commits
+        )
+    ):
+        raise ValueError("the release summary is malformed")
+    return summary
+
+
+def _release_title(summary: dict) -> str:
+    """Plain text that carries the whole meaning, because the lock screen shows no HTML."""
+
+    images = summary["images"]
+    names = list(dict.fromkeys(image["name"].split("/", 1)[0] for image in images))
+    if len(images) == 1:
+        what = f"{images[0]['name']} {images[0].get('to') or 'removed'}"
+    elif names:
+        what = ", ".join(names[:2]) + (f" +{len(names) - 2}" if len(names) > 2 else "")
+    elif summary["commits"]:
+        count = len(summary["commits"])
+        what = f"{count} commit" if count == 1 else f"{count} commits"
+    else:
+        what = summary["release"][:7]
+    return f"\U0001f680 Deployed · {what}"
+
+
+def _release_image_line(image: dict, links: dict[str, str]) -> str:
+    name = f"<b>{html_escape(image['name'])}</b>"
+    before, after = html_escape(image.get("from") or ""), html_escape(image.get("to") or "")
+    kind = image["kind"]
+    if kind == "removed":
+        return f'\U0001f5d1️ {name} <font color="{COLOR_GREY}">removed</font>'
+    if kind == "updated":
+        line = f'{name} {before} → <font color="{COLOR_GREEN}">{after}</font>'
+    elif kind == "added":
+        line = f'\U0001f195 {name} <font color="{COLOR_GREEN}">{after}</font>'
+    else:
+        line = f'{name} {after} <font color="{COLOR_GREY}">repinned</font>'
+    link = links.get(image.get("commit") or "")
+    if link:
+        # _usable_url held it to 512 characters, so this escape never cuts it.
+        href = html_escape(link, MAX_URL_CHARACTERS, 6 * MAX_URL_CHARACTERS)
+        line += f' · <a href="{href}">release notes</a>'
+    return line
+
+
+def _release_message(image_lines: list[str], commit_lines: list[str], footer: str) -> str:
+    """Sections of whole lines, cut to Pushover's cap without losing the footer.
+
+    fit_message drops lines from the end, which would take the footer first, so
+    the body is sized here: commits give way before images, each dropped run of
+    lines is counted in its own section, and fit_message is only the backstop.
+    """
+
+    def compose(shown_images: int, shown_commits: int) -> list[str]:
+        lines: list[str] = []
+        for header, entries, shown, noun in (
+            ("\U0001f4e6 <b>Images</b>", image_lines, shown_images, "image"),
+            ("\U0001f4dd <b>Changes</b>", commit_lines, shown_commits, "change"),
+        ):
+            if not entries:
+                continue
+            lines += [header, *entries[:shown]]
+            hidden = len(entries) - shown
+            if hidden:
+                lines.append(f"… and {hidden} more {noun}{'' if hidden == 1 else 's'}")
+            lines.append("")
+        return [*lines, footer]
+
+    sizes = [(len(image_lines), shown) for shown in range(len(commit_lines), -1, -1)]
+    sizes += [(shown, 0) for shown in range(len(image_lines) - 1, -1, -1)]
+    for shown_images, shown_commits in sizes:
+        lines = compose(shown_images, shown_commits)
+        if len("\n".join(lines)) <= MAX_MESSAGE_CHARACTERS:
+            break
+    return fit_message(lines)
+
+
+def render_release(
+    config: Config, summary: dict, links: dict[str, str], started: str, finished: str
+) -> dict:
+    """Build the Deployments message for a release that deployed and verified."""
+
+    release, previous = summary["release"], summary["previous"]
+    repository = html_escape(config.repository)
+    # Links in the body name twelve-character SHAs, which GitHub resolves: the
+    # markup counts against Pushover's 1024, and full SHAs alone pushed an
+    # ordinary three-image, four-commit release over it. The button has its
+    # own 512 and keeps them whole.
+    commit_lines = [
+        f'• <a href="https://github.com/{repository}/commit/{commit["sha"][:12]}">'
+        f"{html_escape(commit['subject'])}</a>"
+        for commit in summary["commits"]
+    ]
+    duration = format_duration(started, finished)
+    if previous:
+        url = f"https://github.com/{config.repository}/compare/{previous}...{release}"
+        revisions = (
+            f'<a href="https://github.com/{repository}/compare/{previous[:12]}...{release[:12]}">'
+            f"{previous[:7]} → {release[:7]}</a>"
+        )
+    else:
+        url = f"https://github.com/{config.repository}/commit/{release}"
+        revisions = release[:7]
+    footer = f'⏱️ {duration} · <font color="{COLOR_GREY}">{revisions}</font>'
+    return {
+        "title": _release_title(summary),
+        "message": _release_message(
+            [_release_image_line(image, links) for image in summary["images"]], commit_lines, footer
+        ),
+        "priority": 0,
+        "url": url,
+        "url_title": "View changes on GitHub",
+    }
+
+
+def announce_release(config: Config, candidate: str, started: str, finished: str) -> None:
+    """Send the one Deployments message for a release that deployed and verified.
+
+    Never raises and never changes an outcome: the release is already recorded
+    as deployed, and a message about it is worth no more than that. A summary
+    that is missing -- a site.yml older than the handshake -- stale or malformed
+    costs the message; GitHub unreachable costs the release-notes links; a
+    refused or unanswered send costs the message. Each says so in one stderr
+    line, and none is retried: the next release has its own message.
+    """
+
+    try:
+        summary = read_release_summary(_summary_path(config), candidate)
+    except Exception as error:  # Deliberately broad; see the docstring.
+        print(f"production auto-deploy: no release message for {candidate[:9]}: {error}",
+              file=sys.stderr)
+        return
+    try:
+        links = release_pull_requests(
+            config, [image["commit"] for image in summary["images"] if image.get("commit")]
+        )
+        delivered = publish(config, "deployments", render_release(config, summary, links, started, finished))
+    except Exception:  # Deliberately broad; see the docstring.
+        delivered = False
+    if not delivered:
+        print("production auto-deploy: release notification failed", file=sys.stderr)
 
 
 def _notification_timeout() -> int:
@@ -1918,13 +2186,14 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             finished = _timestamp()
             if succeeded:
                 record_success(config, candidate, finished)
-            # A successful deployment reports itself, from inside the run,
-            # where the manifests and the Git history that say what shipped are
-            # still at hand. Announcing it a second time here would add a
-            # revision and a duration to a message that already said more.
-            #
-            # Best effort, but never silent: a misconfigured publisher would
-            # otherwise lose every failure with nothing to show for it.
+                # After the record, so nothing about the message can change
+                # it. What shipped was written by site.yml, which read the
+                # manifests and the Git history; succeeded means verify.yml
+                # passed too, so this is the one message a release gets.
+                announce_release(config, candidate, started, finished)
+            # A failure is announced here, best effort but never silent: a
+            # misconfigured publisher would otherwise lose every failure with
+            # nothing to show for it.
             #
             # The link is to the run that released the revision, which is what
             # a human opens first to see what changed and whether it was green.
@@ -1995,6 +2264,9 @@ def converge(config: Config, arguments: list[str]) -> int:
             return 1
         environment = dict(os.environ)
         environment[LOCK_OWNER_ENVIRONMENT] = str(os.getpid())
+        # Never inherited: announce_release does not run after an operator's
+        # command, so a converge that wrote the summary would announce nothing.
+        environment.pop(SUMMARY_PATH_ENVIRONMENT, None)
         try:
             completed = subprocess.run(
                 ["ansible-playbook", *arguments], env=environment, check=False

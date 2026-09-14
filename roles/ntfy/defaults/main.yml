@@ -105,3 +105,10 @@ ntfy_deployment_summary_checkout: "{{ playbook_dir }}"
 ntfy_deployment_summary_max_commits: 8
 ntfy_deployment_summary_changes: []
 ntfy_deployment_summary_commits: []
+# Where the deployment poller wants this run's summary, from the environment it
+# runs site.yml in (#558). Set, the summary is written there as JSON and nothing
+# is published: the poller sends a richer message once verify.yml passes. Empty
+# -- an operator --converge, a workstation run, a poller older than the
+# variable -- publishes the plain summary exactly as before. A tolerated input,
+# like PLATFORM_DEPLOYMENT_LOCK_OWNER: site.yml depends on nothing that sets it.
+ntfy_deployment_summary_path: "{{ lookup('ansible.builtin.env', 'PLATFORM_DEPLOYMENT_SUMMARY_PATH') }}"

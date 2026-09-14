@@ -162,7 +162,10 @@ install a five-minute, non-root poller on the NAS. It anonymously resolves
 runs the local Ansible deployment and verification. It uses no PAT, deploy key,
 GitHub write permission, inbound webhook, or self-hosted runner. A failed commit
 is quarantined until an operator explicitly retries that exact current SHA; a
-newer successful commit may proceed normally.
+newer successful commit may proceed normally. Each release that deploys and
+verifies is announced once to Pushover's Deployments application: what moved,
+each image linked to the pull request that carries its release notes, and the
+commits it shipped.
 
 The same installer schedules a weekly Docker image prune, because every image is
 pinned by digest and each bump otherwise leaves its predecessor on disk forever.

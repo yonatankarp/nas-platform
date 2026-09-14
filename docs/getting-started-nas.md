@@ -234,7 +234,7 @@ webhook is Pushover, and since the Dozzle alert relay moved, every container
 alert is too. They are separate Pushover applications on one account: Beszel
 sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
 the per-service deployment reports and the image prune's reclaim with
-Containers, the run summary with Deployments, the deployment poller's and the
+Containers, each release's one message with Deployments, the deployment poller's and the
 image prune's alerts with Alerts, and Seerr with Media, all to the one
 `vault_pushover_user_key`.
 Pushover has no disposable equivalent of a topic, so
@@ -332,13 +332,19 @@ Pushover's monthly quota in the order of hundreds of messages.
 A run that recreates nothing therefore publishes nothing, which also keeps a
 selective converge and a re-run of the installed revision silent.
 
-After every service role, a single run-level summary follows through Pushover's
-Deployments application at priority 0, above the per-service detail. It diffs the
-manifest of the release the deployment replaced against the one it installed,
-so it names the versions each image moved between and the commit subjects the
-release carries — readable on a phone with no checkout at hand, where a
-revision is a lookup you cannot perform. It is published only when the release
-actually moved, and reaching it means the whole run converged. Pushover caps a
+After every service role, the run records a single summary of what the release
+shipped, for Pushover's Deployments application at priority 0, above the
+per-service detail. It diffs the manifest of the release the deployment replaced
+against the one it installed, so it names the versions each image moved between
+and the commit subjects the release carries — readable on a phone with no
+checkout at hand, where a revision is a lookup you cannot perform. It is made
+only when the release actually moved, and reaching it means the whole run
+converged. Who sends it depends on who ran the play. Under the deployment
+poller, `site.yml` writes it as JSON beside the poller's state and publishes
+nothing, and the poller sends a richer message once verification has passed too
+(see [automatic deployment](#automatic-deployment-from-the-nas)). An operator's
+`nas-platform-deploy --converge`, or a run from a workstation, publishes it
+itself as plain text. Either way a release gets exactly one. Pushover caps a
 title at 250 characters and a message at 1024, so a long summary is cut with a
 trailing `…` rather than refused. A report or summary Pushover authoritatively
 refuses — a 4xx carrying its own `status: 0`, which is what a revoked or
@@ -551,9 +557,23 @@ links to its page on GitHub, the notification opens the CI run that released the
 revision, and the attempt log's path is in the body. Only a message Pushover
 accepts counts as sent. One it refuses prints the vault key names to fix --
 never a value -- and neither a refusal nor an unanswered request changes the
-poll's exit code or its recorded state. A successful deployment reports itself from inside
-the run, through the summary above, which can say what shipped; the poller adds
-nothing to it and stays quiet.
+poll's exit code or its recorded state.
+
+A deployment that converges and verifies gets one message on Pushover's
+Deployments application at priority 0, sent by the poller from the summary
+`site.yml` wrote during the run. Its title alone says what moved, because a lock
+screen shows no formatting; expanded, it lists each image that moved with its
+old and new version and a link to the pull request that moved it, whose
+description carries the upstream release notes, then each commit subject linked
+to its commit, how long the deployment took, and a button to GitHub's comparison
+of the two revisions. A message that would pass Pushover's 1024 characters drops
+whole lines, commits before images, and says how many it left out. The pull
+request links cost one anonymous GitHub request each, at most eight per release
+and never past the first refusal; when GitHub cannot answer, only those links
+are left out. A deployment that fails, verification included, sends the failure
+above and no release message. A refused or unanswered release message is
+reported on stderr like every other notice and changes nothing -- the release is
+already recorded as deployed -- and it is not retried.
 
 The poller deploys the newest revision of `main` that CI has released, which is
 not always the head. A full run takes longer than the gap between merges, so the

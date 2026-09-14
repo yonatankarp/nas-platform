@@ -7,6 +7,7 @@ did this deployment actually change" without a Git checkout at hand.
 
 import importlib.util
 from pathlib import Path
+import re
 
 from ansible.errors import AnsibleFilterError
 
@@ -74,6 +75,10 @@ def deployment_image_changes(previous_manifest, current_manifest):
     A repin — same readable tag, different digest — is reported as its own kind,
     because "nothing changed" and "the same tag now resolves elsewhere" are
     different answers to what shipped.
+
+    Every image the release now runs carries its full pinned `reference`, which
+    is the literal a Git pickaxe finds in the commit that introduced it. A
+    removed image has nothing in the release to find, so it carries none.
     """
     previous = _images(_require_manifest(previous_manifest, "previous"))
     current = _images(_require_manifest(current_manifest, "current"))
@@ -88,7 +93,7 @@ def deployment_image_changes(previous_manifest, current_manifest):
                 continue
             label = _label(service, container)
             if was is None:
-                changes.append({"name": label, "kind": "added", "to": _version(now)})
+                changes.append({"name": label, "kind": "added", "to": _version(now), "reference": now})
             elif now is None:
                 changes.append({"name": label, "kind": "removed", "from": _version(was)})
             elif _version(was) != _version(now):
@@ -98,10 +103,13 @@ def deployment_image_changes(previous_manifest, current_manifest):
                         "kind": "updated",
                         "from": _version(was),
                         "to": _version(now),
+                        "reference": now,
                     }
                 )
             else:
-                changes.append({"name": label, "kind": "repinned", "to": _version(now)})
+                changes.append(
+                    {"name": label, "kind": "repinned", "to": _version(now), "reference": now}
+                )
     return changes
 
 
@@ -149,6 +157,49 @@ def deployment_report_headline(changes, commits):
     return "NAS deployed: no change"
 
 
+_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def deployment_summary_document(changes, image_commits, commit_lines, release, previous):
+    """Return the version-1 summary the deployment poller announces (#558).
+
+    image_commits is the registered loop of per-image `git log -S` lookups, and
+    commit_lines are `%H<TAB>%s` lines. Everything a lookup could not settle -- a
+    skipped item, a non-zero exit, output that is not one SHA -- reads as no
+    commit, because a wrong release-notes link is worse than none.
+    """
+    deployment_change_lines(changes)
+    if not isinstance(image_commits, list) or not isinstance(commit_lines, list):
+        raise AnsibleFilterError("deployment summary lookups must be lists")
+    introduced = {}
+    for lookup in image_commits:
+        item = lookup.get("item") if isinstance(lookup, dict) else None
+        sha = str(lookup.get("stdout", "")).strip() if isinstance(lookup, dict) else ""
+        if isinstance(item, dict) and lookup.get("rc") == 0 and _SHA.fullmatch(sha):
+            introduced[item.get("reference")] = sha
+    commits = []
+    for line in commit_lines:
+        sha, _tab, subject = str(line).partition("\t")
+        if _SHA.fullmatch(sha):
+            commits.append({"sha": sha, "subject": subject})
+    return {
+        "version": 1,
+        "release": release,
+        "previous": previous if isinstance(previous, str) and _SHA.fullmatch(previous) else "",
+        "images": [
+            {
+                "name": change["name"],
+                "kind": change["kind"],
+                "from": change.get("from"),
+                "to": change.get("to"),
+                "commit": introduced.get(change["reference"]) if "reference" in change else None,
+            }
+            for change in changes
+        ],
+        "commits": commits,
+    }
+
+
 class FilterModule:
     """Expose deployment report filters."""
 
@@ -157,4 +208,5 @@ class FilterModule:
             "deployment_image_changes": deployment_image_changes,
             "deployment_change_lines": deployment_change_lines,
             "deployment_report_headline": deployment_report_headline,
+            "deployment_summary_document": deployment_summary_document,
         }
