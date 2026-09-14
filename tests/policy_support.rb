@@ -14,7 +14,7 @@ module PolicySupport
   EXPECTED_SERVICES = %w[
     audiobookshelf beszel dozzle immich jellyfin komga nextcloud ntfy
     paperless-ngx arr downloaders bindery kapowarr pinchflat trailarr seerr
-    vaultwarden
+    vaultwarden karakeep
   ].freeze
   # Not every vault key belongs to a service; these are platform-wide.
   # expectation_problems below requires every key in a tests/expected/<service>.yml

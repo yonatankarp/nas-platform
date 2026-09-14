@@ -1,0 +1,19 @@
+---
+services:
+  karakeep:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep
+    # The host side comes from the rendered environment rather than a literal,
+    # so the Mac lane can run several copies side by side. The allocation chain
+    # that fills KARAKEEP_HOST_PORT (tests/mac/run.sh, inventory/group_vars/
+    # mac_hosts/main.yml) lands with the change that turns the stack on; while
+    # it is dark the Mac lane converges it to `state: absent` and this renders
+    # the role default. The bind address is carried over from the canonical
+    # file, because the bootstrap's loopback phase depends on it here too.
+    ports: !override
+      - "${KARAKEEP_PUBLISH_ADDRESS:?}:${KARAKEEP_HOST_PORT:?}:3000"
+
+  chrome:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep-chrome
+
+  meilisearch:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-karakeep-meilisearch

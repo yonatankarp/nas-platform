@@ -44,7 +44,7 @@ production_auto_deploy_locale_candidates:
   - en_US.utf8
   - C.utf8
 production_auto_deploy_verify_tags: >-
-  platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden
+  platform_verify_media_acquisition_foundation,platform_verify_ntfy,platform_verify_beszel,platform_verify_dozzle,platform_verify_audiobookshelf,platform_verify_komga,platform_verify_arr,platform_verify_downloaders,platform_verify_bindery,platform_verify_kapowarr,platform_verify_pinchflat,platform_verify_trailarr,platform_verify_jellyfin,platform_verify_seerr,platform_verify_immich,platform_verify_paperless,platform_verify_nextcloud,platform_verify_vaultwarden,platform_verify_karakeep
 # Checks only the hourly --verify run selects, after the deploy list and each in
 # an invocation and verdict record of its own, so neither masks the other. They
 # must never fail a deployment. platform_verify_mdraid is one (#609): a degraded

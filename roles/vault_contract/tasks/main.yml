@@ -206,7 +206,10 @@
           'vault_nextcloud_db_name': vault_nextcloud_db_name,
           'vault_nextcloud_db_username': vault_nextcloud_db_username,
           'vault_nextcloud_db_password': vault_nextcloud_db_password,
-          'vault_nextcloud_cache_password': vault_nextcloud_cache_password}
+          'vault_nextcloud_cache_password': vault_nextcloud_cache_password,
+          'vault_karakeep_nextauth_secret': vault_karakeep_nextauth_secret,
+          'vault_karakeep_meili_master_key': vault_karakeep_meili_master_key,
+          'vault_karakeep_admin_password': vault_karakeep_admin_password}
          | vault_credential_errors }}
   no_log: true
 

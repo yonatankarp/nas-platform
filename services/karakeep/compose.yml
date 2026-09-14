@@ -1,0 +1,185 @@
+---
+# Platform fragments. Compose resolves a YAML anchor only inside the file that
+# declares it, so every stack carries its own copy; tests/policy_test.rb pins the
+# copies equal and records there why cross-file sharing was not taken. A
+# container needing different health-check timing overrides only the fields it
+# changes, so a deviation reads as a deviation.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: 10m
+    max-file: "3"
+
+x-service-defaults: &service-defaults
+  cpuset: ${PLATFORM_CONTAINER_CPUSET:?}
+  # The application runs s6-overlay as root and nothing in it executes a setuid
+  # binary; chrome runs as 65534 with --no-sandbox (its image's run.sh passes it)
+  # and meilisearch is a single static binary. Refusing the escalation costs
+  # none of them anything.
+  security_opt:
+    - no-new-privileges:true
+  restart: unless-stopped
+  logging: *default-logging
+
+x-healthcheck-defaults: &healthcheck-defaults
+  interval: 30s
+  timeout: 10s
+  retries: 5
+  start_period: 60s
+
+services:
+  karakeep:
+    <<: *service-defaults
+    container_name: karakeep
+    # THIS IMAGE MIGRATES ITS OWN STORE. The s6 service init-db-migration runs
+    # the drizzle migrations against /data/db.db before the web and worker
+    # services start, so a version bump is one-way: an older image does not know
+    # the newer schema. renovate.json withholds its version updates from
+    # automerge and roles/karakeep refuses a pin older than one that has already
+    # run (roles/image_downgrade_guard), for #511's reason.
+    #
+    # A concrete version rather than upstream's `release` channel, which resolved
+    # to this same digest when it was pinned.
+    image: ghcr.io/karakeep-app/karakeep:0.33.2@sha256:b069e4307dec06ea06d16989c6861c30a1ff208568be44ed5fb5d422cd3e950c
+    cpus: 2.0
+    labels:
+      dev.dozzle.group: karakeep
+      dev.dozzle.name: karakeep
+    depends_on:
+      meilisearch:
+        condition: service_healthy
+      chrome:
+        condition: service_healthy
+    # The bind address is interpolated rather than left to Compose's wildcard,
+    # and that is the whole of how the first-administrator window is closed.
+    # Karakeep makes its first registered account the administrator and refuses
+    # every signup, the first included, while DISABLE_SIGNUPS is true -- both
+    # measured against this pin. So roles/karakeep/tasks/bootstrap.yml opens
+    # signups for exactly one request, and while they are open this renders as
+    # 127.0.0.1: the play on the host can register the administrator and nothing
+    # on the LAN can. Every other converge renders 0.0.0.0, which is the IPv4
+    # wildcard only -- unlike a bare "8087:3000" it publishes nothing on [::].
+    #
+    # 8087 because 8080-8086 are taken (Dozzle, its alert relay, qbittorrent,
+    # 8083 left unclaimed by roles/nextcloud/defaults/main.yml, Nextcloud,
+    # SABnzbd, Vaultwarden) and 8090 is Beszel.
+    ports:
+      - "${KARAKEEP_PUBLISH_ADDRESS:?}:8087:3000"
+    volumes:
+      - ${KARAKEEP_DATA_PATH:?}:/data
+    environment:
+      TZ: ${TZ:?}
+      DATA_DIR: /data
+      # Must be the address clients actually type, or NextAuth's redirects and
+      # callbacks point somewhere else. Karakeep parses it as a URL at start and
+      # refuses to boot on a value that is not one.
+      NEXTAUTH_URL: ${KARAKEEP_NEXTAUTH_URL:?}
+      # Required, and upstream's compose ships none: its .env.sample says only
+      # "[generate with <openssl rand -base64 36>]". Without it the config's
+      # signingSecret() throws, so there is no silent public default to fall back
+      # to on this pin -- the vault contract still requires the key.
+      NEXTAUTH_SECRET: ${KARAKEEP_NEXTAUTH_SECRET:?}
+      MEILI_ADDR: http://meilisearch:7700
+      MEILI_MASTER_KEY: ${KARAKEEP_MEILI_MASTER_KEY:?}
+      BROWSER_WEB_URL: http://chrome:9222
+      DISABLE_SIGNUPS: ${KARAKEEP_DISABLE_SIGNUPS:?}
+      # The NAS does not phone home for release announcements; the digest pin is
+      # the only upgrade path, as roles/immich/defaults/main.yml puts it.
+      DISABLE_NEW_RELEASE_CHECK: "true"
+      # AI tagging and summarisation are OFF DELIBERATELY: no OPENAI_API_KEY and
+      # no OLLAMA_BASE_URL is set. Inference would send every archived page to a
+      # third party and add a credential with a cost attached; #551 recommends
+      # off for the first slice and this is that decision, not an omission.
+    healthcheck:
+      <<: *healthcheck-defaults
+      # The image's own HEALTHCHECK command. /api/health answers only once the
+      # web service is up, and s6 starts that service after the migration.
+      test: [CMD-SHELL, "wget --no-verbose --tries=1 --spider http://127.0.0.1:3000/api/health || exit 1"]
+    # db.db is SQLite and queue.db the job queue beside it, both in the
+    # recovery: critical data root. 30s commits the open transaction; a crawl cut
+    # short is re-queued rather than lost.
+    stop_grace_period: 30s
+    networks:
+      - browser
+      - search
+
+  chrome:
+    <<: *service-defaults
+    container_name: karakeep-chrome
+    # Karakeep's own build of chromedp/headless-shell. Its tags are Chromium
+    # versions, not Karakeep versions; upstream's compose names `release`, which
+    # resolved to this digest when 0.33.2 was pinned.
+    image: ghcr.io/karakeep-app/karakeep-chrome:151.0.7922.47-r1@sha256:5b19bbb160e9ff60681a3abd97e1c4ec9f64212301410de658c3900ab7ef31e7
+    cpus: 1.5
+    labels:
+      dev.dozzle.group: karakeep
+      dev.dozzle.name: chrome
+    # Upstream's own flags. run.sh adds --no-sandbox and the debugging listener
+    # socat forwards to 9222.
+    init: true
+    command:
+      - --disable-gpu
+      - --disable-dev-shm-usage
+      - --hide-scrollbars
+      - --disable-blink-features=AutomationControlled
+      - --window-size=1440,900
+    healthcheck:
+      <<: *healthcheck-defaults
+      # No curl or wget in this image; bash is its shell. The listener is what
+      # the application connects to.
+      test: [CMD, bash, -c, "exec 3<>/dev/tcp/127.0.0.1/9222"]
+    # THIS CONTAINER LOADS WHATEVER URL A USER BOOKMARKS, SO IT IS NEVER ON
+    # media-control. Every service there is reachable by Compose service name,
+    # and a bookmark naming one would be fetched from inside that network. It
+    # joins `browser` alone: the application reaches it there, it has egress to
+    # the internet there, and meilisearch is not on it. Measured from inside this
+    # container: `web` resolves and 3000 connects; `meilisearch` and a container
+    # on a separate network neither resolve nor connect by IP; 1.1.1.1:443
+    # connects.
+    #
+    # Karakeep's worker also refuses a crawl whose target resolves to a private
+    # address -- a bookmark of http://web:3000/api/health failed with "Refusing
+    # to access disallowed resolved address", measured. That guard is upstream's
+    # and is not the containment; the network is.
+    networks:
+      - browser
+
+  meilisearch:
+    <<: *service-defaults
+    container_name: karakeep-meilisearch
+    # MEILISEARCH MIGRATES ITS OWN ON-DISK INDEX and refuses to open one written
+    # by a different version, so a bump is one-way in the same sense as the
+    # application's. The index is recovery: cache -- Karakeep rebuilds it from
+    # the data root -- which makes a refusal recoverable by emptying the
+    # directory, but it is still a crash loop until somebody does. Withheld from
+    # automerge in renovate.json and guarded by image_downgrade_guard like the
+    # application.
+    image: docker.io/getmeili/meilisearch:v1.41.0@sha256:860fa4baed04ae1c235de870edab0c8006227546dea1bbb6411fbfc5e27cf1db
+    cpus: 1.0
+    labels:
+      dev.dozzle.group: karakeep
+      dev.dozzle.name: meilisearch
+    volumes:
+      - ${KARAKEEP_MEILISEARCH_PATH:?}:/meili_data
+    environment:
+      TZ: ${TZ:?}
+      MEILI_NO_ANALYTICS: "true"
+      MEILI_MASTER_KEY: ${KARAKEEP_MEILI_MASTER_KEY:?}
+    healthcheck:
+      <<: *healthcheck-defaults
+      test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:7700/health || exit 1"]
+    # An LMDB write transaction in flight. The index is rebuildable, but a torn
+    # one is a rebuild nobody asked for.
+    stop_grace_period: 30s
+    networks:
+      - search
+
+networks:
+  # The application and chrome. Not internal: chrome needs internet egress to
+  # fetch what is bookmarked, and the application publishes its port here.
+  browser: {}
+  # The application and meilisearch, and nothing else. Internal, because the
+  # index has no reason to reach anything: measured, meilisearch cannot connect
+  # out from here.
+  search:
+    internal: true

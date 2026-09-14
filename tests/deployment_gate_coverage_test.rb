@@ -175,13 +175,20 @@ ROOT = File.expand_path("..", __dir__)
 # one rather than two because AdGuard held one registry entry and no
 # MAC_UNREGISTERED_SERVICES name. SUBJECT_FLOOR is again the one that did not
 # move, by the rule above.
-IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
-GATE_VARIABLE_FLOOR = 2      # nextcloud and vaultwarden _deployment_enabled
-SUBJECT_FLOOR = 15           # 17 implemented, of which at most the 2 gated ones may be dark
+#
+# THE FIFTH TIME WAS AN ADDITION THAT LANDED DARK. #551 added Karakeep with its
+# gate false and its lane in the same change, and the floors were re-derived the
+# same way: 18 implemented, 3 gate variables, 17 tagged rows, 18 lane tags and 32
+# site tags (`documents` was already Nextcloud's, so only `karakeep` is new). The
+# Mac roster stays 17, because a dark stack is not a subject and Karakeep is in
+# neither half of it yet. SUBJECT_FLOOR stays 15 by its rule, 18 - 3.
+IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
+GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and karakeep _deployment_enabled
+SUBJECT_FLOOR = 15           # 18 implemented, of which at most the 3 gated ones may be dark
 MAC_ROSTER_FLOOR = 17        # 15 registered contracts plus ntfy and vaultwarden
-TAGGED_LANE_FLOOR = 16       # the acquisition and service rows of tests/ci/suites.conf
-LANE_TAG_FLOOR = 17          # the distinct manifest service tags those rows converge
-SITE_TAG_FLOOR = 31          # the role tags site.yml declares
+TAGGED_LANE_FLOOR = 17       # the acquisition and service rows of tests/ci/suites.conf
+LANE_TAG_FLOOR = 18          # the distinct manifest service tags those rows converge
+SITE_TAG_FLOOR = 32          # the role tags site.yml declares
 
 failures = []
 

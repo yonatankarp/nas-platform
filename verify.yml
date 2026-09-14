@@ -93,3 +93,5 @@
       tags: [never]
     - role: vaultwarden
       tags: [never]
+    - role: karakeep
+      tags: [never]

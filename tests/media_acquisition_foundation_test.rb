@@ -217,7 +217,13 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # free host port on this platform when #547 chose it: 8080 Dozzle, 8081 the
   # Dozzle alert relay, 8082 qbittorrent, 8083 claimed by the AdGuard Home stack
   # of #548 and free again since #577 removed it, 8084 Nextcloud, 8085 SABnzbd.
-  ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"]
+  ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"],
+  # Karakeep's bind address is interpolated -- ${KARAKEEP_PUBLISH_ADDRESS:?} --
+  # and parse_port reads it as the wildcard, which is what every converge but
+  # the administrator bootstrap renders. The bootstrap renders 127.0.0.1 for one
+  # request; services/karakeep/compose.yml carries the argument. 8087 is the
+  # next free host port after Vaultwarden's 8086.
+  ["karakeep", "karakeep", "0.0.0.0", 8087, 3000, "tcp"]
 ].freeze
 
 EXPECTED_STORAGE = {
@@ -372,7 +378,11 @@ def parse_port(publication)
   end
 
   protocol = publication.include?("/") ? publication.split("/", 2).last : "tcp"
-  address_and_ports = publication.sub(%r{/[^/]+\z}, "")
+  # An interpolated bind address is read as the wildcard: it is the widest thing
+  # it can render to, so a collision check that assumed anything narrower could
+  # pass two publications that do collide. Its colons are Compose's `:?`, not
+  # address separators.
+  address_and_ports = publication.sub(%r{/[^/]+\z}, "").sub(/\A\$\{[A-Z0-9_]+:\?\}:/, "0.0.0.0:")
   if (match = address_and_ports.match(/\A\[([^\]]+)\]:(\d+):(\d+)\z/))
     bind_address, host_port, container_port = match.captures
   elsif (match = address_and_ports.match(/\A(::):(\d+):(\d+)\z/))

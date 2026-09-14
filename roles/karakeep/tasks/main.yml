@@ -1,0 +1,22 @@
+---
+# Karakeep, one stage per file, in the order they run.
+#
+# Imported statically, as roles/nextcloud/tasks/main.yml explains: that is what
+# lets --tags platform_verify_karakeep reach the verification through verify.yml's
+# tags: [never], and what keeps these files in the fixture set
+# tests/policy_mutation_support.rb derives.
+#
+# The gate is karakeep_deployment_enabled and it lives inside these files.
+- name: Deploy the Karakeep stack
+  ansible.builtin.import_tasks: deploy.yml
+
+# In the same play that starts the container, before anything yields: until an
+# account exists, whoever registers first becomes Karakeep's administrator.
+- name: Bootstrap the Karakeep administrator
+  ansible.builtin.import_tasks: bootstrap.yml
+
+- name: Report whether the Karakeep deployment moved
+  ansible.builtin.import_tasks: report.yml
+
+- name: Verify Karakeep is wired to its search index and browser
+  ansible.builtin.import_tasks: verify.yml

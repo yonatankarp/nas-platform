@@ -1,0 +1,146 @@
+---
+# Verification has to prove the three containers are wired to each other, not
+# that a port is open (#445). /api/health cannot: it answered 200 four seconds
+# after start, before the application had reached anything.
+#
+# admin.checkConnections can. It runs a search against Meilisearch and fetches
+# chrome's /json/version, and reports each as connected or not. Measured both
+# ways against this pin: with chrome stopped, browser.connected false with
+# "getaddrinfo ENOTFOUND chrome"; with Meilisearch stopped, searchEngine and
+# vectorStore false. It is an administrator procedure, so answering 200 also
+# proves the vault identity still administers the instance.
+#
+# And the door: config.clientConfig is unauthenticated and reports the effective
+# DISABLE_SIGNUPS, which is the one setting whose drift would matter most.
+
+- name: Read a Karakeep sign-in token for verification
+  tags: [platform_verify_karakeep]
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/csrf"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_verify_csrf
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - not ansible_check_mode
+
+# Redacted: the request carries the administrator password.
+- name: Sign in as the Karakeep administrator for verification
+  tags: [platform_verify_karakeep]
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/auth/callback/credentials"
+    method: POST
+    body_format: form-urlencoded
+    body:
+      csrfToken: "{{ (karakeep_verify_csrf.json | default({})).csrfToken | default('') }}"
+      email: "{{ karakeep_admin_email }}"
+      password: "{{ vault_karakeep_admin_password }}"
+      json: "true"
+    headers:
+      Cookie: "{{ karakeep_verify_csrf.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_verify_login
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - karakeep_deployment_enabled | bool
+    - not ansible_check_mode
+
+# Redacted: the request carries the session cookie.
+- name: Verify the Karakeep search index and browser connections
+  tags: [platform_verify_karakeep]
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/trpc/admin.checkConnections"
+    method: GET
+    headers:
+      Cookie: "{{ karakeep_verify_login.cookies_string | default('') }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_verify_connections
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - karakeep_deployment_enabled | bool
+    - not ansible_check_mode
+
+- name: Verify the Karakeep signup door
+  tags: [platform_verify_karakeep]
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/trpc/config.clientConfig"
+    method: GET
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: karakeep_verify_door
+  failed_when: false
+  changed_when: false
+  check_mode: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - not ansible_check_mode
+
+# Not redacted: the conditions read statuses and booleans, never a credential,
+# and redacting them would hide the one actionable sentence this produces.
+- name: Require a wired and closed Karakeep during exact verification
+  tags: [platform_verify_karakeep]
+  ansible.builtin.assert:
+    that:
+      - karakeep_verify_login.status | default(0) | int == 200
+      - karakeep_verify_connections.status | default(0) | int == 200
+      - >-
+        (karakeep_verify_connections.json | default({})).result.data.json.searchEngine.connected
+        | default(false) | bool
+      - >-
+        (karakeep_verify_connections.json | default({})).result.data.json.browser.connected
+        | default(false) | bool
+      - karakeep_verify_door.status | default(0) | int == 200
+      - >-
+        (karakeep_verify_door.json | default({})).result.data.json.auth.disableSignups
+        | default(false) | bool
+    fail_msg: >-
+      Karakeep did not verify. Sign-in {{ karakeep_verify_login.status | default('none') }}
+      (401: the vault administrator no longer signs in); connection check
+      {{ karakeep_verify_connections.status | default('none') }} with search
+      {{ (karakeep_verify_connections.json | default({})).result.data.json.searchEngine
+         | default('unread') }} and browser
+      {{ (karakeep_verify_connections.json | default({})).result.data.json.browser
+         | default('unread') }}; signups disabled
+      {{ (karakeep_verify_door.json | default({})).result.data.json.auth.disableSignups
+         | default('unread') }}. A search engine that is not connected is
+      Meilisearch down or holding a different master key; a browser that is not
+      connected is chrome down or off the `browser` network; signups not
+      disabled means the door this platform keeps closed is open.
+  when:
+    - karakeep_deployment_enabled | bool
+    - not ansible_check_mode
+
+# So that --tags platform_verify_karakeep is never an empty selection while the
+# stack is dark.
+- name: Report the deferred Karakeep verification
+  tags: [platform_verify_karakeep]
+  ansible.builtin.debug:
+    msg: >-
+      karakeep_deployment_enabled is false, so there is no Karakeep instance to
+      query. A live run would sign in as {{ karakeep_admin_email }}, require
+      admin.checkConnections to report Meilisearch and chrome connected, and
+      require config.clientConfig to report signups disabled.
+  when: not karakeep_deployment_enabled | bool
+
+- name: Report the Karakeep verification check mode defers
+  tags: [platform_verify_karakeep]
+  ansible.builtin.debug:
+    msg: >-
+      A live run would sign in to {{ karakeep_url }} and require Meilisearch and
+      chrome connected and signups disabled. Those are real requests to a server
+      this run did not start, so check mode reports the intent instead.
+  when:
+    - karakeep_deployment_enabled | bool
+    - ansible_check_mode

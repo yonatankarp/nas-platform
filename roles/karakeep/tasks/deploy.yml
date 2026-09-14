@@ -1,0 +1,234 @@
+---
+- name: Revalidate deployment paths before Karakeep runtime use
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: karakeep
+    deployment_target_require_current_release: true
+    # The two directories this role touches beyond the five paths
+    # deployment_target_service derives. Ansible creates nothing under either;
+    # the containers own everything inside.
+    deployment_target_extra_paths:
+      - "{{ karakeep_data_host_path }}"
+      - "{{ karakeep_meilisearch_host_path }}"
+
+# Always the closed door: DISABLE_SIGNUPS true and the wildcard bind. The one
+# converge that needs it open re-renders it inside tasks/bootstrap.yml and renders
+# this again before that file ends, so the file on disk is this one whenever the
+# role is not mid-bootstrap.
+- name: Render the private Karakeep environment
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ platform_runtime_dir }}/services/karakeep/.env"
+    mode: "0600"
+  no_log: true
+
+# Every Compose invocation below needs this file, the teardown included, and
+# under --check the render above wrote nothing. roles/vaultwarden/tasks/deploy.yml
+# carries the measurement and the ordering argument: this read must follow the
+# render, or a live first converge reads "absent" and silently deploys nothing.
+- name: Read whether a Karakeep runtime environment exists on this host
+  ansible.builtin.stat:
+    path: "{{ platform_runtime_dir }}/services/karakeep/.env"
+  register: karakeep_runtime_env
+  changed_when: false
+  check_mode: false
+
+# `state: absent` rather than a skipped deployment, so switching the gate off is a
+# deployment decision in both directions.
+- name: Stop the disabled Karakeep project
+  community.docker.docker_compose_v2:
+    project_src: "{{ platform_current_dir }}/services/karakeep"
+    project_name: "{{ karakeep_compose_project_name }}"
+    files: "{{ platform_service_compose_files['karakeep'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/karakeep/.env"]
+    state: absent
+    remove_orphans: true
+  register: karakeep_teardown
+  when:
+    - not karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Report the Karakeep Compose work a missing runtime environment defers
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_runtime_dir }}/services/karakeep/.env does not exist, so every
+      Compose invocation in this role is deferred: the deployed Compose file
+      interpolates ${KARAKEEP_DATA_PATH:?} and its siblings and Compose refuses
+      the project without them, `state: absent` included. Under --check that is
+      expected, because check mode writes nothing. On a live run it means the
+      runtime directory was removed; converge again.
+  when: not karakeep_runtime_env.stat.exists
+
+- name: Report the disabled Karakeep deployment
+  ansible.builtin.debug:
+    msg: >-
+      karakeep_deployment_enabled is false, so the Karakeep Compose project
+      {{ karakeep_compose_project_name }} is torn down rather than converged and
+      nothing is written under {{ karakeep_data_host_path }} or
+      {{ karakeep_meilisearch_host_path }}. Set it to true in
+      inventory/group_vars/all/service_karakeep.yml and merge.
+  when: not karakeep_deployment_enabled | bool
+
+# BEFORE THE DEPLOYMENT, while there is still a healthy stack to protect. Both
+# images migrate their own store when they start -- the application's drizzle
+# migrations against db.db, and Meilisearch's index format -- so a pin older than
+# one that has already run here refuses inside the container, which is a crash
+# loop every converge repeats rather than a failure a play reports (#511).
+- name: Refuse a Karakeep image older than the database this host has migrated
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: karakeep
+    image_downgrade_guard_compose_service: karakeep
+    image_downgrade_guard_project_name: "{{ karakeep_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ karakeep_data_host_path }}"
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Refuse a Meilisearch image older than the index this host has migrated
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: karakeep
+    image_downgrade_guard_compose_service: meilisearch
+    image_downgrade_guard_project_name: "{{ karakeep_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ karakeep_meilisearch_host_path }}"
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+# The block exists for one thing the rescue does with the failure: it hands the
+# deployment's own message to roles/container_health, which either explains it in
+# terms of the container state Docker reports or re-raises it unchanged.
+# roles/bindery/tasks/main.yml carries the long form of this argument.
+- name: Deploy Karakeep, catching a container that runs but never serves
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+  block:
+    - name: Deploy Karakeep
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/karakeep"
+        project_name: "{{ karakeep_compose_project_name }}"
+        files: "{{ platform_service_compose_files['karakeep'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/karakeep/.env"]
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: karakeep_deploy
+  rescue:
+    - name: Record the failed Karakeep deployment
+      ansible.builtin.set_fact:
+        karakeep_deploy_failure_message: >-
+          {{ ansible_failed_result.msg
+             | default('the Karakeep deployment failed and reported no message') }}
+
+# Detect, print the evidence and publish container_health_stuck_services without
+# refusing, because the recreate below has to happen before the verdict (#510).
+- name: Detect a Karakeep container that runs but never serves
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: karakeep
+    container_health_project_name: "{{ karakeep_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ karakeep_deploy_failure_message | default('') }}
+    container_health_refuse: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+# Exactly one force-recreate, of only the services Docker says are stuck, and
+# skipped on every run with nothing to repair -- roles/vaultwarden/tasks/deploy.yml
+# carries the idempotence argument.
+- name: Recreate a Karakeep container that runs but never serves
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+  block:
+    - name: Force-recreate the stuck Karakeep services
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/karakeep"
+        project_name: "{{ karakeep_compose_project_name }}"
+        files: "{{ platform_service_compose_files['karakeep'] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/karakeep/.env"]
+        services: "{{ container_health_stuck_services }}"
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      when: container_health_stuck_services | default([]) | length > 0
+      register: karakeep_wedged_recreate
+  rescue:
+    - name: Record the Karakeep recreate that did not recover the service
+      ansible.builtin.set_fact:
+        karakeep_recreate_failure_message: >-
+          The force-recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}
+
+- name: Record whether a Karakeep recreate was spent
+  ansible.builtin.set_fact:
+    karakeep_recreate_spent: >-
+      {{ container_health_stuck_services | default([]) | length > 0 }}
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Report the Karakeep wedged-container recovery check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ karakeep_compose_project_name }} that Docker reports as restarting or
+      unhealthy, force-recreate exactly those services once with no
+      dependencies, and fail naming that retry if any came back stuck. Compose's
+      dry run starts nothing, so check mode cannot reach that path.
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - ansible_check_mode
+
+- name: Refuse a Karakeep container that stayed wedged after its recreate
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_service_name: karakeep
+    container_health_project_name: "{{ karakeep_compose_project_name }}"
+    container_health_deploy_failure_message: >-
+      {{ karakeep_recreate_failure_message | default('') }}
+    container_health_retried: "{{ karakeep_recreate_spent }}"
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+- name: Verify Karakeep effective container CPU policy
+  ansible.builtin.include_role:
+    name: container_cpu
+  vars:
+    container_cpu_service_name: karakeep
+    container_cpu_project_name: "{{ karakeep_compose_project_name }}"
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+
+# A readiness probe, not the verification: /api/health answers as soon as the web
+# service is up, which is before it has ever reached Meilisearch or chrome.
+# tasks/verify.yml is what proves the wiring.
+- name: Wait for Karakeep application readiness
+  ansible.builtin.uri:
+    url: "{{ karakeep_url }}/api/health"
+    method: GET
+    status_code: [200]
+  register: karakeep_ready
+  until: karakeep_ready.status | default(0) | int == 200
+  retries: "{{ platform_readiness_retries }}"
+  delay: "{{ platform_readiness_delay }}"
+  changed_when: false
+  check_mode: false
+  when:
+    - karakeep_deployment_enabled | bool
+    - karakeep_runtime_env.stat.exists
+    - not ansible_check_mode
