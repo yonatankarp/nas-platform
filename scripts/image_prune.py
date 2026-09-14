@@ -59,7 +59,7 @@ LOCK_POLL_SECONDS = 15
 MAX_ESCAPED_FIELD_CHARACTERS = 384
 MAX_MESSAGE_CHARACTERS = 1024
 MAX_TITLE_CHARACTERS = 250
-# A reclaim is a record worth a week on the Deployments app and no longer.
+# A reclaim is a record worth a week on the Containers app and no longer.
 RECLAIMED_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -88,10 +88,11 @@ class Config:
     curl_path: Path
     tool_path: str
     # The protected curl config of each Pushover application the prune sends to
-    # (#558): Alerts for a failure, Deployments for a reclaim. None means that
+    # (#558): Alerts for a failure, Containers for a reclaim -- Deployments is
+    # reserved for the one message per release. None means that
     # application cannot be published to; see load_config.
     pushover_alerts_curl_config: Path | None = None
-    pushover_deployments_curl_config: Path | None = None
+    pushover_containers_curl_config: Path | None = None
 
 
 _PATH_FIELDS = frozenset(
@@ -104,7 +105,7 @@ _PATH_FIELDS = frozenset(
     }
 )
 _PUSHOVER_FIELDS = frozenset(
-    {"pushover_alerts_curl_config", "pushover_deployments_curl_config"}
+    {"pushover_alerts_curl_config", "pushover_containers_curl_config", "pushover_deployments_curl_config"}
 )
 _COUNT_FIELDS = {
     "retention_hours": MINIMUM_RETENTION_HOURS,
@@ -593,7 +594,7 @@ OUTCOMES = {
     # Pushover application, title, priority. A prune that reclaimed nothing is
     # not in here on purpose: a weekly no-op notification is noise, and the
     # weeks that reclaim nothing are most of them.
-    "reclaimed": ("deployments", "Images pruned", -1),
+    "reclaimed": ("containers", "Images pruned", -1),
     "failed": ("alerts", "Image prune failed", 1),
 }
 

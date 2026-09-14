@@ -24,10 +24,14 @@ TOKEN = "tk_#{'r' * 29}"
 # own application's token.
 PUSHOVER_ALERTS_TOKEN = 'sentinel-alerts-"token\\one'
 PUSHOVER_DEPLOYMENTS_TOKEN = 'sentinel-deployments-"token\\two'
+# Supplied although the prune reads no Deployments token, so a config found
+# carrying it is caught: that application is the release message's alone.
+PUSHOVER_CONTAINERS_TOKEN = 'sentinel-containers-"token\\four'
 PUSHOVER_USER_KEY = 'sentinel-user-"key\\three'
 PUSHOVER_CREDENTIALS = {
   "vault_pushover_alerts_token" => PUSHOVER_ALERTS_TOKEN,
   "vault_pushover_deployments_token" => PUSHOVER_DEPLOYMENTS_TOKEN,
+  "vault_pushover_containers_token" => PUSHOVER_CONTAINERS_TOKEN,
   "vault_pushover_user_key" => PUSHOVER_USER_KEY
 }.freeze
 # A sentinel rather than the deployed port, and 2586 specifically is not it: the
@@ -42,7 +46,7 @@ SENTINEL_PORT = 28_517
 CONFIG_KEYS = %w[
   curl_path dangling_retention_hours deployment_lock
   deployment_lock_wait_seconds docker_path log_retention_days log_root
-  pushover_alerts_curl_config pushover_deployments_curl_config retention_hours
+  pushover_alerts_curl_config pushover_containers_curl_config retention_hours
   state_root tool_path
 ].freeze
 
@@ -202,8 +206,8 @@ notifiers = defaults.fetch("image_prune_pushover_notifiers", [])
 check(failures,
       notifiers.map { |notifier| [File.basename(notifier["path"].to_s), notifier["token_variable"]] } ==
         [["pushover-prune-alerts.curl", "vault_pushover_alerts_token"],
-         ["pushover-prune-deployments.curl", "vault_pushover_deployments_token"]],
-      "image_prune_pushover_notifiers must be the Alerts then the Deployments config at the " \
+         ["pushover-prune-containers.curl", "vault_pushover_containers_token"]],
+      "image_prune_pushover_notifiers must be the Alerts then the Containers config at the " \
       "prune's own paths, found #{notifiers.inspect}")
 
 # The schedule is installed by the playbook the poller replays on every
@@ -296,7 +300,7 @@ Dir.mktmpdir("image-prune-role") do |root|
     check(failures, PUSHOVER_CREDENTIALS.values.none? { |secret| output.include?(secret) },
           "the role's own output must never print a Pushover credential")
     escape = ->(value) { value.gsub("\\") { "\\\\" }.gsub('"') { '\\"' } }
-    { "alerts" => PUSHOVER_ALERTS_TOKEN, "deployments" => PUSHOVER_DEPLOYMENTS_TOKEN }.each do |app, token|
+    { "alerts" => PUSHOVER_ALERTS_TOKEN, "containers" => PUSHOVER_CONTAINERS_TOKEN }.each do |app, token|
       path = File.join(config_root, "pushover-prune-#{app}.curl")
       check(failures, config["pushover_#{app}_curl_config"] == path,
             "pushover_#{app}_curl_config must name #{path}, got #{config["pushover_#{app}_curl_config"].inspect}")
@@ -427,7 +431,7 @@ Dir.mktmpdir("image-prune-role") do |root|
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        (%w[ntfy_port vault_pushover_alerts_token vault_pushover_deployments_token
+        (%w[ntfy_port vault_pushover_alerts_token vault_pushover_containers_token
             vault_pushover_user_key] - missing_arguments).empty?,
         "the role must refuse to schedule a prune when no port or Pushover credential is " \
         "declared, naming each missing variable, found #{missing_arguments.inspect} " \

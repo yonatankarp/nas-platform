@@ -394,7 +394,7 @@ says.
   run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
   `vault-password` file the poller requires; four protected Pushover publisher
   files, `pushover-alerts.curl` and `pushover-deployments.curl` for the poller
-  and `pushover-prune-alerts.curl` and `pushover-prune-deployments.curl` for the
+  and `pushover-prune-alerts.curl` and `pushover-prune-containers.curl` for the
   prune, each carrying one application's token and the Pushover user key; and
   the two ntfy publisher files `ntfy.curl` and `ntfy-prune.curl`, which still
   carry the deployment token until ntfy is removed.

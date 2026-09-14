@@ -233,9 +233,9 @@ Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
 webhook is Pushover, and since the Dozzle alert relay moved, every container
 alert is too. They are separate Pushover applications on one account: Beszel
 sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
-the per-service deployment reports with Containers, the run summary and the
-image prune's reclaim with Deployments, the deployment poller's and the image
-prune's alerts with Alerts, and Seerr with Media, all to the one
+the per-service deployment reports and the image prune's reclaim with
+Containers, the run summary with Deployments, the deployment poller's and the
+image prune's alerts with Alerts, and Seerr with Media, all to the one
 `vault_pushover_user_key`.
 Pushover has no disposable equivalent of a topic, so
 a test notification reaches the household's real devices. Send one only when you
@@ -293,8 +293,9 @@ application at priority -1, a badge with no sound. Container alerts — out of
 memory, an unexpected exit, an unhealthy container, and the recovery that closes
 one — go to the Containers application, where an out-of-memory kill is an
 emergency message that re-alerts until you acknowledge it. The image prune's
-reclaim is a routine record on the Deployments application at priority -1, and
-expires after a week. `nas-critical` and `nas-deployment` have no publisher left
+reclaim is a routine record on the Containers application at priority -1, and
+expires after a week; the Deployments application carries one message per
+release and nothing else. `nas-critical` and `nas-deployment` have no publisher left
 and stay provisioned only until ntfy is removed.
 
 `nas-containers` has no publisher left. It existed so recoveries could be muted
@@ -763,7 +764,7 @@ touches no image. Prune logs are mode-0600 files under
 `$HOME/.local/share/nas-platform/prune-logs`, retained for 30 days and kept
 separate from the poller's attempt logs.
 
-A run that reclaims something publishes to Pushover's Deployments application at
+A run that reclaims something publishes to Pushover's Containers application at
 priority -1, expiring after a week; a run that fails publishes to the Alerts
 application at priority 1. Each goes through a protected curl config of the
 prune's own, holding only that application's token. A run that reclaims nothing stays quiet, because most weeks reclaim

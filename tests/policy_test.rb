@@ -2644,7 +2644,9 @@ duplicated_constant_sites = {
   },
   # Which configuration keys load_config reads as "cannot publish" rather than
   # refusing (#327). Drift here is a script that refuses the configuration the
-  # other one tolerates.
+  # other one tolerates. The union of every application either script sends to --
+  # the poller Alerts and Deployments, the prune Alerts and Containers -- so the
+  # set stays one copy, and a name a script's Config lacks is never read.
   "_PUSHOVER_FIELDS" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
     "lines" => 3

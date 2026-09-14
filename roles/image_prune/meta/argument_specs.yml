@@ -22,8 +22,8 @@ argument_specs:
         description: Token of the Pushover Alerts application, which a failed prune goes to.
         type: str
         required: true
-      vault_pushover_deployments_token:
-        description: Token of the Pushover Deployments application, which a reclaim goes to.
+      vault_pushover_containers_token:
+        description: Token of the Pushover Containers application, which a reclaim goes to.
         type: str
         required: true
       vault_pushover_user_key:
@@ -79,7 +79,7 @@ argument_specs:
         type: str
       image_prune_pushover_notifiers:
         description: >-
-          The Alerts then the Deployments Pushover curl config, each a path and
+          The Alerts then the Containers Pushover curl config, each a path and
           the name of the vault variable holding that application's token.
         type: list
         elements: dict

@@ -223,7 +223,7 @@ _PING_URL_FIELDS = frozenset(
     {"healthchecks_poller_ping_url", "healthchecks_verify_ping_url"}
 )
 _PUSHOVER_FIELDS = frozenset(
-    {"pushover_alerts_curl_config", "pushover_deployments_curl_config"}
+    {"pushover_alerts_curl_config", "pushover_containers_curl_config", "pushover_deployments_curl_config"}
 )
 
 

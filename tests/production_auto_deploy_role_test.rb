@@ -548,12 +548,17 @@ def template_bindings(template_path)
   end.to_h
 end
 
-[["the poller", POLLER_CONFIG_TEMPLATE, "production_auto_deploy"],
- ["the prune", PRUNE_CONFIG_TEMPLATE, "image_prune"]].each do |label, template, prefix|
+# The prune's second application is Containers: Deployments is the release
+# message's alone.
+[["the poller", POLLER_CONFIG_TEMPLATE, "production_auto_deploy", %w[alerts deployments]],
+ ["the prune", PRUNE_CONFIG_TEMPLATE, "image_prune", %w[alerts containers]]].each do |label, template, prefix, apps|
   bindings = template_bindings(template)
   check(failures, bindings.keys.grep(/\Antfy_/).empty?,
         "#{label} configuration must bind no ntfy key since #558 stage 3, found #{bindings.keys.grep(/\Antfy_/).inspect}")
-  %w[alerts deployments].each_with_index do |app, index|
+  check(failures, bindings.keys.count { |key| key.include?("pushover_") } == apps.length,
+        "#{label} configuration must bind exactly #{apps.inspect}'s curl configs, found " \
+        "#{bindings.keys.grep(/pushover_/).inspect}")
+  apps.each_with_index do |app, index|
     check(failures, bindings["'pushover_#{app}_curl_config'"] == "#{prefix}_pushover_notifiers[#{index}].path" ||
                     bindings["pushover_#{app}_curl_config"] == "#{prefix}_pushover_notifiers[#{index}].path",
           "#{label} configuration must bind pushover_#{app}_curl_config to #{prefix}_pushover_notifiers[#{index}].path, " \

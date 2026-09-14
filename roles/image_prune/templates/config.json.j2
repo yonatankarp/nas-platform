@@ -10,5 +10,5 @@
   'curl_path': image_prune_tools['curl'],
   'tool_path': image_prune_tool_path | trim,
   'pushover_alerts_curl_config': image_prune_pushover_notifiers[0].path,
-  'pushover_deployments_curl_config': image_prune_pushover_notifiers[1].path
+  'pushover_containers_curl_config': image_prune_pushover_notifiers[1].path
 } | to_nice_json }}

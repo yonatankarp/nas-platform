@@ -61,10 +61,10 @@ class PruneTestCase(unittest.TestCase):
         ):
             (self.root / relative).mkdir(parents=True)
         self.alerts_notifier = self.root / ".config/nas-platform/pushover-prune-alerts.curl"
-        self.deployments_notifier = (
-            self.root / ".config/nas-platform/pushover-prune-deployments.curl"
+        self.containers_notifier = (
+            self.root / ".config/nas-platform/pushover-prune-containers.curl"
         )
-        for notifier in (self.alerts_notifier, self.deployments_notifier):
+        for notifier in (self.alerts_notifier, self.containers_notifier):
             notifier.write_text("x\n", encoding="utf-8")
             notifier.chmod(0o600)
         self.lock = self.root / ".local/share/nas-platform/state/deployment.lock"
@@ -132,7 +132,7 @@ class PruneTestCase(unittest.TestCase):
             "deployment_lock": str(self.lock),
             "deployment_lock_wait_seconds": 0,
             "pushover_alerts_curl_config": str(self.alerts_notifier),
-            "pushover_deployments_curl_config": str(self.deployments_notifier),
+            "pushover_containers_curl_config": str(self.containers_notifier),
             "retention_hours": 168,
             "dangling_retention_hours": 24,
             "log_retention_days": 30,
@@ -162,7 +162,7 @@ class ConfigTest(PruneTestCase):
 
     def test_load_config_requires_every_field(self):
         # The two Pushover configs are optional and have their own test below.
-        optional = {"pushover_alerts_curl_config", "pushover_deployments_curl_config"}
+        optional = {"pushover_alerts_curl_config", "pushover_containers_curl_config"}
         for field in [name for name in self.config_payload() if name not in optional]:
             payload = self.config_payload()
             del payload[field]
@@ -196,7 +196,7 @@ class ConfigTest(PruneTestCase):
             ntfy_topic_deployment="nas-deployment",
         )
         payload.pop("pushover_alerts_curl_config")
-        payload.pop("pushover_deployments_curl_config")
+        payload.pop("pushover_containers_curl_config")
         path = self.root / "ntfy-era.json"
         path.write_text(json.dumps(payload), encoding="utf-8")
         stderr = io.StringIO()
@@ -204,7 +204,7 @@ class ConfigTest(PruneTestCase):
             config = image_prune.load_config(path)
 
         self.assertIsNone(config.pushover_alerts_curl_config)
-        self.assertIsNone(config.pushover_deployments_curl_config)
+        self.assertIsNone(config.pushover_containers_curl_config)
         (line,) = stderr.getvalue().splitlines()
         self.assertIn("pushover_alerts_curl_config", line)
         self.stub("docker", body="echo 'Cannot connect to the Docker daemon'\nexit 1")
@@ -217,8 +217,8 @@ class ConfigTest(PruneTestCase):
         for raw in ("", "relative/pushover.curl", 42, None):
             with self.subTest(raw=raw):
                 with contextlib.redirect_stderr(io.StringIO()):
-                    config = self.config(pushover_deployments_curl_config=raw)
-                self.assertIsNone(config.pushover_deployments_curl_config)
+                    config = self.config(pushover_containers_curl_config=raw)
+                self.assertIsNone(config.pushover_containers_curl_config)
                 self.assertEqual(config.pushover_alerts_curl_config, self.alerts_notifier)
 
     def test_a_prune_never_removes_a_same_day_image(self):
@@ -445,8 +445,8 @@ class PruneRunTest(PruneTestCase):
         self.reporting_docker()
         image_prune.prune(self.config())
         (send,) = self.published()
-        # A record, not an alarm: the Deployments app, silent, gone in a week.
-        self.assertEqual(send["config"], str(self.deployments_notifier))
+        # A record, not an alarm: the Containers app, silent, gone in a week.
+        self.assertEqual(send["config"], str(self.containers_notifier))
         self.assertEqual((send["priority"], send["ttl"], send["html"]), ("-1", "604800", "1"))
         self.assertIn("1.5 GB", send["title"])
         self.assertNotIn("--fail", send["argv"])
@@ -473,7 +473,7 @@ class PruneRunTest(PruneTestCase):
 
     def test_a_refused_or_unanswered_report_changes_no_outcome_and_names_only_keys(self):
         sentinel = "sentinel-token-that-must-stay-in-its-file"
-        self.deployments_notifier.write_text(f'form-string = "token={sentinel}"\n', encoding="utf-8")
+        self.containers_notifier.write_text(f'form-string = "token={sentinel}"\n', encoding="utf-8")
         for label, answer, named in (
             ("refused", '{"status":0,"errors":["application token is invalid"]}\n400', True),
             ("unanswered", '<html>captive portal</html>\n200', False),
@@ -487,7 +487,7 @@ class PruneRunTest(PruneTestCase):
                     self.assertTrue(image_prune.prune(self.config()))
                 self.assertEqual(self.state()["outcome"], "reclaimed")
                 self.assertIn("outcome notification failed", stderr.getvalue())
-                self.assertEqual("vault_pushover_deployments_token" in stderr.getvalue(), named)
+                self.assertEqual("vault_pushover_containers_token" in stderr.getvalue(), named)
                 self.assertEqual("HTTP 429" in stderr.getvalue(), label == "rate limited")
                 self.assertNotIn(sentinel, stderr.getvalue())
                 self.assertTrue(all(sentinel not in " ".join(send["argv"])
@@ -556,11 +556,11 @@ class NotificationTest(PruneTestCase):
         payload.update(overrides)
         return payload
 
-    def test_a_reclaim_reports_to_the_deployments_application_quietly(self):
+    def test_a_reclaim_reports_to_the_containers_application_quietly(self):
         app, fields = image_prune.render_notification(
             self.config(), "reclaimed", self.summary()
         )
-        self.assertEqual(app, "deployments")
+        self.assertEqual(app, "containers")
         self.assertEqual(fields["priority"], -1)
         self.assertEqual(fields["ttl"], 604800)
         self.assertIn("1.5 GB", fields["title"])
