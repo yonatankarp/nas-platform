@@ -1741,11 +1741,14 @@ def recorder_failures
       failures << "recorder: the credentials survived capture as #{form.keys.sort.inspect}" unless
         (form.keys & %w[token user]).empty?
       failures << "recorder: the decoded title differs: #{form['title'].inspect}" unless
-        form["title"] == "Unhealthy · svc one & two"
+        form["title"] == "\u{1F7E0} svc one & two unhealthy"
       failures << "recorder: the decoded message differs: #{form['message'].inspect}" unless
-        form["message"] == "<b>Host:</b> nas host\n" \
-                           "<b>Container:</b> svc one &amp; two\n" \
-                           "<b>Status:</b> unhealthy"
+        form["message"] == "<b>svc one &amp; two</b> is <font color=\"#f9a825\">unhealthy</font>\n\n" \
+                           "\u{1F5A5}\u{FE0F} <b>Host</b> nas host\n" \
+                           "\u{1F4E6} <b>Container</b> " \
+                           "<a href=\"http://127.0.0.1:38080/container/#{'a' * 64}\">svc one &amp; two</a>\n" \
+                           "\u{1F552} <b>When</b> 15 Aug 01:22 UTC\n\n" \
+                           "<i>Open it in Dozzle to see why.</i>"
       failures << "recorder: the decoded priority differs: #{form['priority'].inspect}" unless
         form["priority"] == "1"
       failures << "recorder: the decoded html flag differs: #{form['html'].inspect}" unless

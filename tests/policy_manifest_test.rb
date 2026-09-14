@@ -3102,6 +3102,18 @@ expect_failure(failures, "fresh duplicate shared with the relay left unlisted",
   end
 end
 
+# The relay's verbatim copies of the message helpers (#558). duplicated_helper_floors
+# compares scripts/*.py only, and the pairwise stanza skips a name that table
+# lists, so the relay's fit_message drifting by one docstring word was pinned by
+# nothing until RELAY_VERBATIM_HELPERS; this row is that drift.
+expect_failure(failures, "relay message helper diverged from the scripts",
+               "must define fit_message identically to scripts/production_auto_deploy.py",
+               detected_by: %i[policy]) do |root|
+  mutate_text(root, "services/dozzle/alert_relay.py",
+              "Join message lines, dropping whole lines from the end until Pushover takes it.",
+              "Join message lines, dropping whole lines from the end until Pushover accepts it.")
+end
+
 audit_policy_detection(failures)
 report_mutation_census
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")

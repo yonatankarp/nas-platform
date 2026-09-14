@@ -676,15 +676,19 @@ if MODE == "notify"
         "unhealthy event did not reach the private relay and the Pushover recorder"
       ) do |messages|
         messages.reverse.find do |message|
-          message.fetch("form")["title"] == "Unhealthy · #{health_fixture}"
+          message.fetch("form")["title"] == "\u{1F7E0} #{health_fixture} unhealthy"
         end
       end
-      expected_unhealthy_tail =
-        "<b>Container:</b> #{health_fixture}\n<b>Status:</b> unhealthy"
+      # The lead names the container with its state in amber, and the detail
+      # labels follow in order; the host is whatever Docker reported, so it is
+      # matched by label rather than by value.
+      expected_unhealthy_lead =
+        "<b>#{health_fixture}</b> is <font color=\"#f9a825\">unhealthy</font>\n\n" \
+        "\u{1F5A5}\u{FE0F} <b>Host</b> "
       unhealthy_form = unhealthy.fetch("form")
       fail_contract("unhealthy notification presentation differs") unless
-        unhealthy_form["message"].to_s.start_with?("<b>Host:</b> ") &&
-        unhealthy_form["message"].to_s.end_with?(expected_unhealthy_tail) &&
+        unhealthy_form["message"].to_s.start_with?(expected_unhealthy_lead) &&
+        unhealthy_form["message"].to_s.scan(%r{^\S+ <b>([^<]+)</b> }).flatten == %w[Host Container When] &&
         unhealthy_form["priority"] == "1" && unhealthy_form["html"] == "1"
       # The tap-through link opens this container's page in Dozzle, whose route
       # is keyed on the 12-character short id Docker printed for the fixture,
@@ -719,18 +723,19 @@ if MODE == "notify"
         captured, "healthy transition did not produce one correlated recovery"
       ) do |messages|
         messages.reverse.find do |message|
-          message.fetch("form")["title"] == "Recovered · #{health_fixture}"
+          message.fetch("form")["title"] == "\u{1F7E2} #{health_fixture} recovered"
         end
       end
-      expected_recovery_tail =
-        "<b>Container:</b> #{health_fixture}\n<b>Status:</b> healthy"
+      expected_recovery_lead =
+        "<b>#{health_fixture}</b> is <font color=\"#2e7d32\">healthy</font> again\n\n" \
+        "\u{1F5A5}\u{FE0F} <b>Host</b> "
       recovered_form = recovered.fetch("form")
       fail_contract("recovery notification presentation differs") unless
-        recovered_form["message"].to_s.start_with?("<b>Host:</b> ") &&
-        recovered_form["message"].to_s.end_with?(expected_recovery_tail) &&
+        recovered_form["message"].to_s.start_with?(expected_recovery_lead) &&
+        recovered_form["message"].to_s.scan(%r{^\S+ <b>([^<]+)</b> }).flatten == %w[Host Container When] &&
         recovered_form["priority"] == "-1" && recovered_form["html"] == "1" &&
         observed.count { |message|
-          message.fetch("form")["title"] == "Recovered · #{health_fixture}"
+          message.fetch("form")["title"] == "\u{1F7E2} #{health_fixture} recovered"
         } == 1
       recovery_rules = request(
         "get", endpoint(DOZZLE, "/api/notifications/rules"), cookie: cookie
@@ -752,7 +757,7 @@ if MODE == "notify"
         startup_recovery_count > recovery_count
       fail_contract("startup healthy event produced a false recovery") if
         captured.call.any? do |message|
-          message.fetch("form")["title"] == "Recovered · #{startup_fixture}"
+          message.fetch("form")["title"] == "\u{1F7E2} #{startup_fixture} recovered"
         end
 
       _out, _error, run_status = Open3.capture3(
@@ -765,14 +770,18 @@ if MODE == "notify"
         "exit-code-1 event did not reach the private relay and the Pushover recorder"
       ) do |messages|
         messages.reverse.find do |message|
-          message.fetch("form")["title"] == "Unexpected exit · #{exit_fixture}"
+          message.fetch("form")["title"] == "\u{1F6D1} #{exit_fixture} exited (1)"
         end
       end
-      expected_exit_tail = "<b>Container:</b> #{exit_fixture}\n<b>Exit code:</b> 1"
+      expected_exit_lead =
+        "<b>#{exit_fixture}</b> <font color=\"#c62828\">stopped unexpectedly</font>\n\n" \
+        "\u{1F5A5}\u{FE0F} <b>Host</b> "
       exited_form = exited.fetch("form")
       fail_contract("unexpected-exit notification presentation differs") unless
-        exited_form["message"].to_s.start_with?("<b>Host:</b> ") &&
-        exited_form["message"].to_s.end_with?(expected_exit_tail) &&
+        exited_form["message"].to_s.start_with?(expected_exit_lead) &&
+        exited_form["message"].to_s.scan(%r{^\S+ <b>([^<]+)</b> }).flatten ==
+          ["Host", "Container", "Exit code", "When"] &&
+        exited_form["message"].to_s.include?("<b>Exit code</b> <font color=\"#c62828\">1</font>\n") &&
         exited_form["priority"] == "1" && exited_form["html"] == "1"
       fail_contract("relay exposed its event envelope as Pushover message text") if
         observed.any? { |message| message.fetch("form")["message"].to_s.include?('"version":1') }
@@ -781,7 +790,7 @@ if MODE == "notify"
       # lane's own container churn rather than on these three events.
       fail_contract("the daily ceiling suppressed the contract's own alerts") if
         captured.call.any? do |message|
-          message.fetch("form")["title"].to_s.start_with?("Alerts suppressed")
+          message.fetch("form")["title"].to_s.start_with?("\u{1F507} ")
         end
     ensure
       [health_fixture, startup_fixture, exit_fixture].each do |fixture|

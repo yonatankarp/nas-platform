@@ -45,6 +45,26 @@ LINK_BASE = "http://nas.tailnet.example:8080"
 CONTAINER_CEILING = 3
 OOM_CONTAINER_CEILING = 5
 GLOBAL_CEILING = 9
+# An `&` that does not begin one of the five entities html.escape writes.
+HALF_ENTITY = re.compile(r"&(?!amp;|lt;|gt;|quot;|#x27;)")
+
+
+def message_shape(message):
+    """A message's lead line, its detail labels in order, and its closing line.
+
+    Every detail line must be `emoji <b>Label</b> value`; one that is not fails
+    here rather than reading as a missing label.
+    """
+    blocks = message.split("\n\n")
+    closing = blocks.pop() if len(blocks) > 1 and blocks[-1].startswith("<i>") else ""
+    details = blocks[1].split("\n") if len(blocks) > 1 else []
+    labels = []
+    for line in details:
+        matched = re.fullmatch(r"\S+ <b>([^<]+)</b> .+", line)
+        if matched is None:
+            raise AssertionError(f"not an `emoji <b>Label</b> value` detail line: {line!r}")
+        labels.append(matched.group(1))
+    return {"lead": blocks[0], "labels": labels, "closing": closing}
 # The instant every in-process case runs at unless it patches `utc_now` itself.
 # The fixtures carry fixed 2026-08-15 timestamps, and the relay prunes healthy
 # entries older than HEALTHY_RETENTION against its clock, so a case left on the
@@ -546,10 +566,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual((status_code, body), (204, b""))
         published = self.pushover.requests[-1]["form"]
         self.assertEqual(published["priority"], "1")
-        self.assertEqual(published["title"], "Unexpected exit · jellyfin")
-        self.assertEqual(
+        self.assertEqual(published["title"], "\U0001f6d1 jellyfin exited (137)")
+        self.assertIn(
+            '\U0001f522 <b>Exit code</b> <font color="#c62828">137</font>',
             published["message"],
-            "<b>Host:</b> nas\n<b>Container:</b> jellyfin\n<b>Exit code:</b> 137",
         )
 
         request_count = len(self.pushover.requests)
@@ -615,10 +635,15 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     "form": {
                         "token": PUSHOVER_TOKEN,
                         "user": PUSHOVER_USER_KEY,
-                        "title": "Unhealthy · paperless_webserver",
-                        "message": "<b>Host:</b> nas\n"
-                                   "<b>Container:</b> paperless_webserver\n"
-                                   "<b>Status:</b> unhealthy",
+                        "title": "\U0001f7e0 paperless_webserver unhealthy",
+                        "message": '<b>paperless_webserver</b> is <font color="#f9a825">unhealthy</font>\n'
+                                   "\n"
+                                   "\U0001f5a5\ufe0f <b>Host</b> nas\n"
+                                   f'\U0001f4e6 <b>Container</b> <a href="{LINK_BASE}/container/{CONTAINER_ID}">'
+                                   "paperless_webserver</a>\n"
+                                   "\U0001f552 <b>When</b> 15 Aug 01:22 UTC\n"
+                                   "\n"
+                                   "<i>Open it in Dozzle to see why.</i>",
                         "html": "1",
                         "priority": "1",
                         # The container's own page in Dozzle, by the short id
@@ -634,31 +659,40 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
 
     def test_all_rule_renderings_are_human_readable_and_fixed(self):
+        # title, lead, the detail labels in order, whether a closing line follows,
+        # priority. The lead is exact because its coloured state IS the meaning;
+        # the details are pinned by label and order rather than by prose.
         cases = [
             (
                 "Unexpected exit",
-                "Unexpected exit · service",
-                "<b>Host:</b> nas\n<b>Container:</b> service\n<b>Exit code:</b> 23",
+                "\U0001f6d1 service exited (23)",
+                '<b>service</b> <font color="#c62828">stopped unexpectedly</font>',
+                ["Host", "Container", "Exit code", "When"],
+                False,
                 "1",
                 {"container": "service", "exitCode": "23"},
             ),
             (
                 "OOM",
-                "Out of memory · service",
-                "<b>Host:</b> nas\n<b>Container:</b> service\n"
-                "<b>Status:</b> out of memory",
+                "\U0001f4a5 Out of memory · service",
+                '<b>service</b> was <font color="#c62828">killed</font> by the kernel '
+                "for running out of memory",
+                ["Host", "Container", "When"],
+                True,
                 "2",
                 {"container": "service"},
             ),
             (
                 "Recovery",
-                "Recovered · service",
-                "<b>Host:</b> nas\n<b>Container:</b> service\n<b>Status:</b> healthy",
+                "\U0001f7e2 service recovered",
+                '<b>service</b> is <font color="#2e7d32">healthy</font> again',
+                ["Host", "Container", "When"],
+                False,
                 "-1",
                 {"container": "service", "containerId": "b" * 64},
             ),
         ]
-        for rule, title, message, priority, changes in cases:
+        for rule, title, lead, labels, closes, priority, changes in cases:
             with self.subTest(rule=rule):
                 if rule == "Recovery":
                     # A recovery only publishes when it closes an unhealthy
@@ -677,9 +711,118 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.assertEqual(self.post(self.envelope(rule, **changes))[0], 204)
                 published = self.pushover.requests[-1]["form"]
                 self.assertEqual(published["title"], title)
-                self.assertEqual(published["message"], message)
+                shape = message_shape(published["message"])
+                self.assertEqual(shape["lead"], lead)
+                self.assertEqual(shape["labels"], labels)
+                self.assertEqual(bool(shape["closing"]), closes)
                 self.assertEqual(published["priority"], priority)
                 self.assertEqual(published["html"], "1")
+
+    def test_every_title_form_is_pinned_and_stays_plain_text(self):
+        """The lock screen shows the title alone, unescaped, so its form is the alert."""
+        name = "a&b<c>"
+        event = dict(self.envelope(container=name, containerId="c" * 64), exitCode="")
+        titles = {
+            "OOM": f"\U0001f4a5 Out of memory · {name}",
+            "Unexpected exit": f"\U0001f6d1 {name} exited (137)",
+            "Unhealthy": f"\U0001f7e0 {name} unhealthy",
+            "Recovery": f"\U0001f7e2 {name} recovered",
+        }
+        for rule, expected in titles.items():
+            with self.subTest(rule=rule):
+                changes = {"rule": rule, "exitCode": "137" if rule == "Unexpected exit" else ""}
+                rendered = self.relay_module.render_notification(dict(event, **changes), LINK_BASE)
+                self.assertEqual(
+                    rendered["title"], expected,
+                    "a title is plain text on Pushover's side; escaping it shows &amp; to a person",
+                )
+        container_notice = self.relay_module.render_ceiling_notice(event, "container", 10, "2026-09-14", 25)
+        global_notice = self.relay_module.render_ceiling_notice(event, "global", 10, "2026-09-14")
+        self.assertEqual(container_notice["title"], f"\U0001f507 {name} alerts paused")
+        self.assertEqual(global_notice["title"], "\U0001f507 Container alerts paused")
+        self.assertNotEqual(container_notice["title"], global_notice["title"])
+
+    def test_every_message_leads_with_its_state_in_the_colour_of_that_state(self):
+        """Lead, labelled details, closing; red failed, amber warning, green recovered.
+
+        The colour is the one thing the expanded view adds over the title, so a
+        recovery rendered red would read as a second failure.
+        """
+        colours = {
+            "OOM": ("#c62828", ["Host", "Container", "When"]),
+            "Unexpected exit": ("#c62828", ["Host", "Container", "Exit code", "When"]),
+            "Unhealthy": ("#f9a825", ["Host", "Container", "When"]),
+            "Recovery": ("#2e7d32", ["Host", "Container", "When"]),
+        }
+        for rule, (colour, labels) in colours.items():
+            with self.subTest(rule=rule):
+                changes = {"exitCode": "1"} if rule == "Unexpected exit" else {}
+                rendered = self.relay_module.render_notification(self.envelope(rule, **changes), LINK_BASE)
+                shape = message_shape(rendered["message"])
+                self.assertEqual(shape["labels"], labels)
+                self.assertTrue(shape["lead"].startswith("<b>paperless_webserver</b> "), shape["lead"])
+                self.assertEqual(
+                    re.findall(r'<font color="(#[0-9a-f]{6})">', shape["lead"]), [colour],
+                    f"a {rule} lead line must colour its state {colour}, and "
+                    f"{shape['lead']!r} does not",
+                )
+        for scope, allowance, labels in (
+            ("container", 25, ["Host", "Container", "Reason"]),
+            ("global", None, ["Host", "Reason"]),
+        ):
+            with self.subTest(scope=scope):
+                notice = self.relay_module.render_ceiling_notice(
+                    self.envelope(), scope, 10, "2026-09-14", allowance
+                )
+                shape = message_shape(notice["message"])
+                self.assertEqual(shape["labels"], labels)
+                self.assertIn('<font color="#f9a825">paused</font>', shape["lead"])
+                self.assertTrue(shape["closing"])
+
+    def test_an_unhealthy_alert_promises_no_recovery_it_cannot_guarantee(self):
+        """State is keyed on host and container id, so a recovery is not certain.
+
+        A container recreated under the same name -- every image bump -- never
+        closes the entry its predecessor opened, and a ceiling-suppressed or
+        evicted entry closes nothing either, so the closing line points at Dozzle
+        instead, and only when there is a link to point with.
+        """
+        linked = message_shape(self.relay_module.render_notification(self.envelope(), LINK_BASE)["message"])
+        self.assertEqual(
+            linked["closing"], "<i>Open it in Dozzle to see why.</i>",
+            "an unhealthy alert's closing line must not promise a recovery: a recreated "
+            "container never sends one",
+        )
+        unlinked = message_shape(self.relay_module.render_notification(self.envelope(), None)["message"])
+        self.assertEqual(unlinked["closing"], "", "no link, so no line pointing at Dozzle")
+
+    def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
+        """The renderers, not only the envelope, bound what they are handed."""
+        hostile = ("<b>&'\"\n\0\U0001f9e8" * 1500)[:10_000]
+        rendered = [
+            self.relay_module.render_notification(
+                dict(self.envelope(rule, container=hostile, host=hostile), exitCode=code),
+                "https://" + "l" * (self.relay_module.MAX_LINK_BASE_CHARACTERS - len("https://")),
+            )
+            for rule, code in (("OOM", ""), ("Unexpected exit", "255"), ("Unhealthy", ""), ("Recovery", ""))
+        ] + [
+            self.relay_module.render_ceiling_notice(
+                self.envelope(container=hostile, host=hostile), scope, 999999, "2026-09-14", allowance
+            )
+            for scope, allowance in (("container", 999999), ("global", None))
+        ]
+        for fields in rendered:
+            with self.subTest(title=fields["title"][:20]):
+                message = fields["message"]
+                self.assertTrue(message)
+                self.assertTrue(fields["title"])
+                self.assertLessEqual(len(message), self.relay_module.MAX_MESSAGE_CHARACTERS)
+                self.assertLessEqual(len(fields["title"]), self.relay_module.MAX_TITLE_CHARACTERS)
+                self.assertIsNone(HALF_ENTITY.search(message), message[-40:])
+                for tag in ("b", "i", "font", "a"):
+                    self.assertEqual(
+                        len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag
+                    )
 
     def test_emergency_priority_carries_the_parameters_pushover_requires(self):
         """Priority 2 without retry and expire is refused by Pushover outright.
@@ -1128,9 +1271,13 @@ class DozzleAlertRelayTest(unittest.TestCase):
             {
                 "token": PUSHOVER_TOKEN,
                 "user": PUSHOVER_USER_KEY,
-                "title": "Recovered · immich_server",
-                "message": "<b>Host:</b> nas\n<b>Container:</b> immich_server\n"
-                           "<b>Status:</b> healthy",
+                "title": "\U0001f7e2 immich_server recovered",
+                "message": '<b>immich_server</b> is <font color="#2e7d32">healthy</font> again\n'
+                           "\n"
+                           "\U0001f5a5\ufe0f <b>Host</b> nas\n"
+                           f'\U0001f4e6 <b>Container</b> <a href="{LINK_BASE}/container/{"b" * 64}">'
+                           "immich_server</a>\n"
+                           "\U0001f552 <b>When</b> 15 Aug 01:22 UTC",
                 "html": "1",
                 # A recovery is a record, not an emergency: a badge and no
                 # sound, which is what the second ntfy topic used to express.
@@ -1340,9 +1487,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.budget(index + 1, [(CONTAINER_ID, index + 1, False)]),
                 )
         titles = {form["title"] for form in self.published_forms()}
-        self.assertEqual(titles, {"Unexpected exit · paperless_webserver"})
+        self.assertEqual(titles, {"\U0001f6d1 paperless_webserver exited (1)"})
         self.assertNotIn(
-            "Alerts suppressed",
+            "\U0001f507 ",
             "".join(form["title"] for form in self.published_forms()),
         )
 
@@ -1354,8 +1501,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         # One past the allowance: the notice, and nothing else.
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         notice = self.pushover.requests[-1]["form"]
-        self.assertEqual(notice["title"], "Alerts suppressed · paperless_webserver")
-        self.assertIn("<b>Suppressed:</b> paperless_webserver", notice["message"])
+        self.assertEqual(notice["title"], "\U0001f507 paperless_webserver alerts paused")
+        self.assertIn("<b>Alerts for paperless_webserver</b> are", notice["message"])
         self.assertIn(f"{CONTAINER_CEILING} alerts already sent", notice["message"])
         # The notice says the platform has gone quiet, which outranks any single
         # alert it replaced -- but there is nothing to acknowledge, so never 2.
@@ -1367,7 +1514,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING + 1)
         suppressed = [
             form for form in self.published_forms()
-            if form["title"].startswith("Alerts suppressed")
+            if form["title"].startswith("\U0001f507 ")
         ]
         self.assertEqual(len(suppressed), 1)
         # The notice itself is not charged: the allowance is already spent, and
@@ -1394,7 +1541,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.assertEqual(
             self.pushover.requests[-1]["form"]["title"],
-            "Unexpected exit · immich_server",
+            "\U0001f6d1 immich_server exited (1)",
         )
 
     def test_an_oom_outlives_the_ordinary_allowance_and_is_still_bounded(self):
@@ -1421,7 +1568,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         # the container's one notice.
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertTrue(
-            self.pushover.requests[-1]["form"]["title"].startswith("Alerts suppressed")
+            self.pushover.requests[-1]["form"]["title"].startswith("\U0001f507 ")
         )
 
         # And the OOM allowance ends too, rather than running forever.
@@ -1467,8 +1614,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
             204,
         )
         notice = self.pushover.requests[-1]["form"]
-        self.assertEqual(notice["title"], "Alerts suppressed · ceiling reached")
-        self.assertIn("<b>Suppressed:</b> every container", notice["message"])
+        self.assertEqual(notice["title"], "\U0001f507 Container alerts paused")
+        self.assertIn("<b>Every container alert</b> is", notice["message"])
         self.assertIn(f"{GLOBAL_CEILING} alerts already sent", notice["message"])
 
         for index in range(4):
@@ -1487,7 +1634,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             len(
                 [
                     form for form in self.published_forms()
-                    if form["title"].startswith("Alerts suppressed")
+                    if form["title"].startswith("\U0001f507 ")
                 ]
             ),
             1,
@@ -1524,7 +1671,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING + 2)
         self.assertEqual(
             self.pushover.requests[-1]["form"]["title"],
-            "Unexpected exit · paperless_webserver",
+            "\U0001f6d1 paperless_webserver exited (1)",
         )
         self.assertEqual(
             self.read_state()["budget"],
@@ -1553,7 +1700,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING + 2)
         self.assertEqual(
             self.pushover.requests[-1]["form"]["title"],
-            "Unexpected exit · paperless_webserver",
+            "\U0001f6d1 paperless_webserver exited (1)",
             "a clock that moved backwards must start a fresh day, not suppress",
         )
         self.assertEqual(
@@ -1579,12 +1726,12 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertEqual(len(self.pushover.requests), CONTAINER_CEILING)
             self.assertEqual(
                 self.pushover.requests[-1]["form"]["title"],
-                "Unexpected exit · paperless_webserver",
+                "\U0001f6d1 paperless_webserver exited (1)",
             )
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
             self.assertTrue(
                 self.pushover.requests[-1]["form"]["title"].startswith(
-                    "Alerts suppressed"
+                    "\U0001f507 "
                 )
             )
             # The latch survives too: a restart must not buy a second notice.
@@ -1608,7 +1755,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             len(
                 [
                     form for form in self.published_forms()
-                    if form["title"].startswith("Alerts suppressed")
+                    if form["title"].startswith("\U0001f507 ")
                 ]
             ),
             1,
@@ -1648,8 +1795,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertFalse(self.state_path.exists())
 
         titles = [form["title"] for form in self.published_forms()]
-        alerts = [t for t in titles if t.startswith("Unexpected exit")]
-        notices = [t for t in titles if t.startswith("Alerts suppressed")]
+        alerts = [t for t in titles if t.startswith("\U0001f6d1 ")]
+        notices = [t for t in titles if t.startswith("\U0001f507 ")]
         self.assertEqual(
             len(alerts), CONTAINER_CEILING,
             f"the ceiling failed open across a broken store: {len(alerts)} alerts",
@@ -1687,8 +1834,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
         self.assertFalse(self.state_path.exists())
         titles = [form["title"] for form in self.published_forms()]
-        alerts = [t for t in titles if t.startswith("Unexpected exit")]
-        notices = [t for t in titles if t == "Alerts suppressed · ceiling reached"]
+        alerts = [t for t in titles if t.startswith("\U0001f6d1 ")]
+        notices = [t for t in titles if t == "\U0001f507 Container alerts paused"]
         self.assertEqual(
             len(alerts), GLOBAL_CEILING,
             f"the global backstop failed open across a broken store: {len(alerts)}",
@@ -1789,7 +1936,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertTrue(
-            self.pushover.requests[-1]["form"]["title"].startswith("Alerts suppressed"),
+            self.pushover.requests[-1]["form"]["title"].startswith("\U0001f507 "),
             "a rewound store handed the process its allowance a second time",
         )
         # And the correction is written back, so the next reader sees it too.
@@ -1816,7 +1963,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertTrue(
-            self.pushover.requests[-1]["form"]["title"].startswith("Alerts suppressed")
+            self.pushover.requests[-1]["form"]["title"].startswith("\U0001f507 ")
         )
         self.assertEqual(len(self.pushover.requests), 1)
 
@@ -1843,7 +1990,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(line.count("\n"), 1, "the line must be exactly one line")
         self.assertIn("alert-relay: pushover rejected the alert (HTTP 400)", line)
         # Which alert was lost, which is the operator's first question.
-        self.assertIn("alert=Unhealthy · paperless_webserver", line)
+        self.assertIn("alert=\U0001f7e0 paperless_webserver unhealthy", line)
         # And the far end's own explanation, which separates a bad credential
         # from an over-long message from a missing retry parameter.
         self.assertIn("user key is not valid", line)
@@ -1864,7 +2011,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(len(recorder.writes), 1)
         line = recorder.writes[0]
         self.assertIn("alert-relay: pushover unreachable (", line)
-        self.assertIn("alert=Unhealthy · paperless_webserver", line)
+        self.assertIn("alert=\U0001f7e0 paperless_webserver unhealthy", line)
         # No HTTP status, because there was no HTTP response. A line claiming
         # one would be the collapse this case exists to prevent, wearing the
         # other name.
@@ -2005,7 +2152,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 line.split("alert=")[1].split(" detail=")[0]
                 for line in recorder.getvalue().splitlines()
             ),
-            sorted(f"Unhealthy · service-{index}" for index in range(failures)),
+            sorted(f"\U0001f7e0 service-{index} unhealthy" for index in range(failures)),
         )
 
     def test_a_refused_publish_does_not_consume_the_allowance(self):
@@ -2027,7 +2174,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         self.assertEqual(
             self.pushover.requests[-1]["form"]["title"],
-            "Unexpected exit · paperless_webserver",
+            "\U0001f6d1 paperless_webserver exited (1)",
         )
 
     def test_budget_counters_cannot_crowd_out_unevictable_health_entries(self):
@@ -2474,8 +2621,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         Pushover parses `message` under html=1 as five tags -- <b>, <i>, <u>,
         <font color> and <a href> -- so a container named `<b>` would style the
         notification and one carrying an `<a href>` would put a link in it. The
-        relay emits only <b> of those five, which is its own narrowness rather
-        than the API's. `title` is not parsed, and stays raw on purpose:
+        relay emits <b>, <i>, <font color> and <a href> of those five, which is
+        its own narrowness rather than the API's. `title` is not parsed, and stays raw on purpose:
         escaping it would show `&amp;` to somebody reading a notification title.
         """
         hostile = '<b>svc</b> & "q" <a href=\'x\'>'
@@ -2487,20 +2634,17 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(status_code, 204)
         self.assertEqual(wrong_status, 401)
         published = self.pushover.requests[0]["form"]
-        self.assertEqual(published["title"], f"Unhealthy · {hostile}")
-        self.assertEqual(
-            published["message"],
-            "<b>Host:</b> nas&lt;host&gt;\n"
-            "<b>Container:</b> &lt;b&gt;svc&lt;/b&gt; &amp; &quot;q&quot; "
-            "&lt;a href=&#x27;x&#x27;&gt;\n"
-            "<b>Status:</b> unhealthy",
-        )
-        # The only markup left in the message is the relay's own three labels,
-        # so every `<` in it opens a <b> or a </b> and none of them came from
-        # the container's name.
-        self.assertEqual(published["message"].count("<b>"), 3)
-        self.assertEqual(published["message"].count("</b>"), 3)
-        self.assertEqual(published["message"].count("<"), 6)
+        self.assertEqual(published["title"], f"\U0001f7e0 {hostile} unhealthy")
+        escaped = "&lt;b&gt;svc&lt;/b&gt; &amp; &quot;q&quot; &lt;a href=&#x27;x&#x27;&gt;"
+        # In the lead and inside the Container link, and escaped both times.
+        self.assertEqual(published["message"].count(escaped), 2)
+        self.assertIn("\U0001f5a5\ufe0f <b>Host</b> nas&lt;host&gt;\n", published["message"])
+        # The only markup left is the relay's own: four <b>, one <font>, one
+        # <a> and one <i>, each closed, so every `<` in the message is one of
+        # those fourteen and none of them came from the container's name.
+        self.assertEqual(published["message"].count("<b>"), 4)
+        self.assertEqual(published["message"].count("</b>"), 4)
+        self.assertEqual(published["message"].count("<"), 14)
         combined = captured.getvalue() + response_body.decode() + wrong_body.decode()
         for secret in (RELAY_TOKEN, PUSHOVER_TOKEN, PUSHOVER_USER_KEY, "request-secret"):
             self.assertNotIn(secret, combined)
@@ -2533,7 +2677,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.post(self.envelope(container=long_name))[0], 204
         )
         published = self.pushover.requests[-1]["form"]
-        self.assertIn(f"<b>Container:</b> {'x' * 128}\n", published["message"])
+        self.assertIn(f">{'x' * 128}</a>\n", published["message"])
         self.assertNotIn("x" * 129, published["message"])
 
     def test_no_rendered_message_can_exceed_what_pushover_accepts(self):
@@ -2636,7 +2780,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
                 self.post(self.envelope("Unexpected exit", container=longest))[0], 204
             )
         notice = self.pushover.requests[-1]["form"]
-        self.assertTrue(notice["title"].startswith("Alerts suppressed"))
+        self.assertTrue(notice["title"].startswith("\U0001f507 "))
         self.assertLessEqual(
             len(notice["title"]), self.relay_module.MAX_TITLE_CHARACTERS
         )
@@ -2653,7 +2797,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
         notice = self.pushover.requests[-1]["form"]
         self.assertIn(
-            f"<b>Still reporting:</b> out-of-memory kills, to {OOM_CONTAINER_CEILING} a day",
+            f"<i>Out-of-memory kills still get through, up to {OOM_CONTAINER_CEILING} a day",
             notice["message"],
         )
 
@@ -2669,8 +2813,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
             self.post(self.envelope("Unexpected exit", containerId=spent))[0], 204
         )
         spent_notice = self.pushover.requests[-1]["form"]
-        self.assertTrue(spent_notice["title"].startswith("Alerts suppressed"))
-        self.assertNotIn("Still reporting", spent_notice["message"])
+        self.assertTrue(spent_notice["title"].startswith("\U0001f507 "))
+        self.assertNotIn("still get through", spent_notice["message"])
 
     def test_the_global_notice_claims_no_exception_at_all(self):
         for index in range(GLOBAL_CEILING):
@@ -2687,9 +2831,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
             204,
         )
         notice = self.pushover.requests[-1]["form"]
-        self.assertEqual(notice["title"], "Alerts suppressed · ceiling reached")
-        self.assertIn("<b>Suppressed:</b> every container, every rule", notice["message"])
-        self.assertNotIn("Still reporting", notice["message"])
+        self.assertEqual(notice["title"], "\U0001f507 Container alerts paused")
+        self.assertIn("<b>Every container alert</b> is", notice["message"])
+        self.assertNotIn("still get through", notice["message"])
 
 
 class RelayProcessSignalTest(unittest.TestCase):

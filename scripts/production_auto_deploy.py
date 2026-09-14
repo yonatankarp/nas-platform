@@ -94,21 +94,47 @@ VERIFY_TIMEOUT_SECONDS = 30 * 60
 # own budget, so a service run that timed out still leaves it one. The hold is at
 # most 30 + 10 per hourly-only tag: 40 minutes today, under the hourly cadence.
 HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
-# What an hourly-only tag's failure looks like in its log, and its page titles.
-# The array run also runs verify.yml's always-tagged setup (Docker modules, vault
-# contract, GPU, Compose files), and a failure there is no evidence about the
-# disks, so "degraded" is claimed only when the log carries the literal that opens
-# roles/host_prep/tasks/verify_mdraid.yml's fail_msg. Any other failure, a timeout
-# included, is "unchecked": the check could not run. The record keeps which, so
-# a recovery says "recovered" only after a real mismatch.
+# One palette for styled messages: mid-tones that read on Pushover's light and
+# dark themes alike. Green is recovered, healthy or new; red failed or killed;
+# amber degraded; grey metadata. Spelled identically in scripts/image_prune.py
+# and services/dozzle/alert_relay.py, and tests/policy_test.rb holds the copies
+# identical, so one state reads as one colour whichever program sent it.
+COLOR_GREEN = "#2e7d32"
+COLOR_RED = "#c62828"
+COLOR_AMBER = "#f9a825"
+COLOR_GREY = "#9e9e9e"
+# What an hourly-only tag's failure looks like in its log, and what each change
+# of its verdict pages as: a title, a lead line, and a closing line that may be
+# empty. The array run also runs verify.yml's always-tagged setup (Docker
+# modules, vault contract, GPU, Compose files), and a failure there is no
+# evidence about the disks, so "degraded" is claimed only when the log carries
+# the literal that opens roles/host_prep/tasks/verify_mdraid.yml's fail_msg. Any
+# other failure, a timeout included, is "unchecked": the check could not run. The
+# record keeps which, so a recovery says "healthy" only after a real mismatch.
 MDRAID_MISMATCH_MARKER = "MDRAID-BASELINE-MISMATCH"
 HOURLY_ONLY_VERIFY_CHECKS = {
     "platform_verify_mdraid": {
         "marker": MDRAID_MISMATCH_MARKER,
-        "fail": "RAID arrays degraded",
-        "unchecked": "RAID array check could not run",
-        "recovered": "RAID arrays recovered",
-        "restored": "RAID array check runs again",
+        "fail": (
+            "\U0001f7e0 RAID degraded",
+            f'<b>RAID arrays</b> are <font color="{COLOR_AMBER}">degraded</font>',
+            "<i>Read /proc/mdstat on the host; the log names the arrays that differ.</i>",
+        ),
+        "unchecked": (
+            "❔ RAID check could not run",
+            f'<b>RAID check</b> <font color="{COLOR_AMBER}">could not run</font>',
+            "<i>This says nothing about the disks; the log names what stopped the check.</i>",
+        ),
+        "recovered": (
+            "\U0001f7e2 RAID healthy",
+            f'<b>RAID arrays</b> are <font color="{COLOR_GREEN}">healthy</font> again',
+            "",
+        ),
+        "restored": (
+            "\U0001f7e2 RAID check running again",
+            f'<b>RAID check</b> <font color="{COLOR_GREEN}">runs</font> again',
+            "",
+        ),
     },
 }
 TOOLING_TIMEOUT_SECONDS = 15 * 60
@@ -146,14 +172,6 @@ SUMMARY_PATH_ENVIRONMENT = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
 # images, so release-notes links stop at this many lookups and this budget.
 MAX_PULL_REQUEST_LOOKUPS = 8
 PULL_REQUEST_LOOKUP_BUDGET_SECONDS = 30
-# One palette for styled messages: mid-tones that read on Pushover's light and
-# dark themes alike. Poller-only today, and only the release message uses it;
-# red and amber are there so the failure and degraded messages take the same
-# colours when they are styled, in both scripts and the relay.
-COLOR_GREEN = "#2e7d32"
-COLOR_RED = "#c62828"
-COLOR_AMBER = "#f9a825"
-COLOR_GREY = "#9e9e9e"
 
 
 class ConfigurationError(ValueError):
@@ -1377,9 +1395,9 @@ def html_escape(value: str, maximum: int = 128, escaped_maximum: int = MAX_ESCAP
 def fit_message(lines) -> str:
     """Join message lines, dropping whole lines from the end until Pushover takes it.
 
-    Identical to the copy in the other script by construction, and
-    tests/policy_test.rb compares the two definitions as text so it stays that
-    way (#423). Prose true of only one script goes in a comment above the def,
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
     which that comparison does not read.
 
     Whole lines where it can, because every line is HTML and a cut can split an
@@ -1407,6 +1425,33 @@ def fit_message(lines) -> str:
     if unclosed:
         cut = cut[: unclosed[0].start()]
     return f"{cut}\u2026"
+
+
+def compose_message(lead: str, details, closing: str = "") -> str:
+    """One message in the platform's shape: a lead line, labelled details, what next.
+
+    Identical to the copies in the other two programs by construction, and
+    tests/policy_test.rb compares the definitions as text so it stays that way
+    (#423). Prose true of only one program goes in a comment above the def,
+    which that comparison does not read.
+
+    The lead says what happened with its state coloured; each detail is one
+    `emoji <b>Label</b> value` fact; the closing, in italics, says what happens
+    next. Blank lines separate the three. Over MAX_MESSAGE_CHARACTERS the details
+    give way from the last, so the lead and the closing survive wherever they
+    can, and fit_message is the backstop for a lead that cannot fit on its own.
+    """
+
+    details = list(details)
+    while True:
+        lines = [lead]
+        if details:
+            lines += ["", *details]
+        if closing:
+            lines += ["", closing]
+        if not details or len("\n".join(lines)) <= MAX_MESSAGE_CHARACTERS:
+            return fit_message(lines)
+        details.pop()
 
 
 def pushover_verdict(returncode: int, output: bytes) -> str:
@@ -1471,7 +1516,31 @@ def commit_link(config: Config, sha: str) -> str:
     """
 
     repository = html_escape(config.repository)
-    return f'<a href="https://github.com/{repository}/commit/{sha}">{sha[:9]}</a>'
+    return f'<a href="https://github.com/{repository}/commit/{sha}">{sha[:12]}</a>'
+
+
+def run_link(url: str) -> str:
+    """A CI run as an <a href> for a detail line, or "" when it is not a usable link."""
+
+    if not _usable_url(url):
+        return ""
+    # _usable_url held it to 512 characters, so this escape never cuts it.
+    href = html_escape(url, MAX_URL_CHARACTERS, 6 * MAX_URL_CHARACTERS)
+    return f'\U0001f9ea <b>CI</b> <a href="{href}">the run that released it</a>'
+
+
+def log_line(log_path: Path) -> str:
+    return f'\U0001f4c4 <b>Log</b> <font color="{COLOR_GREY}">{html_escape(str(log_path))}</font>'
+
+
+def readable_time(stamp: str) -> str:
+    """A _timestamp() value as `14 Sep 02:03 UTC`, or the value itself when it is not one."""
+
+    try:
+        moment = datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return html_escape(stamp)
+    return f"{moment.day} {moment:%b %H:%M} UTC"
 
 
 def render_notification(
@@ -1481,28 +1550,42 @@ def render_notification(
     finished: str,
     log_path: Path,
     run_url: str = "",
+    failure: str = "failed",
 ) -> dict:
     """Build the Pushover fields for a failed deployment.
 
     Only a failure is rendered here. A successful deployment reports itself from
-    inside the run, where what shipped is still at hand.
+    inside the run, where what shipped is still at hand. failure is how poll()
+    left the revision: "failed" quarantines it, "retrying" forgot the attempt
+    after a transient failure, and "quarantined" is a transient failure the
+    poller would not forgive -- its limit reached, or its counter unwritable.
     """
 
+    details = [f"\U0001f516 <b>Revision</b> {commit_link(config, sha)}"]
+    if run_link(run_url):
+        details.append(run_link(run_url))
+    details += [
+        f"\U0001f552 <b>When</b> {readable_time(finished)}",
+        f"⏱️ <b>Took</b> {format_duration(started, finished)}",
+        log_line(log_path),
+    ]
+    # A forgotten attempt is not a promise about the next poll: a newer green
+    # revision is deployed ahead of it, and --retry-failed takes the full SHA.
+    closing = {
+        "retrying": "<i>The poller retries this revision on a later poll, unless a newer green "
+        "revision deploys first.</i>",
+        "quarantined": "<i>The poller will not retry this revision; run nas-platform-deploy "
+        f"--retry-failed {sha} once the cause is fixed.</i>",
+    }.get(failure, "<i>The poller will not retry this revision; merge a fix to main.</i>")
     fields = {
-        "title": f"Deploy failed · {sha[:9]}",
-        "message": fit_message(
-            (
-                f"<b>Commit:</b> {commit_link(config, sha)}",
-                f"<b>Started:</b> {html_escape(started)}",
-                f"<b>Finished:</b> {html_escape(finished)}",
-                f"<b>Duration:</b> {format_duration(started, finished)}",
-                f"<b>Log:</b> {html_escape(str(log_path))}",
-            )
+        "title": f"\U0001f534 Deploy failed · {sha[:7]}",
+        "message": compose_message(
+            f'<b>Deployment</b> <font color="{COLOR_RED}">failed</font>', details, closing
         ),
         "priority": 1,
     }
     if run_url:
-        fields |= {"url": run_url, "url_title": "The CI run that released it"}
+        fields |= {"url": run_url, "url_title": "Open CI run"}
     return fields
 
 
@@ -1513,13 +1596,14 @@ def notify(
     finished: str,
     log_path: Path,
     run_url: str = "",
+    failure: str = "failed",
 ) -> bool:
     """Publish a failed deployment to the Alerts application."""
 
     return publish(
         config,
         "alerts",
-        render_notification(config, sha, started, finished, log_path, run_url),
+        render_notification(config, sha, started, finished, log_path, run_url, failure),
     )
 
 
@@ -1931,13 +2015,14 @@ def note_blind_poll(config: Config, reason: str) -> None:
         config,
         "alerts",
         {
-            "title": f"Deploy poller blind \u00b7 {count} polls",
-            "message": fit_message(
+            "title": f"\U0001f648 Deploy poller blind · {count} polls",
+            "message": compose_message(
+                f'<b>Deploy poller</b> is <font color="{COLOR_RED}">blind</font>',
                 (
-                    f"<b>Reason:</b> {html_escape(reason)}",
-                    f"<b>Consecutive failures:</b> {count}",
-                    "<b>Effect:</b> no revision can be deployed until this clears",
-                )
+                    f'❓ <b>Reason</b> <font color="{COLOR_RED}">{html_escape(reason)}</font>',
+                    f"\U0001f9ee <b>Polls</b> {count} in a row could not read main",
+                ),
+                "<i>No revision can deploy until the poller reaches main.</i>",
             ),
             "priority": 1,
         },
@@ -1970,8 +2055,11 @@ def note_seeing_poll(config: Config) -> None:
             config,
             "alerts",
             {
-                "title": "Deploy poller recovered",
-                "message": "<b>Status:</b> the poller can reach main again",
+                "title": "\U0001f7e2 Deploy poller recovered",
+                "message": compose_message(
+                    f'<b>Deploy poller</b> can <font color="{COLOR_GREEN}">reach main</font> again',
+                    (f"\U0001f9ee <b>Polls</b> {count} in a row could not read main before this one",),
+                ),
                 "priority": -1,
             },
         )
@@ -2022,19 +2110,21 @@ def note_ci_refusal(
     marker = f"{sha} {verdict} {detail}"
     if announced == marker:
         return
+    verdict_line = f'\U0001f9ea <b>CI</b> <font color="{COLOR_RED}">{html_escape(detail)}</font>'
+    if _usable_url(url):
+        # _usable_url held it to 512 characters, so this escape never cuts it.
+        verdict_line += f' · <a href="{html_escape(url, MAX_URL_CHARACTERS, 6 * MAX_URL_CHARACTERS)}">open the run</a>'
     fields = {
-        "title": f"CI blocks deploy · {sha[:9]}",
-        "message": fit_message(
-            (
-                f"<b>Commit:</b> {commit_link(config, sha)}",
-                f"<b>CI:</b> {html_escape(detail)}",
-                "<b>Effect:</b> no deployment until this revision passes CI",
-            )
+        "title": f"⛔ CI blocks deploy · {sha[:7]}",
+        "message": compose_message(
+            f'<b>CI</b> <font color="{COLOR_RED}">blocks</font> this revision',
+            (f"\U0001f516 <b>Revision</b> {commit_link(config, sha)}", verdict_line),
+            "<i>Nothing deploys until this revision passes CI.</i>",
         ),
         "priority": 1,
     }
     if url:
-        fields |= {"url": url, "url_title": "The CI run"}
+        fields |= {"url": url, "url_title": "Open CI run"}
     published = publish(config, "alerts", fields)
     if not published:
         # Recorded only once it has actually been delivered, so a publisher
@@ -2168,6 +2258,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         # retry loop on the next five-minute tick.
         record_attempt(config, candidate)
         started = _timestamp()
+        failure = "failed"
         with attempt_log(config, candidate) as log:
             log_path = Path(log.name)
             try:
@@ -2183,6 +2274,9 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 log.write(note.encode("ascii", "replace") + b"\n")
                 if may_retry_after_transient_failure(config, candidate):
                     forget_attempt(config, candidate)
+                    failure = "retrying"
+                else:
+                    failure = "quarantined"
             finished = _timestamp()
             if succeeded:
                 record_success(config, candidate, finished)
@@ -2204,6 +2298,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
                 finished,
                 log_path,
                 selection.verdict[2] if selection.verdict else "",
+                failure=failure,
             ):
                 warning = "production auto-deploy: outcome notification failed"
                 log.write(warning.encode("ascii") + b"\n")
@@ -2344,34 +2439,41 @@ def note_verify_verdict(
         return
     if verdict != "pass" or previous is not None:
         failed = verdict != "pass"
-        if tag is None:
-            title = f"{'Verify failed' if failed else 'Verify recovered'} · {sha[:9]}"
-            lines = ()
-        else:
-            titles = HOURLY_ONLY_VERIFY_CHECKS.get(tag, {})
-            key = verdict if failed else "recovered" if previous == "fail" else "restored"
-            title = titles.get(key, f"{tag}: {key}")
-            lines = (f"<b>Check:</b> {html_escape(tag)}",)
-        fields = {
-            "title": title,
-            "message": fit_message(
-                (
-                    *lines,
-                    f"<b>Commit:</b> {commit_link(config, sha)}",
-                    f"<b>Log:</b> {html_escape(str(log_path))}",
-                )
-            ),
-            # A failure needs a human; a recovery closes it on the same app, quietly.
-            "priority": 1 if failed else -1,
-        }
+        run_url = ""
         if failed and tag is None:
             # Best effort, and only here, where the verdict changed: one more
             # anonymous GitHub request, whose failure costs the link and nothing
             # else.
             with contextlib.suppress(EligibilityError):
-                run_url = ci_verdict(config, sha, fetch_ci_runs(config))[2]
-                if run_url:
-                    fields |= {"url": run_url, "url_title": "The CI run that released it"}
+                run_url = ci_verdict(config, sha, fetch_ci_runs(config))[2] or ""
+        if tag is None:
+            details = []
+            if failed:
+                title = f"\U0001f534 Verify failed · {sha[:7]}"
+                lead = f'<b>Verify</b> <font color="{COLOR_RED}">failed</font> on the deployed revision'
+                closing = "<i>Verify runs hourly; a recovery follows here once it passes.</i>"
+            else:
+                title = f"\U0001f7e2 Verify recovered · {sha[:7]}"
+                lead = f'<b>Verify</b> <font color="{COLOR_GREEN}">passes</font> again'
+                closing = ""
+        else:
+            key = verdict if failed else "recovered" if previous == "fail" else "restored"
+            title, lead, closing = HOURLY_ONLY_VERIFY_CHECKS.get(tag, {}).get(
+                key, (f"{tag}: {key}", f"<b>{html_escape(tag)}</b> {html_escape(key)}", "")
+            )
+            details = [f"\U0001f50d <b>Check</b> {html_escape(tag)}"]
+        details.append(f"\U0001f516 <b>Revision</b> {commit_link(config, sha)}")
+        if run_link(run_url):
+            details.append(run_link(run_url))
+        details.append(log_line(log_path))
+        fields = {
+            "title": title,
+            "message": compose_message(lead, details, closing),
+            # A failure needs a human; a recovery closes it on the same app, quietly.
+            "priority": 1 if failed else -1,
+        }
+        if run_url:
+            fields |= {"url": run_url, "url_title": "Open CI run"}
         published = publish(config, "alerts", fields)
         if not published:
             print("production auto-deploy: verify notification failed", file=sys.stderr)
