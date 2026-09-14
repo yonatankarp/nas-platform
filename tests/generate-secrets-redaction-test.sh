@@ -72,8 +72,7 @@ set +e
 PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$success_dir/state" \
   ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
     -e generate_brand_new_platform=true \
-    -e vault_plain_path="$success_dir/vault-plain.yml" \
-    -e vault_encrypted_path="$success_dir/vault.yml" \
+    -e vault_output_dir="$success_dir" \
     -e audiobookshelf_admin_password=SENTINEL_GENERATED_PASSWORD \
     >"$success_dir/output" 2>&1
 success_status=$?
@@ -90,8 +89,7 @@ if PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$failure_dir/state" \
     FAKE_DOCKER_TOKEN_FAILURE=true \
     ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
       -e generate_brand_new_platform=true \
-      -e vault_plain_path="$failure_dir/vault-plain.yml" \
-      -e vault_encrypted_path="$failure_dir/vault.yml" \
+      -e vault_output_dir="$failure_dir" \
       -e audiobookshelf_admin_password=SENTINEL_GENERATED_PASSWORD \
       >"$failure_dir/output" 2>&1; then
   printf 'secret generator failure fixture unexpectedly succeeded\n' >&2

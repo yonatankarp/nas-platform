@@ -2,9 +2,17 @@
 **/.env
 
 # Vault password and any decrypted copy. The encrypted vault itself IS committed.
+#
+# A pattern rather than a literal, because generate-secrets.yml writes one
+# plaintext file per credential group since #641 -- vault_arr-plain.yml,
+# vault_pushover-plain.yml, eighteen of them -- and the literal
+# `inventory/group_vars/all/vault-plain.yml` it replaces matched none of those.
+# Every one holds cleartext credentials, so a name this file does not cover is a
+# name `git add -A` commits. The glob keeps covering the retired single-file
+# name too: `*` matches the empty string.
 .vault-password
 vault-password*
-inventory/group_vars/all/vault-plain.yml
+inventory/group_vars/all/vault*-plain.yml
 *.decrypted.yml
 
 # Credentials and keys. The certificate belongs here beside its key rather
