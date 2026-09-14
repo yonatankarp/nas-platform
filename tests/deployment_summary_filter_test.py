@@ -120,6 +120,37 @@ assert untagged == [
     {"name": "beszel", "kind": "repinned", "to": "untagged", "reference": "docker.io/henrygd/beszel" + DIGEST_B}
 ]
 
+# The poller's summary: each image paired with the commit its own lookup found,
+# keyed by reference so two images never trade commits, and nothing a lookup
+# could not settle. A removed image carries no reference and gets no commit.
+document_of = plugin.deployment_summary_document
+SHA_J, SHA_I, RELEASE, PREVIOUS = "1" * 40, "2" * 40, "3" * 40, "4" * 40
+lookups = [
+    {"item": changes[0], "rc": 0, "stdout": SHA_I + "\n"},
+    {"item": changes[1], "rc": 0, "stdout": SHA_J},
+    {"item": changes[2], "rc": 128, "stdout": SHA_J},
+    {"item": changes[3], "rc": 0, "stdout": ""},
+    {"item": changes[4], "skipped": True},
+]
+document = document_of(changes, lookups, [SHA_J + "\tfix: pin jellyfin 10.11.0", "junk"], RELEASE, PREVIOUS)
+assert document == {
+    "version": 1,
+    "release": RELEASE,
+    "previous": PREVIOUS,
+    "images": [
+        {"name": "immich/immich-server", "kind": "updated", "from": "v1.121.0", "to": "v1.122.0",
+         "commit": SHA_I},
+        {"name": "jellyfin", "kind": "updated", "from": "10.10.3", "to": "10.11.0", "commit": SHA_J},
+        {"name": "komga", "kind": "added", "from": None, "to": "1.19.0", "commit": None},
+        {"name": "ntfy", "kind": "repinned", "from": None, "to": "v2.27.0", "commit": None},
+        {"name": "retired", "kind": "removed", "from": "1.0.0", "to": None, "commit": None},
+    ],
+    "commits": [{"sha": SHA_J, "subject": "fix: pin jellyfin 10.11.0"}],
+}, document
+# A first install has no predecessor to name.
+assert document_of(first_install, [], [], RELEASE, "")["previous"] == ""
+require_rejected(document_of, changes, "lookups", [], RELEASE, PREVIOUS)
+
 require_rejected(changes_of, "not-a-manifest", current)
 require_rejected(changes_of, {"services": {"jellyfin": {}}}, current)
 require_rejected(changes_of, {"services": [{"images": {}}]}, current)

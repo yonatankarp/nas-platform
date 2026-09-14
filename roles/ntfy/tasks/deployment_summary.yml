@@ -8,6 +8,12 @@
 # Silent unless the release actually moved. A converge that reinstalls the same
 # revision recreated nothing, and the per-service reports stay silent for the
 # same reason.
+#
+# Two ways out, never both (#558). Under the deployment poller, which alone sets
+# ntfy_deployment_summary_path, the summary is written as JSON and published by
+# nobody here: the poller announces it after verify.yml passes, with links this
+# play cannot build. Everywhere else it is published as plain text, as before.
+# Exactly one message per release either way, whichever side is the older code.
 - name: Read the installed deployment manifest
   atomic_safe_slurp:
     path: "{{ platform_release_dir }}/manifest.yml"
@@ -55,7 +61,7 @@
       - "{{ ntfy_deployment_summary_checkout }}"
       - log
       - --no-merges
-      - --format=%s
+      - --format=%H%x09%s
       - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
   register: ntfy_deployment_summary_git_log
   changed_when: false
@@ -79,12 +85,67 @@
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
 
+# The poller links each image to the pull request that moved it, so it needs
+# the commit that introduced the image's exact pinned reference. A pickaxe on
+# the whole reference rather than a path filter, because one Compose file can
+# pin several images (services/arr/compose.yml pins four). Best effort, like the
+# log above: a lookup that finds nothing costs that image its link.
+- name: Find the commit that introduced each image the release runs
+  ansible.builtin.command:
+    argv:
+      - git
+      - -C
+      - "{{ ntfy_deployment_summary_checkout }}"
+      - log
+      - -1
+      - --format=%H
+      - "-S{{ item.reference }}"
+      - "{{ ntfy_deployment_previous_release }}..{{ platform_release_id }}"
+  loop: "{{ ntfy_deployment_summary_changes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: ntfy_deployment_summary_image_commits
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  delegate_to: localhost
+  run_once: true
+  when:
+    - ntfy_deployment_summary_path | length > 0
+    - ntfy_deployment_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+    - ntfy_deployment_previous_release is match('^[0-9a-f]{40}$')
+    - item.reference is defined
+
+# Beside the poller's other state, which is where the path points, and on the
+# controller because the poller reads it there; on the NAS the two are one host.
+# It carries versions, SHAs and commit subjects, nothing secret, and is private
+# anyway like every other file in that directory.
+- name: Write the deployment summary for the poller to announce
+  ansible.builtin.copy:
+    content: >-
+      {{ ntfy_deployment_summary_changes
+         | deployment_summary_document(ntfy_deployment_summary_image_commits.results | default([]),
+                                       ntfy_deployment_summary_commits, platform_release_id,
+                                       ntfy_deployment_previous_release)
+         | to_nice_json }}
+    dest: "{{ ntfy_deployment_summary_path }}"
+    mode: "0600"
+  delegate_to: localhost
+  run_once: true
+  when:
+    - ntfy_deployment_summary_path | length > 0
+    - ntfy_deployment_release_moved | bool
+    - not ansible_check_mode
+    - ntfy_deployment_summary_current_source.exists | default(false)
+
 # Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
 # 2b. A refused publish fails the converge on purpose, exactly as the
 # per-service report does; an unreachable Pushover does not. Normal priority,
 # above the quiet per-service detail, and the Deployments application, which
-# carries nothing but this one message per release. Plain text on purpose: the
-# poller's own richer message replaces this one in a later stage of #558.
+# carries nothing but one message per release. Plain text, and only when no
+# poller asked for the summary: the poller's richer message replaces this one.
 - name: Publish the deployment summary
   ansible.builtin.include_tasks: pushover_publish.yml
   vars:
@@ -95,6 +156,7 @@
     ntfy_pushover_message: "{{ lookup('ansible.builtin.template', 'deployment_summary.j2') }}"
     ntfy_pushover_priority: 0
   when:
+    - ntfy_deployment_summary_path | length == 0
     - ntfy_deployment_release_moved | bool
     - not ansible_check_mode
     - ntfy_deployment_summary_current_source.exists | default(false)
@@ -102,6 +164,7 @@
 - name: Report the deployment summary withheld by check mode
   ansible.builtin.debug:
     msg: >-
-      Check mode publishes no deployment summary; a real run that moves the
-      release sends one Pushover message.
+      Check mode publishes and writes no deployment summary; a real run that
+      moves the release sends one Pushover message, or hands it to the
+      deployment poller to send.
   when: ansible_check_mode

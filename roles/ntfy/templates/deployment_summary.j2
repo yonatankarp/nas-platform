@@ -15,8 +15,8 @@ Images unchanged
 {% if shown_commits %}
 
 Changes
-{% for subject in shown_commits %}
-- {{ subject }}
+{% for commit in shown_commits %}
+- {{ commit.split('\t', 1) | last }}
 {% endfor %}
 {% if remaining_commits > 0 %}
 - and {{ remaining_commits }} more

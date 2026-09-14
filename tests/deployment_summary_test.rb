@@ -95,25 +95,37 @@ def with_controller_repository
     run.call("add", "README")
     run.call("commit", "-qm", "feat: first release")
     previous = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
-    File.write(File.join(repository, "README"), "second\n")
-    run.call("commit", "-qam", "fix: pin jellyfin 10.11.0")
+    # The pin lands in a Compose file beside an unrelated one, as it does in
+    # services/arr/compose.yml, so only a search for the exact reference can
+    # name the commit that introduced it.
+    File.write(File.join(repository, "compose.yml"),
+               "image: #{CURRENT_IMAGES.dig('jellyfin', 'jellyfin')}\n" \
+               "image: #{PREVIOUS_IMAGES.dig('ntfy', 'ntfy')}\n")
+    run.call("add", "compose.yml")
+    run.call("commit", "-qm", "fix: pin jellyfin 10.11.0")
+    introducing = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
     File.write(File.join(repository, "README"), "third\n")
     run.call("commit", "-qam", "chore(deps): update immich to v1.122.0")
     current = Open3.capture3("git", "-C", repository, "rev-parse", "HEAD").first.strip
-    yield directory, repository, previous, current
+    yield directory, repository, previous, current, introducing
   end
 end
 
-def run_ntfy_task(tasks_from, variables, *arguments)
+SUMMARY_PATH_VARIABLE = "PLATFORM_DEPLOYMENT_SUMMARY_PATH"
+
+# Unset unless a row sets it, so a variable in the shell running this file can
+# never turn the plain-summary rows into poller rows.
+def run_ntfy_task(tasks_from, variables, *arguments, environment: { SUMMARY_PATH_VARIABLE => nil })
   report = [{
     "name" => "Report the deployment",
     "ansible.builtin.include_role" => { "name" => "ntfy", "tasks_from" => tasks_from }
   }]
-  run_playbook(report, variables, *arguments, prefix: "nas-platform-deployment-summary-play-")
+  run_playbook(report, variables, *arguments, environment: environment,
+                                              prefix: "nas-platform-deployment-summary-play-")
 end
 
-def run_summary(variables, *arguments)
-  run_ntfy_task("deployment_summary", variables, *arguments)
+def run_summary(variables, *arguments, **options)
+  run_ntfy_task("deployment_summary", variables, *arguments, **options)
 end
 
 def run_report(variables, *arguments)
@@ -165,7 +177,7 @@ LONG_HEADLINE = "NAS deployed: #{LONG_NAMES.first(3).join(', ')} +37"
 LONG_PREVIOUS = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:1.0.0#{DIGEST_A}" }] }
 LONG_CURRENT = LONG_NAMES.to_h { |name| [name, { name => "docker.io/example/#{name}:2.0.0#{DIGEST_B}" }] }
 
-with_controller_repository do |directory, repository, previous, current|
+with_controller_repository do |directory, repository, previous, current, introducing|
   deploy_root = File.join(directory, "deploy")
   write_release(deploy_root, previous, PREVIOUS_IMAGES)
   release_dir = write_release(deploy_root, current, CURRENT_IMAGES)
@@ -207,7 +219,77 @@ with_controller_repository do |directory, repository, previous, current|
           "the summary must name the release and the one it replaced")
     check(failures, message.start_with?("Images\n- ") && message.include?("\n\nChanges\n- "),
           "the summary must read as plain text lists, not markup: #{message.inspect}")
+    check(failures, !message.include?(introducing) && !message.include?("\t"),
+          "the plain summary must strip the SHA the commit log now carries: #{message.inspect}")
   end
+
+  # --- the poller's half of the handshake (#558) -----------------------------
+  #
+  # The poller alone sets the variable, and with it set this file writes the
+  # summary and publishes NOTHING: the poller sends the one message once verify
+  # passes. Unset -- an operator converge, or a poller older than the variable --
+  # the rows above publish the plain summary. Either way exactly one message.
+  summary_path = File.join(directory, "state", "deployment-summary.json")
+  FileUtils.mkdir_p(File.dirname(summary_path))
+  poller_environment = { SUMMARY_PATH_VARIABLE => summary_path }
+  read_summary = lambda do
+    File.exist?(summary_path) ? JSON.parse(File.read(summary_path)) : nil
+  end
+
+  with_http_probe(0) do |port, requests|
+    _stdout, stderr, status = run_summary(
+      base.call(port, "deployment_bundle_previous_release_id" => previous),
+      environment: poller_environment
+    )
+    check(failures, status.success?,
+          "poller deployment summary fixture failed: #{stderr.lines.last&.strip}")
+    check(failures, requests.empty?,
+          "deployment_summary.yml published although the poller asked for the summary; the " \
+          "release would be announced twice: #{requests.map { |r| r.dig('form', 'title') }.inspect}")
+    check(failures, File.exist?(summary_path) && (File.stat(summary_path).mode & 0o777) == 0o600,
+          "the poller's summary must be written at mode 0600")
+    check(failures, read_summary.call == {
+      "version" => 1, "release" => current, "previous" => previous,
+      "images" => [{ "name" => "jellyfin", "kind" => "updated", "from" => "10.10.3",
+                     "to" => "10.11.0", "commit" => introducing }],
+      "commits" => [{ "sha" => current, "subject" => "chore(deps): update immich to v1.122.0" },
+                    { "sha" => introducing, "subject" => "fix: pin jellyfin 10.11.0" }]
+    }, "the poller's summary must name each moved image's introducing commit and every commit " \
+       "of the release: #{read_summary.call.inspect}")
+    written = File.read(summary_path)
+    check(failures, TOKENS.values.none? { |secret| written.include?(secret) } && !written.include?(USER_KEY),
+          "the poller's summary must carry no Pushover credential")
+  end
+
+  # Nothing moved, a review, or a selective converge: nothing to announce, and no
+  # file that could be mistaken for one.
+  [["an unmoved release", { "deployment_bundle_previous_release_id" => current }, []],
+   ["check mode", { "deployment_bundle_previous_release_id" => previous }, ["--check"]],
+   ["a selective converge", {}, []]].each do |label, overrides, arguments|
+    FileUtils.rm_f(summary_path)
+    with_http_probe(0) do |port, _requests|
+      _stdout, stderr, status = run_summary(base.call(port, overrides), *arguments,
+                                            environment: poller_environment)
+      check(failures, status.success?, "#{label} poller summary fixture failed: #{stderr.lines.last&.strip}")
+    end
+    check(failures, !File.exist?(summary_path), "#{label} must write no poller summary")
+  end
+
+  # A first install names no predecessor, has no Git range to read, and so no
+  # commit for any image.
+  FileUtils.rm_f(summary_path)
+  with_http_probe(0) do |port, _requests|
+    _stdout, stderr, status = run_summary(
+      base.call(port, "deployment_bundle_previous_release_id" => ""), environment: poller_environment
+    )
+    check(failures, status.success?,
+          "first-install poller summary fixture failed: #{stderr.lines.last&.strip}")
+  end
+  first = read_summary.call || {}
+  check(failures, first["previous"] == "" && first["commits"] == [] &&
+                  first["images"].to_a.map { |image| [image["kind"], image["commit"]] } ==
+                    [["added", nil], ["added", nil]],
+        "a first install must write an empty previous, no commits and no image commits: #{first.inspect}")
 
   # A refused summary names the Deployments token, the one it was sent with.
   with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _requests|
