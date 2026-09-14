@@ -643,7 +643,9 @@ def publish(config: Config, app: str, fields: dict) -> bool:
     the vault keys to fix and never a value, and nothing here raises.
     """
 
-    curl_config = getattr(config, f"pushover_{app}_curl_config")
+    # An application this script configures no curl config for reads as cannot
+    # publish, like an unconfigured one, rather than raising.
+    curl_config = getattr(config, f"pushover_{app}_curl_config", None)
     if curl_config is None:
         return False
     form = dict(fields, html="1")

@@ -612,6 +612,9 @@ class NotificationTest(PruneTestCase):
 
     def test_publish_never_raises(self):
         config = self.config()
+        # The release message's application, which the prune configures no curl for.
+        self.assertFalse(image_prune.publish(
+            config, "deployments", {"title": "t", "message": "m", "priority": 0}))
         with contextlib.redirect_stderr(io.StringIO()):
             # A NUL no argv can carry, through the real _run.
             self.assertFalse(image_prune.publish(
