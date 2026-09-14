@@ -581,6 +581,22 @@ STATIC_ROWS = [
     expects: "the Kapowarr indexer read must be a redacted, real, changeless read"
   },
   {
+    # A live run has deployed the pinned image, so a 404 there is a Kapowarr
+    # that is not the pinned one, and accepting it would skip the reconciliation.
+    name: "an indexer read that accepts a 404 on a live run",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        task = find_task(document) do |candidate|
+          candidate.dig("ansible.builtin.uri", "method") == "GET" &&
+            candidate.dig("ansible.builtin.uri", "url").to_s.include?("/api/indexers") &&
+            !Array(candidate["tags"]).include?("platform_verify_kapowarr")
+        end
+        task["ansible.builtin.uri"]["status_code"] = [200, 404]
+      end
+    },
+    expects: "the Kapowarr indexer read may accept a 404 only under --check"
+  },
+  {
     # The write reaches getcomics.org, so an ungated one would make every
     # converge depend on a third party and report a change it never needed.
     name: "a service order write that runs on every converge",
@@ -989,7 +1005,7 @@ STATIC_ROWS = [
           Array(candidate["tags"]).include?("platform_verify_kapowarr") &&
             candidate.key?("ansible.builtin.assert")
         end
-        task["ansible.builtin.assert"]["that"].delete("kapowarr_verify_getcomics_indexers | length == 1")
+        task["ansible.builtin.assert"]["that"].reject! { |value| value.include?("length == 1") }
       end
     },
     expects: "Kapowarr verification must assert its exact access and ownership outcomes"
@@ -1963,6 +1979,13 @@ PROGRAM_MUTATIONS = [
     indexer_read["check_mode"] == false && indexer_read["no_log"] == true',
     to: "true",
     rows: ["an indexer read that does not really run under --check"]
+  },
+  {
+    label: "the check-mode-only 404 acceptance check",
+    program: :static,
+    from: 'indexer_read.dig("ansible.builtin.uri", "status_code") == "{{ [200, 404] if ansible_check_mode else [200] }}"',
+    to: "true",
+    rows: ["an indexer read that accepts a 404 on a live run"]
   },
   {
     label: "the drift-gated service order write check",

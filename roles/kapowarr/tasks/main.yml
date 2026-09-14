@@ -517,17 +517,31 @@
 # Kapowarr v1.3.2 moved the download service order out of the settings interface
 # and onto the GetComics indexer record, as gc_service_preference: migration 47
 # copies the old global value into that record and deletes the config row (#671).
+#
+# A 404 is accepted under --check only, and it is the review of the upgrade
+# itself: Compose's dry run recreates nothing, so the container answering is
+# still the older image, which has no indexer interface. A live run deployed the
+# pin above, so a 404 there is a Kapowarr that is not the pinned one and fails.
 # Redacted: the request carries the application API key in its query string.
 - name: Read the deployed Kapowarr indexers
   ansible.builtin.uri:
     url: "{{ kapowarr_api }}/api/indexers?api_key={{ kapowarr_settings_api_key }}"
     method: GET
-    status_code: [200]
+    status_code: "{{ [200, 404] if ansible_check_mode else [200] }}"
     return_content: true
   register: kapowarr_indexers
   changed_when: false
   check_mode: false
   no_log: true
+
+- name: Report the Kapowarr download service order check mode defers
+  ansible.builtin.debug:
+    msg: >-
+      The running Kapowarr predates the indexer interface, so this review cannot
+      read the download service order where the pinned image keeps it. Starting
+      the pinned image migrates the global service_preference onto the GetComics
+      indexer, and a live run then reconciles kapowarr_service_preference there.
+  when: kapowarr_indexers.status | default(0) | int == 404
 
 # Identified by client_type, which the application registers and no request can
 # change; the title is editable through the same interface the write uses.
@@ -537,6 +551,7 @@
       {{ kapowarr_indexers.json.result | default([])
          | selectattr('client_type', 'defined')
          | selectattr('client_type', 'equalto', 'GetComics') | list }}
+  when: kapowarr_indexers.status | default(0) | int == 200
 
 # Kapowarr creates exactly one GetComics indexer on first start, migration 47
 # creates exactly one on upgrade, and a second is refused with
@@ -557,6 +572,7 @@
          'Kapowarr refuses to add a second one, so its database was edited outside the application;
          delete all but one under Settings, Indexers, then rerun.' }}
       No indexer was changed.
+  when: kapowarr_indexers.status | default(0) | int == 200
 
 # The declared order is applied over the deployed one exactly as it was over the
 # v1.3.1 setting, because the rule that shaped it survived the move: the indexer
@@ -579,6 +595,7 @@
     kapowarr_service_preference_declared: >-
       {{ (kapowarr_service_preference | select('in', kapowarr_service_order_base) | list)
          + (kapowarr_service_order_base | reject('in', kapowarr_service_preference) | list) }}
+  when: kapowarr_indexers.status | default(0) | int == 200
 
 - name: Report the planned Kapowarr download service order
   ansible.builtin.debug:
@@ -588,6 +605,7 @@
       {{ kapowarr_service_preference_declared | join(', ') }}.
   when:
     - ansible_check_mode
+    - kapowarr_indexers.status | default(0) | int == 200
     - kapowarr_service_preference_declared != kapowarr_service_preference_deployed
 
 # The indexer interface is NOT a partial merge, unlike the settings one: the
@@ -1023,15 +1041,26 @@
          selectattr('key', 'in', kapowarr_settings.keys() | list) | items2dict)
         == kapowarr_settings
       # The order conditions index the one record, so they follow the conditions
-      # that prove there is one: assert stops at the first that is false.
-      - kapowarr_verify_indexers.status | default(0) | int == 200
-      - kapowarr_verify_getcomics_indexers | length == 1
-      - kapowarr_verify_getcomics_indexers[0].gc_service_preference | default([], true) | length > 0
+      # that prove there is one: assert stops at the first that is false. A 404
+      # passes under --check only, for the reason the converge's indexer read
+      # gives: the review of the upgrade still reaches the older image. On a live
+      # run the first condition refuses a 404, so the alternatives after it can
+      # never be what passes.
       - >-
-        (kapowarr_verify_getcomics_indexers[0].gc_service_preference
-         | select('in', kapowarr_service_preference) | list)
-        == (kapowarr_service_preference
-            | select('in', kapowarr_verify_getcomics_indexers[0].gc_service_preference) | list)
+        kapowarr_verify_indexers.status | default(0) | int == 200
+        or (ansible_check_mode and kapowarr_verify_indexers.status | default(0) | int == 404)
+      - >-
+        kapowarr_verify_indexers.status | default(0) | int == 404
+        or kapowarr_verify_getcomics_indexers | length == 1
+      - >-
+        kapowarr_verify_indexers.status | default(0) | int == 404
+        or kapowarr_verify_getcomics_indexers[0].gc_service_preference | default([], true) | length > 0
+      - >-
+        kapowarr_verify_indexers.status | default(0) | int == 404
+        or (kapowarr_verify_getcomics_indexers[0].gc_service_preference
+            | select('in', kapowarr_service_preference) | list)
+           == (kapowarr_service_preference
+               | select('in', kapowarr_verify_getcomics_indexers[0].gc_service_preference) | list)
     fail_msg: >-
       Kapowarr is unreachable, or it no longer accepts exactly the vault-authored
       administrator, refuses everyone else, owns exactly the declared comics

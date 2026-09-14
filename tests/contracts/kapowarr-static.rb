@@ -291,6 +291,12 @@ if failures.empty?
   failures << "the Kapowarr indexer read must be a redacted, real, changeless read" unless
     indexer_read && indexer_read["changed_when"] == false &&
     indexer_read["check_mode"] == false && indexer_read["no_log"] == true
+  # Compose's dry run recreates nothing, so --check before the upgrade reaches
+  # the older image, which has no indexer interface. That 404 is the review and
+  # must not fail it; on a live run the pinned image is running and a 404 must.
+  failures << "the Kapowarr indexer read may accept a 404 only under --check" unless
+    indexer_read &&
+    indexer_read.dig("ansible.builtin.uri", "status_code") == "{{ [200, 404] if ansible_check_mode else [200] }}"
   # The indexer interface is not a partial merge: it reads every field out of the
   # body and refuses a missing one. A write must restate the record it read,
   # replacing only the order, or it would own fields nothing declares. It reaches
