@@ -215,8 +215,8 @@ STATIC_ROWS = [
     name: "a hub that lost the default network beside the alert relay bridge",
     break: lambda { |root|
       mutate_text(root, "services/beszel/compose.yml",
-                  "    networks:\n      - default\n      - alert-relay\n",
-                  "    networks:\n      - alert-relay\n")
+                  "    networks:\n      - default\n      - alert-bridge\n",
+                  "    networks:\n      - alert-bridge\n")
     },
     expects: "hub must join default and the external alert-relay bridge"
   },

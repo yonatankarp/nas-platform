@@ -137,9 +137,9 @@ proxy = compose.fetch("services").fetch("socket-proxy")
 # relay, and names default beside it: a service with a networks key joins only
 # what it lists, so dropping default cuts the portable agent off from hub:8090.
 refuse("hub must join default and the external alert-relay bridge, and nothing else may") unless
-  compose.fetch("services").fetch("hub")["networks"] == %w[default alert-relay] &&
+  compose.fetch("services").fetch("hub")["networks"] == %w[default alert-bridge] &&
     compose["networks"] == { "default" => {},
-                             "alert-relay" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" } } &&
+                             "alert-bridge" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" } } &&
     compose.fetch("services").none? { |name, service| name != "hub" && service.key?("networks") }
 refuse("NAS Intel agent image differs") unless
   intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:")

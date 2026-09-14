@@ -34,11 +34,12 @@ services:
       dev.nas-platform.alert-relay.script-sha256: ${ALERT_RELAY_SCRIPT_SHA256:?}
     user: "${NAS_UID:?}:${NAS_GID:?}"
     command: [python, /app/alert_relay.py]
-    # alert-relay is where Beszel's hub reaches this relay; default has to be
+    # alert-bridge is where Beszel's hub reaches this relay (a key named apart
+    # from the service it serves); default has to be
     # named too, or Dozzle loses alert-relay:8081.
     networks:
       - default
-      - alert-relay
+      - alert-bridge
     volumes:
       - ${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro
       - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state
@@ -143,6 +144,6 @@ services:
 networks:
   default: {}
   # Created by host_prep, never by this project: Beszel's hub joins it too.
-  alert-relay:
+  alert-bridge:
     external: true
     name: ${PLATFORM_ALERT_RELAY_NETWORK:?}
