@@ -60,6 +60,7 @@ def report_input
     "seerr_port" => 35_055,
     "nextcloud_port" => 38_084,
     "vaultwarden_port" => 38_086,
+    "karakeep_port" => 38_087,
     "git_revision" => "abc123",
     "vault_checksum" => "0" * 64,
     "diagnostic_locations" => [],

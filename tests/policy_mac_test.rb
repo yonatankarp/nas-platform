@@ -235,7 +235,7 @@ end
 # and the respelling check below stay, because the rule is what a second port of
 # an existing service will need again and an unexercised rule is cheaper to keep
 # than to rediscover.
-MAC_PORT_ROSTER_FLOOR = 20
+MAC_PORT_ROSTER_FLOOR = 21
 mac_port_roster = mac_lib[/^MAC_SERVICE_PORT_ORDER='([^']*)'/m, 1].to_s.split
 check(failures, mac_port_roster.length >= MAC_PORT_ROSTER_FLOOR &&
                 mac_port_roster.uniq.length == mac_port_roster.length &&
@@ -490,7 +490,7 @@ unless mac_contract_arms.empty? || mac_registered_aliases.empty?
 end
 check(failures, mac_lib.include?("mac_assert_service_coverage()") &&
                 mac_lib.include?("mac_registry_services()") &&
-                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy vaultwarden'"),
+                mac_lib.include?("MAC_UNREGISTERED_SERVICES='ntfy vaultwarden karakeep'"),
       "Mac lifecycle must be able to hold a hook group to the contract registry")
 #
 # Drift, the fifth group, never collapsed and does not need to: no two services
@@ -601,14 +601,7 @@ MAC_REVIEW_EXEMPTIONS = {
   "arr" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
            "proved by its Docker integration suite",
   "downloaders" => "its Phase 1 runtime is default-disabled in the Mac lane and " \
-                   "proved by its Docker integration suite",
-  # #551 landed Karakeep dark: karakeep_deployment_enabled is false and the Mac
-  # lane converges the project to `state: absent`, so a review entry would tell
-  # an operator to exercise a service the lane deliberately did not deploy. The
-  # flip removes this exemption and writes the entry;
-  # tests/deployment_gate_coverage_test.rb is what makes that mandatory.
-  "karakeep" => "its stack is gated off until the change that turns it on, and " \
-                "its integration suite proves the bootstrap and the wiring"
+                   "proved by its Docker integration suite"
 }.freeze
 
 # One bullet may cover several services -- "Audiobookshelf, Jellyfin, and Komga"

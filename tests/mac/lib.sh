@@ -232,9 +232,16 @@ mac_validate_integration_callback() {
 # through an agent with either value empty, so blanking both closes it and keeps
 # the real pair out of the sandbox's mode-0644 settings.json.
 # tests/seerr_contract_test.rb refuses this function losing the line.
+#
+# karakeep_deployment_enabled for the reason nextcloud's is here: the lane
+# requests the state its hooks account for rather than inheriting it, so turning
+# the platform switch back off does not quietly drop the service from a lane that
+# still names it. Karakeep needs nothing else: inventory/mac.yml's 127.0.0.1 is a
+# valid NEXTAUTH_URL host, and its port comes from the roster below.
 mac_ansible_playbook() {
   set -- "$@" -e nas_compose_minimum=2.24.4 -e nextcloud_deployment_enabled=true \
     -e vaultwarden_deployment_enabled=true -e ntfy_deployment_enabled=true \
+    -e karakeep_deployment_enabled=true \
     -e vaultwarden_domain=https://vaultwarden.mac.invalid \
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e 'deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \
@@ -297,7 +304,8 @@ mac_target_container_names() {
         "$mac_project-kapowarr" "$mac_project-bindery" "$mac_project-trailarr" \
         "$mac_project-seerr" "$mac_project-nextcloud" \
         "$mac_project-nextcloud-cron" "$mac_project-nextcloud-db" \
-        "$mac_project-nextcloud-cache"
+        "$mac_project-nextcloud-cache" "$mac_project-karakeep" \
+        "$mac_project-karakeep-chrome" "$mac_project-karakeep-meilisearch"
       ;;
     *) mac_die 'proof platform is invalid' ;;
   esac
@@ -334,7 +342,7 @@ mac_target_container_names() {
 # one transformation, and holds it whether or not an entry currently uses it.
 MAC_SERVICE_PORT_ORDER='beszel ntfy dozzle audiobookshelf komga jellyfin immich
 paperless radarr sonarr prowlarr bazarr sabnzbd pinchflat kapowarr bindery
-trailarr seerr nextcloud vaultwarden'
+trailarr seerr nextcloud vaultwarden karakeep'
 
 # How many services the roster holds, for callers validating a list length
 # against it. Resetting the positional parameters inside a function does not
@@ -393,7 +401,12 @@ mac_container_name() {
 # tests/mac/verify.sh runs here through platform_verify_vaultwarden like every
 # other tag. Naming it here is what puts it on the coverage rosters, so the four
 # collapsed hooks have to account for it rather than pass over it in silence.
-MAC_UNREGISTERED_SERVICES='ntfy vaultwarden'
+# Karakeep is the third, for Vaultwarden's route with a different reason: its
+# vault identity is an administrator the converge registers through the API, and
+# roles/karakeep/tasks/verify.yml already signs in as it and requires the search
+# index and browser connected and the signup door closed. A contract would repeat
+# that verification, so tests/mac/verify.sh runs platform_verify_karakeep instead.
+MAC_UNREGISTERED_SERVICES='ntfy vaultwarden karakeep'
 
 # Verification keeps four infrastructure-specific hooks ahead of the shared
 # contract runner. This is the one canonical roster used both by verify.sh for

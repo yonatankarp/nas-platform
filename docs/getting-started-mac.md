@@ -257,6 +257,16 @@ active service:
   name that can never resolve, so WebAuthn and any origin-bound flow are out
   of scope here; and the Tailscale Serve front a Bitwarden client actually
   talks to exists only on the NAS.
+- Karakeep: sign in with the vault administrator identity, then confirm that
+  registering a second account is refused. Karakeep makes its first registered
+  account the administrator, so the converge opened signups for exactly one
+  request with the application published on 127.0.0.1 only, registered the
+  vault administrator, and closed the door again; a refused sign-up is that
+  door. Save a disposable text note rather than a link, so the headless browser
+  fetches nothing, and confirm it survives recreation and is found by search —
+  the note is in `db.db` and the search is Meilisearch, so this checks both
+  stores. The administrator password is not repairable: nothing here resets it,
+  and a vault password that no longer signs in fails every converge by name.
 
 After the review, produce the report and clean only the validated sandbox:
 

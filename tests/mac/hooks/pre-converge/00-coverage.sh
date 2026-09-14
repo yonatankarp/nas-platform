@@ -58,5 +58,6 @@ bindery=its only fixture would be a real Usenet download, which this lane has no
 trailarr=its only fixture would be a real trailer download from YouTube, which this lane must not make, so its converge has nothing to read
 seerr=its fixtures are the two permission identities the converge itself creates, so there is nothing for it to read off disk first
 nextcloud=the installer writes config.php on first start and the converge reconciles the trusted domains inside it afterwards, so nothing has to exist on disk before run_site
-vaultwarden=its converge reads nothing off disk: the store belongs to the container and the environment it is given is rendered by the converge itself' \
+vaultwarden=its converge reads nothing off disk: the store belongs to the container and the environment it is given is rendered by the converge itself
+karakeep=its converge reads nothing off disk first: the administrator is registered through the API by the converge itself, and the environment it starts on is rendered by the converge too' \
   "$mac_pre_converge_hooks" ''
