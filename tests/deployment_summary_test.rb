@@ -488,10 +488,11 @@ check_report(failures, "recreated", RECREATED, 1) do |request|
   form = request["form"] || {}
   check_delivery_form(failures, "a service report", request, "-1",
                       token: "vault_pushover_containers_token", extras: REPORT_EXTRAS)
-  check(failures, form["title"] == "Komga deployed (recreated)",
-        "a recreated service must say so: #{form['title'].inspect}")
-  check(failures, form["message"] == "<b>Komga</b>\nCompose recreated it at release #{RELEASE[0, 12]}",
-        "a recreated service must name itself in bold and the release it was recreated at: " \
+  check(failures, form["title"] == "♻️ Komga recreated",
+        "a recreated service must say so in the platform's style: #{form['title'].inspect}")
+  check(failures, form["message"] == "<b>Komga</b> was recreated by Compose\n" \
+                                     "🏷️ <font color=\"#9e9e9e\">release #{RELEASE[0, 12]}</font>",
+        "a recreated service must name itself in bold and the release it was recreated at in grey: " \
         "#{form['message'].inspect}")
 end
 
@@ -501,13 +502,14 @@ HOSTILE_SERVICE = %(Paperless & "Tika" <i>'x'</i>)
 check_report(failures, "a service name carrying markup",
              RECREATED.merge("deployment_report_service" => HOSTILE_SERVICE), 1) do |request|
   form = request["form"] || {}
-  check(failures, form["title"] == "#{HOSTILE_SERVICE} deployed (recreated)",
+  check(failures, form["title"] == "♻️ #{HOSTILE_SERVICE} recreated",
         "the report title must stay plain text: #{form['title'].inspect}")
   check(failures, form["message"].to_s.start_with?(
-    "<b>Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;</b>\n"
+    "<b>Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;</b> was recreated by Compose\n"
   ), "every value in the report's HTML must be escaped: #{form['message'].inspect}")
-  check(failures, form["message"].to_s.scan("<").length == 2,
-        "the report's only markup must be its own <b></b>: #{form['message'].inspect}")
+  check(failures, form["message"].to_s.scan("<").length == 4 &&
+                  form["message"].to_s.include?("<font color=\"#9e9e9e\">release #{RELEASE[0, 12]}</font>"),
+        "the report's only markup must be its own <b></b> and grey <font></font>: #{form['message'].inspect}")
 end
 
 # Escaping expands, and a cut after escaping can split an entity or the closing
@@ -519,7 +521,8 @@ check_report(failures, "a service name long enough to overrun the message",
   message = (request["form"] || {})["message"].to_s
   check(failures, message.length <= 1024 && !message.include?("…"),
         "an overlong service name must be bounded before escaping, not cut after: #{message.length}")
-  check(failures, message.start_with?("<b>#{'&amp;' * 128}</b>\n"),
+  check(failures, message.start_with?("<b>#{'&amp;' * 128}</b> was recreated by Compose\n") &&
+                  message.end_with?("release #{RELEASE[0, 12]}</font>"),
         "an overlong service name must keep whole entities and its closing tag: #{message[0, 40].inspect}")
 end
 
@@ -538,7 +541,7 @@ check_report(failures, "unmoved release with a recreation", {
                "deployment_bundle_previous_release_id" => RELEASE,
                "deployment_report_changed" => true
              }, 1) do |request|
-  check(failures, (request["form"] || {})["title"] == "Komga deployed (recreated)",
+  check(failures, (request["form"] || {})["title"] == "♻️ Komga recreated",
         "a recreation outside a release move must still be reported")
 end
 

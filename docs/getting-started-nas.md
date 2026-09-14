@@ -316,7 +316,7 @@ proof therefore arrived as an empty "New message", once per publisher, on every
 converge.
 
 A service reports its own deployment through Pushover's Containers application
-at priority -1, a badge with no sound — `Komga deployed (recreated)` — only when
+at priority -1, a badge with no sound — `♻️ Komga recreated` — only when
 Compose actually replaced its containers, and the message expires from the
 device after a day. The controller sends it with the Containers application's
 token and the account's user key, so no service needs a credential of its own
