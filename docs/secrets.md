@@ -1211,14 +1211,18 @@ repository vault remains encrypted:
   not revoked by rotating it.
 - Karakeep's `db.db` in its data root, which belongs in this class rather than
   merely in the `critical` recovery class that root already carries: it holds
-  every account's bcrypt password hash and every API key a user has issued. How
-  those keys are stored at rest has not been verified against the pin, so treat
-  them as readable. It holds no sessions -- they are JWTs signed with the
-  `NEXTAUTH_SECRET` in the service's `.env`, and a sign-in writes nothing -- so
-  a copy of the database mints no login by itself. The archived pages, assets and
-  screenshots beside it, and the Meilisearch index in its own root, are user
-  data rather than credentials; a page archived from behind a login can still
-  show whatever that page showed.
+  every account's bcrypt password hash (`$2a$`), which is what an offline guess
+  is made against. It does not hold usable API keys: a key has the form
+  `ak2_<keyId>_<secret>`, and the `apiKey` table keeps only the key ID and a
+  base64 SHA-256 hash of the 128-bit secret. A raw byte search of `db.db` and its
+  `-wal` for a live key's secret found nothing. It holds no sessions either: the
+  `session` table stayed empty after a sign-in, because the session cookie is an
+  encrypted JWT keyed from the `NEXTAUTH_SECRET` in the service's `.env`. So a
+  copy of the database mints no API access and no login by itself; all three
+  were measured against the pinned image and a live database. The archived
+  pages, assets and screenshots beside it, and the Meilisearch index in its own
+  root, are user data rather than credentials; a page archived from behind a
+  login can still show whatever that page showed.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See
