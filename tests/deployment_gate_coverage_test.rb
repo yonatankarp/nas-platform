@@ -195,10 +195,19 @@ ROOT = File.expand_path("..", __dir__)
 # guard fighting it. Do not "correct" it to 15 or 16. ntfy stays in the Mac
 # roster and in every lane's tags because the service is still implemented until
 # stage 4c removes it, at which point every one of these is re-derived again.
+#
+# THE SEVENTH TIME WAS KARAKEEP TURNING ON, on top of that. #551's second chunk
+# flipped Karakeep's gate and rebased onto ntfy's, so the numbers were read off
+# the merged tree once more, every floor at 9999: 18 implemented, 4 gate
+# variables, 17 subjects (ntfy is the one dark gate now), a 18-name Mac roster, 17
+# tagged rows, 18 lane tags, 32 site tags. Only MAC_ROSTER_FLOOR moved, 17 to 18,
+# because Karakeep joined MAC_UNREGISTERED_SERVICES. SUBJECT_FLOOR stays 14 by
+# its rule, 18 - 4, although 17 subjects converge: a lit gate is not a reason to
+# raise it, for the same reason a dark one was not a reason to lower it.
 IMPLEMENTED_FLOOR = 18       # services/manifest.yml holds 18 implemented services
 GATE_VARIABLE_FLOOR = 4      # nextcloud, vaultwarden, karakeep and ntfy _deployment_enabled
 SUBJECT_FLOOR = 14           # 18 implemented, of which at most the 4 gated ones may be dark
-MAC_ROSTER_FLOOR = 17         # 15 registered contracts plus ntfy and vaultwarden
+MAC_ROSTER_FLOOR = 18         # 15 registered contracts plus ntfy, vaultwarden and karakeep
 TAGGED_LANE_FLOOR = 17        # the acquisition and service rows of tests/ci/suites.conf
 LANE_TAG_FLOOR = 18           # the distinct manifest service tags those rows converge
 SITE_TAG_FLOOR = 32           # the role tags site.yml declares
