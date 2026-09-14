@@ -79,6 +79,7 @@ argument_specs:
       vault_nextcloud_db_username: {type: str, required: true}
       vault_nextcloud_db_password: {type: str, required: true}
       vault_nextcloud_cache_password: {type: str, required: true}
+      vault_karakeep_admin_email: {type: str, required: true}
       vault_karakeep_nextauth_secret: {type: str, required: true}
       vault_karakeep_meili_master_key: {type: str, required: true}
       vault_karakeep_admin_password: {type: str, required: true}

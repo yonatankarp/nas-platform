@@ -37,7 +37,7 @@
     body_format: form-urlencoded
     body:
       csrfToken: "{{ (karakeep_verify_csrf.json | default({})).csrfToken | default('') }}"
-      email: "{{ karakeep_admin_email }}"
+      email: "{{ vault_karakeep_admin_email }}"
       password: "{{ vault_karakeep_admin_password }}"
       json: "true"
     headers:
@@ -107,8 +107,14 @@
         | default(false) | bool
     fail_msg: >-
       Karakeep did not verify. Sign-in {{ karakeep_verify_login.status | default('none') }}
-      (401: the vault administrator no longer signs in); connection check
-      {{ karakeep_verify_connections.status | default('none') }} with search
+      (401 means the vault administrator no longer signs in: its password was
+      rotated in the vault or changed in the interface); connection check
+      {{ karakeep_verify_connections.status | default('none') }} (403 means the
+      vault identity signs in but is not an administrator: a non-admin account
+      holds the email and password the vault holds, registered by hand or by a
+      release of this role from before it refused to register over existing
+      accounts -- sign in as the administrator and compare the account list in
+      the administrator settings with the email the vault holds) with search
       {{ (karakeep_verify_connections.json | default({})).result.data.json.searchEngine
          | default('unread') }} and browser
       {{ (karakeep_verify_connections.json | default({})).result.data.json.browser
@@ -129,7 +135,7 @@
   ansible.builtin.debug:
     msg: >-
       karakeep_deployment_enabled is false, so there is no Karakeep instance to
-      query. A live run would sign in as {{ karakeep_admin_email }}, require
+      query. A live run would sign in as the vault administrator, require
       admin.checkConnections to report Meilisearch and chrome connected, and
       require config.clientConfig to report signups disabled.
   when: not karakeep_deployment_enabled | bool

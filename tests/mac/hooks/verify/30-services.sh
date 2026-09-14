@@ -47,5 +47,6 @@ done
 mac_assert_service_coverage verify 30-services.sh "$mac_verified" \
   'arr=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
 downloaders=its Phase 1 runtime is default-disabled in the Mac lane and proved by its Docker integration suite
-vaultwarden=it has no contract suite of its own, because it reads no vault credential to sign in with; the Mac lane verifies it through the platform_verify_vaultwarden tasks tests/mac/verify.sh runs, which knock on its registration door and compare the running version against the pin' \
+vaultwarden=it has no contract suite of its own, because it reads no vault credential to sign in with; the Mac lane verifies it through the platform_verify_vaultwarden tasks tests/mac/verify.sh runs, which knock on its registration door and compare the running version against the pin
+karakeep=it has no contract suite of its own; the Mac lane verifies it through the platform_verify_karakeep tasks tests/mac/verify.sh runs, which sign in as the vault administrator and require the search index and browser connected and the signup door closed' \
   "$MAC_VERIFY_INFRASTRUCTURE_HOOKS" "$MAC_VERIFY_COVERAGE_NEUTRAL_HOOKS"

@@ -56,9 +56,20 @@
       {{ platform_runtime_dir }}/services/karakeep/.env does not exist, so every
       Compose invocation in this role is deferred: the deployed Compose file
       interpolates ${KARAKEEP_DATA_PATH:?} and its siblings and Compose refuses
-      the project without them, `state: absent` included. Under --check that is
-      expected, because check mode writes nothing. On a live run it means the
-      runtime directory was removed; converge again.
+      the project without them, `state: absent` included.
+      {% if ansible_check_mode %}Under --check that is expected, because check
+      mode renders nothing: this is a host Karakeep has never been deployed to,
+      or a deployed host whose runtime directory was removed, and the two look
+      the same until a live run renders the file.
+      {% if karakeep_deployment_enabled | bool %}A live run would render it,
+      start the stack and, if the administrator held in the vault cannot sign in
+      -- which on a first deployment it cannot -- register that administrator,
+      whose login is the administrator email held in the vault, with signups open
+      only while the application is published on 127.0.0.1, and close signups
+      again before the role yields, in the same play.{% endif %}
+      {% else %}On a live run the render above writes the file first, so
+      reaching this means it was removed between those two tasks; converge
+      again.{% endif %}
   when: not karakeep_runtime_env.stat.exists
 
 - name: Report the disabled Karakeep deployment

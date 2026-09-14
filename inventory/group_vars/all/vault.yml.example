@@ -181,12 +181,14 @@ vault_nextcloud_db_username: example_nextcloud
 vault_nextcloud_db_password: example-password
 vault_nextcloud_cache_password: example-password
 
-# Karakeep. All three are 64 lowercase hex, generated with `openssl rand -hex 32`.
+# Karakeep. The administrator email is its login identity and is never mailed.
+# The other three are 64 lowercase hex, generated with `openssl rand -hex 32`.
 # The session-signing secret and the Meilisearch master key are read on every
-# start; the administrator password is registered once, by roles/karakeep's
-# bootstrap, and is not reset from here afterwards. Quoted on purpose: an
-# unquoted all-digit value loads as a YAML integer, not a string, and the
-# contract refuses it.
+# start; the administrator email and password are registered once, by
+# roles/karakeep's bootstrap, and are not reset from here afterwards. Quoted on
+# purpose: an unquoted all-digit value loads as a YAML integer, not a string,
+# and the contract refuses it.
+vault_karakeep_admin_email: admin@example.invalid
 vault_karakeep_nextauth_secret: "8888888888888888888888888888888888888888888888888888888888888888"
 vault_karakeep_meili_master_key: "9999999999999999999999999999999999999999999999999999999999999999"
 vault_karakeep_admin_password: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

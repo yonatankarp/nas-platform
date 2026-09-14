@@ -60,6 +60,12 @@ private keys, password hashes, rendered environment files, or application logs.
       serves nothing but its own "the admin panel is disabled" body. The
       lane's origin is `https://vaultwarden.mac.invalid` and there is no
       Tailscale front here, so nothing origin-bound is in scope.
+- [ ] Karakeep: sign in with the vault administrator identity and confirm the
+      sign-up link is refused — the converge opened that door for one request
+      on 127.0.0.1 and closed it again. Save a disposable text note rather than
+      a link, so chrome fetches nothing, and confirm it is still there and
+      searchable after recreation. Confirm the administrator settings report
+      the search engine and browser connected.
 - [ ] Beszel: inspect metrics/thresholds. Do not test the stored webhook: it
       is Pushover, and this lane's vault holds stand-ins for the account it
       names, so it can only refuse.

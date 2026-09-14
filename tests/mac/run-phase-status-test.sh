@@ -95,7 +95,8 @@ vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
   --trailarr-port 37889 \
   --seerr-port 35055 \
   --nextcloud-port 38084 \
-  --vaultwarden-port 38086
+  --vaultwarden-port 38086 \
+  --karakeep-port 38087
 ruby -rjson -e '
   input = JSON.parse(File.read(ARGV.fetch(0)))
   abort "report retained retired migration identity" if

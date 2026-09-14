@@ -44,6 +44,7 @@ from vault_credential_schema import (  # noqa: E402
     DISTINCT_KEY_GROUPS,
     EMAIL,
     EXACT,
+    KARAKEEP_EMAIL,
     HEX_32,
     DOZZLE_ALERT_RELAY_TOKEN_PLACEHOLDERS,
     HEX_64,
@@ -78,6 +79,7 @@ PATTERN_SAMPLES = {
     BCRYPT_HASH.pattern: (HASH, HASH + "x"),
     DATABASE_IDENTIFIER.pattern: ("platform_db", "platform_db;drop"),
     EMAIL.pattern: ("person@example.invalid", "person@example.invalid with words"),
+    KARAKEEP_EMAIL.pattern: ("person@example.invalid", "person@example.invalid\n"),
     SSH_ED25519_PUBLIC_KEY.pattern: (AGENT_KEY, AGENT_KEY + " comment"),
     UUID.pattern: (UUID_VALUE, UUID_VALUE + "-extra"),
     HEX_32.pattern: ("0" * 32, "0" * 32 + "x"),
@@ -127,6 +129,7 @@ MALFORMED = {
     BCRYPT_HASH.pattern: "$2b$10$" + "A" * 52,
     DATABASE_IDENTIFIER.pattern: "9platform",
     EMAIL.pattern: "person.example.invalid",
+    KARAKEEP_EMAIL.pattern: "person@nas",
     SSH_ED25519_PUBLIC_KEY.pattern: "ssh-rsa AAAAC3NzaC1lZDI1NTE5AAAAIA==",
     UUID.pattern: "00000000-0000-9000-a000-000000000000",
     HEX_32.pattern: "A" * 32,
@@ -486,6 +489,32 @@ class VaultCredentialSchemaTest(unittest.TestCase):
                 with self.subTest(key):
                     self.assertIn(f"{key}: does not match the required format",
                                   errors_for(**{key: MALFORMED[argument.pattern]}))
+
+    def test_the_karakeep_administrator_email_is_what_karakeep_accepts_in_lowercase(self):
+        # Karakeep refuses `admin@nas` with 400 invalid_format on every converge,
+        # stores the address as given and signs in case-sensitively, so its rule
+        # is Karakeep's own pattern, lowercase only. Immich, Komga and Beszel keep
+        # EMAIL.
+        key = "vault_karakeep_admin_email"
+        refused = (
+            "admin@nas",
+            "Admin@example.com",
+            "admin@example.com\n",
+            "\tadmin@example.com",
+            ".a@example.com",
+            "a..b@example.com",
+        )
+        accepted = (
+            "nasadmin@example.invalid",
+            "first.last+tag@sub.example.co",
+        )
+        for value in refused:
+            with self.subTest(f"refused {value!r}"):
+                self.assertIn(f"{key}: does not match the required format",
+                              errors_for(**{key: value}))
+        for value in accepted:
+            with self.subTest(f"accepted {value!r}"):
+                self.assertEqual(errors_for(**{key: value}), [])
 
     def test_only_the_bazarr_submitted_api_keys_require_a_hex_letter(self):
         # Pinned rather than derived: widening the rule to a key Bazarr never

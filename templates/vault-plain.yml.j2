@@ -117,9 +117,11 @@ vault_nextcloud_db_username: {{ nextcloud_db_username }}
 vault_nextcloud_db_password: {{ nextcloud_db_password }}
 vault_nextcloud_cache_password: {{ nextcloud_cache_password }}
 
-{# Karakeep's session-signing secret, Meilisearch master key and administrator
-   password, all 64 lowercase hex. The administrator is registered by the role's
-   first converge; nothing here resets it afterwards. #}
+{# Karakeep's administrator email, then its session-signing secret, Meilisearch
+   master key and administrator password, all 64 lowercase hex. The administrator
+   is registered by the role's first converge; nothing here renames or resets it
+   afterwards. #}
+vault_karakeep_admin_email: {{ karakeep_admin_email }}
 vault_karakeep_nextauth_secret: {{ karakeep_nextauth_secret }}
 vault_karakeep_meili_master_key: {{ karakeep_meili_master_key }}
 vault_karakeep_admin_password: {{ karakeep_admin_password }}

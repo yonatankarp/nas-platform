@@ -214,14 +214,18 @@ ansible-playbook -i inventory/remote.yml site.yml --ask-vault-pass
 
 Record the Git commit, encrypted vault checksum, recap, application checks, and
 operator decision without recording secrets. Existing NAS credentials must work
-unchanged for sixteen of the seventeen implemented service projects; the other,
-Karakeep, is dark. Karakeep landed dark in #551 and has nothing deployed to
-check yet. ntfy, the alerting sink, was switched off in #558 stage 4a once every
-publisher had moved to Pushover, and stage 4c removed it, so it has no
-credential left to check. Neither of the other two gated
-services carries a gated-off caveat any more: Nextcloud's switch was flipped in #500 — and #501 removed Seafile, which
-it replaced as this platform's file-sync service — and Vaultwarden's after #547
-landed the stack dark. Vaultwarden is the one whose credential check is not a
+unchanged for all seventeen implemented service projects. ntfy, the alerting
+sink, was switched off in #558 stage 4a once every publisher had moved to
+Pushover, and stage 4c removed it, so it has no credential left to check. None
+of the three gated services carries a gated-off caveat any more: Nextcloud's
+switch was flipped in #500 — and #501 removed Seafile, which it replaced as this
+platform's file-sync service — Vaultwarden's after #547 landed the stack dark,
+and Karakeep's after #551 did the same. Karakeep's first converge registers the
+vault administrator itself, so its check is an ordinary sign-in with
+`vault_karakeep_admin_email` and the vault password. A failure there is not
+repaired by a later converge: when that identity no longer signs in and an
+account already exists, the converge refuses by name before it ever opens
+signups. Vaultwarden is the one whose credential check is not a
 credential check: it is the only service here that holds no vault-authored
 identity, because master passwords are user-owned and the server never learns
 them, so what there is to check is the door — that registration answers as the

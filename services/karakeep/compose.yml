@@ -147,13 +147,26 @@ services:
   meilisearch:
     <<: *service-defaults
     container_name: karakeep-meilisearch
-    # MEILISEARCH MIGRATES ITS OWN ON-DISK INDEX and refuses to open one written
-    # by a different version, so a bump is one-way in the same sense as the
-    # application's. The index is recovery: cache -- Karakeep rebuilds it from
-    # the data root -- which makes a refusal recoverable by emptying the
-    # directory, but it is still a crash loop until somebody does. Withheld from
-    # automerge in renovate.json and guarded by image_downgrade_guard like the
-    # application.
+    # MEILISEARCH MIGRATES ITS OWN ON-DISK INDEX, BUT ONLY WHEN TOLD TO, and
+    # MEILI_UPGRADE_DB below is the telling. Without it the engine refuses an
+    # index an older version wrote. Measured: v1.53.2 on a v1.41.0 index
+    # crash-looped with "Your database version (1.41.0) is incompatible with your
+    # current engine version (1.53.2)", and roles/container_health refused it on
+    # every tick -- #511's shape. With it set, a converge from a restored v1.41.0
+    # index came up with search connected and the bookmark still found, and the
+    # next converge changed nothing. It stays set permanently: a start with
+    # nothing to upgrade works with it set too. MEILI_EXPERIMENTAL_DUMPLESS_UPGRADE
+    # is ignored by this engine and --experimental-dumpless-upgrade is rejected,
+    # so neither is used.
+    #
+    # THE UPGRADE IS STILL ONE-WAY. An older engine does not open an index a newer
+    # one upgraded, so roles/image_downgrade_guard still refuses a pin older than
+    # one that has run here, and renovate.json still withholds this image's
+    # version updates from automerge: an upgrade that succeeds is exactly as
+    # irreversible as one that fails. The index is recovery: cache -- Karakeep
+    # rebuilds it from the data root -- so an index stranded by a bad pin is
+    # recoverable by emptying the directory, but that is a rebuild nobody asked
+    # for.
     image: docker.io/getmeili/meilisearch:v1.41.0@sha256:860fa4baed04ae1c235de870edab0c8006227546dea1bbb6411fbfc5e27cf1db
     cpus: 1.0
     labels:
@@ -165,6 +178,9 @@ services:
       TZ: ${TZ:?}
       MEILI_NO_ANALYTICS: "true"
       MEILI_MASTER_KEY: ${KARAKEEP_MEILI_MASTER_KEY:?}
+      # Upgrade an index an older engine wrote, in place, on start. The comment
+      # beside `image:` carries the measurement and why it stays set.
+      MEILI_UPGRADE_DB: "true"
     healthcheck:
       <<: *healthcheck-defaults
       test: [CMD-SHELL, "wget -q -O /dev/null http://127.0.0.1:7700/health || exit 1"]

@@ -197,18 +197,28 @@ ROOT = File.expand_path("..", __dir__)
 # stack went dark, and the rule is what lets the next gate go dark without a
 # guard fighting it. Do not "correct" it to 15 or 16.
 #
-# THE SEVENTH TIME IS THE REMOVAL THE SIXTH ANTICIPATED. #558 stage 4c deleted
-# ntfy, and every floor was again set to an impossible value and the check run:
-# 17 implemented, 3 gate variables, 16 subjects, a 16-name Mac roster, 17 tagged
-# rows, 17 lane tags, 31 site tags. The tagged rows did not move, because ntfy
-# never had a row of its own, and the site tags fell by one because `monitoring`
-# is still Beszel's and Dozzle's. SUBJECT_FLOOR did not move either, by its rule:
-# a gate variable and an implemented service left together, and 17 - 3 is the
-# same 14 that 18 - 4 was.
+# THE SEVENTH TIME WAS KARAKEEP TURNING ON, on top of that. #551's second chunk
+# flipped Karakeep's gate and rebased onto ntfy's, so the numbers were read off
+# the merged tree once more, every floor at 9999: 18 implemented, 4 gate
+# variables, 17 subjects (ntfy is the one dark gate now), a 18-name Mac roster, 17
+# tagged rows, 18 lane tags, 32 site tags. Only MAC_ROSTER_FLOOR moved, 17 to 18,
+# because Karakeep joined MAC_UNREGISTERED_SERVICES. SUBJECT_FLOOR stays 14 by
+# its rule, 18 - 4, although 17 subjects converge: a lit gate is not a reason to
+# raise it, for the same reason a dark one was not a reason to lower it.
+#
+# THE EIGHTH TIME IS THE REMOVAL THE SIXTH ANTICIPATED. #558 stage 4c deleted
+# ntfy after Karakeep was lit, and every floor was again set to an impossible
+# value on the merged tree and the check run: 17 implemented, 3 gate variables,
+# 17 subjects, a 17-name Mac roster, 17 tagged rows, 17 lane tags, 31 site tags.
+# IMPLEMENTED_FLOOR, GATE_VARIABLE_FLOOR, MAC_ROSTER_FLOOR and LANE_TAG_FLOOR each
+# fell by one, and SITE_TAG_FLOOR by one because `monitoring` is still Beszel's
+# and Dozzle's. The tagged rows did not move, because ntfy never had a row of its
+# own. SUBJECT_FLOOR did not move either, by its rule: a gate variable and an
+# implemented service left together, and 17 - 3 is the same 14 that 18 - 4 was.
 IMPLEMENTED_FLOOR = 17       # services/manifest.yml holds 17 implemented services
 GATE_VARIABLE_FLOOR = 3      # nextcloud, vaultwarden and karakeep _deployment_enabled
 SUBJECT_FLOOR = 14           # 17 implemented, of which at most the 3 gated ones may be dark
-MAC_ROSTER_FLOOR = 16         # 15 registered contracts plus vaultwarden
+MAC_ROSTER_FLOOR = 17         # 15 registered contracts plus vaultwarden and karakeep
 TAGGED_LANE_FLOOR = 17        # the acquisition and service rows of tests/ci/suites.conf
 LANE_TAG_FLOOR = 17           # the distinct manifest service tags those rows converge
 SITE_TAG_FLOOR = 31           # the role tags site.yml declares

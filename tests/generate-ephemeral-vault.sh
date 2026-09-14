@@ -370,6 +370,7 @@ vault_nextcloud_db_name: ephemeral-nextcloud-db
 vault_nextcloud_db_username: ephemeral-nextcloud-db-user
 vault_nextcloud_db_password: '$(random_password)'
 vault_nextcloud_cache_password: '$(random_password)'
+vault_karakeep_admin_email: ephemeral-admin@example.invalid
 vault_karakeep_nextauth_secret: '$(openssl rand -hex 32 2>/dev/null)'
 vault_karakeep_meili_master_key: '$(openssl rand -hex 32 2>/dev/null)'
 vault_karakeep_admin_password: '$(openssl rand -hex 32 2>/dev/null)'

@@ -392,7 +392,41 @@ spec=$1
 dir=$(dirname "$spec")
 index=${spec##*/cmd.}
 started=$(date +%s)
-sh -c "$(cat "$spec")" >"$dir/out.$index" 2>&1
+command=$(cat "$spec")
+# The checks read this repository's own files, and 135 characters of CLAUDE.md
+# alone are non-ASCII. Ruby takes its default external encoding from the locale,
+# so on a machine whose locale is not UTF-8 -- an unset LANG, or one naming a
+# locale the image never generated -- File.read hands back US-ASCII and the
+# first regex over it raises `invalid byte sequence in US-ASCII`. Measured
+# before this line: 24 of the 79 ruby checks in this manifest died that way,
+# policy_test.rb and policy_ci_test.rb among them, naming a regex instead of a
+# violation. CI is UTF-8 and never saw it, which is exactly why it needed
+# stating here rather than being left to the environment.
+#
+# RUBYOPT rather than LC_ALL=C.UTF-8, which was the first fix and was wrong on
+# the one platform that would have needed it most: C.UTF-8 is not a locale
+# macOS has, so setting it there leaves default_external at US-ASCII and the
+# checks keep dying, silently and in the same way. RUBYOPT sets the encoding
+# Ruby actually reads, on every platform.
+#
+# It is set per check rather than exported once at the top of this script, and
+# that is the whole of why this is here and not there. tests/mac/run.sh refuses
+# to start when RUBYOPT -- or RUBYLIB, GEM_HOME, BUNDLE_GEMFILE and the rest --
+# is set in its environment at all, because it decrypts a vault and those
+# variables are arbitrary-code-loading vectors. Exported once at the top, this
+# variable reached that guard and was refused with `reserved language startup
+# environment must be unset`. Measured rather than assumed: of this manifest's
+# seventeen tests/mac/*.sh lines, four mention run.sh and exactly one --
+# manual-validation-runner-test.sh -- executes it far enough to meet the guard,
+# so one check went red and shards 1 and 2 stayed green. One is enough. Setting
+# the variable per check is what keeps that guard whole; loosening the guard to
+# admit one value was the alternative, and trading a vault-decrypting script's
+# refusal of code-loading environment for an encoding default is not a trade
+# worth making.
+case $command in
+  ruby\ *) RUBYOPT="${RUBYOPT:+$RUBYOPT }-EUTF-8"; export RUBYOPT ;;
+esac
+sh -c "$command" >"$dir/out.$index" 2>&1
 status=$?
 printf '%s\n' "$(($(date +%s) - started))" >"$dir/seconds.$index"
 printf '%s\n' "$status" >"$dir/status.$index"
