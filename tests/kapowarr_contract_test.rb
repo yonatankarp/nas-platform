@@ -1939,13 +1939,15 @@ PROGRAM_MUTATIONS = [
     to: "true",
     rows: ["a verification read that claims a change"]
   },
+  # The ordering half only. An absent guard also fails the subject check below
+  # it, so planting the presence half away leaves that row refused by the other
+  # sentence -- the same redundancy the drift-assertion note further down records.
   {
-    label: "the downgrade guard presence and ordering check",
+    label: "the downgrade guard ordering check",
     program: :static,
-    from: "guard_index && deploy_index && guard_index < deploy_index",
+    from: "guard_index < deploy_index",
     to: "true",
-    rows: ["no guard against a pin that goes back past a migration",
-           "a downgrade guard that runs after the deployment"]
+    rows: ["a downgrade guard that runs after the deployment"]
   },
   {
     label: "the downgrade guard subject check",
