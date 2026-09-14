@@ -797,17 +797,31 @@ case_vault_install_path() {
 # nothing, and an unchecked count is exactly how.
 # ---------------------------------------------------------------------------
 
+# A count mismatch is fatal and says why: the plant's anchor text moved, which
+# is a stale plant rather than a detected defect, and deleting it would silently
+# retire the property it proves. $6 and $7 name the plant and the repository file
+# it anchors in, because the path in $1 is a temporary copy nobody can edit.
 apply_plant() {
   ruby -e '
-    path, pattern, replacement, expected, mode = ARGV
+    path, pattern, replacement, expected, mode, label, source = ARGV
     body = File.read(path)
     needle = mode == "regexp" ? Regexp.new(pattern) : pattern
     count = body.scan(needle).length
     unless count == Integer(expected)
-      abort "plant matched #{count} occurrence(s) of #{pattern.inspect}, expected #{expected}"
+      abort <<~MESSAGE
+        STALE PLANT ANCHOR [plant] #{label}: #{source}
+          pattern (#{mode}): #{pattern.inspect}
+          matched #{count} occurrence(s), expected #{expected}
+        The plant could not be applied because its ANCHOR moved: #{source} no
+        longer contains that text the expected number of times. This abort is
+        about the plant, not the property -- whether the property still holds is
+        what any FAIL lines printed above this one report. Re-anchor the plant on
+        the line of #{source} that now produces the property; never delete it,
+        because a deleted plant leaves its property proved by nothing.
+      MESSAGE
     end
     File.write(path, body.gsub(needle, replacement.gsub("\\n", "\n")))
-  ' "$1" "$2" "$3" "$4" "$5"
+  ' "$1" "$2" "$3" "$4" "$5" "$6" "$7"
 }
 
 # label, the case that must fail, program|library, pattern, replacement,
@@ -821,8 +835,10 @@ plant() {
   cp "$pristine_program" "$planted_program"
   cp "$pristine_library" "$planted_library"
   case $plant_file in
-    program) apply_plant "$planted_program" "$4" "$5" "$6" "${7:-literal}" ;;
-    library) apply_plant "$planted_library" "$4" "$5" "$6" "${7:-literal}" ;;
+    program) apply_plant "$planted_program" "$4" "$5" "$6" "${7:-literal}" \
+      "$plant_label" tests/integration_controller.sh ;;
+    library) apply_plant "$planted_library" "$4" "$5" "$6" "${7:-literal}" \
+      "$plant_label" tests/integration_controller_lib.sh ;;
     *) printf 'unknown plant target: %s\n' "$plant_file" >&2; exit 1 ;;
   esac
   relocate_program "$planted_program" \
