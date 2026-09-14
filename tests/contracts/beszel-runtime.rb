@@ -61,6 +61,22 @@ def fail_contract(message)
   exit 1
 end
 
+# roles/beszel's beszel_notification_url, rendered. The port is read from the
+# inspected tree's shared inventory, its one home. The token is encoded the way
+# Jinja's urlencode does it: every byte but letters, digits, `_.-~` and `/`
+# becomes %XX, so the space in "Bearer " is %20. That rule was measured through
+# Ansible, not assumed.
+RELAY_PORT = Integer(
+  YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"),
+                                "inventory/group_vars/all/service_dozzle.yml"))
+      .fetch("dozzle_alert_relay_port")
+)
+
+def relay_webhook(token)
+  header = "Bearer #{token}".b.gsub(%r{[^A-Za-z0-9_.~/-]}n) { |byte| format("%%%02X", byte.ord) }
+  "generic://alert-relay:#{RELAY_PORT}/beszel?disabletls=yes&template=json&@Authorization=#{header}"
+end
+
 vault_yaml, vault_error, status = Open3.capture3(
   "ansible-vault", "view", "--vault-password-file",
   ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
@@ -368,16 +384,13 @@ else
 
   settings = exact_record(records("user_settings", admin_token, equality("user", user_id)),
                           "managed user settings")
-  # The shoutrrr URL roles/beszel converges, rebuilt here from the same two vault
-  # values rather than read back from anywhere -- the credential direction the
-  # whole platform holds to. `shoutrrr` is the URL's required user component;
-  # Pushover itself takes the application token and the user key.
-  # `?priority=1` is part of the managed value: Beszel keeps the query when it
-  # adds the title, and the vendored shoutrrr sends it as the form's priority.
-  expected_url = "pushover://shoutrrr:#{vault.fetch('vault_pushover_alerts_token')}@#{vault.fetch('vault_pushover_user_key')}/?priority=1"
+  # The shoutrrr URL roles/beszel converges, rebuilt here from the vault's relay
+  # token and the relay port in shared inventory rather than read back from
+  # anywhere -- the credential direction the whole platform holds to.
+  expected_url = relay_webhook(vault.fetch("vault_dozzle_alert_relay_token"))
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)
-  fail_contract("managed Pushover webhook differs") unless notification_settings["webhooks"] == [expected_url]
+  fail_contract("managed relay webhook differs") unless notification_settings["webhooks"] == [expected_url]
 
   managed_system = exact_record(managed_systems, "managed system")
   persisted_telemetry(ENV.fetch("PLATFORM_KIND"), managed_system, admin_token)

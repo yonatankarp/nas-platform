@@ -69,12 +69,37 @@ refuse("freshness must cover exactly three one-minute samples") unless
   defaults["beszel_telemetry_freshness_seconds"] == 180
 refuse("telemetry polling timeout differs") unless
   defaults["beszel_telemetry_poll_timeout_seconds"] == 90
-# The Alerts application at priority 1 (#558). Beszel keeps the stored URL's
-# query when it adds the title, and the shoutrrr fork it vendors sends `priority`
-# as the form field, so this string is the whole of what sets the priority.
-refuse("notification webhook is not the Alerts application at priority 1") unless
+# The Dozzle alert relay's /beszel route, authenticated with the relay's own
+# token. The relay sets the priority, 1 for a problem and -1 for its recovery,
+# so a URL still naming pushover:// would ring every recovery again. A URL
+# without the header is refused by the relay with 401, and one carrying a
+# Pushover token instead would put a publishing credential in Beszel's database.
+# Every one of those is a different string, so equality is the whole check.
+refuse("notification webhook is not the alert relay's /beszel route with the relay token") unless
   defaults["beszel_notification_url"].to_s.strip ==
-    "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1"
+    "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json" \
+    "&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}"
+# The diagnostic's scheme label has to match the managed URL's scheme. Left on
+# the previous scheme, it reports [REDACTED] for the correct webhook forever and
+# nothing fails (#598). The fact is no_log and reaches only a fail_msg, so this
+# is the one place it is observed.
+webhook_summary = role_tasks.find do |task|
+  task.is_a?(Hash) && task["name"] == "Summarize the managed relay webhook without URL bodies"
+end
+webhook_scheme = webhook_summary&.dig("ansible.builtin.set_fact", "beszel_webhook_scheme").to_s
+refuse("webhook scheme summary does not match the relay URL's generic:// scheme") unless
+  webhook_scheme.include?("select('match', '^generic://')") && !webhook_scheme.include?("pushover")
+# The relay gives a Beszel alert its "Open in Beszel" button only when the link
+# starts with its BESZEL_LINK_BASE, and Beszel builds that link from its own
+# APP_URL. Two sources that happen to agree are not enough: a mismatch drops
+# every button, and no alert or check notices. So both must be the one
+# inventory variable, read bare, in both roles' environment files.
+beszel_env = File.read(File.join(root, "roles/beszel/templates/env.j2"))
+dozzle_env = File.read(File.join(root, "roles/dozzle/templates/env.j2"))
+refuse("Beszel's APP_URL and the relay's BESZEL_LINK_BASE are not both beszel_app_url") unless
+  beszel_env.lines.include?("BESZEL_APP_URL={{ beszel_app_url }}\n") &&
+    dozzle_env.lines.include?("BESZEL_LINK_BASE={{ beszel_app_url }}\n") &&
+    compose.dig("services", "hub", "environment", "APP_URL") == "${BESZEL_APP_URL:?}"
 # Scoped to the one variable rather than to the whole file: naming the required
 # categories anywhere else, including in a comment, is not the same as deriving
 # them, and matching a literal expression would miss the same inference written

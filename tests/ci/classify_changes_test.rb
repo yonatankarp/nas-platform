@@ -389,7 +389,9 @@ if defined?(ClassifyChanges)
 
   {
     "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel",
-    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,dozzle",
+    # The dozzle lane converges Beszel too, because its beszel-notify mode sends
+    # through the hub's stored webhook to the relay and on to the recorder.
+    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
     # Same shape as the Jellyfin row below: the bindery lane comes first in
     # suites.conf row order and its tags are a superset of Audiobookshelf's own,
     # so the Audiobookshelf plan is Bindery's plan.
