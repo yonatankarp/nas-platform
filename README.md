@@ -171,7 +171,7 @@ deployment lock while Docker runs so it can never race a deployment, and reports
 what it reclaimed. Rollback is unaffected: images are pinned by digest, so an
 earlier revision re-pulls exactly what it names.
 
-The complete bootstrap, status, manual retry, protected-log, ntfy, SSH, prune,
+The complete bootstrap, status, manual retry, protected-log, notification, SSH, prune,
 and disable/removal procedures are in the
 [physical NAS walkthrough](docs/getting-started-nas.md#automatic-deployment-from-the-nas).
 
@@ -392,8 +392,12 @@ says.
   carries.
 - **The deploy account's home**, once `install-production-auto-deploy.yml` has
   run. `~/.config/nas-platform` is mode 0700 and holds the mode-0600
-  `vault-password` file the poller requires, plus two protected ntfy publisher
-  files, `ntfy.curl` and `ntfy-prune.curl`, each carrying the deployment token.
+  `vault-password` file the poller requires; four protected Pushover publisher
+  files, `pushover-alerts.curl` and `pushover-deployments.curl` for the poller
+  and `pushover-prune-alerts.curl` and `pushover-prune-deployments.curl` for the
+  prune, each carrying one application's token and the Pushover user key; and
+  the two ntfy publisher files `ntfy.curl` and `ntfy-prune.curl`, which still
+  carry the deployment token until ntfy is removed.
   The sibling `~/.local/share/nas-platform` is mode 0700 and holds the
   controller checkout, the recorded deployment state, and the mode-0600 attempt
   and prune logs; those logs are written without credentials, because every task

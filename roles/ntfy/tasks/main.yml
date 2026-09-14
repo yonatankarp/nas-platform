@@ -340,8 +340,10 @@
 # dozzle's, which nothing else exercises end to end; beszel proves its own
 # webhook. The deploy publisher is no longer proven by any converge: the
 # deployment report and summary that used to fail the run on a refused publish
-# go to Pushover since #558 stage 2b, so a broken deploy token now surfaces only
-# when the poller or the image prune tries to publish with it.
+# go to Pushover since #558 stage 2b, and the poller and the image prune publish
+# there since stage 3, so a broken deploy token surfaces nowhere: only a poller
+# process still running the previous revision reads ntfy.curl, for the one tick
+# that installs its successor.
 #
 # Published to the verification topic, which no managed user may declare access
 # to and no device is subscribed to, so the proof reaches nobody. Cache and
