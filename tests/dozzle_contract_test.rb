@@ -110,6 +110,7 @@ BASE_COMPOSE_FILES = %w[
   services/immich/compose.yml
   services/jellyfin/compose.yml
   services/kapowarr/compose.yml
+  services/karakeep/compose.yml
   services/komga/compose.yml
   services/nextcloud/compose.yml
   services/paperless-ngx/compose.yml
@@ -1465,9 +1466,9 @@ WRAPPER_PROGRAM_SOURCES = {
 RENDERED_STACKS = {
   "arr" => "arr", "beszel" => "beszel", "downloaders" => "downloaders",
   "dozzle" => "dozzle", "paperless-ngx" => "paperless",
-  "immich" => "immich", "nextcloud" => "nextcloud",
+  "immich" => "immich", "nextcloud" => "nextcloud", "karakeep" => "karakeep",
   "audiobookshelf" => "", "bindery" => "", "jellyfin" => "", "kapowarr" => "",
-  "komga" => "", "ntfy" => "", "pinchflat" => "", "seerr" => "",
+  "komga" => "", "pinchflat" => "", "seerr" => "",
   "trailarr" => "", "vaultwarden" => ""
 }.freeze
 

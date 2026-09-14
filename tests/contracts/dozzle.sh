@@ -144,6 +144,11 @@ render_group_contract() {
     KAPOWARR_BOOKS_PATH=/tmp/dozzle-contract/books \
     KAPOWARR_COMICS_PATH=/tmp/dozzle-contract/comics \
     KAPOWARR_DOWNLOADS_PATH=/tmp/dozzle-contract/kapowarr-downloads \
+    KARAKEEP_HOST_PORT=33000 KARAKEEP_PUBLISH_ADDRESS=127.0.0.1 \
+    KARAKEEP_DATA_PATH=/tmp/dozzle-contract/karakeep-data \
+    KARAKEEP_MEILISEARCH_PATH=/tmp/dozzle-contract/karakeep-meilisearch \
+    KARAKEEP_MEILI_MASTER_KEY=contract KARAKEEP_NEXTAUTH_SECRET=contract \
+    KARAKEEP_NEXTAUTH_URL=http://127.0.0.1:33000 KARAKEEP_DISABLE_SIGNUPS=true \
     PINCHFLAT_HOST_PORT=38945 PINCHFLAT_CONFIG_PATH=/tmp/dozzle-contract/pinchflat-config \
     PINCHFLAT_DOWNLOADS_PATH=/tmp/dozzle-contract/pinchflat-downloads \
     PINCHFLAT_YTDLP_PATH=/tmp/dozzle-contract/pinchflat-ytdlp \
@@ -208,9 +213,9 @@ if [ "$mode" = static ]; then
     "$repo_dir/services/immich/compose.yml" \
     "$repo_dir/services/jellyfin/compose.yml" \
     "$repo_dir/services/kapowarr/compose.yml" \
+    "$repo_dir/services/karakeep/compose.yml" \
     "$repo_dir/services/komga/compose.yml" \
     "$repo_dir/services/nextcloud/compose.yml" \
-    "$repo_dir/services/ntfy/compose.yml" \
     "$repo_dir/services/paperless-ngx/compose.yml" \
     "$repo_dir/services/pinchflat/compose.yml" \
     "$repo_dir/services/seerr/compose.yml" \
@@ -228,6 +233,7 @@ if [ "$mode" = static ]; then
   render_group_variants beszel beszel
   render_group_variants downloaders downloaders
   render_group_variants dozzle dozzle
+  render_group_variants karakeep karakeep
   render_group_variants paperless-ngx paperless
   render_group_variants immich immich
   render_group_variants nextcloud nextcloud
@@ -236,7 +242,6 @@ if [ "$mode" = static ]; then
   render_group_variants jellyfin ""
   render_group_variants kapowarr ""
   render_group_variants komga ""
-  render_group_variants ntfy ""
   render_group_variants pinchflat ""
   render_group_variants seerr ""
   render_group_variants trailarr ""
