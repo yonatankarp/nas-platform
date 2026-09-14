@@ -909,6 +909,12 @@ EOF
     fi
 
     if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is beszel; then
+      # Named rather than left to the contract's default, which is `verify`
+      # (#667). What this adds is the wrapper: tests/beszel_contract_test.rb
+      # already runs beszel-static.rb against this tree, but it invokes the
+      # program, so the preloads, the `</dev/null` and the root the wrapper
+      # hands it were asserted by nothing. It costs a tenth of a second.
+      run_beszel_contract static
       run_beszel_contract verify
       printf 'BESZEL_INITIAL_CONTRACT_OK\n'
 
@@ -1015,6 +1021,16 @@ EOF
 
     if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is dozzle; then
 
+      # The static half renders every stack in services/manifest.yml through
+      # `docker compose config` and judges the dev.dozzle.* labels on the
+      # rendered document. Nothing ran it against a real render until #667: the
+      # wrapper defaults to `verify` and no caller passed a mode, and
+      # tests/dozzle_contract_test.rb drives static mode through a stubbed
+      # `docker`, so it asserts the argv the wrapper builds rather than the
+      # labels a render produces. That is why #656 found arr and downloaders
+      # carrying Dozzle names and no group at all -- the rule was stated, and
+      # the contract that states it had never been asked. Seven seconds.
+      run_dozzle_contract static
       run_dozzle_contract verify
       printf 'DOZZLE_INITIAL_CONTRACT_OK\n'
       run_dozzle_contract duplicate-dispatcher-create

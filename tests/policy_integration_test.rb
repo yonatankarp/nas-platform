@@ -73,6 +73,60 @@ dozzle_contract = File.read(File.join(ROOT, "tests", "contracts", "dozzle.sh"))
 # deployed API. Only the token naming that program moved, from `-` to the path.
 check(failures, dozzle_contract.include?('exec ruby "$runtime_program" "$mode" "$@"'),
       "Dozzle contract must pass its default verify mode to the dynamic probe")
+
+# Every registered contract has a static half -- the assertions that need no
+# deployed stack -- and two shapes reach it. In most wrappers the static
+# assertions run above the runtime half, so every mode executes them and the
+# `static` mode is an early exit after the fact; `run_contracts.rb --execute`,
+# which invokes each contract with no argument at all, is enough for those. In
+# Beszel's and Dozzle's the static work sits *inside* `if [ "$mode" = static ]`,
+# and both wrappers default to `verify`, so until #667 nothing invoked either
+# wrapper in that mode. The two cost different amounts. Beszel's static program
+# is already run against this tree by tests/beszel_contract_test.rb, so what was
+# unasserted there is only the wrapper around it. Dozzle's is not:
+# tests/dozzle_contract_test.rb drives static mode through a stubbed `docker`,
+# which asserts the argv the wrapper builds rather than the labels a render
+# produces, and the static half's whole subject is what `docker compose config`
+# returns for every stack in services/manifest.yml. So no real render had ever
+# been judged, and #656 found arr and downloaders carrying no dev.dozzle.group
+# at all -- seven containers loose in the Running Containers panel under a rule
+# that cannot fail for a stack nothing renders.
+#
+# The universe is derived from tests/contracts/registry.yml rather than restated,
+# and the partition below closes it in both directions: a registered contract
+# that grows a static half and neither a lane invocation nor a line here fails,
+# and one that gains a lane invocation while keeping its line here fails too,
+# because an exemption nobody deletes is the next guard that stops holding.
+#
+# What is *not* derived is each line's premise -- that the wrapper really does
+# run its static assertions before the mode test. Both textual shapes that could
+# stand for it were tried and neither survives the file's own layout: the mode
+# validation at the top of arr.sh and downloaders.sh spells `"$mode" = static`
+# before any assertion, and dozzle.sh calls fail_contract for other things long
+# before its static branch. A heuristic that reports the wrong answer for four of
+# fifteen subjects is worse than a list that says plainly it was read.
+STATIC_HALF_RUN_BY_EVERY_MODE = {
+  "audiobookshelf" => "static program runs above the runtime half; `static` only exits after it",
+  "immich" => "static program runs above the capability halves; `static` only exits after it",
+  "jellyfin" => "static program runs above the capability halves; `static` only exits after it",
+  "komga" => "static program runs above the runtime half; `static` only exits after it",
+  "nextcloud" => "static program runs above the runtime half; `static` only exits after it",
+  "paperless" => "every assertion runs above the mode test since #667; `static` only exits after them"
+}.freeze
+registered_contracts = YAML.safe_load_file(
+  File.join(ROOT, "tests", "contracts", "registry.yml")
+).fetch("contracts").map { |entry| File.basename(entry.fetch("path"), ".sh") }
+static_capable_contracts = registered_contracts.select do |name|
+  File.read(File.join(ROOT, "tests", "contracts", "#{name}.sh")).include?('"$mode" = static')
+end
+contracts_named_static_by_a_lane = static_capable_contracts.select do |name|
+  controller.include?("run_#{name}_contract static") ||
+    controller.include?("/repo/tests/contracts/#{name}.sh static")
+end
+check(failures,
+      (static_capable_contracts - contracts_named_static_by_a_lane).sort ==
+        STATIC_HALF_RUN_BY_EVERY_MODE.keys.sort,
+      "every registered contract with a static half must be named `static` by an "       "integration lane, or listed as one whose every mode already runs it")
 integration_lock_path = File.join(ROOT, "tests", "integration_lock.sh")
 integration_lock = File.file?(integration_lock_path) ? File.read(integration_lock_path) : ""
 mac_path_fixture_tasks = flatten_tasks(
