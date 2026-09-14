@@ -52,9 +52,12 @@ RECONCILIATION_LANES = %w[arr downloaders].freeze
 # bindery lane is the only one converging Audiobookshelf and Bindery together,
 # and roles/bindery signs in to Audiobookshelf as the vault administrator, mints
 # itself an API key there and resolves the managed library by name, so the
-# audiobookshelf lane cannot see what an Audiobookshelf change broke. Widening
-# this in the classifier must fail here.
+# audiobookshelf lane cannot see what an Audiobookshelf change broke. The beszel
+# row is the first shape: only the dozzle lane sends through the webhook
+# roles/beszel stores, hub to relay to recorder, and the beszel lane converges no
+# relay. Widening this in the classifier must fail here.
 COMPANION_LANES = {
+  "beszel" => %w[dozzle],
   "downloaders" => %w[bindery],
   "audiobookshelf" => %w[bindery],
   "jellyfin" => %w[seerr]
@@ -388,7 +391,8 @@ if defined?(ClassifyChanges)
   end
 
   {
-    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel",
+    # beszel selects dozzle as its companion, whose tags are a superset.
+    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
     # The dozzle lane converges Beszel too, because its beszel-notify mode sends
     # through the hub's stored webhook to the relay and on to the recorder.
     "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",

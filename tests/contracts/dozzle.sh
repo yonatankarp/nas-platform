@@ -13,7 +13,7 @@ case $mode in
   surplus-cleanup|check-mixed-create|check-mixed-unchanged|\
   check-mixed-cleanup|check-mixed-recover|check-missing-create|\
   check-missing-unchanged|check-missing-cleanup|assert-check-mixed-output|\
-  assert-check-missing-output) ;;
+  assert-check-missing-output|beszel-notify) ;;
   *) exit 2 ;;
 esac
 [ "$#" -eq 0 ] || shift
@@ -276,6 +276,9 @@ esac
 # in tests/integration_controller_lib.sh and in tests/mac/lib.sh, and
 # tests/dozzle_contract_test.rb refuses the three disagreeing.
 : "${PLATFORM_DOZZLE_PUSHOVER_PORT:=32587}"
+# The Beszel hub the beszel-notify mode asks to send a test notification. The
+# default is beszel_port, which tests/contracts/beszel.sh defaults the same way.
+: "${PLATFORM_BESZEL_PORT:=8090}"
 PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS=$service_vars
 # The notify mode's throwaway containers are started from the alert relay's
 # image for one reason only: a lane that converged Dozzle has already pulled it.
@@ -283,7 +286,7 @@ PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS=$service_vars
 # of the deployment rather than restated here.
 PLATFORM_CONTRACT_DOZZLE_COMPOSE=$compose
 export PLATFORM_DOZZLE_PORT PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS
-export PLATFORM_DOZZLE_PUSHOVER_PORT
+export PLATFORM_DOZZLE_PUSHOVER_PORT PLATFORM_BESZEL_PORT
 export PLATFORM_CONTRACT_DOZZLE_COMPOSE
 
 exec ruby "$runtime_program" "$mode" "$@" </dev/null

@@ -112,6 +112,8 @@ FIXTURE_FILES = %w[
   roles/beszel/tasks/alert.yml
   roles/beszel/meta/argument_specs.yml
   roles/beszel/templates/env.j2
+  roles/dozzle/templates/env.j2
+  inventory/group_vars/all/service_dozzle.yml
   services/beszel/compose.yml
   inventory/group_vars/nas_hosts/main.yml
   inventory/group_vars/mac_hosts/main.yml
@@ -228,23 +230,71 @@ STATIC_ROWS = [
     expects: "telemetry polling timeout differs"
   },
   {
-    # Delivered, but into the recipient's quiet hours.
-    name: "a notification webhook that lost its priority",
+    # Every recovery would ring at priority 1 again: the direct URL #558 shipped.
+    name: "a notification webhook still sending to Pushover directly",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/defaults/main.yml",
-                  "{{ vault_pushover_user_key }}/?priority=1",
-                  "{{ vault_pushover_user_key }}/")
+                  "generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}",
+                  "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1")
     },
-    expects: "notification webhook is not the Alerts application at priority 1"
+    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
   },
   {
-    name: "a notification webhook sending with the Containers application",
+    # The relay answers /alerts with Dozzle's envelope rules, so Beszel's
+    # two-key body would be refused with 400.
+    name: "a notification webhook that is not the relay's /beszel route",
     break: lambda { |root|
       mutate_text(root, "roles/beszel/defaults/main.yml",
-                  "pushover://shoutrrr:{{ vault_pushover_alerts_token }}@",
-                  "pushover://shoutrrr:{{ vault_pushover_containers_token }}@")
+                  "/beszel?disabletls=yes", "/alerts?disabletls=yes")
     },
-    expects: "notification webhook is not the Alerts application at priority 1"
+    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+  },
+  {
+    # A publishing credential in Beszel's database, and a 401 from the relay.
+    name: "a notification webhook naming the Containers token instead of the relay token",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/defaults/main.yml",
+                  "vault_dozzle_alert_relay_token) | urlencode",
+                  "vault_pushover_containers_token) | urlencode")
+    },
+    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+  },
+  {
+    # No bearer header: the relay refuses every Beszel alert with 401.
+    name: "a notification webhook without the Authorization header",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/defaults/main.yml",
+                  "&@Authorization={{ ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}", "")
+    },
+    expects: "notification webhook is not the alert relay's /beszel route with the relay token"
+  },
+  {
+    # #598's shape: the diagnostic reports [REDACTED] for the correct webhook.
+    name: "a webhook scheme summary still matching ^pushover://",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/tasks/configure.yml",
+                  "select('match', '^generic://')", "select('match', '^pushover://')")
+    },
+    expects: "webhook scheme summary does not match the relay URL's generic:// scheme"
+  },
+  {
+    # Every "Open in Beszel" button disappears, and nothing else changes.
+    name: "a relay link base that diverges from Beszel's APP_URL",
+    break: lambda { |root|
+      mutate_text(root, "roles/dozzle/templates/env.j2",
+                  "BESZEL_LINK_BASE={{ beszel_app_url }}",
+                  "BESZEL_LINK_BASE={{ dozzle_alert_relay_link_base }}")
+    },
+    expects: "Beszel's APP_URL and the relay's BESZEL_LINK_BASE are not both beszel_app_url"
+  },
+  {
+    name: "a Beszel APP_URL that diverges from the relay's link base",
+    break: lambda { |root|
+      mutate_text(root, "roles/beszel/templates/env.j2",
+                  "BESZEL_APP_URL={{ beszel_app_url }}",
+                  "BESZEL_APP_URL=http://{{ platform_public_host }}:{{ beszel_port }}")
+    },
+    expects: "Beszel's APP_URL and the relay's BESZEL_LINK_BASE are not both beszel_app_url"
   },
   {
     # Scoped to the one variable rather than to the whole file, which is what
@@ -723,6 +773,7 @@ UNREAD_BY_STATIC = %w[
   roles/beszel/tasks/managed_users.yml
   roles/beszel/tasks/alert.yml
   tests/contracts/support/beszel_telemetry.rb
+  inventory/group_vars/all/service_dozzle.yml
 ].freeze
 
 def missing_file_failures(program = STATIC_PROGRAM)
@@ -876,6 +927,10 @@ APP_EMAIL = "beszel-app@example.invalid"
 APP_PASSWORD = "beszel-contract-app-password"
 UNIVERSAL_TOKEN = "33333333-3333-4333-a333-333333333333"
 PUSHOVER_TOKEN = "beszel-contract-pushover-token"
+# Not the 64-hex shape a real relay token has, on purpose: the space, `+`, `=`,
+# `&` and `%` are what the URL encoding has to get right, and the literal below
+# is what Ansible's urlencode rendered for them, not what this file computes.
+RELAY_TOKEN = "relay+tok/en=a&b%c"
 PUSHOVER_USER_KEY = "beszel-contract-pushover-user-key"
 ADMIN_TOKEN = "beszel-contract-admin-token"
 APP_TOKEN = "beszel-contract-app-session-token"
@@ -919,14 +974,16 @@ VAULT = {
   "vault_beszel_app_user_password" => APP_PASSWORD,
   "vault_beszel_universal_token" => UNIVERSAL_TOKEN,
   "vault_pushover_alerts_token" => PUSHOVER_TOKEN,
-  "vault_pushover_user_key" => PUSHOVER_USER_KEY
+  "vault_pushover_user_key" => PUSHOVER_USER_KEY,
+  "vault_dozzle_alert_relay_token" => RELAY_TOKEN
 }.freeze
 
 # What roles/beszel stores, and what the verify and drift modes compare the
-# stored value against. No port: the Pushover form carries neither a host of this
-# platform's nor one of the fixture's.
-def expected_webhook
-  "pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/?priority=1"
+# stored value against. The port is inventory/group_vars/all/service_dozzle.yml's.
+# The header is the bytes Ansible rendered for RELAY_TOKEN, measured rather than
+# derived, so the runtime program's encoder is judged against Jinja, not itself.
+def expected_webhook(header = "Bearer%20relay%2Btok/en%3Da%26b%25c")
+  "generic://alert-relay:8081/beszel?disabletls=yes&template=json&@Authorization=#{header}"
 end
 
 # What the hub does with the URL the notification proof sends instead, which is
@@ -1185,18 +1242,22 @@ RUNTIME_ROWS = [
   { name: "no universal token for the managed user", mode: "verify",
     state: { universal_tokens: [] },
     expects: "managed universal token is absent" },
-  # A second Pushover account rather than a second scheme: the stored value that
-  # actually threatens this platform is one that delivers somewhere nobody reads,
-  # and only a well-formed URL of the managed shape can do that.
-  { name: "a webhook pointing at a Pushover account other than the managed one",
+  # The managed relay route with a token the relay does not hold: well formed,
+  # and refused with 401 on every alert, which is the silence nobody reads.
+  { name: "a relay webhook carrying a token other than the relay's",
     mode: "verify",
-    state: { webhooks: ["pushover://shoutrrr:other-token@other-user-key/?priority=1"] },
-    expects: "managed Pushover webhook differs" },
-  # The managed account without the priority: it delivers, but into the
-  # recipient's quiet hours, which is the silence priority 1 exists to break.
-  { name: "a webhook for the managed account that lost its priority", mode: "verify",
-    state: { webhooks: ["pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/"] },
-    expects: "managed Pushover webhook differs" },
+    state: { webhooks: [expected_webhook("Bearer%20other-token")] },
+    expects: "managed relay webhook differs" },
+  # The direct Pushover URL a hand edit or a stale hub would still hold: it
+  # delivers, and rings every recovery at priority 1.
+  { name: "a webhook still sending to Pushover directly", mode: "verify",
+    state: { webhooks: ["pushover://shoutrrr:#{PUSHOVER_TOKEN}@#{PUSHOVER_USER_KEY}/?priority=1"] },
+    expects: "managed relay webhook differs" },
+  # The header unencoded: Beszel stores it, and shoutrrr would read the query
+  # apart at `&` and `=` inside the token.
+  { name: "a relay webhook whose header was not URL-encoded", mode: "verify",
+    state: { webhooks: [expected_webhook("Bearer relay+tok/en=a&b%c")] },
+    expects: "managed relay webhook differs" },
   {
     # PocketBase returns a relation's JSON column as a string on some routes and
     # as an object on others. The program handles both; this row is the string
@@ -1495,7 +1556,7 @@ def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
         # is what keeps that from happening.
         output = stdout + stderr
         [SUPER_PASSWORD, APP_PASSWORD, UNIVERSAL_TOKEN,
-         PUSHOVER_TOKEN, PUSHOVER_USER_KEY].each do |secret|
+         PUSHOVER_TOKEN, PUSHOVER_USER_KEY, RELAY_TOKEN].each do |secret|
           collected << "#{label}: the diagnostic echoed a credential" if output.include?(secret)
         end
         after = row[:after]
@@ -2278,9 +2339,11 @@ RUNTIME_MUTATIONS = [
     to: "nil unless",
     rows: ["a universal token that is not the vault's"] },
   { label: "the managed webhook comparison",
-    from: 'fail_contract("managed Pushover webhook differs") unless',
+    from: 'fail_contract("managed relay webhook differs") unless',
     to: "nil unless",
-    rows: ["a webhook pointing at a Pushover account other than the managed one"] },
+    rows: ["a relay webhook carrying a token other than the relay's",
+           "a webhook still sending to Pushover directly",
+           "a relay webhook whose header was not URL-encoded"] },
   { label: "the managed alert comparison",
     from: 'fail_contract("managed #{name} alert differs") unless',
     to: "nil unless",
