@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this repository is
 
-Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running eighteen
+Ansible is the **only** control plane for an ASUSTOR AS6704T NAS running seventeen
 Compose service stacks. The repository recreates service *configuration*, not
 data. Configuration changed by hand in a service's web UI is reverted by the
 next run — that is what makes the repository describe reality.
@@ -104,11 +104,9 @@ idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. Every service and acquisition lane
-converges `ntfy` as well; it is not a lane of its own. Since #558 stage 4a that
-converges ntfy's gated-off branch, `state: absent`, and the komga lane is the one
-that brings ntfy up and proves the teardown stops it gracefully. The deployment
-reports ntfy's role used to carry live in `roles/deployment_bundle` now, whose
-changes fall open to every lane. The harness runs Ansible
+converges `host_prep` and `deployment_bundle` as well; neither is a lane of its
+own. The deployment report every service role sends lives in
+`roles/deployment_bundle`, whose changes fall open to every lane. The harness runs Ansible
 inside a pinned Linux container against a disposable sandbox so the plays meet a
 real `/proc/mounts`, real numeric uid/gid and a real Docker socket. It asserts
 three properties: the run converges, a second run changes nothing, and
@@ -210,8 +208,8 @@ service's own keys and its `vault_managed_<role>_users` list in
 outward. Nothing
 is ever read back from a running service, which is why a run converges in a
 single pass. Where a service would normally hand a human a generated value to
-copy-paste, this platform supplies its own instead (ntfy takes declarative
-users/ACLs/tokens; Beszel gets a hub keypair placed before first start).
+copy-paste, this platform supplies its own instead (Beszel gets a hub keypair
+placed before first start).
 `roles/vault_contract` validates the whole credential set, redacted, before any
 target mutation — roles do not repeat that check.
 
@@ -339,7 +337,7 @@ raising handler was observed losing a stop there once in eight attempts. Measure
 `docker kill -s KILL` still exiting 137, which is what keeps a host-level
 out-of-memory kill reportable. What is left open is interpreter start-up, before
 the process blocks anything; `init: true` would close it and was not taken, for
-the reason `services/ntfy/compose.yml` records beside that key. For the other
+the reason `services/dozzle/alert_relay.py` records beside its stop handling. For the other
 eleven, exiting inside ten seconds is an expectation rather than a measurement.
 **Declaring a grace period is not evidence of stopping inside one either**, which
 is the half `alert-relay` did not show: `nextcloud-cron` declared 30s and still
@@ -805,7 +803,7 @@ four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
 checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 57/55/63 over 175 today, and
+53/53/61 over 167 when #517 drew the split and is 57/56/64 over 177 today, and
 this sentence stood at 51/52/61 through both of those, then went stale three
 times more inside #548 alone -- once within one pull request of being corrected,
 again in the pull request that corrected it, and a third time when #547's
@@ -1102,6 +1100,29 @@ whole tidy-up; both directories are `recovery: cache`, so nothing is lost by
 it. The general rule this records is that removing a service is a repository
 change and leaving its data is a host one, and only the first of them happens
 on merge.
+
+**ntfy is the second worked example, and its data was not a cache.** #558
+turned the stack off in stage 4a and deleted it in stage 4c -- role, Compose,
+the eleven `vault_ntfy_*` credentials and `vault_managed_ntfy_users`, the lane
+tag, the poller's and the prune's publisher configs and the `nas_storage`
+entries -- and the same rule holds: nothing in this repository removes what it
+left on the host. `{{ nas_docker_root }}/ntfy/data` was `recovery: critical`: it
+holds `auth.db`, every account's bcrypt hash and every access token.
+`{{ nas_docker_root }}/ntfy/cache` beside it was `recovery: cache`. The rendered
+`.env` under `nas-platform/runtime/services/ntfy` carries those hashes and the
+publisher tokens in clear, and the deploy account's
+`~/.config/nas-platform/ntfy.curl` and `ntfy-prune.curl` each carry the deploy
+publisher's bearer token at mode 0600. The operator has decided to delete all
+of it rather than archive it, since nothing any longer runs that those
+credentials open. Once `docker ps -a --filter
+label=com.docker.compose.project=ntfy` on the NAS prints nothing, the tidy-up is,
+as the deploy account:
+
+```sh
+rm -rf /volume1/Docker/nas-platform/runtime/services/ntfy
+rm -rf /volume1/Docker/ntfy
+rm -f "$HOME/.config/nas-platform/ntfy.curl" "$HOME/.config/nas-platform/ntfy-prune.curl"
+```
 
 **Vaultwarden is the exception the list above needs, and it is a narrow one.**
 Unlike Bindery, Nextcloud, Seerr and Dozzle, whose data directories hold

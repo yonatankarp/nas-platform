@@ -33,7 +33,7 @@ converging the deployment. See
 ## Roles
 
 A **role** groups tasks, templates, defaults, handlers, and validation for one
-responsibility. For example, [`roles/ntfy`](../roles/ntfy) owns the ntfy
+responsibility. For example, [`roles/beszel`](../roles/beszel) owns the Beszel
 configuration and [`roles/preflight`](../roles/preflight) rejects unsafe host
 assumptions before deployment. `site.yml` calls roles in dependency order. See
 [Roles](https://docs.ansible.com/ansible/latest/playbook_guide/playbooks_reuse_roles.html).
@@ -71,10 +71,10 @@ and [Ansible concepts](https://docs.ansible.com/ansible/latest/getting_started/b
 
 `--check` asks modules to predict changes without applying them. `--diff` shows
 safe before/after detail for supported files. Check mode is a required review,
-not a guarantee that every external system can simulate perfectly. In
-particular, ntfy check mode does not start a one-off container to inspect its
-authentication database and does not publish verification messages; a normal
-convergence or the tagged verification play performs those runtime checks.
+not a guarantee that every external system can simulate perfectly. Roles
+report what they cannot simulate as explicit `debug` tasks under check mode; a
+normal convergence or the tagged verification play performs those runtime
+checks.
 
 **Tags** select part of a playbook. For example, `site.yml` tags the preflight
 role `preflight`, but its `always` safety tasks still run when other tags are

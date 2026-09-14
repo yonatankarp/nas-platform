@@ -19,7 +19,7 @@ off-site backup. RAID is not a backup.
 - [Adding a service](docs/adding-a-service.md)
 
 The [`services/manifest.yml`](services/manifest.yml) catalog distinguishes
-eighteen implemented service projects from no planned media-acquisition
+seventeen implemented service projects from no planned media-acquisition
 projects. The media acquisition catalog is fully implemented; a project added
 to it in future stays inert, with no runtime role or Compose directory, until
 its own promotion.
@@ -57,8 +57,8 @@ party, such as a Gmail app password, must be obtained by a human.
 **Vault is always first.** Every credential is authored in vault and flows one
 direction. Nothing is read back from a running service, so a run converges in a
 single pass. Where a service would normally hand you a generated value to
-copy-paste, we supply ours instead: ntfy accepts declarative users, ACL entries
-and tokens, and Beszel uses a hub keypair placed on disk before first start.
+copy-paste, we supply ours instead: Beszel uses a hub keypair placed on disk
+before first start.
 
 **Ansible converges on every run.** Configuration changed in a web UI is reverted
 by the next run, which is what makes the repository describe reality. Review with
@@ -112,7 +112,7 @@ decrypted on disk to run anything.
 **If you lose the password the vault is unrecoverable.** There is no backdoor.
 Recovery means regenerating every credential and running again, which this design
 survives because everything is authored in vault rather than read back from
-running services, but you would be reprovisioning ntfy, Beszel and every
+running services, but you would be reprovisioning Beszel and every
 administrator account. Keep the password in a password manager.
 
 The repository vault remains ciphertext and may be committed, so its safety
@@ -146,10 +146,10 @@ locally; with `inventory/remote.yml` it and `PLATFORM_NAS_USER` are required, an
 an unset one fails while the connection is being templated rather than falling
 back to the inventory hostname `nas` and your own login name.
 `PLATFORM_PUBLIC_HOST` is the address clients use to reach published
-services; it is required and has no fallback, because ntfy hashes it into the
-topic it registers for mobile push, so a value inherited from the connection
-address routes notifications to a topic no device subscribes to and nothing
-reports an error. `PLATFORM_CALLBACK_HOST` is how containers reach
+services; it is required and has no fallback, because the services hand it to
+clients -- Beszel's application URL, Seerr's notification links, Vaultwarden's
+WebAuthn domain -- so a value inherited from the connection address gives
+devices an address they may not use and nothing reports an error. `PLATFORM_CALLBACK_HOST` is how containers reach
 host-published callbacks and does default to the connection address, which is
 the right answer for that audience. Connection coordinates stay in inventory
 inputs and are not portable vault credentials.
@@ -285,7 +285,7 @@ builds it locally and reuses it afterwards, and a run that cannot build it
 installs the same toolchain inside the container the way the harness always did.
 `INTEGRATION_TOOLCHAIN=off` forces that last path.
 
-The current Mac proof covers ntfy, Beszel, Dozzle, Audiobookshelf, Komga,
+The current Mac proof covers Beszel, Dozzle, Audiobookshelf, Komga,
 Jellyfin, Immich, Paperless-ngx, Pinchflat, Kapowarr, Bindery, Trailarr, Seerr,
 Nextcloud and Vaultwarden — every implemented service except `arr`
 and `downloaders`, which have a Phase 1 runtime that is default-disabled in that
@@ -338,10 +338,10 @@ On the NAS, with the production defaults of
 `inventory/group_vars/all/main.yml`:
 
 ```sh
-cd /volume1/Docker/nas-platform/current/services/ntfy
+cd /volume1/Docker/nas-platform/current/services/beszel
 docker compose \
-  --project-name ntfy \
-  --env-file /volume1/Docker/nas-platform/runtime/services/ntfy/.env \
+  --project-name beszel \
+  --env-file /volume1/Docker/nas-platform/runtime/services/beszel/.env \
   -f compose.yml up -d
 ```
 
@@ -398,9 +398,7 @@ says.
   `vault-password` file the poller requires; four protected Pushover publisher
   files, `pushover-alerts.curl` and `pushover-deployments.curl` for the poller
   and `pushover-prune-alerts.curl` and `pushover-prune-containers.curl` for the
-  prune, each carrying one application's token and the Pushover user key; and
-  the two ntfy publisher files `ntfy.curl` and `ntfy-prune.curl`, which still
-  carry the deployment token until ntfy is removed.
+  prune, each carrying one application's token and the Pushover user key.
   The sibling `~/.local/share/nas-platform` is mode 0700 and holds the
   controller checkout, the recorded deployment state, and the mode-0600 attempt
   and prune logs; those logs are written without credentials, because every task

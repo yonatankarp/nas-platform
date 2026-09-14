@@ -174,8 +174,8 @@ required_commands_by_section = {
   ],
   "## Individual secret recipes" => [
     "openssl rand -base64 48",
-    "user hash",
-    "token generate",
+    "--entrypoint php",
+    "PASSWORD_BCRYPT",
     "ssh-keygen"
   ]
 }
