@@ -148,12 +148,17 @@
     - not ansible_check_mode
     - kapowarr_upgrade_pending | bool
 
+# Ownership is set where the platform owns it, the host_prep and roles/dozzle
+# form: on the NAS, or where Linux ownership is managed. Elsewhere -- Docker
+# Desktop, where a non-root controller cannot chown -- the file keeps the
+# account that wrote it, and the modes still hold. Measured: an unconditional
+# owner failed there with "chown failed" after the container had stopped.
 - name: Create the Kapowarr pre-upgrade copy directory
   ansible.builtin.file:
     path: "{{ kapowarr_pre_upgrade_backup_path }}"
     state: directory
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0700"
   when:
     - not ansible_check_mode
@@ -167,8 +172,8 @@
     src: "{{ item.path }}"
     dest: "{{ kapowarr_pre_upgrade_backup_path }}/{{ item.path | basename }}"
     remote_src: true
-    owner: "{{ nas_uid }}"
-    group: "{{ nas_gid }}"
+    owner: "{{ nas_uid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
+    group: "{{ nas_gid if platform_kind == 'nas' or (platform_manage_linux_ownership | bool) else omit }}"
     mode: "0600"
   loop: "{{ kapowarr_store_files.files | default([]) }}"
   loop_control:
