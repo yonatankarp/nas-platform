@@ -408,6 +408,35 @@ end
   end
 end
 
+# The pre-upgrade copy rule in tests/policy_test.rb is the only guard on
+# Vaultwarden's rescue, so each of its three sentences is planted there.
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that leaves the service stopped",
+               "role vaultwarden: a failed pre-upgrade copy must start the stopped container again, " \
+               "on its old image",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .reject! { |task| task.key?("community.docker.docker_compose_v2") }
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that starts over a missing store",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("community.docker.docker_compose_v2") }.delete("when")
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that lets the upgrade proceed",
+               "role vaultwarden: a failed pre-upgrade copy must still fail the run",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"].reject! { |task| task.key?("ansible.builtin.fail") }
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.

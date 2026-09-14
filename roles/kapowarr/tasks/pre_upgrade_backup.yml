@@ -91,9 +91,10 @@
     - kapowarr_upgrade_pending | bool
 
 # Before the stop, so the one refusal that has no copy to take costs no downtime.
-# Starting the old image again after a stop would be worse than never stopping:
-# with Kapowarr.db gone it creates a fresh empty store, the next converge copies
-# that, and the upgrade runs over nothing the operator recognises.
+# The rescue below reads the store again before it starts anything, for the same
+# reason: with Kapowarr.db gone the old image creates a fresh empty store, the
+# next converge copies that, and the upgrade runs over nothing the operator
+# recognises.
 - name: Read the Kapowarr store before stopping the container that holds it
   ansible.builtin.stat:
     path: "{{ kapowarr_config_host_path }}/Kapowarr.db"
@@ -111,9 +112,8 @@
       whose Kapowarr container reports the image {{ kapowarr_deployed_image }},
       so this run has a store it cannot copy and an upgrade to
       {{ kapowarr_pinned_image }} that would migrate it. The upgrade is refused
-      rather than performed unprotected. Nothing was stopped: Kapowarr is still
-      on {{ kapowarr_deployed_image }}. Find out what is in
-      {{ kapowarr_config_host_path }} before converging again.
+      rather than performed unprotected, and this run stopped nothing. Find out
+      what is in {{ kapowarr_config_host_path }} before converging again.
   when:
     - not ansible_check_mode
     - kapowarr_upgrade_pending | bool
@@ -174,7 +174,8 @@
                               | map(attribute='path') | map('basename') | list)
         fail_msg: >-
           Kapowarr.db was present under {{ kapowarr_config_host_path }} before
-          the stop and is not there after it, so the copy has nothing to take.
+          the stop and cannot be read there after it -- it is missing or unreadable --
+          so the copy has nothing to take.
         success_msg: >-
           The Kapowarr store is present and is copied into
           {{ kapowarr_pre_upgrade_backup_path }} before this run upgrades to
@@ -235,15 +236,16 @@
                        | map(attribute='path') | map('basename') | list)
   rescue:
     # First, before anything else can rebind them. The path is the one the failed
-    # task was acting on: the copy directory or file for the two that write, the
+    # task was acting on: the copy directory or file for the tasks that write, the
     # store directory for the two that read it, the project for the stop.
     - name: Record where the Kapowarr pre-upgrade copy failed
       ansible.builtin.set_fact:
         kapowarr_pre_upgrade_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
         kapowarr_pre_upgrade_failed_message: >-
-          {{ ansible_failed_result.msg | default('no message', true) }}
-          {{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
-             | selectattr('failed') | map(attribute='msg') | select('defined') | unique | join(' ') }}
+          {{ (ansible_failed_result.msg | default('no message', true) ~ ' '
+              ~ (ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
+                 | selectattr('failed') | map(attribute='msg') | select('defined') | unique | join(' ')))
+             | trim | regex_replace('[. ]+$', '') }}
         kapowarr_pre_upgrade_failed_path: >-
           {{ (platform_current_dir ~ '/services/kapowarr')
              if (ansible_failed_task.action | default('')) is search('docker_compose_v2')
@@ -251,12 +253,24 @@
              if (ansible_failed_task.action | default('')) is search('find|assert')
              else (ansible_failed_result.path | default(kapowarr_pre_upgrade_backup_path, true)) }}
 
-    # `recreate: never` again, and for the same reason as the stop: `up` without
-    # it would replace the stopped container with one on the new pin, which both
-    # starts the migration this block exists to protect and makes the next
-    # converge read the new image as deployed and skip the copy. With it the
-    # module starts the existing container and nothing else -- measured: the
-    # stopped container came back `Up` on the image it was created from.
+    # THE STORE IS READ AGAIN BEFORE ANYTHING STARTS. The check ahead of the stop
+    # proves the store was there then; a store lost after the stop -- the failure
+    # the in-block assertion names -- is not covered by it. Starting the old image
+    # over a missing Kapowarr.db creates a fresh empty one, the next converge's check
+    # finds that file, copies it and upgrades over it with a green run: measured
+    # by deleting the store as the container exited. So a store that is not there
+    # now leaves the container stopped, and the message below says why.
+    - name: Read whether the Kapowarr store is still there to start over
+      ansible.builtin.stat:
+        path: "{{ kapowarr_config_host_path }}/Kapowarr.db"
+      register: kapowarr_pre_upgrade_store_after
+
+    # `recreate: never` again, for the reason the stop carries it: `up` without it
+    # replaces the stopped container with one on the new pin, which both starts
+    # the migration this block exists to protect and makes the next converge read
+    # the new image as deployed and skip the copy. With it the module starts the
+    # existing container and nothing else -- measured: the stopped container came
+    # back `Up` on the image it was created from, with the same container ID.
     - name: Start Kapowarr again on the image it was running
       community.docker.docker_compose_v2:
         project_src: "{{ platform_current_dir }}/services/kapowarr"
@@ -268,10 +282,11 @@
         recreate: never
       register: kapowarr_pre_upgrade_restart
       failed_when: false
+      when: kapowarr_pre_upgrade_store_after.stat.exists | default(false)
 
     # What Docker reports rather than what the module claimed. The same container
     # ID running is the old image running, because a container never changes its
-    # image.
+    # image -- and it is also what a stop that itself failed leaves behind.
     - name: Read whether the Kapowarr container this run stopped is running again
       ansible.builtin.command:
         argv:
@@ -293,13 +308,21 @@
       ansible.builtin.fail:
         msg: >-
           The Kapowarr pre-upgrade copy failed at "{{ kapowarr_pre_upgrade_failed_task }}"
-          on {{ kapowarr_pre_upgrade_failed_path }}: {{ kapowarr_pre_upgrade_failed_message | trim }}.
-          The upgrade from {{ kapowarr_deployed_image }} to {{ kapowarr_pinned_image }}
-          was not performed.
-          {{ ('Kapowarr was restarted on its old image, ' ~ kapowarr_deployed_image ~ ', and is running.')
+          on {{ kapowarr_pre_upgrade_failed_path }}: {{ kapowarr_pre_upgrade_failed_message }}.
+          The upgrade from {{ kapowarr_deployed_image }} to {{ kapowarr_pinned_image }} was not performed.
+          {{ kapowarr_pre_upgrade_outcome }}
+      vars:
+        kapowarr_pre_upgrade_outcome: >-
+          {{ ('Kapowarr is running on its old image, ' ~ kapowarr_deployed_image ~ '. Repair '
+               ~ kapowarr_pre_upgrade_failed_path ~ ' and converge again; the next run takes the copy'
+               ~ ' and then performs the upgrade.')
              if (kapowarr_pre_upgrade_running.stdout_lines | default([])
                  | select('in', kapowarr_backup_container_ids.stdout_lines) | list | length > 0)
+             else ('KAPOWARR IS STOPPED, and was deliberately not started again: '
+                   ~ kapowarr_config_host_path ~ '/Kapowarr.db is missing or unreadable, and the old image would'
+                   ~ ' create a fresh empty store there, which the next converge would copy and upgrade'
+                   ~ ' over. Put the store back, then converge again.')
+             if not (kapowarr_pre_upgrade_store_after.stat.exists | default(false))
              else ('KAPOWARR IS STOPPED: starting it again on its old image did not leave it running ('
-                   ~ (kapowarr_pre_upgrade_restart.msg | default('no message', true)) ~ ').') }}
-          Repair {{ kapowarr_pre_upgrade_failed_path }} and converge again; the next
-          run takes the copy and then performs the upgrade.
+                   ~ (kapowarr_pre_upgrade_restart.msg | default('no message', true)) ~ '). Repair '
+                   ~ kapowarr_pre_upgrade_failed_path ~ ' and converge again.') }}

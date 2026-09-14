@@ -340,10 +340,27 @@ if failures.empty?
     start = task["community.docker.docker_compose_v2"]
     start.is_a?(Hash) && start["state"] == "present" && Array(start["services"]) == ["kapowarr"]
   end
+  start_index = rescue_start ? backup_rescue.index(rescue_start) : 0
   failures << "the Kapowarr pre-upgrade copy must start the old container again when it fails" unless
     backup_unit && Array(backup_unit["block"]).include?(backup_stop) &&
     rescue_start && rescue_start.dig("community.docker.docker_compose_v2", "recreate") == "never" &&
-    backup_rescue.index(rescue_start) < backup_rescue.length - 1
+    start_index < backup_rescue.length - 1 &&
+    backup_rescue.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
+    backup_rescue.all? { |task| !task.key?("community.docker.docker_compose_v2") || task.dig("community.docker.docker_compose_v2", "recreate") == "never" }
+  # The check ahead of the stop does not cover a store lost after it, and the old
+  # image started over a missing store creates an empty one that the next
+  # converge copies and upgrades over -- measured. So the rescue reads the store
+  # again first and the start is conditional on exactly that read.
+  rescue_store_read = backup_rescue.find do |task|
+    task.dig("ansible.builtin.stat", "path").to_s.include?("Kapowarr.db")
+  end
+  failures << "the Kapowarr pre-upgrade copy must not start the old container over a missing store" unless
+    rescue_start.nil? || (
+      rescue_store_read && backup_rescue.index(rescue_store_read) < start_index &&
+      Array(rescue_start["when"]).any? &&
+      Array(rescue_start["when"]).all? { |condition| condition.to_s.include?("stat.exists") } &&
+      Array(rescue_start["when"]).join(" ").include?(rescue_store_read["register"].to_s + ".stat.exists")
+    )
   failures << "the Kapowarr pre-upgrade copy must still fail the run after starting the old container" unless
     backup_rescue.last&.key?("ansible.builtin.fail")
 
@@ -412,7 +429,9 @@ if failures.empty?
       value.to_s.include?("kapowarr_service_order_write.status")
     end
   end
-  write_message = write_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
+  # The message and the task vars it selects its explanation from.
+  write_message = [write_assert&.dig("ansible.builtin.assert", "fail_msg"),
+                   *Array((write_assert || {})["vars"]&.values)].join(" ")
   failures << "the Kapowarr service order write must fail with its status and the getcomics.org cause" unless
     indexer_write && indexer_write["failed_when"] == false && write_assert &&
     write_message.include?("kapowarr_service_order_write.status") && write_message.include?("ClientNotWorking") &&

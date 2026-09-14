@@ -572,15 +572,20 @@
             and kapowarr_indexers.json.result | reject('mapping') | list | length == 0)
     fail_msg: >-
       Kapowarr answered GET /api/indexers with status
-      {{ kapowarr_indexers.status | default('none') }}
-      ({{ ((kapowarr_indexers.json | default({})) if (kapowarr_indexers.json | default({})) is mapping
-           else {}).error | default('no error code', true) }}).
+      {{ kapowarr_indexers.status | default('none') }} ({{ kapowarr_indexers_error }}).
+      {{ kapowarr_indexers_explanation }} No indexer was changed.
+  # The expressions live here rather than in the message: a folded scalar keeps
+  # the line break around any more-indented line, which put breaks mid-sentence.
+  vars:
+    kapowarr_indexers_error: >-
+      {{ ((kapowarr_indexers.json | default({})) if (kapowarr_indexers.json | default({})) is mapping
+          else {}).error | default('no error code', true) }}
+    kapowarr_indexers_explanation: >-
       {{ kapowarr_indexers_unusable if kapowarr_indexers.status | default(0) | int == 200
          else kapowarr_indexers_missing if kapowarr_indexers.status | default(0) | int == 404
          else kapowarr_indexers_unanswered if kapowarr_indexers.status | default(0) | int == -1
          else kapowarr_indexers_unauthorized if kapowarr_indexers.status | default(0) | int == 401
-         else kapowarr_indexers_failed }} No indexer was changed.
-  vars:
+         else kapowarr_indexers_failed }}
     kapowarr_indexers_unusable: >-
       The body is not the JSON list of indexer records that route returns, so
       this run cannot count the GetComics indexers it holds. Check which image
@@ -741,12 +746,21 @@
     fail_msg: >-
       Kapowarr answered the download service order write on GetComics indexer
       {{ kapowarr_getcomics_indexers[0].id }} with status
-      {{ kapowarr_service_order_write.status | default('none') }}
-      ({{ kapowarr_service_order_write_error | default('no error code', true) }}{{
+      {{ kapowarr_service_order_write.status | default('none') }} ({{ kapowarr_service_order_write_code }})
+      after {{ kapowarr_service_order_write.elapsed | default('an unknown number of') }} seconds.
+      {{ kapowarr_service_order_explanation }}
+  # The expressions live here rather than in the message: a folded scalar keeps
+  # the line break around any more-indented line, which put breaks mid-sentence.
+  vars:
+    kapowarr_service_order_write_error: >-
+      {{ ((kapowarr_service_order_write.json | default({}))
+          if (kapowarr_service_order_write.json | default({})) is mapping else {}).error | default('') }}
+    kapowarr_service_order_write_code: >-
+      {{ kapowarr_service_order_write_error | default('no error code', true) }}{{
          (', ' ~ kapowarr_service_order_write.json.result.reason)
          if ((kapowarr_service_order_write.json | default({})).result | default({})).reason is defined
-         else '' }}) after {{ kapowarr_service_order_write.elapsed | default('an unknown number of') }}
-      seconds.
+         else '' }}
+    kapowarr_service_order_explanation: >-
       {{ kapowarr_service_order_unreachable if kapowarr_service_order_write_error == 'ClientNotWorking'
          else kapowarr_service_order_timed_out
          if kapowarr_service_order_write.status | default(0) | int == -1
@@ -755,10 +769,6 @@
          else kapowarr_service_order_unauthorized if kapowarr_service_order_write.status | default(0) | int == 401
          else kapowarr_service_order_refused if kapowarr_service_order_write.status | default(0) | int == 400
          else kapowarr_service_order_failed }}
-  vars:
-    kapowarr_service_order_write_error: >-
-      {{ ((kapowarr_service_order_write.json | default({}))
-          if (kapowarr_service_order_write.json | default({})) is mapping else {}).error | default('') }}
     kapowarr_service_order_retry: >-
       The write only runs because the order was changed in the web interface, so
       putting the order back under Settings, Indexers also makes it unnecessary.
@@ -770,17 +780,19 @@
       from the NAS, so the order was not stored. Restore the NAS's reach to
       getcomics.org and rerun. {{ kapowarr_service_order_retry }}
     kapowarr_service_order_timed_out: >-
-      No answer arrived within this request's 75-second bound, which is what
-      Kapowarr's own retries against an unreachable getcomics.org take longer
-      than. Kapowarr may still store the order when its test finally passes, so
-      rerun: a converge that finds the order stored issues no write. If it times
-      out again, restore the NAS's reach to getcomics.org.
+      No answer arrived within this request's 75-second bound. Against an
+      unreachable getcomics.org Kapowarr keeps retrying its own test for longer
+      than that, and may still store the order if the test later passes, so rerun:
+      a converge that finds the order stored issues no write. If it times out
+      again, restore the NAS's reach to getcomics.org.
       {{ kapowarr_service_order_retry }}
     kapowarr_service_order_unanswered: >-
-      The request failed without an answer well inside its 75-second bound, so the
+      The request ended without an answer before its 75-second bound, so the
       connection to Kapowarr on port {{ kapowarr_port }} was refused or dropped
-      and getcomics.org was never tested. The order was not stored. Check that the
-      Kapowarr container is running, then rerun.
+      rather than left waiting on getcomics.org. A refusal at 0 seconds never
+      reached Kapowarr; a later drop cannot say whether Kapowarr received the
+      write, so rerun: a converge that finds the order stored issues no write.
+      Check that the Kapowarr container is running.
     kapowarr_service_order_unauthorized: >-
       Kapowarr refused the API key this run took from the login above, so it
       rotated that key between the login and this write. The order was not stored;

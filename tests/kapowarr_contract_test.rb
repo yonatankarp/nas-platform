@@ -679,6 +679,53 @@ STATIC_ROWS = [
     expects: "the Kapowarr pre-upgrade copy must still fail the run after starting the old container"
   },
   {
+    # A fail ahead of the start ends the rescue before anything starts.
+    name: "a pre-upgrade rescue that fails before it starts Kapowarr",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .insert(1, { "name" => "Fail early", "ansible.builtin.fail" => { "msg" => "early" } })
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
+  },
+  {
+    # A second Compose task that recreates brings the new pin up after all.
+    name: "a pre-upgrade rescue with a second start that recreates onto the new pin",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        rescue_tasks = find_task(document) { |task| task.key?("rescue") }["rescue"]
+        start = rescue_tasks.find { |task| task.key?("community.docker.docker_compose_v2") }
+        second = Marshal.load(Marshal.dump(start))
+        second["community.docker.docker_compose_v2"]["recreate"] = "always"
+        rescue_tasks.insert(rescue_tasks.index(start) + 1, second)
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must start the old container again when it fails"
+  },
+  {
+    # Measured: a store deleted as the container exited, the old image started
+    # over it, and the next converge upgraded over the empty store it created.
+    name: "a pre-upgrade rescue that starts Kapowarr over a missing store",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }.delete("when")
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
+    name: "a pre-upgrade rescue start that never runs",
+    break: lambda { |root|
+      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |task| task.key?("rescue") }["rescue"]
+          .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] = false
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
+  },
+  {
     name: "an indexer read that does not really run under --check",
     break: lambda { |root|
       role_tasks(root) do |document|
@@ -2204,6 +2251,34 @@ PROGRAM_MUTATIONS = [
     from: 'backup_rescue.last&.key?("ansible.builtin.fail")',
     to: "true",
     rows: ["a pre-upgrade rescue that lets the upgrade proceed"]
+  },
+  {
+    label: "the no-fail-before-the-start check",
+    program: :static,
+    from: 'backup_rescue.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&',
+    to: "true &&",
+    rows: ["a pre-upgrade rescue that fails before it starts Kapowarr"]
+  },
+  {
+    label: "the every-rescue-start-is-non-recreating check",
+    program: :static,
+    from: 'backup_rescue.all? { |task| !task.key?("community.docker.docker_compose_v2") || task.dig("community.docker.docker_compose_v2", "recreate") == "never" }',
+    to: "true",
+    rows: ["a pre-upgrade rescue with a second start that recreates onto the new pin"]
+  },
+  {
+    label: "the conditional rescue start check",
+    program: :static,
+    from: 'Array(rescue_start["when"]).any? &&',
+    to: "true &&",
+    rows: ["a pre-upgrade rescue that starts Kapowarr over a missing store"]
+  },
+  {
+    label: "the store-read rescue start condition check",
+    program: :static,
+    from: 'Array(rescue_start["when"]).all? { |condition| condition.to_s.include?("stat.exists") } &&',
+    to: "true &&",
+    rows: ["a pre-upgrade rescue start that never runs"]
   },
   {
     label: "the redacted real indexer read check",

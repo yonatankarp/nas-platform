@@ -123,11 +123,12 @@
     - ansible_check_mode
     - vaultwarden_upgrade_pending | bool
 
-# BEFORE THE STOP, so the one refusal that has no copy to take costs no downtime
-# and cannot be made worse by the rescue below: starting the old image again
-# over a missing db.sqlite3 would create a fresh empty store, the next converge
-# would copy that, and the upgrade would run over nothing the household
-# recognises -- the passwords gone from view with a green run on top.
+# BEFORE THE STOP, so the one refusal that has no copy to take costs no downtime.
+# It covers a store missing before the stop only; the rescue below reads the
+# store again before it starts anything, because starting the old image over a
+# missing db.sqlite3 would create a fresh empty store, the next converge would
+# copy that, and the upgrade would run over nothing the household recognises --
+# the passwords gone from view with a green run on top.
 - name: Read the Vaultwarden store before stopping the container that holds it
   ansible.builtin.stat:
     path: "{{ vaultwarden_data_host_path }}/db.sqlite3"
@@ -148,8 +149,8 @@
       The upgrade is refused here rather than performed unprotected: a
       migration that goes wrong would have nothing to restore from, and this
       service's store is the household's passwords under recovery: critical.
-      Nothing was stopped: Vaultwarden is still on {{ vaultwarden_deployed_image }},
-      and every converge takes this same refusal until the store is found. Find
+      This run stopped nothing, and every converge takes this same refusal until
+      the store is found. Find
       out what is in {{ vaultwarden_data_host_path }} before converging again --
       a store that moved is restored by putting it back, and a store that is
       genuinely empty is started by taking this container to `state: absent` so
@@ -233,8 +234,9 @@
             'db.sqlite3' in (vaultwarden_store_files.files | default([])
                              | map(attribute='path') | map('basename') | list)
         fail_msg: >-
-          db.sqlite3 was present under {{ vaultwarden_data_host_path }} before the
-          stop and is not there after it, so the copy has nothing to take.
+          db.sqlite3 was present under {{ vaultwarden_data_host_path }} before
+          the stop and cannot be read there after it -- it is missing or unreadable --
+          so the copy has nothing to take.
         success_msg: >-
           The Vaultwarden store is present and is copied into
           {{ vaultwarden_pre_upgrade_backup_path }} before this run upgrades to
@@ -294,14 +296,15 @@
   rescue:
     # First, before anything else can rebind them. The path is the one the failed
     # task was acting on: the copy directory or file for the tasks that write, the
-    # data directory for the two that read it, the project for the stop.
+    # store directory for the two that read it, the project for the stop.
     - name: Record where the Vaultwarden pre-upgrade copy failed
       ansible.builtin.set_fact:
         vaultwarden_pre_upgrade_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
         vaultwarden_pre_upgrade_failed_message: >-
-          {{ ansible_failed_result.msg | default('no message', true) }}
-          {{ ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
-             | selectattr('failed') | map(attribute='msg') | select('defined') | unique | join(' ') }}
+          {{ (ansible_failed_result.msg | default('no message', true) ~ ' '
+              ~ (ansible_failed_result.results | default([]) | selectattr('failed', 'defined')
+                 | selectattr('failed') | map(attribute='msg') | select('defined') | unique | join(' ')))
+             | trim | regex_replace('[. ]+$', '') }}
         vaultwarden_pre_upgrade_failed_path: >-
           {{ (platform_current_dir ~ '/services/vaultwarden')
              if (ansible_failed_task.action | default('')) is search('docker_compose_v2')
@@ -309,12 +312,24 @@
              if (ansible_failed_task.action | default('')) is search('find|assert')
              else (ansible_failed_result.path | default(vaultwarden_pre_upgrade_backup_path, true)) }}
 
+    # THE STORE IS READ AGAIN BEFORE ANYTHING STARTS. The check ahead of the stop
+    # proves the store was there then; a store lost after the stop -- the failure
+    # the in-block assertion names -- is not covered by it. Starting the old image
+    # over a missing db.sqlite3 creates a fresh empty one, the next converge's check
+    # finds that file, copies it and upgrades over it with a green run: measured
+    # by deleting the store as the container exited. So a store that is not there
+    # now leaves the container stopped, and the message below says why.
+    - name: Read whether the Vaultwarden store is still there to start over
+      ansible.builtin.stat:
+        path: "{{ vaultwarden_data_host_path }}/db.sqlite3"
+      register: vaultwarden_pre_upgrade_store_after
+
     # `recreate: never` again, for the reason the stop carries it: `up` without it
     # replaces the stopped container with one on the new pin, which both starts
     # the migration this block exists to protect and makes the next converge read
     # the new image as deployed and skip the copy. With it the module starts the
     # existing container and nothing else -- measured: the stopped container came
-    # back `Up` on the image it was created from.
+    # back `Up` on the image it was created from, with the same container ID.
     - name: Start Vaultwarden again on the image it was running
       community.docker.docker_compose_v2:
         project_src: "{{ platform_current_dir }}/services/vaultwarden"
@@ -326,10 +341,11 @@
         recreate: never
       register: vaultwarden_pre_upgrade_restart
       failed_when: false
+      when: vaultwarden_pre_upgrade_store_after.stat.exists | default(false)
 
     # What Docker reports rather than what the module claimed. The same container
     # ID running is the old image running, because a container never changes its
-    # image.
+    # image -- and it is also what a stop that itself failed leaves behind.
     - name: Read whether the Vaultwarden container this run stopped is running again
       ansible.builtin.command:
         argv:
@@ -351,13 +367,21 @@
       ansible.builtin.fail:
         msg: >-
           The Vaultwarden pre-upgrade copy failed at "{{ vaultwarden_pre_upgrade_failed_task }}"
-          on {{ vaultwarden_pre_upgrade_failed_path }}: {{ vaultwarden_pre_upgrade_failed_message | trim }}.
-          The upgrade from {{ vaultwarden_deployed_image }} to {{ vaultwarden_pinned_image }}
-          was not performed.
-          {{ ('Vaultwarden was restarted on its old image, ' ~ vaultwarden_deployed_image ~ ', and is running.')
+          on {{ vaultwarden_pre_upgrade_failed_path }}: {{ vaultwarden_pre_upgrade_failed_message }}.
+          The upgrade from {{ vaultwarden_deployed_image }} to {{ vaultwarden_pinned_image }} was not performed.
+          {{ vaultwarden_pre_upgrade_outcome }}
+      vars:
+        vaultwarden_pre_upgrade_outcome: >-
+          {{ ('Vaultwarden is running on its old image, ' ~ vaultwarden_deployed_image ~ '. Repair '
+               ~ vaultwarden_pre_upgrade_failed_path ~ ' and converge again; the next run takes the copy'
+               ~ ' and then performs the upgrade.')
              if (vaultwarden_pre_upgrade_running.stdout_lines | default([])
                  | select('in', vaultwarden_backup_container_ids.stdout_lines) | list | length > 0)
+             else ('VAULTWARDEN IS STOPPED, and was deliberately not started again: '
+                   ~ vaultwarden_data_host_path ~ '/db.sqlite3 is missing or unreadable, and the old image would'
+                   ~ ' create a fresh empty store there, which the next converge would copy and upgrade'
+                   ~ ' over. Put the store back, then converge again.')
+             if not (vaultwarden_pre_upgrade_store_after.stat.exists | default(false))
              else ('VAULTWARDEN IS STOPPED: starting it again on its old image did not leave it running ('
-                   ~ (vaultwarden_pre_upgrade_restart.msg | default('no message', true)) ~ ').') }}
-          Repair {{ vaultwarden_pre_upgrade_failed_path }} and converge again; the
-          next run takes the copy and then performs the upgrade.
+                   ~ (vaultwarden_pre_upgrade_restart.msg | default('no message', true)) ~ '). Repair '
+                   ~ vaultwarden_pre_upgrade_failed_path ~ ' and converge again.') }}
