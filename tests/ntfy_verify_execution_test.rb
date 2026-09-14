@@ -613,6 +613,21 @@ failures << "services/ntfy/compose.yml must keep `init: true` and a stop_grace_p
             "makes the teardown a graceful stop" unless
   ntfy_service["init"] == true && ntfy_service["stop_grace_period"].to_s.match?(/\A\d+s\z/)
 
+# ON FOR EXACTLY THE LANES WHOSE CONTRACTS STILL READ IT. beszel-runtime.rb's
+# notify mode and dozzle-runtime.rb's publisher-ACL read talk to the platform's
+# ntfy, and `full` executes both; every other lane converges inventory's off.
+controller_program = File.read(File.join(ROOT, "tests", "integration_controller.sh"))
+controller_library = File.read(File.join(ROOT, "tests", "integration_controller_lib.sh"))
+ntfy_arms = controller_program[/^\s*integration_ntfy_deployment_enabled=false\n\s*case \$INTEGRATION_SUITE in\n\s*(\S+)\) integration_ntfy_deployment_enabled=true ;;\n\s*esac/, 1].to_s.split("|")
+expected_arms = %w[beszel dozzle full]
+failures << "the integration controller must keep ntfy on for #{(expected_arms - ntfy_arms).inspect}, whose " \
+            "contracts still read the platform's ntfy until #558 stage 4c" unless (expected_arms - ntfy_arms).empty?
+failures << "the integration controller turns ntfy on for #{(ntfy_arms - expected_arms).inspect}, which must converge " \
+            "inventory's off like the NAS -- komga's teardown proof included" unless (ntfy_arms - expected_arms).empty?
+failures << "tests/integration_controller_lib.sh must pass integration_ntfy_deployment_enabled from both run_play and " \
+            "run_verification, or a lane's phases disagree about ntfy" unless
+  controller_library.scan('-e ntfy_deployment_enabled="$integration_ntfy_deployment_enabled"').length == 2
+
 # AND IT IS EXERCISED: the komga lane brings ntfy up, converges inventory's off,
 # and reads the die event's exit code.
 controller = File.read(File.join(ROOT, "tests", "integration_controller.sh"))

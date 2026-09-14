@@ -290,6 +290,26 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       karakeep) integration_karakeep_deployment_enabled=true ;;
     esac
 
+    # NTFY'S GATE IS NARROWED THE OTHER WAY, FOR TWO CONTRACTS THAT STILL READ IT.
+    # #558 stage 4a turns ntfy off in inventory, and every lane converges that --
+    # except the two whose runtime contracts still talk to the platform's ntfy:
+    # tests/contracts/beszel-runtime.rb's notify mode sends a Beszel test
+    # notification to it with the ntfy admin pair and polls /nas-critical/json,
+    # and tests/contracts/dozzle-runtime.rb asserts the dozzle publisher's ntfy
+    # token is refused a read of nas-critical and nas-containers, an ntfy ACL
+    # property. `full` runs both through run_contracts.rb --execute. Everywhere
+    # else -- komga's teardown proof, smoke, the idempotence shards -- converges
+    # inventory's false, which is what the NAS runs. Set on every lane, and passed
+    # by run_play and run_verification alike, so all three phases of a lane agree.
+    #
+    # #558 STAGE 4C DELETES THIS BLOCK, THE MATCHING LINES IN
+    # tests/integration_controller_lib.sh AND BOTH CONTRACT CHECKS TOGETHER.
+    # tests/ntfy_verify_execution_test.rb pins the arm to exactly these suites.
+    integration_ntfy_deployment_enabled=false
+    case $INTEGRATION_SUITE in
+      beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;
+    esac
+
     # NEXTCLOUD'S GATE IS NOT NARROWED HERE, AND THE ABSENCE IS THE FEATURE.
     # #500 landed the stack dark, so this block set the gate per suite and turned
     # it on for `nextcloud` and `full` alone -- correct while
@@ -1278,7 +1298,9 @@ EOF
         fi
         ntfy_container_id=$(docker inspect --format '{{.Id}}' $integration_project_namespace-ntfy)
         ntfy_teardown_since=$(date +%s)
-        # No override: inventory's own `false` is the value the NAS converges.
+        # No trailing override: run_play passes this lane's
+        # integration_ntfy_deployment_enabled, which is false here -- the value
+        # inventory holds and the NAS converges.
         run_play --tags ntfy
         ntfy_teardown_until=$(date +%s)
         if docker ps -a --format '{{.Names}}' |

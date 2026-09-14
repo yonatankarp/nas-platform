@@ -759,6 +759,10 @@ case_komga() {
   expect_log_order '[--tags][ntfy][-e][ntfy_deployment_enabled=true]' 'docker argv=[inspect]'
   expect_log '[--filter][container=ntfy-fixture-container-id][--filter][event=die]'
   expect_output 'NTFY_TEARDOWN_VERIFIED exit=143'
+  # Every komga converge asks for inventory's off; only the scenario's own
+  # trailing -e turns ntfy on, so the teardown converge after it is a real off.
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=false]'
+  expect_no_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
 }
 
 # A teardown that stopped ntfy with SIGKILL is what pages the household through
@@ -794,6 +798,23 @@ case_komga_ntfy_survives() {
   expect_status 1
   expect_output 'ntfy_deployment_enabled=false left the ntfy container in place'
   expect_no_log 'docker argv=[events]'
+}
+
+# ntfy stays on for the two lanes whose contracts still read it (#558 stage 4a),
+# in every play the lane runs. Scenarios are off, so this observes the lane's own
+# converge argv without reaching contracts the checkout does not stub.
+case_dozzle_ntfy_override() {
+  run_controller dozzle host_prep,deployment_bundle,ntfy,dozzle false true site.yml
+  expect_status 0
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_no_log '[-e][ntfy_deployment_enabled=false]'
+}
+
+case_beszel_ntfy_override() {
+  run_controller beszel host_prep,deployment_bundle,ntfy,beszel false true site.yml
+  expect_status 0
+  expect_log '[-e][karakeep_deployment_enabled=false][-e][ntfy_deployment_enabled=true]'
+  expect_no_log '[-e][ntfy_deployment_enabled=false]'
 }
 
 # The smoke lane stops after the converge, and is the cheapest place to observe
@@ -929,7 +950,7 @@ build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
     downloaders bindery seerr jellyfin komga komga_ntfy_killed komga_ntfy_never_up \
-    komga_ntfy_survives toolchain_install \
+    komga_ntfy_survives dozzle_ntfy_override beszel_ntfy_override toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -1041,6 +1062,12 @@ plant 'ntfy teardown exit code check dropped' komga_ntfy_killed program \
 # block in place but unable to fire -- the form a careless edit takes. \x27 is a
 # single quote inside the Ruby pattern, which a shell single-quoted string cannot
 # carry.
+plant 'ntfy override missing for dozzle' dozzle_ntfy_override program \
+  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
+  'beszel|full) integration_ntfy_deployment_enabled=true ;;' 1
+plant 'ntfy override leaks into komga' komga program \
+  'beszel|dozzle|full) integration_ntfy_deployment_enabled=true ;;' \
+  'beszel|dozzle|komga|full) integration_ntfy_deployment_enabled=true ;;' 1
 plant 'ntfy running guard (container not running before the teardown) disabled' \
   komga_ntfy_never_up program \
   "if ! docker ps --format '{{.Names}}' |" \
