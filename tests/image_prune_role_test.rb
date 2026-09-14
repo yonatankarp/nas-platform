@@ -354,13 +354,16 @@ Dir.mktmpdir("image-prune-role") do |root|
     notifier_path = File.join(config_root, "ntfy-prune.curl")
     check(failures, File.file?(notifier_path) && (File.stat(notifier_path).mode & 0o777) == 0o600,
           "ntfy-prune.curl must still be rendered, at mode 0600, until stage 4 of #558")
-    check(failures, File.read(notifier_path).include?(TOKEN),
+    # Read once and guarded: an unrendered file must be reported by the check
+    # above, not crash this suite before it prints what failed.
+    notifier_body = File.file?(notifier_path) ? File.read(notifier_path) : ""
+    check(failures, notifier_body.include?(TOKEN),
           "ntfy-prune.curl must carry the publisher token")
     # Rendered against a sentinel port, so a template that stopped reading the
     # variable and restated 2586 is caught rather than agreeing by accident.
-    check(failures, File.read(notifier_path).include?("127.0.0.1:#{SENTINEL_PORT}/"),
+    check(failures, notifier_body.include?("127.0.0.1:#{SENTINEL_PORT}/"),
           "ntfy-prune.curl must address the declared ntfy port, got: " \
-          "#{File.read(notifier_path).lines.grep(/^url/).join.strip}")
+          "#{notifier_body.lines.grep(/^url/).join.strip}")
     check(failures, notifier_path != File.join(config_root, "ntfy.curl"),
           "the prune must not overwrite the poller's own publisher configuration")
 
