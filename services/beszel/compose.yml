@@ -33,6 +33,11 @@ services:
       dev.dozzle.name: hub
     ports:
       - "8090:8090"
+    # alert-relay reaches the Dozzle alert relay; default has to be named too, or
+    # the agents lose hub:8090.
+    networks:
+      - default
+      - alert-relay
     volumes:
       # Holds the PocketBase database and id_ed25519. That keypair is authored in
       # vault and written here before first start, so the agent's KEY is known in
@@ -194,3 +199,10 @@ services:
     read_only: true
     tmpfs:
       - /run
+
+networks:
+  default: {}
+  # Created by host_prep, never by this project: Dozzle's alert-relay joins it too.
+  alert-relay:
+    external: true
+    name: ${PLATFORM_ALERT_RELAY_NETWORK:?}

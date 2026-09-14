@@ -26,6 +26,9 @@ argument_specs:
       platform_media_control_network:
         type: str
         required: true
+      platform_alert_relay_network:
+        type: str
+        required: true
       nas_storage:
         type: list
         elements: dict

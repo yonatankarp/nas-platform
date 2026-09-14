@@ -1,0 +1,23 @@
+---
+# The bridge Beszel's hub reaches the Dozzle alert relay over. Run by verify.yml
+# under both consumers' verify tags rather than a tag of its own, so the poller's
+# verify tag list needs no new entry: either service being verified proves it.
+- name: Inspect the derived alert relay network
+  community.docker.docker_network_info:
+    name: "{{ platform_alert_relay_network }}"
+  register: host_prep_alert_relay_network
+  changed_when: false
+  tags: [platform_verify_beszel, platform_verify_dozzle]
+
+- name: Require the exact alert relay bridge
+  ansible.builtin.assert:
+    that:
+      - host_prep_alert_relay_network.exists
+      - host_prep_alert_relay_network.network.Name == platform_alert_relay_network
+      - host_prep_alert_relay_network.network.Driver == 'bridge'
+      - host_prep_alert_relay_network.network.Labels['nas.platform.purpose'] == 'alert-relay'
+      - host_prep_alert_relay_network.network.Labels['nas.platform.project'] == (platform_project_name | default('nas-platform', true))
+      - host_prep_alert_relay_network.network.Labels.keys() | sort == ['nas.platform.project', 'nas.platform.purpose']
+    fail_msg: The derived alert-relay network identity, driver, or labels differ.
+  changed_when: false
+  tags: [platform_verify_beszel, platform_verify_dozzle]

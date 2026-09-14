@@ -29,6 +29,7 @@ render() {
   seerr_port=${19}
 
   env PLATFORM_PROJECT_NAME="$base_name" BESZEL_HOST_PORT="$beszel_port" \
+    PLATFORM_ALERT_RELAY_NETWORK="$base_name-alert-relay" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_MEDIA_ROOT="$temporary_dir/$label-media" \
     NAS_RENDER_DEVICE=/dev/null \
     NAS_SMART_SATA_DEVICE_1=/dev/null NAS_SMART_SATA_DEVICE_2=/dev/null \
@@ -41,6 +42,7 @@ render() {
       > "$temporary_dir/$label-beszel.json"
 
   env PLATFORM_PROJECT_NAME="$base_name" DOZZLE_HOST_PORT="$dozzle_port" \
+    PLATFORM_ALERT_RELAY_NETWORK="$base_name-alert-relay" \
     NAS_DOCKER_ROOT="$temporary_dir/$label" NAS_UID=1000 NAS_GID=100 TZ=UTC \
     PLATFORM_CURRENT_DIR="$repo_dir" DOZZLE_STATE_ROOT="$temporary_dir/$label/dozzle/data" \
     ALERT_RELAY_SCRIPT_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \

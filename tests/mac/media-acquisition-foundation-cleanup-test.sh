@@ -64,6 +64,14 @@ new_case() {
         "name" => "unrelated-network", "driver" => "bridge", "labels" => { "owner" => "unrelated" }
       }
     }
+    # The alert-relay bridge host_prep also creates, exact or owned by someone else.
+    if %w[exact_with_alert alert_wrong_project].include?(variant)
+      alert = "#{project}-alert-relay"
+      networks[alert] = { "name" => alert, "driver" => "bridge", "labels" => {
+        "nas.platform.purpose" => "alert-relay",
+        "nas.platform.project" => variant == "alert_wrong_project" ? "#{project}-lookalike" : project
+      } }
+    end
     containers = {
       "reader-audio" => { "project" => "#{project}-audiobookshelf" },
       "reader-jelly" => { "project" => "#{project}-jellyfin" },
@@ -91,7 +99,7 @@ assert_unrelated_preserved() {
   ' "$state" || fail "$label changed unrelated resources"
 }
 
-new_case valid exact
+new_case valid exact_with_alert
 run_cleanup
 [ "$status" -eq 0 ] || {
   printf 'media-acquisition-cleanup-valid: status=%s err=%s log=%s\n' \
@@ -99,6 +107,7 @@ run_cleanup
   fail 'valid exact cleanup failed'
 }
 [ ! -e "$sandbox" ] && [ ! -L "$sandbox" ] || fail 'valid exact cleanup retained its sandbox'
+grep -Fqx "MUTATE network-rm $project-alert-relay" "$log" || fail 'valid cleanup left the alert-relay bridge'
 assert_unrelated_preserved
 
 label=recreated_media_control
@@ -119,7 +128,7 @@ ruby -rjson -e '
 ' "$state" "$project" || fail 'recreated exact media-control network escaped stability inspection'
 assert_unrelated_preserved
 
-for variant in wrong_driver wrong_purpose wrong_project bare prefix suffix; do
+for variant in wrong_driver wrong_purpose wrong_project bare prefix suffix alert_wrong_project; do
   label=$variant
   new_case "$label" "$variant"
   run_cleanup
@@ -155,15 +164,16 @@ run_cleanup
 [ "$status" -ne 0 ] && [ ! -s "$log" ] && [ -d "$sandbox" ] || fail 'symlink cleanup state mutated resources'
 
 for token in \
-  'media_acquisition_cleanup_network=$mac_project-media-control' \
-  'nas.platform.purpose=media-control' \
+  'media_acquisition_cleanup_network=$mac_project-$mac_bridge_purpose' \
+  'nas.platform.purpose=$mac_bridge_purpose' \
+  'for mac_bridge in media-control alert-relay; do' \
   'nas.platform.project=$mac_project' \
   'docker network rm "$media_acquisition_cleanup_network"'; do
   printf '%s\n' "$source" | grep -Fq "$token" || fail "cleanup omits $token"
 done
 printf '%s\n' "$source" | grep -Eq 'docker (system|network) prune' && fail 'cleanup must not prune'
 printf '%s\n' "$source" | grep -Fq 'docker network disconnect' && fail 'cleanup must not disconnect broad endpoints'
-printf '%s\n' "$source" | grep -Eq 'media_acquisition_cleanup_network=.*media-control$' ||
+printf '%s\n' "$source" | grep -Eq 'media_acquisition_cleanup_network=[$]mac_project-[$]mac_bridge_purpose$' ||
   fail 'cleanup network must be project-derived'
 
 printf '%s\n' 'media acquisition cleanup: two-phase exact-network safety holds'

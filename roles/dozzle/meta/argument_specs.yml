@@ -9,6 +9,10 @@ argument_specs:
       platform_project_name:
         type: str
         required: false
+      platform_alert_relay_network:
+        type: str
+        required: true
+        description: External bridge host_prep creates for Beszel's hub to reach the Dozzle alert relay.
       platform_callback_host:
         type: str
         required: true

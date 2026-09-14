@@ -61,6 +61,13 @@ abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"
 ]
 abort "Dozzle contract failed: alert relay must not publish a port" if
   relay.key?("ports") || relay.key?("network_mode")
+# The relay alone joins the external bridge host_prep creates for Beszel's hub,
+# and names default beside it, or Dozzle loses alert-relay:8081.
+abort "Dozzle contract failed: alert relay must join default and the external alert-relay bridge, and nothing else may" unless
+  relay["networks"] == %w[default alert-relay] &&
+  compose["networks"] == { "default" => {},
+                           "alert-relay" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" } } &&
+  services.none? { |name, service| name != "alert-relay" && service.key?("networks") }
 abort "Dozzle contract failed: alert relay hardening differs" unless
   relay["read_only"] == true && relay["tmpfs"] == ["/tmp"] &&
   relay["security_opt"] == ["no-new-privileges:true"] && relay.key?("healthcheck") &&

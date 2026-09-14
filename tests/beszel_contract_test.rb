@@ -211,6 +211,15 @@ DRIFT_ANCHOR_DIAGNOSTIC =
 
 STATIC_ROWS = [
   { name: "an intact repository", break: ->(_root) {}, expects: nil },
+  {
+    name: "a hub that lost the default network beside the alert relay bridge",
+    break: lambda { |root|
+      mutate_text(root, "services/beszel/compose.yml",
+                  "    networks:\n      - default\n      - alert-relay\n",
+                  "    networks:\n      - alert-relay\n")
+    },
+    expects: "hub must join default and the external alert-relay bridge"
+  },
   # The resolved-root sentinel is NOT a row here. It reads the wrapper's own
   # text, so it belongs to the self-read layer below, where the plant is made in
   # the wrapper and the judge is the static program -- the only arrangement that
