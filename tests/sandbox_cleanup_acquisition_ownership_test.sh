@@ -315,7 +315,11 @@ preflight_project_cleanup_targets() {
       for preflight_service in $cleanup_project_services; do
         preflight_container_filters="$preflight_container_filters --filter name=^$preflight_namespace-$preflight_service\$"
       done
-      preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-${preflight_kind}_default\$"
+      cleanup_sandbox_project_networks "$preflight_kind" ||
+        fail "unregistered cleanup network kind: $preflight_kind"
+      for preflight_network in $cleanup_project_networks; do
+        preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-${preflight_kind}_$preflight_network\$"
+      done
     done
     preflight_network_filters="$preflight_network_filters --filter name=^$preflight_namespace-media-control\$"
 
@@ -887,10 +891,14 @@ for kind in $cleanup_sandbox_projects; do
       --label "com.docker.compose.service=$service"
     owned_container_ids="$owned_container_ids $created_container_id"
   done
-  create_network "$fixture_namespace-${kind}_default" \
-    --label "com.docker.compose.project=$fixture_namespace-$kind" \
-    --label com.docker.compose.network=default
-  owned_network_ids="$owned_network_ids $created_network_id"
+  cleanup_sandbox_project_networks "$kind" ||
+    fail "unregistered cleanup network kind: $kind"
+  for network in $cleanup_project_networks; do
+    create_network "$fixture_namespace-${kind}_$network" \
+      --label "com.docker.compose.project=$fixture_namespace-$kind" \
+      --label "com.docker.compose.network=$network"
+    owned_network_ids="$owned_network_ids $created_network_id"
+  done
 done
 create_container "$fixture_namespace-arr-configarr-run-a1b2c3" \
   --label "com.docker.compose.project=$fixture_arr_project" \
@@ -1059,6 +1067,47 @@ for negative_kind in arr downloaders immich; do
       "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
     release_owned_refused_sandbox
   done
+done
+
+# Karakeep's named networks are owned only under a declared key, with the exact
+# project label and a network label naming that same key. An undeclared key under
+# the right project label, a declared name labelled as another declared key, and
+# a declared name under another project each refuse, with a declared peer intact.
+for karakeep_mismatch in undeclared-key network-label project-label; do
+  new_sandbox
+  karakeep_project=$fixture_namespace-karakeep
+  karakeep_refusal_target=${karakeep_project}_browser
+  case $karakeep_mismatch in
+    undeclared-key)
+      karakeep_refusal_target=${karakeep_project}_scraper
+      create_network "$karakeep_refusal_target" \
+        --label "com.docker.compose.project=$karakeep_project" \
+        --label com.docker.compose.network=scraper
+      ;;
+    network-label)
+      create_network "$karakeep_refusal_target" \
+        --label "com.docker.compose.project=$karakeep_project" \
+        --label com.docker.compose.network=search
+      ;;
+    project-label)
+      create_network "$karakeep_refusal_target" \
+        --label com.docker.compose.project=somebody-else \
+        --label com.docker.compose.network=browser
+      ;;
+  esac
+  mismatched_network_id=$created_network_id
+  create_network "${karakeep_project}_search" \
+    --label "com.docker.compose.project=$karakeep_project" \
+    --label com.docker.compose.network=search
+  atomic_peer_network_id=$created_network_id
+
+  expect_cleanup_refusal "karakeep $karakeep_mismatch" \
+    "$karakeep_refusal_target" network
+  require_network_unchanged "$mismatched_network_id" "karakeep $karakeep_mismatch"
+  require_network_unchanged "$atomic_peer_network_id" "karakeep atomic-peer search"
+  "$real_docker" network rm \
+    "$mismatched_network_id" "$atomic_peer_network_id" >/dev/null
+  release_owned_refused_sandbox
 done
 
 # The media-control bridge is not a Compose resource: it is owned only when its
