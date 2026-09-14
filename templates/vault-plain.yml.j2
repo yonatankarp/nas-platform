@@ -9,9 +9,8 @@ vault_audiobookshelf_admin_password: {{ audiobookshelf_admin_password }}
 vault_dozzle_admin_username: {{ dozzle_admin_username }}
 vault_dozzle_admin_password: {{ dozzle_admin_password }}
 vault_dozzle_admin_password_hash: "{{ dozzle_admin_password_hash }}"
-{# Not an ntfy credential and deliberately not the ntfy publish token: Dozzle
-   stores this one at rest in its own /data volume and serves it back over its
-   API, so it is minted separately and reveals nothing about ntfy (#172). #}
+{# Minted on its own and shared with nothing else: Dozzle stores this one at
+   rest in its own /data volume and serves it back over its API (#172). #}
 vault_dozzle_alert_relay_token: {{ dozzle_alert_relay_token | to_json }}
 
 vault_immich_admin_email: {{ immich_admin_email }}
@@ -69,18 +68,6 @@ vault_trailarr_admin_password_hash: "{{ trailarr_admin_password_hash }}"
    with a Jellyfin user type and no local password, from the Jellyfin
    administrator pair above. This one key is the whole of its authentication. #}
 vault_seerr_api_key: {{ seerr_api_key | to_json }}
-
-vault_ntfy_admin_user: {{ ntfy_admin_user }}
-vault_ntfy_admin_password: {{ ntfy_admin_password }}
-vault_ntfy_admin_password_hash: "{{ ntfy_admin_hash }}"
-vault_ntfy_dozzle_password_hash: "{{ ntfy_dozzle_hash }}"
-vault_ntfy_dozzle_token: {{ ntfy_dozzle_token }}
-vault_ntfy_beszel_password_hash: "{{ ntfy_beszel_hash }}"
-vault_ntfy_beszel_token: {{ ntfy_beszel_token }}
-vault_ntfy_deploy_password_hash: "{{ ntfy_deploy_hash }}"
-vault_ntfy_deploy_token: {{ ntfy_deploy_token }}
-vault_ntfy_seerr_password_hash: "{{ ntfy_seerr_hash }}"
-vault_ntfy_seerr_token: {{ ntfy_seerr_token }}
 
 {# The Pushover user key and the four application tokens are issued by a
    third-party account, so this generator writes the documented stand-ins for
@@ -145,5 +132,4 @@ vault_managed_dozzle_users: []
 vault_managed_immich_users: []
 vault_managed_jellyfin_users: []
 vault_managed_komga_users: []
-vault_managed_ntfy_users: []
 vault_managed_paperless_ngx_users: []

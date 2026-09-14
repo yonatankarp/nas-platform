@@ -69,12 +69,6 @@
     - role: deployment_bundle
       tags: [deployment_bundle]
 
-    # ntfy first, from when it was the sink every monitor published to. It is off
-    # since #558 stage 4a -- every publisher sends through Pushover -- so this
-    # entry now converges its `state: absent` teardown; stage 4c removes it.
-    - role: ntfy
-      tags: [ntfy, monitoring]
-
     - role: beszel
       tags: [beszel, monitoring]
 

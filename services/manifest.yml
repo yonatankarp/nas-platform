@@ -18,9 +18,6 @@ services:
   - name: komga
     role: komga
     status: implemented
-  - name: ntfy
-    role: ntfy
-    status: implemented
   - name: paperless-ngx
     role: paperless_ngx
     status: implemented

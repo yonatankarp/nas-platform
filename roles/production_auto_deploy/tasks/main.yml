@@ -240,15 +240,6 @@
     mode: "0600"
   no_log: true
 
-# Kept, never removed, until stage 4 of #558: a poller process running the
-# previous revision reports the end of its own tick through this file.
-- name: Render the protected ntfy publisher configuration
-  ansible.builtin.template:
-    src: ntfy.curl.j2
-    dest: "{{ production_auto_deploy_notifier_path }}"
-    mode: "0600"
-  no_log: true
-
 - name: Install one polling cron entry
   when: not production_auto_deploy_external_scheduler | bool
   ansible.builtin.cron:

@@ -56,14 +56,9 @@ HEX_32 = re.compile(r"^[0-9a-f]{32}\Z")
 
 # The Dozzle alert relay's shared secret. 64 lowercase hex is what
 # `openssl rand -hex 32` prints and what a SHA-256 hexdigest is, which is the
-# whole reason the shape is pinned here rather than left NONEMPTY: the shared
-# inventory's derived default for this key is a SHA-256 hexdigest, so a rule
-# this narrow is also the rule that stops the ntfy publish token -- `tk_` and 29
-# characters, matched by NTFY_TOKEN below -- from being pasted back into the
-# credential the relay presents (#172). That is why no DISTINCT_KEY_GROUPS entry
-# names the pair: the two shapes cannot collide, and a distinctness group over
-# values that can never be equal is a guard that passes without checking
-# anything.
+# whole reason the shape is pinned here rather than left NONEMPTY: a narrow rule
+# refuses a pasted value of any other credential's shape in the one secret
+# Dozzle persists at rest and serves back over its own API (#172).
 HEX_64 = re.compile(r"^[0-9a-f]{64}\Z")
 
 # Two of the hex API keys are submitted to Bazarr's settings form, and Bazarr
@@ -80,7 +75,6 @@ HEX_LETTER = re.compile(r"[a-f]")
 # that are not credentials. They moved to filter_plugins/media_usenet_provider.py
 # with those values (#298); `OptionStr` still strips the account name, which is
 # why the two rules below are NONEMPTY rather than a pattern.
-NTFY_TOKEN = re.compile(r"^tk_[a-z0-9]{29}$")
 SSH_ED25519_PUBLIC_KEY = re.compile(r"^ssh-ed25519 [A-Za-z0-9+/]+={0,3}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}"
                   r"-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
@@ -152,8 +146,7 @@ HEALTHCHECKS_PING_URL_KEYS = ("vault_healthchecks_poller_ping_url",
 
 # The Dozzle alert relay's stand-in, and the one zero-filled placeholder in
 # vault.yml.example that has to be rejected here rather than by the service that
-# receives it. The others fail somewhere: `tk_` and 29 zeros is not a token ntfy
-# issued, so ntfy refuses to publish, and a bcrypt payload of 53 zeros matches no
+# receives it. The others fail somewhere: a bcrypt payload of 53 zeros matches no
 # password, so the login fails. This value is different in kind -- 64 zeros is a
 # perfectly good shared secret, and both ends of it are configured by this
 # platform from the same source, so an operator who copies the example verbatim
@@ -201,17 +194,6 @@ CREDENTIAL_RULES = {
     ),
     "vault_komga_admin_email": ((PATTERN, EMAIL),),
     "vault_komga_admin_password": ((NONEMPTY, None),),
-    "vault_ntfy_admin_user": ((NONEMPTY, None),),
-    "vault_ntfy_admin_password": ((NONEMPTY, None),),
-    "vault_ntfy_admin_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_ntfy_dozzle_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_ntfy_beszel_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_ntfy_deploy_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_ntfy_seerr_password_hash": ((PATTERN, BCRYPT_HASH),),
-    "vault_ntfy_dozzle_token": ((PATTERN, NTFY_TOKEN),),
-    "vault_ntfy_beszel_token": ((PATTERN, NTFY_TOKEN),),
-    "vault_ntfy_deploy_token": ((PATTERN, NTFY_TOKEN),),
-    "vault_ntfy_seerr_token": ((PATTERN, NTFY_TOKEN),),
     "vault_pushover_alerts_token": (
         (NONEMPTY, None),
         (NOT_PLACEHOLDER, PUSHOVER_ALERTS_TOKEN_PLACEHOLDERS),
@@ -334,13 +316,7 @@ OPTIONAL_KEY_GROUPS = (
      "vault_downloaders_sabnzbd_server_password"),
 )
 
-# The four publisher tokens authenticate four different ntfy identities. A
-# duplicate would authorize one publisher as another, and the role's own
-# publisher separation rule for managed users would then have nothing to
-# separate.
 DISTINCT_KEY_GROUPS = (
-    ("vault_ntfy_dozzle_token", "vault_ntfy_beszel_token",
-     "vault_ntfy_deploy_token", "vault_ntfy_seerr_token"),
     ("vault_arr_radarr_api_key", "vault_arr_sonarr_api_key",
      "vault_arr_prowlarr_api_key", "vault_arr_bazarr_api_key",
      "vault_downloaders_sabnzbd_api_key"),

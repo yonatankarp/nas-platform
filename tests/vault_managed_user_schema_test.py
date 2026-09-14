@@ -22,8 +22,6 @@ from vault_managed_user_schema import (  # noqa: E402
 )
 
 HASH = "$2b$10$" + "A" * 53
-TOKEN = "tk_" + "a" * 29
-RESERVED = ["tk_" + "c" * 29, "tk_" + "d" * 29]
 
 VALID = {
     "audiobookshelf": [{
@@ -42,10 +40,6 @@ VALID = {
                   "policy": {"EnableMediaPlayback": True, "IsDisabled": False}}],
     "komga": [{"email": "k@example.invalid", "password": "pw",
                "roles": ["PAGE_STREAMING"]}],
-    "ntfy": [{"username": "phone", "password": "pw", "password_hash": HASH,
-              "role": "user",
-              "access": [{"topic": "nas-critical", "permission": "read-only"}],
-              "tokens": [TOKEN]}],
     "paperless_ngx": [{"username": "scanner", "password": "pw",
                        "email": "p@example.invalid", "is_active": True,
                        "is_staff": False, "is_superuser": False,
@@ -88,15 +82,6 @@ REJECTED = {
     "komga unsupported role": lambda v: v["komga"][0].update(roles=["SUPER"]),
     "komga no roles": lambda v: v["komga"][0].update(roles=[]),
     "komga duplicated roles": lambda v: v["komga"][0].update(roles=["ADMIN", "ADMIN"]),
-    "ntfy malformed username": lambda v: v["ntfy"][0].update(username="has space"),
-    "ntfy elevated role": lambda v: v["ntfy"][0].update(role="admin"),
-    "ntfy malformed token": lambda v: v["ntfy"][0].update(tokens=["tk_SHORT"]),
-    "ntfy duplicated token": lambda v: v["ntfy"][0].update(tokens=[TOKEN, TOKEN]),
-    "ntfy reuses a service token": lambda v: v["ntfy"][0].update(tokens=[RESERVED[0]]),
-    "ntfy malformed topic": lambda v: v["ntfy"][0]["access"][0].update(topic="bad topic!"),
-    "ntfy unsupported permission": lambda v: v["ntfy"][0]["access"][0].update(permission="rw"),
-    "ntfy access extra key": lambda v: v["ntfy"][0]["access"][0].update(extra=1),
-    "ntfy access not a list": lambda v: v["ntfy"][0].update(access="x"),
     "paperless inactive": lambda v: v["paperless_ngx"][0].update(is_active=False),
     "paperless is_staff not boolean": lambda v: v["paperless_ngx"][0].update(is_staff="no"),
     "paperless malformed email": lambda v: v["paperless_ngx"][0].update(email="nope"),
@@ -107,8 +92,8 @@ REJECTED = {
     "service value not a list": lambda v: v.update(komga={}),
 }
 
-# The administrator identity of each service, plus the two usernames the platform
-# publishes under. None of these collides with the valid fixture.
+# The administrator identity of each service, plus the Beszel agent identity the
+# platform owns. None of these collides with the valid fixture.
 RESERVED_IDENTITIES = {
     "audiobookshelf": ["abs-admin"],
     "beszel": ["hub@example.invalid", "agent@example.invalid"],
@@ -116,14 +101,13 @@ RESERVED_IDENTITIES = {
     "immich": ["immich-admin@example.invalid"],
     "jellyfin": ["Yonatan"],
     "komga": ["komga-admin@example.invalid"],
-    "ntfy": ["ntfy-admin", "dozzle", "beszel"],
     "paperless_ngx": ["paperless-admin"],
 }
 
 
 class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_the_valid_contract_is_accepted(self):
-        self.assertEqual(vault_managed_user_errors(VALID, RESERVED), [])
+        self.assertEqual(vault_managed_user_errors(VALID), [])
 
     def test_an_unlimited_immich_quota_is_accepted(self):
         # null is the only way to express "no limit": the server skips the quota
@@ -131,23 +115,23 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
         # null would leave an unlimited account undeclarable.
         candidate = copy.deepcopy(VALID)
         candidate["immich"][0]["quota_size"] = None
-        self.assertEqual(vault_managed_user_errors(candidate, RESERVED), [])
+        self.assertEqual(vault_managed_user_errors(candidate), [])
 
     def test_every_violation_is_rejected(self):
         for label, mutate in REJECTED.items():
             with self.subTest(label):
                 candidate = copy.deepcopy(VALID)
                 mutate(candidate)
-                errors = vault_managed_user_errors(candidate, RESERVED)
+                errors = vault_managed_user_errors(candidate)
                 self.assertTrue(errors, f"{label} was accepted")
 
     def test_no_error_message_carries_a_value(self):
-        secrets = ["pw", HASH, TOKEN, "reader", "b@example.invalid", "Books"]
+        secrets = ["pw", HASH, "reader", "b@example.invalid", "Books"]
         for label, mutate in REJECTED.items():
             with self.subTest(label):
                 candidate = copy.deepcopy(VALID)
                 mutate(candidate)
-                joined = " ".join(vault_managed_user_errors(candidate, RESERVED))
+                joined = " ".join(vault_managed_user_errors(candidate))
                 for secret in secrets:
                     self.assertNotIn(secret, joined,
                                      f"{label} disclosed {secret!r}")
@@ -155,7 +139,7 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
     def test_errors_name_the_offending_field_path(self):
         candidate = copy.deepcopy(VALID)
         candidate["audiobookshelf"][0]["permissions"]["flags"]["download"] = "yes"
-        errors = vault_managed_user_errors(candidate, RESERVED)
+        errors = vault_managed_user_errors(candidate)
         self.assertEqual(errors, ["audiobookshelf[0].permissions.flags.download: "
                                   "must be a boolean"])
 
@@ -177,21 +161,19 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                 with self.subTest(f"{service}.{field}"):
                     candidate = copy.deepcopy(VALID)
                     candidate[service][0][field] = wrong[kind]
-                    errors = vault_managed_user_errors(candidate, RESERVED)
+                    errors = vault_managed_user_errors(candidate)
                     self.assertTrue(errors, f"{service}.{field} accepted a {kind.__name__} "
                                             f"replaced by an incompatible type")
                     self.assertTrue(any(f"{service}[0].{field}" in error for error in errors),
                                     f"{service}.{field} rejection did not name the field: {errors}")
                 checked += 1
-        self.assertGreaterEqual(checked, 32, "fewer fields checked than the schema declares")
+        self.assertGreaterEqual(checked, 33, "fewer fields checked than the schema declares")
 
     def test_nested_permission_and_access_fields_have_type_guards(self):
         nested = [
             ("audiobookshelf", ["permissions", "flags"], "not-a-mapping"),
             ("audiobookshelf", ["permissions", "librariesAccessible"], "not-a-list"),
             ("audiobookshelf", ["permissions", "itemTagsSelected"], "not-a-list"),
-            ("ntfy", ["access", 0, "topic"], 12345),
-            ("ntfy", ["access", 0, "permission"], 12345),
         ]
         for service, path, replacement in nested:
             with self.subTest(f"{service}.{'.'.join(map(str, path))}"):
@@ -200,22 +182,21 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                 for step in path[:-1]:
                     target = target[step]
                 target[path[-1]] = replacement
-                self.assertTrue(vault_managed_user_errors(candidate, RESERVED))
+                self.assertTrue(vault_managed_user_errors(candidate))
 
     def test_a_non_mapping_root_is_rejected(self):
-        self.assertTrue(vault_managed_user_errors([], RESERVED))
+        self.assertTrue(vault_managed_user_errors([]))
 
     def test_the_valid_contract_is_accepted_against_reserved_identities(self):
         self.assertEqual(
-            vault_managed_user_errors(VALID, RESERVED, RESERVED_IDENTITIES), [])
+            vault_managed_user_errors(VALID, RESERVED_IDENTITIES), [])
 
     def test_a_duplicate_identity_is_rejected_per_service(self):
         for service, field in IDENTITY_FIELDS.items():
             with self.subTest(service):
                 candidate = copy.deepcopy(VALID)
                 candidate[service].append(copy.deepcopy(candidate[service][0]))
-                errors = vault_managed_user_errors(candidate, RESERVED,
-                                                   RESERVED_IDENTITIES)
+                errors = vault_managed_user_errors(candidate, RESERVED_IDENTITIES)
                 self.assertIn(f"vault_managed_{service}_users: {field} must be "
                               f"unique after normalization", errors)
 
@@ -226,8 +207,7 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                 twin = copy.deepcopy(candidate[service][0])
                 twin[field] = f"  {twin[field].upper()}  "
                 candidate[service].append(twin)
-                self.assertTrue(vault_managed_user_errors(candidate, RESERVED,
-                                                          RESERVED_IDENTITIES))
+                self.assertTrue(vault_managed_user_errors(candidate, RESERVED_IDENTITIES))
 
     def test_a_reserved_identity_may_not_be_claimed(self):
         for service, field in IDENTITY_FIELDS.items():
@@ -235,22 +215,20 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                 with self.subTest(f"{service}={reserved}"):
                     candidate = copy.deepcopy(VALID)
                     candidate[service][0][field] = reserved
-                    errors = vault_managed_user_errors(candidate, RESERVED,
-                                                       RESERVED_IDENTITIES)
+                    errors = vault_managed_user_errors(candidate, RESERVED_IDENTITIES)
                     self.assertTrue(any("platform-owned identity" in error
                                         for error in errors),
                                     f"{service} accepted the reserved {field}")
 
     def test_a_reserved_identity_is_matched_after_normalization(self):
         candidate = copy.deepcopy(VALID)
-        candidate["ntfy"][0]["username"] = "DOZZLE"
+        candidate["dozzle"][0]["username"] = "DOZZLE-ADMIN"
         self.assertTrue(any("platform-owned identity" in error for error in
-                            vault_managed_user_errors(candidate, RESERVED,
-                                                      RESERVED_IDENTITIES)))
+                            vault_managed_user_errors(candidate, RESERVED_IDENTITIES)))
 
     def test_no_identity_message_carries_a_value(self):
-        # `dozzle` and `beszel` are excluded: they are public literals in the
-        # role, not vault values, and they are also service names, so they appear
+        # A reserved name that is also a service name is excluded: it would be a
+        # public literal in the role rather than a vault value, and it appears
         # legitimately in the `vault_managed_<service>_users` path prefix.
         secrets = [name for names in RESERVED_IDENTITIES.values() for name in names
                    if name not in SERVICES]
@@ -260,8 +238,7 @@ class VaultManagedUserSchemaTest(unittest.TestCase):
                     candidate = copy.deepcopy(VALID)
                     candidate[service][0][field] = reserved
                     joined = " ".join(
-                        vault_managed_user_errors(candidate, RESERVED,
-                                                  RESERVED_IDENTITIES))
+                        vault_managed_user_errors(candidate, RESERVED_IDENTITIES))
                     for secret in secrets:
                         self.assertNotIn(secret, joined,
                                          f"{service} disclosed {secret!r}")
