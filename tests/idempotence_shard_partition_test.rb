@@ -126,7 +126,7 @@ if ARGV.include?("--self-test")
   # deleting a tag from a shard rather than by editing the universe, because that
   # is the direction a rebalance actually goes wrong in.
   # Anchored to the shard rows by name. The first three plants were written as
-  # bare substring edits -- ",immich\n", ",komga\n", "ntfy,beszel" -- and every
+  # bare substring edits -- ",immich\n", ",komga\n" and one on the beszel row -- and every
   # one of them landed on the *service* row of the same name, which appears
   # earlier in the file, so `sub` mangled a row this checker does not read and the
   # self-test reported three defects undetected. That is the failure this

@@ -4,7 +4,7 @@
 # its failure semantics stay stated once, here, rather than inside report.yml.
 #
 # It lives in roles/deployment_bundle beside report.yml since #558 stage 4a moved
-# both out of roles/ntfy. A change under roles/deployment_bundle/ falls open to
+# both out of the alerting sink's role. A change under roles/deployment_bundle/ falls open to
 # every lane and every idempotence shard, which is wider than the lanes that run
 # a report but never narrower.
 #

@@ -1572,6 +1572,13 @@ expect_success(failures, "registered variable contract") do |root|
     probe
   SH
   register_contract(root, "vaultwarden")
+  # A registered contract owes the Mac runner a per-service arm, which
+  # tests/policy_mac_test.rb requires of every registry entry. The service this
+  # row borrows has none in the real tree, so the arm is planted beside the
+  # registration rather than exempted there: an expect_success row must pass all
+  # eight scripts, and an exemption would outlive the sandbox.
+  mutate_text(root, "tests/mac/run-contract.sh", "case $mac_service in\n",
+              "case $mac_service in\n  vaultwarden)\n    ;;\n")
 end
 
 expect_failure(failures, "unregistered contract", "vaultwarden: implemented service has no automated verification",

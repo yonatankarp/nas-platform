@@ -3,11 +3,10 @@
 # the controller rather than from inside the container, so a service reports its
 # own deployment without needing a credential baked into its image.
 #
-# Delivered through Pushover (pushover_publish.yml), not ntfy, since #558 stage
-# 2b. It lives in roles/deployment_bundle since stage 4a moved it out of
-# roles/ntfy, whose retirement it must not share: every deploying role reports
-# through it, and deployment_bundle is the one role every one of them already
-# includes.
+# Delivered through Pushover (pushover_publish.yml) since #558 stage 2b. It lives
+# in roles/deployment_bundle since stage 4a moved it out of the alerting sink's
+# role, whose retirement it must not share: every deploying role reports through
+# it, and deployment_bundle is the one role every one of them already includes.
 #
 # It used to speak for every service on every run that moved the release, so
 # that a silent service could not be confused with one that was never deployed.

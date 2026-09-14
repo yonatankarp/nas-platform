@@ -52,11 +52,10 @@ nextcloud_trusted_domains: >-
 # Where the mesh name goes, and why it is its own list rather than a second
 # value folded into platform_public_host.
 #
-# platform_public_host has blast radius well beyond this service: roles/ntfy
-# builds ntfy_base_url from it, and inventory/remote.yml records that it feeds
-# the topic ntfy registers with its upstream push server -- so repointing it to
-# reach Nextcloud over the mesh would silently move notifications to a topic no
-# device subscribes to. Nextcloud is the first service here that can hold
+# platform_public_host has blast radius well beyond this service: Beszel publishes
+# it as its application URL, Seerr embeds it in every notification link and
+# Vaultwarden derives its WebAuthn domain from it -- so repointing it to reach
+# Nextcloud over the mesh would silently move every one of those. Nextcloud is the first service here that can hold
 # several hostnames at once, and this is the list that holds the extra ones.
 #
 # Empty by default: this platform has no mesh hostname declared anywhere today,

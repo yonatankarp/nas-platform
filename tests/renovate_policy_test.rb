@@ -345,8 +345,8 @@ end, "Alpine 3.24 pins must not depend on Repology coverage")
 # tests/contracts/**. The Configarr digest hashed into the Arr reconciliation
 # fingerprint drifted two releases behind the deployed image exactly that way,
 # which silently disabled the reconcile a version bump exists to force. The
-# Dozzle contract's disposable ntfy fixture drifted a release behind the same
-# way, so CI pulled a second ntfy image on every dozzle leg for the sake of an
+# Dozzle contract's disposable fixture image drifted a release behind the same
+# way, so CI pulled a second copy of that image on every dozzle leg for the sake of an
 # image it picked because the platform had already pulled it. The Compose
 # definition is the one pin; everything else reads the image out of it.
 RESTATED_PIN_TREES = ["roles", "inventory", "config", "tests/contracts"].freeze

@@ -6,7 +6,7 @@
 # Until #147 all six lived in `<<'RUBY'` heredocs inside tests/contracts/dozzle.sh
 # -- 951 of that file's 1,116 lines, more heredocs than any other contract in the
 # repository. `sh -n` reads a quoted heredoc as opaque text, so nothing but an
-# integration lane with Docker, a converged Dozzle stack, disposable ntfy and a
+# integration lane with Docker, a converged Dozzle stack, a Pushover recorder and a
 # real vault ever executed most of them. They are files now, so all six are
 # reachable here.
 #

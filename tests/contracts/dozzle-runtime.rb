@@ -195,7 +195,7 @@ end
 # Pushover account can run in a lane: the messages reach somebody's phone and
 # the API has nothing to read them back from. So the lane redirects
 # dozzle_pushover_api_url at this recorder and the notify mode asserts the form
-# the relay POSTed -- which keeps every property the ntfy readback was proving
+# the relay POSTed -- which keeps every property the earlier readback was proving
 # (the exact presentation, exactly one recovery, no false recovery on a
 # startup-healthy container, and no event envelope leaking into message text)
 # rather than trading them for a transport change.
@@ -205,7 +205,7 @@ end
 # integration harness runs its controller with --network host, and the Mac lane
 # runs this program on the Mac itself, so in both a socket opened here is a
 # socket on the host and a service container reaches it at CALLBACK_HOST -- the
-# same path the relay used to reach disposable ntfy.
+# same path the relay used to reach its earlier disposable server.
 PUSHOVER_RECORDER_PORT = Integer(ENV.fetch("PLATFORM_DOZZLE_PUSHOVER_PORT"), 10)
 PUSHOVER_RECORDER_URL =
   "http://#{CALLBACK_HOST}:#{PUSHOVER_RECORDER_PORT}/1/messages.json".freeze
@@ -684,7 +684,7 @@ if MODE == "notify"
       fail_contract("relay published to an endpoint other than the messages API") unless
         unhealthy["path"] == "/1/messages.json" &&
         unhealthy["content_type"].to_s.start_with?("application/x-www-form-urlencoded")
-      # A credential in a header is the ntfy shape carried across, and it would
+      # A credential in a header is the earlier transport's shape carried across, and it would
       # put the application token somewhere nothing on the far end reads.
       fail_contract("relay sent a credential in an Authorization header") unless
         unhealthy["authorization"].nil?
@@ -695,7 +695,7 @@ if MODE == "notify"
         "docker", "exec", health_fixture, "/bin/sh", "-c", "touch /tmp/healthy"
       )
       fail_contract("disposable unhealthy fixture could not recover") unless exec_status.success?
-      # A recovery is a record, not an emergency. Under ntfy that was a second
+      # A recovery is a record, not an emergency. Under the earlier transport that was a second
       # topic; Pushover says it on the message, so the assertion is the
       # priority rather than the routing.
       recovered, observed = wait_for_pushover(

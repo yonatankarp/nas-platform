@@ -296,7 +296,7 @@ class Config:
             raise ConfigurationError("ALERT_RELAY_PORT must be a TCP port number")
         relay_port = int(port)
 
-        # Unlike the ntfy publisher this replaced, the endpoint carries a path:
+        # Unlike the publisher this replaced, the endpoint carries a path:
         # Pushover's message API is /1/messages.json, and the whole URL is a
         # variable rather than a host so a lane can redirect it at a recorder
         # without reaching the household's real devices. A query or a fragment
@@ -663,7 +663,7 @@ def render_notification(event, link_base):
     quiet hours hold it until morning. `Recovery` is -1, a badge with no sound:
     it is a record that closes an earlier alert, not something to wake up for.
 
-    The -1 replaces a second ntfy topic. Recovery used to be routed to
+    The -1 replaces a second topic. Recovery used to be routed to
     nas-containers purely so it could be muted separately from nas-critical;
     Pushover expresses "do not make a noise about this" on the message itself,
     so the second topic has no remaining job and the relay no longer has one.
@@ -1316,7 +1316,7 @@ def report_upstream_failure(config, notification, reason, detail):
     Without this the whole path is silent: there is no logging anywhere in this
     module, /healthz reports only on the state store, and Dozzle is told 502 and
     does not retry. A rejected alert simply vanished, and against Pushover a
-    rejection is reachable in a way it never was against a local ntfy -- the 250
+    rejection is reachable in a way it never was against a local server -- the 250
     and 1024 caps, the priority-2 parameters, and credentials that were revoked
     or mistyped.
 
