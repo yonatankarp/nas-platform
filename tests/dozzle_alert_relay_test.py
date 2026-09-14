@@ -73,7 +73,7 @@ def message_shape(message):
 # fixture, so no case depends on the date it happens to run on, and so the
 # budget day a case expects cannot straddle a real midnight either.
 FIXED_NOW = datetime(2026, 8, 15, 12, 0, tzinfo=timezone.utc)
-# The listener port the deployment declares today, in roles/dozzle/defaults.
+# The listener port the deployment declares today, in service_dozzle.yml.
 # Nothing here depends on the number staying current: these tests only need a
 # port that differs from any literal the relay itself could have kept, so a
 # stale value would still select a usable one.

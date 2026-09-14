@@ -1,6 +1,6 @@
 ---
-beszel_port: 8090
-beszel_app_url: "http://{{ platform_public_host }}:{{ beszel_port }}"
+# beszel_port and beszel_app_url live in inventory/group_vars/all/service_beszel.yml:
+# the Dozzle alert relay validates Beszel's links against the same app URL.
 beszel_system_name: ASUSTOR-AS6704T
 
 # Beszel persists one sample per minute. Three samples of freshness tolerance

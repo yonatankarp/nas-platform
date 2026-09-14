@@ -28,10 +28,10 @@ CALLBACK_HOST = [ENV["PLATFORM_CALLBACK_HOST"], ENV["PLATFORM_NAS_ADDRESS"]]
                 .compact.reject(&:empty?).first || "host.docker.internal"
 REPORT_ROOT = ENV.fetch("PLATFORM_REPORT_ROOT")
 # The dispatcher URL Dozzle reports back is the rendered form of the role
-# default, so build the expectation from the one place the listener port is
+# default, whose port is shared inventory (service_dozzle.yml), so build the expectation from the one place the listener port is
 # declared instead of repeating the number in this contract.
 RELAY_ALERTS_URL = "http://alert-relay:#{Integer(
-  YAML.safe_load_file(ENV.fetch('PLATFORM_CONTRACT_DOZZLE_DEFAULTS'))
+  YAML.safe_load_file(ENV.fetch('PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS'))
       .fetch('dozzle_alert_relay_port')
 )}/alerts".freeze
 SAFE_ID = /\A[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\z/

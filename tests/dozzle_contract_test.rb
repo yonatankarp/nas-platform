@@ -128,7 +128,8 @@ ALERTS_ARGUMENT_VARIABLES = {
   "tests/integration_controller.sh" => "integration",
   "tests/mac/hooks/drift/20-dozzle.sh" => "mac_drift",
   "tests/mac/hooks/verify/20-dozzle.sh" => "mac_verify",
-  "tests/mac/hooks/verify/20-dozzle-labels.rb" => "mac_verify_labels"
+  "tests/mac/hooks/verify/20-dozzle-labels.rb" => "mac_verify_labels",
+  "inventory/group_vars/all/service_dozzle.yml" => "service_vars"
 }.freeze
 
 # Exactly what the contract reads out of the tree it inspects. A fixture holding
@@ -139,6 +140,7 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
   services/dozzle/alert_relay.py
   roles/dozzle/tasks/main.yml
   roles/dozzle/defaults/main.yml
+  inventory/group_vars/all/service_dozzle.yml
   roles/dozzle/templates/env.j2
   roles/deployment_bundle/tasks/inputs.yml
   roles/deployment_bundle/tasks/main.yml
@@ -774,9 +776,9 @@ ALERTS_ROWS = [
   },
   {
     name: "a listener port that is not a number", mode: "verify",
-    argument: "roles/dozzle/defaults/main.yml",
+    argument: "inventory/group_vars/all/service_dozzle.yml",
     edit: lambda { |root|
-      edit_yaml_text(root, "roles/dozzle/defaults/main.yml",
+      edit_yaml_text(root, "inventory/group_vars/all/service_dozzle.yml",
                      "dozzle_alert_relay_port: 8081\n", "dozzle_alert_relay_port: \"8081\"\n")
     },
     expects: "relay listener port is not a single declared TCP port"
@@ -1229,7 +1231,7 @@ def with_runtime_stub(state, relay_port: 8081)
       "PLATFORM_REPORT_ROOT" => reports,
       "PLATFORM_CONTRACT_VAULT_FILE" => vault,
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "password"),
-      "PLATFORM_CONTRACT_DOZZLE_DEFAULTS" => defaults
+      "PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS" => defaults
     }, root, merged)
   end
 ensure

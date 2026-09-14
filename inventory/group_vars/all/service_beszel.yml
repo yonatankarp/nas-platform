@@ -2,6 +2,13 @@
 # beszel: non-secret settings and the storage this service owns.
 # Cross-cutting facts live in main.yml; secrets in vault.yml.
 
+# Shared inventory rather than roles/beszel defaults, because roles/dozzle reads
+# the app URL too: the alert relay gives a Beszel alert its "Open in Beszel"
+# button only when the link Beszel sent starts with this origin. mac_hosts
+# overrides beszel_port, and group_vars/mac_hosts outranks group_vars/all.
+beszel_port: 8090
+beszel_app_url: "http://{{ platform_public_host }}:{{ beszel_port }}"
+
 nas_storage_beszel:
   # Beszel. The hub database holds systems, alerts and notification settings.
   - path: "{{ nas_docker_root }}/beszel/hub"

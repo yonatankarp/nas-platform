@@ -287,7 +287,7 @@ class Config:
             resolved[name] = value
 
         # Deliberately without a fallback: the listener port has exactly one home,
-        # dozzle_alert_relay_port in roles/dozzle/defaults/main.yml, and it reaches
+        # dozzle_alert_relay_port in inventory/group_vars/all/service_dozzle.yml, and it reaches
         # this process through ALERT_RELAY_PORT in the rendered environment file.
         # A default here would be a second copy that could silently disagree with
         # the Compose healthcheck and the dispatcher URL built from the same home.

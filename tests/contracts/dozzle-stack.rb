@@ -152,7 +152,7 @@ abort "Dozzle contract failed: environment does not render the selected state an
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
 # The third leg of the single listener port: the rendered environment file is how
-# the value in roles/dozzle/defaults/main.yml reaches both consumers inside the
+# the value in inventory/group_vars/all/service_dozzle.yml reaches both consumers inside the
 # container. The rendered Compose document is checked against a probe port above,
 # and the live modes below dispatch through the URL built from the same default.
 abort "Dozzle contract failed: environment does not render the single relay listener port" unless
