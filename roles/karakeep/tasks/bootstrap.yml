@@ -238,7 +238,7 @@
       and role
       {{ (karakeep_bootstrap_signup.json | default({})).result.data.json.role | default('none') }}.
       Signups are closed again. "Email is already taken" means an account with
-      vault_karakeep_admin_email already exists and the vault administrator
+      the administrator email the vault holds already exists and the vault administrator
       password does not sign in to it: the vault value was rotated or the account's
       password was changed in the interface, and nothing here resets it. A 200
       with role "user" means another account was registered first and
@@ -331,7 +331,7 @@
          | length }} account(s) holding roles
       {{ (karakeep_census.json | default({})).result.data.json.users | default([])
          | map(attribute='role') | list }}; emails are not shown. Signups are
-      closed. Anything other than exactly vault_karakeep_admin_email as the one
+      closed. Anything other than exactly the vault administrator email as the one
       admin means an account was
       registered while the door was open; remove it in the administrator
       interface before trusting this instance.
