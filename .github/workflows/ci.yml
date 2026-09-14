@@ -162,7 +162,23 @@ jobs:
           fetch-depth: 0
 
       - name: Validate shell syntax
-        run: find tests -type f -name '*.sh' -exec sh -n {} +
+        run: |
+          # One invocation per file, with the parser chosen by the script's own
+          # shebang. `-exec sh -n {} +` batched all ninety-eight scripts into a
+          # single invocation, and `sh -n` parses only its first argument, so the
+          # sweep checked exactly one of them and reported green (#634). Switching
+          # to `-exec ... \;` would not fix it: find's exit status ignores the
+          # command's, so a failing parse would still leave the step at 0.
+          # tests/contracts/audiobookshelf-audio-test.sh is bash and is not valid
+          # POSIX sh, which is why the shebang and not the extension decides.
+          status=0
+          while IFS= read -r script; do
+            case "$(head -n 1 "$script")" in
+              *bash*) bash -n "$script" || status=1 ;;
+              *) sh -n "$script" || status=1 ;;
+            esac
+          done < <(find tests -type f -name '*.sh' | sort)
+          exit "$status"
 
       - name: Install ShellCheck
         run: |
