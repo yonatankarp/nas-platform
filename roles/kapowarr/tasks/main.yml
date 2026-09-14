@@ -567,11 +567,17 @@
     fail_msg: >-
       Kapowarr holds {{ kapowarr_getcomics_indexers | length }} GetComics indexers, and this
       platform declares the download service order on exactly one.
-      {{ 'Add the GetComics indexer back under Settings, Indexers in the web interface, then rerun.'
-         if kapowarr_getcomics_indexers | length == 0 else
-         'Kapowarr refuses to add a second one, so its database was edited outside the application;
-         delete all but one under Settings, Indexers, then rerun.' }}
-      No indexer was changed.
+      {{ kapowarr_getcomics_indexer_missing if kapowarr_getcomics_indexers | length == 0
+         else kapowarr_getcomics_indexer_duplicated }} No indexer was changed.
+  vars:
+    # Each remedy is its own folded scalar: a quoted literal continued onto a
+    # more-indented line inside the message above keeps that line break.
+    kapowarr_getcomics_indexer_missing: >-
+      Add the GetComics indexer back under Settings, Indexers in the web
+      interface, then rerun.
+    kapowarr_getcomics_indexer_duplicated: >-
+      Kapowarr refuses to add a second one, so its database was edited outside
+      the application; delete all but one under Settings, Indexers, then rerun.
   when: kapowarr_indexers.status | default(0) | int == 200
 
 # The declared order is applied over the deployed one exactly as it was over the
