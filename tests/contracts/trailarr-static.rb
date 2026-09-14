@@ -204,7 +204,8 @@ if failures.empty?
   failures << "Trailarr env must carry the vault-authored identity" unless
     [
       ["TRAILARR_API_KEY", "{{ vault_trailarr_api_key }}"],
-      ["TRAILARR_WEBUI_USERNAME", "{{ vault_trailarr_admin_username }}"]
+      ["TRAILARR_WEBUI_USERNAME",
+       "{{ vault_trailarr_admin_username | replace('$', '$$') }}"]
     ].all? { |assignment| env_assignments.include?(assignment) }
 
   role_tasks = Dir[File.join(root, "roles/trailarr/tasks/*.yml")].sort
