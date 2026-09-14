@@ -2,7 +2,7 @@
 
 Each media-acquisition project is investigated once, against upstream source
 *and* a running container, and what the investigation found is written down here
-so the next person does not pay for it twice. Six of the eight files indexed
+so the next person does not pay for it twice. Seven of the nine files indexed
 below came out of that programme; the other two are Nextcloud and the retired
 Seafile, which are not media-acquisition projects and are described in their own
 section for that reason.
@@ -24,6 +24,16 @@ promotion starts from.
 - [Seerr](dossier-seerr.md) — Phase 4, requests
 - [Gluetun and qBittorrent](dossier-gluetun-qbittorrent.md) — Phase 5, the
   torrent cutover
+
+## Before a container is added
+
+One project has no row in the manifest at all, because it would not be a
+service of its own. #632 proposed Decluttarr as a container inside the `arr`
+project, so there is nothing to promote; its dossier asks whether that container
+is safe to add, and which of its jobs.
+
+- [Decluttarr](dossier-decluttarr.md) — backlog search, and why most of its
+  removal jobs stay off
 
 ## After a promotion
 
@@ -70,7 +80,7 @@ both file-sync services could run side by side while the choice between them is
 evaluated with real files, so the two dossiers are the evidence that decision
 will be made on.
 
-The design the six acquisition dossiers are read against is
+The design the seven acquisition dossiers are read against is
 [the media acquisition platform design](superpowers/specs/2026-08-21-media-acquisition-platform-design.md).
 [Adding a service](adding-a-service.md) is the mechanics; a dossier is the part
 that mechanics cannot tell you.
@@ -98,7 +108,7 @@ at the end of each file.
 
 ## The pins these files rest on
 
-Behaviour is a property of a version. Each of the six acquisition dossiers is
+Behaviour is a property of a version. Each of the seven acquisition dossiers is
 derived from exactly one image, and the Seafile dossier from the three that
 stack ran; all of them are digest-pinned the way `tests/policy_test.rb` requires — a
 readable tag
@@ -114,6 +124,7 @@ docker.io/nandyalu/trailarr:0.11.3@sha256:86d6ae3dffa583261f3281017106ebefc68693
 ghcr.io/seerr-team/seerr:v3.4.1@sha256:f4768de5f616248d723e05891f3345a1402123775d03bf0890dbfedc0831bda1
 qmcgaw/gluetun:v3.41.3@sha256:fa19cc76b2af13d57a8d3dc3066f2ada061b1c761b8aecf989b3877c0486e027
 lscr.io/linuxserver/qbittorrent:5.2.3_v2.0.14-ls473@sha256:304b19cf94bf4fda534e0b086cab9c5f1a9e139a8180c05c0ad7d2ba1526fa99
+ghcr.io/manimatter/decluttarr:v2.1.0@sha256:c06d48426b612b845f2406c2d045f266468a6390faf87aea796d497a2935ec95
 ```
 
 The two post-promotion dossiers rest on the digests their own Compose files
@@ -124,10 +135,10 @@ ghcr.io/kieraneglin/pinchflat:v2025.6.6@sha256:4e975edf58f0861a5cbfe8fc6aac4851f
 docker.io/mrcas/kapowarr:v1.3.1@sha256:d455797e4f2c5b1a8ccc5ce05c427f1af2179451bb1af195ca3fa8c3e928623b
 ```
 
-All seven images above publish `linux/amd64` and `linux/arm64`, so one pin
+All eight images above publish `linux/amd64` and `linux/arm64`, so one pin
 resolves on the AS6704T and on an arm64 Mac lane. Each was taken from the
 top-level `Digest:` of `docker buildx imagetools inspect`, never a per-platform
-entry. Confirmed for all seven.
+entry. Confirmed for all eight.
 
 ## What the four have in common
 
