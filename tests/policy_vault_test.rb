@@ -1179,8 +1179,9 @@ tracked_root_vault, _tracked_root_vault_error, _tracked_root_vault_status = Open
 check(failures, tracked_root_vault.strip.empty?,
       "inventory/group_vars/all/vault.yml is committed; every vault key belongs in " \
       "its service's vault_<role>.yml (or vault_pushover.yml or vault_healthchecks.yml)")
+NON_SERVICE_VAULT_ROLES = %w[pushover healthchecks].freeze
 manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } +
-                 %w[pushover healthchecks]
+                 NON_SERVICE_VAULT_ROLES
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip
@@ -1188,6 +1189,38 @@ Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).so
   role = name[/\Avault_(.+)\.yml\z/, 1]
   check(failures, role.nil? || manifest_roles.include?(role),
         "#{name} names no role in services/manifest.yml")
+end
+
+# AND THE OTHER DIRECTION, which the glob above cannot state: it iterates what is
+# on disk, so it refuses a file naming no role and says nothing at all about a
+# role with no file. Deleting inventory/group_vars/all/vault_komga.yml passed
+# policy_test, this check and secrets_docs_test together -- measured -- and the
+# failure then waited for roles/vault_contract on the NAS, on a five-minute
+# poller tick, which is the #561 window reached by a different route.
+#
+# The roster is derived from the manifest rather than listed, the way
+# tests/nas_storage_support.rb derives the storage contributors it closes in both
+# directions. CREDENTIAL_FREE_SERVICES is the one legitimate absence and is
+# already closed against its own roster in tests/policy_support.rb, so a service
+# gaining or losing every key fails here either way: listed there and holding a
+# file, or absent there and holding none.
+#
+# Keyed by service NAME for the exemption and by ROLE for the filename, because
+# those differ -- paperless-ngx is the service, vault_paperless_ngx.yml is the
+# file.
+expected_vault_roles = manifest_entries.filter_map { |entry|
+  next unless entry.is_a?(Hash) && entry["status"] == "implemented"
+  next if CREDENTIAL_FREE_SERVICES.include?(entry["name"])
+
+  entry["role"]
+}.compact.sort + NON_SERVICE_VAULT_ROLES
+expected_vault_roles.each do |role|
+  relative = File.join("inventory", "group_vars", "all", "vault_#{role}.yml")
+  check(failures, File.file?(File.join(ROOT, relative)),
+        "#{relative} is missing: every implemented service authors its credentials in its own " \
+        "vault file, and a service whose file is gone reads as having no keys here while " \
+        "roles/vault_contract refuses on the target. Add the file, or register the service in " \
+        "CREDENTIAL_FREE_SERVICES if it genuinely holds no credential")
 end
 
 
