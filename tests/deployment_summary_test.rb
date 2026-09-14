@@ -466,14 +466,34 @@ def report_variables(url, overrides)
   }.merge(TOKENS).merge(overrides)
 end
 
+# The report's When line is the controller's clock at render time, so a row
+# accepts any minute between just before the play started and just after it
+# ended, in the exact form the report writes.
+def report_minutes(started, finished)
+  (((started.to_i / 60) - 1)..((finished.to_i / 60) + 1)).map do |minute|
+    Time.at(minute * 60).utc.strftime("%d %b %H:%M UTC")
+  end
+end
+
+def report_lines(service, release, started, finished)
+  lead = "<b>#{service}</b> was <font color=\"#2e7d32\">recreated</font> by Compose"
+  release_line = "🔖 <b>Release</b> <font color=\"#9e9e9e\">#{release[0, 12]}</font>"
+  report_minutes(started, finished).map do |minute|
+    "#{lead}\n\n#{release_line}\n🕒 <b>When</b> <font color=\"#9e9e9e\">#{minute}</font>\n\n" \
+      "<i>Details are in the Deployments message for this release.</i>"
+  end
+end
+
 def check_report(failures, label, variables_overrides, expected_count, *arguments)
   with_http_probe(expected_count) do |port, requests|
+    started = Time.now
     _stdout, stderr, status = run_report(
       report_variables(endpoint(port), variables_overrides), *arguments
     )
+    finished = Time.now
     check(failures, status.success?,
           "#{label} report fixture failed: #{stderr.lines.last&.strip}")
-    yield requests.first || {} if block_given?
+    yield requests.first || {}, started, finished if block_given?
   end
 end
 
@@ -484,32 +504,32 @@ RECREATED = {
 
 REPORT_EXTRAS = { "html" => "1", "ttl" => "86400" }.freeze
 
-check_report(failures, "recreated", RECREATED, 1) do |request|
+check_report(failures, "recreated", RECREATED, 1) do |request, started, finished|
   form = request["form"] || {}
   check_delivery_form(failures, "a service report", request, "-1",
                       token: "vault_pushover_containers_token", extras: REPORT_EXTRAS)
   check(failures, form["title"] == "♻️ Komga recreated",
         "a recreated service must say so in the platform's style: #{form['title'].inspect}")
-  check(failures, form["message"] == "<b>Komga</b> was recreated by Compose\n" \
-                                     "🏷️ <font color=\"#9e9e9e\">release #{RELEASE[0, 12]}</font>",
-        "a recreated service must name itself in bold and the release it was recreated at in grey: " \
-        "#{form['message'].inspect}")
+  check(failures, report_lines("Komga", RELEASE, started, finished).include?(form["message"]),
+        "a recreated service must lead with its bold name and a green verb, then label its release " \
+        "and the UTC minute in grey, then point at the Deployments message: #{form['message'].inspect}")
 end
 
 # The message is HTML, so a service name is text inside markup rather than
 # markup, and the title -- which Pushover never parses -- stays as written.
 HOSTILE_SERVICE = %(Paperless & "Tika" <i>'x'</i>)
 check_report(failures, "a service name carrying markup",
-             RECREATED.merge("deployment_report_service" => HOSTILE_SERVICE), 1) do |request|
+             RECREATED.merge("deployment_report_service" => HOSTILE_SERVICE), 1) do |request, started, finished|
   form = request["form"] || {}
   check(failures, form["title"] == "♻️ #{HOSTILE_SERVICE} recreated",
         "the report title must stay plain text: #{form['title'].inspect}")
-  check(failures, form["message"].to_s.start_with?(
-    "<b>Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;</b> was recreated by Compose\n"
-  ), "every value in the report's HTML must be escaped: #{form['message'].inspect}")
-  check(failures, form["message"].to_s.scan("<").length == 4 &&
-                  form["message"].to_s.include?("<font color=\"#9e9e9e\">release #{RELEASE[0, 12]}</font>"),
-        "the report's only markup must be its own <b></b> and grey <font></font>: #{form['message'].inspect}")
+  escaped = "Paperless &amp; &#34;Tika&#34; &lt;i&gt;&#39;x&#39;&lt;/i&gt;"
+  check(failures, report_lines(escaped, RELEASE, started, finished).include?(form["message"]),
+        "every value in the report's HTML must be escaped: #{form['message'].inspect}")
+  # Seven elements of its own -- <b> and <font> on each of three lines, and the
+  # closing <i> -- and not one more from the name.
+  check(failures, form["message"].to_s.scan("<").length == 14,
+        "the report's only markup must be its own: #{form['message'].inspect}")
 end
 
 # Escaping expands, and a cut after escaping can split an entity or the closing
@@ -517,12 +537,11 @@ end
 # arrives whole: complete entities, a closed tag, under Pushover's cap, and never
 # reaching the publish task's own cut.
 check_report(failures, "a service name long enough to overrun the message",
-             RECREATED.merge("deployment_report_service" => "&" * 300), 1) do |request|
+             RECREATED.merge("deployment_report_service" => "&" * 300), 1) do |request, started, finished|
   message = (request["form"] || {})["message"].to_s
   check(failures, message.length <= 1024 && !message.include?("…"),
         "an overlong service name must be bounded before escaping, not cut after: #{message.length}")
-  check(failures, message.start_with?("<b>#{'&amp;' * 128}</b> was recreated by Compose\n") &&
-                  message.end_with?("release #{RELEASE[0, 12]}</font>"),
+  check(failures, report_lines("&amp;" * 128, RELEASE, started, finished).include?(message),
         "an overlong service name must keep whole entities and its closing tag: #{message[0, 40].inspect}")
 end
 
