@@ -1988,6 +1988,8 @@ class MessageStyleTest(PollerTestCase):
                 self.assertEqual(shape["labels"], labels)
                 self.assertEqual(bool(shape["closing"]), closes)
         closings = dict((label, message_shape(fields["message"])["closing"]) for label, fields in messages)
+        self.assertNotIn("next poll", closings["deploy failed, retrying"],
+                         "the retrying line must not claim the next poll: a newer green revision goes first")
         # Each cause names the remedy that fits it, and none promises the next poll.
         self.assertEqual(
             closings,
@@ -2000,8 +2002,6 @@ class MessageStyleTest(PollerTestCase):
             },
             "a failed deployment's closing line must name its own remedy",
         )
-        self.assertNotIn("next poll", closings["deploy failed, retrying"],
-                         "the retrying line must not claim the next poll: a newer green revision goes first")
 
     def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
         hostile = ("<b>&'\"\n\0\U0001f9e8" * 1500)[:10_000]
