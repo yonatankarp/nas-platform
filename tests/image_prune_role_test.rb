@@ -19,14 +19,24 @@ include TestScaffold
 ROLE_TASKS = File.join(ROOT, "roles/image_prune/tasks/main.yml")
 PRUNE_SOURCE = File.join(ROOT, "scripts/image_prune.py")
 TOKEN = "tk_#{'r' * 29}"
-# Deliberately not the deployed topics: rendering with names the repository
-# never contains proves the configuration reads the declared variables rather
-# than a fallback that happens to agree with them today (#345).
-SENTINEL_CRITICAL = "sentinel-critical"
-SENTINEL_DEPLOYMENT = "sentinel-deployment"
-# The port is a sentinel for the same reason, and 2586 specifically is not
-# it: the value this role used to fall back to would pass a render that
-# stopped reading the variable at all (#402).
+# One sentinel per Pushover credential, distinct, each carrying a double quote and
+# a backslash, so a rendered config is proved to escape them and to hold only its
+# own application's token.
+PUSHOVER_ALERTS_TOKEN = 'sentinel-alerts-"token\\one'
+PUSHOVER_DEPLOYMENTS_TOKEN = 'sentinel-deployments-"token\\two'
+# Supplied although the prune reads no Deployments token, so a config found
+# carrying it is caught: that application is the release message's alone.
+PUSHOVER_CONTAINERS_TOKEN = 'sentinel-containers-"token\\four'
+PUSHOVER_USER_KEY = 'sentinel-user-"key\\three'
+PUSHOVER_CREDENTIALS = {
+  "vault_pushover_alerts_token" => PUSHOVER_ALERTS_TOKEN,
+  "vault_pushover_deployments_token" => PUSHOVER_DEPLOYMENTS_TOKEN,
+  "vault_pushover_containers_token" => PUSHOVER_CONTAINERS_TOKEN,
+  "vault_pushover_user_key" => PUSHOVER_USER_KEY
+}.freeze
+# A sentinel rather than the deployed port, and 2586 specifically is not it: the
+# value this role used to fall back to would pass a render that stopped reading
+# the variable at all (#402). ntfy-prune.curl still reads it.
 SENTINEL_PORT = 28_517
 
 # Deliberately restated rather than derived from the script: this list is the
@@ -36,7 +46,7 @@ SENTINEL_PORT = 28_517
 CONFIG_KEYS = %w[
   curl_path dangling_retention_hours deployment_lock
   deployment_lock_wait_seconds docker_path log_retention_days log_root
-  ntfy_curl_config ntfy_topic_critical ntfy_topic_deployment retention_hours
+  pushover_alerts_curl_config pushover_containers_curl_config retention_hours
   state_root tool_path
 ].freeze
 
@@ -64,6 +74,23 @@ check(failures, notifier_tasks.length == 1,
       "the role must render ntfy.curl exactly once")
 check(failures, notifier_tasks.all? { |task| task["no_log"] == true },
       "the ntfy.curl task must set no_log so the token never reaches a log")
+# Kept rendered until stage 4 of #558, and never removed before then: a prune
+# running the previous revision reports through ntfy-prune.curl.
+ntfy_removals = tasks.select do |task|
+  task.values.any? do |arguments|
+    arguments.is_a?(Hash) && arguments["state"].to_s == "absent" &&
+      arguments.values.any? { |value| value.to_s.match?(/notifier_path|ntfy-prune\.curl/) }
+  end
+end
+check(failures, ntfy_removals.empty?,
+      "no task may remove ntfy-prune.curl before stage 4 of #558, found " \
+      "#{ntfy_removals.map { |task| task['name'] }.inspect}")
+pushover_tasks = tasks.select do |task|
+  task.dig("ansible.builtin.template", "src") == "pushover.curl.j2"
+end
+check(failures, pushover_tasks.length == 1 &&
+        pushover_tasks.all? { |task| task["no_log"] == true && task.dig("ansible.builtin.template", "mode") == "0600" },
+      "the role must render pushover.curl.j2 exactly once, at mode 0600, with no_log")
 
 cron_tasks = tasks.select { |task| task.key?("ansible.builtin.cron") }
 check(failures, cron_tasks.length == 1, "the role must install exactly one cron entry")
@@ -162,6 +189,27 @@ check(failures,
         [["header", '"Authorization: Bearer {{ vault_ntfy_deploy_token }}"']],
       "the ntfy.curl config must present exactly the deploy publisher's own bearer token")
 
+# The Pushover configs, read as directives: exactly one token, read by name and
+# escaped, the user key, and the url; and the defaults' list routes Alerts first.
+pushover_directives = File.read(File.join(ROOT, "roles/image_prune/templates/pushover.curl.j2"))
+                          .lines.filter_map do |line|
+  key, separator, value = line.strip.partition(" = ")
+  [key, value] unless separator.empty?
+end
+check(failures,
+      pushover_directives.select { |key, value| key == "form-string" && value.start_with?('"token=') }.length == 1 &&
+        pushover_directives.select { |key, value| key == "form-string" && value.include?("item.token_variable") }.length == 1 &&
+        pushover_directives.map(&:first).sort == %w[form-string form-string url] &&
+        pushover_directives.find { |key, _| key == "url" }.to_a.last == '"{{ image_prune_pushover_api_url }}"',
+      "the prune's pushover.curl config must declare exactly its url, the user key and one token")
+notifiers = defaults.fetch("image_prune_pushover_notifiers", [])
+check(failures,
+      notifiers.map { |notifier| [File.basename(notifier["path"].to_s), notifier["token_variable"]] } ==
+        [["pushover-prune-alerts.curl", "vault_pushover_alerts_token"],
+         ["pushover-prune-containers.curl", "vault_pushover_containers_token"]],
+      "image_prune_pushover_notifiers must be the Alerts then the Containers config at the " \
+      "prune's own paths, found #{notifiers.inspect}")
+
 # The schedule is installed by the playbook the poller replays on every
 # deployment. Installed anywhere else it would drift the moment someone edited
 # the role, which is the failure this repository exists to prevent.
@@ -218,11 +266,10 @@ Dir.mktmpdir("image-prune-role") do |root|
     "-e", "image_prune_home=#{home}",
     "-e", "vault_ntfy_deploy_token=#{TOKEN}",
     "-e", "image_prune_external_scheduler=true",
-    # Supplied the way the platform supplies them -- as inventory variables the
-    # role declares required. This synthetic inventory is not inventory/local.yml
-    # and nothing else here would define them, which is the point.
-    "-e", "ntfy_topic=#{SENTINEL_CRITICAL}",
-    "-e", "ntfy_deployment_topic=#{SENTINEL_DEPLOYMENT}",
+    "-e", JSON.generate(PUSHOVER_CREDENTIALS),
+    # Supplied the way the platform supplies it -- an inventory variable the role
+    # declares required. This synthetic inventory is not inventory/local.yml and
+    # nothing else here would define it, which is the point.
     "-e", "ntfy_port=#{SENTINEL_PORT}",
   ]
   output, status = Open3.capture2e(environment, *arguments)
@@ -248,16 +295,27 @@ Dir.mktmpdir("image-prune-role") do |root|
           "image-prune.json keys must match the script's Config exactly; " \
           "extra=#{(config.keys - CONFIG_KEYS).inspect} " \
           "missing=#{(CONFIG_KEYS - config.keys).inspect}")
-    check(failures, config.values.none? { |value| value.to_s.include?(TOKEN) },
-          "the non-secret configuration must never contain the ntfy token")
-    # The prune publishes as the deploy account too, so its topics have to come
-    # from the same declaration the grant is derived from rather than from a
-    # fallback in a play the ntfy role is absent from (#345).
-    check(failures, config["ntfy_topic_critical"] == SENTINEL_CRITICAL &&
-                    config["ntfy_topic_deployment"] == SENTINEL_DEPLOYMENT,
-          "the configuration must render the declared topics, got " \
-          "#{config['ntfy_topic_critical'].inspect} and " \
-          "#{config['ntfy_topic_deployment'].inspect}")
+    check(failures, config.values.none? { |value| ([TOKEN] + PUSHOVER_CREDENTIALS.values).any? { |secret| value.to_s.include?(secret) } },
+          "the non-secret configuration must never contain the ntfy token or a Pushover credential")
+    check(failures, PUSHOVER_CREDENTIALS.values.none? { |secret| output.include?(secret) },
+          "the role's own output must never print a Pushover credential")
+    escape = ->(value) { value.gsub("\\") { "\\\\" }.gsub('"') { '\\"' } }
+    { "alerts" => PUSHOVER_ALERTS_TOKEN, "containers" => PUSHOVER_CONTAINERS_TOKEN }.each do |app, token|
+      path = File.join(config_root, "pushover-prune-#{app}.curl")
+      check(failures, config["pushover_#{app}_curl_config"] == path,
+            "pushover_#{app}_curl_config must name #{path}, got #{config["pushover_#{app}_curl_config"].inspect}")
+      next check(failures, false, "#{path} was not rendered") unless File.file?(path)
+
+      rendered = File.read(path)
+      check(failures, (File.stat(path).mode & 0o777) == 0o600, "pushover-prune-#{app}.curl must be mode 0600")
+      others = PUSHOVER_CREDENTIALS.values - [token, PUSHOVER_USER_KEY]
+      check(failures,
+            rendered.lines.grep(/\Aform-string = "token=/) == ["form-string = \"token=#{escape.call(token)}\"\n"] &&
+              rendered.lines.grep(/\Aform-string = "user=/) == ["form-string = \"user=#{escape.call(PUSHOVER_USER_KEY)}\"\n"] &&
+              others.none? { |other| rendered.include?(escape.call(other)) },
+            "pushover-prune-#{app}.curl must carry its own token and the user key, escaped, and no " \
+            "other application's token")
+    end
 
     # The prune runs with a narrow PATH from cron, so the installer must record
     # where the tools really are rather than assuming /usr/bin.
@@ -296,16 +354,20 @@ Dir.mktmpdir("image-prune-role") do |root|
     check(failures, launcher_body.include?(config_path), "the launcher must pass the config path")
     check(failures, !launcher_body.include?(TOKEN), "the launcher must not contain the token")
 
+    # Still rendered, unchanged, for a prune running the previous revision.
     notifier_path = File.join(config_root, "ntfy-prune.curl")
-    check(failures, (File.stat(notifier_path).mode & 0o777) == 0o600,
-          "ntfy-prune.curl must be mode 0600")
-    check(failures, File.read(notifier_path).include?(TOKEN),
+    check(failures, File.file?(notifier_path) && (File.stat(notifier_path).mode & 0o777) == 0o600,
+          "ntfy-prune.curl must still be rendered, at mode 0600, until stage 4 of #558")
+    # Read once and guarded: an unrendered file must be reported by the check
+    # above, not crash this suite before it prints what failed.
+    notifier_body = File.file?(notifier_path) ? File.read(notifier_path) : ""
+    check(failures, notifier_body.include?(TOKEN),
           "ntfy-prune.curl must carry the publisher token")
     # Rendered against a sentinel port, so a template that stopped reading the
     # variable and restated 2586 is caught rather than agreeing by accident.
-    check(failures, File.read(notifier_path).include?("127.0.0.1:#{SENTINEL_PORT}/"),
+    check(failures, notifier_body.include?("127.0.0.1:#{SENTINEL_PORT}/"),
           "ntfy-prune.curl must address the declared ntfy port, got: " \
-          "#{File.read(notifier_path).lines.grep(/^url/).join.strip}")
+          "#{notifier_body.lines.grep(/^url/).join.strip}")
     check(failures, notifier_path != File.join(config_root, "ntfy.curl"),
           "the prune must not overwrite the poller's own publisher configuration")
 
@@ -321,6 +383,8 @@ Dir.mktmpdir("image-prune-role") do |root|
           "a fresh installation must report no prune yet: #{status_output}")
     check(failures, status_output.include?("unused retention: #{retention}h"),
           "--status must report the window it will apply: #{status_output}")
+    check(failures, !status_output.include?("nothing can be published"),
+          "the installed prune must find both Pushover configs its configuration names: #{status_output}")
 
     # Reviewing an installed host is the case --check exists for, and the one
     # the operator guide requires before every production run. It is also where
@@ -338,16 +402,16 @@ Dir.mktmpdir("image-prune-role") do |root|
           "#{review_output.lines.last(3).join}")
   end
 
-  # And the refusal a fallback used to swallow: with no topic declared the role
-  # must stop and name the variable rather than schedule a prune that publishes
-  # where the deploy account may not write. Check mode is enough, because the
+  # And the refusal a fallback used to swallow: with no port or Pushover
+  # credential declared the role must stop and name each variable rather than
+  # schedule a prune that cannot publish. Check mode is enough, because the
   # argument spec is validated before the role's first task.
   undeclared = []
   index = 0
   while index < arguments.length
     if arguments[index] == "-e" &&
-       arguments[index + 1].to_s.start_with?("ntfy_topic=", "ntfy_deployment_topic=",
-                                             "ntfy_port=")
+       (arguments[index + 1].to_s.start_with?("ntfy_port=") ||
+        arguments[index + 1] == JSON.generate(PUSHOVER_CREDENTIALS))
       index += 2
       next
     end
@@ -367,8 +431,9 @@ Dir.mktmpdir("image-prune-role") do |root|
   missing_arguments =
     refusal_output[/missing required arguments: ([a-z_, ]+)/, 1].to_s.split(",").map(&:strip)
   check(failures, !refusal_status.success? &&
-        (%w[ntfy_topic ntfy_deployment_topic ntfy_port] - missing_arguments).empty?,
-        "the role must refuse to schedule a prune when no topic or port is " \
+        (%w[ntfy_port vault_pushover_alerts_token vault_pushover_containers_token
+            vault_pushover_user_key] - missing_arguments).empty?,
+        "the role must refuse to schedule a prune when no port or Pushover credential is " \
         "declared, naming each missing variable, found #{missing_arguments.inspect} " \
         "in: #{refusal_output.lines.last(8).join}")
 end

@@ -3,9 +3,10 @@
 #
 # ntfy_port is deliberately absent from this file for the same reason the two
 # topics below are: it is declared in inventory/group_vars/all/main.yml, because
-# the poller and the image prune address it from a play that does not list this
-# role and a default here would be invisible there (#402). Do not restore it;
-# every reader addresses the same listener this role publishes.
+# the ntfy.curl files the poller and image prune roles still render address it
+# from a play that does not list this role, and a default here would be
+# invisible there (#402). Do not restore it; every reader addresses the same
+# listener this role publishes.
 ntfy_base_url: "http://{{ platform_public_host }}:{{ ntfy_port }}"
 ntfy_account_api: "http://127.0.0.1:{{ ntfy_port }}/v1/account"
 ntfy_account_subscription_api: "{{ ntfy_account_api }}/subscription"
@@ -20,10 +21,10 @@ ntfy_compose_project_name: >-
 #
 # ntfy_topic and ntfy_deployment_topic are deliberately absent from this file:
 # they are declared in inventory/group_vars/all/main.yml, because the poller and
-# the image prune read them from a play that does not list this role and a
-# default here would be invisible there while the publisher grants below moved
-# (#345). Do not restore them; the grants read the same variables and the
-# inventory layer is what makes both sides one declaration.
+# the image prune read them from a play that does not list this role, and a
+# default here was invisible there while the publisher grants below moved
+# (#345). Neither reads them since #558 stage 3 moved both to Pushover; they stay
+# in the inventory with the grants until ntfy is removed.
 ntfy_containers_topic: nas-containers
 # Seerr's request events until #558 moved them to Pushover. Nothing publishes
 # here any more; the topic stays provisioned until stage 3 removes ntfy.

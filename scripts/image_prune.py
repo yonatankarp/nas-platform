@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields
 from datetime import datetime, timedelta, timezone
 import fcntl
+import html
 import json
 import os
 from pathlib import Path
@@ -52,8 +53,14 @@ PRUNE_TIMEOUT_SECONDS = 15 * 60
 INVENTORY_TIMEOUT_SECONDS = 60
 NOTIFICATION_TIMEOUT_SECONDS = 10
 LOCK_POLL_SECONDS = 15
-# Mirrors scripts/production_auto_deploy.py so both publishers escape alike.
-MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
+# Pushover's own caps, spelled exactly as services/dozzle/alert_relay.py and
+# scripts/production_auto_deploy.py spell them; tests/policy_test.rb holds the
+# copies identical. Over any of them is a 4xx and a lost message.
+MAX_ESCAPED_FIELD_CHARACTERS = 384
+MAX_MESSAGE_CHARACTERS = 1024
+MAX_TITLE_CHARACTERS = 250
+# A reclaim is a record worth a week on the Containers app and no longer.
+RECLAIMED_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 class ConfigurationError(ValueError):
@@ -72,11 +79,6 @@ class Config:
     # be pulling an image while its layers are being removed underneath it.
     deployment_lock: Path
     deployment_lock_wait_seconds: int
-    ntfy_curl_config: Path
-    # Addressed in the publish body, not the URL: ntfy only parses a JSON
-    # publish document when the POST goes to the server root.
-    ntfy_topic_critical: str
-    ntfy_topic_deployment: str
     retention_hours: int
     dangling_retention_hours: int
     log_retention_days: int
@@ -85,6 +87,12 @@ class Config:
     docker_path: Path
     curl_path: Path
     tool_path: str
+    # The protected curl config of each Pushover application the prune sends to
+    # (#558): Alerts for a failure, Containers for a reclaim -- Deployments is
+    # reserved for the one message per release. None means that
+    # application cannot be published to; see load_config.
+    pushover_alerts_curl_config: Path | None = None
+    pushover_containers_curl_config: Path | None = None
 
 
 _PATH_FIELDS = frozenset(
@@ -92,10 +100,12 @@ _PATH_FIELDS = frozenset(
         "state_root",
         "log_root",
         "deployment_lock",
-        "ntfy_curl_config",
         "docker_path",
         "curl_path",
     }
+)
+_PUSHOVER_FIELDS = frozenset(
+    {"pushover_alerts_curl_config", "pushover_containers_curl_config", "pushover_deployments_curl_config"}
 )
 _COUNT_FIELDS = {
     "retention_hours": MINIMUM_RETENTION_HOURS,
@@ -115,7 +125,21 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     if not isinstance(payload, dict):
         raise ConfigurationError("configuration is not an object")
     values: dict[str, object] = {}
+    unpublishable = []
     for field in fields(Config):
+        if field.name in _PUSHOVER_FIELDS:
+            # Never a refusal, and checked before the non-empty and absolute
+            # rules below. The install play copies this script before it renders
+            # the file, so a prune started in that window, or after a failed
+            # render, reads an ntfy-era configuration naming no Pushover config.
+            # Refusing it would stop the prune itself; reading it as "cannot
+            # publish" costs that run's notification and one stderr line.
+            raw = payload.get(field.name)
+            usable = type(raw) is str and Path(raw).is_absolute()
+            values[field.name] = Path(raw) if usable else None
+            if not usable:
+                unpublishable.append(field.name)
+            continue
         if field.name not in payload:
             raise ConfigurationError(f"configuration is missing {field.name}")
         raw = payload[field.name]
@@ -141,6 +165,12 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     if values["dangling_retention_hours"] > values["retention_hours"]:  # type: ignore[operator]
         raise ConfigurationError(
             "dangling_retention_hours must not exceed retention_hours"
+        )
+    if unpublishable:
+        print(
+            "image prune: nothing can be published to Pushover through "
+            f"{', '.join(unpublishable)}, which the configuration does not name",
+            file=sys.stderr,
         )
     return Config(**values)  # type: ignore[arg-type]
 
@@ -254,16 +284,95 @@ def format_duration(seconds: int) -> str:
     return f"{seconds}s"
 
 
-def markdown_escape(value: str, maximum: int = 256) -> str:
-    """Escape one value for ntfy's markdown rendering, bounded like the relay.
+def html_escape(value: str, maximum: int = 128, escaped_maximum: int = MAX_ESCAPED_FIELD_CHARACTERS) -> str:
+    """Bound one value, then make it inert markup for Pushover's html=1.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read. services/dozzle/alert_relay.py carries
+    a relative of it, unannotated, which is left alone.
+
+    Cut first and escape after: escaping first and cutting afterwards can split
+    `&amp;` and leave a dangling entity. The second bound is on the result, and
+    it drops whole input characters rather than cutting the escaped text, for
+    the same reason -- `'` renders as `&#x27;`, so escaping expands.
+    """
+
+    bounded = value[:maximum]
+    escaped = html.escape(bounded, quote=True)
+    while bounded and len(escaped) > escaped_maximum:
+        bounded = bounded[:-1]
+        escaped = html.escape(bounded, quote=True)
+    return escaped
+
+
+def fit_message(lines) -> str:
+    """Join message lines, dropping whole lines from the end until Pushover takes it.
 
     Identical to the copy in the other script by construction, and
     tests/policy_test.rb compares the two definitions as text so it stays that
     way (#423). Prose true of only one script goes in a comment above the def,
     which that comparison does not read.
+
+    Whole lines where it can, because every line is HTML and a cut can split an
+    entity or a tag. A message over MAX_MESSAGE_CHARACTERS is refused outright,
+    and so is an empty one -- which Pushover would blame on the token -- so a
+    first line that does not fit on its own is cut instead: back past any
+    partial tag or entity at the cut, and before any tag the cut left unclosed,
+    with a marker, and never to nothing when there was something to send.
     """
 
-    return MARKDOWN_PATTERN.sub(lambda match: f"\\{match.group(1)}", value[:maximum])
+    kept = list(lines)
+    while len(kept) > 1 and len("\n".join(kept)) > MAX_MESSAGE_CHARACTERS:
+        kept.pop()
+    message = "\n".join(kept)
+    if len(message) <= MAX_MESSAGE_CHARACTERS:
+        return message
+    cut = message[: MAX_MESSAGE_CHARACTERS - 1]
+    cut = re.sub(r"<[^>]*\Z", "", cut)
+    cut = re.sub(r"&[^;<>\s]*\Z", "", cut)
+    unclosed = [
+        opening
+        for opening in re.finditer(r"<(b|i|u|a|font)\b[^>]*>", cut)
+        if f"</{opening.group(1)}>" not in cut[opening.end():]
+    ]
+    if unclosed:
+        cut = cut[: unclosed[0].start()]
+    return f"{cut}\u2026"
+
+
+def pushover_verdict(returncode: int, output: bytes) -> str:
+    """Read one curl --write-out '\\n%{http_code}' run as accepted, refused or unanswered.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+
+    The same verdict as roles/ntfy/tasks/pushover_publish.yml (#598): 200 with
+    an integer status of 1 is accepted, a 4xx other than 429 with an integer
+    status of 0 is refused, and everything else -- no answer, a proxy's page, a
+    quota 429, a status of "0" or true -- is unanswered, which is not a refusal.
+    The code is read from the end of the output because curl's diagnostics can
+    precede it on the same stream.
+    """
+
+    if returncode != 0:
+        return "unanswered"
+    body, _separator, code = output.rpartition(b"\n")
+    try:
+        status = int(code.decode("ascii"))
+        answer = json.loads(body.decode("utf-8")).get("status")
+    except (AttributeError, UnicodeError, ValueError, RecursionError):
+        return "unanswered"
+    if type(answer) is not int:
+        return "unanswered"
+    if status == 200 and answer == 1:
+        return "accepted"
+    if 400 <= status <= 499 and status != 429 and answer == 0:
+        return "refused"
+    return "unanswered"
 
 
 def _timestamp(now: datetime | None = None) -> str:
@@ -482,34 +591,34 @@ def record_state(config: Config, state: dict) -> None:
 
 
 OUTCOMES = {
-    # topic attribute, title, priority, tags. A prune that reclaimed nothing is
+    # Pushover application, title, priority. A prune that reclaimed nothing is
     # not in here on purpose: a weekly no-op notification is noise, and the
     # weeks that reclaim nothing are most of them.
-    "reclaimed": ("ntfy_topic_deployment", "Images pruned", 3, ("wastebasket",)),
-    "failed": ("ntfy_topic_critical", "Image prune failed", 5, ("warning",)),
+    "reclaimed": ("containers", "Images pruned", -1),
+    "failed": ("alerts", "Image prune failed", 1),
 }
 
 
-def render_notification(config: Config, outcome: str, summary: dict) -> dict:
-    """Build ntfy's structured publish document for one prune outcome."""
+def render_notification(config: Config, outcome: str, summary: dict) -> tuple[str, dict]:
+    """Build the Pushover application and fields for one prune outcome."""
 
     try:
-        topic_attribute, title, priority, tags = OUTCOMES[outcome]
+        app, title, priority = OUTCOMES[outcome]
     except KeyError:
         raise ValueError(f"unknown prune outcome: {outcome}") from None
     lines = []
     if outcome == "failed":
-        lines.append(f"**Pass:** `{markdown_escape(str(summary.get('pass', '?')))}`")
-        lines.append(f"**Reason:** `{markdown_escape(str(summary.get('reason', '?')))}`")
+        lines.append(f"<b>Pass:</b> {html_escape(str(summary.get('pass', '?')))}")
+        lines.append(f"<b>Reason:</b> {html_escape(str(summary.get('reason', '?')))}")
     else:
-        lines.append(f"**Reclaimed:** `{format_bytes(summary['reclaimed_bytes'])}`")
-        lines.append(f"**Images removed:** `{summary['images_removed']}`")
+        lines.append(f"<b>Reclaimed:</b> {format_bytes(summary['reclaimed_bytes'])}")
+        lines.append(f"<b>Images removed:</b> {summary['images_removed']}")
         if summary.get("images_remaining") is not None:
-            lines.append(f"**Images remaining:** `{summary['images_remaining']}`")
-    lines.append(f"**Unused older than:** `{config.retention_hours}h`")
-    lines.append(f"**Dangling older than:** `{config.dangling_retention_hours}h`")
-    lines.append(f"**Duration:** `{format_duration(int(summary.get('seconds', 0)))}`")
-    lines.append(f"**Log:** `{markdown_escape(str(summary.get('log', '')))}`")
+            lines.append(f"<b>Images remaining:</b> {summary['images_remaining']}")
+    lines.append(f"<b>Unused older than:</b> {config.retention_hours}h")
+    lines.append(f"<b>Dangling older than:</b> {config.dangling_retention_hours}h")
+    lines.append(f"<b>Duration:</b> {format_duration(int(summary.get('seconds', 0)))}")
+    lines.append(f"<b>Log:</b> {html_escape(str(summary.get('log', '')))}")
     # A lock screen shows the title and little else, so the reclaimed size is
     # the one number worth putting there. A failure says so in the title
     # already and does not need it said twice.
@@ -518,47 +627,69 @@ def render_notification(config: Config, outcome: str, summary: dict) -> dict:
         if outcome == "reclaimed"
         else title
     )
-    return {
-        "topic": getattr(config, topic_attribute),
-        "title": headline,
-        "message": "\n".join(lines),
-        "priority": priority,
-        "tags": list(tags),
-        "markdown": True,
-    }
+    fields = {"title": headline, "message": fit_message(lines), "priority": priority}
+    if outcome == "reclaimed":
+        # A ttl is never sent with priority 2, which none of these is.
+        fields["ttl"] = RECLAIMED_TTL_SECONDS
+    return app, fields
 
 
-def publish(config: Config, notification: dict) -> bool:
-    """Send one prepared ntfy document through the protected curl config."""
+def publish(config: Config, app: str, fields: dict) -> bool:
+    """Send one message to a Pushover application; True only if Pushover accepted it.
 
-    body = json.dumps(notification, ensure_ascii=False, separators=(",", ":"))
-    try:
-        result = _run(
-            [
-                str(config.curl_path),
-                "--disable",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                "10",
-                "--config",
-                str(config.ntfy_curl_config),
-                "--data-binary",
-                body,
-            ],
-            timeout=NOTIFICATION_TIMEOUT_SECONDS,
-            config=config,
-        )
-    except (OSError, subprocess.SubprocessError):
+    The token and the user key live only in that application's protected curl
+    config, so argv holds nothing but the message, and every field goes as
+    --form-string, which never reads a leading @ or < as a file. A refusal names
+    the vault keys to fix and never a value, and nothing here raises.
+    """
+
+    # An application this script configures no curl config for reads as cannot
+    # publish, like an unconfigured one, rather than raising.
+    curl_config = getattr(config, f"pushover_{app}_curl_config", None)
+    if curl_config is None:
         return False
-    return result.returncode == 0
+    form = dict(fields, html="1")
+    form["title"] = str(form["title"])[:MAX_TITLE_CHARACTERS]
+    arguments = [
+        str(config.curl_path),
+        "--disable",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "10",
+        "--config",
+        str(curl_config),
+    ]
+    for key, value in form.items():
+        arguments += ["--form-string", f"{key}={value}"]
+    arguments += ["--write-out", "\n%{http_code}"]
+    try:
+        result = _run(arguments, timeout=NOTIFICATION_TIMEOUT_SECONDS, config=config)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # ValueError is a NUL byte in a field, which no argv can carry: nothing
+        # was sent, and a notice that cannot be sent must not raise either.
+        return False
+    verdict = pushover_verdict(result.returncode, result.stdout)
+    if verdict == "refused":
+        print(
+            f"image prune: Pushover refused a message to the {app} application; "
+            f"check vault_pushover_{app}_token and vault_pushover_user_key. "
+            "Values are not shown.",
+            file=sys.stderr,
+        )
+    elif result.returncode == 0 and result.stdout.rpartition(b"\n")[2].strip() == b"429":
+        print(
+            f"image prune: Pushover rate-limited a message to the {app} application "
+            "(HTTP 429: its quota is spent).",
+            file=sys.stderr,
+        )
+    return verdict == "accepted"
 
 
 def notify(config: Config, outcome: str, summary: dict) -> bool:
-    """Publish a secret-free prune outcome through the operator's curl config."""
+    """Publish a secret-free prune outcome to its Pushover application."""
 
-    return publish(config, render_notification(config, outcome, summary))
+    return publish(config, *render_notification(config, outcome, summary))
 
 
 def run_passes(config: Config, log) -> tuple[int, int]:
@@ -705,8 +836,8 @@ def main(argv=None) -> int:
     try:
         config = load_config(config_path)
     except ConfigurationError:
-        # The notifier credentials live beside this file, so an unusable
-        # configuration cannot be reported through ntfy.
+        # The notifier's paths live in this file, so an unusable configuration
+        # cannot be reported through Pushover.
         print("image prune: unusable configuration", file=sys.stderr)
         return 1
     if mode == "status":

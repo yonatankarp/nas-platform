@@ -19,9 +19,8 @@
     fail_msg: >-
       Export PLATFORM_PUBLIC_HOST -- the address your devices use to reach
       published services -- as every other role on this host requires, or
-      override production_auto_deploy_public_host directly. ntfy hashes it into
-      the mobile push topic, so defaulting it to the LAN address would silently
-      publish where nothing is subscribed.
+      override production_auto_deploy_public_host directly. Defaulting it to the
+      LAN address would silently hand the plays an address devices do not use.
 
 - name: Require Python 3.12 or newer
   ansible.builtin.assert:
@@ -218,10 +217,22 @@
     dest: "{{ production_auto_deploy_launcher_path }}"
     mode: "0700"
 
+# Before the configuration that names them, so a configuration never points at
+# a curl config that was not rendered. Each carries one application's token.
+- name: Render the protected Pushover publisher configurations
+  ansible.builtin.template:
+    src: pushover.curl.j2
+    dest: "{{ item.path }}"
+    mode: "0600"
+  loop: "{{ production_auto_deploy_pushover_notifiers }}"
+  loop_control:
+    label: "{{ item.path }}"
+  no_log: true
+
 # Secret-bearing since #606: the two healthchecks.io ping URLs carry their
 # checks' tokens. Rendered after the poller copy above, and the poller reads a
-# configuration without them as "no ping", so neither half-installed state
-# stops a deployment.
+# configuration without them as "no ping", and one without the Pushover paths
+# as "cannot publish", so no half-installed state stops a deployment.
 - name: Write the protected poller configuration
   ansible.builtin.template:
     src: config.json.j2
@@ -229,6 +240,8 @@
     mode: "0600"
   no_log: true
 
+# Kept, never removed, until stage 4 of #558: a poller process running the
+# previous revision reports the end of its own tick through this file.
 - name: Render the protected ntfy publisher configuration
   ansible.builtin.template:
     src: ntfy.curl.j2

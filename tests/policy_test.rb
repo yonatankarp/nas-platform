@@ -2453,9 +2453,10 @@ end
 # in a comment above its def, which is outside the extracted body. That is why
 # these definitions are byte-identical down to the docstring (#423).
 #
-# services/dozzle/alert_relay.py mirrors markdown_escape from inside a container
-# and is deliberately outside this glob: its copy takes a different bound and no
-# annotations, so it is a relative rather than a duplicate. Do not converge it.
+# services/dozzle/alert_relay.py mirrors html_escape from inside a container and
+# is deliberately outside this glob: its copy carries no annotations and a
+# docstring of its own, so it is a relative rather than a duplicate. Do not
+# converge it.
 duplicated_scripts = Dir.glob(File.join(ROOT, "scripts/*.py")).sort
 check_floor(failures, duplicated_scripts.length, 2, "scripts/*.py programs")
 script_definitions = duplicated_scripts.to_h do |path|
@@ -2468,14 +2469,38 @@ end
 # floor sized for the largest would fail the smallest. An extractor that stopped
 # at the first blank line yields two lines for every one of these, so each floor
 # is set well above that and below the current length, leaving room for prose.
+#
+# Six since #558 stage 3 moved both scripts from ntfy's Markdown to Pushover's
+# HTML: markdown_escape went, and html_escape, fit_message and pushover_verdict
+# came -- the escape, the whole-line bound on a message, and the reading of
+# Pushover's answer that decides whether a state record may move. The floor
+# rose with the table rather than being left at the four it was.
 duplicated_helper_floors = {
   "_write_private" => 20,
   "_record_lock_holder" => 12,
-  "markdown_escape" => 6,
   "_timestamp" => 6,
+  "html_escape" => 8,
+  "fit_message" => 8,
+  "pushover_verdict" => 8,
 }
-check_floor(failures, duplicated_helper_floors.length, 4,
+check_floor(failures, duplicated_helper_floors.length, 6,
             "helpers held identical across scripts/*.py")
+
+# Retired by #558 stage 3, and refused by name because nothing derived can see a
+# leftover: the reduce(:&) stanza below needs both scripts to define a name, and
+# the pairwise one further down needs a byte-identical pair, so markdown_escape
+# kept in one script and deleted from the other would sit there green -- an
+# escape for a renderer neither script publishes to any more, one import away
+# from being used on HTML it does not escape.
+RETIRED_SCRIPT_NAMES = %w[markdown_escape MARKDOWN_PATTERN].freeze
+duplicated_scripts.each do |path|
+  retired = (python_top_level_definitions(path).keys + python_top_level_constants(path).keys) &
+            RETIRED_SCRIPT_NAMES
+  check(failures, retired.empty?,
+        "scripts/#{File.basename(path)} still defines #{retired.inspect}, retired when both " \
+        "scripts moved from ntfy's Markdown to Pushover's HTML (#558); html_escape is the " \
+        "escape now, and a leftover copy is one nothing else compares")
+end
 
 duplicated_helper_floors.each do |helper, floor|
   sources = script_definitions.select { |_, definitions| definitions.key?(helper) }
@@ -2516,7 +2541,7 @@ end
 
 # The list above is stated, and a stated list of what must match fails open: the
 # guard covered only _write_private for as long as it existed, while
-# markdown_escape, _timestamp and _record_lock_holder sat duplicated and
+# markdown_escape (since retired), _timestamp and _record_lock_holder sat duplicated and
 # unwatched beside it (#423). This closes that, derived rather than stated: a
 # copy is byte-identical at the moment it is made, so a name both scripts define
 # whose bodies already agree is a fresh duplicate and must be named above. The
@@ -2549,7 +2574,9 @@ check(failures, unlisted_identical.empty?,
 # notification would have shipped unescaped _ * [ ] # | > while the deploy
 # poller's did not -- with the identity check on the consumer reporting the two
 # copies identical. NOTIFICATION_TIMEOUT_SECONDS = 10 is the same class in two
-# files and was compared by nothing either.
+# files and was compared by nothing either. (#558 stage 3 retired both Markdown
+# names; the escape is html_escape and its input is MAX_ESCAPED_FIELD_CHARACTERS,
+# pinned the same way below.)
 #
 # THE SUBJECT COULD NOT SEE THE RELAY. Everything above globs scripts/*.py and
 # derives its reverse direction with reduce(:&), so it needs BOTH scripts to
@@ -2589,25 +2616,47 @@ end
 # reformat costs one edit here, which is the stated-number posture this file
 # takes everywhere else.
 duplicated_constant_sites = {
-  # Two sites rather than three since #558 moved the relay to Pushover. What the
-  # relay sends is HTML now, so it escapes with html.escape and defines no
-  # character class of its own; the two scripts/*.py programs still publish
-  # Markdown to ntfy and still share this one. What went away is the third copy,
-  # not the contract -- and this is the "say which happened here" the failure
-  # message asks for.
-  "MARKDOWN_PATTERN" => {
-    "sites" => %w[
-      scripts/image_prune.py
-      scripts/production_auto_deploy.py
-    ],
+  # MARKDOWN_PATTERN left this table in #558 stage 3, when the last two sites of
+  # it -- the scripts -- moved to Pushover's HTML as the relay had before them;
+  # RETIRED_SCRIPT_NAMES above refuses it coming back. What replaced it is
+  # Pushover's own caps, and all three copy sites now publish to Pushover, so
+  # the three that bound every message are pinned at all three. The two link
+  # caps have only the sites that send a link: the scripts' prune sends none.
+  "MAX_ESCAPED_FIELD_CHARACTERS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
     "lines" => 1
+  },
+  "MAX_MESSAGE_CHARACTERS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "MAX_TITLE_CHARACTERS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "MAX_URL_CHARACTERS" => {
+    "sites" => %w[scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  "MAX_URL_TITLE_CHARACTERS" => {
+    "sites" => %w[scripts/production_auto_deploy.py services/dozzle/alert_relay.py],
+    "lines" => 1
+  },
+  # Which configuration keys load_config reads as "cannot publish" rather than
+  # refusing (#327). Drift here is a script that refuses the configuration the
+  # other one tolerates. The union of every application either script sends to --
+  # the poller Alerts and Deployments, the prune Alerts and Containers -- so the
+  # set stays one copy, and a name a script's Config lacks is never read.
+  "_PUSHOVER_FIELDS" => {
+    "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
+    "lines" => 3
   },
   "NOTIFICATION_TIMEOUT_SECONDS" => {
     "sites" => %w[scripts/image_prune.py scripts/production_auto_deploy.py],
     "lines" => 1
   }
 }
-check_floor(failures, duplicated_constant_sites.length, 2,
+check_floor(failures, duplicated_constant_sites.length, 7,
             "module-level constants held identical across the copy sites")
 
 duplicated_constant_sites.each do |constant, expectation|
@@ -2637,9 +2686,9 @@ duplicated_constant_sites.each do |constant, expectation|
   check(failures, bodies.uniq.length == 1,
         "every copy site must spell #{constant} identically, and " \
         "#{sources.keys.sort.inspect} do not. This is the input to a helper the check " \
-        "above already pins: markdown_escape can be byte-identical in all three files " \
-        "while one of them escapes a different character class, and that reads as the " \
-        "copies agreeing (#515)")
+        "above already pins: html_escape can be byte-identical in both scripts while one " \
+        "of them bounds its result to a different MAX_ESCAPED_FIELD_CHARACTERS, and that " \
+        "reads as the copies agreeing (#515)")
 end
 
 # The reverse direction, derived rather than stated, exactly as the reduce(:&)
@@ -2651,8 +2700,8 @@ end
 # And the rule is "SOME PAIR is byte-identical" rather than "every site that
 # defines it agrees": the weaker phrasing fails open on precisely the shape being
 # closed, because a name in all three where two agree and the third differs on
-# purpose would go unflagged while those two sat unpinned. markdown_escape is
-# clean here because it is excluded by name, not because its bodies disagree.
+# purpose would go unflagged while those two sat unpinned. html_escape is clean
+# here because it is excluded by name, not because the relay's body disagrees.
 #
 # The stanza above is this rule over a narrower subject and is left alone: its
 # glob picks up a fourth scripts/*.py program that this stated site list would
@@ -2666,22 +2715,24 @@ shared_across_sites = site_names.values.combination(2).map { |left, right| left 
 check_floor(failures, shared_across_sites.length, 15,
             "top-level names shared by at least two of the copy sites")
 # And a second floor, on the relay's own participation, for the same reason the
-# Jinja escape scanner above floors its two subject lists separately. Sixteen of
-# the twenty-one names that count above come from the two scripts/*.py files
-# alone, so a subject that stopped reaching services/dozzle/alert_relay.py -- a
-# moved path, an extractor returning nothing for it -- would leave the count
-# comfortably above fifteen while the half of this check that #515 exists for
-# stopped running. DUPLICATION_SITES.length does not cover it: that proves the
-# path is in the list, not that anything was read out of it. Six today --
-# TIMESTAMP_PATTERN, main, publish and render_notification -- of which only one
-# is byte-identical, which is exactly the mix that makes the relay worth reading.
+# Jinja escape scanner above floors its two subject lists separately.
+# Twenty-four of the twenty-seven names that count above come from the two
+# scripts/*.py files alone, so a subject that stopped reaching
+# services/dozzle/alert_relay.py -- a moved path, an extractor returning nothing
+# for it -- would leave the count comfortably above fifteen while the half of
+# this check that #515 exists for stopped running. DUPLICATION_SITES.length does
+# not cover it: that proves the path is in the list, not that anything was read
+# out of it.
 #
-# Four today rather than the six this said before #558, and the floor moved with
-# it rather than the count being left to drift: the relay publishes to Pushover
-# now, so it defines neither MARKDOWN_PATTERN nor markdown_escape and shares two
-# fewer names with the two Markdown-publishing scripts. Lowering a floor is the
-# move this file exists to make visible, so it is stated here with what was lost
-# and why, and four is still a real subject rather than a vacuous one.
+# The count went six, then four when #558 moved the relay to Pushover and it
+# stopped sharing the two Markdown names, and is ten since #558 stage 3 moved the
+# scripts to Pushover too, measured on that tree: MAX_ESCAPED_FIELD_CHARACTERS,
+# MAX_MESSAGE_CHARACTERS, MAX_TITLE_CHARACTERS, MAX_URL_CHARACTERS,
+# MAX_URL_TITLE_CHARACTERS, TIMESTAMP_PATTERN, html_escape, main, publish and
+# render_notification. The five caps are byte-identical and pinned by name in
+# duplicated_constant_sites; html_escape is a relative and the other four differ
+# on purpose, which is still the mix that makes the relay worth reading. The
+# floor rose with the count rather than being left at four.
 relay_site = "services/dozzle/alert_relay.py"
 check(failures, DUPLICATION_SITES.include?(relay_site),
       "#{relay_site} must be one of the copy sites: CLAUDE.md names it as the third place these " \
@@ -2689,7 +2740,7 @@ check(failures, DUPLICATION_SITES.include?(relay_site),
 relay_shared = (site_names[relay_site] || Set.new).select do |name|
   DUPLICATION_SITES.any? { |relative| relative != relay_site && site_names.fetch(relative).include?(name) }
 end
-check_floor(failures, relay_shared.length, 4,
+check_floor(failures, relay_shared.length, 10,
             "top-level names #{relay_site} shares with a scripts/*.py program")
 listed_by_name = duplicated_helper_floors.keys.to_set | duplicated_constant_sites.keys.to_set
 unlisted_pairwise = shared_across_sites.reject { |name| listed_by_name.include?(name) }.select do |name|

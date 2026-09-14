@@ -37,7 +37,19 @@ image_prune_state_root: "{{ image_prune_share_root }}/prune-state"
 image_prune_log_root: "{{ image_prune_share_root }}/prune-logs"
 image_prune_config_root: "{{ image_prune_home }}/.config/nas-platform"
 image_prune_config_path: "{{ image_prune_config_root }}/image-prune.json"
+# Rendered, unchanged, until stage 4 of #558 deletes ntfy: a prune process
+# started from the previous revision reports through the file it was given.
 image_prune_notifier_path: "{{ image_prune_config_root }}/ntfy-prune.curl"
+# One protected curl config per Pushover application, each carrying only its own
+# application's token, at paths of the prune's own: Alerts for a failure,
+# Containers for a reclaim. Deployments carries one message per release and
+# nothing else, so the prune never holds its token.
+image_prune_pushover_notifiers:
+  - path: "{{ image_prune_config_root }}/pushover-prune-alerts.curl"
+    token_variable: vault_pushover_alerts_token
+  - path: "{{ image_prune_config_root }}/pushover-prune-containers.curl"
+    token_variable: vault_pushover_containers_token
+image_prune_pushover_api_url: https://api.pushover.net/1/messages.json
 image_prune_launcher_root: "{{ image_prune_home }}/.local/bin"
 image_prune_launcher_path: "{{ image_prune_launcher_root }}/nas-platform-prune"
 image_prune_script_path: "{{ image_prune_root }}/image_prune.py"

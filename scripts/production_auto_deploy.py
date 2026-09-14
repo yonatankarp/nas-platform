@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timedelta, timezone
 import fcntl
+import html
 from http.client import HTTPException
 import json
 import os
@@ -74,8 +75,16 @@ HEALTHCHECKS_URL_PATTERN = re.compile(r'^https://[^\s"\\]+\Z')
 # five-minute cron cadence this is a quarter hour of being unable to see
 # main, which no transient network blip should reach.
 BLIND_POLL_THRESHOLD = 3
-# Mirrors services/dozzle/alert_relay.py so both publishers escape alike.
-MARKDOWN_PATTERN = re.compile(r"([\\`*_{}\[\]()#+\-.!|>])")
+# Pushover's own caps, spelled exactly as services/dozzle/alert_relay.py and
+# scripts/image_prune.py spell them; tests/policy_test.rb holds the copies
+# identical. Over any of them is a 4xx and a lost message rather than a cut one.
+# The escaped-field bound is on html_escape's result, because escaping expands.
+MAX_ESCAPED_FIELD_CHARACTERS = 384
+MAX_MESSAGE_CHARACTERS = 1024
+MAX_TITLE_CHARACTERS = 250
+# The tap-through link: https only, and omitted rather than cut when too long.
+MAX_URL_CHARACTERS = 512
+MAX_URL_TITLE_CHARACTERS = 100
 COMMAND_TIMEOUT_SECONDS = 60 * 60
 # --verify holds the deployment lock for as long as verify.yml runs, and #351 is
 # what an hour of a held lock costs. Half the hourly cadence, so a stuck run is a
@@ -163,11 +172,6 @@ class Config:
     state_root: Path
     log_root: Path
     vault_password_file: Path
-    ntfy_curl_config: Path
-    # Addressed in the publish body, not the URL: ntfy only parses a JSON
-    # publish document when the POST goes to the server root.
-    ntfy_topic_critical: str
-    ntfy_topic_deployment: str
     platform_nas_address: str
     platform_public_host: str
     platform_callback_host: str
@@ -196,6 +200,13 @@ class Config:
     # is what an older configuration reads as; see load_config.
     healthchecks_poller_ping_url: str = ""
     healthchecks_verify_ping_url: str = ""
+    # The protected curl config of each Pushover application this poller sends
+    # to (#558): the Alerts app for what needs a human, the Deployments app for
+    # routine records. Each holds its own application's token and the user key,
+    # so no credential reaches this file or a command line. None means that
+    # application cannot be published to; see load_config.
+    pushover_alerts_curl_config: Path | None = None
+    pushover_deployments_curl_config: Path | None = None
 
 
 _PATH_FIELDS = frozenset(
@@ -204,13 +215,15 @@ _PATH_FIELDS = frozenset(
         "state_root",
         "log_root",
         "vault_password_file",
-        "ntfy_curl_config",
         "git_path",
         "curl_path",
     }
 )
 _PING_URL_FIELDS = frozenset(
     {"healthchecks_poller_ping_url", "healthchecks_verify_ping_url"}
+)
+_PUSHOVER_FIELDS = frozenset(
+    {"pushover_alerts_curl_config", "pushover_containers_curl_config", "pushover_deployments_curl_config"}
 )
 
 
@@ -224,7 +237,21 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     if not isinstance(payload, dict):
         raise ConfigurationError("configuration is not an object")
     values: dict[str, object] = {}
+    unpublishable = []
     for field in fields(Config):
+        if field.name in _PUSHOVER_FIELDS:
+            # Never a refusal (#327). The install play copies this script before
+            # it renders the file, so the first tick after the move to Pushover
+            # reads a configuration the ntfy-era template wrote, which names no
+            # Pushover config at all. Refusing it would stop every deployment
+            # with nothing able to heal the host; reading it as "cannot publish"
+            # costs one tick's notifications and one stderr line.
+            raw = payload.get(field.name)
+            usable = type(raw) is str and Path(raw).is_absolute()
+            values[field.name] = Path(raw) if usable else None
+            if not usable:
+                unpublishable.append(field.name)
+            continue
         if field.name in _PING_URL_FIELDS:
             # Never a refusal, in either direction. Absent is every configuration
             # written before #606 and the one this poller meets when the install
@@ -279,6 +306,12 @@ def load_config(path: str | os.PathLike[str]) -> Config:
     for url_field in ("repository_url", "github_api_base"):
         if urlsplit(str(values[url_field])).scheme != "https":
             raise ConfigurationError(f"{url_field} must be https")
+    if unpublishable:
+        print(
+            "production auto-deploy: nothing can be published to Pushover through "
+            f"{', '.join(unpublishable)}, which the configuration does not name",
+            file=sys.stderr,
+        )
     return Config(**values)  # type: ignore[arg-type]
 
 
@@ -1244,29 +1277,95 @@ def rotate_logs(config: Config, now: datetime) -> None:
                 entry.unlink()
 
 
-OUTCOMES = {
-    # topic attribute, title prefix, priority, tags. Severity picks the topic:
-    # a failed deployment belongs on the critical topic, a successful one does
-    # not, which is the whole point of having two.
-    "success": ("ntfy_topic_deployment", "Deployed", 3, ("white_check_mark",)),
-    "failed": ("ntfy_topic_critical", "Deploy failed", 5, ("warning", "skull")),
-}
+def html_escape(value: str, maximum: int = 128, escaped_maximum: int = MAX_ESCAPED_FIELD_CHARACTERS) -> str:
+    """Bound one value, then make it inert markup for Pushover's html=1.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read. services/dozzle/alert_relay.py carries
+    a relative of it, unannotated, which is left alone.
+
+    Cut first and escape after: escaping first and cutting afterwards can split
+    `&amp;` and leave a dangling entity. The second bound is on the result, and
+    it drops whole input characters rather than cutting the escaped text, for
+    the same reason -- `'` renders as `&#x27;`, so escaping expands.
+    """
+
+    bounded = value[:maximum]
+    escaped = html.escape(bounded, quote=True)
+    while bounded and len(escaped) > escaped_maximum:
+        bounded = bounded[:-1]
+        escaped = html.escape(bounded, quote=True)
+    return escaped
 
 
-# Only the log path needs this here: the SHA is validated hex and the timestamps
-# come from strftime, so escaping those would only make them unreadable. That is
-# true of this script and not of the other, so it sits above the definition,
-# where the identity comparison below does not read it.
-def markdown_escape(value: str, maximum: int = 256) -> str:
-    """Escape one value for ntfy's markdown rendering, bounded like the relay.
+def fit_message(lines) -> str:
+    """Join message lines, dropping whole lines from the end until Pushover takes it.
 
     Identical to the copy in the other script by construction, and
     tests/policy_test.rb compares the two definitions as text so it stays that
     way (#423). Prose true of only one script goes in a comment above the def,
     which that comparison does not read.
+
+    Whole lines where it can, because every line is HTML and a cut can split an
+    entity or a tag. A message over MAX_MESSAGE_CHARACTERS is refused outright,
+    and so is an empty one -- which Pushover would blame on the token -- so a
+    first line that does not fit on its own is cut instead: back past any
+    partial tag or entity at the cut, and before any tag the cut left unclosed,
+    with a marker, and never to nothing when there was something to send.
     """
 
-    return MARKDOWN_PATTERN.sub(lambda match: f"\\{match.group(1)}", value[:maximum])
+    kept = list(lines)
+    while len(kept) > 1 and len("\n".join(kept)) > MAX_MESSAGE_CHARACTERS:
+        kept.pop()
+    message = "\n".join(kept)
+    if len(message) <= MAX_MESSAGE_CHARACTERS:
+        return message
+    cut = message[: MAX_MESSAGE_CHARACTERS - 1]
+    cut = re.sub(r"<[^>]*\Z", "", cut)
+    cut = re.sub(r"&[^;<>\s]*\Z", "", cut)
+    unclosed = [
+        opening
+        for opening in re.finditer(r"<(b|i|u|a|font)\b[^>]*>", cut)
+        if f"</{opening.group(1)}>" not in cut[opening.end():]
+    ]
+    if unclosed:
+        cut = cut[: unclosed[0].start()]
+    return f"{cut}\u2026"
+
+
+def pushover_verdict(returncode: int, output: bytes) -> str:
+    """Read one curl --write-out '\\n%{http_code}' run as accepted, refused or unanswered.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+
+    The same verdict as roles/ntfy/tasks/pushover_publish.yml (#598): 200 with
+    an integer status of 1 is accepted, a 4xx other than 429 with an integer
+    status of 0 is refused, and everything else -- no answer, a proxy's page, a
+    quota 429, a status of "0" or true -- is unanswered, which is not a refusal.
+    The code is read from the end of the output because curl's diagnostics can
+    precede it on the same stream.
+    """
+
+    if returncode != 0:
+        return "unanswered"
+    body, _separator, code = output.rpartition(b"\n")
+    try:
+        status = int(code.decode("ascii"))
+        answer = json.loads(body.decode("utf-8")).get("status")
+    except (AttributeError, UnicodeError, ValueError, RecursionError):
+        return "unanswered"
+    if type(answer) is not int:
+        return "unanswered"
+    if status == 200 and answer == 1:
+        return "accepted"
+    if 400 <= status <= 499 and status != 429 and answer == 0:
+        return "refused"
+    return "unanswered"
 
 
 def format_duration(started: str, finished: str) -> str:
@@ -1290,56 +1389,63 @@ def format_duration(started: str, finished: str) -> str:
     return f"{seconds}s"
 
 
+def commit_link(config: Config, sha: str) -> str:
+    """The revision as an <a href> to its commit page, for an html=1 message.
+
+    The SHA is validated hex; the repository is configuration, so it is escaped
+    with the quotes that would otherwise end the attribute.
+    """
+
+    repository = html_escape(config.repository)
+    return f'<a href="https://github.com/{repository}/commit/{sha}">{sha[:9]}</a>'
+
+
 def render_notification(
     config: Config,
-    outcome: str,
     sha: str,
     started: str,
     finished: str,
     log_path: Path,
+    run_url: str = "",
 ) -> dict:
-    """Build ntfy's structured publish document for one deployment outcome."""
+    """Build the Pushover fields for a failed deployment.
 
-    try:
-        topic_attribute, title_prefix, priority, tags = OUTCOMES[outcome]
-    except KeyError:
-        raise ValueError(f"unknown deployment outcome: {outcome}") from None
-    message = "\n".join(
-        (
-            f"**Commit:** `{sha}`",
-            f"**Started:** `{started}`",
-            f"**Finished:** `{finished}`",
-            f"**Duration:** `{format_duration(started, finished)}`",
-            f"**Log:** `{markdown_escape(str(log_path))}`",
-        )
-    )
-    return {
-        "topic": getattr(config, topic_attribute),
-        "title": f"{title_prefix} \u00b7 {sha[:9]}",
-        "message": message,
-        "priority": priority,
-        "tags": list(tags),
-        "markdown": True,
+    Only a failure is rendered here. A successful deployment reports itself from
+    inside the run, where what shipped is still at hand.
+    """
+
+    fields = {
+        "title": f"Deploy failed · {sha[:9]}",
+        "message": fit_message(
+            (
+                f"<b>Commit:</b> {commit_link(config, sha)}",
+                f"<b>Started:</b> {html_escape(started)}",
+                f"<b>Finished:</b> {html_escape(finished)}",
+                f"<b>Duration:</b> {format_duration(started, finished)}",
+                f"<b>Log:</b> {html_escape(str(log_path))}",
+            )
+        ),
+        "priority": 1,
     }
+    if run_url:
+        fields |= {"url": run_url, "url_title": "The CI run that released it"}
+    return fields
 
 
 def notify(
     config: Config,
-    outcome: str,
     sha: str,
     started: str,
     finished: str,
     log_path: Path,
+    run_url: str = "",
 ) -> bool:
-    """Publish a secret-free outcome through the operator's protected curl config.
-
-    The curl config addresses the ntfy server root, so the topic travels in the
-    body. Posting this document to /<topic> instead would deliver it as literal
-    JSON text rather than a rendered notification.
-    """
+    """Publish a failed deployment to the Alerts application."""
 
     return publish(
-        config, render_notification(config, outcome, sha, started, finished, log_path)
+        config,
+        "alerts",
+        render_notification(config, sha, started, finished, log_path, run_url),
     )
 
 
@@ -1351,31 +1457,76 @@ def _notification_timeout() -> int:
     return min(int(raw), NOTIFICATION_TIMEOUT_CEILING_SECONDS)
 
 
-def publish(config: Config, notification: dict) -> bool:
-    """Send one prepared ntfy document through the protected curl config."""
+def _usable_url(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme == "https" and bool(parts.netloc) and len(url) <= MAX_URL_CHARACTERS
 
-    body = json.dumps(notification, ensure_ascii=False, separators=(",", ":"))
+
+def publish(config: Config, app: str, fields: dict) -> bool:
+    """Send one message to a Pushover application; True only if Pushover accepted it.
+
+    app is "alerts" or "deployments". The token and the user key live only in
+    that application's protected curl config, so argv -- readable by every
+    account on the host, and carried whole by a TimeoutExpired -- holds nothing
+    but the message. Every field goes as --form-string, which never reads a
+    leading @ or < as a file.
+
+    Only an accepted answer counts as delivered, so a state record that moves
+    after delivery does not move on a refusal or on silence. A refusal names the
+    vault keys to fix and never a value; neither outcome raises, because a
+    notification nobody received must not also stop a deployment.
+    """
+
+    # An application this script configures no curl config for reads as cannot
+    # publish, like an unconfigured one, rather than raising.
+    curl_config = getattr(config, f"pushover_{app}_curl_config", None)
+    if curl_config is None:
+        return False
+    form = dict(fields, html="1")
+    form["title"] = str(form["title"])[:MAX_TITLE_CHARACTERS]
+    if not _usable_url(str(form.get("url", ""))):
+        form.pop("url", None)
+        form.pop("url_title", None)
+    elif "url_title" in form:
+        form["url_title"] = str(form["url_title"])[:MAX_URL_TITLE_CHARACTERS]
+    arguments = [
+        config.curl_path,
+        "--disable",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        str(_notification_timeout()),
+        "--config",
+        str(curl_config),
+    ]
+    for key, value in form.items():
+        arguments += ["--form-string", f"{key}={value}"]
+    arguments += ["--write-out", "\n%{http_code}"]
     try:
         result = _run(
-            [
-                config.curl_path,
-                "--disable",
-                "--fail",
-                "--silent",
-                "--show-error",
-                "--max-time",
-                str(_notification_timeout()),
-                "--config",
-                str(config.ntfy_curl_config),
-                "--data-binary",
-                body,
-            ],
+            arguments,
             timeout=_notification_timeout(),
             env={"PATH": config.tool_path, "LC_ALL": "C"},
         )
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, ValueError, subprocess.SubprocessError):
+        # ValueError is a NUL byte in a field, which no argv can carry: nothing
+        # was sent, and a notice that cannot be sent must not raise either.
         return False
-    return result.returncode == 0
+    verdict = pushover_verdict(result.returncode, result.stdout)
+    if verdict == "refused":
+        print(
+            f"production auto-deploy: Pushover refused a message to the {app} "
+            f"application; check vault_pushover_{app}_token and "
+            "vault_pushover_user_key. Values are not shown.",
+            file=sys.stderr,
+        )
+    elif result.returncode == 0 and result.stdout.rpartition(b"\n")[2].strip() == b"429":
+        print(
+            f"production auto-deploy: Pushover rate-limited a message to the {app} "
+            "application (HTTP 429: its quota is spent); it is retried on a later run.",
+            file=sys.stderr,
+        )
+    return verdict == "accepted"
 
 
 def healthchecks_check_identity(url):
@@ -1510,19 +1661,17 @@ def note_blind_poll(config: Config, reason: str) -> None:
         return
     published = publish(
         config,
+        "alerts",
         {
-            "topic": config.ntfy_topic_critical,
             "title": f"Deploy poller blind \u00b7 {count} polls",
-            "message": "\n".join(
+            "message": fit_message(
                 (
-                    f"**Reason:** `{markdown_escape(reason)}`",
-                    f"**Consecutive failures:** `{count}`",
-                    "**Effect:** `no revision can be deployed until this clears`",
+                    f"<b>Reason:</b> {html_escape(reason)}",
+                    f"<b>Consecutive failures:</b> {count}",
+                    "<b>Effect:</b> no revision can be deployed until this clears",
                 )
             ),
-            "priority": 5,
-            "tags": ["warning"],
-            "markdown": True,
+            "priority": 1,
         },
     )
     if not published:
@@ -1547,15 +1696,15 @@ def note_seeing_poll(config: Config) -> None:
         # all-clear still follows an alarm this revision of the poller did not
         # itself send -- the count it inherits is all a freshly installed
         # poller knows about the outage it woke up inside.
+        # -1 on the Alerts app: it closes an alarm, so it belongs beside it,
+        # and it is a record rather than something to wake anybody for.
         published = publish(
             config,
+            "alerts",
             {
-                "topic": config.ntfy_topic_deployment,
                 "title": "Deploy poller recovered",
-                "message": "**Status:** `the poller can reach main again`",
-                "priority": 3,
-                "tags": ["white_check_mark"],
-                "markdown": True,
+                "message": "<b>Status:</b> the poller can reach main again",
+                "priority": -1,
             },
         )
         if not published:
@@ -1605,24 +1754,20 @@ def note_ci_refusal(
     marker = f"{sha} {verdict} {detail}"
     if announced == marker:
         return
-    lines = [
-        f"**Commit:** `{sha}`",
-        f"**CI:** `{markdown_escape(detail)}`",
-        "**Effect:** `no deployment until this revision passes CI`",
-    ]
+    fields = {
+        "title": f"CI blocks deploy · {sha[:9]}",
+        "message": fit_message(
+            (
+                f"<b>Commit:</b> {commit_link(config, sha)}",
+                f"<b>CI:</b> {html_escape(detail)}",
+                "<b>Effect:</b> no deployment until this revision passes CI",
+            )
+        ),
+        "priority": 1,
+    }
     if url:
-        lines.append(f"**Run:** `{markdown_escape(url)}`")
-    published = publish(
-        config,
-        {
-            "topic": config.ntfy_topic_critical,
-            "title": f"CI blocks deploy · {sha[:9]}",
-            "message": "\n".join(lines),
-            "priority": 4,
-            "tags": ["warning"],
-            "markdown": True,
-        },
-    )
+        fields |= {"url": url, "url_title": "The CI run"}
+    published = publish(config, "alerts", fields)
     if not published:
         # Recorded only once it has actually been delivered, so a publisher
         # that was briefly unreachable reports on the next poll instead of
@@ -1780,13 +1925,16 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             #
             # Best effort, but never silent: a misconfigured publisher would
             # otherwise lose every failure with nothing to show for it.
+            #
+            # The link is to the run that released the revision, which is what
+            # a human opens first to see what changed and whether it was green.
             if not succeeded and not notify(
                 config,
-                "failed",
                 candidate,
                 started,
                 finished,
                 log_path,
+                selection.verdict[2] if selection.verdict else "",
             ):
                 warning = "production auto-deploy: outcome notification failed"
                 log.write(warning.encode("ascii") + b"\n")
@@ -1931,25 +2079,28 @@ def note_verify_verdict(
             titles = HOURLY_ONLY_VERIFY_CHECKS.get(tag, {})
             key = verdict if failed else "recovered" if previous == "fail" else "restored"
             title = titles.get(key, f"{tag}: {key}")
-            lines = (f"**Check:** `{markdown_escape(tag)}`",)
-        published = publish(
-            config,
-            {
-                "topic": config.ntfy_topic_critical if failed
-                else config.ntfy_topic_deployment,
-                "title": title,
-                "message": "\n".join(
-                    (
-                        *lines,
-                        f"**Commit:** `{sha}`",
-                        f"**Log:** `{markdown_escape(str(log_path))}`",
-                    )
-                ),
-                "priority": 5 if failed else 3,
-                "tags": ["warning"] if failed else ["white_check_mark"],
-                "markdown": True,
-            },
-        )
+            lines = (f"<b>Check:</b> {html_escape(tag)}",)
+        fields = {
+            "title": title,
+            "message": fit_message(
+                (
+                    *lines,
+                    f"<b>Commit:</b> {commit_link(config, sha)}",
+                    f"<b>Log:</b> {html_escape(str(log_path))}",
+                )
+            ),
+            # A failure needs a human; a recovery closes it on the same app, quietly.
+            "priority": 1 if failed else -1,
+        }
+        if failed and tag is None:
+            # Best effort, and only here, where the verdict changed: one more
+            # anonymous GitHub request, whose failure costs the link and nothing
+            # else.
+            with contextlib.suppress(EligibilityError):
+                run_url = ci_verdict(config, sha, fetch_ci_runs(config))[2]
+                if run_url:
+                    fields |= {"url": run_url, "url_title": "The CI run that released it"}
+        published = publish(config, "alerts", fields)
         if not published:
             print("production auto-deploy: verify notification failed", file=sys.stderr)
             return
@@ -2209,7 +2360,7 @@ def main(argv=None) -> int:
             try:
                 passed = verify(config)
             except OSError as error:
-                # Nothing was verified, so no verdict is recorded and ntfy pages
+                # Nothing was verified, so no verdict is recorded and Pushover hears
                 # nothing; the external verify check still hears /fail from the
                 # `finally` below.
                 print(f"production auto-deploy: could not verify: {error}",
@@ -2232,7 +2383,7 @@ def main(argv=None) -> int:
         # and ping plain again -- /fail, then plain, then plain. A transient
         # failure is retried for up to TRANSIENT_FORGIVENESS_LIMIT ticks and
         # pings /fail on each. That is the intent rather than a gap: a failure
-        # that persists on the box is paged there, through ntfy, and --status
+        # that persists on the box is paged there, through Pushover, and --status
         # names the revision; these external checks exist to hear the NAS or
         # the poller being gone, which nothing on the box can report. An
         # unhandled raise leaves `outcome` False: a tick that did not finish.

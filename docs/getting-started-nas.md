@@ -233,8 +233,10 @@ Neither Beszel nor Dozzle is an ntfy check any more: Beszel's notification
 webhook is Pushover, and since the Dozzle alert relay moved, every container
 alert is too. They are separate Pushover applications on one account: Beszel
 sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
-the per-service deployment reports with Containers, the run summary with
-Deployments and Seerr with Media, all to the one `vault_pushover_user_key`.
+the per-service deployment reports and the image prune's reclaim with
+Containers, the run summary with Deployments, the deployment poller's and the
+image prune's alerts with Alerts, and Seerr with Media, all to the one
+`vault_pushover_user_key`.
 Pushover has no disposable equivalent of a topic, so
 a test notification reaches the household's real devices. Send one only when you
 mean to.
@@ -277,20 +279,24 @@ never directory listings, ACL dumps containing private account details, or
 secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 [what the Mac proof does not prove](getting-started-mac.md#what-this-does-not-prove).
 
-The platform provisions three ntfy topics for humans, severity first then
-subject, plus one nobody reads. Two of the things that used to land here are
-now Pushover's: Beszel's threshold breaches, and every container alert the
-Dozzle relay sends.
+The platform still provisions three ntfy topics for humans, severity first then
+subject, plus one nobody reads, but nothing a human needs lands on them any
+more. Beszel's threshold breaches, every container alert the Dozzle relay sends,
+and every notice from the deployment poller and the image prune are Pushover's.
 
-`nas-critical` cuts across every remaining ntfy publisher and carries only what
-should get you out of your chair: a failed deployment, a revision CI refuses to
-release, and a deployment poller that has gone blind. Container alerts — out of
+What should get you out of your chair reaches Pushover's Alerts application at
+priority 1, which rings through quiet hours: a failed deployment, a revision CI
+refuses to release, a deployment poller that has gone blind, a failed
+verification, a RAID array that is degraded or could not be checked, and a
+failed image prune. The recovery that closes each arrives on the same
+application at priority -1, a badge with no sound. Container alerts — out of
 memory, an unexpected exit, an unhealthy container, and the recovery that closes
-one — reach Pushover instead, where an out-of-memory kill is an emergency
-message that re-alerts until you acknowledge it and a recovery is a badge with
-no sound. `nas-deployment` is the routine record for poller recovery and image
-prune reclaims, so that chatter can be muted on its own. Successful deployments
-are no longer reported there; see below.
+one — go to the Containers application, where an out-of-memory kill is an
+emergency message that re-alerts until you acknowledge it. The image prune's
+reclaim is a routine record on the Containers application at priority -1, and
+expires after a week; the Deployments application carries one message per
+release and nothing else. `nas-critical` and `nas-deployment` have no publisher left
+and stay provisioned only until ntfy is removed.
 
 `nas-containers` has no publisher left. It existed so recoveries could be muted
 separately from `nas-critical`, which Pushover expresses on the message itself;
@@ -539,9 +545,13 @@ one revision at a time fills that record faster than deploying only heads did,
 and a platform that changes rarely is exactly the one whose expired entries
 would otherwise sit there forever.
 
-Failures are sent to ntfy using the deployer's own protected publisher token,
-as rendered Markdown rather than a raw document, publishing to
-`nas-critical` at priority 5. A successful deployment reports itself from inside
+Failures are sent to Pushover's Alerts application at priority 1, through a
+protected curl config holding that application's token, as HTML: the commit
+links to its page on GitHub, the notification opens the CI run that released the
+revision, and the attempt log's path is in the body. Only a message Pushover
+accepts counts as sent. One it refuses prints the vault key names to fix --
+never a value -- and neither a refusal nor an unanswered request changes the
+poll's exit code or its recorded state. A successful deployment reports itself from inside
 the run, through the summary above, which can say what shipped; the poller adds
 nothing to it and stays quiet.
 
@@ -575,8 +585,8 @@ behind it, so a red `main` still stops every deployment. A conclusion this
 poller does not recognise counts as a refusal rather than being waved through,
 and a cancelled re-run does not bury the failure that prompted it: the newest
 run that actually judged the revision is the one that counts. A refusal is
-announced once on `nas-critical` at priority 4, naming the revision, the
-conclusion and the run's URL. Once per revision and verdict, not once per
+announced once on the Alerts application at priority 1, linking the revision and
+naming the conclusion, and opening the run. Once per revision and verdict, not once per
 poll: a red `main` stays red, and the five-minute cadence would otherwise
 repeat it twelve times an hour. A revision
 whose CI has not finished yet is the ordinary case and is never reported.
@@ -586,11 +596,14 @@ A poll that cannot establish a candidate revision at all -- Git unreachable,
 the GitHub API failing, an unparsable response -- is a worse failure than a
 failed deployment, because a silent poll is also what a healthy idle poll looks
 like. After three consecutive blind polls, a quarter hour at the five-minute
-cadence, the poller publishes once to `nas-critical` and stays quiet until the
-condition changes; recovery is announced once on `nas-deployment`. A single
-blip never alerts. An unusable configuration cannot be reported this way,
-because the notifier credentials come from the same file; it remains a stderr
-message and a non-zero exit.
+cadence, the poller publishes once to the Alerts application and stays quiet
+until the condition changes; recovery is announced once on the same application
+at priority -1. A single blip never alerts. An unusable configuration cannot be
+reported this way, because the notifier paths come from the same file; it
+remains a stderr message and a non-zero exit. A configuration that names no
+Pushover config at all -- the one an older installer wrote, which the poller
+reads for the tick that installs its replacement -- is not unusable: it deploys,
+publishes nothing, and says so in one stderr line.
 
 Secrets stay out of the logs because the tasks that handle them set `no_log`,
 and the vault password is passed to Ansible as a file path rather than a
@@ -622,9 +635,10 @@ services get 30 minutes and the array check 10, so the lock is held for roughly
 whole budget from 03:37 on a Sunday still holds the lock when the 04:00 image
 prune has waited its fifteen minutes, so that week's prune is skipped.
 
-Each check pages on its own: a failure publishes once to `nas-critical`
-(`Verify failed`, or `RAID arrays degraded`) and a recovery once to
-`nas-deployment`. The array run shares `verify.yml`'s setup -- Docker modules,
+Each check pages on its own: a failure publishes once to the Alerts application
+at priority 1 (`Verify failed`, which also opens the CI run that released the
+deployed revision when GitHub answers, or `RAID arrays degraded`) and a recovery
+once to the same application at priority -1. The array run shares `verify.yml`'s setup -- Docker modules,
 vault, GPU, Compose files -- so when it fails without the array check's own
 mismatch message in its log it pages `RAID array check could not run` instead,
 and its return is `RAID array check runs again` rather than a recovery; an unchanged result publishes nothing. The last results live
@@ -750,9 +764,10 @@ touches no image. Prune logs are mode-0600 files under
 `$HOME/.local/share/nas-platform/prune-logs`, retained for 30 days and kept
 separate from the poller's attempt logs.
 
-A run that reclaims something publishes to `nas-deployment`; a run that fails
-publishes to `nas-critical` at priority 5, through the deployer's own write-only
-token. A run that reclaims nothing stays quiet, because most weeks reclaim
+A run that reclaims something publishes to Pushover's Containers application at
+priority -1, expiring after a week; a run that fails publishes to the Alerts
+application at priority 1. Each goes through a protected curl config of the
+prune's own, holding only that application's token. A run that reclaims nothing stays quiet, because most weeks reclaim
 nothing and a weekly no-op notification is noise. The recorded state under
 `prune-state/last-prune` is what to read when the silence needs explaining.
 

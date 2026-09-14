@@ -151,12 +151,26 @@
     dest: "{{ image_prune_launcher_path }}"
     mode: "0700"
 
+# Before the configuration that names them, so a configuration never points at
+# a curl config that was not rendered. Each carries one application's token.
+- name: Render the protected Pushover publisher configurations
+  ansible.builtin.template:
+    src: pushover.curl.j2
+    dest: "{{ item.path }}"
+    mode: "0600"
+  loop: "{{ image_prune_pushover_notifiers }}"
+  loop_control:
+    label: "{{ item.path }}"
+  no_log: true
+
 - name: Write the non-secret prune configuration
   ansible.builtin.template:
     src: config.json.j2
     dest: "{{ image_prune_config_path }}"
     mode: "0600"
 
+# Kept, never removed, until stage 4 of #558: a prune process running the
+# previous revision reports through this file.
 - name: Render the protected ntfy publisher configuration
   ansible.builtin.template:
     src: ntfy.curl.j2

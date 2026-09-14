@@ -1,0 +1,9 @@
+{# One Pushover application's protected curl config, rendered once per
+   application from the loop in tasks/main.yml. It carries that application's
+   token and the shared user key, and nothing else's, so the poller's argv holds
+   only the message. form-string rather than form: a value is never read as a
+   file. The schema has no pattern for either value, so a backslash or a double
+   quote is escaped rather than trusted to be absent. #}
+url = "{{ production_auto_deploy_pushover_api_url }}"
+form-string = "user={{ vault_pushover_user_key | replace('\\', '\\\\') | replace('"', '\\"') }}"
+form-string = "token={{ lookup('ansible.builtin.vars', item.token_variable) | replace('\\', '\\\\') | replace('"', '\\"') }}"
