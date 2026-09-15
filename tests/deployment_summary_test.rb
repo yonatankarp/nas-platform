@@ -657,12 +657,7 @@ with_http_probe(1, answer: [400, JSON.generate({ "status" => 0 })]) do |port, _r
         "a refused report disclosed a Pushover token")
 end
 
-closed_port = begin
-  probe = TCPServer.new("127.0.0.1", 0)
-  probe.addr.fetch(1)
-ensure
-  probe&.close
-end
+closed_port = refusing_port
 # An outage, and the #521 shape: a uri that refuses before it makes any request
 # registers no status at all, which must read as no verdict rather than as a
 # refusal.
