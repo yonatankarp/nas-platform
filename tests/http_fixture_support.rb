@@ -81,6 +81,47 @@ module HttpFixtureSupport
     output.include?("#{TASK_REFUSAL_PREFIX}#{diagnostic}")
   end
 
+  # A loopback port nothing is listening on, for the rows whose subject is what a
+  # caller does when a connection is REFUSED.
+  #
+  # Binding port 0 and closing the socket asks the kernel for a free port and
+  # then hands it straight back, so from the close onward that port belongs to
+  # whoever takes it next -- another case of the same check running in a worker
+  # pool, a fixture server two lines further down, anything on the machine. The
+  # tests that did this observed none of it: a connect that SUCCEEDS reaches
+  # whatever took the port and is answered, so the row meant to prove the
+  # refusal path proves that other server's reply instead, silently and with the
+  # verdict it was looking for still plausible.
+  #
+  # So the port is verified rather than assumed. A probe connect has to be
+  # refused before the port is handed back, and a port that answers is discarded
+  # and re-derived. That does not close the window -- nothing outside the kernel
+  # can, short of holding the port, which is the one thing these rows need not to
+  # do -- but it narrows it from the whole body of the test to the gap between
+  # this probe and the caller's own connect, and it turns the remaining failure
+  # into a loud one: every attempt answering is a raise, not a pass.
+  def refusing_port(attempts: 32)
+    attempts.times do
+      port = begin
+        probe = TCPServer.new("127.0.0.1", 0)
+        probe.addr.fetch(1)
+      ensure
+        probe&.close
+      end
+
+      begin
+        TCPSocket.new("127.0.0.1", port).close
+      rescue Errno::ECONNREFUSED
+        return port
+      rescue SystemCallError
+        next
+      end
+    end
+
+    raise "no loopback port refused a connection in #{attempts} attempts: something on " \
+          "this host is answering on every ephemeral port the kernel handed out"
+  end
+
   # Serves one loopback HTTP fixture for the duration of +client+.
   #
   #   with_http_fixture(->(port) { ... }) do |method, target, headers, body|

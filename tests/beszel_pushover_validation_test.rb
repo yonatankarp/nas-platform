@@ -266,14 +266,11 @@ if missing.empty?
   }
 
   # Nothing listening: the connection-refused path, which is the shape a Pushover
-  # outage takes and the one that must never be read as a refusal. The port is
-  # bound and released so it is free rather than merely unlikely.
-  closed_port = begin
-    probe = TCPServer.new("127.0.0.1", 0)
-    port = probe.addr.fetch(1)
-    probe.close
-    port
-  end
+  # outage takes and the one that must never be read as a refusal. Binding port 0
+  # and releasing it only makes the port free at that instant; refusing_port
+  # proves a connect is actually refused before handing it over, because a port
+  # something took in the meantime answers this row instead of refusing it.
+  closed_port = refusing_port
   # Five shapes, not one. The first two are an outage: a refused connection and a
   # name that does not resolve reach uri through different failure paths, and
   # either is how Pushover being down presents.

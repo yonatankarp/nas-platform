@@ -1177,6 +1177,56 @@ def with_mutant(mutation)
   end
 end
 
+# tests/fixtures/paperless-ocr.png.base64 is 110KB of base64 and tells a reader
+# nothing. The SVG beside it is the source that image was rendered from and is
+# the only legible record of what the OCR rows below demand out of it -- but
+# nothing loaded the SVG, so it was an orphan any prune would have taken, and #657
+# found it that way. Deleting it was the other option and is the worse one: it
+# would have left the assertions naming strings no file in the tree says the
+# image contains.
+#
+# A comment would have rotted the first time somebody changed a required string
+# without re-rendering the image, so the link is a check instead. The strings are
+# read out of the runtime program rather than restated here, because a copy is
+# the thing that stops matching; what the row then asserts is exactly "the image
+# we ship still says what we assert about it", which is the claim the OCR rows
+# rest on and could not previously make.
+OCR_SOURCE = File.join(ROOT, "tests", "fixtures", "paperless-ocr.svg")
+# The image marker plus the German and Hebrew strings. Stated, so that an
+# assertion renamed out of the extraction's reach empties the subject list
+# loudly rather than passing over nothing -- the failure this file exists to
+# refuse, in miniature.
+OCR_REQUIRED_STRINGS = 3
+
+# Both files are read with an explicit encoding. The strings this compares are
+# German and Hebrew, and File.read tags its result with Encoding.default_external
+# -- which is US-ASCII on a runner with no locale set, where scanning those bytes
+# raises rather than failing a row.
+def ocr_fixture_failures(runtime_source: File.read(RUNTIME_PROGRAM, encoding: "UTF-8"))
+  return ["ocr fixture: #{OCR_SOURCE} is absent, so nothing in the tree records what " \
+          "tests/fixtures/paperless-ocr.png.base64 says"] unless File.exist?(OCR_SOURCE)
+
+  required = runtime_source.scan(
+    /image_document\.fetch\("content", ""\)(?:\.downcase)?\.include\?\("([^"]+)"\)/
+  ).flatten
+  marker = runtime_source[/^IMAGE_MARKER\s*=\s*"([^"]+)"/, 1]
+  required << marker if marker
+  unless required.length == OCR_REQUIRED_STRINGS
+    return ["ocr fixture: read #{required.length} required strings out of " \
+            "tests/contracts/paperless-runtime.rb, wanted #{OCR_REQUIRED_STRINGS}: the " \
+            "assertions moved and this check is now proving nothing"]
+  end
+
+  # Comments stripped first. The file carries a header explaining what it is, and
+  # a header that happened to quote one of these strings would satisfy the row
+  # without the image containing anything.
+  rendered = File.read(OCR_SOURCE, encoding: "UTF-8").gsub(/<!--.*?-->/m, "").downcase
+  required.reject { |string| rendered.include?(string.downcase) }.map do |missing|
+    "ocr fixture: the runtime requires #{missing.inspect} in the OCR text, and the source " \
+      "tests/fixtures/paperless-ocr.svg the image was rendered from does not contain it"
+  end
+end
+
 def rows_named(rows, names)
   selected = rows.select { |row| names.include?(row.fetch(:name)) }
   abort "self-test names a row that does not exist: #{names.inspect}" unless
@@ -1243,17 +1293,46 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
+  # The OCR fixture link, both ways it can break: a required string the rendered
+  # source does not contain, and the assertions moving out of the extraction's
+  # reach, which is the failure that would otherwise be silent.
+  planted_fixtures = 0
+  runtime_text = File.read(RUNTIME_PROGRAM, encoding: "UTF-8")
+  # One row per contributor to the required list, so none of the three is left
+  # proved by the other two, plus the extraction itself. The German and Hebrew
+  # anchors are %{} rather than '': a \u escape in a single-quoted Ruby string is
+  # eight literal characters, so the anchor matches nothing and substitute raises
+  # -- loudly, which is the only reason that slip is cheap here.
+  [
+    [%{image_document.fetch("content", "").include?("\u05E2\u05D1\u05E8\u05D9\u05EA")},
+     %{image_document.fetch("content", "").include?("\u05E9\u05DC\u05D5\u05DD")}, 1],
+    [%{.downcase.include?("\u00FCberpr\u00FCfung")}, %{.downcase.include?("kontrolle")}, 1],
+    ['IMAGE_MARKER = "paperless contract image ocr"',
+     'IMAGE_MARKER = "paperless contract scanned page"', 1],
+    # Both OCR assertions at once: the shape that empties the subject list rather
+    # than failing a row, which is the only one of the four that would be silent.
+    ['image_document.fetch("content", "")', 'image_document.fetch("contents", "")', 2]
+  ].each do |from, to, occurrences|
+    broken = substitute(runtime_text, from, to, count: occurrences)
+    abort "self-test failed: #{from.inspect} mutated to #{to.inspect} was accepted" if
+      ocr_fixture_failures(runtime_source: broken).empty?
+    planted_fixtures += 1
+  end
+
   puts "paperless contract: self-test detects " \
-       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_roots} planted regressions"
+       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_roots + planted_fixtures} " \
+       "planted regressions"
   exit
 end
 
-failures = render_failures + static_failures + runtime_failures + wrapper_failures + stdin_failures
+failures = render_failures + static_failures + runtime_failures + wrapper_failures +
+           stdin_failures + ocr_fixture_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Paperless contract violation(s)"
 end
 
 puts "paperless contract: #{RENDER_ROWS.length} render, #{STATIC_ROWS.length} static and " \
-     "#{RUNTIME_ROWS.length} runtime properties hold, and the wrapper reaches all three " \
-     "programs with an empty stdin"
+     "#{RUNTIME_ROWS.length} runtime properties hold, the OCR image still says the " \
+     "#{OCR_REQUIRED_STRINGS} things the runtime requires of it, and the wrapper reaches all " \
+     "three programs with an empty stdin"

@@ -1,4 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!--
+  The source tests/fixtures/paperless-ocr.png.base64 was rendered from. That file
+  is 110KB of base64 and says nothing a reader can check; this one is what it
+  says, and tests/paperless_contract_test.rb holds the two together by requiring
+  every string tests/contracts/paperless-runtime.rb demands out of the OCR text to
+  appear below.
+
+  Three scripts on purpose: Latin, German diacritics and a right-to-left script,
+  because Paperless has to hand all three to Tesseract and give them back intact.
+  The PNG is 2400x900, the viewBox below. Re-render after editing this file, e.g.
+  from the repository root:
+
+    rsvg-convert tests/fixtures/paperless-ocr.svg -o /tmp/paperless-ocr.png
+    base64 /tmp/paperless-ocr.png > tests/fixtures/paperless-ocr.png.base64
+
+  Any renderer producing a legible PNG at those dimensions will do: the contract
+  asserts what Tesseract reads back, not the bytes.
+
+  What the static check does NOT do is compare this file to the PNG -- nothing
+  here rasterises or OCRs anything. It holds this file against the strings the
+  runtime demands, so changing a string here without changing the assertion fails
+  it, and changing the assertion without changing this file fails it too. Whether
+  the PNG was actually re-rendered is caught only by the Paperless lane, and only
+  once it runs. Re-render in the same commit.
+-->
 <svg xmlns="http://www.w3.org/2000/svg" width="2400" height="900" viewBox="0 0 2400 900">
   <rect width="2400" height="900" fill="white"/>
   <g fill="black" font-family="DejaVu Sans, Arial, sans-serif" font-size="112">
