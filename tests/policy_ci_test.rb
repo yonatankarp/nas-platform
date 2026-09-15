@@ -248,11 +248,19 @@ check(failures,
   check(failures, toolchain_dockerfile.include?(package),
         "the controller image must install #{package}, as the in-run fallback does")
 end
+# The collection install is pinned with its --no-cache rather than as a bare
+# `ansible-galaxy collection install`, which every flag passes. ansible-galaxy
+# writes its Galaxy API cache entry in two steps -- a blank entry carrying a
+# 24-hour expiry, then `results` when the response arrives -- so an install that
+# dies between them leaves an entry every later read refuses by name, and here it
+# would be baked into the image layer. Nothing on this path reads the cache back:
+# the image installs collections once, at build time.
 check(failures,
       toolchain_dockerfile.include?("ansible-core==${ANSIBLE_CORE_VERSION}") &&
         toolchain_dockerfile.include?("requests==${REQUESTS_VERSION}") &&
-        toolchain_dockerfile.include?("ansible-galaxy collection install"),
-      "the controller image must install the pinned Ansible toolchain and collections")
+        toolchain_dockerfile.include?("ansible-galaxy collection install --no-cache"),
+      "the controller image must install the pinned Ansible toolchain and " \
+      "collections, declining the Galaxy API cache")
 # Every version the image is built from arrives as an argument, so Renovate keeps
 # tracking exactly one copy of each in tests/integration.sh and the two paths
 # cannot drift. A default here is how that silently stops being true.
