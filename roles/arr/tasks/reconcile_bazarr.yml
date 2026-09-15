@@ -81,6 +81,12 @@
 # `roles/vault_contract` already refuses to accept, over a refusal of
 # `general.hostname`, which nothing here submits. The report below therefore
 # blames the cast only for what this request submits.
+#
+# That `general.hostname` refusal is the only 406 observed in CI (#283, #708),
+# and its cause was a stored value, not this request: Bazarr defaults the key to
+# platform.node() through dynaconf's TOML parser, so a random container ID shaped
+# like a number was saved as an int or `.inf`. `services/arr/compose.yml` fixes
+# the container hostname for that reason.
 - name: Reconcile Bazarr authentication and identical-path Arr connections
   ansible.builtin.uri:
     url: "{{ arr_bazarr_api }}/system/settings"

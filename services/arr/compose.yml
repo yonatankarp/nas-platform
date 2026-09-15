@@ -106,6 +106,13 @@ services:
   bazarr:
     <<: *service-defaults
     container_name: bazarr
+    # Bazarr defaults general.hostname to platform.node() and stores that default
+    # through dynaconf's TOML parser, so a Docker-assigned hostname -- the random
+    # container ID -- shaped like 123e45678901 is saved as `.inf` and every later
+    # settings submit answers 406 over general.hostname (#708). A fixed,
+    # non-numeric hostname removes the draw, and heals a config already holding
+    # `.inf` at the next start, because Bazarr resets it to this value.
+    hostname: bazarr
     image: lscr.io/linuxserver/bazarr:1.6.0@sha256:84b6f05a7a4194fafe5a0bec062d32f6ae9ea74db33d43d678cb9a3191f31c24
     cpus: 1.0
     labels:
