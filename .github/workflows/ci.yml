@@ -224,12 +224,16 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          # --no-cache because the Galaxy API cache is written in two steps:
-          # a blank entry with a 24-hour expiry first, its `results` filled in
-          # when the response arrives. A run that dies between them leaves an
-          # entry every later read refuses for a day, which reds a leg no diff
-          # caused. A job installs collections exactly once, so nothing here
-          # reads the cache back and declining it costs nothing.
+          # --no-cache because the Galaxy API cache is written in two steps: a
+          # blank entry with a 24-hour expiry first, its `results` filled in when
+          # the response arrives. _call_galaxy writes that entry *before* issuing
+          # the request and retries six deep around it, so one transient HTTP
+          # error re-enters, finds its own blank entry unexpired and refuses --
+          # a single flaky request reds a leg no diff caused, from a clean cache,
+          # in one sequential process. An ephemeral runner HOME is no protection.
+          # This step is the only reader of what it writes, so declining the
+          # cache costs it nothing. `static` installs collections a second time
+          # inside ansible-lint, which this does not reach: #719.
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The shard reaches the gate through the environment rather than by
@@ -358,12 +362,16 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          # --no-cache because the Galaxy API cache is written in two steps:
-          # a blank entry with a 24-hour expiry first, its `results` filled in
-          # when the response arrives. A run that dies between them leaves an
-          # entry every later read refuses for a day, which reds a leg no diff
-          # caused. A job installs collections exactly once, so nothing here
-          # reads the cache back and declining it costs nothing.
+          # --no-cache because the Galaxy API cache is written in two steps: a
+          # blank entry with a 24-hour expiry first, its `results` filled in when
+          # the response arrives. _call_galaxy writes that entry *before* issuing
+          # the request and retries six deep around it, so one transient HTTP
+          # error re-enters, finds its own blank entry unexpired and refuses --
+          # a single flaky request reds a leg no diff caused, from a clean cache,
+          # in one sequential process. An ephemeral runner HOME is no protection.
+          # This step is the only reader of what it writes, so declining the
+          # cache costs it nothing. `static` installs collections a second time
+          # inside ansible-lint, which this does not reach: #719.
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Validate the encrypted vault
@@ -449,12 +457,16 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          # --no-cache because the Galaxy API cache is written in two steps:
-          # a blank entry with a 24-hour expiry first, its `results` filled in
-          # when the response arrives. A run that dies between them leaves an
-          # entry every later read refuses for a day, which reds a leg no diff
-          # caused. A job installs collections exactly once, so nothing here
-          # reads the cache back and declining it costs nothing.
+          # --no-cache because the Galaxy API cache is written in two steps: a
+          # blank entry with a 24-hour expiry first, its `results` filled in when
+          # the response arrives. _call_galaxy writes that entry *before* issuing
+          # the request and retries six deep around it, so one transient HTTP
+          # error re-enters, finds its own blank entry unexpired and refuses --
+          # a single flaky request reds a leg no diff caused, from a clean cache,
+          # in one sequential process. An ephemeral runner HOME is no protection.
+          # This step is the only reader of what it writes, so declining the
+          # cache costs it nothing. `static` installs collections a second time
+          # inside ansible-lint, which this does not reach: #719.
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The harness syntax-checks a play in every sandbox it builds and renders
@@ -520,12 +532,16 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          # --no-cache because the Galaxy API cache is written in two steps:
-          # a blank entry with a 24-hour expiry first, its `results` filled in
-          # when the response arrives. A run that dies between them leaves an
-          # entry every later read refuses for a day, which reds a leg no diff
-          # caused. A job installs collections exactly once, so nothing here
-          # reads the cache back and declining it costs nothing.
+          # --no-cache because the Galaxy API cache is written in two steps: a
+          # blank entry with a 24-hour expiry first, its `results` filled in when
+          # the response arrives. _call_galaxy writes that entry *before* issuing
+          # the request and retries six deep around it, so one transient HTTP
+          # error re-enters, finds its own blank entry unexpired and refuses --
+          # a single flaky request reds a leg no diff caused, from a clean cache,
+          # in one sequential process. An ephemeral runner HOME is no protection.
+          # This step is the only reader of what it writes, so declining the
+          # cache costs it nothing. `static` installs collections a second time
+          # inside ansible-lint, which this does not reach: #719.
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Check media acquisition reconciliation
