@@ -272,7 +272,15 @@ module ClassifyChanges
   # downloaders, bindery, trailarr and seerr lanes read it over stable APIs
   # rather than through a one-shot credential handshake. Four more lanes on every
   # arr change is not what that buys.
+  #
+  # The beszel row is the first shape. roles/beszel stores the webhook the relay
+  # receives Beszel's alerts through, and only the dozzle lane sends one: its
+  # beszel-notify mode asks the converged hub to deliver through the stored URL to
+  # the relay and on to the Pushover recorder. The beszel lane converges no relay
+  # and compares the stored string only, so a URL that no longer reaches the relay
+  # is red nowhere else.
   COMPANION_LANES = {
+    "beszel" => %w[dozzle],
     "downloaders" => %w[bindery],
     "audiobookshelf" => %w[bindery],
     "jellyfin" => %w[seerr]
@@ -331,7 +339,9 @@ module ClassifyChanges
   # would narrow what they run rather than widen it.
   VAULT_ROUTED_PATTERN = %r{\Ainventory/group_vars/all/vault(?:_[a-z0-9_]+)?\.yml\z}
   CI_WORKFLOW_JOB_LANES = %w[docs vault reconciliation].freeze
-  CI_WORKFLOW_SUITE_LANE = "beszel"
+  # komga rather than beszel, which it was until beszel gained dozzle as a
+  # companion: one representative leg should cost one leg.
+  CI_WORKFLOW_SUITE_LANE = "komga"
 
   module_function
 

@@ -162,11 +162,14 @@ def endpoint(base, path)
   URI.join(base.to_s, path)
 end
 
-def request(method, uri, cookie: nil, basic: nil, bearer: nil, body: nil, form: nil, expected: [200])
+def request(method, uri, cookie: nil, basic: nil, bearer: nil, token: nil, body: nil, form: nil,
+            expected: [200])
   request = Net::HTTP.const_get(method.capitalize).new(uri)
   request["Cookie"] = cookie if cookie
   request.basic_auth(*basic) if basic
   request["Authorization"] = "Bearer #{bearer}" if bearer
+  # PocketBase takes its auth token bare, with no scheme in front of it.
+  request["Authorization"] = token if token
   if body
     request["Content-Type"] = "application/json"
     request.body = JSON.generate(body)
@@ -780,6 +783,71 @@ if MODE == "notify"
     current_exit_count = current_rules.find { |rule| rule["name"] == "Unexpected exit" }.fetch("triggerCount")
     fail_contract("unique exit event was delivered without incrementing its managed rule") unless
       exited && current_exit_count > initial_exit_count
+  end
+end
+
+# Beszel's host alerts, end to end: the webhook the converged hub stored, sent by
+# the hub over the alert-relay bridge to the relay's /beszel route, published by
+# the relay to the recorder with the Alerts application token. Nothing else
+# crosses all of those. The Beszel contract proves the stored string. The relay's
+# unit suite proves the parser. Only this proves the hub can reach the relay with
+# a token it accepts, and that the relay then publishes. So the lane converges
+# beszel as well as dozzle.
+#
+# "Test Alert" is no subject the relay recognises, so it goes out verbatim at
+# priority 1 (render_beszel's fallback). The link Beszel appends to a test is its
+# bare app URL, not a /system/ page, so the relay adds no button.
+if MODE == "beszel-notify"
+  beszel = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BESZEL_PORT'), 10)}")
+  timeout = Integer(ENV.fetch("PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS", "40"), 10)
+  _response, superuser = request(
+    "post", endpoint(beszel, "/api/collections/_superusers/auth-with-password"),
+    body: { identity: vault.fetch("vault_beszel_superuser_email"),
+            password: vault.fetch("vault_beszel_superuser_password") }
+  )
+  _response, app_user = request(
+    "post", endpoint(beszel, "/api/collections/users/auth-with-password"),
+    body: { identity: vault.fetch("vault_beszel_app_user_email"),
+            password: vault.fetch("vault_beszel_app_user_password") }
+  )
+  app_user_id = safe_id(app_user.dig("record", "id"))
+  _response, settings = request(
+    "get",
+    endpoint(beszel, "/api/collections/user_settings/records?perPage=2&filter=" +
+                     URI.encode_www_form_component(%(user = "#{app_user_id}"))),
+    token: superuser.fetch("token")
+  )
+  items = settings.fetch("items", [])
+  fail_contract("expected exactly one Beszel settings record for the managed user") unless items.length == 1
+  stored = items.first.fetch("settings")
+  stored = JSON.parse(stored) if stored.is_a?(String)
+  webhooks = Array(stored["webhooks"])
+  relay_route = "generic://alert-relay:#{URI(RELAY_ALERTS_URL).port}/beszel?"
+  fail_contract("Beszel's stored webhook is not the alert relay's /beszel route") unless
+    webhooks.length == 1 && webhooks.first.start_with?(relay_route)
+
+  with_pushover_recorder(vault.fetch("vault_pushover_alerts_token"),
+                         vault.fetch("vault_pushover_user_key")) do |captured|
+    _response, answer = request(
+      "post", endpoint(beszel, "/api/beszel/test-notification"),
+      token: app_user.fetch("token"), body: { url: webhooks.first }
+    )
+    fail_contract("Beszel test notification through the relay reported delivery failure") unless
+      answer.is_a?(Hash) && answer["err"] == false
+    delivered, = wait_for_pushover(
+      captured, "Beszel test notification did not reach the Pushover recorder through the relay",
+      timeout: timeout
+    ) do |messages|
+      messages.find { |message| message.fetch("form")["title"] == "Test Alert" }
+    end
+    # Pushover authenticates by form field. The Alerts token is what separates
+    # this route from /alerts, which publishes with Containers.
+    fail_contract("relay published Beszel's test notification without the Alerts credentials") unless
+      delivered["credentials_ok"]
+    form = delivered.fetch("form")
+    fail_contract("Beszel test notification presentation differs") unless
+      delivered["path"] == "/1/messages.json" && form["priority"] == "1" && form["html"] == "1" &&
+      !form.key?("url") && !form.key?("url_title")
   end
 end
 

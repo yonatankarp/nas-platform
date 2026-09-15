@@ -1018,8 +1018,22 @@ end
 VAULT_FIXTURE = {
   "vault_dozzle_admin_username" => "dozzle-contract-admin",
   "vault_dozzle_admin_password" => "dozzle-contract-secret",
-  "vault_dozzle_alert_relay_token" => "7f3c" * 16
+  "vault_dozzle_alert_relay_token" => "7f3c" * 16,
+  # The beszel-notify mode's: the hub identities it signs in with, and the
+  # Pushover pair it expects the relay to publish Beszel's alerts with.
+  "vault_beszel_superuser_email" => "beszel-contract-superuser@example.invalid",
+  "vault_beszel_superuser_password" => "beszel-contract-superuser-secret",
+  "vault_beszel_app_user_email" => "beszel-contract-app@example.invalid",
+  "vault_beszel_app_user_password" => "beszel-contract-app-secret",
+  "vault_pushover_alerts_token" => "dozzle-contract-alerts-token",
+  "vault_pushover_containers_token" => "dozzle-contract-containers-token",
+  "vault_pushover_user_key" => "dozzle-contract-user-key"
 }.freeze
+
+# What a converged Beszel hub stores, as far as beszel-notify reads it: the
+# relay's /beszel route. The token part is not compared there, only sent.
+BESZEL_STORED_WEBHOOK =
+  "generic://alert-relay:8081/beszel?disabletls=yes&template=json&@Authorization=Bearer%20x"
 
 EXPECTED_TEMPLATE = JSON.generate(
   version: 1,
@@ -1125,6 +1139,7 @@ class StubApi
   def route(method, target, headers, body)
     path = target.split("?", 2).first
     return token_route(body) if method == "POST" && path == "/api/token"
+    return beszel_route(method, path, headers) if path.start_with?("/api/collections/", "/api/beszel/")
 
     unless headers.key?("cookie")
       return [@state.fetch(:unauthenticated_status, 401), JSON_TYPE,
@@ -1159,6 +1174,42 @@ class StubApi
     end
   end
 
+  # Beszel's hub, on the same port: none of its paths collide with Dozzle's.
+  # A delivering hub stands in for the hub, the bridge and the relay together.
+  # It POSTs the form the relay would to the recorder the mode listens with.
+  def beszel_route(method, path, headers)
+    authorization = headers.fetch("authorization", "")
+    case [method, path]
+    in ["POST", "/api/collections/_superusers/auth-with-password"]
+      [200, JSON_TYPE, JSON.generate("token" => "beszel-superuser-token"), nil]
+    in ["POST", "/api/collections/users/auth-with-password"]
+      [200, JSON_TYPE, JSON.generate("token" => "beszel-app-token", "record" => { "id" => "appuser1" }), nil]
+    in ["GET", "/api/collections/user_settings/records"]
+      return [401, JSON_TYPE, JSON.generate("message" => "unauthorized"), nil] unless
+        authorization == "beszel-superuser-token"
+
+      webhooks = @state.fetch(:beszel_webhooks, [BESZEL_STORED_WEBHOOK])
+      [200, JSON_TYPE, JSON.generate("items" => [{ "settings" => { "webhooks" => webhooks } }]), nil]
+    in ["POST", "/api/beszel/test-notification"]
+      return [401, JSON_TYPE, JSON.generate("message" => "unauthorized"), nil] unless
+        authorization == "beszel-app-token"
+      return [200, JSON_TYPE, JSON.generate("err" => @state.fetch(:beszel_err)), nil] if @state.key?(:beszel_err)
+
+      if @state.fetch(:beszel_delivers, false)
+        form = {
+          "token" => @state.fetch(:beszel_publish_token, VAULT_FIXTURE.fetch("vault_pushover_alerts_token")),
+          "user" => VAULT_FIXTURE.fetch("vault_pushover_user_key"),
+          "title" => "Test Alert", "message" => "This is a notification from Beszel.",
+          "priority" => "1", "html" => "1"
+        }.merge(@state.fetch(:beszel_extra_fields, {}))
+        Net::HTTP.post_form(URI("http://127.0.0.1:#{@state.fetch(:recorder_port)}/1/messages.json"), form)
+      end
+      [200, JSON_TYPE, JSON.generate("err" => false), nil]
+    else
+      [404, JSON_TYPE, JSON.generate("message" => "absent"), nil]
+    end
+  end
+
   def token_route(body)
     fields = body.split("&").to_h { |pair| pair.split("=", 2).map { |value| CGI.unescape(value.to_s) } }
     expected_user = VAULT_FIXTURE.fetch("vault_dozzle_admin_username")
@@ -1184,8 +1235,10 @@ VAULT_STUB = <<~STUB
   cat "$DOZZLE_STUB_VAULT"
 STUB
 
-def with_runtime_stub(state, relay_port: 8081)
+def with_runtime_stub(state, relay_port: 8081, recorder: false)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
+  # Only the beszel-notify rows open the recorder, and they get a real free port.
+  merged[:recorder_port] = free_local_port if recorder
   stub = StubApi.new(merged)
   dozzle_port = stub.start
   Dir.mktmpdir("nas-platform-dozzle-runtime.") do |raw|
@@ -1208,7 +1261,8 @@ def with_runtime_stub(state, relay_port: 8081)
       # supply it in every mode too. Deliberately a port nothing here binds:
       # none of these rows reaches the notify mode, and a row that started to
       # would have to say so by listening rather than by inheriting a socket.
-      "PLATFORM_DOZZLE_PUSHOVER_PORT" => "1",
+      "PLATFORM_DOZZLE_PUSHOVER_PORT" => merged.fetch(:recorder_port, 1).to_s,
+      "PLATFORM_BESZEL_PORT" => dozzle_port.to_s,
       "PLATFORM_REPORT_ROOT" => reports,
       "PLATFORM_CONTRACT_VAULT_FILE" => vault,
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "password"),
@@ -1333,12 +1387,57 @@ RUNTIME_ROWS = [
     name: "a report root reached through a symlink", mode: "duplicate-dispatcher-create",
     state: {}, report_root: :symlink,
     expects: "contract report root is unavailable"
+  },
+  # --- beszel-notify ------------------------------------------------------
+  # A short delivery budget on every row that could wait, for the #319 reason:
+  # a row that reaches the deadline sits out the whole of it.
+  {
+    name: "a Beszel test notification the relay published with the Alerts token",
+    mode: "beszel-notify", recorder: true, state: { beszel_delivers: true },
+    expects: nil, prints: "Dozzle contract passed"
+  },
+  {
+    name: "a Beszel test notification that never reaches the recorder",
+    mode: "beszel-notify", recorder: true, state: {},
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel test notification did not reach the Pushover recorder through the relay"
+  },
+  {
+    name: "a Beszel test notification published with the Containers token",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_delivers: true,
+             beszel_publish_token: VAULT_FIXTURE.fetch("vault_pushover_containers_token") },
+    expects: "relay published Beszel's test notification without the Alerts credentials"
+  },
+  {
+    name: "a hub that reports the relay refused the test notification",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_err: "server returned unexpected response status code: 401" },
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel test notification through the relay reported delivery failure"
+  },
+  {
+    name: "a hub whose stored webhook is not the relay's /beszel route",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_webhooks: ["pushover://shoutrrr:token@user/?priority=1"] },
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel's stored webhook is not the alert relay's /beszel route"
+  },
+  {
+    # A test notification links the bare app URL, which is no system page, so
+    # a button here would mean the relay's link validation had loosened.
+    name: "a Beszel test notification that arrived with a button",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_delivers: true,
+             beszel_extra_fields: { "url" => "http://beszel.invalid", "url_title" => "Open in Beszel" } },
+    expects: "Beszel test notification presentation differs"
   }
 ].freeze
 
 def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
   in_parallel_case_results(rows) do |row|
-    with_runtime_stub(row.fetch(:state), relay_port: row.fetch(:relay_port, 8081)) do |env, root, _state|
+    with_runtime_stub(row.fetch(:state), relay_port: row.fetch(:relay_port, 8081),
+                      recorder: row.fetch(:recorder, false)) do |env, root, _state|
       if row[:report_root] == :symlink
         link = File.join(root, "reports-link")
         File.symlink(File.join(root, "reports"), link)
@@ -2447,6 +2546,48 @@ PROGRAM_MUTATIONS = [
     # dispatcher's. Recorded rather than tolerated; the dispatcher check is what
     # names the dispatcher, which is what a reader of the lane's log needs.
     detects: "refused for the wrong reason"
+  },
+  {
+    # The end-to-end mode passing without a recorded request: the match is
+    # replaced by a delivery nobody made.
+    label: "the Beszel end-to-end recorder requirement",
+    program: :runtime,
+    from: "      messages.find { |message| message.fetch(\"form\")[\"title\"] == \"Test Alert\" }\n",
+    to: "      { \"credentials_ok\" => true, \"path\" => \"/1/messages.json\", " \
+        "\"form\" => { \"title\" => \"Test Alert\", \"priority\" => \"1\", \"html\" => \"1\" } }\n",
+    rows: ["a Beszel test notification that never reaches the recorder"]
+  },
+  {
+    label: "the Beszel Alerts credential check",
+    program: :runtime,
+    from: "      delivered[\"credentials_ok\"]\n",
+    to: "      true\n",
+    rows: ["a Beszel test notification published with the Containers token"]
+  },
+  {
+    label: "the Beszel delivery failure check",
+    program: :runtime,
+    from: "      answer.is_a?(Hash) && answer[\"err\"] == false\n",
+    to: "      true\n",
+    rows: ["a hub that reports the relay refused the test notification"],
+    # Nothing is delivered after the refusal, so the recorder wait refuses
+    # instead, naming the recorder rather than the hub's answer.
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "the Beszel stored webhook check",
+    program: :runtime,
+    from: "    webhooks.length == 1 && webhooks.first.start_with?(relay_route)\n",
+    to: "    true\n",
+    rows: ["a hub whose stored webhook is not the relay's /beszel route"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "the Beszel test notification presentation check",
+    program: :runtime,
+    from: "      !form.key?(\"url\") && !form.key?(\"url_title\")\n",
+    to: "      true\n",
+    rows: ["a Beszel test notification that arrived with a button"]
   }
 ].freeze
 

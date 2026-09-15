@@ -51,43 +51,48 @@ beszel_alerts:
     value: 87
     min: 15
 
-# Shoutrrr URL. Built from the Alerts application token and the user key in vault,
-# so the value Beszel stores is authored in one place rather than copied between
-# two web interfaces, over a transport that reaches a phone without the NAS
-# being reachable from it. Pushover itself
-# takes only the application token and the user key, which are this URL's
-# password and host and are what the two vault values are. The `shoutrrr` user
-# component is a filler the library reads and discards: `pushover://:token@userkey/`
-# is accepted just the same, measured against this pin. It is kept because an
-# empty user component reads as a typo, not because anything requires it.
+# Shoutrrr URL. Beszel sends to the Dozzle alert relay's /beszel route, and the
+# relay publishes to Pushover's Alerts application. It used to send to Pushover
+# directly, at priority 1 for everything. Beszel 0.19.0 builds an alert and its
+# recovery ("... below threshold", "... is up") from one stored webhook, so a
+# direct URL gives both the same priority and every recovery rang like the
+# problem it closed. The relay reads the title and sends a problem at 1, which
+# rings through quiet hours, and its recovery at -1, a badge with no sound
+# (services/dozzle/alert_relay.py: render_beszel).
 #
-# This is the Alerts application (vault_pushover_alerts_token): host and platform
-# problems, silent while healthy. Priority 1, which bypasses the recipient's quiet
-# hours without an acknowledgement loop, because a host threshold breach
-# overnight is worth waking a phone for.
+# What Beszel stores, and shows on its settings page, is now the relay's bearer
+# token instead of the Pushover Alerts token. That is the weaker credential:
+# it can only POST to a relay on a private bridge, under the relay's own daily
+# ceiling. It cannot publish to Pushover or reach any other application. The
+# relay's token is still a secret. Dozzle already keeps it in cleartext (#172),
+# and shoutrrr writes the whole URL into Beszel's log when a send fails, as it
+# did the Pushover token before.
 #
-# KNOWN AND ACCEPTED: Beszel sends its recovery notice ("... below threshold")
-# through this same URL, so a recovery also rings at priority 1. Beszel builds
-# both from one stored webhook and has no per-event priority, and routing Beszel
-# through the relay to separate them is out of scope for #558.
+# The form, read from source at the pins and measured against a real 0.19.0 hub
+# in #697. Beszel 0.19.0 vendors github.com/nicholas-fedor/shoutrrr v0.19.0,
+# whose generic service:
+#   - posts over plain http only with `disabletls=yes`;
+#   - sends exactly {"message","title"} as application/json with
+#     `template=json`, and Beszel adds the title only when a template is set;
+#   - turns every `@` query key into a header.
+# The header value is URL-encoded because it sits in a query string. `urlencode`
+# turns the space into %20 and every reserved character into its escape, and
+# shoutrrr decodes it back. #697 round-tripped `%2B`, `/`, `%3D`, `%26` and `%25`
+# that way. `alert-relay` resolves on the external bridge host_prep creates,
+# which only the hub and the relay join. The port is shared inventory
+# (service_dozzle.yml), because Beszel converges before Dozzle and cannot read
+# Dozzle's role defaults.
 #
-# How the query reaches Pushover, read from source at the pins rather than
-# assumed. Beszel 0.19.0's go.mod requires github.com/nicholas-fedor/shoutrrr
-# v0.19.0, NOT containrrr/shoutrrr. Beszel's SendShoutrrrAlert
-# (internal/alerts/alerts.go) parses this URL, takes its existing query, Adds
-# `title` to it and re-encodes it, so `priority` survives beside the title. The
-# fork's pkg/services/push/pushover/pushover_config.go declares
-# `Priority int8 key:"priority"` and setURL feeds every query key through the
-# config resolver; pushover.go's sendToDevice then sets the form's `priority`
-# only when it lies in -2..1. So 1 reaches the API. 2 would be parsed and then
-# silently NOT sent, which is what an earlier revision of this comment got wrong
-# when it said 2 was "carried through to the API call"; 200 is refused by int8
-# parsing. That gate, and the fork carrying no retry or expire key -- asked for
-# one it answers `not a valid config key: expire (valid keys: [devices
-# encryptionkey key priority title])` -- are why the emergency priority is only
-# reachable through the Dozzle relay, which POSTs the API itself.
+# Priority lives in the relay now, so nothing in this URL sets it, and the
+# emergency priority the shoutrrr fork cannot send is still reachable only
+# through the relay. Revert this value to go back to the direct URL. Nothing
+# else has to be reverted with it: the relay keeps serving /beszel.
+#
+# Broken after `{{` for line length. Folding puts its one space inside the
+# braces, where Jinja ignores it, so the value is the one unbroken string.
 beszel_notification_url: >-
-  pushover://shoutrrr:{{ vault_pushover_alerts_token }}@{{ vault_pushover_user_key }}/?priority=1
+  generic://alert-relay:{{ dozzle_alert_relay_port }}/beszel?disabletls=yes&template=json&@Authorization={{
+  ('Bearer ' ~ vault_dozzle_alert_relay_token) | urlencode }}
 
 # Pushover's own credential check, which is the only thing on this platform that
 # can tell a working notification chain from a stored string. Pushover documents

@@ -52,9 +52,12 @@ RECONCILIATION_LANES = %w[arr downloaders].freeze
 # bindery lane is the only one converging Audiobookshelf and Bindery together,
 # and roles/bindery signs in to Audiobookshelf as the vault administrator, mints
 # itself an API key there and resolves the managed library by name, so the
-# audiobookshelf lane cannot see what an Audiobookshelf change broke. Widening
-# this in the classifier must fail here.
+# audiobookshelf lane cannot see what an Audiobookshelf change broke. The beszel
+# row is the first shape: only the dozzle lane sends through the webhook
+# roles/beszel stores, hub to relay to recorder, and the beszel lane converges no
+# relay. Widening this in the classifier must fail here.
 COMPANION_LANES = {
+  "beszel" => %w[dozzle],
   "downloaders" => %w[bindery],
   "audiobookshelf" => %w[bindery],
   "jellyfin" => %w[seerr]
@@ -157,7 +160,8 @@ if defined?(ClassifyChanges)
     # Docker's applied quota, so it selects the lane that converges the stack and
     # not the policy gate alone. The per-service loop below holds the same claim
     # for every implemented service rather than for this one sample.
-    ["tests/expected/beszel.yml"] => %w[static smoke beszel idempotence_check],
+    # dozzle is beszel's companion: its beszel-notify mode sends through the hub.
+    ["tests/expected/beszel.yml"] => %w[static smoke beszel dozzle idempotence_check],
     ["renovate.json"] => %w[static],
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
@@ -180,7 +184,7 @@ if defined?(ClassifyChanges)
     # the end of this file is what keeps that claim true as the workflow grows;
     # this row is what makes a quiet widening or narrowing of it visible.
     [".github/workflows/ci.yml"] =>
-      %w[static docs vault reconciliation smoke beszel idempotence_check],
+      %w[static docs vault reconciliation smoke komga idempotence_check],
     # Only that one file is mapped. A second workflow, or anything else under
     # .github/, is a path nobody has reasoned about and keeps falling open.
     [".github/workflows/release.yml"] => FALL_OPEN_LANES,
@@ -390,8 +394,11 @@ if defined?(ClassifyChanges)
   end
 
   {
-    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel",
-    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,dozzle",
+    # beszel selects dozzle as its companion, whose tags are a superset.
+    "roles/beszel/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
+    # The dozzle lane converges Beszel too, because its beszel-notify mode sends
+    # through the hub's stored webhook to the relay and on to the recorder.
+    "roles/dozzle/tasks/main.yml" => "host_prep,deployment_bundle,beszel,dozzle",
     # Same shape as the Jellyfin row below: the bindery lane comes first in
     # suites.conf row order and its tags are a superset of Audiobookshelf's own,
     # so the Audiobookshelf plan is Bindery's plan.
@@ -815,8 +822,8 @@ if defined?(ClassifyChanges)
         "static, docs, vault and reconciliation are the only lanes that gate a job instead of a suite")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
-          %w[smoke beszel idempotence-check],
-        "a Beszel-only change must dispatch smoke, beszel and idempotence-check")
+          %w[smoke beszel dozzle idempotence-check],
+        "a Beszel-only change must dispatch smoke, beszel, its dozzle companion and idempotence-check")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/arr/tasks/main.yml"])) ==
           %w[arr idempotence-check],
@@ -1005,12 +1012,14 @@ unless CLASSIFY_STEP.to_s.empty?
   # A squash merge: main gains one commit, and `before` is the tip it replaced.
   Dir.mktmpdir("classify-push-squash-") do |root|
     init_push_repository(root)
-    before = push_commit(root, "roles/dozzle/tasks/main.yml")
-    push_commit(root, "roles/beszel/tasks/main.yml")
+    # The landed commit is dozzle's, because beszel's would select dozzle too as
+    # its companion and the tip it replaced could no longer be told apart.
+    before = push_commit(root, "roles/beszel/tasks/main.yml")
+    push_commit(root, "roles/dozzle/tasks/main.yml")
     status, output, stderr = classify_push(root, before)
     lanes = push_lanes(output)
     check(failures, status.success?, "a squash merge must classify cleanly: #{stderr.inspect}")
-    check(failures, lanes.include?("beszel") && !lanes.include?("dozzle"),
+    check(failures, lanes.include?("dozzle") && !lanes.include?("beszel"),
           "a squash merge must select only the lanes it touched, got #{lanes.inspect}")
     check(failures, !lanes.include?("immich"),
           "a squash merge must not fall back to a full sweep, got #{lanes.inspect}")

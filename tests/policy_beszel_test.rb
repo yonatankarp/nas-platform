@@ -192,10 +192,10 @@ check(failures, beszel_create_user && beszel_create_user["changed_when"] == true
                 Array(beszel_plan_user["when"]).include?("ansible_check_mode"),
       "Beszel user creation must report real and check-mode predicted changes")
 
-webhook_assert = beszel_tasks.find { |task| task["name"] == "Verify the managed Pushover webhook" }
+webhook_assert = beszel_tasks.find { |task| task["name"] == "Verify the managed relay webhook" }
 webhook_failure = webhook_assert&.dig("ansible.builtin.assert", "fail_msg").to_s
 webhook_summary = beszel_tasks.find do |task|
-  task["name"] == "Summarize the managed Pushover webhook without URL bodies"
+  task["name"] == "Summarize the managed relay webhook without URL bodies"
 end
 check(failures, webhook_failure.include?("scheme=") && webhook_failure.include?("[REDACTED]") &&
                 !webhook_failure.match?(/actual=|expected=|webhooks/) &&

@@ -1142,6 +1142,11 @@ EOF
       run_dozzle_contract verify
       run_dozzle_contract notify
       printf 'DOZZLE_DRIFT_RECONCILED_AND_NOTIFIED\n'
+      # The one proof that Beszel's stored webhook reaches Pushover: hub, bridge,
+      # relay's /beszel route, and the recorder the relay publishes to. It is why
+      # this lane converges beszel as well.
+      run_dozzle_contract beszel-notify
+      printf 'DOZZLE_BESZEL_NOTIFICATION_THROUGH_RELAY\n'
 
     fi
 
