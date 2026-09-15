@@ -85,22 +85,34 @@ implemented_acquisition_lanes = acquisition_projects & PolicySupport.implemented
 # three guards below that consult it hold nothing. That is dormancy rather than a
 # hole, and #639 went looking for the hole before saying so. A floor under the
 # implemented side and a both-directions check against the suite table were
-# written, measured against planted defects, and then deleted, because every
-# failure mode they were meant to catch is already caught:
+# written, measured against planted defects on a checkout of main, and then
+# deleted, because every failure mode they were meant to catch is already caught.
+# Two of the four are caught in this file and two are not, which is worth knowing
+# separately -- a reader here sees only the first pair:
 #
-#   the manifest stops naming acquisition services  -> "service_image_sources
-#     must cover every implemented service exactly once"
-#   an acquisition lane vanishes from suites.conf   -> "implemented acquisition
-#     suite <name> must converge at least one service role"
-#   a lane appears that no manifest entry implements -> "service lane <name> must
-#     converge ntfy"
-#   a status value is renamed, emptying both lists  -> EXPECTED_PROJECTS in
-#     tests/media_acquisition_foundation_test.rb pins each project's status
+#   caught HERE
+#     the manifest stops naming acquisition services -> "service_image_sources
+#       must cover every implemented service exactly once"
+#     an acquisition lane vanishes from suites.conf  -> "implemented acquisition
+#       suite <name> must converge at least one service role"
 #
-# A fourth check saying the same thing more clearly is still a fourth check, and
-# this file's subject is guards that report a verdict they did not establish. So
-# what is recorded here is the reasoning, and the list above is what a future
-# reader should re-measure before adding the floor back.
+#   caught ELSEWHERE, and nothing in this file sees them
+#     a lane appears that no manifest entry implements -> tests/ci/
+#       classify_changes_test.rb and tests/ci/workflow_test.rb
+#     a status value is renamed, emptying both lists  -> EXPECTED_PROJECTS in
+#       tests/media_acquisition_foundation_test.rb, plus
+#       tests/deployment_gate_coverage_test.rb and tests/policy_test.rb
+#
+# A fifth check saying what four already say is still a fifth check, and this
+# file's subject is guards that report a verdict they did not establish. So what
+# is recorded here is the reasoning, and the list above is what a future reader
+# should re-measure before adding the floor back.
+#
+# Re-measure it against a real checkout of main. The first pass of this table was
+# written against a stale worktree and named a "service lane <name> must converge
+# ntfy" check that #676 had already deleted; on current main that row is caught
+# by the CI classifier's own tests instead, and it took re-running the plants on
+# b2f1841 to find that out.
 
 unless suite_rows.empty?
   suite_rows.each do |suite, kind, tags|
