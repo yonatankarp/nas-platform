@@ -177,15 +177,21 @@ check(failures,
       drift.any? { |failure| failure.include?("line 52") && failure.include?("no longer detect it") },
       "a script that has stopped detecting a row must be reported, got #{drift.inspect}")
 
-# The three shapes that execute a checker themselves are invisible to the
+# The two shapes that execute a checker themselves are invisible to the
 # subtraction above -- nothing counts a run this file never sees -- so their
 # registration is asserted where it lives. Stated by name rather than derived:
-# the point is that these three are known to be outside the audit, and a fourth
+# the point is that these two are known to be outside the audit, and a third
 # arriving is what the tripwire is for.
+#
+# There were three until #639. `run_foundation_wrapper` in
+# tests/policy_manifest_test.rb was the other, and it went with the seven
+# tests/contracts/*-foundation.sh wrappers it planted defects into. This list
+# being stated is what turned that deletion into a failing check rather than a
+# silently shorter census -- which is the whole argument for stating it, made
+# once in practice.
 {
   "tests/policy_mutation_support.rb" => ["def check_direct_policy_hostile_environment",
-                                         "def run_compose_metadata_behavior"],
-  "tests/policy_manifest_test.rb" => ["run_foundation_wrapper = lambda"]
+                                         "def run_compose_metadata_behavior"]
 }.each do |relative_path, definitions|
   source = File.read(File.join(ROOT, relative_path))
   definitions.each do |definition|

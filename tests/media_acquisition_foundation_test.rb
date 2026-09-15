@@ -1,6 +1,5 @@
 #!/usr/bin/env ruby
 
-require "open3"
 require "set"
 require "yaml"
 
@@ -14,31 +13,18 @@ ACQUISITION_PROJECTS = Set[
   "arr", "downloaders", "bindery", "kapowarr", "pinchflat", "trailarr", "seerr"
 ].freeze
 ACQUISITION_JOB_SERVICES = Set["configarr"].freeze
-FOUNDATION_WRAPPER_SOURCE = <<~'SH'.freeze
-  #!/bin/sh
-  set -eu
-  set +x
 
-  project=$(basename -- "$0" -foundation.sh)
-  case $project in
-    arr|downloaders|bindery|kapowarr|pinchflat|trailarr|seerr) ;;
-    *) printf '%s\n' 'unknown acquisition foundation contract' >&2; exit 2 ;;
-  esac
-  mode=${1:-static}
-  repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)}
-  [ "$mode" = static ] || { printf '%s\n' "$project foundation contract accepts only static" >&2; exit 2; }
-  ruby "$repo_dir/tests/media_acquisition_foundation_test.rb" --project "$project"
-SH
-
-def parse_project_selection(arguments)
-  return nil if arguments.empty?
-  return arguments.fetch(1) if arguments.length == 2 && arguments.first == "--project" &&
-                               ACQUISITION_PROJECTS.include?(arguments.fetch(1))
-
-  abort "usage: ruby tests/media_acquisition_foundation_test.rb [--project NAME]"
+# This program takes no arguments. It used to take --project NAME, which the
+# seven tests/contracts/*-foundation.sh wrappers passed after deriving the name
+# from their own basename; #639 deleted them, and with them the only branch that
+# argument selected -- verifying the wrapper's bytes, mode and staged Git mode,
+# plus a per-project catalog pin the whole-catalog comparison in
+# catalog_contract_problems already implies. Refusing an argument rather than
+# ignoring one is the point: a caller still passing --project is a caller that
+# expects a check this program no longer performs, and it should hear so.
+unless ARGV.empty?
+  abort "usage: ruby tests/media_acquisition_foundation_test.rb (this program takes no arguments)"
 end
-
-SELECTED_PROJECT = parse_project_selection(ARGV).freeze
 
 def ui_port(port, container_port: port, published_by:)
   [{
@@ -436,33 +422,6 @@ end
 
 failures = []
 failures.concat(PINNED_CPU_PROBLEMS)
-if SELECTED_PROJECT
-  relative_wrapper_path = "tests/contracts/#{SELECTED_PROJECT}-foundation.sh"
-  wrapper_path = File.join(ROOT, relative_wrapper_path)
-  begin
-    wrapper_stat = File.lstat(wrapper_path)
-    failures << "#{relative_wrapper_path} must be a regular executable file" unless
-      wrapper_stat.file? && !wrapper_stat.symlink? && (wrapper_stat.mode & 0o7777) == 0o755
-    failures << "#{relative_wrapper_path} differs from the exact foundation wrapper" unless
-      File.binread(wrapper_path) == FOUNDATION_WRAPPER_SOURCE
-  rescue SystemCallError => e
-    failures << "#{relative_wrapper_path} cannot be inspected: #{e.class}"
-  end
-
-  clean_git_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
-  staged, staged_error, staged_status = Open3.capture3(
-    clean_git_environment,
-    "git", "-C", ROOT, "ls-files", "--stage", "--", relative_wrapper_path
-  )
-  unless staged_status.success?
-    failures << "#{relative_wrapper_path} staged mode cannot be inspected: #{staged_error.lines.first&.strip}"
-  end
-  staged_lines = staged.lines
-  staged_mode = staged_lines.fetch(0, "").split.fetch(0, nil)
-  failures << "#{relative_wrapper_path} must be staged with Git mode 100755" unless
-    staged_status.success? && staged_lines.length == 1 && staged_mode == "100755"
-end
-
 catalog, catalog_load_problems = strict_yaml_file(CATALOG_PATH)
 catalog_load_problems.each { |problem| failures << "config/media-acquisition.yml #{problem}" }
 if catalog_load_problems.empty? && !catalog.is_a?(Hash)
@@ -487,11 +446,6 @@ if catalog
   end.to_set
   failures << "Configarr must be the sole one-shot service" unless
     one_shots == ACQUISITION_JOB_SERVICES
-
-  if SELECTED_PROJECT
-    failures << "selected acquisition project differs from its exact pinned contract" unless
-      catalog.fetch("projects")[SELECTED_PROJECT] == EXPECTED_PROJECTS.fetch(SELECTED_PROJECT)
-  end
 
   planned_publications = ports.map do |port|
     port.slice("protocol", "bind_address", "host_port")

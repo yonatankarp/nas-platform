@@ -555,7 +555,6 @@ module ClassifyChanges
       path.start_with?("roles/#{lane}/", "services/#{lane}/") ||
         path == "tests/expected/#{lane}.yml" ||
         path == "inventory/group_vars/all/service_#{lane}.yml" ||
-        path == "tests/contracts/#{lane}-foundation.sh" ||
         path == "tests/contracts/#{lane}.sh"
     end
   end

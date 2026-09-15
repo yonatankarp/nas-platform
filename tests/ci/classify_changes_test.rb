@@ -148,7 +148,6 @@ if defined?(ClassifyChanges)
     ["services/downloaders/compose.yml"] =>
       %w[static reconciliation downloaders bindery idempotence_check],
     ["tests/expected/bindery.yml"] => %w[static bindery idempotence_check],
-    ["tests/contracts/kapowarr-foundation.sh"] => %w[static kapowarr idempotence_check],
     ["tests/media_control_network_collision_test.sh"] => %w[static reconciliation arr idempotence_check],
     ["config/media-acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
@@ -200,8 +199,7 @@ if defined?(ClassifyChanges)
       "roles/#{project}/tasks/main.yml",
       "services/#{project}/compose.yml",
       "tests/expected/#{project}.yml",
-      "inventory/group_vars/all/service_#{project}.yml",
-      "tests/contracts/#{project}-foundation.sh"
+      "inventory/group_vars/all/service_#{project}.yml"
     ].each do |path|
       expected = canonical(["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)),
                             project, *COMPANION_LANES.fetch(project, []), "idempotence_check"])
@@ -830,18 +828,20 @@ if defined?(ClassifyChanges)
         "an Arr-only change must dispatch its foundation suite without smoke")
 
   # No lane emits the inert foundation tag plan any more: Phase 4 promoted the
-  # last planned acquisition project. A foundation contract now routes to its
-  # own project's lane, and Seerr's is the lane that carries the shared
-  # foundation's runtime proof on top of its own service.
+  # last planned acquisition project, and #639 deleted the seven
+  # tests/contracts/*-foundation.sh wrappers that routed to their own lanes. The
+  # shared foundation is now reached only through its own program, which is in
+  # ACQUISITION_SHARED_PATHS and so selects every acquisition lane rather than
+  # one -- the row below, which is what that route has to keep doing.
   acquisition_output = StringIO.new
   ClassifyChanges.write_github_outputs(
-    ClassifyChanges.classify(["tests/contracts/seerr-foundation.sh"]), acquisition_output
+    ClassifyChanges.classify(["tests/media_acquisition_foundation_test.rb"]), acquisition_output
   )
   check(failures,
-        acquisition_output.string.end_with?(
-          "selected_tags=host_prep,deployment_bundle,arr,jellyfin,seerr\n"
-        ),
-        "an acquisition foundation contract must route to its own project's lane")
+        acquisition_output.string.include?("seerr") &&
+          acquisition_output.string.include?("kapowarr") &&
+          acquisition_output.string.include?("pinchflat"),
+        "the shared foundation program must route to every acquisition lane, not one")
   check(failures, !acquisition_output.string.downcase.include?("tmm"),
         "classifier outputs must not resurrect the retired tMM project")
 
