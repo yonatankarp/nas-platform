@@ -284,13 +284,59 @@ def with_pushover_recorder(token, user_key)
   end
 end
 
+# The relay container this contract drives. Its stderr is the only place a
+# refused envelope is named -- the relay logs a rejection and an outage as one
+# assembled line each, credentials redacted before truncation -- and until #714
+# nothing read it, so a refusal and a silence were the same red line.
+ALERT_RELAY_CONTAINER = "dozzle_alert_relay"
+
+# What the relay said, for a failure that is about a message not arriving.
+# Best-effort by construction: a missing container, a docker that refuses, or an
+# empty log must not replace the caller's diagnostic with an error about
+# fetching it, so every failure here degrades to a stated absence.
+def alert_relay_diagnostics(limit: 40)
+  output, errors, status = Open3.capture3(
+    "docker", "logs", "--tail", limit.to_s, ALERT_RELAY_CONTAINER
+  )
+  return "  (docker logs #{ALERT_RELAY_CONTAINER} failed: #{errors.lines.first&.strip})" unless status.success?
+
+  lines = (output.to_s + errors.to_s).lines.map(&:rstrip).reject(&:empty?)
+  return "  (the relay logged nothing)" if lines.empty?
+
+  lines.last(limit).map { |line| "  #{line}" }.join("\n")
+end
+
+# A timeout here means "no message matched", which is three different states:
+# nothing was ever published, the relay refused what Dozzle sent, or something
+# arrived in a shape this block does not recognise. The diagnostic named only
+# the first and the caller's own `observed` -- returned for exactly this -- was
+# discarded on the failure path, so six identical CI failures produced no
+# mechanism. Report what was captured and what the relay said alongside it.
 def wait_for_pushover(reader, diagnostic, timeout: 40)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
     messages = reader.call
     match = yield messages
     return [match, messages] if match
-    fail_contract(diagnostic) if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+      # Titles only, and they are already redacted: with_pushover_recorder runs
+      # every record through redact_credentials before it is captured, so the
+      # token and the user key cannot reach this output. A whole body could
+      # still carry a container's own text, so the summary stays at the field
+      # the match is made on.
+      seen = messages.map { |message| message.fetch("form", {})["title"].inspect }
+      summary =
+        if seen.empty?
+          "the recorder captured nothing at all"
+        else
+          "the recorder captured #{seen.length} message(s), titled: #{seen.join(', ')}"
+        end
+      fail_contract(
+        "#{diagnostic}\n  after #{timeout}s, #{summary}\n" \
+        "relay log (last lines):\n#{alert_relay_diagnostics}"
+      )
+    end
     sleep 2
   end
 end
