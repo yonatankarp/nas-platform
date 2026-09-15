@@ -249,6 +249,18 @@ end
         "#{name} must have a meaningful healthcheck")
 end
 
+# Bazarr stores its general.hostname default, platform.node(), through dynaconf's
+# TOML parser. Without `hostname:` that is the random container ID, and one in
+# about 150 (measured: 663 of 100000) parses as an int or float, is saved as
+# `.inf` or a number, and fails is_type_of str on every later settings submit
+# (#708). So the hostname must be declared and must not be TOML-number-shaped.
+bazarr_hostname = arr_services.dig("bazarr", "hostname")
+check(failures,
+      bazarr_hostname.is_a?(String) &&
+        !bazarr_hostname.match?(/\A[+-]?\d[\d_]*(\.\d*)?([eE][+-]?\d+)?\z/),
+      "bazarr must declare a non-numeric hostname, or dynaconf stores a numeric " \
+      "container ID as a number and Bazarr refuses every settings submit")
+
 %w[radarr sonarr prowlarr bazarr].each do |name|
   check(failures, Array(arr_services.dig(name, "networks")).include?("media-control"),
         "#{name} must join media-control")
