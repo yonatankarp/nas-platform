@@ -732,7 +732,11 @@ case_toolchain_install() {
   expect_status 0
   expect_log "apk argv=[add][--no-cache][--quiet][docker-cli][docker-cli-compose][git][tar][openssl][apache2-utils][openssh-client][$ruby_package][$curl_package]"
   expect_log "pip argv=[install][--quiet][--no-input][ansible-core==$ansible_core_version][requests==$requests_version]"
-  expect_log 'ansible-galaxy argv=[collection][install][-r][{repo}/requirements.yml]'
+  # --no-cache is in the argv rather than asserted separately: the Galaxy API
+  # cache entry is written blank and filled in when the response arrives, so an
+  # interrupted install leaves an entry every later read refuses, and this path
+  # installs once and never reads it back.
+  expect_log 'ansible-galaxy argv=[collection][install][--no-cache][-r][{repo}/requirements.yml]'
   expect_log_count 'ansible-playbook argv=' 1
   expect_no_log '[--check][--diff]'
 }

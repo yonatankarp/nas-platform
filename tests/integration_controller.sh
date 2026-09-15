@@ -62,7 +62,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
         apache2-utils openssh-client "$ruby_package" "$curl_package" >/dev/null
       pip install --quiet --no-input "ansible-core==$ansible_core_version" \
         "requests==$requests_version"
-      ansible-galaxy collection install -r /repo/requirements.yml >/dev/null
+      ansible-galaxy collection install --no-cache -r /repo/requirements.yml >/dev/null
     fi
 
     # This container runs as root while the sandbox belongs to whoever started
