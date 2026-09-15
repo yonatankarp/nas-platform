@@ -6,7 +6,30 @@ argument_specs:
       - Fails early and specifically rather than letting a later role fail
         obscurely. Checks the interpreter, Docker, the Compose floor, that the
         NAS volumes are mounted, that the controller bundle source is present,
-        and that the deployment root is writable.
+        and that nas_docker_root -- the service state root -- is writable, which
+        is what the write-probe tasks are named for.
+      - >-
+        It does NOT probe platform_deploy_root. The description said it did
+        until issue 654, while tasks/main.yml has only ever probed
+        nas_docker_root, and a policy check requires exactly that -- see
+        "fresh-install preflight must probe the existing validated
+        nas_docker_root" in tests/policy_platform_test.rb, which two mutation
+        rows plant platform_deploy_root against. The option was required here
+        and read nowhere, so it is gone.
+      - >-
+        platform_deploy_root is nas_docker_root joined with nas-platform, a
+        child of the probed directory, so a writable parent is what lets
+        deployment_bundle create it. A deploy root that exists and is not
+        writable is still caught, by deployment_bundle, later than here. Adding
+        that probe is a behaviour change to a role the five-minute poller runs,
+        so it belongs in an issue with a measurement rather than in a
+        dead-surface cleanup.
+      - >-
+        The options that remain and are not read in tasks/main.yml are NOT dead.
+        PLATFORM_CAPABILITIES in tests/policy_platform_test.rb are host-class
+        facts that must not be all-group variables, and this role is where the
+        run fails early if a host class left one undeclared: required:true in
+        this spec IS that assertion. Reading them is not the point and never was.
     options:
       platform_kind:
         type: str
@@ -78,7 +101,3 @@ argument_specs:
         type: str
         required: true
         description: Directory holding NAS-managed user files.
-      platform_deploy_root:
-        type: str
-        required: true
-        description: Root containing versioned controller deployment bundles.

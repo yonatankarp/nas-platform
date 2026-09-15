@@ -226,11 +226,6 @@ def basic_credentials(request)
   Base64.decode64(encoded).split(":", 2)
 end
 
-def basic_identity(request)
-  basic_credentials(request).first
-end
-
-
 def contract_failures(service, tasks)
   failures = []
   names = tasks.map { |task| task_name(task) }

@@ -111,8 +111,6 @@
 
 - name: Decide whether Configarr must run
   ansible.builtin.set_fact:
-    arr_configarr_owned_state_current_sha256: >-
-      {{ arr_configarr_owned_state_current | to_json | hash('sha256') }}
     arr_configarr_run_required: >-
       {{
         (arr_configarr_owned_state_current | to_json | hash('sha256')) !=

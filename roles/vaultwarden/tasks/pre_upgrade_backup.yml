@@ -194,7 +194,6 @@
         services: [vaultwarden]
         state: stopped
         recreate: never
-      register: vaultwarden_pre_upgrade_stop
       when:
         - not ansible_check_mode
         - vaultwarden_upgrade_pending | bool

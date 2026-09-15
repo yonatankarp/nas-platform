@@ -76,7 +76,6 @@
       # to be the cause of the list failure described below.
       role: admin
     status_code: [200]
-  register: beszel_created_user
   when: beszel_matching_users | length == 0
   changed_when: true
   no_log: true

@@ -24,7 +24,6 @@
     - not ansible_check_mode
     - paperless_candidate_mail_probe_verified | bool
     - paperless_mail_account_create_required | bool
-  register: paperless_mail_account_created
   changed_when: true
   no_log: true
 

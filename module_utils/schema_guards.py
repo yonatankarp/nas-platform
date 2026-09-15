@@ -15,9 +15,13 @@ Two rules keep this file honest:
 * **Messages are the caller's.** The guards raise `AnsibleFilterError` with
   `"<label> must be a <noun>"` and the label is supplied by the caller, so the
   message a play sees is still written by the module that knows what the value
-  is. `noun` exists because the same list check is reported as "a list" in one
-  module and "a sequence" in another, and neither wording is worth changing.
-  It carries its own article, so a guard reads `noun="a list"`.
+  is. `noun` is an override on `sequence` ALONE, and the reason is specific to
+  it: the same list check is reported as "a list" in one module and "a sequence"
+  in another, and neither wording is worth changing. It carries its own article,
+  so a guard reads `noun="a list"`. The other four guards carried the same
+  keyword and no caller ever passed one, so #654 removed it from them rather
+  than keep a symmetry the argument above does not support; a module that ever
+  needs it re-adds one keyword.
 
 The `is_*` predicates match Ansible's own Jinja tests, verified on ansible-core
 2.21.3: `is integer` rejects booleans, `is boolean` rejects integers, and `is
@@ -58,9 +62,9 @@ def is_sequence(value):
     return isinstance(value, (list, tuple))
 
 
-def mapping(value, label, *, noun="a mapping"):
+def mapping(value, label):
     if not is_mapping(value):
-        raise AnsibleFilterError(f"{label} must be {noun}")
+        raise AnsibleFilterError(f"{label} must be a mapping")
     return value
 
 
@@ -71,19 +75,19 @@ def sequence(value, label, *, noun="a sequence"):
     return list(value)
 
 
-def string(value, label, *, noun="a string"):
+def string(value, label):
     if not is_string(value):
-        raise AnsibleFilterError(f"{label} must be {noun}")
+        raise AnsibleFilterError(f"{label} must be a string")
     return value
 
 
-def integer(value, label, *, noun="an integer"):
+def integer(value, label):
     if not is_integer(value):
-        raise AnsibleFilterError(f"{label} must be {noun}")
+        raise AnsibleFilterError(f"{label} must be an integer")
     return value
 
 
-def boolean(value, label, *, noun="a boolean"):
+def boolean(value, label):
     if not is_boolean(value):
-        raise AnsibleFilterError(f"{label} must be {noun}")
+        raise AnsibleFilterError(f"{label} must be a boolean")
     return value

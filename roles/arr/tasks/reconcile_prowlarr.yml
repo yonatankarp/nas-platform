@@ -363,6 +363,18 @@
     label: prowlarr-operator-indexer
   no_log: true
 
+# A set_fact whose facts nothing reads, on purpose: the point is the evaluation,
+# not the result. acquisition_application_projection and its siblings raise on a
+# malformed readback, so forcing them here fails the run BEFORE the mutation
+# below rather than after it. #654 found these looking exactly like dead code,
+# which they are not -- but nothing said so.
+#
+# An `assert: that: - (... | ...) is mapping` would state that in the task type,
+# which is what every other validate-before-mutate step in this file does, and
+# is the better shape. It is not done here because `is mapping` is a stronger
+# claim than the current tasks make, and this role is converged by the
+# five-minute poller: a new assertion that turns out to be wrong stops
+# deployment. That conversion wants its own change with a measurement behind it.
 - name: Evaluate every owned Prowlarr application projection before mutation
   ansible.builtin.set_fact:
     arr_prowlarr_preflight_application_current_projection: >-
@@ -390,6 +402,18 @@
   changed_when: false
   no_log: true
 
+# A set_fact whose facts nothing reads, on purpose: the point is the evaluation,
+# not the result. acquisition_application_projection and its siblings raise on a
+# malformed readback, so forcing them here fails the run BEFORE the mutation
+# below rather than after it. #654 found these looking exactly like dead code,
+# which they are not -- but nothing said so.
+#
+# An `assert: that: - (... | ...) is mapping` would state that in the task type,
+# which is what every other validate-before-mutate step in this file does, and
+# is the better shape. It is not done here because `is mapping` is a stronger
+# claim than the current tasks make, and this role is converged by the
+# five-minute poller: a new assertion that turns out to be wrong stops
+# deployment. That conversion wants its own change with a measurement behind it.
 - name: Evaluate every owned Prowlarr indexer projection before mutation
   ansible.builtin.set_fact:
     arr_prowlarr_preflight_indexer_current_projection: >-

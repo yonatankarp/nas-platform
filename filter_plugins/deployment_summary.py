@@ -147,6 +147,10 @@ def deployment_summary_document(changes, image_commits, commit_lines, release, p
     skipped item, a non-zero exit, output that is not one SHA -- reads as no
     commit, because a wrong release-notes link is worse than none.
     """
+    # Called for its exceptions, not its value: it is the only validation of the
+    # change list's shape, and every kind it does not know raises. Discarding the
+    # return is deliberate -- #654 read it as a stray statement, which is exactly
+    # what a validation call with no name looks like.
     deployment_change_lines(changes)
     if not isinstance(image_commits, list) or not isinstance(commit_lines, list):
         raise AnsibleFilterError("deployment summary lookups must be lists")

@@ -62,7 +62,6 @@
     state: absent
     remove_orphans: true
   when: not media_usenet_enabled | bool
-  register: arr_stop
 
 - name: Bootstrap deterministic Arr authentication
   ansible.builtin.include_tasks: bootstrap.yml
