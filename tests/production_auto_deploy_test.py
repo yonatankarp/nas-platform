@@ -1035,7 +1035,18 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertEqual(galaxy[0][1:3], ["collection", "install"])
         self.assertIn("--collections-path", galaxy[0])
         self.assertEqual(galaxy[0][galaxy[0].index("--collections-path") + 1], expected)
-        self.assertTrue(galaxy[0][-3].endswith("requirements.yml"))
+        # Read the requirements path through its own flag rather than at a fixed
+        # offset from the end. The flag is what makes the path mean anything:
+        # without it ansible-galaxy asks Galaxy for a collection *named* by that
+        # path, so the pinned community.docker stops being installed and the
+        # sync still reports success -- and a positional check passes on exactly
+        # that deletion, because dropping the flag leaves the path in place and
+        # merely shifts what precedes it. The same offset then reds a correct
+        # argv as soon as a later flag is appended, which #704's --no-cache
+        # already had to reason about. Backwards on both counts.
+        self.assertIn("--requirements-file", galaxy[0])
+        requirements = galaxy[0][galaxy[0].index("--requirements-file") + 1]
+        self.assertTrue(requirements.endswith("requirements.yml"))
 
         for call, options in zip(calls, kwargs):
             if call[0] != "ansible-playbook":
