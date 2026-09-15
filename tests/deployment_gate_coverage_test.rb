@@ -66,6 +66,13 @@
 #      per-service contract that two of the three gates do not have. The reason
 #      is at the check itself.
 #
+#   4. Inventory declares it in inventory/group_vars/all/service_<role>.yml and
+#      nowhere else (#680). Also not a coverage requirement, and the pair to 3:
+#      that one holds the floor under the decision, this one holds the file the
+#      decision is made in. Every other check here -- DECISION_FILES most
+#      directly -- assumes that file is where the gate is, and until this one
+#      nothing required it. The reason is at the check itself.
+#
 # NOT REQUIRED HERE, deliberately, because each is already closed elsewhere and a
 # second copy of an assertion is a second thing to keep true:
 #
@@ -463,7 +470,7 @@ gate_names.each do |name|
   # after #577 it is the only thing reaching any of them.
   #
   # If a service ever needs a true role default, this is the check to argue with
-  # rather than to route around: the argument belongs here, beside the other two
+  # rather than to route around: the argument belongs here, beside the other
   # things a gate must be.
   check(failures, declaration.nil? || declaration["value"] == false,
         "roles/#{prefix}/defaults/main.yml ships #{name}: #{declaration&.fetch('value').inspect}, " \
@@ -475,6 +482,49 @@ gate_names.each do |name|
         "here and leave inventory to say what this platform runs")
 
   overrides = inventory_gates[name]
+
+  # AND INVENTORY MUST MAKE THE DECISION IN THE SERVICE'S OWN FILE (#680). The
+  # pair to the role-default rule above: that one holds the floor under the
+  # decision, this one holds the file the decision is made in. Every check here
+  # assumes inventory/group_vars/all/service_<role>.yml is that file --
+  # DECISION_FILES is built from exactly that name -- and until this line
+  # nothing required a gate to be there. Move one to any other inventory file
+  # and every check still passes: the gate resolves, the stack converges, and
+  # DECISION_FILES is satisfied because that loop asserts each file parses to a
+  # non-empty mapping, not that it holds the decision. Gutting the file it moved
+  # to then reproduces #635's symptom exactly -- the gate falls back to a role
+  # default this check requires to ship OFF, the stack reads as deliberately
+  # dark, and every requirement below it holds vacuously. So the guard was sound
+  # for the layout in use and silent about a layout change that would break it,
+  # which is the same family as #635 itself.
+  #
+  # THE EXPECTED PATH IS BUILT THE WAY DECISION_FILES BUILDS ITS ENTRIES, from
+  # the gate's own prefix rather than from a literal, so the two cannot drift
+  # apart -- and a literal is what #635 was.
+  #
+  # THE ALTERNATIVE WAS REJECTED RATHER THAN MISSED: accept a gate wherever it
+  # is found and derive the decision file from there, which is what the closed
+  # #668 did. It buys a flexibility nothing here wants. All three gates sit in
+  # their own service file, #602's split is what made that the convention, and
+  # both switches say so in their own words -- service_nextcloud.yml and
+  # service_vaultwarden.yml each record why the gate lives in the service file
+  # rather than in a host group.
+  #
+  # IT IS SILENT FOR A GATE INVENTORY DOES NOT SET, and that is a resolution
+  # rather than a gap: a role default with no override is dark-by-deletion,
+  # which the paragraph above DECISION_FILES argues must stay legitimate. No
+  # floor over `overrides` for the same reason it refuses one there -- an empty
+  # inventory scan for a gate is a state this platform performs on purpose.
+  decision_file = File.join("inventory", "group_vars", "all", "service_#{prefix}.yml")
+  stray_declarations = overrides.map { |entry| entry["path"] }.reject { |path| path == decision_file }
+  check(failures, stray_declarations.empty?,
+        "#{name} is declared by #{stray_declarations.inspect}, and the deployment decision for a " \
+        "service is made in #{decision_file}. A gate resolves from wherever inventory sets it, so " \
+        "the stack converges either way and nothing else here objects -- but every check that " \
+        "reads the decision looks at the service's own file, so emptying the file it was moved to " \
+        "would leave the gate on its role default with this run reporting the stack as " \
+        "deliberately dark. Move the declaration back")
+
   values = overrides.empty? ? [declaration&.fetch("value")] : overrides.map { |entry| entry["value"] }
   check(failures, values.uniq.length == 1,
         "#{name} is set to conflicting values by #{overrides.map { |entry| entry['path'] }.inspect}: " \
