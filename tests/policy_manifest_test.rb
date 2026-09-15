@@ -695,11 +695,17 @@ expect_failure(failures, "reintroduced legacy source",
   end
 end
 
+# vault detects this one too, and the reason is worth stating rather than
+# leaving to the audit to rediscover: a service's manifest `role` is what names
+# both inventory/group_vars/all/vault_<role>.yml and service_<role>.yml, and
+# policy_vault_test.rb derives its rosters from that field in both directions --
+# so renaming beszel's role moves the service out from under the derived checks
+# while leaving the files it owns naming a role the manifest no longer has.
 {
   "role" => "wrong_role"
 }.each do |field, value|
   expect_failure(failures, "wrong #{field}", "beszel: #{field} must equal",
-                 detected_by: %i[policy deployment]) do |root|
+                 detected_by: %i[policy deployment vault]) do |root|
     mutate_manifest(root) { |manifest| service(manifest, "beszel")[field] = value }
   end
 end
@@ -1672,8 +1678,15 @@ expect_success(failures, "paperless contract alias") do |root|
   register_contract(root, "paperless")
 end
 
+# integration detects this one too, by a route the row is not aiming at:
+# register_contract drops the entry whose `service` is paperless-ngx before
+# adding its own, so registering tests/contracts/paperless-ngx.sh *displaces*
+# paperless from the registry rather than joining it. policy_integration_test.rb
+# derives its static-half universe from that registry (#667) and partitions it
+# against STATIC_HALF_RUN_BY_EVERY_MODE, whose `paperless` key then names a
+# contract the registry no longer holds, so the partition stops matching.
 expect_failure(failures, "paperless service-name contract", "paperless-ngx: implemented service has no automated verification",
-               detected_by: %i[policy]) do |root|
+               detected_by: %i[policy integration]) do |root|
   implement_paperless(root)
   write_contract(root, "paperless-ngx", <<~'SH')
     #!/bin/sh
