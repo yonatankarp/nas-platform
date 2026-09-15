@@ -95,7 +95,6 @@
     body:
       label: pre-upgrade
     status_code: [201]
-  register: bindery_pre_upgrade_backup
   when:
     - not ansible_check_mode
     - bindery_upgrade_pending | bool

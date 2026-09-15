@@ -104,7 +104,6 @@
     state: absent
     remove_orphans: true
   when: not media_usenet_enabled | bool
-  register: downloaders_stop
 
 - name: Inspect SABnzbd bootstrap state
   ansible.builtin.stat:

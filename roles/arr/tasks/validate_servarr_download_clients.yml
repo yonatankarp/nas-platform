@@ -105,6 +105,11 @@
          else arr_servarr_validation_url_matches }}
   no_log: true
 
+# The same shape as the two projection evaluations in reconcile_prowlarr.yml:
+# a set_fact whose facts nothing reads, kept because evaluating
+# acquisition_servarr_client_projection raises on a malformed readback and so
+# fails the run before the mutation rather than after it. See the note there for
+# why this is not an assert yet.
 - name: Evaluate the selected Servarr SABnzbd projection before mutation
   ansible.builtin.set_fact:
     arr_servarr_validation_selected_projection: >-

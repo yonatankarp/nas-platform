@@ -255,14 +255,6 @@
   when: jellyfin_settings_phase == 'preflight'
   no_log: true
 
-- name: Resolve whether Open Subtitles requires activation
-  ansible.builtin.set_fact:
-    jellyfin_opensubtitles_activation_required: >-
-      {{ jellyfin_plugins_before.json |
-         selectattr('Name', 'equalto', 'Open Subtitles') |
-         selectattr('Status', 'equalto', 'Active') | list | length != 1 }}
-  when: jellyfin_settings_phase == 'preflight'
-
 - name: Refuse unusable installed required Jellyfin plugins
   ansible.builtin.assert:
     that:
@@ -620,7 +612,6 @@
        selectattr('Name', 'in', jellyfin_missing_plugins | default([])) | list }}
   loop_control:
     label: "{{ item.Name }}"
-  register: jellyfin_plugin_installation
   when:
     - jellyfin_settings_phase == 'activate'
     - not ansible_check_mode

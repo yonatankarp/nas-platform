@@ -199,7 +199,6 @@ FINGERPRINT_FILE_BY_KIND = {
   bazarr: ".bazarr-providers-input.sha256",
   configarr: ".configarr-input.sha256"
 }.freeze
-FINGERPRINT_KIND_BY_FILE = FINGERPRINT_FILE_BY_KIND.invert.freeze
 FINGERPRINT_INPUT_BY_KIND = {
   application: "prowlarr_applications",
   download_client: "servarr_sabnzbd",
