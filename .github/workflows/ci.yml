@@ -232,8 +232,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` installs collections a second time
-          # inside ansible-lint, which this does not reach: #719.
+          # cache costs it nothing. `static` used to install collections a second
+          # time inside ansible-lint, which this flag cannot reach; its lint step
+          # passes --offline so that call no longer happens and this is the only
+          # galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The shard reaches the gate through the environment rather than by
@@ -268,8 +270,31 @@ jobs:
           fi
           test ! -s "$self_test_log"
 
+      # --offline because ansible-lint does not lint alone: ansible-compat's
+      # prepare_environment walks REQUIREMENT_LOCATIONS and runs its own
+      # `ansible-galaxy collection install` on requirements.yml, from inside a
+      # library, with no --no-cache and nowhere to pass one. That is the second
+      # galaxy call in this job and the only one #704's flag cannot reach, so it
+      # carries the whole failure the step above describes (#719). The flag is on
+      # the command rather than `offline: true` in .ansible-lint because the
+      # config file is read by a developer's bare `ansible-lint` too, where the
+      # self-healing install is the thing that makes a first run work; scoped
+      # here it costs them nothing. It is a CLI option with no environment
+      # fallback -- ANSIBLE_LINT_OFFLINE does not exist, and ANSIBLE_LINT_NODEPS,
+      # which would imply it, also suppresses the checks that need the
+      # collections ("far less violations will be reported").
+      #
+      # It turns off two things. The install: lint then resolves modules from the
+      # $HOME/.ansible/collections the step above populated, rather than
+      # installing its own copy under <tree>/.ansible, and it refuses loudly --
+      # 18 syntax-check[unknown-module] and exit 2 -- if that step did not run,
+      # so the new dependency cannot fail quietly. And the schema refresh, which
+      # leaves the schemas bundled with the pinned ansible-lint in force, so the
+      # gate's verdict stops depending on a network fetch. Measured on a fresh
+      # HOME with nothing cached, that costs nothing here: 387 files processed
+      # either way, 0 failures either way.
       - name: Lint Ansible
-        run: ansible-lint --strict
+        run: ansible-lint --strict --offline
 
       - name: Check playbook syntax
         run: |
@@ -370,8 +395,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` installs collections a second time
-          # inside ansible-lint, which this does not reach: #719.
+          # cache costs it nothing. `static` used to install collections a second
+          # time inside ansible-lint, which this flag cannot reach; its lint step
+          # passes --offline so that call no longer happens and this is the only
+          # galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Validate the encrypted vault
@@ -465,8 +492,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` installs collections a second time
-          # inside ansible-lint, which this does not reach: #719.
+          # cache costs it nothing. `static` used to install collections a second
+          # time inside ansible-lint, which this flag cannot reach; its lint step
+          # passes --offline so that call no longer happens and this is the only
+          # galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The harness syntax-checks a play in every sandbox it builds and renders
@@ -540,8 +569,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` installs collections a second time
-          # inside ansible-lint, which this does not reach: #719.
+          # cache costs it nothing. `static` used to install collections a second
+          # time inside ansible-lint, which this flag cannot reach; its lint step
+          # passes --offline so that call no longer happens and this is the only
+          # galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Check media acquisition reconciliation

@@ -956,7 +956,15 @@ static_commands = run_steps(static)
   "tests/immich_probe_status_test.py",
   "tests/generate-secrets-redaction-test.sh",
   "tests/generate-ephemeral-vault.sh --self-test",
-  "ansible-lint --strict",
+  # --offline is part of the literal rather than a check of its own, for the same
+  # reason --no-cache is below. ansible-compat's prepare_environment runs a second
+  # `ansible-galaxy collection install` from inside ansible-lint, which the install
+  # step's own --no-cache cannot reach, and that call carries the retry defect that
+  # reds a leg no diff caused (#719). `static_commands` is the joined run text, so
+  # the bare "ansible-lint --strict" this replaces is a prefix of the flagged form
+  # and would keep matching a step that had dropped the flag -- passing while
+  # pinning nothing.
+  "ansible-lint --strict --offline",
   "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
   "ansible-playbook generate-secrets.yml --syntax-check",
   "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
