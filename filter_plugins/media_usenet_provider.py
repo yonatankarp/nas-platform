@@ -4,8 +4,8 @@ Four of the six values a Usenet subscription needs are not credentials: the
 host is published by the provider, the port is 563 or 119, the connection
 count is a subscription tier, and TLS is a protocol flag. Only the account
 name and its password must not be disclosed. Those four therefore live in
-`inventory/group_vars/all/main.yml` as ordinary operator policy beside
-`media_arr_indexers`, and the `vault_` prefix -- which promises a reader that
+`inventory/group_vars/all/service_downloaders.yml` as ordinary operator policy,
+beside `media_arr_indexers` in its own service's file, and the `vault_` prefix -- which promises a reader that
 a value is vault-authored -- is reserved for the two that are (#298).
 
 The rules moved here unchanged from `vault_credential_schema`, because the

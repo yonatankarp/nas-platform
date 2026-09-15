@@ -196,6 +196,7 @@ if defined?(ClassifyChanges)
       "roles/#{project}/tasks/main.yml",
       "services/#{project}/compose.yml",
       "tests/expected/#{project}.yml",
+      "inventory/group_vars/all/service_#{project}.yml",
       "tests/contracts/#{project}-foundation.sh"
     ].each do |path|
       expected = canonical(["static", *("reconciliation" if RECONCILIATION_LANES.include?(project)),
@@ -256,6 +257,7 @@ if defined?(ClassifyChanges)
       "roles/#{role}/tasks/main.yml",
       "services/#{service}/compose.yml",
       "tests/expected/#{service}.yml",
+      "inventory/group_vars/all/service_#{role}.yml",
       "tests/contracts/#{contract}.sh"
     ].each do |path|
       companions = expected_service_lanes.flat_map { |lane| COMPANION_LANES.fetch(lane, []) }

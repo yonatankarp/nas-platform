@@ -336,8 +336,9 @@ never runs from a clone. `deployment_bundle` installs an immutable release at
 `platform_runtime_dir`, so the Compose file and the environment file come from
 two different trees, and `services/<name>/.env` exists in neither.
 
-On the NAS, with the production defaults of
-`inventory/group_vars/all/main.yml`:
+On the NAS, with the production defaults of `inventory/group_vars/all/`
+(`main.yml` for the cross-cutting facts, `service_<role>.yml` for each
+service's own):
 
 ```sh
 cd /volume1/Docker/nas-platform/current/services/beszel

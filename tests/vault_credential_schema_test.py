@@ -640,7 +640,7 @@ class VaultCredentialSchemaTest(unittest.TestCase):
     def test_an_entirely_undeclared_optional_group_is_accepted(self):
         # The state that broke a production converge: the operator owns no
         # Usenet subscription, so all six provider keys are the empty strings
-        # inventory/group_vars/all/main.yml declares.
+        # inventory/group_vars/all/service_downloaders.yml declares.
         for key_group in OPTIONAL_KEY_GROUPS:
             with self.subTest(key_group):
                 self.assertEqual(

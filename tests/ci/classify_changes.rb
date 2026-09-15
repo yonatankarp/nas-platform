@@ -506,11 +506,34 @@ module ClassifyChanges
   # directly was Seafile's, removed in #501, which is how the omission surfaced:
   # the harness closure in tests/ci/classify_changes_test.rb reached that
   # service's tests/expected/ fixture and found it selecting no suite at all.
+  #
+  # inventory/group_vars/all/service_<role>.yml is routed for exactly that
+  # argument (#650). #611 split one unmapped main.yml into seventeen per-service
+  # files and routed none of them, so each fell open to the whole matrix -- a
+  # change to service_komga.yml dispatched 29 legs where the komga lane is what
+  # asserts it. These files carry the settings a converge applies and the storage
+  # host_prep creates, so they change what the lane asserts and not only what the
+  # policy gate reads. The sibling vault_<role>.yml is deliberately NOT routed
+  # here: VAULT_ROUTED_PATTERN already sends it to static and vault, and its
+  # plaintext is never read by a lane.
+  #
+  # Keyed by the ROLE rather than the service name, which is why SERVICE_NAMES
+  # carrying paperless_ngx beside paperless-ngx is load-bearing here: that is the
+  # platform's one name/role divergence, and the file is named for the role.
+  #
+  # The route appears in acquisition_lane below as well, and neither copy is
+  # individually necessary -- the caller tries acquisition_lane first and falls
+  # through to service_lane, SERVICE_NAMES names every acquisition project too,
+  # and deleting either line alone leaves every verdict unchanged (measured).
+  # That is the same redundancy tests/expected/<lane>.yml already carries in both
+  # resolvers, so this follows the file rather than inventing an exception; what
+  # a plant can catch is deleting the pair, which is the state #650 found.
   def service_lane(path)
     SERVICE_NAMES.each do |lane, names|
       names.each do |name|
         return lane if path.start_with?("roles/#{name}/", "services/#{name}/")
         return lane if path == "tests/expected/#{name}.yml"
+        return lane if path == "inventory/group_vars/all/service_#{name}.yml"
         return lane if path.match?(%r{\Atests/contracts/#{Regexp.escape(name)}(?:[-.]|\z)})
       end
     end
@@ -521,6 +544,7 @@ module ClassifyChanges
     ACQUISITION_LANES.find do |lane|
       path.start_with?("roles/#{lane}/", "services/#{lane}/") ||
         path == "tests/expected/#{lane}.yml" ||
+        path == "inventory/group_vars/all/service_#{lane}.yml" ||
         path == "tests/contracts/#{lane}-foundation.sh" ||
         path == "tests/contracts/#{lane}.sh"
     end

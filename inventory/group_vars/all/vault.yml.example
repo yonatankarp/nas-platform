@@ -3,10 +3,19 @@
 # copy these exact values from the password manager and the deployed configuration;
 # do not regenerate credentials already used by application or database state.
 # generate-secrets.yml is only for a brand-new platform with no state to adopt.
+#
+# ONE FILE HERE, EIGHTEEN ON A TARGET. #612 split the single vault into one
+# vault_<role>.yml per service; this stays one file because four checks read it
+# as a whole, so each block carries a `# ->` marker naming the file its keys
+# belong in. Copy block by block to those destinations rather than copying this
+# file's own shape (#650). paperless-ngx is the one service whose file is named
+# for its role and not its directory: vault_paperless_ngx.yml.
 
+# -> inventory/group_vars/all/vault_audiobookshelf.yml
 vault_audiobookshelf_admin_username: example-admin
 vault_audiobookshelf_admin_password: example-password
 
+# -> inventory/group_vars/all/vault_dozzle.yml
 vault_dozzle_admin_username: example-admin
 vault_dozzle_admin_password: example-password
 vault_dozzle_admin_password_hash: $2b$12$00000000000000000000000000000000000000000000000000000
@@ -23,17 +32,20 @@ vault_dozzle_admin_password_hash: $2b$12$000000000000000000000000000000000000000
 # say so. Replace it.
 vault_dozzle_alert_relay_token: "0000000000000000000000000000000000000000000000000000000000000000"
 
+# -> inventory/group_vars/all/vault_immich.yml
 vault_immich_admin_email: admin@example.invalid
 vault_immich_admin_password: example-password
 vault_immich_db_name: example_immich
 vault_immich_db_username: example_immich
 vault_immich_db_password: example-password
 
+# -> inventory/group_vars/all/vault_jellyfin.yml
 vault_jellyfin_admin_username: Yonatan
 vault_jellyfin_admin_password: example-password
 vault_jellyfin_opensubtitles_username: example-opensubtitles-username
 vault_jellyfin_opensubtitles_password: example-opensubtitles-password
 
+# -> inventory/group_vars/all/vault_komga.yml
 vault_komga_admin_email: admin@example.invalid
 vault_komga_admin_password: example-password
 
@@ -45,6 +57,7 @@ vault_komga_admin_password: example-password
 # value with int() unless the last dash-segment of its key is one of config.py's
 # str_keys -- `apikey` is not -- so a key of only decimal digits fails the
 # schema's is_type_of str and Bazarr answers 406 for as long as it is deployed.
+# -> inventory/group_vars/all/vault_arr.yml
 vault_arr_radarr_api_key: "0000000000000000000000000000000a"
 vault_arr_radarr_admin_username: nasadmin
 vault_arr_radarr_admin_password: example-radarr-password
@@ -57,6 +70,7 @@ vault_arr_prowlarr_admin_password: example-prowlarr-password
 vault_arr_bazarr_api_key: "33333333333333333333333333333333"
 vault_arr_bazarr_admin_username: nasadmin
 vault_arr_bazarr_admin_password: example-bazarr-password
+# -> inventory/group_vars/all/vault_downloaders.yml
 vault_downloaders_sabnzbd_api_key: "44444444444444444444444444444444"
 vault_downloaders_sabnzbd_admin_username: nasadmin
 vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
@@ -66,7 +80,8 @@ vault_downloaders_sabnzbd_admin_password: example-sabnzbd-password
 # has to bring rather than generate. They are also the only half of the provider
 # that must not be disclosed: the host, port, connection count and TLS flag are
 # not credentials and are operator policy in `media_usenet_provider` in
-# `inventory/group_vars/all/main.yml` since #298, typed and readable without the
+# `inventory/group_vars/all/service_downloaders.yml` since #298, typed and readable
+# without the
 # vault password, with the shape SABnzbd's parsing demands of them documented
 # beside that declaration rather than here. The two halves have to agree, so an
 # operator with no subscription leaves this pair empty and the host empty with
@@ -79,6 +94,7 @@ vault_downloaders_sabnzbd_server_password: example-usenet-password
 # first-run setup route is anonymous until a user exists and refuses everyone
 # afterwards. The administrator pair is stored hashed in Bindery's database and
 # the application refuses a password shorter than eight characters.
+# -> inventory/group_vars/all/vault_bindery.yml
 vault_bindery_api_key: "55555555555555555555555555555555"
 vault_bindery_admin_username: example-admin
 vault_bindery_admin_password: example-bindery-password
@@ -87,12 +103,14 @@ vault_bindery_admin_password: example-bindery-password
 # its own database and demands before it hands out its API key. The ComicVine
 # key is a third-party account credential; the platform records it here and
 # never generates it.
+# -> inventory/group_vars/all/vault_kapowarr.yml
 vault_kapowarr_admin_username: example-admin
 vault_kapowarr_admin_password: example-kapowarr-password
 vault_kapowarr_comicvine_api_key: example-comicvine-api-key
 
 # Pinchflat's only access control: HTTP basic authentication on its web
 # interface, which is the writer for the YouTube library.
+# -> inventory/group_vars/all/vault_pinchflat.yml
 vault_pinchflat_admin_username: example-admin
 vault_pinchflat_admin_password: example-pinchflat-password
 
@@ -102,6 +120,7 @@ vault_pinchflat_admin_password: example-pinchflat-password
 # bcrypt.checkpw directly, so the hash is the value actually pushed and the
 # plaintext exists only for recovery; the two must be a matching pair. An API
 # key shorter than 32 characters is silently replaced by a random one.
+# -> inventory/group_vars/all/vault_trailarr.yml
 vault_trailarr_api_key: "66666666666666666666666666666666"
 vault_trailarr_admin_username: example-admin
 vault_trailarr_admin_password: example-trailarr-password
@@ -114,6 +133,7 @@ vault_trailarr_admin_password_hash: "$2b$12$000000000000000000000000000000000000
 # platform's, matching the vault_arr_* keys. Seerr needs no administrator
 # password of its own: its owner row is created with a Jellyfin user type and
 # no local password, from the Jellyfin administrator pair above.
+# -> inventory/group_vars/all/vault_seerr.yml
 vault_seerr_api_key: "77777777777777777777777777777777"
 
 # The Pushover user key and the four application tokens belong to a third-party
@@ -126,6 +146,7 @@ vault_seerr_api_key: "77777777777777777777777777777777"
 # Alerts (Beszel's webhook), Containers (the Dozzle alert relay and the
 # per-service deployment reports), Deployments (the run summary) and Media
 # (Seerr's request events).
+# -> inventory/group_vars/all/vault_pushover.yml
 vault_pushover_alerts_token: example-pushover-alerts-token
 vault_pushover_containers_token: example-pushover-containers-token
 vault_pushover_deployments_token: example-pushover-deployments-token
@@ -139,11 +160,13 @@ vault_pushover_user_key: example-pushover-user-key
 # contract checks only that each is an https URL and that the two differ, because
 # healthchecks.io also serves slug paths and custom ping domains that a narrower
 # rule would refuse. The stand-ins below are not URLs, so that rule refuses them.
+# -> inventory/group_vars/all/vault_healthchecks.yml
 vault_healthchecks_poller_ping_url: example-healthchecks-poller-ping-url
 vault_healthchecks_verify_ping_url: example-healthchecks-verify-ping-url
 
 # The Beszel hub keypair is authored before first start. The agent key contains
 # only the key type and public key, without a trailing comment.
+# -> inventory/group_vars/all/vault_beszel.yml
 vault_beszel_superuser_email: admin@example.invalid
 vault_beszel_superuser_password: example-password
 vault_beszel_app_user_email: user@example.invalid
@@ -155,6 +178,7 @@ vault_beszel_hub_private_key: |
   example-only-not-a-real-private-key
   -----END OPENSSH PRIVATE KEY-----
 
+# -> inventory/group_vars/all/vault_paperless_ngx.yml
 vault_paperless_admin_username: example-admin
 vault_paperless_admin_password: example-password
 vault_paperless_admin_email: admin@example.invalid
@@ -174,6 +198,7 @@ vault_paperless_gmail_app_password: example-app-password
 # config.php, which is what keeps this file authoritative for them. The cache
 # password authenticates the Valkey Nextcloud keeps its file locks and sessions
 # in.
+# -> inventory/group_vars/all/vault_nextcloud.yml
 vault_nextcloud_admin_username: example-admin
 vault_nextcloud_admin_password: example-password
 vault_nextcloud_db_name: example_nextcloud
@@ -188,6 +213,7 @@ vault_nextcloud_cache_password: example-password
 # roles/karakeep's bootstrap, and are not reset from here afterwards. Quoted on
 # purpose: an unquoted all-digit value loads as a YAML integer, not a string,
 # and the contract refuses it.
+# -> inventory/group_vars/all/vault_karakeep.yml
 vault_karakeep_admin_email: admin@example.invalid
 vault_karakeep_nextauth_secret: "8888888888888888888888888888888888888888888888888888888888888888"
 vault_karakeep_meili_master_key: "9999999999999999999999999999999999999999999999999999999999999999"
@@ -197,6 +223,7 @@ vault_karakeep_admin_password: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 # credentials during migration; do not use these placeholders in production.
 # Each list belongs in its own service's vault_<role>.yml, like that service's
 # credentials; paperless-ngx's is vault_paperless_ngx.yml.
+# -> inventory/group_vars/all/vault_audiobookshelf.yml
 vault_managed_audiobookshelf_users:
   - username: reader-example-invalid
     password: example-reader-password
@@ -207,11 +234,13 @@ vault_managed_audiobookshelf_users:
         accessAllLibraries: false
       librariesAccessible: []
       itemTagsSelected: []
+# -> inventory/group_vars/all/vault_beszel.yml
 vault_managed_beszel_users:
   - email: reader@beszel.example.invalid
     password: example-reader-password
     role: user
     verified: true
+# -> inventory/group_vars/all/vault_dozzle.yml
 vault_managed_dozzle_users:
   - username: reader-example-invalid
     password: example-reader-password
@@ -220,6 +249,7 @@ vault_managed_dozzle_users:
     name: Synthetic Reader
     filter: ""
     roles: none
+# -> inventory/group_vars/all/vault_immich.yml
 vault_managed_immich_users:
   - email: reader@immich.example.invalid
     password: example-reader-password
@@ -227,16 +257,19 @@ vault_managed_immich_users:
     # A byte count caps the account; null lifts the cap entirely. 0 is
     # rejected by the schema -- it refuses every upload of a non-empty file.
     quota_size: 10737418240
+# -> inventory/group_vars/all/vault_jellyfin.yml
 vault_managed_jellyfin_users:
   - username: reader-example-invalid
     password: example-reader-password
     policy:
       IsAdministrator: false
       EnableAllFolders: false
+# -> inventory/group_vars/all/vault_komga.yml
 vault_managed_komga_users:
   - email: reader@komga.example.invalid
     password: example-reader-password
     roles: [PAGE_STREAMING]
+# -> inventory/group_vars/all/vault_paperless_ngx.yml
 vault_managed_paperless_ngx_users:
   - username: reader-example-invalid
     password: example-reader-password

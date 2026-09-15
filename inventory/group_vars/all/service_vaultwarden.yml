@@ -1,6 +1,6 @@
 ---
 # vaultwarden: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_vaultwarden.yml.
 
 # VAULTWARDEN IS ON. #547 landed the stack dark and this is the separate
 # deliberate act that turns it on. THIS LINE IS THE WHOLE OF IT:

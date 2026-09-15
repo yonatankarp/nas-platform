@@ -65,7 +65,14 @@ end
 failures = []
 catalog = strict_yaml("config/media-acquisition.yml")
 manifest = strict_yaml("services/manifest.yml")
-all_vars = strict_yaml("inventory/group_vars/all/service_arr.yml")
+# The composition rather than one file. These defaults are the host's answer for
+# the acquisition stack, and #650 moved
+# media_acquisition_adopt_existing_libraries to main.yml because roles/downloaders
+# reads it too -- so a subject built from service_arr.yml alone stopped containing
+# one of the six values below. Merged in the order Ansible loads group_vars/all,
+# which is by filename, so service_arr.yml wins any key main.yml also sets.
+all_vars = strict_yaml("inventory/group_vars/all/main.yml")
+           .merge(strict_yaml("inventory/group_vars/all/service_arr.yml"))
 
 # The two files must agree; which status they agree on is not restated here.
 # media_acquisition_foundation_test.rb pins the catalog exactly and holds it to
