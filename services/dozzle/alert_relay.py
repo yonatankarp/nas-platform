@@ -1555,6 +1555,37 @@ def report_upstream_failure(config, notification, reason, detail):
     sys.stderr.flush()
 
 
+def report_refused_envelope(config, route, error):
+    """Say out loud that an envelope was refused, which a 400 never did.
+
+    #699 is what that silence costs. Dozzle v11.1.0 began rendering event
+    timestamps in local time, the relay's TIMESTAMP_PATTERN accepts only the
+    `Z` spelling, and every health alert was refused here -- for three days of
+    CI, across six runs and three diagnostic changes, with nothing on either
+    side naming a reason. Dozzle said only "webhook returned status code 400";
+    this end said nothing at all, because none of the 400 paths wrote a line.
+    report_upstream_failure covers the far end rejecting US; this covers us
+    rejecting the near end, and the two together close the route.
+
+    The exception's own text is the diagnosis and it is safe to print: every
+    SchemaError message here names a FIELD and never its value
+    ("timestamp syntax differs", "invalid container"), which is the same
+    discipline the managed-user schema keeps for the same reason. log_safe runs
+    over it regardless, because a message is a poor place to discover an
+    exception to that rule.
+
+    ONE assembled write, for report_upstream_failure's reason: this server is
+    threaded and print() issues two writes, so concurrent refusals can
+    interleave into a line that reads as something neither of them said.
+    """
+    line = (
+        f"alert-relay: refused an envelope on {route}: "
+        f"{log_safe(f'{type(error).__name__}: {error}', config)}\n"
+    )
+    sys.stderr.write(line)
+    sys.stderr.flush()
+
+
 def read_upstream_detail(error):
     """The far end's own explanation, bounded, and never at the cost of the failure.
 
@@ -2054,7 +2085,8 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
             event = validate_envelope(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError):
+        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError) as caught:
+            report_refused_envelope(self.server.config, "/alerts", caught)
             self.send_text(400, "invalid request\n")
             return
         try:
@@ -2072,7 +2104,8 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
         try:
             payload = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
             alert = validate_beszel_envelope(payload)
-        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError):
+        except (UnicodeDecodeError, json.JSONDecodeError, SchemaError) as caught:
+            report_refused_envelope(config, "/beszel", caught)
             self.send_text(400, "invalid request\n")
             return
         if config.pushover_alerts_token is None:

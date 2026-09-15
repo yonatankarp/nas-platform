@@ -58,7 +58,7 @@ expected_template_fields = {
   "event" => ".Event.Name",
   "healthStatus" => 'index .Event.Attributes `healthStatus`',
   "exitCode" => 'index .Event.Attributes `exitCode`',
-  "timestamp" => '.Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00`'
+  "timestamp" => '.Event.Timestamp.UTC.Format `2006-01-02T15:04:05.999999999Z07:00`'
 }
 template_source = dispatcher.fetch("template")
 # The relay owns presentation; the dispatcher hands it an event envelope and
