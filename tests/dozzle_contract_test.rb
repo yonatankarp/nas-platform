@@ -1044,7 +1044,7 @@ EXPECTED_TEMPLATE = JSON.generate(
   event: "{{ .Event.Name }}",
   healthStatus: '{{ index .Event.Attributes `healthStatus` }}',
   exitCode: '{{ index .Event.Attributes `exitCode` }}',
-  timestamp: '{{ .Event.Timestamp.Format `2006-01-02T15:04:05.999999999Z07:00` }}'
+  timestamp: '{{ .Event.Timestamp.UTC.Format `2006-01-02T15:04:05.999999999Z07:00` }}'
 )
 
 DESIRED_ALERTS = {
