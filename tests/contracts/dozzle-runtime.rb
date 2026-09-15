@@ -300,10 +300,19 @@ end
 # The label is set by Compose for every container it creates, under every name.
 ALERT_RELAY_COMPOSE_SERVICE = "alert-relay"
 
-def alert_relay_container
+# Dozzle's own log is the other half of the same question, and the relay alone
+# cannot answer it. A relay that logged nothing is equally consistent with "no
+# POST was ever sent" and with "a POST arrived and was published": the relay
+# writes a line for a rejection and for an outage, and nothing for the ordinary
+# path. Dozzle says which -- it logs "Event alert triggered" when a subscription
+# matches, and reports a dispatch that fails -- so without it a silent relay
+# names neither side of the boundary.
+DOZZLE_COMPOSE_SERVICE = "dozzle"
+
+def compose_service_container(service)
   output, _errors, status = Open3.capture3(
     "docker", "ps", "-a",
-    "--filter", "label=com.docker.compose.service=#{ALERT_RELAY_COMPOSE_SERVICE}",
+    "--filter", "label=com.docker.compose.service=#{service}",
     "--format", "{{.Names}}"
   )
   return nil unless status.success?
@@ -315,10 +324,10 @@ end
 # Best-effort by construction: no container, a docker that refuses, or an empty
 # log must not replace the caller's diagnostic with an error about fetching it,
 # so every failure here degrades to a stated absence.
-def alert_relay_diagnostics(limit: 40)
-  container = alert_relay_container
+def container_log_digest(service, limit)
+  container = compose_service_container(service)
   return "  (no container carries the Compose label " \
-         "com.docker.compose.service=#{ALERT_RELAY_COMPOSE_SERVICE})" unless container
+         "com.docker.compose.service=#{service})" unless container
 
   output, errors, status = Open3.capture3("docker", "logs", "--tail", limit.to_s, container)
   return "  (docker logs #{container} failed: #{errors.lines.first&.strip})" unless status.success?
@@ -327,6 +336,13 @@ def alert_relay_diagnostics(limit: 40)
   return "  (#{container} logged nothing)" if lines.empty?
 
   ["  [#{container}]", *lines.last(limit).map { |line| "  #{line}" }].join("\n")
+end
+
+# Both sides of the boundary the failure sits on, in the order a reader needs
+# them: did Dozzle send, and did the relay receive.
+def alert_delivery_diagnostics(relay_limit: 40, dozzle_limit: 25)
+  "dozzle log (last lines):\n#{container_log_digest(DOZZLE_COMPOSE_SERVICE, dozzle_limit)}\n" \
+  "relay log (last lines):\n#{container_log_digest(ALERT_RELAY_COMPOSE_SERVICE, relay_limit)}"
 end
 
 # A timeout here means "no message matched", which is three different states:
@@ -357,7 +373,7 @@ def wait_for_pushover(reader, diagnostic, timeout: 40)
         end
       fail_contract(
         "#{diagnostic}\n  after #{timeout}s, #{summary}\n" \
-        "relay log (last lines):\n#{alert_relay_diagnostics}"
+        "#{alert_delivery_diagnostics}"
       )
     end
     sleep 2
