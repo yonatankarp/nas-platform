@@ -224,7 +224,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+          # --no-cache because the Galaxy API cache is written in two steps:
+          # a blank entry with a 24-hour expiry first, its `results` filled in
+          # when the response arrives. A run that dies between them leaves an
+          # entry every later read refuses for a day, which reds a leg no diff
+          # caused. A job installs collections exactly once, so nothing here
+          # reads the cache back and declining it costs nothing.
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The shard reaches the gate through the environment rather than by
       # interpolating a matrix value into shell source, as every other matrix here
@@ -352,7 +358,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+          # --no-cache because the Galaxy API cache is written in two steps:
+          # a blank entry with a 24-hour expiry first, its `results` filled in
+          # when the response arrives. A run that dies between them leaves an
+          # entry every later read refuses for a day, which reds a leg no diff
+          # caused. A job installs collections exactly once, so nothing here
+          # reads the cache back and declining it costs nothing.
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Validate the encrypted vault
         env:
@@ -437,7 +449,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+          # --no-cache because the Galaxy API cache is written in two steps:
+          # a blank entry with a 24-hour expiry first, its `results` filled in
+          # when the response arrives. A run that dies between them leaves an
+          # entry every later read refuses for a day, which reds a leg no diff
+          # caused. A job installs collections exactly once, so nothing here
+          # reads the cache back and declining it costs nothing.
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The harness syntax-checks a play in every sandbox it builds and renders
       # role defaults through Ansible, so it needs the gate's toolchain.
@@ -502,7 +520,13 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml
+          # --no-cache because the Galaxy API cache is written in two steps:
+          # a blank entry with a 24-hour expiry first, its `results` filled in
+          # when the response arrives. A run that dies between them leaves an
+          # entry every later read refuses for a day, which reds a leg no diff
+          # caused. A job installs collections exactly once, so nothing here
+          # reads the cache back and declining it costs nothing.
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Check media acquisition reconciliation
         env:
