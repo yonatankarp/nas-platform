@@ -40,4 +40,7 @@ RUN test -n "${ANSIBLE_CORE_VERSION}" && test -n "${REQUESTS_VERSION}" && \
 # container -- which runs as root -- looks for them. Copied in rather than bind
 # mounted so the layer is complete on its own.
 COPY requirements.yml /toolchain/requirements.yml
-RUN ansible-galaxy collection install -r /toolchain/requirements.yml >/dev/null
+# --no-cache: the Galaxy API cache entry is written blank and filled in when
+# the response arrives, so a build that dies between the two would bake an
+# entry every later read refuses into the layer. Nothing reads it back here.
+RUN ansible-galaxy collection install --no-cache -r /toolchain/requirements.yml >/dev/null

@@ -981,8 +981,12 @@ check(failures,
       "static checks must install the controller pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
+# --no-cache is part of the literal rather than a check of its own: the Galaxy API
+# cache entry is written blank and filled in when the response arrives, so a run
+# that dies between the two leaves an entry every read for the next day refuses,
+# and a job that installs collections once never reads it back.
 check(failures, static_commands.include?(
-        '"$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install -r requirements.yml'
+        '"$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml'
       ), "static checks must install collections with the isolated pinned Ansible tools")
 check(failures, !static_commands.include?("python3 tests/deployment_target_validator_test.py"),
       "static must not duplicate the deployment validator already run by validate-policy.sh")
