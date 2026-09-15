@@ -286,24 +286,47 @@ end
 
 # The relay container this contract drives. Its stderr is the only place a
 # refused envelope is named -- the relay logs a rejection and an outage as one
-# assembled line each, credentials redacted before truncation -- and until #714
+# assembled line each, credentials redacted before truncation -- and until #716
 # nothing read it, so a refusal and a silence were the same red line.
-ALERT_RELAY_CONTAINER = "dozzle_alert_relay"
+#
+# Found by Compose's own service label rather than by container name, because the
+# name is not one value: services/dozzle/compose.yml declares
+# `dozzle_alert_relay` and both platform overrides replace it with
+# `${PLATFORM_PROJECT_NAME}-dozzle-alert-relay`, so every lane this contract
+# actually runs in names it differently. #716 hardcoded the production spelling
+# and every integration run answered "No such container", which is the one
+# failure a diagnostic must not have -- it reported the absence of the log
+# instead of the contents, and looked exactly like a relay that was not running.
+# The label is set by Compose for every container it creates, under every name.
+ALERT_RELAY_COMPOSE_SERVICE = "alert-relay"
+
+def alert_relay_container
+  output, _errors, status = Open3.capture3(
+    "docker", "ps", "-a",
+    "--filter", "label=com.docker.compose.service=#{ALERT_RELAY_COMPOSE_SERVICE}",
+    "--format", "{{.Names}}"
+  )
+  return nil unless status.success?
+
+  output.lines.map(&:strip).reject(&:empty?).first
+end
 
 # What the relay said, for a failure that is about a message not arriving.
-# Best-effort by construction: a missing container, a docker that refuses, or an
-# empty log must not replace the caller's diagnostic with an error about
-# fetching it, so every failure here degrades to a stated absence.
+# Best-effort by construction: no container, a docker that refuses, or an empty
+# log must not replace the caller's diagnostic with an error about fetching it,
+# so every failure here degrades to a stated absence.
 def alert_relay_diagnostics(limit: 40)
-  output, errors, status = Open3.capture3(
-    "docker", "logs", "--tail", limit.to_s, ALERT_RELAY_CONTAINER
-  )
-  return "  (docker logs #{ALERT_RELAY_CONTAINER} failed: #{errors.lines.first&.strip})" unless status.success?
+  container = alert_relay_container
+  return "  (no container carries the Compose label " \
+         "com.docker.compose.service=#{ALERT_RELAY_COMPOSE_SERVICE})" unless container
+
+  output, errors, status = Open3.capture3("docker", "logs", "--tail", limit.to_s, container)
+  return "  (docker logs #{container} failed: #{errors.lines.first&.strip})" unless status.success?
 
   lines = (output.to_s + errors.to_s).lines.map(&:rstrip).reject(&:empty?)
-  return "  (the relay logged nothing)" if lines.empty?
+  return "  (#{container} logged nothing)" if lines.empty?
 
-  lines.last(limit).map { |line| "  #{line}" }.join("\n")
+  ["  [#{container}]", *lines.last(limit).map { |line| "  #{line}" }].join("\n")
 end
 
 # A timeout here means "no message matched", which is three different states:
