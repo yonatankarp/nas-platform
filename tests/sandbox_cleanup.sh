@@ -305,36 +305,38 @@ cleanup_collect_namespace_ownership() {
     done
   done
 
-  # host_prep, not Compose, creates the media-control bridge, so it is found by
-  # its namespace-derived name and by its platform labels. Both observations must
-  # agree on one network, and its complete identity must match, or the sandbox is
-  # refused with nothing deleted.
-  cleanup_owner_media_network=$cleanup_owner_namespace-media-control
-  cleanup_owner_ids=$(docker network ls -q --no-trunc \
-    --filter "name=^${cleanup_owner_media_network}$") || return 1
-  cleanup_owner_label_ids=$(docker network ls -q --no-trunc \
-    --filter label=nas.platform.purpose=media-control \
-    --filter "label=nas.platform.project=$cleanup_owner_namespace") || return 1
-  for cleanup_owner_id in $cleanup_owner_label_ids; do
-    case " $cleanup_owner_ids " in
-      *" $cleanup_owner_id "*) ;;
-      *)
+  # host_prep, not Compose, creates the media-control and alert-relay bridges, so
+  # each is found by its namespace-derived name and by its platform labels. Both
+  # observations must agree on one network, and its complete identity must match,
+  # or the sandbox is refused with nothing deleted.
+  for cleanup_owner_purpose in media-control alert-relay; do
+    cleanup_owner_media_network=$cleanup_owner_namespace-$cleanup_owner_purpose
+    cleanup_owner_ids=$(docker network ls -q --no-trunc \
+      --filter "name=^${cleanup_owner_media_network}$") || return 1
+    cleanup_owner_label_ids=$(docker network ls -q --no-trunc \
+      --filter label=nas.platform.purpose=$cleanup_owner_purpose \
+      --filter "label=nas.platform.project=$cleanup_owner_namespace") || return 1
+    for cleanup_owner_id in $cleanup_owner_label_ids; do
+      case " $cleanup_owner_ids " in
+        *" $cleanup_owner_id "*) ;;
+        *)
+          cleanup_refuse_ownership network "$cleanup_owner_media_network"
+          return 1
+          ;;
+      esac
+    done
+    for cleanup_owner_id in $cleanup_owner_ids; do
+      cleanup_read_media_control_identity "$cleanup_owner_id" || return 1
+      if [ "$cleanup_identity_name" != "$cleanup_owner_media_network" ] ||
+         [ "$cleanup_identity_driver" != bridge ] ||
+         [ "$cleanup_identity_purpose" != "$cleanup_owner_purpose" ] ||
+         [ "$cleanup_identity_project" != "$cleanup_owner_namespace" ] ||
+         [ "$cleanup_identity_label_count" != 2 ]; then
         cleanup_refuse_ownership network "$cleanup_owner_media_network"
         return 1
-        ;;
-    esac
-  done
-  for cleanup_owner_id in $cleanup_owner_ids; do
-    cleanup_read_media_control_identity "$cleanup_owner_id" || return 1
-    if [ "$cleanup_identity_name" != "$cleanup_owner_media_network" ] ||
-       [ "$cleanup_identity_driver" != bridge ] ||
-       [ "$cleanup_identity_purpose" != media-control ] ||
-       [ "$cleanup_identity_project" != "$cleanup_owner_namespace" ] ||
-       [ "$cleanup_identity_label_count" != 2 ]; then
-      cleanup_refuse_ownership network "$cleanup_owner_media_network"
-      return 1
-    fi
-    cleanup_owned_networks="$cleanup_owned_networks $cleanup_owner_id"
+      fi
+      cleanup_owned_networks="$cleanup_owned_networks $cleanup_owner_id"
+    done
   done
 }
 

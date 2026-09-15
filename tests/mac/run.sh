@@ -110,6 +110,30 @@ case $(CDPATH= cd -- "$(dirname -- "$vault_password_file")" 2>/dev/null && pwd -
   "$mac_repo_dir"/*) mac_die 'vault password input must remain outside the repository' ;;
 esac
 
+# THE COMMITTED PER-SERVICE VAULTS ARE STILL LOADED BY THIS LANE, AND THAT IS
+# NOT WHAT tests/integration_controller.sh DOES (#650). That harness runs inside
+# a container against a disposable clone at /repo, so it can `rm -f
+# inventory/group_vars/all/vault_*.yml` before installing the ephemeral vault --
+# and it does, with the reason stated beside it. This script runs
+# `ansible-playbook` against $mac_repo_dir, which is THE OPERATOR'S OWN
+# CHECKOUT, so the same two lines here would delete eighteen committed files out
+# of their working tree. The treatment is not portable and must not be copied.
+#
+# What that leaves is a coupling nothing states. inventory/mac.yml sits beside
+# inventory/group_vars/, so `all` is loaded from there, and every committed
+# vault_<role>.yml is decrypted with the single --vault-password-file this
+# script exports. It works only while the operator's Mac vault password equals
+# the repository's: equal, and production ciphertext is decrypted into a run
+# that then overrides it with `-e @"$vault_file"`; unequal, and the run dies
+# mid-play on a decryption error that names neither this coupling nor the file.
+#
+# Not fixed here, because both available fixes are wrong for a residue sweep: a
+# removal is destructive, and giving the Mac inventory its own group_vars
+# directory is a restructure -- the lane legitimately needs main.yml and every
+# service_<role>.yml out of that same directory, and Ansible offers no per-file
+# exclusion. Asserting the passwords match would be worse still: it would make a
+# rule of the accident. The decision belongs with whoever owns the Mac proof.
+
 canonical_input_path() {
   input_parent=$(CDPATH= cd -- "$(dirname -- "$1")" 2>/dev/null && pwd -P) ||
     mac_die "$2 parent is unavailable"

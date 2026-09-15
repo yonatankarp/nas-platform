@@ -288,6 +288,69 @@ check(failures, unswept_bcrypt_roles.empty?,
       "#{unswept_bcrypt_roles.join(', ')}: bcrypt material reaches .env here, but the sweep no "\
       "longer matches this role and the Compose escaping property passes vacuously for it")
 
+# AND PER LINE, FOR EVERY CREDENTIAL WHOSE SHAPE ADMITS A `$`, which the
+# assertion above cannot say: it asks whether a template contains the escape
+# ANYWHERE, so a file that escapes one value and not the next reads as compliant.
+# That is not hypothetical -- roles/trailarr/templates/env.j2 escaped its bcrypt
+# hash on line 27 and rendered the username on line 26 raw, under a 14-line
+# header comment explaining the very property it was breaking, and this sweep
+# called the file clean (#642).
+#
+# THE SUBJECT IS DERIVED FROM THE SCHEMA rather than listed, and that is the
+# whole value of this check. A hand-list is a second statement of which
+# credentials are free-form, and it goes stale the moment a shape moves -- the
+# first attempt at this fix carried one, and it was wrong within minutes: it
+# un-escaped vault_trailarr_admin_password_hash, the one value in the tree that
+# most obviously must be escaped. filter_plugins/vault_credential_schema.py
+# already says which credentials are pattern-constrained, so a credential that
+# gains or loses a pattern moves in and out of this subject on its own.
+#
+# A credential with no PATTERN rule may hold any non-empty string, `$` included.
+# One with a pattern -- HEX_32, UUID, DATABASE_IDENTIFIER, BCRYPT_HASH -- either
+# cannot contain `$` or, in bcrypt's case, always does and is covered by the
+# per-file rule above as well.
+credential_specs = File.read(File.join(ROOT, "filter_plugins", "vault_credential_schema.py"))
+                       .scan(/^\s{4}"(vault_[a-z0-9_]+)":\s*\((.*?)\),\n(?=\s{4}"|\s*\})/m)
+check_floor(failures, credential_specs.length, 50, "vault credential specs parsed from the schema")
+#
+# BCRYPT_HASH joins them from the other side: it is pattern-constrained, but the
+# pattern is `^\$2[aby]\$...`, so such a value ALWAYS contains `$` and is the one
+# credential that cannot survive going out raw. The per-file rule above is not
+# enough to hold it -- measured, by un-escaping
+# roles/trailarr/templates/env.j2's hash while leaving the username beside it
+# escaped: the file still contained `replace`, so the file-level assertion passed
+# and nothing said a word.
+must_escape_credentials = credential_specs.reject { |_key, body|
+  body.include?("PATTERN") && !body.include?("BCRYPT_HASH")
+}.map(&:first)
+check_floor(failures, must_escape_credentials.length, 30,
+            "vault credentials whose value may contain $")
+
+ENV_RENDER = /\A([A-Z0-9_]+)=\{\{\s*(vault_[a-z0-9_]+)\b(.*)\z/m
+swept_free_form_renders = 0
+env_templates.each do |template|
+  File.readlines(template).each_with_index do |line, index|
+    match = line.match(ENV_RENDER)
+    next unless match && must_escape_credentials.include?(match[2])
+
+    swept_free_form_renders += 1
+    check(failures, match[3].include?("replace('$', '$$')"),
+          "#{template}:#{index + 1}: #{match[1]} renders #{match[2]}, whose schema admits any " \
+          "non-empty value including one containing $, into a Compose env file without " \
+          "| replace('$', '$$'). Compose interpolates $ here and TRUNCATES an unescaped value " \
+          "rather than refusing it, so the container starts on a credential the vault does not " \
+          "hold")
+  end
+end
+# Floored for the reason the two lists above are: a template syntax change, a
+# renamed prefix or a schema the regex above stops matching empties the subject,
+# and the property then holds for nobody while every line still passes. Thirteen
+# free-form credentials reach an .env today, across dozzle, immich, nextcloud,
+# paperless_ngx, pinchflat and trailarr. Eight is chosen against the bands the
+# way the floor of ten above is: a collapse leaves zero, while retiring the two
+# largest contributors lands at nine.
+check_floor(failures, swept_free_form_renders, 8, "free-form vault credentials rendered into .env")
+
 # The vault example is the documented contract; drift means an operator follows it
 # and ends up with a vault missing keys the roles require.
 example_path = File.join(ROOT, "inventory", "group_vars", "all", "vault.yml.example")
@@ -1051,8 +1114,9 @@ tracked_root_vault, _tracked_root_vault_error, _tracked_root_vault_status = Open
 check(failures, tracked_root_vault.strip.empty?,
       "inventory/group_vars/all/vault.yml is committed; every vault key belongs in " \
       "its service's vault_<role>.yml (or vault_pushover.yml or vault_healthchecks.yml)")
+NON_SERVICE_VAULT_ROLES = %w[pushover healthchecks].freeze
 manifest_roles = manifest_entries.filter_map { |entry| entry["role"] if entry.is_a?(Hash) } +
-                 %w[pushover healthchecks]
+                 NON_SERVICE_VAULT_ROLES
 Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).sort.each do |vault_path|
   name = File.basename(vault_path)
   first = File.open(vault_path, &:readline).strip
@@ -1060,6 +1124,79 @@ Dir.glob(File.join(ROOT, "inventory", "group_vars", "all", "vault{,_*}.yml")).so
   role = name[/\Avault_(.+)\.yml\z/, 1]
   check(failures, role.nil? || manifest_roles.include?(role),
         "#{name} names no role in services/manifest.yml")
+end
+
+# AND THE OTHER DIRECTION, which the glob above cannot state: it iterates what is
+# on disk, so it refuses a file naming no role and says nothing at all about a
+# role with no file. Deleting inventory/group_vars/all/vault_komga.yml passed
+# policy_test, this check and secrets_docs_test together -- measured -- and the
+# failure then waited for roles/vault_contract on the NAS, on a five-minute
+# poller tick, which is the #561 window reached by a different route.
+#
+# The roster is derived from the manifest rather than listed, the way
+# tests/nas_storage_support.rb derives the storage contributors it closes in both
+# directions. CREDENTIAL_FREE_SERVICES is the one legitimate absence and is
+# already closed against its own roster in tests/policy_support.rb, so a service
+# gaining or losing every key fails here either way: listed there and holding a
+# file, or absent there and holding none.
+#
+# Keyed by service NAME for the exemption and by ROLE for the filename, because
+# those differ -- paperless-ngx is the service, vault_paperless_ngx.yml is the
+# file.
+expected_vault_roles = manifest_entries.filter_map { |entry|
+  next unless entry.is_a?(Hash) && entry["status"] == "implemented"
+  next if CREDENTIAL_FREE_SERVICES.include?(entry["name"])
+
+  entry["role"]
+}.compact.sort + NON_SERVICE_VAULT_ROLES
+expected_vault_roles.each do |role|
+  relative = File.join("inventory", "group_vars", "all", "vault_#{role}.yml")
+  check(failures, File.file?(File.join(ROOT, relative)),
+        "#{relative} is missing: every implemented service authors its credentials in its own " \
+        "vault file, and a service whose file is gone reads as having no keys here while " \
+        "roles/vault_contract refuses on the target. Add the file, or register the service in " \
+        "CREDENTIAL_FREE_SERVICES if it genuinely holds no credential")
+end
+
+# Where the next editor is told to put a secret. Every implemented service has a
+# service_<role>.yml beside its vault file, and its header names the file that
+# holds that service's credentials. Sixteen of them named bare `vault.yml`
+# instead -- the single file #612 retired and the check at the top of this script
+# hard-fails on -- so the geography a reader is handed was the pre-split one, in
+# the file they are about to edit (#650).
+#
+# The seventeenth is why this is a check rather than one sweep. service_karakeep.yml
+# was written after the split and names vault_karakeep.yml correctly, so the
+# stale text was not something every file had: it was something every file
+# written *before* the split had, and the next service would have been right by
+# accident or wrong by copy depending on which sibling its author opened. Derived
+# from services/manifest.yml in both directions so a promotion cannot skip it.
+#
+# `vault.yml.example` is the one legitimate mention of the retired name: it is a
+# real committed file and the shape those per-service vaults take, so the
+# refusal below matches the bare name only when `.example` does not follow it.
+service_settings_roles = manifest_entries.filter_map do |entry|
+  entry["role"] if entry.is_a?(Hash) && entry["status"] == "implemented"
+end.compact.sort
+service_settings_roles.each do |role|
+  relative = File.join("inventory", "group_vars", "all", "service_#{role}.yml")
+  path = File.join(ROOT, relative)
+  unless File.file?(path)
+    check(failures, false,
+          "#{relative} is missing: every implemented service declares its non-secret " \
+          "settings and the storage it owns in its own file")
+    next
+  end
+
+  body = File.read(path)
+  check(failures, body.include?("vault_#{role}.yml"),
+        "#{relative} does not name vault_#{role}.yml: its header tells the next editor " \
+        "where this service's secrets live, and that is the file roles/vault_contract " \
+        "reads them from")
+  check(failures, !body.match?(/vault\.yml(?!\.example)/),
+        "#{relative} names the retired bare vault.yml: #612 split it into one " \
+        "vault_<role>.yml per service, and a committed vault.yml fails this script " \
+        "at the encryption check above")
 end
 
 

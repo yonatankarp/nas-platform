@@ -4,7 +4,7 @@
 # `docker compose config --format json` rather than off Compose source, so an
 # override that breaks either cannot slip in unrendered.
 #
-# Invoked once per stack per platform variant -- twenty-four times in a static
+# Invoked once per stack per platform variant -- fifty-one times in a static
 # run -- with the stack, the variant, the expected group and the probe port as
 # argv, and the whole rendered document in DOZZLE_RENDERED_COMPOSE. The probe
 # port is a value the repository never contains, which is what makes the first

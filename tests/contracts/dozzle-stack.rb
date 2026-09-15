@@ -49,6 +49,8 @@ abort "Dozzle contract failed: alert relay environment differs" unless
     "PUSHOVER_API_URL" => "${PUSHOVER_API_URL:?}",
     "ALERT_RELAY_LINK_BASE" => "${ALERT_RELAY_LINK_BASE:?}",
     "PUSHOVER_TOKEN" => "${PUSHOVER_TOKEN:?}",
+    "PUSHOVER_ALERTS_TOKEN" => "${PUSHOVER_ALERTS_TOKEN:?}",
+    "BESZEL_LINK_BASE" => "${BESZEL_LINK_BASE:?}",
     "PUSHOVER_USER_KEY" => "${PUSHOVER_USER_KEY:?}",
     "ALERT_DAILY_CONTAINER_CEILING" => "${ALERT_DAILY_CONTAINER_CEILING:?}",
     "ALERT_DAILY_OOM_CONTAINER_CEILING" => "${ALERT_DAILY_OOM_CONTAINER_CEILING:?}",
@@ -61,6 +63,13 @@ abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"
 ]
 abort "Dozzle contract failed: alert relay must not publish a port" if
   relay.key?("ports") || relay.key?("network_mode")
+# The relay alone joins the external bridge host_prep creates for Beszel's hub,
+# and names default beside it, or Dozzle loses alert-relay:8081.
+abort "Dozzle contract failed: alert relay must join default and the external alert-relay bridge, and nothing else may" unless
+  relay["networks"] == %w[default alert-bridge] &&
+  compose["networks"] == { "default" => {},
+                           "alert-bridge" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" } } &&
+  services.none? { |name, service| name != "alert-relay" && service.key?("networks") }
 abort "Dozzle contract failed: alert relay hardening differs" unless
   relay["read_only"] == true && relay["tmpfs"] == ["/tmp"] &&
   relay["security_opt"] == ["no-new-privileges:true"] && relay.key?("healthcheck") &&
@@ -152,7 +161,7 @@ abort "Dozzle contract failed: environment does not render the selected state an
   env_template.include?("PLATFORM_CURRENT_DIR={{ platform_current_dir }}") &&
   env_template.include?("DOZZLE_STATE_ROOT={{ dozzle_state_root }}")
 # The third leg of the single listener port: the rendered environment file is how
-# the value in roles/dozzle/defaults/main.yml reaches both consumers inside the
+# the value in inventory/group_vars/all/service_dozzle.yml reaches both consumers inside the
 # container. The rendered Compose document is checked against a probe port above,
 # and the live modes below dispatch through the URL built from the same default.
 abort "Dozzle contract failed: environment does not render the single relay listener port" unless
@@ -164,8 +173,15 @@ abort "Dozzle contract failed: environment does not render the single relay list
 # different vault credentials rather than the same one twice.
 abort "Dozzle contract failed: the relay secret is not a credential of its own" unless
   env_template.include?("ALERT_RELAY_TOKEN={{ vault_dozzle_alert_relay_token }}") &&
-  env_template.include?("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}") &&
-  env_template.include?("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}")
+  env_template.include?(
+    "PUSHOVER_TOKEN={{ vault_pushover_containers_token | replace('$', '$$') }}"
+  ) &&
+  env_template.include?(
+    "PUSHOVER_ALERTS_TOKEN={{ vault_pushover_alerts_token | replace('$', '$$') }}"
+  ) &&
+  env_template.include?(
+    "PUSHOVER_USER_KEY={{ vault_pushover_user_key | replace('$', '$$') }}"
+  )
 
 # The publish endpoint is a variable in every layer it passes through, and that
 # is a safety property rather than tidiness: a literal here would mean every
@@ -182,6 +198,11 @@ abort "Dozzle contract failed: the relay publish endpoint is not redirectable" u
 # The tap-through link goes to the address clients already reach Dozzle at, from
 # the two values that define it, rather than a literal host a lane or a rename
 # would leave pointing somewhere else.
+# A Beszel alert's button opens only Beszel's own app URL, the shared inventory
+# value roles/beszel renders as APP_URL, never a literal or a Dozzle default.
+abort "Dozzle contract failed: the Beszel link base is not Beszel's app URL" unless
+  env_template.include?("BESZEL_LINK_BASE={{ beszel_app_url }}")
+
 abort "Dozzle contract failed: the alert link is not built from the public host and Dozzle port" unless
   env_template.include?("ALERT_RELAY_LINK_BASE={{ dozzle_alert_relay_link_base }}") &&
   relay_defaults.include?(%(dozzle_alert_relay_link_base: "http://{{ platform_public_host }}:{{ dozzle_port }}"\n))

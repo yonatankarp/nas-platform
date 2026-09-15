@@ -1,9 +1,22 @@
 ---
 # Non-secret facts shared by every service. Per-service settings and the storage
 # each service owns live in service_<role>.yml beside this file; secrets live in
-# vault.yml, see vault.yml.example.
+# vault_<role>.yml beside it, one file per service, and vault.yml.example is the
+# shape they take.
 
 nas_timezone: Europe/Berlin
+
+# Read by roles/arr AND roles/downloaders, which is why it is here rather than in
+# service_arr.yml, where it sat until #650. A group_vars value outranks every role
+# default, so one service's settings file was deciding the other service's
+# behaviour with nothing saying so -- and a change to it selected the arr lane
+# only, leaving the downloaders half of what it gates untested. Both roles keep
+# their own `false` default; this is the host's answer, and it is shared.
+#
+# Phase 1 media acquisition stays inert until a host enables Usenet. Adoption is a
+# one-convergence escape hatch for the existing Movies and Series trees; neither
+# role persists it.
+media_acquisition_adopt_existing_libraries: false
 nas_uid: 1000
 nas_gid: 100
 
@@ -19,6 +32,11 @@ platform_current_dir: "{{ platform_deploy_root }}/current"
 platform_runtime_dir: "{{ platform_deploy_root }}/runtime"
 platform_media_control_network: >-
   {{ (platform_project_name ~ '-media-control') if platform_project_name | default('') | length > 0 else 'media-control' }}
+# The bridge Beszel's hub reaches the Dozzle alert relay over. host_prep creates
+# it, as it does media-control, because two Compose projects share it and
+# neither may own it.
+platform_alert_relay_network: >-
+  {{ (platform_project_name ~ '-alert-relay') if platform_project_name | default('') | length > 0 else 'alert-relay' }}
 
 # Lowest interpreter the plays are known to work on.
 nas_python_minimum: "3.8"

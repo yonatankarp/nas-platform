@@ -257,9 +257,10 @@ build_stub_bin() {
   rm -rf "$stub_bin"
   mkdir -p "$stub_bin"
 
-  # The recap is what the controller and the launcher library parse: phase 2
-  # requires changed=0 and failed=0, and run_enabled_idempotence requires
-  # exactly one recap naming the target host.
+  # The recap is what the controller and the launcher library parse. Since #638
+  # both go through enabled_idempotence_recap_is_clean, so both require exactly
+  # one recap, exactly one line naming the target host, and changed, unreachable
+  # and failed all zero.
   {
     stub_preamble
     cat <<'STUB'
@@ -886,13 +887,13 @@ plant 'suite tags dropped from the selected play' idempotence_check program \
 plant 'empty tags select only the always tasks' empty_tags program \
   'if [ -n "$INTEGRATION_TAGS" ]; then' 'if [ -n $INTEGRATION_TAGS ]; then' 1
 plant 'check mode dropped from phase 3' idempotence_check program \
-  'if run_selected_play $@ --check --diff; then' \
-  'if run_selected_play $@; then' 1
+  'if run_selected_play "$@" --check --diff; then' \
+  'if run_selected_play "$@"; then' 1
 plant 'second converge dropped from phase 2' idempotence_check program \
-  'run_selected_play $@ >/tmp/second.txt 2>&1 || idempotence_status=$?' \
+  'run_selected_play "$@" >/tmp/second.txt 2>&1 || idempotence_status=$?' \
   'idempotence_status=0' 1
 plant 'initial converge dropped' idempotence_check program \
-  'perform_initial_converge $@' ':' 1
+  'perform_initial_converge "$@"' ':' 1
 plant 'generated vault not installed into the checkout' idempotence_check \
   program 'install -m 0600 "$vault_file" /repo/inventory/group_vars/all/vault.yml' \
   ':' 1
@@ -954,7 +955,7 @@ plant 'verification provider policy dropped' bindery library \
 plant 'declared downloader verification-only play dropped' bindery program \
   'run_downloaders_verify_only' ':' 2
 plant 'acquisition foundation contract dropped' seerr program \
-  '/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static' ':' 1
+  '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static' ':' 1
 plant 'acquisition reader prerequisites dropped' seerr program \
   'converge_media_acquisition_reader_prerequisites' ':' 1
 plant 'acquisition foundation verification dropped' seerr program \
@@ -966,7 +967,7 @@ plant 'verification supplies the transport fact it asserts against' seerr \
 plant 'acquisition foundation dispatch opened to every suite' jellyfin program \
   '\n      seerr\)\n' '\n      *)\n' 1 regexp
 plant 'suite_is matches only the full lane' jellyfin program \
-  '[ $INTEGRATION_SUITE = full ] || [ $INTEGRATION_SUITE = $1 ]' \
+  '[ "$INTEGRATION_SUITE" = full ] || [ "$INTEGRATION_SUITE" = "$1" ]' \
   '[ $INTEGRATION_SUITE = full ]' 1
 plant 'Jellyfin fixture seed dropped' jellyfin program \
   'run_jellyfin_contract seed' ':' 1

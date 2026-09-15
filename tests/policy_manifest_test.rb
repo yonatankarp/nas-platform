@@ -408,6 +408,85 @@ end
   end
 end
 
+# The pre-upgrade copy rule in tests/policy_test.rb is the only guard on
+# Vaultwarden's rescue, so each of its three sentences is planted there.
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that leaves the service stopped",
+               "role vaultwarden: a failed pre-upgrade copy must start the stopped container again, " \
+               "on its old image",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .reject! { |task| task.key?("community.docker.docker_compose_v2") }
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that starts over a missing store",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("community.docker.docker_compose_v2") }.delete("when")
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue start gated on the read taken before the stop",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
+      "vaultwarden_store_stat.stat.isreg | default(false)"
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue start that accepts a directory or a dangling symlink",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
+      "vaultwarden_pre_upgrade_store_after.stat.exists | default(false)"
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue store read of the write-ahead log",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("ansible.builtin.stat") }["ansible.builtin.stat"]["path"] =
+      "{{ vaultwarden_data_host_path }}/db.sqlite3-wal"
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue store read that aborts on a permission error",
+               "role vaultwarden: a failed pre-upgrade copy must not start the old container over a missing store",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("ansible.builtin.stat") }.delete("failed_when")
+  end
+end
+
+expect_failure(failures, "Vaultwarden second pre-upgrade start under always",
+               "role vaultwarden: a failed pre-upgrade copy must start the stopped container again, " \
+               "on its old image",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    unit = tasks.find { |task| task.key?("rescue") }
+    start = unit["rescue"].find { |task| task.key?("community.docker.docker_compose_v2") }
+    unit["always"] = [Marshal.load(Marshal.dump(start)).tap { |task| task.delete("when") }]
+  end
+end
+
+expect_failure(failures, "Vaultwarden pre-upgrade rescue that lets the upgrade proceed",
+               "role vaultwarden: a failed pre-upgrade copy must still fail the run",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/vaultwarden/tasks/pre_upgrade_backup.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"].reject! { |task| task.key?("ansible.builtin.fail") }
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.
@@ -1308,7 +1387,7 @@ expect_failure(failures, "unredacted Beszel webhook summary",
                detected_by: %i[beszel]) do |root|
   mutate_yaml_file(root, "roles/beszel/tasks/configure.yml") do |tasks|
     task = flatten_tasks(tasks).find do |entry|
-      entry["name"] == "Summarize the managed Pushover webhook without URL bodies"
+      entry["name"] == "Summarize the managed relay webhook without URL bodies"
     end
     task["no_log"] = false
   end
@@ -2933,6 +3012,38 @@ expect_failure(failures, "pinned expectations gain an unknown field",
   mutate_yaml_file(root, "tests/expected/komga.yml") { |e| e["unexpected"] = true }
 end
 
+# The nas_storage_* prefix rule had no mutation at all, which is how its subject
+# came to include trees Ansible never reads. The pair below is what makes the
+# sweep's subject a stated thing rather than whatever Find walked into: one
+# definition outside inventory/group_vars/all must be refused, and the same
+# definition inside a nested checkout must not be.
+expect_failure(failures, "storage contributor outside group_vars/all",
+               "roles/dozzle/defaults/planted.yml: nas_storage_planted",
+               detected_by: %i[policy]) do |root|
+  File.write(File.join(root, "roles", "dozzle", "defaults", "planted.yml"),
+             YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
+end
+
+# A nested checkout is a different tree and none of its files is in scope for a
+# run of this one. .gitignore anticipates agent worktrees under
+# .claude/worktrees/ and git honours it; the sweep walks the filesystem and did
+# not, so a single `git worktree add` put a second copy of all nineteen
+# contributors into its subject and failed the check naming every one -- 133
+# paths at seven worktrees, none of them a definition Ansible would ever read
+# (#665). The sandbox is no git repository, so this plants the shape rather than
+# a real worktree: a directory holding a `.git` *file* is exactly what a worktree
+# is on disk, and it is what the sweep prunes on. Planting the shape rather than
+# the path name is the point -- a row that created `.claude/worktrees/` and
+# nothing else would pass against a check that merely special-cased that name.
+expect_success(failures, "storage contributor inside a nested checkout") do |root|
+  checkout = File.join(root, ".claude", "worktrees", "agent-0000")
+  contributors = File.join(checkout, "inventory", "group_vars", "all")
+  FileUtils.mkdir_p(contributors)
+  File.write(File.join(checkout, ".git"), "gitdir: /nonexistent/worktrees/agent-0000\n")
+  File.write(File.join(contributors, "service_planted.yml"),
+             YAML.dump("nas_storage_planted" => [{ "path" => "/tmp/planted" }]))
+end
+
 # The media library path is written once in a service template and once in
 # nas_storage, and Compose passes the template's copy through as a bind source.
 # Nothing used to compare the two, so these mutations are what keep the new
@@ -2962,7 +3073,14 @@ expect_failure(failures, "media library leaves removed from storage",
   # so emptying only media_libraries.yml leaves the staging paths covering the
   # mount and the plant stops biting.
   Dir.glob(File.join(root, "inventory", "group_vars", "all", "*.yml")).sort.each do |file|
-    next if File.basename(file) == "vault.yml"
+    # Every vault artifact, not the one filename this used to name. #611/#612
+    # split vault.yml into one vault_<role>.yml per service, and #636 put all
+    # eighteen of them into BASE_FIXTURE_PATHS because policy_vault_test.rb now
+    # requires them to exist. They are encrypted, so they parse to a String
+    # rather than a mapping, and the block below would call `each` on it with
+    # two parameters. The name-based skip was correct for as long as the sandbox
+    # carried no vault file at all, which is what hid it.
+    next if File.basename(file).match?(/\Avault(?:_[a-z0-9_]+)?\.yml\z/)
 
     relative = File.join("inventory", "group_vars", "all", File.basename(file))
     mutate_yaml_file(root, relative) do |inventory|

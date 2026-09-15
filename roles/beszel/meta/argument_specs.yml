@@ -1,7 +1,7 @@
 ---
 argument_specs:
   main:
-    short_description: Deploy Beszel and wire it to Pushover with no value read back
+    short_description: Deploy Beszel and wire it to the Dozzle alert relay with no value read back
     description:
       - Installs the hub keypair from vault before first start, so the agent key
         and universal token are known in advance and the run converges in one pass.
@@ -19,6 +19,10 @@ argument_specs:
         type: str
         required: false
         description: Disposable Mac proof namespace; empty preserves canonical NAS naming.
+      platform_alert_relay_network:
+        type: str
+        required: true
+        description: External bridge host_prep creates for Beszel's hub to reach the Dozzle alert relay.
       platform_public_host:
         type: str
         required: true
@@ -97,7 +101,7 @@ argument_specs:
       beszel_notification_url:
         type: str
         required: false
-        description: Shoutrrr URL, built from the Alerts application token and user key in vault, at priority 1.
+        description: Shoutrrr URL naming the Dozzle alert relay's /beszel route, authenticated with the relay token from vault.
       beszel_pushover_validation_url:
         type: str
         required: false
@@ -125,10 +129,18 @@ argument_specs:
       vault_beszel_app_user_password:
         type: str
         required: true
+      dozzle_alert_relay_port:
+        type: int
+        required: true
+        description: The Dozzle alert relay's container port, shared inventory in service_dozzle.yml.
+      vault_dozzle_alert_relay_token:
+        type: str
+        required: true
+        description: Bearer token the relay's /beszel route requires; carried in the notification URL.
       vault_pushover_alerts_token:
         type: str
         required: true
-        description: Pushover Alerts application token; the URL's password component.
+        description: Pushover Alerts application token; only validated here, the relay sends with it.
       vault_pushover_containers_token:
         type: str
         required: true

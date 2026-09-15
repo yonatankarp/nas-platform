@@ -1133,6 +1133,17 @@ storage_prefix_offenders = []
 storage_prefix_unreadable = []
 Find.find(ROOT) do |path|
   Find.prune if File.basename(path) == ".git"
+  # A nested checkout is a different tree, and none of its files is in scope for
+  # a run of this one. .gitignore anticipates agent worktrees under
+  # .claude/worktrees/ and git honours it; Find does not, so a single
+  # `git worktree add` put a second copy of all 19 contributors into this sweep
+  # and failed the check naming every one -- 133 paths at seven worktrees, none
+  # of them a definition Ansible would ever read (#665). Pruning on the nested
+  # .git rather than on that path name is what makes it a statement about what
+  # the sweep's subject is: a worktree carries a .git file and a clone a .git
+  # directory, both answer File.exist?, and a mutation sandbox is no git tree at
+  # all, so nothing there is pruned and a planted file is still seen.
+  Find.prune if path != ROOT && File.directory?(path) && File.exist?(File.join(path, ".git"))
   next unless File.file?(path) && path.end_with?(".yml")
 
   relative = path.delete_prefix("#{ROOT}/")
@@ -1957,6 +1968,52 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
         "role #{name}: deployment report ignores a registered Compose deployment")
 end
 
+# A pre-upgrade copy that stops a container before copying its store must start
+# that container again when the copy fails, on its old image, and only over a store
+# that is still there, and must still fail the run. A stop with nothing after it
+# left the service exited on every later converge, and a start over a store lost
+# after the stop created an empty one the next converge upgraded over -- both
+# measured against roles/kapowarr and roles/vaultwarden. The Kapowarr contract
+# holds the same properties for that role; this is what holds every other.
+pre_upgrade_stops = 0
+Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort.each do |path|
+  name = File.basename(File.dirname(path, 2))
+  document = YAML.safe_load_file(path, aliases: true)
+  stops = ->(task) { task.dig("community.docker.docker_compose_v2", "state") == "stopped" }
+  next unless flatten_tasks(document).any?(&stops)
+
+  pre_upgrade_stops += 1
+  unit = Array(document).find { |task| task.is_a?(Hash) && flatten_tasks(task["block"]).any?(&stops) }
+  rescue_tasks = flatten_tasks(unit&.fetch("rescue", nil))
+  start = rescue_tasks.find { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
+  start_index = start ? rescue_tasks.index(start) : 0
+  check(failures,
+        start && unit["always"].nil? &&
+          rescue_tasks.first(start_index).none? { |task| task.key?("ansible.builtin.fail") } &&
+          rescue_tasks.all? do |task|
+            !task.key?("community.docker.docker_compose_v2") ||
+              task.dig("community.docker.docker_compose_v2", "recreate") == "never"
+          end,
+        "role #{name}: a failed pre-upgrade copy must start the stopped container again, on its old image")
+  # Exactly this shape: the rescue re-reads the path the pre-stop read took,
+  # tolerates that read failing (stat fails on a permission error rather than
+  # reporting absence), and starts only on a regular file from that read -- a
+  # condition naming the pre-stop read, `exists` (true for a directory or a
+  # dangling symlink), or anything looser was measured to let the bug back in.
+  pre_stop_read = Array(document).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.stat") }
+  store_read = rescue_tasks.find { |task| task.key?("ansible.builtin.stat") }
+  check(failures,
+        start.nil? || (store_read && pre_stop_read && rescue_tasks.index(store_read) < start_index &&
+                       store_read.dig("ansible.builtin.stat", "path") ==
+                         pre_stop_read.dig("ansible.builtin.stat", "path") &&
+                       store_read["failed_when"] == false &&
+                       Array(start["when"]) == ["#{store_read['register']}.stat.isreg | default(false)"]),
+        "role #{name}: a failed pre-upgrade copy must not start the old container over a missing store")
+  check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
+        "role #{name}: a failed pre-upgrade copy must still fail the run")
+end
+check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
+
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
 # only outside --check, and the delivery itself must be a redacted, changeless
@@ -2325,20 +2382,28 @@ unless controller_source.nil?
   # and 4 SC2068 unquoted expansions, and one SC2070 -- `[ -n $VAR ]`, which
   # tests true on an empty value. That SC2070 was not cosmetic: it was the whole
   # of the bug that ran the nightly's idempotence and check-mode phases over 88
-  # of 1495 tasks, so it is fixed and its exclusion is gone. The other two codes
-  # remain pre-existing and stay excluded. Pinned here because an exclusion list
-  # that may quietly grow is a check that quietly stops running -- and dropping a
-  # code from it, as this change does, must cost an edit here rather than pass
-  # unremarked.
+  # of 1495 tasks. The other two codes were left excluded as pre-existing, and
+  # by #640 that exclusion was covering 66 SC2086 and 5 SC2068 sites -- one of
+  # them the same class of defect as the SC2070: `[ $before != $after ]` over
+  # checksums read through a pipeline, which on an unreadable file collapses to
+  # a degenerate `[` and routes a drift guard to the WRONG BRANCH. Measured: with
+  # the .env removed between the two reads -- the exact mutation that guard
+  # exists to catch -- the old form printed BESZEL_DRIFTED_CHECK_PRESERVED_STATE
+  # and exited 0.
+  #
+  # So the list is now empty and the licence is per-line: the one deliberate
+  # word-splitting site carries its own `# shellcheck disable=SC2086`. Still
+  # pinned, because an exclusion list that may quietly grow is a check that
+  # quietly stops running -- and a code returning to it must cost an edit here
+  # rather than pass unremarked.
   manifest = File.read(File.join(ROOT, "tests", "validate-policy.sh"))
   controller_check = manifest.lines.map(&:chomp).find do |line|
     line.end_with?(" tests/integration_controller.sh")
   end
   check(failures, controller_check ==
-        "shellcheck --shell=sh -x --exclude=SC2068,SC2086 " \
-        "tests/integration_controller.sh",
+        "shellcheck --shell=sh -x tests/integration_controller.sh",
         "tests/validate-policy.sh: the integration controller must be " \
-        "shellchecked excluding exactly SC2068,SC2086, not " \
+        "shellchecked with no --exclude at all, not " \
         "#{controller_check.inspect}")
 end
 

@@ -102,7 +102,7 @@ end
 if File.file?(controller_path)
   check(failures,
         controller_body.include?(
-          "/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static"
+          '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static'
         ),
         "acquisition foundation suites must execute their matching static contract")
 end
@@ -304,11 +304,20 @@ enabled_idempotence_contracts = enabled_idempotence_service_tags
   [suite,
    ["run_enabled_idempotence #{selection}", "run_play --tags #{selection} --check --diff"]]
 end
+# Every block the suite opens, not the first. This read the first one until #640
+# quoted the controller's tests: the lane block and the vault-generator block at
+# the top of the file both open `if [ "$INTEGRATION_SUITE" = downloaders ]`, and
+# before that change only the lane block was unquoted, so the pattern happened to
+# select it. The disambiguation was an inconsistency in the subject rather than
+# anything this check asked for, and quoting both made it match the shorter,
+# earlier block and report the lane as missing its convergence. Scanning every
+# block and requiring one of them to carry the calls is what was always meant.
 enabled_idempotence_contracts.each do |suite, (idempotence_call, check_call)|
-  suite_body = controller_body[
-    /if \[ \$INTEGRATION_SUITE = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m,
-    1
-  ].to_s
+  suite_bodies = controller_body.scan(
+    /if \[ "\$INTEGRATION_SUITE" = #{Regexp.escape(suite)} \]; then(.*?)^    fi$/m
+  ).flatten
+  suite_body = suite_bodies.find { |body| body.include?(idempotence_call) } ||
+               suite_bodies.last.to_s
   check(failures, suite_body.include?(idempotence_call),
         "the #{suite} suite must run a second normal enabled convergence")
   check(failures,

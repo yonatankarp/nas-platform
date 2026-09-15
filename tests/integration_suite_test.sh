@@ -419,7 +419,7 @@ if acquisition_runtime_contract_holds "$acquisition_runtime_mutant" \
 fi
 assert_output 'suite=beszel tags=host_prep,deployment_bundle,beszel playbook=site.yml scenarios=true' \
   --describe-suite beszel
-assert_output 'suite=dozzle tags=host_prep,deployment_bundle,dozzle playbook=site.yml scenarios=true' \
+assert_output 'suite=dozzle tags=host_prep,deployment_bundle,beszel,dozzle playbook=site.yml scenarios=true' \
   --describe-suite dozzle
 assert_output 'suite=audiobookshelf tags=host_prep,deployment_bundle,audiobookshelf playbook=site.yml scenarios=true' \
   --describe-suite audiobookshelf
@@ -458,7 +458,7 @@ actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
 [ "$actual" = 'suite=full tags= playbook=custom.yml scenarios=false' ]
 actual=$(PATH="$fake_bin:$PATH" DOCKER_LOG=$docker_log \
   INTEGRATION_DESCRIBE_ONLY=1 "$integration" --suite dozzle)
-[ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,dozzle playbook=site.yml scenarios=true' ]
+[ "$actual" = 'suite=dozzle tags=host_prep,deployment_bundle,beszel,dozzle playbook=site.yml scenarios=true' ]
 
 # Dispatch crosses the Docker boundary as quoted argv/environment rather than
 # being interpolated into the runner program.

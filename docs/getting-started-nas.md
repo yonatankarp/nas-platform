@@ -250,10 +250,12 @@ scope — does not exist on this network. Repeat the
 service-specific credential checks from the
 [Mac manual review](getting-started-mac.md#4-perform-the-manual-review)
 against the production deployment without exercising external integrations.
-Beszel's notification webhook is Pushover, and so is every container alert the
-Dozzle alert relay sends. They are separate Pushover applications on one account: Beszel
-sends with the Alerts application (`vault_pushover_alerts_token`), the relay and
-the per-service deployment reports and the image prune's reclaim with
+Beszel's notification webhook is the Dozzle alert relay's `/beszel` route, and the
+relay publishes every Beszel alert and every container alert to Pushover. They
+are separate Pushover applications on one account: the relay sends Beszel's
+alerts with the Alerts application (`vault_pushover_alerts_token`), and its
+container alerts, the per-service deployment reports and the image prune's
+reclaim go with
 Containers, each release's one message with Deployments, the deployment poller's and the
 image prune's alerts with Alerts, and Seerr with Media, all to the one
 `vault_pushover_user_key`.
@@ -302,6 +304,15 @@ secrets. Docker Desktop cannot prove this NAS ACL boundary at all; see
 Every notice this platform sends is Pushover's: Beszel's threshold breaches,
 every container alert the Dozzle relay sends, and every notice from the
 deployment poller and the image prune.
+
+Beszel does not call Pushover itself. Its webhook points at the Dozzle alert
+relay over a private bridge, and the relay publishes the alert on the Alerts
+application. A threshold breach or an unreachable host arrives at priority 1,
+titled in red, and the notice that it cleared arrives at priority -1, in green,
+with an "Open in Beszel" button when the alert names a system page. Beszel alone
+cannot split those: it sends a problem and its recovery through one URL at one
+priority. The cost is that host alerts need the relay running, and they share
+its daily ceiling with container alerts.
 
 What should get you out of your chair reaches Pushover's Alerts application at
 priority 1, which rings through quiet hours: a failed deployment, a revision CI

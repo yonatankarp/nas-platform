@@ -1,6 +1,7 @@
 ---
 # The single operator switch. Inventory sets it true, and
-# inventory/group_vars/all/main.yml is where the deployment decision is made and
+# inventory/group_vars/all/service_nextcloud.yml is where the deployment decision is
+# made and
 # explained; this default stays false so the role converges to `state: absent`
 # for any caller that runs it without that inventory rather than deploying a
 # database on the strength of a missing variable. The gate lives inside the role
@@ -60,7 +61,8 @@ nextcloud_trusted_domains: >-
 #
 # Empty by default: this platform has no mesh hostname declared anywhere today,
 # and inventing one here would put an address into config.php that resolves to
-# nothing. Set it in inventory/group_vars/all/main.yml when the name exists.
+# nothing. Set it in inventory/group_vars/all/service_nextcloud.yml when the name
+# exists.
 nextcloud_additional_trusted_domains: []
 
 # The shipped app set, which is configuration this repository would otherwise
@@ -156,7 +158,7 @@ nextcloud_disabled_apps:
 # The operator's escape hatch, empty by default, in the shape
 # nextcloud_additional_trusted_domains above uses: the role owns a list and the
 # inventory may extend it without editing this file. Set it in
-# inventory/group_vars/all/main.yml.
+# inventory/group_vars/all/service_nextcloud.yml.
 nextcloud_additional_disabled_apps: []
 
 # What the reconciliation actually reads. Kept separate from the two lists above

@@ -191,6 +191,23 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes shellcheck
           fi
 
+      # The venv below is built with whatever `python3` the runner image happens
+      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
+      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
+      # image moving its default interpreter -- in either direction -- silently
+      # changed the toolchain CI resolved, and a contributor on 3.11 met the
+      # documented `pip install -r controller-requirements.txt` with a resolver
+      # wall of text naming no cause (#655). The version is read from
+      # .python-version rather than written here, for the same reason the pins
+      # are read from controller-requirements.txt: four jobs carry this pair
+      # byte-identically, and a literal repeated four times is four places a bump
+      # has to find. pyenv reads that file too, so a contributor gets the same
+      # interpreter without being told to.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
       - name: Install Ansible tooling
         run: |
           # All three ship in the ubuntu-latest image, so this normally installs
@@ -302,6 +319,23 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # The venv below is built with whatever `python3` the runner image happens
+      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
+      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
+      # image moving its default interpreter -- in either direction -- silently
+      # changed the toolchain CI resolved, and a contributor on 3.11 met the
+      # documented `pip install -r controller-requirements.txt` with a resolver
+      # wall of text naming no cause (#655). The version is read from
+      # .python-version rather than written here, for the same reason the pins
+      # are read from controller-requirements.txt: four jobs carry this pair
+      # byte-identically, and a literal repeated four times is four places a bump
+      # has to find. pyenv reads that file too, so a contributor gets the same
+      # interpreter without being told to.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
       - name: Install Ansible tooling
         run: |
           # All three ship in the ubuntu-latest image, so this normally installs
@@ -370,6 +404,23 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The venv below is built with whatever `python3` the runner image happens
+      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
+      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
+      # image moving its default interpreter -- in either direction -- silently
+      # changed the toolchain CI resolved, and a contributor on 3.11 met the
+      # documented `pip install -r controller-requirements.txt` with a resolver
+      # wall of text naming no cause (#655). The version is read from
+      # .python-version rather than written here, for the same reason the pins
+      # are read from controller-requirements.txt: four jobs carry this pair
+      # byte-identically, and a literal repeated four times is four places a bump
+      # has to find. pyenv reads that file too, so a contributor gets the same
+      # interpreter without being told to.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
       - name: Install Ansible tooling
         run: |
           # All three ship in the ubuntu-latest image, so this normally installs
@@ -417,6 +468,23 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      # The venv below is built with whatever `python3` the runner image happens
+      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
+      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
+      # image moving its default interpreter -- in either direction -- silently
+      # changed the toolchain CI resolved, and a contributor on 3.11 met the
+      # documented `pip install -r controller-requirements.txt` with a resolver
+      # wall of text naming no cause (#655). The version is read from
+      # .python-version rather than written here, for the same reason the pins
+      # are read from controller-requirements.txt: four jobs carry this pair
+      # byte-identically, and a literal repeated four times is four places a bump
+      # has to find. pyenv reads that file too, so a contributor gets the same
+      # interpreter without being told to.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
 
       - name: Install Ansible tooling
         run: |

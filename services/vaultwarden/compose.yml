@@ -73,7 +73,8 @@ services:
       # of them demands a credential. This one hands out ACCOUNTS to anyone who
       # asks -- SIGNUPS_ALLOWED is true by decision -- so a wildcard publication
       # makes "the tailnet is the perimeter" false, which is the entire argument
-      # inventory/group_vars/all/main.yml gives for leaving the door open.
+      # inventory/group_vars/all/service_vaultwarden.yml gives for leaving the door
+      # open.
       #
       # Measured before the prefix was added, against this pin with the rendered
       # environment: `docker port` reported `0.0.0.0:8086` AND `[::]:8086`, and a
@@ -99,7 +100,8 @@ services:
     volumes:
       # The whole of DATA_FOLDER: db.sqlite3 and its write-ahead log,
       # attachments/, sends/ and rsa_key.pem. recovery: critical in
-      # inventory/group_vars/all/main.yml, and irreplaceable -- see the note
+      # inventory/group_vars/all/service_vaultwarden.yml, and irreplaceable -- see
+      # the note
       # there.
       - ${VAULTWARDEN_DATA_PATH:?}:/data
     environment:

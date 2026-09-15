@@ -56,6 +56,7 @@ services:
     image: lscr.io/linuxserver/radarr:6.3.0@sha256:fe051413dfd91b383ba04910552e83fb0306895fefee275c48dafe7bb90807dc
     cpus: 1.0
     labels:
+      dev.dozzle.group: arr
       dev.dozzle.name: radarr
     ports:
       - "7878:7878"
@@ -73,6 +74,7 @@ services:
     image: lscr.io/linuxserver/sonarr:4.0.19@sha256:82172b363f9eddc02aca544f880a044f2ceb9aaf190bc87e4454e2f705eb91d0
     cpus: 1.0
     labels:
+      dev.dozzle.group: arr
       dev.dozzle.name: sonarr
     ports:
       - "8989:8989"
@@ -90,6 +92,7 @@ services:
     image: lscr.io/linuxserver/prowlarr:2.5.2@sha256:c7502a75b021d964481c129c84590b9cbc40f83aadd4e553f173871bc0deaa3c
     cpus: 0.5
     labels:
+      dev.dozzle.group: arr
       dev.dozzle.name: prowlarr
     ports:
       - "9696:9696"
@@ -106,6 +109,7 @@ services:
     image: lscr.io/linuxserver/bazarr:1.6.0@sha256:84b6f05a7a4194fafe5a0bec062d32f6ae9ea74db33d43d678cb9a3191f31c24
     cpus: 1.0
     labels:
+      dev.dozzle.group: arr
       dev.dozzle.name: bazarr
     ports:
       - "6767:6767"
@@ -120,7 +124,7 @@ services:
   configarr:
     <<: *job-defaults
     profiles: [jobs]
-    image: ghcr.io/raydak-labs/configarr:1.30.2@sha256:ec585b6d2530f6090ee26fdcc9701f279666c24dc96c9087208e88ec867c2416
+    image: ghcr.io/raydak-labs/configarr:1.31.0@sha256:ae97eb6eb4009bbbe81a754e7b6e8d33608443c1353b3a1197c55a8ff3e989fa
     user: "${NAS_UID:?}:${NAS_GID:?}"
     cpus: 0.5
     environment:

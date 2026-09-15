@@ -28,7 +28,9 @@ actual = alerts.to_h { |alert| [alert.fetch("name"), [alert.fetch("eventExpressi
 abort "Dozzle contract failed: exact alert definitions differ" unless actual == expected
 abort "Dozzle contract failed: alerts must be enabled event-only rules over all containers" unless
   alerts.all? { |alert| alert.fetch("enabled") == true && alert.fetch("containerExpression") == "true" && alert.fetch("logExpression") == "" }
-relay_port = defaults.fetch("dozzle_alert_relay_port", nil)
+# The port is shared inventory (Beszel reaches the same relay), so it is read
+# from the service's group_vars file rather than from the role defaults.
+relay_port = YAML.safe_load_file(ARGV.fetch(6)).fetch("dozzle_alert_relay_port", nil)
 abort "Dozzle contract failed: relay listener port is not a single declared TCP port" unless
   relay_port.is_a?(Integer) && relay_port.between?(1, 65535)
 dispatcher = defaults.fetch("dozzle_dispatcher")
@@ -86,8 +88,9 @@ markers = %w[
   DOZZLE_SURPLUS_STATE_REMOVED
   DOZZLE_CHECK_MIXED_PLANNED_IMMUTABLE_AND_REPAIRED
   DOZZLE_CHECK_MISSING_PLANNED_IMMUTABLE_AND_REPAIRED
+  DOZZLE_BESZEL_NOTIFICATION_THROUGH_RELAY
 ]
-if ARGV.fetch(6) == "static"
+if ARGV.fetch(7) == "static"
   planned_tasks.each do |name|
     abort "Dozzle contract failed: missing #{name}" unless
       role_tasks.any? { |task| task["name"] == name }

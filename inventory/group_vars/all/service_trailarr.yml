@@ -1,6 +1,6 @@
 ---
 # trailarr: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_trailarr.yml.
 
 # Whether Trailarr may fetch a trailer, which is the one outbound request this
 # platform makes to a service it does not run.

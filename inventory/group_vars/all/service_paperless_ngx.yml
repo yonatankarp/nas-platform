@@ -1,6 +1,6 @@
 ---
 # paperless_ngx: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_paperless_ngx.yml.
 
 # Optional Paperless AI integration. Enable only after replacing the documentation
 # address with the reachable Ollama endpoint used by the NAS. This is the only home

@@ -126,8 +126,10 @@ if failures.empty?
       [["PLATFORM_CONTAINER_CPUSET", "{{ platform_effective_container_cpuset }}"]]
   failures << "Pinchflat env must carry only the vault-authored identity" unless
     [
-      ["PINCHFLAT_BASIC_AUTH_USERNAME", "{{ vault_pinchflat_admin_username }}"],
-      ["PINCHFLAT_BASIC_AUTH_PASSWORD", "{{ vault_pinchflat_admin_password }}"]
+      ["PINCHFLAT_BASIC_AUTH_USERNAME",
+       "{{ vault_pinchflat_admin_username | replace('$', '$$') }}"],
+      ["PINCHFLAT_BASIC_AUTH_PASSWORD",
+       "{{ vault_pinchflat_admin_password | replace('$', '$$') }}"]
     ].all? { |assignment| env_assignments.include?(assignment) }
 
   tasks = flatten_tasks(

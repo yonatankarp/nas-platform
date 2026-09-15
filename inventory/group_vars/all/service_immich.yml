@@ -1,6 +1,6 @@
 ---
 # immich: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_immich.yml.
 
 # Managed Immich user preferences are nonsecret policy. Every encrypted managed
 # identity uses this profile unless its email selects another declared profile;

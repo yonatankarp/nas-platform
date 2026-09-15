@@ -12,7 +12,7 @@
 # already absent is silent, and the run that first tears the project down
 # reports that it did.
 #
-# Every term carries a default, because each of the five tasks behind them is
+# Every term carries a default, because each of the six tasks behind them is
 # conditional and a reader of an undefined name is an error rather than a false.
 - name: Report the Vaultwarden deployment
   ansible.builtin.include_role:
@@ -25,4 +25,5 @@
          ((vaultwarden_teardown | default({})) is changed) or
          ((vaultwarden_wedged_recreate | default({})) is changed) or
          ((vaultwarden_pre_upgrade_copy | default({})) is changed) or
+         ((vaultwarden_pre_upgrade_restart | default({})) is changed) or
          ((vaultwarden_serve_placed | default({})) is changed) }}

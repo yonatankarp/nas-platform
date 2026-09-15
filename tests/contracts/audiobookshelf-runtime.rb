@@ -427,10 +427,10 @@ def exact_baseline_role_runs(controller)
     /^\s*run_selected_play\(\) \{\n\s*if \[ -n "\$INTEGRATION_TAGS" \]; then\n\s*run_play --tags "\$INTEGRATION_TAGS" "\$@"\n\s*elif \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_play "\$@"\n\s*fi\n\s*\}$/
   ).length
   initial = controller.scan(
-    /^\s*if \[ -z "\$INTEGRATION_TAGS" \] && \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play \$@\n\s*fi$/
+    /^\s*if \[ -z "\$INTEGRATION_TAGS" \] && \[ \$# -eq 0 \]; then\n\s*run_play\n\s*else\n\s*run_selected_play "\$@"\n\s*fi$/
   ).length
-  idempotence = controller.scan(/^\s*run_selected_play \$@ >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\$\?$/).length
-  check = controller.scan(/^\s*if run_selected_play \$@ --check --diff; then$/).length
+  idempotence = controller.scan(/^\s*run_selected_play "\$@" >\/tmp\/second\.txt 2>&1 \|\| idempotence_status=\$\?$/).length
+  check = controller.scan(/^\s*if run_selected_play "\$@" --check --diff; then$/).length
   fail_contract("Audiobookshelf baseline role call sequence differs") unless
     selector == 1 && initial == 1 && idempotence == 1 && check == 1
   { normal: initial + idempotence, check: check }

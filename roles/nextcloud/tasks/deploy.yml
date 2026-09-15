@@ -98,9 +98,9 @@
       {{ nextcloud_compose_project_name }} is torn down rather than converged and
       nothing on {{ nextcloud_data_host_path }} or
       {{ nextcloud_postgres_host_path }} is read or written. Set
-      nextcloud_deployment_enabled to true in inventory/group_vars/all/main.yml
-      and merge; the auto-deploy poller brings the stack up on its next
-      five-minute tick.
+      nextcloud_deployment_enabled to true in
+      inventory/group_vars/all/service_nextcloud.yml and merge; the auto-deploy
+      poller brings the stack up on its next five-minute tick.
   when: not nextcloud_deployment_enabled | bool
 
 # Two phases, because the application's installer runs against a database that

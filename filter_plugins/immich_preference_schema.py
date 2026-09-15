@@ -27,6 +27,8 @@ before the membership.
 import importlib.util
 from pathlib import Path
 
+from ansible.errors import AnsibleFilterError
+
 
 # Filter plugins cannot import module_utils/ by name, and putting the repository
 # root on sys.path to reach it would shadow site-packages with library/, roles/,
@@ -88,22 +90,31 @@ def _unsupported(errors, path, value, allowed, noun):
 
 
 def _field(errors, path, value, kind, allowed):
-    if kind is BOOLEAN:
+    # `==` rather than `is`, and an `else` that refuses: the kinds are module-level
+    # string literals, so CPython interning made identity work, and an unmatched
+    # kind fell off the end validating nothing at all. A table entry naming a kind
+    # this function does not implement is a mistake in the table, not a field the
+    # schema declines to check, so it raises the way its siblings do (#648).
+    if kind == BOOLEAN:
         if not _GUARDS.is_boolean(value):
             errors.append(f"{path}: must be a boolean")
-    elif kind is POSITIVE_INTEGER:
+    elif kind == POSITIVE_INTEGER:
         if not _GUARDS.is_integer(value):
             errors.append(f"{path}: must be an integer")
         elif value <= 0:
             errors.append(f"{path}: must be greater than zero")
-    elif kind is STRING:
+    elif kind == STRING:
         if not _GUARDS.is_string(value):
             errors.append(f"{path}: must be a string")
-    elif kind is ENUM:
+    elif kind == ENUM:
         if not _GUARDS.is_string(value):
             errors.append(f"{path}: must be a string")
         elif value not in allowed:
             errors.append(f"{path}: must be one of {', '.join(allowed)}")
+    else:
+        # Safe to name: every kind reaching here is a literal from SCOPES, never
+        # a vault-supplied key or value, so the redaction rule above is intact.
+        raise AnsibleFilterError(f"{path}: unknown field kind {kind!r}")
 
 
 def _preferences(errors, path, value):

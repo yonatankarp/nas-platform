@@ -1,6 +1,6 @@
 ---
 # komga: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_komga.yml.
 
 # One-convergence input, and false is the only value this file may hold: this
 # layer outranks roles/komga/defaults/main.yml, so it is the one that decides

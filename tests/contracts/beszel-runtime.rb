@@ -61,6 +61,22 @@ def fail_contract(message)
   exit 1
 end
 
+# roles/beszel's beszel_notification_url, rendered. The port is read from the
+# inspected tree's shared inventory, its one home. The token is encoded the way
+# Jinja's urlencode does it: every byte but letters, digits, `_.-~` and `/`
+# becomes %XX, so the space in "Bearer " is %20. That rule was measured through
+# Ansible, not assumed.
+RELAY_PORT = Integer(
+  YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"),
+                                "inventory/group_vars/all/service_dozzle.yml"))
+      .fetch("dozzle_alert_relay_port")
+)
+
+def relay_webhook(token)
+  header = "Bearer #{token}".b.gsub(%r{[^A-Za-z0-9_.~/-]}n) { |byte| format("%%%02X", byte.ord) }
+  "generic://alert-relay:#{RELAY_PORT}/beszel?disabletls=yes&template=json&@Authorization=#{header}"
+end
+
 vault_yaml, vault_error, status = Open3.capture3(
   "ansible-vault", "view", "--vault-password-file",
   ENV.fetch("PLATFORM_CONTRACT_VAULT_PASSWORD_FILE"),
@@ -110,9 +126,26 @@ def read_recorded_request(socket)
   length = Integer(headers.fetch("content-length", "0"), 10)
   body = length.positive? ? socket.read(length).to_s : ""
   socket.write("HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-  { "method" => request_line.split(" ", 3)[0], "body" => body }
+  { "method" => request_line.split(" ", 3)[0], "headers" => headers, "body" => body }
 rescue StandardError
   nil
+end
+
+# What the Dozzle alert relay's /beszel route requires, and the double encoding
+# that has to survive to reach it: template=json makes shoutrrr's generic service
+# send exactly {"message","title"} as JSON, and the percent-encoded
+# @Authorization query key becomes the header after Beszel has decoded and
+# re-encoded the whole query to add $title (SendShoutrrrAlert). Proved against a
+# real 0.19.0 hub, never read off the source alone.
+def relay_envelope?(record)
+  body = begin
+    JSON.parse(record["body"])
+  rescue JSON::ParserError
+    nil
+  end
+  record["headers"]["authorization"] == "Bearer sentinel" &&
+    record["headers"]["content-type"].to_s.start_with?("application/json") &&
+    body.is_a?(Hash) && body.keys.sort == %w[message title] && body["title"] == "Test Alert"
 end
 
 def endpoint(base, path)
@@ -301,12 +334,14 @@ when "notify"
   #
   # The URL form is read from the pinned sources rather than guessed. Beszel
   # 0.19.0 vendors nicholas-fedor/shoutrrr v0.19.0, whose generic service POSTs
-  # over https unless `disabletls` is set (generic_config.go: WebhookURL), sends
-  # the message as a text/plain body when no template is given, and returns an
-  # error for a dial failure or a status of 400 or more -- which the hub reports
-  # as a string in `err` (internal/alerts/alerts_api.go: SendTestNotification).
-  # Without a template Beszel prepends the title "Test Alert" and appends its
-  # app URL, so the body is matched on the message it carries rather than whole.
+  # over https unless `disabletls` is set (generic_config.go: WebhookURL), and
+  # returns an error for a dial failure or a status of 400 or more -- which the
+  # hub reports as a string in `err` (internal/alerts/alerts_api.go:
+  # SendTestNotification). The URL carries template=json and an @Authorization
+  # header because that is the form PR-B points Beszel at the alert relay with:
+  # the recorder requires the bearer header and the two-key JSON envelope, so
+  # this mode proves the transport the relay depends on. The message is matched
+  # on Beszel's test text rather than whole, because the hub appends its app URL.
   # A wrong host, port or scheme therefore fails at `err`, and a hub that says
   # it sent without sending fails at the recorder.
   begin
@@ -323,7 +358,7 @@ when "notify"
       socket.close rescue nil
     end
   end
-  notification_url = "generic://#{CALLBACK_HOST}:#{recorder.addr[1]}/beszel-contract?disabletls=yes"
+  notification_url = "generic://#{CALLBACK_HOST}:#{recorder.addr[1]}/beszel-contract?disabletls=yes&template=json&@Authorization=Bearer%20sentinel"
   notification = request("post", endpoint(HUB, "/api/beszel/test-notification"),
                          token: app_auth.fetch("token"), body: { url: notification_url })
   fail_contract("Beszel test notification reported delivery failure") unless notification["err"] == false
@@ -332,7 +367,7 @@ when "notify"
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + NOTIFICATION_POLL_TIMEOUT_SECONDS
   loop do
     received << recorded.pop until recorded.empty?
-    break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") }
+    break if received.any? { |record| record["body"].include?("This is a notification from Beszel.") && relay_envelope?(record) }
     fail_contract("Beszel test notification did not reach the contract's recorder") if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
     sleep 1
   end
@@ -349,16 +384,13 @@ else
 
   settings = exact_record(records("user_settings", admin_token, equality("user", user_id)),
                           "managed user settings")
-  # The shoutrrr URL roles/beszel converges, rebuilt here from the same two vault
-  # values rather than read back from anywhere -- the credential direction the
-  # whole platform holds to. `shoutrrr` is the URL's required user component;
-  # Pushover itself takes the application token and the user key.
-  # `?priority=1` is part of the managed value: Beszel keeps the query when it
-  # adds the title, and the vendored shoutrrr sends it as the form's priority.
-  expected_url = "pushover://shoutrrr:#{vault.fetch('vault_pushover_alerts_token')}@#{vault.fetch('vault_pushover_user_key')}/?priority=1"
+  # The shoutrrr URL roles/beszel converges, rebuilt here from the vault's relay
+  # token and the relay port in shared inventory rather than read back from
+  # anywhere -- the credential direction the whole platform holds to.
+  expected_url = relay_webhook(vault.fetch("vault_dozzle_alert_relay_token"))
   notification_settings = settings.fetch("settings")
   notification_settings = JSON.parse(notification_settings) if notification_settings.is_a?(String)
-  fail_contract("managed Pushover webhook differs") unless notification_settings["webhooks"] == [expected_url]
+  fail_contract("managed relay webhook differs") unless notification_settings["webhooks"] == [expected_url]
 
   managed_system = exact_record(managed_systems, "managed system")
   persisted_telemetry(ENV.fetch("PLATFORM_KIND"), managed_system, admin_token)

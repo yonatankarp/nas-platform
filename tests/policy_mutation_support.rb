@@ -9,6 +9,18 @@
 # BASE_FIXTURE_PATHS is deliberately stated rather than derived from the repository:
 # a sandbox built from whatever happens to be on disk would stop proving that a
 # policy check reads the file it claims to read.
+#
+# The eighteen vault_<role>.yml files are here because tests/policy_vault_test.rb
+# stopped merely globbing them and started REQUIRING one per implemented service
+# (#636). Before that the glob found nothing in a sandbox and the loop ran zero
+# times, so their absence cost nothing; a requirement reads that same absence as
+# the violation it exists to catch. The symptom was the documented one and worth
+# recognising rather than rediscovering: five expect_success rows went red at
+# once, every one of them reporting `vault_arr.yml is missing` -- not one check
+# failing, but every row that expects a clean tree failing identically.
+#
+# Adding a service therefore adds a line here too. That is the price of stating
+# the list, and it is the same price docs/adding-a-service.md already charges.
 
 require "fileutils"
 require "open3"
@@ -50,6 +62,24 @@ BASE_FIXTURE_PATHS = %w[
   inventory/group_vars/all/media_libraries.yml
   inventory/group_vars/all/media_acquisition.yml
   inventory/group_vars/all/vault.yml.example
+  inventory/group_vars/all/vault_arr.yml
+  inventory/group_vars/all/vault_audiobookshelf.yml
+  inventory/group_vars/all/vault_beszel.yml
+  inventory/group_vars/all/vault_bindery.yml
+  inventory/group_vars/all/vault_downloaders.yml
+  inventory/group_vars/all/vault_dozzle.yml
+  inventory/group_vars/all/vault_healthchecks.yml
+  inventory/group_vars/all/vault_immich.yml
+  inventory/group_vars/all/vault_jellyfin.yml
+  inventory/group_vars/all/vault_kapowarr.yml
+  inventory/group_vars/all/vault_karakeep.yml
+  inventory/group_vars/all/vault_komga.yml
+  inventory/group_vars/all/vault_nextcloud.yml
+  inventory/group_vars/all/vault_paperless_ngx.yml
+  inventory/group_vars/all/vault_pinchflat.yml
+  inventory/group_vars/all/vault_pushover.yml
+  inventory/group_vars/all/vault_seerr.yml
+  inventory/group_vars/all/vault_trailarr.yml
   inventory/group_vars/mac_hosts/main.yml
   inventory/group_vars/nas_hosts/main.yml
   inventory/local.yml
@@ -593,11 +623,36 @@ def mutate_manifest(root)
   File.write(path, YAML.dump(manifest))
 end
 
+# YAML.dump writes the parsed document and nothing else, so a round-trip through
+# it deletes every comment the file had. That is invisible until a policy check
+# reads one -- tests/policy_vault_test.rb reads the header of each
+# service_<role>.yml, which names the vault file that service's secrets live in
+# (#650) -- and then the sandbox fails a check for a defect the mutation did not
+# plant and the repository does not have. Preserving the leading comment block
+# keeps the fixture looking like the tree it stands for; comments further down
+# are still lost, which no check reads today and this does not pretend to fix.
+def dump_yaml_preserving_header(path, document)
+  header = []
+  File.foreach(path) do |line|
+    stripped = line.strip
+    next if stripped == "---" && header.empty?
+    # The header block only: the run of comment lines the file opens with, ending
+    # at the first blank line. Comments further down document the key they sit
+    # above, and hoisting them to the top would be worse than losing them.
+    break unless stripped.start_with?("#")
+
+    header << line
+  end
+  body = YAML.dump(document)
+  body = body.sub(/\A---\n/, "---\n#{header.join}\n") unless header.empty?
+  File.write(path, body)
+end
+
 def mutate_yaml_file(root, relative_path)
   path = File.join(root, relative_path)
   document = YAML.safe_load_file(path)
   yield document
-  File.write(path, YAML.dump(document))
+  dump_yaml_preserving_header(path, document)
 end
 
 # Text mutation with the match count asserted, the guard
@@ -1107,5 +1162,9 @@ def implement_paperless(root)
     "mode" => "0755",
     "recovery" => "critical"
   }
-  File.write(storage_path, YAML.dump(storage))
+  if File.exist?(storage_path)
+    dump_yaml_preserving_header(storage_path, storage)
+  else
+    File.write(storage_path, YAML.dump(storage))
+  end
 end

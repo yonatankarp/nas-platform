@@ -212,8 +212,8 @@ STATIC_ROWS = [
     break: lambda { |root|
       edit_text(root, "roles/pinchflat/templates/env.j2") do |source|
         source.sub(
-          "PINCHFLAT_BASIC_AUTH_USERNAME={{ vault_pinchflat_admin_username }}",
-          "# PINCHFLAT_BASIC_AUTH_USERNAME={{ vault_pinchflat_admin_username }}\n" \
+          "PINCHFLAT_BASIC_AUTH_USERNAME={{ vault_pinchflat_admin_username | replace('$', '$$') }}",
+          "# PINCHFLAT_BASIC_AUTH_USERNAME={{ vault_pinchflat_admin_username | replace('$', '$$') }}\n" \
           "PINCHFLAT_BASIC_AUTH_USERNAME=admin"
         )
       end

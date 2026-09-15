@@ -301,7 +301,7 @@ relay_mutations = [
    "      - ${DOZZLE_STATE_ROOT:?}/alert-relay:/state\n",
    "      - ${DOZZLE_STATE_ROOT:?}:/state\n",
    "alert relay mounts differ"],
-  # The listener port has one home, roles/dozzle/defaults/main.yml. These three
+  # The listener port has one home, inventory/group_vars/all/service_dozzle.yml. These three
   # mutations put a literal back into each consumer in turn and require the
   # contract to reject it, so a second copy cannot reappear unnoticed.
   ["literal relay healthcheck port", "services/dozzle/compose.yml",

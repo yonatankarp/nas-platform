@@ -1,6 +1,6 @@
 ---
 # pinchflat: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_pinchflat.yml.
 
 nas_storage_pinchflat:
   - path: "{{ nas_docker_root }}/pinchflat/config"

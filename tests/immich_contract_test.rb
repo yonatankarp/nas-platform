@@ -38,7 +38,6 @@
 # Run with --self-test to plant a regression in each program and prove the rows
 # above detect it.
 
-require "etc"
 require "fileutils"
 require "json"
 require "open3"
@@ -47,6 +46,7 @@ require "shellwords"
 require "tmpdir"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "http_fixture_support"
 require_relative "policy_support"
 
@@ -84,46 +84,6 @@ FIXTURE_FILES = %w[
   tests/contracts/immich-runtime.rb
 ].freeze
 
-# Runs independent cases through a worker pool, capped at the core count. The
-# same shape and the same reasoning as in_parallel_cases in
-# tests/media_acquisition_reconciliation_support.rb: a check that spawns a
-# subprocess per case, serially, becomes the floor for the whole policy gate, and
-# oversubscribing a four-core CI runner trades wall time for contention. Never
-# more workers than cores.
-CASE_WORKER_LIMIT = Integer(ENV.fetch("IMMICH_CONTRACT_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }, 10)
-
-def in_parallel_cases(items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.flat_map { |item| yield item } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        # A row whose fixture edit raises is a broken row, not a crashed suite:
-        # without this the worker thread dies and the pool reports nothing about
-        # the other rows it was carrying.
-        local = begin
-          yield item
-        rescue StandardError => error
-          ["#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: fixture raised " \
-           "#{error.class}: #{error.message}"]
-        end
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.flat_map { |index| collected.fetch(index) }
-end
 
 def build_fixture_repository(root)
   FIXTURE_FILES.each do |relative|
@@ -444,7 +404,7 @@ STATIC_ROWS = [
 ].freeze
 
 def static_failures(program = STATIC_PROGRAM, rows = STATIC_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     Dir.mktmpdir("nas-platform-immich-static.") do |raw|
       root = File.realpath(raw)
       build_fixture_repository(root)
@@ -726,7 +686,7 @@ def runtime_responder(options)
 end
 
 def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     options = RUNTIME_DEFAULTS.merge(row.fetch(:given))
     collected = []
     Dir.mktmpdir("nas-platform-immich-runtime.") do |raw|
@@ -1229,7 +1189,7 @@ def rows_named(rows, names)
 end
 
 if ARGV.include?("--self-test")
-  in_parallel_cases(PROGRAM_MUTATIONS) do |mutation|
+  in_parallel_case_results(PROGRAM_MUTATIONS) do |mutation|
     with_mutant(mutation) do |mutant|
       caught = if mutation.fetch(:program) == :static
                  static_failures(mutant, rows_named(STATIC_ROWS, mutation.fetch(:rows)))

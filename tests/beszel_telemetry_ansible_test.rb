@@ -156,9 +156,15 @@ if smart_stat && smart_warn
       "nas_docker_root" => dir, "nas_media_root" => dir,
       "platform_render_device_path" => "/dev/dri/renderD128", "beszel_app_url" => "http://127.0.0.1:8090",
       "beszel_port" => 8090, "beszel_system_name" => "contract", "platform_project_name" => "",
-      "vault_beszel_agent_key" => "contract-key", "vault_beszel_universal_token" => "contract-token"
+      "vault_beszel_agent_key" => "contract-key", "vault_beszel_universal_token" => "contract-token",
+      # The inventory's own expression, not a copy of its value: env.j2 renders
+      # it, so a play without it fails at the template before any slot is read.
+      "platform_alert_relay_network" =>
+        YAML.safe_load_file(File.join(ROOT, "inventory/group_vars/all/main.yml"),
+                            aliases: true).fetch("platform_alert_relay_network")
     }
     expected_slots = {
+      "PLATFORM_ALERT_RELAY_NETWORK" => "alert-relay",
       "NAS_SMART_SATA_DEVICE_1" => "/dev/zero",
       "NAS_SMART_SATA_DEVICE_2" => "/dev/null",
       "NAS_SMART_SATA_DEVICE_3" => "/dev/null",
@@ -174,7 +180,13 @@ if smart_stat && smart_warn
       mode = check ? "under --check" : "on a converge"
       stdout, stderr, status = run_play([smart_stat, smart_warn, render], smart_vars,
                                         vars_files: [ROLE_VARS], check: check)
-      failures << "an absent S.M.A.R.T. device failed the run #{mode}: #{stderr.lines.last(3).join}" unless status.success?
+      # Ansible reports a task's failure on stdout, so stderr alone is usually empty.
+      unless status.success?
+        output = stdout + stderr
+        reason = output.lines.grep(/fatal:|ERROR!/).last(3)
+        failures << "an absent S.M.A.R.T. device failed the run #{mode}: " \
+                    "#{(reason.empty? ? output.lines.last(3) : reason).join}"
+      end
       expected_warnings.each do |warning|
         failures << "no warning #{mode} that #{warning}" unless stdout.include?("WARNING: #{warning}")
       end

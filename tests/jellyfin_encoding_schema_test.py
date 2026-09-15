@@ -187,6 +187,21 @@ class JellyfinEncodingSchemaTest(unittest.TestCase):
         self.assertTrue(found)
         self.assertNotIn(sentinel, " ".join(found))
 
+    def test_an_unknown_field_kind_is_refused_rather_than_unchecked(self):
+        """A kind the dispatch does not implement validated nothing, silently.
+
+        The kinds are module-level string literals, so CPython interning made the
+        `is` comparisons work and the missing `else` never bit — but a table entry
+        naming an unimplemented kind passed every value through unread, which is
+        the shape this repository keeps closing (#648).
+        """
+        from ansible.errors import AnsibleFilterError
+        import jellyfin_encoding_schema as schema
+
+        with self.assertRaises(AnsibleFilterError) as refused:
+            schema._field([], "jellyfin_encoding_policy.Whatever", object(), "path")
+        self.assertIn("unknown field kind", str(refused.exception))
+
     def test_the_table_covers_exactly_what_the_role_ships(self):
         self.assertEqual(sorted(REQUIRED_PROFILES), sorted(PROFILES))
         for name in REQUIRED_PROFILES:

@@ -1,6 +1,6 @@
 ---
 # audiobookshelf: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_audiobookshelf.yml.
 
 nas_storage_audiobookshelf:
   # Audiobookshelf. The database, metadata, and automatic restore backups are

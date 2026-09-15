@@ -1,6 +1,6 @@
 ---
 # downloaders: non-secret settings and the storage this service owns.
-# Cross-cutting facts live in main.yml; secrets in vault.yml.
+# Cross-cutting facts live in main.yml; secrets in vault_downloaders.yml.
 
 # The Usenet provider is the same kind of declaration, and it is the one no
 # generator can mint: it is a paid third-party subscription. Four of its six

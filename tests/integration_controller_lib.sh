@@ -180,7 +180,7 @@ run_enabled_idempotence() {
       'enabled media acquisition convergence did not complete' >&2
     exit 1
   fi
-  if ! enabled_idempotence_recap_is_clean $idempotence_output; then
+  if ! enabled_idempotence_recap_is_clean "$idempotence_output"; then
     cat $idempotence_output >&2
     printf '%s\n' \
       'enabled media acquisition convergence was not idempotent' >&2
@@ -445,7 +445,23 @@ run_immich_clean_restore() {
       "$immich_clean_restore_status" >&2
     exit 1
   fi
-  grep -qE 'changed=0 .*failed=0 ' /tmp/immich-clean-restore-second.txt
+  # The same parser run_enabled_idempotence uses. The grep this replaces was
+  # stricter than the pair #638 converted -- both fields had to appear on one
+  # line rather than anywhere in the file -- but it still required no `PLAY
+  # RECAP` marker, so a task that merely PRINTS `changed=0 ... failed=0`
+  # satisfied it, and it still never read `unreachable`: a replay that reached
+  # nothing reports `changed=0 unreachable=N failed=0` and passed. It also let
+  # the line name any host and let a second recap follow.
+  #
+  # It was the whole verdict too -- no `if`, so it leaned on `set -e` and failed
+  # as a bare non-zero exit, alone among this file's assertions in printing
+  # nothing about what it wanted. IMMICH_CLEAN_RESTORE_IDEMPOTENT is printed on
+  # the next line, so a false pass here reads as a proof that ran.
+  if ! enabled_idempotence_recap_is_clean "/tmp/immich-clean-restore-second.txt"; then
+    cat "/tmp/immich-clean-restore-second.txt" >&2
+    printf '%s\n' 'immich clean restore replay was not idempotent' >&2
+    exit 1
+  fi
   run_immich_contract clean-restore-assert
   printf 'IMMICH_CLEAN_RESTORE_IDEMPOTENT\n'
 }

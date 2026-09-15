@@ -42,8 +42,11 @@
 #   without a converged stack; the fixture modes that write artifacts are driven
 #   as sequences.
 #
-#   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into up to
-#   twenty-four invocations. Its rows prove every program is reached, that each
+#   Wrapper -- tests/contracts/dozzle.sh is what turns a mode into one
+#   invocation per program plus one render per stack per platform variant, which
+#   is three times whatever services/manifest.yml declares and fifty-one today
+#   (it was twenty-seven, over nine of the seventeen stacks, until #656). Its
+#   rows prove every program is reached, that each
 #   is resolved from the script's own checkout while the tree to inspect is
 #   passed in, that the `-r` preload deliberately still names the inspected tree,
 #   and that none of the six can consume the caller's stdin.
@@ -52,7 +55,6 @@
 # above detect it.
 
 require "digest"
-require "etc"
 require "fileutils"
 require "json"
 require "net/http"
@@ -63,6 +65,7 @@ require "tmpdir"
 require "uri"
 require "yaml"
 
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include TestScaffold
@@ -92,19 +95,37 @@ ALERTS_COMMAND = [RbConfig.ruby, "-ryaml"].freeze
 PLANNED_COMMAND = [RbConfig.ruby].freeze
 RUNTIME_COMMAND = [RbConfig.ruby].freeze
 
-# The eight base Compose files the labels program is handed, in the wrapper's
-# order. Stated here so a row can break exactly one of them and so the wrapper
-# layer can assert the list has not drifted from the wrapper's own invocation.
+# The seventeen base Compose files the labels program is handed, in the
+# wrapper's order. Stated here so a row can break exactly one of them and so the
+# wrapper layer can assert the list has not drifted from the wrapper's own
+# invocation, and held against services/manifest.yml below so it cannot go back
+# to naming a subset.
 BASE_COMPOSE_FILES = %w[
+  services/arr/compose.yml
   services/audiobookshelf/compose.yml
   services/beszel/compose.yml
+  services/bindery/compose.yml
+  services/downloaders/compose.yml
   services/dozzle/compose.yml
   services/immich/compose.yml
   services/jellyfin/compose.yml
+  services/kapowarr/compose.yml
+  services/karakeep/compose.yml
   services/komga/compose.yml
   services/nextcloud/compose.yml
   services/paperless-ngx/compose.yml
+  services/pinchflat/compose.yml
+  services/seerr/compose.yml
+  services/trailarr/compose.yml
+  services/vaultwarden/compose.yml
 ].freeze
+
+# The stacks services/manifest.yml declares, read rather than restated. Both
+# lists above and below are held against this in both directions: a subset is
+# how the grouping rule came to be enforced for nine of seventeen stacks, and a
+# hand-maintained list of the services is exactly the sixtieth list nobody edits.
+MANIFEST_SERVICE_NAMES = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+                             .fetch("services").map { |entry| entry.fetch("name") }.sort.freeze
 
 # The six arguments the stack program receives, in the wrapper's order, each
 # with the shell variable the wrapper binds it to. The defaults file joined them
@@ -128,7 +149,8 @@ ALERTS_ARGUMENT_VARIABLES = {
   "tests/integration_controller.sh" => "integration",
   "tests/mac/hooks/drift/20-dozzle.sh" => "mac_drift",
   "tests/mac/hooks/verify/20-dozzle.sh" => "mac_verify",
-  "tests/mac/hooks/verify/20-dozzle-labels.rb" => "mac_verify_labels"
+  "tests/mac/hooks/verify/20-dozzle-labels.rb" => "mac_verify_labels",
+  "inventory/group_vars/all/service_dozzle.yml" => "service_vars"
 }.freeze
 
 # Exactly what the contract reads out of the tree it inspects. A fixture holding
@@ -139,6 +161,7 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
   services/dozzle/alert_relay.py
   roles/dozzle/tasks/main.yml
   roles/dozzle/defaults/main.yml
+  inventory/group_vars/all/service_dozzle.yml
   roles/dozzle/templates/env.j2
   roles/deployment_bundle/tasks/inputs.yml
   roles/deployment_bundle/tasks/main.yml
@@ -155,46 +178,6 @@ FIXTURE_FILES = (BASE_COMPOSE_FILES + %w[
 # finds a copy there and nothing looks wrong. The wrapper layer plants an
 # impostor at those paths inside the inspected tree instead.
 
-# Runs independent cases through a worker pool, capped at the core count. The
-# same shape and the same reasoning as in_parallel_cases in
-# tests/media_acquisition_reconciliation_support.rb: a check that spawns a
-# subprocess per case, serially, becomes the floor for the whole policy gate, and
-# oversubscribing a four-core CI runner trades wall time for contention. Never
-# more workers than cores.
-CASE_WORKER_LIMIT = Integer(
-  ENV.fetch("DOZZLE_CONTRACT_CASE_WORKERS") { [Etc.nprocessors, 8].min.to_s }, 10
-)
-
-def in_parallel_cases(items)
-  items = items.to_a
-  workers = [CASE_WORKER_LIMIT, items.length].min
-  return items.flat_map { |item| yield item } if workers <= 1
-
-  pending = Queue.new
-  items.each_with_index { |item, index| pending << [index, item] }
-  collected = {}
-  lock = Mutex.new
-  Array.new(workers) do
-    Thread.new do
-      loop do
-        index, item = begin
-                        pending.pop(true)
-                      rescue ThreadError
-                        break
-                      end
-        # A row whose fixture edit raises is a broken row, not a crashed suite.
-        local = begin
-          yield item
-        rescue StandardError => error
-          ["#{item.is_a?(Hash) ? item.fetch(:name, item) : item}: fixture raised " \
-           "#{error.class}: #{error.message}"]
-        end
-        lock.synchronize { collected[index] = local }
-      end
-    end
-  end.each(&:join)
-  collected.keys.sort.flat_map { |index| collected.fetch(index) }
-end
 
 # Substitutes text and asserts its own match count. Several literals planted here
 # occur more than once in the file they are planted in, so a plain sub can hit
@@ -385,7 +368,7 @@ GROUP_RENDER_ROWS = [
 ].freeze
 
 def group_render_failures(program = GROUP_RENDER_PROGRAM, rows = GROUP_RENDER_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     stdout, stderr, status = Open3.capture3(
       { "DOZZLE_RENDERED_COMPOSE" => JSON.generate(row.fetch(:config).call) },
       *GROUP_RENDER_COMMAND, program,
@@ -433,7 +416,7 @@ LABEL_ROWS = [
 ].freeze
 
 def labels_failures(program = LABELS_PROGRAM, rows = LABEL_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -589,8 +572,8 @@ STACK_ROWS = [
     argument: "roles/dozzle/templates/env.j2",
     edit: lambda { |root|
       edit_text(root, "roles/dozzle/templates/env.j2") do |source|
-        source.sub("PUSHOVER_USER_KEY={{ vault_pushover_user_key }}",
-                   "PUSHOVER_USER_KEY={{ vault_pushover_containers_token }}")
+        source.sub("PUSHOVER_USER_KEY={{ vault_pushover_user_key | replace('$', '$$') }}",
+                   "PUSHOVER_USER_KEY={{ vault_pushover_containers_token | replace('$', '$$') }}")
       end
     },
     expects: "the relay secret is not a credential of its own"
@@ -603,8 +586,8 @@ STACK_ROWS = [
     argument: "roles/dozzle/templates/env.j2",
     edit: lambda { |root|
       edit_text(root, "roles/dozzle/templates/env.j2") do |source|
-        source.sub("PUSHOVER_TOKEN={{ vault_pushover_containers_token }}",
-                   "PUSHOVER_TOKEN={{ vault_pushover_alerts_token }}")
+        source.sub("PUSHOVER_TOKEN={{ vault_pushover_containers_token | replace('$', '$$') }}",
+                   "PUSHOVER_TOKEN={{ vault_pushover_alerts_token | replace('$', '$$') }}")
       end
     },
     expects: "the relay secret is not a credential of its own"
@@ -742,7 +725,7 @@ STACK_ROWS = [
 ].freeze
 
 def stack_failures(program = STACK_PROGRAM, rows = STACK_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -774,9 +757,9 @@ ALERTS_ROWS = [
   },
   {
     name: "a listener port that is not a number", mode: "verify",
-    argument: "roles/dozzle/defaults/main.yml",
+    argument: "inventory/group_vars/all/service_dozzle.yml",
     edit: lambda { |root|
-      edit_yaml_text(root, "roles/dozzle/defaults/main.yml",
+      edit_yaml_text(root, "inventory/group_vars/all/service_dozzle.yml",
                      "dozzle_alert_relay_port: 8081\n", "dozzle_alert_relay_port: \"8081\"\n")
     },
     expects: "relay listener port is not a single declared TCP port"
@@ -926,7 +909,7 @@ ALERTS_ROWS = [
 ].freeze
 
 def alerts_failures(program = ALERTS_PROGRAM, rows = ALERTS_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     with_fixture_repository do |root|
       row.fetch(:edit).call(root)
       stdout, stderr, status = Open3.capture3(
@@ -1000,7 +983,7 @@ PLANNED_ROWS = [
 ].freeze
 
 def planned_failures(program = PLANNED_OUTPUT_PROGRAM, rows = PLANNED_ROWS)
-  in_parallel_cases(rows) do |row|
+  in_parallel_case_results(rows) do |row|
     Dir.mktmpdir("nas-platform-dozzle-planned.") do |directory|
       argv = [*PLANNED_COMMAND, program, row.fetch(:mode)]
       case row.fetch(:body)
@@ -1035,8 +1018,22 @@ end
 VAULT_FIXTURE = {
   "vault_dozzle_admin_username" => "dozzle-contract-admin",
   "vault_dozzle_admin_password" => "dozzle-contract-secret",
-  "vault_dozzle_alert_relay_token" => "7f3c" * 16
+  "vault_dozzle_alert_relay_token" => "7f3c" * 16,
+  # The beszel-notify mode's: the hub identities it signs in with, and the
+  # Pushover pair it expects the relay to publish Beszel's alerts with.
+  "vault_beszel_superuser_email" => "beszel-contract-superuser@example.invalid",
+  "vault_beszel_superuser_password" => "beszel-contract-superuser-secret",
+  "vault_beszel_app_user_email" => "beszel-contract-app@example.invalid",
+  "vault_beszel_app_user_password" => "beszel-contract-app-secret",
+  "vault_pushover_alerts_token" => "dozzle-contract-alerts-token",
+  "vault_pushover_containers_token" => "dozzle-contract-containers-token",
+  "vault_pushover_user_key" => "dozzle-contract-user-key"
 }.freeze
+
+# What a converged Beszel hub stores, as far as beszel-notify reads it: the
+# relay's /beszel route. The token part is not compared there, only sent.
+BESZEL_STORED_WEBHOOK =
+  "generic://alert-relay:8081/beszel?disabletls=yes&template=json&@Authorization=Bearer%20x"
 
 EXPECTED_TEMPLATE = JSON.generate(
   version: 1,
@@ -1142,6 +1139,7 @@ class StubApi
   def route(method, target, headers, body)
     path = target.split("?", 2).first
     return token_route(body) if method == "POST" && path == "/api/token"
+    return beszel_route(method, path, headers) if path.start_with?("/api/collections/", "/api/beszel/")
 
     unless headers.key?("cookie")
       return [@state.fetch(:unauthenticated_status, 401), JSON_TYPE,
@@ -1176,6 +1174,42 @@ class StubApi
     end
   end
 
+  # Beszel's hub, on the same port: none of its paths collide with Dozzle's.
+  # A delivering hub stands in for the hub, the bridge and the relay together.
+  # It POSTs the form the relay would to the recorder the mode listens with.
+  def beszel_route(method, path, headers)
+    authorization = headers.fetch("authorization", "")
+    case [method, path]
+    in ["POST", "/api/collections/_superusers/auth-with-password"]
+      [200, JSON_TYPE, JSON.generate("token" => "beszel-superuser-token"), nil]
+    in ["POST", "/api/collections/users/auth-with-password"]
+      [200, JSON_TYPE, JSON.generate("token" => "beszel-app-token", "record" => { "id" => "appuser1" }), nil]
+    in ["GET", "/api/collections/user_settings/records"]
+      return [401, JSON_TYPE, JSON.generate("message" => "unauthorized"), nil] unless
+        authorization == "beszel-superuser-token"
+
+      webhooks = @state.fetch(:beszel_webhooks, [BESZEL_STORED_WEBHOOK])
+      [200, JSON_TYPE, JSON.generate("items" => [{ "settings" => { "webhooks" => webhooks } }]), nil]
+    in ["POST", "/api/beszel/test-notification"]
+      return [401, JSON_TYPE, JSON.generate("message" => "unauthorized"), nil] unless
+        authorization == "beszel-app-token"
+      return [200, JSON_TYPE, JSON.generate("err" => @state.fetch(:beszel_err)), nil] if @state.key?(:beszel_err)
+
+      if @state.fetch(:beszel_delivers, false)
+        form = {
+          "token" => @state.fetch(:beszel_publish_token, VAULT_FIXTURE.fetch("vault_pushover_alerts_token")),
+          "user" => VAULT_FIXTURE.fetch("vault_pushover_user_key"),
+          "title" => "Test Alert", "message" => "This is a notification from Beszel.",
+          "priority" => "1", "html" => "1"
+        }.merge(@state.fetch(:beszel_extra_fields, {}))
+        Net::HTTP.post_form(URI("http://127.0.0.1:#{@state.fetch(:recorder_port)}/1/messages.json"), form)
+      end
+      [200, JSON_TYPE, JSON.generate("err" => false), nil]
+    else
+      [404, JSON_TYPE, JSON.generate("message" => "absent"), nil]
+    end
+  end
+
   def token_route(body)
     fields = body.split("&").to_h { |pair| pair.split("=", 2).map { |value| CGI.unescape(value.to_s) } }
     expected_user = VAULT_FIXTURE.fetch("vault_dozzle_admin_username")
@@ -1201,8 +1235,10 @@ VAULT_STUB = <<~STUB
   cat "$DOZZLE_STUB_VAULT"
 STUB
 
-def with_runtime_stub(state, relay_port: 8081)
+def with_runtime_stub(state, relay_port: 8081, recorder: false)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
+  # Only the beszel-notify rows open the recorder, and they get a real free port.
+  merged[:recorder_port] = free_local_port if recorder
   stub = StubApi.new(merged)
   dozzle_port = stub.start
   Dir.mktmpdir("nas-platform-dozzle-runtime.") do |raw|
@@ -1225,11 +1261,12 @@ def with_runtime_stub(state, relay_port: 8081)
       # supply it in every mode too. Deliberately a port nothing here binds:
       # none of these rows reaches the notify mode, and a row that started to
       # would have to say so by listening rather than by inheriting a socket.
-      "PLATFORM_DOZZLE_PUSHOVER_PORT" => "1",
+      "PLATFORM_DOZZLE_PUSHOVER_PORT" => merged.fetch(:recorder_port, 1).to_s,
+      "PLATFORM_BESZEL_PORT" => dozzle_port.to_s,
       "PLATFORM_REPORT_ROOT" => reports,
       "PLATFORM_CONTRACT_VAULT_FILE" => vault,
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "password"),
-      "PLATFORM_CONTRACT_DOZZLE_DEFAULTS" => defaults
+      "PLATFORM_CONTRACT_DOZZLE_SERVICE_VARS" => defaults
     }, root, merged)
   end
 ensure
@@ -1350,12 +1387,57 @@ RUNTIME_ROWS = [
     name: "a report root reached through a symlink", mode: "duplicate-dispatcher-create",
     state: {}, report_root: :symlink,
     expects: "contract report root is unavailable"
+  },
+  # --- beszel-notify ------------------------------------------------------
+  # A short delivery budget on every row that could wait, for the #319 reason:
+  # a row that reaches the deadline sits out the whole of it.
+  {
+    name: "a Beszel test notification the relay published with the Alerts token",
+    mode: "beszel-notify", recorder: true, state: { beszel_delivers: true },
+    expects: nil, prints: "Dozzle contract passed"
+  },
+  {
+    name: "a Beszel test notification that never reaches the recorder",
+    mode: "beszel-notify", recorder: true, state: {},
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel test notification did not reach the Pushover recorder through the relay"
+  },
+  {
+    name: "a Beszel test notification published with the Containers token",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_delivers: true,
+             beszel_publish_token: VAULT_FIXTURE.fetch("vault_pushover_containers_token") },
+    expects: "relay published Beszel's test notification without the Alerts credentials"
+  },
+  {
+    name: "a hub that reports the relay refused the test notification",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_err: "server returned unexpected response status code: 401" },
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel test notification through the relay reported delivery failure"
+  },
+  {
+    name: "a hub whose stored webhook is not the relay's /beszel route",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_webhooks: ["pushover://shoutrrr:token@user/?priority=1"] },
+    environment: { "PLATFORM_DOZZLE_BESZEL_NOTIFICATION_TIMEOUT_SECONDS" => "3" },
+    expects: "Beszel's stored webhook is not the alert relay's /beszel route"
+  },
+  {
+    # A test notification links the bare app URL, which is no system page, so
+    # a button here would mean the relay's link validation had loosened.
+    name: "a Beszel test notification that arrived with a button",
+    mode: "beszel-notify", recorder: true,
+    state: { beszel_delivers: true,
+             beszel_extra_fields: { "url" => "http://beszel.invalid", "url_title" => "Open in Beszel" } },
+    expects: "Beszel test notification presentation differs"
   }
 ].freeze
 
 def runtime_failures(program = RUNTIME_PROGRAM, rows = RUNTIME_ROWS)
-  in_parallel_cases(rows) do |row|
-    with_runtime_stub(row.fetch(:state), relay_port: row.fetch(:relay_port, 8081)) do |env, root, _state|
+  in_parallel_case_results(rows) do |row|
+    with_runtime_stub(row.fetch(:state), relay_port: row.fetch(:relay_port, 8081),
+                      recorder: row.fetch(:recorder, false)) do |env, root, _state|
       if row[:report_root] == :symlink
         link = File.join(root, "reports-link")
         File.symlink(File.join(root, "reports"), link)
@@ -1451,7 +1533,7 @@ DOCKER_STUB = <<~STUB
   #!/bin/sh
   # Answers `docker compose --project-name dozzle-contract-<stack>-<variant> ... config`
   # with the canned render for that stack, and nothing else. The wrapper renders
-  # twenty-four times in a static run; none of them needs a daemon here.
+  # fifty-one times in a static run; none of them needs a daemon here.
   project=
   for argument in "$@"; do
     case $argument in
@@ -1477,10 +1559,18 @@ WRAPPER_PROGRAM_SOURCES = {
 
 # The stacks the wrapper renders, and the group each is required to carry. Kept
 # here so the wrapper layer can assert the wrapper still renders exactly these.
+# The *set* is not a choice -- it is held against MANIFEST_SERVICE_NAMES in both
+# directions -- but the group each stack carries is, because the manifest does
+# not record one and deriving it from the Compose file being judged would make
+# the expectation agree with whatever it found. An empty string is the
+# expectation that the stack stays single-container and carries no group at all.
 RENDERED_STACKS = {
-  "beszel" => "beszel", "dozzle" => "dozzle", "paperless-ngx" => "paperless",
-  "immich" => "immich", "nextcloud" => "nextcloud",
-  "audiobookshelf" => "", "jellyfin" => "", "komga" => ""
+  "arr" => "arr", "beszel" => "beszel", "downloaders" => "downloaders",
+  "dozzle" => "dozzle", "paperless-ngx" => "paperless",
+  "immich" => "immich", "nextcloud" => "nextcloud", "karakeep" => "karakeep",
+  "audiobookshelf" => "", "bindery" => "", "jellyfin" => "", "kapowarr" => "",
+  "komga" => "", "pinchflat" => "", "seerr" => "",
+  "trailarr" => "", "vaultwarden" => ""
 }.freeze
 
 def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
@@ -1652,6 +1742,8 @@ def recorder_failures
       "ALERT_DAILY_CONTAINER_CEILING" => "10",
       "ALERT_DAILY_OOM_CONTAINER_CEILING" => "25",
       "ALERT_DAILY_GLOBAL_CEILING" => "200",
+      "PUSHOVER_ALERTS_TOKEN" => "test-pushover-alerts-token",
+      "BESZEL_LINK_BASE" => "http://127.0.0.1:8090",
       "ALERT_STATE_PATH" => File.join(state_directory, "alert-relay.json"),
       "PYTHONDONTWRITEBYTECODE" => "1"
     }
@@ -1762,6 +1854,23 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
   # and it is the site where following the two-roots convention would be wrong.
   failures << "wrapper: the labels preload must name the inspected tree" unless
     wrapper_source.include?(%(ruby -r"$repo_dir/tests/policy_support.rb" "$labels_program"))
+  # Closed against services/manifest.yml in both directions, which is the half
+  # that was missing until #656: the wrapper rendered nine of seventeen stacks,
+  # so the rule that a multi-container stack groups every one of its containers
+  # was enforced for immich and paperless and unenforced for arr and
+  # downloaders, whose seven containers carried names and no group. A rendered
+  # subset cannot fail for a stack it never renders, and nothing said which
+  # subset it was supposed to be.
+  missing = MANIFEST_SERVICE_NAMES - RENDERED_STACKS.keys
+  surplus = RENDERED_STACKS.keys - MANIFEST_SERVICE_NAMES
+  failures << "wrapper: services/manifest.yml declares #{missing.inspect}, which the " \
+              "wrapper renders for no group at all" unless missing.empty?
+  failures << "wrapper: renders #{surplus.inspect}, which services/manifest.yml does " \
+              "not declare" unless surplus.empty?
+  expected_labelled = MANIFEST_SERVICE_NAMES.map { |name| "services/#{name}/compose.yml" }
+  failures << "wrapper: hands the labels program #{BASE_COMPOSE_FILES.sort.inspect}, not " \
+              "the manifest's own #{expected_labelled.inspect}" unless
+    BASE_COMPOSE_FILES.sort == expected_labelled
   RENDERED_STACKS.each do |stack, group|
     expected = group.empty? ? %(render_group_variants #{stack} "") : "render_group_variants #{stack} #{group}"
     failures << "wrapper: does not render #{stack} expecting group #{group.inspect}" unless
@@ -2437,6 +2546,48 @@ PROGRAM_MUTATIONS = [
     # dispatcher's. Recorded rather than tolerated; the dispatcher check is what
     # names the dispatcher, which is what a reader of the lane's log needs.
     detects: "refused for the wrong reason"
+  },
+  {
+    # The end-to-end mode passing without a recorded request: the match is
+    # replaced by a delivery nobody made.
+    label: "the Beszel end-to-end recorder requirement",
+    program: :runtime,
+    from: "      messages.find { |message| message.fetch(\"form\")[\"title\"] == \"Test Alert\" }\n",
+    to: "      { \"credentials_ok\" => true, \"path\" => \"/1/messages.json\", " \
+        "\"form\" => { \"title\" => \"Test Alert\", \"priority\" => \"1\", \"html\" => \"1\" } }\n",
+    rows: ["a Beszel test notification that never reaches the recorder"]
+  },
+  {
+    label: "the Beszel Alerts credential check",
+    program: :runtime,
+    from: "      delivered[\"credentials_ok\"]\n",
+    to: "      true\n",
+    rows: ["a Beszel test notification published with the Containers token"]
+  },
+  {
+    label: "the Beszel delivery failure check",
+    program: :runtime,
+    from: "      answer.is_a?(Hash) && answer[\"err\"] == false\n",
+    to: "      true\n",
+    rows: ["a hub that reports the relay refused the test notification"],
+    # Nothing is delivered after the refusal, so the recorder wait refuses
+    # instead, naming the recorder rather than the hub's answer.
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "the Beszel stored webhook check",
+    program: :runtime,
+    from: "    webhooks.length == 1 && webhooks.first.start_with?(relay_route)\n",
+    to: "    true\n",
+    rows: ["a hub whose stored webhook is not the relay's /beszel route"],
+    detects: "refused for the wrong reason"
+  },
+  {
+    label: "the Beszel test notification presentation check",
+    program: :runtime,
+    from: "      !form.key?(\"url\") && !form.key?(\"url_title\")\n",
+    to: "      true\n",
+    rows: ["a Beszel test notification that arrived with a button"]
   }
 ].freeze
 
@@ -2488,7 +2639,7 @@ if ARGV.include?("--self-test")
   # convention: a plant whose rows report a different sentence than expected is
   # information about the program, and finding them one interpreter run at a time
   # costs a run per plant.
-  problems = in_parallel_cases(PROGRAM_MUTATIONS) do |mutation|
+  problems = in_parallel_case_results(PROGRAM_MUTATIONS) do |mutation|
     with_mutant(mutation) do |mutant|
       rows = mutation.fetch(:rows)
       caught = case mutation.fetch(:program)
@@ -2519,12 +2670,15 @@ if ARGV.include?("--self-test")
   [
     ["\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\" </dev/null\n",
      "\"$stack\" \"$variant\" \"$expected_group\" \"$relay_probe_port\"\n"],
-    ["\"$repo_dir/services/paperless-ngx/compose.yml\" </dev/null\n",
-     "\"$repo_dir/services/paperless-ngx/compose.yml\"\n"],
+    # The labels invocation's redirect sits on its last argument, so the plant
+    # is taken from the list rather than restated: #656 took that list from nine
+    # compose files to seventeen and moved which one is last.
+    ["\"$repo_dir/#{BASE_COMPOSE_FILES.last}\" </dev/null\n",
+     "\"$repo_dir/#{BASE_COMPOSE_FILES.last}\"\n"],
     ["\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\" </dev/null\n",
      "\"$deployment_inputs\" \"$deployment_bundle\" \"$defaults\"\n"],
-    ["\"$mac_verify\" \"$mac_verify_labels\" \"$mode\" </dev/null\n",
-     "\"$mac_verify\" \"$mac_verify_labels\" \"$mode\"\n"],
+    ["\"$mac_verify\" \"$mac_verify_labels\" \"$service_vars\" \"$mode\" </dev/null\n",
+     "\"$mac_verify\" \"$mac_verify_labels\" \"$service_vars\" \"$mode\"\n"],
     ["exec ruby \"$planned_output_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$planned_output_program\" \"$mode\" \"$@\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
