@@ -155,7 +155,7 @@ check(failures,
       !harness.match?(/\|\s*tee\b/) && !controller.match?(/\|\s*tee\b/) &&
         !controller_library.match?(/\|\s*tee\b/) &&
         controller.include?(
-          "run_selected_play $@ >/tmp/second.txt 2>&1 || idempotence_status=$?"
+          'run_selected_play "$@" >/tmp/second.txt 2>&1 || idempotence_status=$?'
         ) &&
         controller_library.include?(
           "run_play --tags immich >/tmp/immich-clean-restore-second.txt 2>&1 ||"

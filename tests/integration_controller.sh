@@ -73,7 +73,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     git config --global --add safe.directory '*'
 
     suite_is() {
-      [ $INTEGRATION_SUITE = full ] || [ $INTEGRATION_SUITE = $1 ]
+      [ "$INTEGRATION_SUITE" = full ] || [ "$INTEGRATION_SUITE" = "$1" ]
     }
 
     # Which lanes owe the second and third phases. This was `suite_is
@@ -125,8 +125,10 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       undeclared_provider_argument='--undeclared usenet'
     fi
     # Unquoted on purpose: the flag and its group are the two words they look
-    # like, and every other lane expands them to no word at all. This file is
-    # linted with SC2086 excluded for exactly that.
+    # like, and every other lane expands them to no word at all. The exclusion
+    # that used to cover this was file-wide and hid sixty-five other sites with
+    # it (#640), so the licence is now attached to the one line that wants it.
+    # shellcheck disable=SC2086
     TMPDIR="$sandbox" /repo/tests/generate-ephemeral-vault.sh \
       $undeclared_provider_argument \
       --output "$vault_file" --password-file "$vault_password_file"
@@ -619,12 +621,12 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       if [ -z "$INTEGRATION_TAGS" ] && [ $# -eq 0 ]; then
     run_play
       else
-        run_selected_play $@
+        run_selected_play "$@"
       fi
     }
 
     if lifecycle_plan=$(
-      /repo/tests/integration.sh --consume-lifecycle --suite $INTEGRATION_SUITE
+      /repo/tests/integration.sh --consume-lifecycle --suite "$INTEGRATION_SUITE"
     ); then
       :
     else
@@ -658,10 +660,10 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # placeable at all -- the same constraint the ephemeral vault
           # invocation above records.
           converge_status=0
-          perform_initial_converge $@ || converge_status=$?
+          perform_initial_converge "$@" || converge_status=$?
           if [ $converge_status -ne 0 ]; then
             if docker ps --all --format '{{.Names}}' |
-                grep -q '^'$integration_project_namespace'-nextcloud'; then
+                grep -q '^'"$integration_project_namespace"'-nextcloud'; then
               dump_nextcloud_diagnostics
             fi
             printf 'integration converge did not complete (status %s)\n' \
@@ -675,7 +677,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           ;;
         *)
           printf 'unexpected integration lifecycle event: %s\n' \
-            $lifecycle_event >&2
+            "$lifecycle_event" >&2
           exit 1
           ;;
       esac
@@ -708,14 +710,14 @@ EOF
     # own arm below rather than exiting here.
     case $INTEGRATION_SUITE in
       seerr)
-        /repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh static
+        "/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
         printf 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED\n'
         ;;
     esac
 
-    if [ $INTEGRATION_SUITE = arr ]; then
+    if [ "$INTEGRATION_SUITE" = arr ]; then
       /repo/tests/media_control_network_collision_test.sh live
       /repo/tests/contracts/arr.sh static
       run_arr_verify_only
@@ -726,7 +728,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = downloaders ]; then
+    if [ "$INTEGRATION_SUITE" = downloaders ]; then
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/downloaders.sh static
       run_arr_verify_only
@@ -744,7 +746,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = bindery ]; then
+    if [ "$INTEGRATION_SUITE" = bindery ]; then
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/downloaders.sh static
       /repo/tests/contracts/bindery.sh static
@@ -765,7 +767,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = kapowarr ]; then
+    if [ "$INTEGRATION_SUITE" = kapowarr ]; then
       /repo/tests/contracts/kapowarr.sh static
       run_kapowarr_contract run
       run_kapowarr_verify_only
@@ -776,7 +778,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = pinchflat ]; then
+    if [ "$INTEGRATION_SUITE" = pinchflat ]; then
       /repo/tests/contracts/pinchflat.sh static
       run_pinchflat_contract run
       run_pinchflat_verify_only
@@ -787,7 +789,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = trailarr ]; then
+    if [ "$INTEGRATION_SUITE" = trailarr ]; then
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/trailarr.sh static
       run_trailarr_contract run
@@ -799,7 +801,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = seerr ]; then
+    if [ "$INTEGRATION_SUITE" = seerr ]; then
       /repo/tests/contracts/arr.sh static
       /repo/tests/contracts/seerr.sh static
       run_seerr_contract run
@@ -811,7 +813,7 @@ EOF
       exit 0
     fi
 
-    if [ $INTEGRATION_SUITE = smoke ]; then
+    if [ "$INTEGRATION_SUITE" = smoke ]; then
       cleanup_vault
       exit 0
     fi
@@ -823,7 +825,7 @@ EOF
     # once. foundation owns them now because it already exists to prove deployment
     # integrity and converges deployment_bundle alone, so it is the cheapest place
     # to pay for them once.
-    if [ $INTEGRATION_SUITE = foundation ] || [ $INTEGRATION_SUITE = full ]; then
+    if [ "$INTEGRATION_SUITE" = foundation ] || [ "$INTEGRATION_SUITE" = full ]; then
     assert_selective_compose_refused() {
       service=$1
       evidence=$2
@@ -903,12 +905,12 @@ EOF
 
     # foundation converges deployment_bundle and nothing else, so there are no
     # service scenarios below for it to run.
-    if [ $INTEGRATION_SUITE = foundation ]; then
+    if [ "$INTEGRATION_SUITE" = foundation ]; then
       cleanup_vault
       exit 0
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is beszel; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is beszel; then
       # Named rather than left to the contract's default, which is `verify`
       # (#667). What this adds is the wrapper: tests/beszel_contract_test.rb
       # already runs beszel-static.rb against this tree, but it invokes the
@@ -920,8 +922,14 @@ EOF
 
       run_beszel_contract drift
       run_beszel_contract drift-verify
+      # No pipeline: POSIX sh has no pipefail, so `sha256sum ... | cut` reports
+      # cut's status and an unreadable .env yields an EMPTY checksum that `set -e`
+      # never sees. The comparison below then decided a drift guard's verdict from
+      # a value that means "could not read" (#640).
       beszel_env_checksum_before_check=$(sha256sum \
-        "$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env" | cut -d' ' -f1)
+        "$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env") ||
+        { printf 'BESZEL DRIFTED CHECK COULD NOT READ RUNTIME .env\n' >&2; exit 1; }
+      beszel_env_checksum_before_check=${beszel_env_checksum_before_check%% *}
       if ! run_play --tags beszel --check --diff \
           >/tmp/beszel-drifted-check.txt 2>&1; then
         cat /tmp/beszel-drifted-check.txt >&2
@@ -929,7 +937,7 @@ EOF
       fi
       cat /tmp/beszel-drifted-check.txt
       for webhook_sentinel in sentinel-user sentinel-password sentinel-query-key example.invalid; do
-        if grep -qF $webhook_sentinel /tmp/beszel-drifted-check.txt; then
+        if grep -qF "$webhook_sentinel" /tmp/beszel-drifted-check.txt; then
           printf 'BESZEL DRIFTED CHECK LEAKED WEBHOOK SENTINEL\n' >&2
           exit 1
         fi
@@ -941,8 +949,10 @@ EOF
       fi
       run_beszel_contract drift-verify
       beszel_env_checksum_after_check=$(sha256sum \
-        "$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env" | cut -d' ' -f1)
-      if [ $beszel_env_checksum_before_check != $beszel_env_checksum_after_check ]; then
+        "$sandbox/volume1/Docker/nas-platform/runtime/services/beszel/.env") ||
+        { printf 'BESZEL DRIFTED CHECK COULD NOT READ RUNTIME .env\n' >&2; exit 1; }
+      beszel_env_checksum_after_check=${beszel_env_checksum_after_check%% *}
+      if [ "$beszel_env_checksum_before_check" != "$beszel_env_checksum_after_check" ]; then
         printf 'BESZEL DRIFTED CHECK MUTATED RUNTIME BYTES\n' >&2
         exit 1
       fi
@@ -957,9 +967,9 @@ EOF
         exit 1
       fi
       /repo/tests/assert-no-vault-secrets.rb \
-        $vault_file $vault_password_file /tmp/beszel-verify-drift.txt
+        "$vault_file" "$vault_password_file" /tmp/beszel-verify-drift.txt
       for webhook_sentinel in sentinel-user sentinel-password sentinel-query-key example.invalid; do
-        if grep -qF $webhook_sentinel /tmp/beszel-verify-drift.txt; then
+        if grep -qF "$webhook_sentinel" /tmp/beszel-verify-drift.txt; then
           printf 'BESZEL VERIFY LEAKED WEBHOOK SENTINEL\n' >&2
           exit 1
         fi
@@ -977,13 +987,13 @@ EOF
         exit 1
       fi
       while IFS= read -r duplicate_id; do
-        grep -qF $duplicate_id /tmp/beszel-duplicate.txt || {
+        grep -qF "$duplicate_id" /tmp/beszel-duplicate.txt || {
           printf 'BESZEL DUPLICATE FAILURE OMITTED RECORD ID\n' >&2
           exit 1
         }
       done < "$sandbox/reports/beszel-duplicate-ids.txt"
       /repo/tests/assert-no-vault-secrets.rb \
-        $vault_file $vault_password_file /tmp/beszel-duplicate.txt
+        "$vault_file" "$vault_password_file" /tmp/beszel-duplicate.txt
       printf 'BESZEL_DUPLICATE_REFUSED_WITH_IDS\n'
       run_beszel_contract remove-duplicate
       run_play --tags beszel
@@ -995,13 +1005,13 @@ EOF
         exit 1
       fi
       tail -n +2 "$sandbox/reports/beszel-duplicate-ids.txt" | while IFS= read -r wrong_owner_id; do
-        grep -qF $wrong_owner_id /tmp/beszel-wrong-owner.txt || {
+        grep -qF "$wrong_owner_id" /tmp/beszel-wrong-owner.txt || {
           printf 'BESZEL WRONG-OWNER FAILURE OMITTED RECORD ID\n' >&2
           exit 1
         }
       done
       /repo/tests/assert-no-vault-secrets.rb \
-        $vault_file $vault_password_file /tmp/beszel-wrong-owner.txt
+        "$vault_file" "$vault_password_file" /tmp/beszel-wrong-owner.txt
       printf 'BESZEL_WRONG_OWNER_REFUSED_WITH_IDS\n'
       run_beszel_contract remove-duplicate
       run_play --tags beszel
@@ -1009,7 +1019,7 @@ EOF
 
       run_play -e platform_beszel_agent_available=false --tags beszel
       if docker ps -a --format '{{.Names}}' | \
-          grep -Eq '^('$integration_project_namespace'-beszel-agent-intel|'$integration_project_namespace'-beszel-agent-portable)$'; then
+          grep -Eq '^('"$integration_project_namespace"'-beszel-agent-intel|'"$integration_project_namespace"'-beszel-agent-portable)$'; then
         printf 'BESZEL CAPABILITY-FALSE LEFT A MANAGED AGENT\n' >&2
         exit 1
       fi
@@ -1019,7 +1029,7 @@ EOF
 
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is dozzle; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is dozzle; then
 
       # The static half renders every stack in services/manifest.yml through
       # `docker compose config` and judges the dev.dozzle.* labels on the
@@ -1135,7 +1145,7 @@ EOF
 
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is audiobookshelf; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is audiobookshelf; then
 
       run_audiobookshelf_contract run
       printf 'AUDIOBOOKSHELF_INITIAL_CONTRACT_OK\n'
@@ -1239,7 +1249,7 @@ EOF
       printf 'AUDIOBOOKSHELF_CHECK_CREATE_PLANNED_IMMUTABLE\n'
 
       run_audiobookshelf_contract seed-progress
-      docker compose --project-name $integration_project_namespace-audiobookshelf \
+      docker compose --project-name "$integration_project_namespace-audiobookshelf" \
         --env-file "$sandbox/volume1/Docker/nas-platform/runtime/services/audiobookshelf/.env" \
         -f "$sandbox/volume1/Docker/nas-platform/current/services/audiobookshelf/compose.yml" \
         -f "$sandbox/volume1/Docker/nas-platform/current/services/audiobookshelf/compose.integration.yml" \
@@ -1249,23 +1259,23 @@ EOF
 
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is komga; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is komga; then
       run_komga_contract seed
-      if [ $INTEGRATION_SUITE = komga ]; then
+      if [ "$INTEGRATION_SUITE" = komga ]; then
         run_komga_contract run
 
       fi
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is jellyfin; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is jellyfin; then
       run_jellyfin_contract seed
-      if [ $INTEGRATION_SUITE = jellyfin ]; then
+      if [ "$INTEGRATION_SUITE" = jellyfin ]; then
         run_jellyfin_contract run
       fi
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is immich; then
-      if [ $INTEGRATION_SUITE = immich ]; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is immich; then
+      if [ "$INTEGRATION_SUITE" = immich ]; then
         run_immich_contract clean-restore-seed
         run_immich_clean_restore
         run_immich_restore_negative_matrix
@@ -1273,12 +1283,12 @@ EOF
       fi
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is paperless; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is paperless; then
       run_paperless_contract seed
       mkdir -m 0700 "$sandbox/reports/paperless-coordinated-snapshot"
       run_paperless_snapshot drill "$sandbox/reports/paperless-coordinated-snapshot"
       run_paperless_contract assert-persistence
-      docker compose --project-name $integration_project_namespace-paperless \
+      docker compose --project-name "$integration_project_namespace-paperless" \
         --env-file "$sandbox/volume1/Docker/nas-platform/runtime/services/paperless-ngx/.env" \
         -f "$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.yml" \
         -f "$sandbox/volume1/Docker/nas-platform/current/services/paperless-ngx/compose.integration.yml" \
@@ -1286,9 +1296,9 @@ EOF
       run_paperless_contract assert-persistence
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is nextcloud; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is nextcloud; then
       run_nextcloud_contract run
-      if [ $INTEGRATION_SUITE = nextcloud ]; then
+      if [ "$INTEGRATION_SUITE" = nextcloud ]; then
         # The second converge is what refutes a Nextcloud that rewrites its own
         # trusted_domains on every start: the reconciliation would repair it,
         # report changed, and fail the recap check below. That is the claim a
@@ -1317,14 +1327,14 @@ EOF
         # remove_orphans, and an anchored check on the app alone would report
         # success with the database, the cache and the cron sidecar still up.
         if ! docker ps --all --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-nextcloud$'; then
+            grep -Eq '^'"$integration_project_namespace"'-nextcloud$'; then
           printf '%s\n' \
             'the nextcloud container is not present, so the teardown below proves nothing' >&2
           exit 1
         fi
         run_play --tags nextcloud -e nextcloud_deployment_enabled=false
         if docker ps --all --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-nextcloud'; then
+            grep -Eq '^'"$integration_project_namespace"'-nextcloud'; then
           printf '%s\n' \
             'disabling nextcloud_deployment_enabled left a nextcloud container in place' >&2
           exit 1
@@ -1344,8 +1354,8 @@ EOF
       fi
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is vaultwarden; then
-      if [ $INTEGRATION_SUITE = vaultwarden ]; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is vaultwarden; then
+      if [ "$INTEGRATION_SUITE" = vaultwarden ]; then
         # No contract to run, and that is the service rather than a gap: this is
         # the one role on the platform that reads no vault credential, so there
         # is no identity a contract could sign in with. What the lane proves is
@@ -1386,7 +1396,7 @@ EOF
         # a deployment that never happened and VAULTWARDEN_TEARDOWN_VERIFIED
         # means nothing.
         if ! docker ps -a --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-vaultwarden$'; then
+            grep -Eq '^'"$integration_project_namespace"'-vaultwarden$'; then
           printf '%s\n' \
             'the vaultwarden container is not present, so the teardown below proves nothing' >&2
           exit 1
@@ -1400,7 +1410,7 @@ EOF
         # of it.
         run_play --tags vaultwarden -e vaultwarden_deployment_enabled=false
         if docker ps -a --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-vaultwarden$'; then
+            grep -Eq '^'"$integration_project_namespace"'-vaultwarden$'; then
           printf '%s\n' \
             'disabling vaultwarden_deployment_enabled left the container in place' >&2
           exit 1
@@ -1417,8 +1427,8 @@ EOF
       fi
     fi
 
-    if [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ] && suite_is karakeep; then
-      if [ $INTEGRATION_SUITE = karakeep ]; then
+    if [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ] && suite_is karakeep; then
+      if [ "$INTEGRATION_SUITE" = karakeep ]; then
         # The first converge of this lane is the one that bootstraps: an empty
         # data root, so the vault administrator cannot sign in, the role's
         # read-only count of Karakeep's `user` table reads 0, and the role
@@ -1439,14 +1449,14 @@ EOF
         # first; afterwards ANY surviving `-karakeep*` container is a failure,
         # since the tear-down uses remove_orphans across three containers.
         if ! docker ps --all --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-karakeep$'; then
+            grep -Eq '^'"$integration_project_namespace"'-karakeep$'; then
           printf '%s\n' \
             'the karakeep container is not present, so the teardown below proves nothing' >&2
           exit 1
         fi
         run_play --tags karakeep -e karakeep_deployment_enabled=false
         if docker ps --all --format '{{.Names}}' |
-            grep -Eq '^'$integration_project_namespace'-karakeep'; then
+            grep -Eq '^'"$integration_project_namespace"'-karakeep'; then
           printf '%s\n' \
             'disabling karakeep_deployment_enabled left a karakeep container in place' >&2
           exit 1
@@ -1465,8 +1475,8 @@ EOF
       # narrower upload/backup fixture that proves database recovery without
       # waiting for generated assets or inference.
 
-    if [ $INTEGRATION_SUITE = full ] && \
-       [ $INTEGRATION_RUN_SERVICE_SCENARIOS = true ]; then
+    if [ "$INTEGRATION_SUITE" = full ] && \
+       [ "$INTEGRATION_RUN_SERVICE_SCENARIOS" = true ]; then
       env \
         PLATFORM_KIND=integration \
         PLATFORM_CONTRACT_VAULT_FILE="$vault_file" \
@@ -1475,14 +1485,14 @@ EOF
         PLATFORM_MEDIA_ROOT="$sandbox/volume2" \
         PLATFORM_FIXTURE_ROOT="$sandbox/fixtures" \
         PLATFORM_REPORT_ROOT="$sandbox/reports" \
-        PLATFORM_JELLYFIN_CONTAINER=$integration_project_namespace-jellyfin \
-        PLATFORM_PROJECT_NAME=$integration_project_namespace \
-        PLATFORM_AUDIOBOOKSHELF_CONTAINER=$integration_project_namespace-audiobookshelf \
-        PLATFORM_IMMICH_SERVER_CONTAINER=$integration_project_namespace-immich-server \
-        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER=$integration_project_namespace-immich-machine-learning \
-        PLATFORM_IMMICH_REDIS_CONTAINER=$integration_project_namespace-immich-redis \
-        PLATFORM_IMMICH_POSTGRES_CONTAINER=$integration_project_namespace-immich-postgres \
-        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER=$integration_project_namespace-paperless-webserver \
+        PLATFORM_JELLYFIN_CONTAINER="$integration_project_namespace-jellyfin" \
+        PLATFORM_PROJECT_NAME="$integration_project_namespace" \
+        PLATFORM_AUDIOBOOKSHELF_CONTAINER="$integration_project_namespace-audiobookshelf" \
+        PLATFORM_IMMICH_SERVER_CONTAINER="$integration_project_namespace-immich-server" \
+        PLATFORM_IMMICH_MACHINE_LEARNING_CONTAINER="$integration_project_namespace-immich-machine-learning" \
+        PLATFORM_IMMICH_REDIS_CONTAINER="$integration_project_namespace-immich-redis" \
+        PLATFORM_IMMICH_POSTGRES_CONTAINER="$integration_project_namespace-immich-postgres" \
+        PLATFORM_PAPERLESS_WEBSERVER_CONTAINER="$integration_project_namespace-paperless-webserver" \
         ruby /repo/tests/run_contracts.rb --execute
       run_audiobookshelf_contract authentication-session-cleanup
     fi
@@ -1493,7 +1503,7 @@ EOF
     # has no pipefail. A play that died would reach the recap check below with
     # whatever partial output it managed to print.
     idempotence_status=0
-    run_selected_play $@ >/tmp/second.txt 2>&1 || idempotence_status=$?
+    run_selected_play "$@" >/tmp/second.txt 2>&1 || idempotence_status=$?
     cat /tmp/second.txt
     if [ "$idempotence_status" -ne 0 ]; then
       printf 'NOT IDEMPOTENT: second run failed with status %s\n' \
@@ -1523,7 +1533,7 @@ EOF
       exit 1
     fi
     printf '\n=== phase 3: asserting --check --diff works ===\n'
-    if run_selected_play $@ --check --diff; then
+    if run_selected_play "$@" --check --diff; then
       printf 'CHECK MODE OK: dry run completed\n'
     else
       printf 'CHECK MODE BROKEN: dry run failed\n' >&2
