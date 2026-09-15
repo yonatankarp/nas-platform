@@ -410,18 +410,15 @@ def fixture_paths(root = ROOT)
     paths.concat(contract_program_files(root, expected_path))
   end
 
-  # tests/policy_ci_test.rb requires a static foundation contract beside every
-  # planned acquisition lane. Those scripts are not registry contracts -- the
-  # registry only carries services that are built -- so name them from the same
-  # two sources the policy reads: the catalog says which projects are acquisition
-  # lanes, the manifest says which of them are still planned. Without them every
-  # mutation would fail on the absent contract rather than on the mutation.
-  acquisition_catalog = YAML.safe_load_file(File.join(root, "config", "media-acquisition.yml"))
-  acquisition_catalog.fetch("projects").each_key do |project|
-    next unless statuses[project] == "planned"
-
-    paths << File.join("tests", "contracts", "#{project}-foundation.sh")
-  end
+  # The planned acquisition projects' tests/contracts/<project>-foundation.sh
+  # wrappers used to be added here, derived from the catalog and the manifest so
+  # a promotion did not need an edit. Two things ended it: every project is
+  # implemented, so the derivation has selected nothing for some time, and #639
+  # deleted the wrappers themselves. A derived list that selects nothing is the
+  # harder half to notice, which is why it is recorded here rather than simply
+  # removed -- if a `planned` project is ever added back, what it needs in the
+  # sandbox is whatever its contract reads, and BASE_FIXTURE_PATHS above is
+  # where that is stated.
   paths.uniq
 end
 

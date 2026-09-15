@@ -873,98 +873,24 @@ expect_acquisition_failure.call(
   mutate_manifest(root) { |document| service(document, "seerr")["status"] = "planned" }
 end
 
-run_foundation_wrapper = lambda do |filename:, mode: 0o755, mutate: nil, ruby_selection: nil,
-                                   invocation_mode: "static", trace: false|
-  # Outside the audit like the acquisition rows above, and for the same reason:
-  # the checker it runs -- the foundation script, or the contract wrapper itself
-  # -- is not one of the eight, so there is no detecting set to re-derive. It
-  # execs that checker directly, so it counts its own run.
-  record_direct_audit_bypass(:foundation_wrapper)
-  Dir.mktmpdir("nas-platform-foundation-wrapper-") do |root|
-    copy_fixture(ROOT, root)
-    initialize_fixture_index(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    source = File.binread(File.join(ROOT, "tests", "contracts", "arr-foundation.sh"))
-    source = mutate.call(source) if mutate
-    relative_path = File.join("tests", "contracts", filename)
-    wrapper = File.join(root, relative_path)
-    File.binwrite(wrapper, source)
-    File.chmod(mode, wrapper)
-    _add_output, add_error, add_status = capture3_without_git_routing(
-      "git", "add", "--", relative_path, chdir: root
-    )
-    raise "could not stage foundation wrapper fixture: #{add_error.lines.first&.strip}" unless
-      add_status.success?
-
-    command = if ruby_selection
-                [RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", ruby_selection]
-              else
-                [*(trace ? ["sh", "-x"] : []), wrapper, invocation_mode]
-              end
-    clean_environment = ENV.each_key.grep(/\AGIT_/).to_h { |name| [name, nil] }
-    stdout, stderr, status = Open3.capture3(
-      clean_environment.merge("PLATFORM_CONTRACT_REPO_DIR" => root), *command, chdir: root
-    )
-    [stdout + stderr, status.success?]
-  end
-end
-
-{
-  "foundation wrapper filename exemption" => [
-    { filename: "arr-renamed-foundation.sh" },
-    "unknown acquisition foundation contract"
-  ],
-  "foundation wrapper project exemption" => [
-    { filename: "arr-foundation.sh", mutate: ->(source) { source.sub("arr|downloaders", "downloaders") } },
-    "unknown acquisition foundation contract"
-  ]
-}.each do |label, (arguments, diagnostic)|
-  output, succeeded = run_foundation_wrapper.call(**arguments)
-  failures << "#{label}: unexpectedly passed" if succeeded
-  failures << "#{label}: missing #{diagnostic.inspect}" unless output.include?(diagnostic)
-end
-
-{
-  "unknown filename" => [
-    { filename: "arr-renamed-foundation.sh", trace: true },
-    "unknown acquisition foundation contract"
-  ],
-  "invalid mode" => [
-    { filename: "arr-foundation.sh", invocation_mode: "secret-mode", trace: true },
-    "arr foundation contract accepts only static"
-  ]
-}.each do |label, (arguments, diagnostic)|
-  output, succeeded = run_foundation_wrapper.call(**arguments)
-  lines = output.lines(chomp: true)
-  initial_trace = lines.take_while { |line| line.match?(/\A\+ set (?:-eu|\+x)\z/) }
-  remaining = lines.drop(initial_trace.length)
-  failures << "foundation #{label} trace probe: unexpectedly passed" if succeeded
-  failures << "foundation #{label} trace probe: set +x was not the final initial trace" unless
-    initial_trace.last == "+ set +x"
-  failures << "foundation #{label} trace probe: leaked commands, paths, or assignments" unless
-    remaining == [diagnostic]
-end
-
-output, succeeded = run_foundation_wrapper.call(
-  filename: "arr-foundation.sh", mode: 0o644, ruby_selection: "arr"
-)
-failures << "foundation wrapper mode mutation: unexpectedly passed" if succeeded
-[
-  "tests/contracts/arr-foundation.sh must be a regular executable file",
-  "tests/contracts/arr-foundation.sh must be staged with Git mode 100755"
-].each do |diagnostic|
-  failures << "foundation wrapper mode mutation: missing #{diagnostic.inspect}" unless
-    output.include?(diagnostic)
-end
-
+# The foundation wrapper mutations stood here: five rows planting a renamed
+# tests/contracts/arr-foundation.sh, a project removed from its case list, a
+# non-static invocation mode, and a mode-0644 file, each proving the wrapper
+# refused. #639 deleted all seven wrappers, so there is nothing left to plant
+# into -- the one reachable caller ran `ruby tests/media_acquisition_foundation_test.rb
+# --project seerr`, which is the check the gate already runs bare plus a branch
+# whose only remaining work was verifying the wrapper's own bytes and mode.
+# The strict-CLI row below replaces the one that asserted the old --project
+# usage line, because that program now takes no arguments at all and says so.
 stdout, stderr, status = capture3_without_git_routing(
-  RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", "arr", "extra",
+  RbConfig.ruby, "tests/media_acquisition_foundation_test.rb", "--project", "arr",
   chdir: ROOT
 )
-failures << "foundation strict CLI: malformed selection unexpectedly passed" if status.success?
+failures << "foundation strict CLI: an argument unexpectedly passed" if status.success?
 failures << "foundation strict CLI: missing usage diagnostic" unless
-  (stdout + stderr).include?("usage: ruby tests/media_acquisition_foundation_test.rb [--project NAME]")
+  (stdout + stderr).include?(
+    "usage: ruby tests/media_acquisition_foundation_test.rb (this program takes no arguments)"
+  )
 
 %w[policy_test.rb policy_vault_test.rb].each do |caller|
   expect_failure(failures, "#{caller} substitutes the manifest status mapping",

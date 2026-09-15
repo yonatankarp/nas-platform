@@ -80,6 +80,40 @@ check(failures, !acquisition_projects.empty?,
 planned_acquisition_lanes = acquisition_projects & PolicySupport.planned_services(ROOT)
 implemented_acquisition_lanes = acquisition_projects & PolicySupport.implemented_services(ROOT)
 
+# Both lists are keyed on services/manifest.yml's status column, and every
+# acquisition project is implemented, so planned_acquisition_lanes is [] and the
+# three guards below that consult it hold nothing. That is dormancy rather than a
+# hole, and #639 went looking for the hole before saying so. A floor under the
+# implemented side and a both-directions check against the suite table were
+# written, measured against planted defects on a checkout of main, and then
+# deleted, because every failure mode they were meant to catch is already caught.
+# Two of the four are caught in this file and two are not, which is worth knowing
+# separately -- a reader here sees only the first pair:
+#
+#   caught HERE
+#     the manifest stops naming acquisition services -> "service_image_sources
+#       must cover every implemented service exactly once"
+#     an acquisition lane vanishes from suites.conf  -> "implemented acquisition
+#       suite <name> must converge at least one service role"
+#
+#   caught ELSEWHERE, and nothing in this file sees them
+#     a lane appears that no manifest entry implements -> tests/ci/
+#       classify_changes_test.rb and tests/ci/workflow_test.rb
+#     a status value is renamed, emptying both lists  -> EXPECTED_PROJECTS in
+#       tests/media_acquisition_foundation_test.rb, plus
+#       tests/deployment_gate_coverage_test.rb and tests/policy_test.rb
+#
+# A fifth check saying what four already say is still a fifth check, and this
+# file's subject is guards that report a verdict they did not establish. So what
+# is recorded here is the reasoning, and the list above is what a future reader
+# should re-measure before adding the floor back.
+#
+# Re-measure it against a real checkout of main. The first pass of this table was
+# written against a stale worktree and named a "service lane <name> must converge
+# ntfy" check that #676 had already deleted; on current main that row is caught
+# by the CI classifier's own tests instead, and it took re-running the plants on
+# b2f1841 to find that out.
+
 unless suite_rows.empty?
   suite_rows.each do |suite, kind, tags|
     next unless %w[acquisition service].include?(kind)
@@ -89,22 +123,19 @@ unless suite_rows.empty?
           "service lane #{suite} must converge host_prep and deployment_bundle, the shared prerequisites every service role needs")
   end
 
+  # Dormant, not vacuous -- the note above says what tells those apart. A project
+  # added to the catalog as `planned` converges only the shared inert foundation
+  # tags until it is promoted, and this is the row that says so. Its other half
+  # required tests/contracts/<lane>-foundation.sh; #639 deleted those seven
+  # byte-identical wrappers, of which one was reachable and its only contribution
+  # over the gate's own run was verifying that the seven were identical, so there
+  # is no per-lane contract left to require.
   planned_acquisition_lanes.each do |lane|
     row = suite_rows.find { |suite, _kind, _tags| suite == lane }
     check(failures,
           row && row.last == %w[host_prep deployment_bundle media_acquisition_foundation],
           "acquisition foundation suite #{lane} must converge only shared inert foundation tags")
-    contract = File.join(ROOT, "tests", "contracts", "#{lane}-foundation.sh")
-    check(failures, File.file?(contract),
-          "acquisition foundation suite #{lane} has no matching static contract")
   end
-end
-if File.file?(controller_path)
-  check(failures,
-        controller_body.include?(
-          '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static'
-        ),
-        "acquisition foundation suites must execute their matching static contract")
 end
 
 # Collections are pinned like every image.
@@ -365,6 +396,12 @@ service_image_sources.each do |service_tag, service_directory|
         "which has no compose.yml")
 end
 
+# The third guard keyed on planned_acquisition_lanes, and the one whose vacuity
+# is least visible: an intersection with an empty list is empty whatever the left
+# side holds, so this reads as a check and is an identity today. It is kept
+# because it is the correct rule for a planned lane -- a lane converging only the
+# inert foundation has no image to pull -- and because its dormancy is covered by
+# the checks listed beside planned_acquisition_lanes above.
 check(failures, (service_image_sources.map(&:first) & planned_acquisition_lanes).empty?,
       "planned acquisition foundation suites must have zero service image sources")
 
