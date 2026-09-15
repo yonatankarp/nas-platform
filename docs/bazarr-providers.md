@@ -10,7 +10,7 @@ declared from a reviewed schema rather than from a session in its web
 interface. It is the same treatment `roles/arr/files/configarr/` gives the
 pinned TRaSH documents, for the same reason.
 
-Derived from Bazarr **1.6.0**, the version `services/arr/compose.yml` pins.
+Derived from Bazarr **1.6.1**, the version `services/arr/compose.yml` pins.
 `tests/bazarr_provider_schema_test.rb` fails if that pin moves without this
 file being re-derived, because provider settings are upstream's to rename.
 
@@ -31,7 +31,7 @@ ansible-vault edit inventory/group_vars/all/vault_arr.yml
 
 ## Declared form
 
-Bazarr 1.6.0 splits form keys on hyphens, so neither a provider name nor a
+Bazarr 1.6.1 splits form keys on hyphens, so neither a provider name nor a
 setting suffix may contain one: the key is `settings-<provider>-<suffix>` and
 both `<provider>` and `<suffix>` must match `^[a-z][a-z0-9_]*$`. Booleans may
 be written as `true`/`false` or as the strings `"true"`/`"false"`.
@@ -66,10 +66,16 @@ how to obtain it.
 
 ## Subdl
 
+`ai_translate` and `include_ai_translated` are new in 1.6.1 and both default to
+off upstream, so the values below restate the default rather than choosing for
+the operator. They are the same pair OpenSubtitles.com already carries.
+
 ```yaml
   - name: subdl
     settings:
       settings-subdl-api_key: replace-me
+      settings-subdl-ai_translate: "false"
+      settings-subdl-include_ai_translated: "false"
 ```
 
 ## Subsource
