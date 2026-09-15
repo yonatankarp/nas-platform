@@ -188,6 +188,13 @@ def require_mutation_rejected(label)
   refuse("#{label} mutation was not detected") if yield
 end
 
+# The rule that refuses the backup filename reaching the restore shell as source
+# text rather than as a positional argument, as a predicate so that the mutation
+# rows below can run the real rule instead of asserting the literal they planted.
+def shell_source_free_of_filename?(source)
+  !source.include?("backupFilename") && !source.include?("immich_restore_backup_filename")
+end
+
 def safe_marker_copy?(candidate, expected_owner, expected_group)
   copy = candidate&.fetch("ansible.builtin.copy", {})
   content = copy.fetch("content", "").to_s
@@ -620,8 +627,8 @@ shell_source = argv.find { |value| value.to_s.include?("gzip -dc") }.to_s
 refuse("restore does not enable pipeline failure detection") unless argv.include?("pipefail")
 refuse("restore is not transactional and fail-fast") unless
   shell_source.include?("--single-transaction") && shell_source.include?("ON_ERROR_STOP=on")
-refuse("restore filename is interpolated into shell source") if
-  shell_source.include?("backupFilename") || shell_source.include?("immich_restore_backup_filename")
+refuse("restore filename is interpolated into shell source") unless
+  shell_source_free_of_filename?(shell_source)
 refuse("restore does not pass filename as a positional argv value") unless
   argv.include?("{{ immich_restore_backup_filename }}") && shell_source.include?('$1')
 refuse("restore target differs from database") unless
@@ -765,9 +772,18 @@ end
   require_mutation_rejected(label) { lifecycle_ordered?(mutated) }
 end
 
-mutated_shell = shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
-refuse("filename-injection mutation was not detected") unless
-  mutated_shell.include?("immich_restore_backup_filename")
+# The rule above, run against a mutant rather than restated against one. It used
+# to assert that shell_source.sub('$1', "{{ immich_restore_backup_filename }}")
+# contained "immich_restore_backup_filename" -- the literal the sub had just
+# inserted -- so it held for any predicate at all, including none, and would have
+# stayed green with the real rule deleted. Both interpolations the rule names get
+# a row, because a mutant for only one of them leaves the other term proved by
+# nothing.
+["{{ immich_restore_backup_filename }}", "backupFilename"].each do |interpolation|
+  require_mutation_rejected("filename injection via #{interpolation}") do
+    shell_source_free_of_filename?(shell_source.sub('$1', interpolation))
+  end
+end
 
 # The two clean-restore modes are dispatched by the contract's runtime half,
 # which #147 moved out of a heredoc in tests/contracts/immich.sh and into

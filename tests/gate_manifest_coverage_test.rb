@@ -244,6 +244,7 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/policy_platform_test.rb
   ruby tests/policy_integration_test.rb
   ruby tests/policy_deployment_test.rb
+  ruby tests/verify_deployment_manifest.rb --self-test
   ruby tests/gate_manifest_coverage_test.rb
   ruby tests/deployment_gate_coverage_test.rb
   tests/target_docker_dependency_preflight_test.sh

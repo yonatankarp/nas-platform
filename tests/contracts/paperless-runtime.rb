@@ -161,6 +161,11 @@ def seed_document_fixtures
     CONSUME_ROOT.join("task-13-contract.pdf"),
     pdf_bytes("Paperless PDF #{PDF_MARKER}")
   )
+  # Base64 because a PNG in the tree is a binary blob every diff and every
+  # fixture copy has to carry verbatim. What it says is legible in
+  # tests/fixtures/paperless-ocr.svg beside it, which is also what it was
+  # rendered from and how to render it again; the OCR assertions below are held
+  # against that file by tests/paperless_contract_test.rb.
   write_fixture(
     CONSUME_ROOT.join("task-13-contract.png"),
     REPO_ROOT.join("tests/fixtures/paperless-ocr.png.base64").read.delete("\n").unpack1("m0")

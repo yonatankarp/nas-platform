@@ -570,6 +570,18 @@ end
 check(failures, harness.include?('stale_docker_root="$sandbox/stale-root/Docker"') &&
                 controller.include?(%(test ! -e "$sandbox/volume1/Docker/nas-platform")),
       "integration must isolate stale replacement from the genuinely fresh service root")
+# tests/verify_deployment_manifest.rb carries a --self-test of its own: it stages
+# a repository and a release, proves the verifier accepts the pair, then deletes
+# the canonical Configarr image from the manifest and proves it refuses with the
+# exact diagnostic. Sixty-six lines, 29% of that file, and until #657 nothing ran
+# it -- tests/integration_controller.sh invokes the verifier three times and never
+# with that argument, so the harness proving the verifier works was itself proved
+# by nothing and would have passed with its own mutation deleted. The gate runs it
+# now, and this is the line that says so: dropping it from the manifest fails here
+# rather than silently retiring the self-test.
+check(failures, File.readlines(File.join(ROOT, "tests", "validate-policy.sh"), chomp: true)
+                    .include?("ruby tests/verify_deployment_manifest.rb --self-test"),
+      "policy validation must run the deployment manifest verifier's own self-test")
 manifest_verifier = File.read(File.join(ROOT, "tests", "verify_deployment_manifest.rb"))
 check(failures, manifest_verifier.include?("require-image-merge") &&
                 manifest_verifier.include?("if require_image_merge"),
