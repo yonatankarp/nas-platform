@@ -821,6 +821,6 @@ end
 end
 refuse("Immich restore scenarios are not owned by the Immich suite") unless
   integration_text.include?("suite_is immich; then") &&
-  integration_text.include?("[ $INTEGRATION_SUITE = immich ]")
+  integration_text.include?('[ "$INTEGRATION_SUITE" = immich ]')
 
 puts "Immich restore quality contract passed"
