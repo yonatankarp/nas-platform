@@ -1212,12 +1212,26 @@ def sync_tooling(config: Config, log=None) -> None:
     # Collections are a separate dependency set from the Python pins, and the
     # modules the playbooks call live in them. This one reaches
     # galaxy.ansible.com, so it takes the same ladder for the same reason.
+    #
+    # --no-cache, and here it matters more than anywhere else the platform runs
+    # ansible-galaxy. The Galaxy API response cache is written in two steps: a
+    # blank entry carrying a 24-hour expiry, then its `results` when the response
+    # arrives. A run that dies between them leaves an entry every later read
+    # refuses by name, and the ladder below does not help because that refusal is
+    # deterministic rather than transient. HOME is the checkout's parent, which
+    # is a directory on the NAS that survives every deployment, so a poisoned
+    # entry there fails this call on every candidate revision for a day -- and
+    # this poller is the thing that would otherwise apply a fix merged to main,
+    # so the only route out would be editing the host by hand. Nothing is given
+    # up: --force re-downloads the artifact regardless, so the cache was saving a
+    # version lookup on a path that was going to fetch anyway.
     _run_network_command(
         [
             _tooling_bin(config) / "ansible-galaxy",
             "collection",
             "install",
             "--force",
+            "--no-cache",
             "--requirements-file",
             str(config.checkout / "requirements.yml"),
             "--collections-path",

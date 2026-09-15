@@ -1043,6 +1043,29 @@ class DeployTest(DeployHarness, PollerTestCase):
             with self.subTest(play=" ".join(call[-1:])):
                 self.assertEqual(options["env"]["ANSIBLE_COLLECTIONS_PATH"], expected)
 
+    def test_the_collection_install_declines_the_galaxy_api_cache(self):
+        """The HOME this call runs under is the checkout's parent, a directory
+        that survives every deployment, and ansible-galaxy writes its API cache
+        entry blank before filling in `results` -- so a run that dies between the
+        two poisons that HOME for 24 hours and fails this call on every candidate
+        revision afterwards. The ladder does not recover it: the refusal is
+        deterministic, and this poller is what would otherwise apply the fix.
+        --force re-downloads regardless, so the cache was buying a version lookup
+        on a path that fetches anyway."""
+
+        config = self.loaded_config()
+        _outcome, calls, kwargs = self.deploy_with(config)
+
+        galaxy_index = next(
+            i for i, c in enumerate(calls) if c[0].endswith("ansible-galaxy")
+        )
+        self.assertIn("--no-cache", calls[galaxy_index])
+        # Stated here because the flag is only worth anything against a HOME that
+        # persists; an ephemeral one would make it a formality.
+        self.assertEqual(
+            kwargs[galaxy_index]["env"]["HOME"], str(config.checkout.parent)
+        )
+
     def test_collections_install_before_any_play_runs(self):
         config = self.loaded_config()
         _outcome, calls, _kwargs = self.deploy_with(config)
