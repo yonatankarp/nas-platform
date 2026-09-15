@@ -289,9 +289,12 @@ check(failures, !status.success? &&
                 output.include?("tests/contracts/support/helper.rb: sibling Ruby program has invalid syntax"),
       "unreferenced sibling Ruby library was not parsed")
 
-# The shape neither sweep sees: no heredoc and no sibling, which is what the
-# four *-foundation.sh contracts are. Both new loops run over nothing, and a
-# contract that was already legal has to stay legal.
+# The shape neither sweep sees: no heredoc and no sibling. The seven
+# *-foundation.sh contracts were the example this named -- as "four", which they
+# never were -- and #639 deleted them, so the shape has no instance in the tree
+# today. That is the reason to keep the row rather than to drop it: the legality
+# of a wrapper that carries neither is asserted by nothing else, and a rule with
+# no live subject is exactly what stops being true unnoticed.
 output, status = run_registry(
   registry: registry,
   contracts: { "komga.sh" => "#!/bin/sh\n# see tests/contracts/komga_retired.rb\nexec true\n" }

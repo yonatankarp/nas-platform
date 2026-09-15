@@ -708,9 +708,17 @@ EOF
     # both readers, and a foundation nobody verifies is a foundation nobody
     # would notice breaking. It runs first and then falls through to Seerr's
     # own arm below rather than exiting here.
+    #
+    # The static half is not re-run here. It used to be, through
+    # tests/contracts/seerr-foundation.sh, which ran exactly
+    # `ruby tests/media_acquisition_foundation_test.rb --project seerr` -- the
+    # check the gate already runs bare, plus a --project branch whose only
+    # remaining work was verifying the wrapper's own bytes and mode. Seven
+    # byte-identical wrappers dispatching on basename, of which this was the one
+    # reachable caller, and what it proved over the gate was that the seven were
+    # identical (#639). What is left below is the part nothing else does.
     case $INTEGRATION_SUITE in
       seerr)
-        "/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static
         converge_media_acquisition_reader_prerequisites
         run_media_acquisition_foundation_verify
         printf 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED\n'

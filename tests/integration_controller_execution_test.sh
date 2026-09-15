@@ -205,13 +205,15 @@ STUB
   # environment ABI, so the contract records the two variables whose derivation
   # from the disposable namespace is the property under test.
   #
-  # jellyfin-foundation and komga-foundation exist for a lane that must never
-  # reach them. The acquisition foundation dispatch is a *closed* case arm, and
-  # a closedness assertion that only holds because the stub is absent would be
-  # detecting a missing fixture rather than an opened arm -- so the fixture is
-  # present and the absence of the invocation is what is asserted.
-  for contract_name in arr downloaders bindery trailarr seerr seerr-foundation \
-      kapowarr pinchflat jellyfin jellyfin-foundation komga komga-foundation; do
+  # The three *-foundation stubs stood here, present rather than absent on
+  # purpose: a closedness assertion that held only because a stub was missing
+  # would be detecting a missing fixture rather than an opened case arm. #639
+  # removed the dispatch they stood for -- the seven byte-identical
+  # tests/contracts/*-foundation.sh wrappers, of which one was reachable -- so
+  # there is no invocation for a stub to record, and the arm's closedness is now
+  # carried by the two tag assertions in case_jellyfin instead.
+  for contract_name in arr downloaders bindery trailarr seerr \
+      kapowarr pinchflat jellyfin komga; do
     {
       stub_preamble
       cat <<STUB
@@ -666,18 +668,17 @@ case_bindery() {
 }
 
 # Seerr is the last acquisition project, so the shared inert foundation's own
-# runtime proof lives in its lane: the static foundation contract, the reader
-# prerequisites converge, and a verification play whose only fact is the tag.
+# runtime proof lives in its lane: the reader prerequisites converge, and a
+# verification play whose only fact is the tag. The static half is not re-run
+# here -- #639 removed that call, because it ran exactly the check the gate
+# already runs bare plus a branch that verified the wrapper's own bytes.
 case_seerr() {
   run_controller seerr host_prep,deployment_bundle,arr,jellyfin,seerr \
     true true site.yml
   expect_status 0
-  expect_log 'contract seerr-foundation argv=[static]'
   expect_log '[site.yml][--tags][audiobookshelf]'
   expect_log '[{repo}/verify.yml][--tags][platform_verify_media_acquisition_foundation]'
   expect_output 'MEDIA_ACQUISITION_FOUNDATION_RUNTIME_VERIFIED'
-  expect_log_order 'contract seerr-foundation argv=[static]' \
-    '[site.yml][--tags][audiobookshelf]'
   expect_log_order \
     '[site.yml][--tags][audiobookshelf]' \
     '[{repo}/verify.yml][--tags][platform_verify_media_acquisition_foundation]'
@@ -705,12 +706,13 @@ case_jellyfin() {
   expect_log_order 'contract jellyfin argv=[seed]' 'contract jellyfin argv=[run]'
   expect_log 'contract jellyfin env=[PLATFORM_PROJECT_NAME=<unset>][PLATFORM_JELLYFIN_CONTAINER={ns}-jellyfin][PLATFORM_KIND=integration]'
   # The acquisition foundation dispatch is a closed case arm: no lane but the
-  # last acquisition project's runs the shared foundation's static contract, its
-  # reader prerequisites or its verification. The text assertion this replaces
-  # -- `grep -qF 'seerr)'` -- could not see that, because the same string also
-  # appears in the `arr|downloaders|bindery|trailarr|seerr)` arm forty lines
-  # earlier, so it would have passed with the dispatch arm deleted outright.
-  expect_no_log 'contract jellyfin-foundation'
+  # last acquisition project's runs the shared foundation's reader prerequisites
+  # or its verification. The text assertion this replaces -- `grep -qF 'seerr)'`
+  # -- could not see that, because the same string also appears in the
+  # `arr|downloaders|bindery|trailarr|seerr)` arm forty lines earlier, so it
+  # would have passed with the dispatch arm deleted outright. The third
+  # assertion here was `expect_no_log 'contract jellyfin-foundation'`; it went
+  # with the wrappers in #639, and the two below carry the closedness alone.
   expect_no_log '[--tags][audiobookshelf]'
   expect_no_log '[--tags][platform_verify_media_acquisition_foundation]'
 }
@@ -954,8 +956,12 @@ plant 'verification provider policy dropped' bindery library \
   '-e "$integration_media_usenet_provider" "$@"' '"$@"' 1
 plant 'declared downloader verification-only play dropped' bindery program \
   'run_downloaders_verify_only' ':' 2
-plant 'acquisition foundation contract dropped' seerr program \
-  '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static' ':' 1
+# The 'acquisition foundation contract dropped' plant stood here, anchored on
+# '"/repo/tests/contracts/$INTEGRATION_SUITE-foundation.sh" static'. #639 removed
+# that call along with the seven wrappers behind it, so the plant goes with the
+# property rather than instead of it -- there is no invocation left whose removal
+# it could detect. The two plants below still hold the parts of the seerr arm
+# that do work nothing else does.
 plant 'acquisition reader prerequisites dropped' seerr program \
   'converge_media_acquisition_reader_prerequisites' ':' 1
 plant 'acquisition foundation verification dropped' seerr program \
