@@ -65,7 +65,7 @@
     - jellyfin_library_identity_match.CollectionType == item.desired.collection_type
     - >-
       jellyfin_library_identity_match.ItemId | default('') | string
-      is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      is match(platform_safe_api_identifier_pattern)
     - jellyfin_library_identity_match.Locations | default(none) | type_debug == 'list'
     - >-
       jellyfin_library_identity_match.Locations | select('string') | list | length ==
@@ -96,7 +96,7 @@
           jellyfin_library_identity_folder_count | int and
         jellyfin_library_identity_folders | map(attribute='ItemId') |
           select('string') |
-          select('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$') | list | length ==
+          select('match', platform_safe_api_identifier_pattern) | list | length ==
           jellyfin_library_identity_folder_count | int and
         jellyfin_library_identity_folders | selectattr('CollectionType', 'defined') |
           list | length == jellyfin_library_identity_folder_count | int and

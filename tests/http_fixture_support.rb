@@ -32,7 +32,6 @@ module HttpFixtureSupport
   # tests/ci/ or tests/mac/ gets the same repository root as one directly in
   # tests/.
   REPOSITORY_ROOT = File.expand_path("..", __dir__)
-
   # The reason phrases the fixtures used to spell out one map at a time. A
   # caller states its own with reason:, as a literal phrase, a status-to-phrase
   # mapping falling back to UNKNOWN_REASON, or anything callable with a status.
@@ -238,6 +237,19 @@ module HttpFixtureSupport
     end
   end
 
+  # Platform facts a role task file reads from inventory/group_vars/all/main.yml,
+  # which a one-play fixture playbook never loads. Read from that file rather
+  # than restated, so a probe asserts the production value; a probe that passes
+  # its own still wins, because these sit underneath it. Read when a playbook
+  # runs rather than when this file is required: several contract fixtures copy
+  # this helper into a tree that carries no inventory and never run a playbook.
+  # fetch, not slice, so a renamed key fails here rather than as an undefined
+  # variable inside whichever role reads it.
+  def platform_fixture_variables
+    vars = YAML.safe_load_file(File.join(REPOSITORY_ROOT, "inventory", "group_vars", "all", "main.yml"))
+    { "platform_safe_api_identifier_pattern" => vars.fetch("platform_safe_api_identifier_pattern") }
+  end
+
   # Runs +tasks+ as a one-play playbook against the local connection, the way
   # every behavior test reaches a role's task file without a real inventory.
   #
@@ -251,7 +263,7 @@ module HttpFixtureSupport
       File.write(
         playbook,
         YAML.dump([{ "hosts" => hosts, "gather_facts" => gather_facts,
-                     "vars" => variables, "tasks" => tasks }]),
+                     "vars" => platform_fixture_variables.merge(variables), "tasks" => tasks }]),
         mode: "w", perm: 0o600
       )
       Open3.capture3(

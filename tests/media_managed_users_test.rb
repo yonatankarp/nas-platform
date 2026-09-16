@@ -22,6 +22,7 @@ include TestScaffold
 # selectors readable next to each other rather than repeated down a column.
 PROBES = [
   [%w[all audiobookshelf], method(:exercise_audiobookshelf)],
+  [%w[all audiobookshelf], method(:exercise_audiobookshelf_converged)],
   [%w[all jellyfin], method(:exercise_jellyfin)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_settings)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_server_configuration_refresh)],
@@ -76,7 +77,8 @@ SERVICES.each do |service|
   # The shim's own obligations, which the lifecycle above no longer covers for a
   # service that has adopted the shared role.
   if SHARED_MANAGED_USER_TITLES.key?(service)
-    failures.concat(komga_shim_failures(
+    failures.concat(shim_failures(
+                      service,
                       YAML.safe_load_file(managed_path, aliases: false),
                       YAML.safe_load_file(File.join(ROOT, "roles", service, "defaults", "main.yml"),
                                           aliases: false)
@@ -119,7 +121,7 @@ if ARGV == ["--self-test"] && failures.empty?
     plant.call("#{service} password-update",
                contract_failures(service, mutant).any? { |failure| failure.include?("secret fields") })
 
-    if %w[audiobookshelf jellyfin].include?(service)
+    if service == "jellyfin"
       plant.call("#{service} pinned merge/body",
                  contract_failures(service, mutant).any? do |failure|
                    failure.match?(/split|complete current policy/)
@@ -132,34 +134,46 @@ if ARGV == ["--self-test"] && failures.empty?
                  failure.include?("Verify exact")
                end)
 
-    next unless service == "komga"
+    next unless SHARED_MANAGED_USER_TITLES.key?(service)
 
     # The shim's two halves of the vault-password route, each planted on its own.
-    shim = YAML.safe_load_file(KOMGA_SHIM, aliases: false)
-    defaults = YAML.safe_load_file(File.join(ROOT, "roles", "komga", "defaults", "main.yml"),
+    title = SHARED_MANAGED_USER_TITLES.fetch(service)
+    shim = YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "managed_users.yml"),
+                               aliases: false)
+    defaults = YAML.safe_load_file(File.join(ROOT, "roles", service, "defaults", "main.yml"),
                                    aliases: false)
     rebound = Marshal.load(Marshal.dump(shim))
     rebound.find { |task| task.key?("ansible.builtin.include_role") }
-           .fetch("vars")["managed_users_declared"] = "{{ komga_unmanaged_users }}"
-    plant.call("Komga shim declared-set",
-               komga_shim_failures(rebound, defaults).any? do |failure|
+           .fetch("vars")["managed_users_declared"] = "{{ #{service}_unmanaged_users }}"
+    plant.call("#{title} shim declared-set",
+               shim_failures(service, rebound, defaults).any? do |failure|
                  failure.include?("managed_users_declared")
                end)
 
     detached = Marshal.load(Marshal.dump(shim))
     detached.find { |task| task.key?("ansible.builtin.include_role") }
-            .fetch("ansible.builtin.include_role")["name"] = "komga"
-    plant.call("Komga shim shared-role",
-               komga_shim_failures(detached, defaults).any? do |failure|
+            .fetch("ansible.builtin.include_role")["name"] = service
+    plant.call("#{title} shim shared-role",
+               shim_failures(service, detached, defaults).any? do |failure|
                  failure.include?("does not include the shared managed-user role")
                end)
 
     credentialed = Marshal.load(Marshal.dump(defaults))
-    credentialed["komga_managed_users_repair_body"]["password"] = "{{ item.password }}"
-    plant.call("Komga declared repair-body password",
-               komga_shim_failures(shim, credentialed).any? do |failure|
+    credentialed["#{service}_managed_users_repair_body"]["password"] = "{{ item.password }}"
+    plant.call("#{title} declared repair-body password",
+               shim_failures(service, shim, credentialed).any? do |failure|
                  failure.include?("secret fields")
                end)
+
+    if service == "audiobookshelf"
+      unsplit = Marshal.load(Marshal.dump(defaults))
+      unsplit["audiobookshelf_managed_users_repair_body"].delete("itemTagsSelected")
+      plant.call("Audiobookshelf declared pinned repair body",
+                 shim_failures(service, shim, unsplit).any? do |failure|
+                   failure.include?("split the pinned permission fields")
+                 end)
+      next
+    end
 
     KOMGA_AUTH_PASSWORD_EXPRESSIONS.each do |auth_name, expected_password|
       wrong_password = Marshal.load(Marshal.dump(tasks))
@@ -174,13 +188,15 @@ if ARGV == ["--self-test"] && failures.empty?
 
   detected.each { |label| puts "self-test detected: #{label}" }
   # A stated count rather than non-emptiness: each of the three services plants a
-  # password-update and a final-verification, audiobookshelf and jellyfin add
-  # their pinned repair body, and Komga adds three shim plants and its two
+  # password-update and a final-verification; jellyfin adds its pinned repair
+  # body; each shim service (audiobookshelf, komga) adds three shim plants;
+  # audiobookshelf adds its declared pinned repair body and Komga its two
   # authenticate expressions. A service the loop stopped reaching would still
-  # leave this list non-empty, and the first draft of this line said 17 -- which
-  # is the whole reason the tally is printed rather than counted in a comment.
-  failures << "media managed-user self-test planted #{detected.length} defects, expected 13" unless
-    detected.length == 13
+  # leave this list non-empty, and the first draft of this line said 17 against
+  # an actual 13 -- which is the whole reason the tally is printed rather than
+  # counted in a comment.
+  failures << "media managed-user self-test planted #{detected.length} defects, expected 16" unless
+    detected.length == 16
 end
 
 if ARGV.empty?

@@ -83,6 +83,114 @@ def exercise_audiobookshelf(failures)
   end
 end
 
+# The run where nothing needs creating and nothing needs repairing, which
+# exercise_audiobookshelf above never reaches: it drives a missing identity and a
+# drifted one, so every guard it exercises is exercised on its FAILING branch.
+# A fail_msg that dies when it is finalized dies on the PASSING one, and since
+# #647 routed this service's messages and conditions through roles/managed_users
+# a converged fixture is the only run that asks whether reconciliation can
+# report success at all. It is also what proves the repair decision is a
+# decision: exercise_audiobookshelf would still pass if every identity were
+# always repaired. The pinned-exact username is part of the fixture: the login
+# response echoes it exactly, which is the only thing this service accepts.
+def exercise_audiobookshelf_converged(failures)
+  permissions = {
+    "download" => true, "update" => false, "delete" => false, "upload" => false,
+    "createEreader" => false, "accessAllLibraries" => false, "accessAllTags" => true,
+    "accessExplicitContent" => false, "selectedTagsNotAccessible" => false
+  }
+  users = [
+    { "id" => "abs-reader", "username" => "reader", "type" => "user", "isActive" => true,
+      "permissions" => permissions, "librariesAccessible" => ["library-a"],
+      "itemTagsSelected" => ["tag-a"] },
+    { "id" => "abs-unmanaged", "username" => "friend", "type" => "admin", "isActive" => false,
+      "permissions" => permissions, "librariesAccessible" => [], "itemTagsSelected" => [] }
+  ]
+  managed = [
+    { "username" => "reader", "password" => "reader-secret", "type" => "user",
+      "is_active" => true,
+      "permissions" => { "flags" => { "accessAllLibraries" => false, "download" => true },
+                         "librariesAccessible" => ["library-a"],
+                         "itemTagsSelected" => ["tag-a"] } }
+  ]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/users"]
+      [200, { "users" => users, "total" => users.length, "hasMore" => false }]
+    when ["POST", "/login"]
+      body = request.fetch("json")
+      body == { "username" => "reader", "password" => "reader-secret" } ?
+        [200, { "user" => { "username" => "reader" } }] : [401, {}]
+    else [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "audiobookshelf_api" => "http://127.0.0.1:#{port}",
+      "vault_managed_audiobookshelf_users" => managed
+    }
+    stdout, stderr, status = run_playbook(includes_for("audiobookshelf", "fixture-token"), variables)
+    output = stdout + stderr
+    failures << "Audiobookshelf converged fixture failed: #{failure_tail(output)}" unless
+      status.success?
+    mutations = requests.select { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) &&
+                                            request["target"] != "/login" }
+    failures << "Audiobookshelf converged fixture mutated a converged service: " \
+                "#{mutations.map { |request| request['target'] }}" unless mutations.empty?
+    failures << "Audiobookshelf converged fixture did not authenticate the existing identity" unless
+      requests.count { |request| request["target"] == "/login" } == 1
+    failures << "Audiobookshelf converged fixture sent basic credentials" if
+      requests.any? { |request| request.fetch("headers").key?("authorization") &&
+                                !request.dig("headers", "authorization").start_with?("Bearer ") }
+    failures << "Audiobookshelf converged fixture did not reach its final verification" unless
+      requests.count { |request| request["target"] == "/api/users" && request["method"] == "GET" } == 3
+  end
+
+  # The same converged service reviewed under --check must plan nothing.
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "audiobookshelf_api" => "http://127.0.0.1:#{port}",
+      "vault_managed_audiobookshelf_users" => managed
+    }
+    stdout, stderr, status = run_playbook([includes_for("audiobookshelf", "fixture-token").first],
+                                          variables, "--check")
+    output = stdout + stderr
+    failures << "Audiobookshelf converged review failed: #{failure_tail(output)}" unless status.success?
+    %w[AUDIOBOOKSHELF_PLAN_MANAGED_USER_CREATE AUDIOBOOKSHELF_PLAN_MANAGED_USER_REPAIR].each do |literal|
+      failures << "Audiobookshelf converged review reported #{literal}" if output.include?(literal)
+    end
+    failures << "Audiobookshelf converged review sent a request beyond the listing" unless
+      requests.all? { |request| request["method"] == "GET" && request["target"] == "/api/users" }
+  end
+
+  # The refusal this service has always made and komga does not: a login that
+  # succeeds but echoes the declared username in another case is not proof the
+  # declared identity holds that password. roles/managed_users compares komga's
+  # emails normalised, so this is the row that fails if audiobookshelf ever
+  # inherits that comparison.
+  recased = lambda do |request|
+    request["target"] == "/login" ? [200, { "user" => { "username" => "Reader" } }] : responder.call(request)
+  end
+  with_http_service(recased) do |port, requests|
+    variables = {
+      "audiobookshelf_api" => "http://127.0.0.1:#{port}",
+      "vault_managed_audiobookshelf_users" => managed
+    }
+    stdout, stderr, status = run_playbook([includes_for("audiobookshelf", "fixture-token").first],
+                                          variables)
+    output = stdout + stderr
+    failures << "Audiobookshelf re-cased login echo was accepted" if status.success?
+    failures << "Audiobookshelf re-cased login echo did not refuse with its own diagnostic: " \
+                "#{failure_tail(output)}" unless
+      HttpFixtureSupport.refused_with?(
+        output, "Existing Audiobookshelf managed user does not accept its preserved vault password."
+      )
+    failures << "Audiobookshelf re-cased login echo reached a mutation" if
+      requests.any? { |request| %w[PUT PATCH DELETE].include?(request["method"]) ||
+        (request["method"] == "POST" && request["target"] != "/login") }
+  end
+end
+
 def exercise_jellyfin(failures)
   default_policy = {
     "AuthenticationProviderId" => "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider",

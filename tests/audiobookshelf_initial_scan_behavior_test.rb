@@ -16,8 +16,14 @@ include TestScaffold
 
 MAIN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "main.yml")
 SCAN_TASKS = File.join(ROOT, "roles", "audiobookshelf", "tasks", "initial_scan.yml")
+# The role's defaults, plus the one platform fact its task files read from
+# inventory/group_vars/all/main.yml, which this one-play harness never loads.
 DEFAULTS = YAML.safe_load_file(
   File.join(ROOT, "roles", "audiobookshelf", "defaults", "main.yml"), aliases: false
+).merge(
+  "platform_safe_api_identifier_pattern" =>
+    YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+        .fetch("platform_safe_api_identifier_pattern")
 )
 MARKER_NAME = ".nas-platform-initial-scan.json"
 LIBRARY_ID = "managed-library"

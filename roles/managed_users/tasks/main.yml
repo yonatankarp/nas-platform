@@ -232,8 +232,7 @@
 
 - name: "Refuse incomplete managed-user listing: {{ managed_users_title }}"
   ansible.builtin.assert:
-    that:
-      - managed_users_list_json | type_debug == 'list'
+    that: "{{ managed_users_listing_conditions }}"
     fail_msg: >-
       {{ managed_users_title }} returned an unsupported or paginated users
       response; reconciliation is refusing a partial identity view.
@@ -284,7 +283,7 @@
       - >-
         managed_users_matches[item[managed_users_identity_attribute]] | length == 0 or
         managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute]
-          | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+          | string is match(platform_safe_api_identifier_pattern)
     fail_msg: >-
       {{ managed_users_title }} returned an unsafe managed-user API identifier.
   loop: "{{ managed_users_declared }}"
@@ -296,17 +295,28 @@
 # vault password is the one value this role must not route through an
 # indirection: a parameter would make the check that proves the vault password
 # reaches this request a check on a name rather than on a value.
+#
+# That holds for a basic-auth probe. A service that proves the credential in a
+# request body instead (audiobookshelf) sets managed_users_authenticate_basic
+# false, which omits url_username and url_password entirely -- the request its
+# own file sent carried neither -- and its body reads the password from
+# managed_users_authenticating_user, bound below to the same declared user. What
+# proves that value reaches the body is behavioural: the audiobookshelf probes
+# in tests/media_probes_services.rb assert the exact login body the stub saw.
 - name: "Authenticate existing managed users: {{ managed_users_title }}"
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
     method: "{{ managed_users_authenticate_method }}"
-    url_username: "{{ item[managed_users_identity_attribute] }}"
-    url_password: "{{ item.password }}"
+    url_username: >-
+      {{ item[managed_users_identity_attribute] if managed_users_authenticate_basic else omit }}
+    url_password: "{{ item.password if managed_users_authenticate_basic else omit }}"
     force_basic_auth: "{{ managed_users_authenticate_basic }}"
     body_format: "{{ managed_users_authenticate_body_format }}"
     body: "{{ managed_users_authenticate_body }}"
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
+  vars:
+    managed_users_authenticating_user: "{{ item }}"
   register: managed_users_authentication
   when:
     - managed_users_phase == 'reconcile'
@@ -324,8 +334,11 @@
     that:
       - item.status | default(0) | int == 200
       - >-
-        managed_users_authenticate_identity | trim | lower ==
-        item.item[managed_users_identity_attribute] | trim | lower
+        managed_users_authenticate_identity ==
+        item.item[managed_users_identity_attribute] or
+        (managed_users_authenticate_identity_normalized | bool and
+         managed_users_authenticate_identity | trim | lower ==
+         item.item[managed_users_identity_attribute] | trim | lower)
     fail_msg: >-
       Existing {{ managed_users_title }} managed user does not accept its
       preserved vault password. Run the reviewed credential-migration procedure;
@@ -401,8 +414,15 @@
 
 - name: "Require exact newly created managed identities: {{ managed_users_title }}"
   ansible.builtin.assert:
-    that:
-      - managed_users_list_json | type_debug == 'list'
+    that: "{{ managed_users_listing_conditions + managed_users_new_identity_conditions }}"
+    fail_msg: >-
+      {{ managed_users_title }} did not return one exact safe newly created
+      managed identity; reconciliation refuses any subsequent repair.
+  vars:
+    # The re-read listing has to be as complete as the first before its
+    # identities mean anything, so the caller's listing conditions come first
+    # and the whole list short-circuits in order.
+    managed_users_new_identity_conditions:
       - >-
         managed_users_list_json |
         selectattr(managed_users_identity_attribute, 'equalto',
@@ -417,10 +437,7 @@
          selectattr(managed_users_identity_attribute, 'equalto',
                     item.item[managed_users_identity_attribute]) |
          first)[managed_users_id_attribute] | string
-          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
-    fail_msg: >-
-      {{ managed_users_title }} did not return one exact safe newly created
-      managed identity; reconciliation refuses any subsequent repair.
+          is match(platform_safe_api_identifier_pattern)
   loop: >-
     {{ managed_users_creation.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
@@ -435,13 +452,16 @@
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
     method: "{{ managed_users_authenticate_method }}"
-    url_username: "{{ item.item[managed_users_identity_attribute] }}"
-    url_password: "{{ item.item.password }}"
+    url_username: >-
+      {{ item.item[managed_users_identity_attribute] if managed_users_authenticate_basic else omit }}
+    url_password: "{{ item.item.password if managed_users_authenticate_basic else omit }}"
     force_basic_auth: "{{ managed_users_authenticate_basic }}"
     body_format: "{{ managed_users_authenticate_body_format }}"
     body: "{{ managed_users_authenticate_body }}"
     status_code: "{{ range(100, 600) | list }}"
     return_content: true
+  vars:
+    managed_users_authenticating_user: "{{ item.item }}"
   register: managed_users_new_authentication
   loop: >-
     {{ managed_users_creation.results | default([]) |
@@ -460,8 +480,11 @@
     that:
       - item.status | default(0) | int == 200
       - >-
-        managed_users_authenticate_identity | trim | lower ==
-        item.item.item[managed_users_identity_attribute] | trim | lower
+        managed_users_authenticate_identity ==
+        item.item.item[managed_users_identity_attribute] or
+        (managed_users_authenticate_identity_normalized | bool and
+         managed_users_authenticate_identity | trim | lower ==
+         item.item.item[managed_users_identity_attribute] | trim | lower)
     fail_msg: >-
       Newly created {{ managed_users_title }} managed user does not accept its
       vault password. Run the reviewed credential-migration procedure; Ansible

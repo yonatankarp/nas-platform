@@ -36,14 +36,15 @@ JELLYFIN_PLUGIN_PACKAGES = [
   { "Name" => "Open Subtitles", "AssemblyGuid" => JELLYFIN_OPENSUBTITLES_ID,
     "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
 ].freeze
-# Komga's managed-user lifecycle is roles/managed_users behind a shim (#647), so
-# the contract below reads the shared role with its title substituted. That keeps
-# every property this file asserted before -- the ten lifecycle steps in order,
-# no_log on every request, no DELETE, the check-mode gates -- asserted against
-# the tasks Komga actually runs, rather than against a shim that runs none of
-# them. audiobookshelf and jellyfin still read their own files unchanged.
+# Komga's and Audiobookshelf's managed-user lifecycles are roles/managed_users
+# behind a shim (#647), so the contract below reads the shared role with the
+# service's title substituted. That keeps every property this file asserted
+# before -- the ten lifecycle steps in order, no_log on every request, no DELETE,
+# the check-mode gates -- asserted against the tasks the service actually runs,
+# rather than against a shim that runs none of them. jellyfin still reads its
+# own file unchanged.
 SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "main.yml")
-SHARED_MANAGED_USER_TITLES = { "komga" => "Komga" }.freeze
+SHARED_MANAGED_USER_TITLES = { "audiobookshelf" => "Audiobookshelf", "komga" => "Komga" }.freeze
 KOMGA_SHIM = File.join(ROOT, "roles", "komga", "tasks", "managed_users.yml")
 
 # The vault password's route to the authenticate requests, in two halves,
@@ -51,9 +52,13 @@ KOMGA_SHIM = File.join(ROOT, "roles", "komga", "tasks", "managed_users.yml")
 # role holds `item.password` literally -- a parameter there would make this a
 # check on a name rather than on a value -- and the shim is what binds `item` to
 # the vault's declared set. Either half alone is a green check that says nothing.
+# The conditional is audiobookshelf's: a body-authenticated service sends no
+# basic credentials at all, and komga's rendered value is unchanged by it.
 KOMGA_AUTH_PASSWORD_EXPRESSIONS = {
-  "Authenticate existing managed users: Komga" => "{{ item.password }}",
-  "Authenticate newly created managed users: Komga" => "{{ item.item.password }}"
+  "Authenticate existing managed users: Komga" =>
+    "{{ item.password if managed_users_authenticate_basic else omit }}",
+  "Authenticate newly created managed users: Komga" =>
+    "{{ item.item.password if managed_users_authenticate_basic else omit }}"
 }.freeze
 KOMGA_SHIM_PARAMETERS = {
   "managed_users_phase" => "{{ komga_managed_users_phase }}",
@@ -64,19 +69,35 @@ KOMGA_SHIM_PARAMETERS = {
   "managed_users_admin_username" => "{{ vault_komga_admin_email }}",
   "managed_users_admin_password" => "{{ vault_komga_admin_password }}"
 }.freeze
+AUDIOBOOKSHELF_SHIM_PARAMETERS = {
+  "managed_users_phase" => "{{ audiobookshelf_managed_users_phase }}",
+  "managed_users_service" => "audiobookshelf",
+  "managed_users_title" => "Audiobookshelf",
+  "managed_users_declared" => "{{ vault_managed_audiobookshelf_users }}",
+  "managed_users_api" => "{{ audiobookshelf_api }}",
+  "managed_users_admin_headers" => {
+    "Authorization" => "Bearer {{ audiobookshelf_managed_users_token }}"
+  },
+  "managed_users_authenticate_basic" => false,
+  "managed_users_authenticate_body" => "{{ audiobookshelf_managed_users_authenticate_body }}"
+}.freeze
+SHIM_PARAMETERS = {
+  "audiobookshelf" => AUDIOBOOKSHELF_SHIM_PARAMETERS,
+  "komga" => KOMGA_SHIM_PARAMETERS
+}.freeze
 
 REQUIRED_TASKS = {
   "audiobookshelf" => [
-    "List complete Audiobookshelf users for managed-user reconciliation",
-    "Refuse incomplete Audiobookshelf managed-user listing",
-    "Refuse ambiguous normalized Audiobookshelf managed identities",
-    "Authenticate existing Audiobookshelf managed users",
-    "Require preserved Audiobookshelf managed-user credentials",
-    "Create absent Audiobookshelf managed users",
-    "Authenticate newly created Audiobookshelf managed users",
-    "Require newly created Audiobookshelf managed-user credentials",
-    "Repair Audiobookshelf managed-user non-secret properties",
-    "Verify exact Audiobookshelf managed users"
+    "List complete users for managed-user reconciliation: Audiobookshelf",
+    "Refuse incomplete managed-user listing: Audiobookshelf",
+    "Refuse ambiguous normalized managed identities: Audiobookshelf",
+    "Authenticate existing managed users: Audiobookshelf",
+    "Require preserved managed-user credentials: Audiobookshelf",
+    "Create absent managed users: Audiobookshelf",
+    "Authenticate newly created managed users: Audiobookshelf",
+    "Require newly created managed-user credentials: Audiobookshelf",
+    "Repair non-secret managed-user properties: Audiobookshelf",
+    "Verify exact managed users: Audiobookshelf"
   ],
   "jellyfin" => [
     "List complete Jellyfin users for managed-user reconciliation",
@@ -123,26 +144,31 @@ end
 # assertions assume. managed_users_declared is the load-bearing one -- the
 # authenticate requests read item.password, and this is what makes `item` a
 # vault-declared user rather than anything else.
-def komga_shim_failures(shim_tasks, defaults)
+def shim_failures(service, shim_tasks, defaults)
   failures = []
   include = shim_tasks.find { |task| task.key?("ansible.builtin.include_role") }
-  failures << "komga shim does not include the shared managed-user role" unless
+  failures << "#{service} shim does not include the shared managed-user role" unless
     include&.dig("ansible.builtin.include_role", "name") == "managed_users"
   supplied = include&.fetch("vars", nil) || {}
-  KOMGA_SHIM_PARAMETERS.each do |name, value|
-    failures << "komga shim does not pass #{name} as #{value}" unless supplied[name] == value
+  SHIM_PARAMETERS.fetch(service).each do |name, value|
+    failures << "#{service} shim does not pass #{name} as #{value}" unless supplied[name] == value
   end
 
   # The repair body is a parameter now, so the shared role's own `body:` is a
-  # reference and reading it proves nothing. Komga's declared value is the
+  # reference and reading it proves nothing. The service's declared value is the
   # subject, and it is the same property: repairing an existing identity must
   # never carry a credential.
-  repair_body = defaults["komga_managed_users_repair_body"]
+  repair_body = defaults["#{service}_managed_users_repair_body"]
   if repair_body.is_a?(Hash)
-    failures << "komga existing-user repair contains secret fields" unless
+    failures << "#{service} existing-user repair contains secret fields" unless
       repair_body.keys.map(&:to_s).grep(/password|passwd|secret|token/i).empty?
+    # Audiobookshelf's pinned permission fields, moved here from the task body
+    # contract_failures used to read for the same reason.
+    failures << "audiobookshelf repair does not split the pinned permission fields" if
+      service == "audiobookshelf" &&
+      repair_body.keys.sort != %w[isActive itemTagsSelected librariesAccessible permissions type]
   else
-    failures << "komga existing-user repair body is not a declared mapping"
+    failures << "#{service} existing-user repair body is not a declared mapping"
   end
   failures
 end
@@ -348,12 +374,9 @@ def contract_failures(service, tasks)
   end
 
   repair = tasks.find { |task| task_name(task).match?(/Repair .* managed-user/) && uri_task?(task) }
-  if service == "audiobookshelf"
-    body = repair&.dig("ansible.builtin.uri", "body")
-    failures << "audiobookshelf repair does not split the pinned permission fields" unless
-      body.is_a?(Hash) && body.keys.sort ==
-        %w[isActive itemTagsSelected librariesAccessible permissions type]
-  elsif service == "jellyfin"
+  # audiobookshelf's pinned repair fields are its declared default now, so
+  # shim_failures reads them there.
+  if service == "jellyfin"
     body = repair&.dig("ansible.builtin.uri", "body").to_s
     failures << "jellyfin repair does not merge into the complete current policy" unless
       body.include?(".Policy") && body.include?("combine(item.policy")

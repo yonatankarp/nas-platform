@@ -26,3 +26,17 @@ managed_users_id_attribute: id
 managed_users_create_status: [201]
 managed_users_reconcile_method: PATCH
 managed_users_repair_status: [204]
+
+# What a complete listing must satisfy, asserted against the first listing and
+# again against the one re-read after creation. BRACE-FREE, like
+# managed_users_verify_conditions, so `assert` evaluates them in order and stops
+# at the first false: a service that wraps its list in a paginated envelope
+# (audiobookshelf) proves the envelope is a mapping before anything reads a key
+# out of it.
+managed_users_listing_conditions:
+  - managed_users_list_json | type_debug == 'list'
+
+# Whether an authenticated identity may differ from the declared one by case or
+# surrounding whitespace. komga compares emails normalised; audiobookshelf has
+# always required the login response to echo the declared username exactly.
+managed_users_authenticate_identity_normalized: true

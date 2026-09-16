@@ -170,8 +170,12 @@ def validate_initial_scan!(tasks, defaults)
   current_id_assert = current_id_gate.fetch("ansible.builtin.assert", {})
   require_condition(
     Array(current_id_assert["that"]) == [
-      "audiobookshelf_current_library.id | string is match('#{SAFE_ID_PATTERN}')"
-    ] && Array(current_id_gate["when"]) == ["audiobookshelf_current_library | length > 0"],
+      "audiobookshelf_current_library.id | string is match(platform_safe_api_identifier_pattern)"
+    ] && Array(current_id_gate["when"]) == ["audiobookshelf_current_library | length > 0"] &&
+      # The pattern is one platform variable since #647, so the value it names is
+      # half of this property and is held here rather than trusted.
+      YAML.safe_load_file(File.join(ROOT, "inventory", "group_vars", "all", "main.yml"))
+          .fetch("platform_safe_api_identifier_pattern") == SAFE_ID_PATTERN,
     "current library ID must be validated against the safe API pattern"
   )
   # `assert` renders the source text of the failing condition and the rendered

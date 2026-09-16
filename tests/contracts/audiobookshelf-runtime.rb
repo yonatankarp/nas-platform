@@ -345,22 +345,50 @@ def expect_contract_failure(message = "unsafe drift snapshot was accepted", time
   fail_contract(message) if status.success?
 end
 
+# Since #647 the managed-user authenticate requests are roles/managed_users',
+# reached through this role's shim, so counting logins in the shim alone would
+# find none and the budget below would silently stop counting them. The shared
+# role is read with this service's title substituted, and the shim is held to the
+# bindings that make its generic login URL this service's /login: the API base,
+# the path, the verb and the declared set the per-user loop iterates.
+SHARED_MANAGED_USER_LOGIN_URL = "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
+
+def audiobookshelf_managed_user_tasks(repo_root)
+  shim = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/managed_users.yml"))
+  defaults = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/defaults/main.yml"))
+  include = Array(shim).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
+  bound = include&.fetch("vars", nil) || {}
+  fail_contract("Audiobookshelf managed-user shim does not bind the shared login") unless
+    include&.dig("ansible.builtin.include_role", "name") == "managed_users" &&
+      bound["managed_users_title"] == "Audiobookshelf" &&
+      bound["managed_users_api"] == "{{ audiobookshelf_api }}" &&
+      bound["managed_users_authenticate_path"] ==
+        "{{ audiobookshelf_managed_users_authenticate_path }}" &&
+      defaults["audiobookshelf_managed_users_authenticate_path"] == "login" &&
+      bound["managed_users_authenticate_method"] == "POST" &&
+      bound["managed_users_declared"] == "{{ vault_managed_audiobookshelf_users }}"
+  YAML.safe_load(
+    repo_root.join("roles/managed_users/tasks/main.yml").read
+             .gsub("{{ managed_users_title }}", "Audiobookshelf")
+  )
+end
+
 def exact_role_auth_model(main_tasks, managed_tasks)
-  login_tasks = lambda do |tasks|
+  login_tasks = lambda do |tasks, url|
     tasks.each_with_index.filter_map do |task, index|
       uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
-      [task, index] if uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/login"
+      [task, index] if uri.is_a?(Hash) && uri["url"] == url
     end
   end
-  main_logins = login_tasks.call(main_tasks)
-  managed_logins = login_tasks.call(managed_tasks)
+  main_logins = login_tasks.call(main_tasks, "{{ audiobookshelf_api }}/login")
+  managed_logins = login_tasks.call(managed_tasks, SHARED_MANAGED_USER_LOGIN_URL)
   expected_main_names = [
     "Authenticate the Audiobookshelf administrator for reconciliation",
     "Authenticate to Audiobookshelf for exact verification"
   ]
   expected_managed_names = [
-    "Authenticate existing Audiobookshelf managed users",
-    "Authenticate newly created Audiobookshelf managed users"
+    "Authenticate existing managed users: Audiobookshelf",
+    "Authenticate newly created managed users: Audiobookshelf"
   ]
   fail_contract("Audiobookshelf administrator authentication task model differs") unless
     main_logins.map { |task, _index| task["name"] } == expected_main_names
@@ -374,17 +402,20 @@ def exact_role_auth_model(main_tasks, managed_tasks)
       verify["when"] == ["not ansible_check_mode", "audiobookshelf_reconcile_token is not defined"]
   fail_contract("Audiobookshelf managed-user authentication guards differ") unless
     existing["when"] == [
-      "audiobookshelf_managed_users_phase == 'reconcile'",
+      "managed_users_phase == 'reconcile'",
       "not ansible_check_mode",
-      "audiobookshelf_managed_user_matches[item.username] | length == 1"
-    ] && existing["loop"] == "{{ vault_managed_audiobookshelf_users }}" &&
+      "managed_users_matches[item[managed_users_identity_attribute]] | length == 1"
+    ] && existing["loop"] == "{{ managed_users_declared }}" &&
       created["when"] == [
-        "audiobookshelf_managed_users_phase == 'reconcile'",
+        "managed_users_phase == 'reconcile'",
         "not ansible_check_mode"
-      ] && created["loop"].to_s.include?("audiobookshelf_managed_user_creation.results")
+      ] && created["loop"].to_s.include?("managed_users_creation.results")
   fail_contract("Audiobookshelf authentication tasks are not protected from disclosure") unless
-    (main_logins + managed_logins).all? do |task, _index|
+    main_logins.all? do |task, _index|
       task.dig("ansible.builtin.uri", "method") == "POST" && task["no_log"] == true
+    end && managed_logins.all? do |task, _index|
+      task.dig("ansible.builtin.uri", "method") == "{{ managed_users_authenticate_method }}" &&
+        task["no_log"] == true
     end
 
   {
@@ -805,7 +836,7 @@ when "authentication-budget-self-test"
       launcher.include?('cleanup_sandbox "$sandbox"')
 
   main_tasks = PolicySupport.static_role_tasks(repo_root.join("roles/audiobookshelf/tasks/main.yml"))
-  managed_tasks = YAML.safe_load_file(repo_root.join("roles/audiobookshelf/tasks/managed_users.yml"))
+  managed_tasks = audiobookshelf_managed_user_tasks(repo_root)
   auth_model = exact_role_auth_model(main_tasks, managed_tasks)
   expect_contract_failure("an added Audiobookshelf role authentication call was accepted") do
     exact_role_auth_model(main_tasks + [main_tasks.fetch(auth_model.fetch(:main_task_indexes).first)], managed_tasks)

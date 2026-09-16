@@ -328,7 +328,7 @@
       - item.root | length > 0
       - item.id is defined
       - item.id is string
-      - item.id is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      - item.id is match(platform_safe_api_identifier_pattern)
     fail_msg: A managed-root or desired-name Komga library candidate has an unsafe schema.
   loop: >-
     {{ (komga_library_candidates | map(attribute='root_matches') | list | flatten) +

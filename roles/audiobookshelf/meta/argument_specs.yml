@@ -115,3 +115,72 @@ argument_specs:
       vault_audiobookshelf_admin_password:
         type: str
         required: true
+      # The managed-user parameters this role hands roles/managed_users. Only
+      # the ones that resolve at role entry are declared: Ansible templates
+      # every declared option before the role's first task, so declaring
+      # audiobookshelf_managed_users_create_body, _repair_body,
+      # _repair_condition, _reconcile_path, _authenticate_body,
+      # _authenticate_identity or _list_json -- each a template over the shared
+      # role's per-identity `item`, its bound match or user, or the listing it
+      # registers -- would fail this role at "Validating arguments against arg
+      # spec 'main'". roles/managed_users asserts their presence instead.
+      audiobookshelf_managed_users_identity_attribute:
+        type: str
+        required: false
+      audiobookshelf_managed_users_id_attribute:
+        type: str
+        required: false
+      audiobookshelf_managed_users_list_path:
+        type: str
+        required: false
+      audiobookshelf_managed_users_authenticate_path:
+        type: str
+        required: false
+      audiobookshelf_managed_users_create_path:
+        type: str
+        required: false
+      audiobookshelf_managed_users_reconcile_interface:
+        description: >-
+          The interfaces.reconcile value config/managed-user-capabilities.yml
+          declares for Audiobookshelf, asserted against the deployed register.
+        type: str
+        required: false
+      audiobookshelf_managed_users_create_status:
+        type: list
+        elements: int
+        required: false
+      audiobookshelf_managed_users_repair_status:
+        type: list
+        elements: int
+        required: false
+      audiobookshelf_managed_users_authenticate_identity_normalized:
+        type: bool
+        required: false
+      audiobookshelf_managed_users_listing_conditions:
+        description: >-
+          Brace-free pagination refusals the shared role asserts in order
+          against both listings. Unbraced, so they are safe to declare here.
+        type: list
+        elements: str
+        required: false
+      audiobookshelf_managed_users_verify_conditions:
+        description: >-
+          Brace-free expressions the shared role's final verification asserts in
+          order. Unbraced, so they are safe to declare here.
+        type: list
+        elements: str
+        required: false
+      audiobookshelf_managed_users_verify_fail_msg:
+        type: str
+        required: false
+      audiobookshelf_managed_users_plan_create_message:
+        type: str
+        required: false
+      audiobookshelf_managed_users_plan_repair_message:
+        type: str
+        required: false
+      vault_managed_audiobookshelf_users:
+        description: The exact declared Audiobookshelf managed-user set.
+        type: list
+        elements: dict
+        required: true

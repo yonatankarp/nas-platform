@@ -27,7 +27,7 @@
   ansible.builtin.assert:
     that:
       - audiobookshelf_managed_admin_ids
-        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | reject('match', platform_safe_api_identifier_pattern)
         | list | length == 0
     fail_msg: Managed Audiobookshelf administrator contains an unsafe API identifier.
 
