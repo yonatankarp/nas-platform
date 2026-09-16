@@ -421,6 +421,9 @@ SHARED_INVENTORY = "inventory/group_vars/all/main.yml"
 HOST_PREP = "roles/host_prep/tasks/main.yml"
 VERIFY_PLAY = "verify.yml"
 CI_WORKFLOW = ".github/workflows/ci.yml"
+# Relative, unlike VALIDATE_POLICY above: a substitution names the path inside
+# the copied tree, not in this checkout.
+POLICY_GATE = "tests/validate-policy.sh"
 VAULT_CONTRACT = "roles/vault_contract/tasks/main.yml"
 DOWNLOADERS_MAIN = "roles/downloaders/tasks/main.yml"
 DOWNLOADERS_ENVIRONMENT = "roles/downloaders/templates/env.j2"
@@ -1422,14 +1425,24 @@ check_accepted(
     "  roles:\n"]]
 )
 
+# The same defect one file over since #653, which moved this check out of the
+# static job's steps and into the policy gate's manifest: it is still named in
+# tests/validate-policy.sh, so a whole-file substring finds it, and it is no
+# longer inside a heredoc, so nothing dispatches it. That is what "demoted to its
+# name" means here, and it is why the assertion reads the manifest through
+# PolicySupport.gate_shards rather than grepping the file.
 check_rejected(
-  :policy_vault, "the redaction test demoted from a run step to its name",
-  [[CI_WORKFLOW,
-    "      - name: Check generated credential redaction\n" \
-    "        run: tests/generate-secrets-redaction-test.sh\n",
-    "      - name: Check generated credential redaction with " \
+  :policy_vault, "the redaction test demoted from a dispatched line to its name",
+  [[POLICY_GATE,
+    "tests/sandbox_cleanup_acquisition_ownership_test.sh\n" \
     "tests/generate-secrets-redaction-test.sh\n" \
-    "        run: true\n"]],
+    "POLICY_CHECKS_3\n" \
+    "}\n",
+    "tests/sandbox_cleanup_acquisition_ownership_test.sh\n" \
+    "POLICY_CHECKS_3\n" \
+    "}\n" \
+    "\n" \
+    "# Retired: tests/generate-secrets-redaction-test.sh\n"]],
   "CI must execute the generated-secret redaction test"
 )
 

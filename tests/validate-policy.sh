@@ -185,6 +185,7 @@ ruby tests/vaultwarden_serve_test.rb
 ruby tests/vaultwarden_serve_test.rb --self-test
 ruby tests/role_forward_reference_test.rb
 ruby tests/release_path_read_test.rb
+tests/integration_cleanup_test.sh
 POLICY_CHECKS_1
 }
 
@@ -247,6 +248,7 @@ tests/contracts/audiobookshelf-audio-test.sh
 tests/mac/snapshot-immich.sh --self-test
 ruby tests/mac/pin-protected-input-test.rb
 ruby tests/mac/read-integration-ports-test.rb --self-test
+PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py
 POLICY_CHECKS_2
 }
 
@@ -316,6 +318,7 @@ ruby tests/paperless_mail_reconciliation_test.rb
 ruby tests/immich_user_onboarding_test.rb
 ruby tests/media_managed_users_test.rb
 tests/sandbox_cleanup_acquisition_ownership_test.sh
+tests/generate-secrets-redaction-test.sh
 POLICY_CHECKS_3
 }
 

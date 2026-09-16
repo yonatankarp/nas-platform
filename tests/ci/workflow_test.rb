@@ -55,7 +55,8 @@ DOCKER_HUB_TOKEN_SECRET = "DOCKERHUB_TOKEN"
 # Every registry the job is able to authenticate to. A registry outside this list
 # is one nobody decided about, which is what the classification check below names.
 CREDENTIALED_REGISTRIES = (GITHUB_BACKED_REGISTRIES + [DOCKER_HUB_REGISTRY]).freeze
-EXPECTED_JOBS = %w[changes static docs vault mutation reconciliation toolchain suites validate].freeze
+EXPECTED_JOBS =
+  %w[changes static lint docs vault mutation reconciliation toolchain suites validate].freeze
 # One reconciliation file per matrix leg, in the order a full run enumerates them.
 RECONCILIATION_PARTS = %w[core bazarr configarr].freeze
 RECONCILIATION_SUPPORT_PATH =
@@ -104,13 +105,54 @@ STATIC_STEP_NAMES = [
   "Install ShellCheck",
   "Set up Python",
   "Install Ansible tooling",
-  "Check policy properties",
-  "Check integration sandbox cleanup",
-  "Check Immich probe status rendering",
-  "Check generated credential redaction",
+  "Check policy properties"
+].freeze
+# The shard-independent steps `static` used to carry, on a runner of their own
+# (#653). Pinned by name and asserted unconditional for the same reason
+# STATIC_STEP_NAMES is: this job exists precisely because a check that does not
+# vary by shard should run once, which makes it the natural place for the next
+# such check to be dropped in and asserted by nothing.
+#
+# The three single-command checks that stood beside these went into
+# tests/validate-policy.sh instead, where the manifest declaration guards them.
+# What is here is what cannot be a manifest line: ansible-lint and
+# ansible-playbook are not this repository's own programs, and the ephemeral
+# vault self-test is required by tests/policy_vault_test.rb against the
+# workflow's own dependency install.
+LINT_STEP_NAMES = [
+  "Check out repository",
+  "Set up Python",
+  "Install Ansible tooling",
   "Check silent ephemeral vault generation",
   "Lint Ansible",
   "Check playbook syntax"
+].freeze
+# The commands that job must still run, as whole lines of its joined run text.
+# Moving a check out of `static` and into a job of its own is only half a fix:
+# the other half is that it still runs somewhere, and a check in neither place
+# is a guard that silently stopped running.
+LINT_CHECK_COMMANDS = [
+  "tests/generate-ephemeral-vault.sh --self-test",
+  # --offline is part of the literal rather than a check of its own, for the same
+  # reason --no-cache is at the toolchain install. ansible-compat's
+  # prepare_environment runs a second `ansible-galaxy collection install` from
+  # inside ansible-lint, which the install step's own --no-cache cannot reach,
+  # and that call carries the retry defect that reds a leg no diff caused (#719).
+  # The subject is joined run text, so the bare "ansible-lint --strict" this
+  # replaces is a prefix of the flagged form and would keep matching a step that
+  # had dropped the flag -- passing while pinning nothing.
+  "ansible-lint --strict --offline",
+  "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
+  "ansible-playbook generate-secrets.yml --syntax-check",
+  "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
+].freeze
+# The three that went the other way, into the gate's manifest. Asserted absent
+# from `static` as well as present in the manifest: a check left in both places
+# is the duplication this issue removed, reinstated one line at a time.
+GATE_ADOPTED_CHECKS = [
+  "tests/integration_cleanup_test.sh",
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py',
+  "tests/generate-secrets-redaction-test.sh"
 ].freeze
 # The checks the docs job carries, in the order it runs them. Each one reads
 # Markdown and the working tree and nothing else, which is what lets the job be a
@@ -573,7 +615,7 @@ check(failures,
       end,
       "the mutation job must install the pinned Ansible toolchain")
 
-# Four jobs need that toolchain and each carries its own copy of the step that
+# Five jobs need that toolchain and each carries its own copy of the step that
 # installs it. The pins used to be written into all of them, so a bump could land
 # in one and leave the rest on the old version with nothing comparing them;
 # they now install from controller-requirements.txt, which is the one place the
@@ -950,27 +992,8 @@ check(failures, syntax_sweep.match?(/exit\s+"\$status"/),
       "regardless of what the parser said")
 
 static_commands = run_steps(static)
-[
-  "tests/validate-policy.sh",
-  "tests/integration_cleanup_test.sh",
-  "tests/immich_probe_status_test.py",
-  "tests/generate-secrets-redaction-test.sh",
-  "tests/generate-ephemeral-vault.sh --self-test",
-  # --offline is part of the literal rather than a check of its own, for the same
-  # reason --no-cache is below. ansible-compat's prepare_environment runs a second
-  # `ansible-galaxy collection install` from inside ansible-lint, which the install
-  # step's own --no-cache cannot reach, and that call carries the retry defect that
-  # reds a leg no diff caused (#719). `static_commands` is the joined run text, so
-  # the bare "ansible-lint --strict" this replaces is a prefix of the flagged form
-  # and would keep matching a step that had dropped the flag -- passing while
-  # pinning nothing.
-  "ansible-lint --strict --offline",
-  "ansible-playbook -i inventory/local.yml site.yml --syntax-check",
-  "ansible-playbook generate-secrets.yml --syntax-check",
-  "ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check"
-].each do |command|
-  check(failures, static_commands.include?(command), "static checks must retain #{command.inspect}")
-end
+check(failures, static_commands.include?("tests/validate-policy.sh"),
+      "static checks must retain \"tests/validate-policy.sh\"")
 # Assert each package is installed rather than the exact apt invocation, so adding
 # flags (retries, timeouts) to a fetch that has stalled in CI does not fail this.
 %w[apache2-utils openssh-client openssl].each do |package|
@@ -1000,6 +1023,56 @@ check(failures, !static_commands.include?("python3 tests/deployment_target_valid
       "static must not duplicate the deployment validator already run by validate-policy.sh")
 
 policy_source = File.read(POLICY_PATH)
+
+# The three checks #653 moved out of `static` and into the gate's manifest,
+# asserted in both directions. A check the gate runs and `static` also runs is
+# the per-shard duplication the move removed; a check neither runs is a guard
+# that stopped running, which is the more expensive half and reads as a faster
+# job rather than as a failure.
+GATE_ADOPTED_CHECKS.each do |command|
+  check(failures, registers_command_once?(policy_source, command),
+        "tests/validate-policy.sh must register #{command.inspect} exactly once: it left " \
+        "the static job so that it runs once rather than once per shard, and the manifest " \
+        "is now the only thing that runs it")
+  # Compared as a whole line rather than as a substring, because the gate's own
+  # invocation is a substring of nothing in `static` and the lint job's run text
+  # is a separate subject. `static_commands` is joined run text, so the bare
+  # basename would match this file's own name in a comment.
+  check(failures, static_commands.lines.map(&:strip).none? { |line| line == command },
+        "static must not also run #{command.inspect}: the gate runs it once, and a step here " \
+        "restores the per-shard triplication")
+end
+
+# The fourth job (#653). Its whole reason to exist is that a shard-independent
+# check should run once, so what is pinned is the step list, that no step is
+# conditional, and that the checks it took from `static` are still invoked --
+# the same three properties `docs` and `vault` are held to, for the same reason.
+lint_job = jobs.fetch("lint", {})
+lint_steps = Array(lint_job["steps"])
+check(failures, lint_job["needs"] == "changes", "lint must depend only on changes")
+# The same output as the gate, not a narrower lane: ansible-lint and a syntax
+# check read every play and every role, so there is no subset of files that
+# cannot change what they say.
+check(failures, expression(lint_job["if"]) == "${{ needs.changes.outputs.static == 'true' }}",
+      "lint must run whenever the policy gate does, found #{expression(lint_job['if']).inspect}")
+check(failures, lint_job["strategy"].nil?,
+      "the lint job holds the steps that do not vary by shard and must not declare a matrix: " \
+      "a matrix here would reinstate exactly what moving them out of `static` removed")
+check(failures, lint_steps.all?(Hash), "lint steps must all be mappings")
+check(failures, lint_steps.map { |step| step["name"] } == LINT_STEP_NAMES,
+      "lint steps differ: got #{lint_steps.map { |step| step['name'] }.inspect}, " \
+      "expected #{LINT_STEP_NAMES.inspect}")
+check(failures, lint_steps.none? { |step| step.key?("if") },
+      "lint steps must be unconditional: the changes job is the only classifier, and a step " \
+      "gated on anything else is a check that stopped running without the job reporting it")
+lint_commands = run_steps(lint_job)
+LINT_CHECK_COMMANDS.each do |command|
+  check(failures, lint_commands.include?(command),
+        "the lint job must retain #{command.inspect}")
+  check(failures, !static_commands.include?(command),
+        "static must no longer run #{command.inspect}: it moved to the lint job so that it " \
+        "runs once rather than once per shard")
+end
 %w[
   ruby\ tests/beszel_telemetry_probe_test.rb
   ruby\ tests/beszel_telemetry_timeout_test.rb
@@ -1159,9 +1232,9 @@ check(failures, !triggers.to_h.key?("pull_request_target"),
 validate = jobs.fetch("validate", {})
 check(failures, validate["name"] == "validate", "aggregate check name must remain validate")
 check(failures, expression(validate["if"]) == "${{ always() }}", "validate must always run")
-expected_needs = %w[changes static docs vault mutation reconciliation toolchain suites]
+expected_needs = %w[changes static lint docs vault mutation reconciliation toolchain suites]
 check(failures, Array(validate["needs"]) == expected_needs,
-      "validate must need changes, static, docs, the vault validation, mutation, " \
+      "validate must need changes, static, lint, docs, the vault validation, mutation, " \
       "reconciliation, the toolchain publish and the suite matrix " \
       "in canonical order")
 validate_checkout = Array(validate["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }

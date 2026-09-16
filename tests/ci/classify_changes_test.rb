@@ -1135,7 +1135,15 @@ DOCUMENT_REFERENCE_PATTERN = %r{(?<![\w./-])(?:docs/[A-Za-z0-9_./-]+|[A-Za-z0-9_
 
 # The checks each classifier lane runs. The mutation harness is gated on the same
 # `static` output as the gate, so a check it carries is a `static` input like any
-# other; the docs job is gated on `docs`.
+# other; so is `lint`, which #653 split out of `static` and gated on that same
+# output. The docs job is gated on `docs`.
+#
+# A job left out of this list is not a failure here -- it is this derivation
+# quietly getting smaller. The checks it runs fall out of `check_lanes`, the
+# documents their sources name stop being asserted to route anywhere, and the
+# floors below still pass because they count what remains. Adding a job that
+# runs a check means adding it here, and the `lint` job is the worked example:
+# it took tests/generate-ephemeral-vault.sh with it.
 def lane_check_text(workflow_path, manifest_path)
   workflow = File.file?(workflow_path) ? YAML.safe_load_file(workflow_path, aliases: false) : {}
   jobs = workflow.fetch("jobs", {})
@@ -1144,7 +1152,7 @@ def lane_check_text(workflow_path, manifest_path)
   end
   manifest = File.file?(manifest_path) ? File.read(manifest_path) : ""
   {
-    "static" => [manifest, runs.call("static"), runs.call("mutation")].join("\n"),
+    "static" => [manifest, runs.call("static"), runs.call("lint"), runs.call("mutation")].join("\n"),
     "docs" => runs.call("docs")
   }
 end
