@@ -708,8 +708,13 @@ def publish(config: Config, app: str, fields: dict) -> bool:
         "--disable",
         "--silent",
         "--show-error",
+        # The same deadline curl enforces on the transfer and _run enforces on
+        # the process below, spelled once. It was the literal 10 while the line
+        # underneath already read NOTIFICATION_TIMEOUT_SECONDS, so lowering that
+        # constant -- which tests/policy_test.rb requires be done in both
+        # scripts at once -- would have left curl waiting the old ten (#658).
         "--max-time",
-        "10",
+        str(NOTIFICATION_TIMEOUT_SECONDS),
         "--config",
         str(curl_config),
     ]
