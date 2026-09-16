@@ -26,7 +26,11 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
-ATTEMPT_LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-[0-9a-f]{40}")
+# The names run_log writes, which is a stamp and the revision it attempted.
+# Spelled LOG_PATTERN rather than ATTEMPT_LOG_PATTERN so rotate_logs below is
+# byte-identical to the other script's copy of it and can be held that way; the
+# two values differ, and nothing requires them to agree (#658).
+LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-[0-9a-f]{40}")
 TIMESTAMP_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 # Bounds the attempted record. The count is the hard cap; the window keeps it
 # from carrying revisions nobody remembers.
@@ -1387,12 +1391,20 @@ def _timestamp(now: datetime | None = None) -> str:
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Called with the revision being attempted, so one deployment's output is
+# reachable by the SHA that produced it.
 @contextmanager
-def attempt_log(config: Config, sha: str):
-    """Open one private attempt log and point 'latest' at it."""
+def run_log(config: Config, suffix: str):
+    """Open one private run log and point 'latest' at it.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = config.log_root / f"{stamp}-{sha}"
+    path = config.log_root / f"{stamp}-{suffix}"
     # Create privately first, then reopen by path so the sink carries a usable
     # .name for the notification payload.
     os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
@@ -1409,8 +1421,15 @@ def attempt_log(config: Config, sha: str):
             sink.flush()
 
 
+# The logs are one per deployment attempt, named for the revision attempted.
 def rotate_logs(config: Config, now: datetime) -> None:
-    """Delete attempt logs older than the configured retention window."""
+    """Delete run logs older than the configured retention window.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     cutoff = now - timedelta(days=config.log_retention_days)
     try:
@@ -1418,7 +1437,7 @@ def rotate_logs(config: Config, now: datetime) -> None:
     except OSError:
         return
     for entry in entries:
-        match = ATTEMPT_LOG_PATTERN.fullmatch(entry.name)
+        match = LOG_PATTERN.fullmatch(entry.name)
         if match is None:
             continue
         try:
@@ -1550,16 +1569,15 @@ def pushover_verdict(returncode: int, output: bytes) -> str:
     return "unanswered"
 
 
-def format_duration(started: str, finished: str) -> str:
-    """Render the elapsed deployment time, or admit that it is not derivable."""
+def format_duration(seconds: int) -> str:
+    """Render an elapsed run, which is minutes at worst.
 
-    try:
-        span = datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
-            started, "%Y-%m-%dT%H:%M:%SZ"
-        )
-    except ValueError:
-        return "unknown"
-    seconds = int(span.total_seconds())
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
+
     if seconds < 0:
         return "unknown"
     minutes, seconds = divmod(seconds, 60)
@@ -1569,6 +1587,23 @@ def format_duration(started: str, finished: str) -> str:
     if minutes:
         return f"{minutes}m {seconds}s"
     return f"{seconds}s"
+
+
+# The poller times a deployment by two recorded timestamps rather than by a
+# monotonic span, so its input needs parsing and the other script's does not.
+# That difference is the whole of why the two format_duration copies differed,
+# and it lives here now: an unparseable pair is "unknown" the same way a
+# negative span is, which format_duration above still decides (#658).
+def duration_between(started: str, finished: str) -> str:
+    """Render the elapsed deployment time, or admit that it is not derivable."""
+
+    try:
+        span = datetime.strptime(finished, "%Y-%m-%dT%H:%M:%SZ") - datetime.strptime(
+            started, "%Y-%m-%dT%H:%M:%SZ"
+        )
+    except ValueError:
+        return "unknown"
+    return format_duration(int(span.total_seconds()))
 
 
 def commit_link(config: Config, sha: str) -> str:
@@ -1629,7 +1664,7 @@ def render_notification(
         details.append(run_link(run_url))
     details += [
         f"\U0001f552 <b>When</b> {readable_time(finished)}",
-        f"⏱️ <b>Took</b> {format_duration(started, finished)}",
+        f"⏱️ <b>Took</b> {duration_between(started, finished)}",
         log_line(log_path),
     ]
     # A forgotten attempt is not a promise about the next poll: a newer green
@@ -1814,7 +1849,7 @@ def render_release(
         f"{html_escape(commit['subject'])}</a>"
         for commit in summary["commits"]
     ]
-    duration = format_duration(started, finished)
+    duration = duration_between(started, finished)
     if previous:
         url = f"https://github.com/{config.repository}/compare/{previous}...{release}"
         revisions = (
@@ -2322,7 +2357,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         record_attempt(config, candidate)
         started = _timestamp()
         failure = "failed"
-        with attempt_log(config, candidate) as log:
+        with run_log(config, candidate) as log:
             log_path = Path(log.name)
             try:
                 succeeded = deploy(config, candidate, log)

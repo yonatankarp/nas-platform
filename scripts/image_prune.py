@@ -22,7 +22,12 @@ from typing import Iterator
 # Images are pinned as repo:tag@sha256:..., so every Renovate bump pulls a new
 # image and leaves the superseded one behind. Nothing else on the NAS removes
 # them, which is what this exists to do.
-PRUNE_LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-prune")
+
+# The names run_log writes. Spelled LOG_PATTERN rather than PRUNE_LOG_PATTERN
+# so rotate_logs below is byte-identical to the other script's copy of it and
+# can be held that way; the two values differ, and nothing requires them to
+# agree (#658).
+LOG_PATTERN = re.compile(r"(\d{8}T\d{6}Z)-prune")
 RECLAIMED_PATTERN = re.compile(
     r"^Total reclaimed space:\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]{1,3})\s*$",
     re.MULTILINE,
@@ -276,8 +281,15 @@ def format_bytes(count: int) -> str:
     return f"{size:.1f} PB"
 
 
+# The prune is timed with a monotonic clock, so its input is already seconds.
 def format_duration(seconds: int) -> str:
-    """Render an elapsed prune, which is minutes at worst."""
+    """Render an elapsed run, which is minutes at worst.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     if seconds < 0:
         return "unknown"
@@ -536,12 +548,22 @@ def deployment_lock(config: Config) -> Iterator[bool]:
         os.close(descriptor)
 
 
+# Called with a fixed suffix: the prune is scheduled, so a stamp names it
+# uniquely and there is no second identity to record.
 @contextmanager
-def prune_log(config: Config):
-    """Open one private prune log and point 'latest' at it."""
+def run_log(config: Config, suffix: str):
+    """Open one private run log and point 'latest' at it.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    path = config.log_root / f"{stamp}-prune"
+    path = config.log_root / f"{stamp}-{suffix}"
+    # Create privately first, then reopen by path so the sink carries a usable
+    # .name for the notification payload.
     os.close(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
     os.chmod(path, 0o600)
     with path.open("wb") as sink:
@@ -556,8 +578,15 @@ def prune_log(config: Config):
             sink.flush()
 
 
+# The logs are one per scheduled prune, all named alike.
 def rotate_logs(config: Config, now: datetime) -> None:
-    """Delete prune logs older than the configured retention window."""
+    """Delete run logs older than the configured retention window.
+
+    Identical to the copy in the other script by construction, and
+    tests/policy_test.rb compares the two definitions as text so it stays that
+    way (#423). Prose true of only one script goes in a comment above the def,
+    which that comparison does not read.
+    """
 
     cutoff = now - timedelta(days=config.log_retention_days)
     try:
@@ -565,7 +594,7 @@ def rotate_logs(config: Config, now: datetime) -> None:
     except OSError:
         return
     for entry in entries:
-        match = PRUNE_LOG_PATTERN.fullmatch(entry.name)
+        match = LOG_PATTERN.fullmatch(entry.name)
         if match is None:
             continue
         try:
@@ -796,7 +825,7 @@ def prune(config: Config) -> bool:
             return True
         rotate_logs(config, datetime.now(timezone.utc))
         started = time.monotonic()
-        with prune_log(config) as log:
+        with run_log(config, "prune") as log:
             summary: dict = {"log": log.name}
             try:
                 reclaimed, removed = run_passes(config, log)

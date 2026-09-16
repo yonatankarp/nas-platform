@@ -2675,8 +2675,21 @@ duplicated_helper_floors = {
   # Seven since #558 gave every message one shape: a lead line, labelled details
   # and a closing line, which the details give way inside.
   "compose_message" => 8,
+  # Ten since #658, and these three arrived differently from the seven above:
+  # they were already duplicated and already drifting, one literal apart each,
+  # and the derived stanza below could not see them because a near-copy is not
+  # a copy. rotate_logs differed only in the pattern it matched, run_log (then
+  # attempt_log and prune_log) only in the filename suffix, and format_duration
+  # only in whether its caller had already turned the span into seconds. Each
+  # difference is hoisted out -- to LOG_PATTERN, to a parameter, and to
+  # duration_between in the poller -- so what is left is byte-identical and
+  # named here. That is the #354 shape displaced one notch: a fix to any of
+  # them had to be made twice and nothing would have noticed if it were not.
+  "rotate_logs" => 16,
+  "run_log" => 14,
+  "format_duration" => 10,
 }
-check_floor(failures, duplicated_helper_floors.length, 7,
+check_floor(failures, duplicated_helper_floors.length, 10,
             "helpers held identical across scripts/*.py")
 
 # Retired by #558 stage 3, and refused by name because nothing derived can see a
@@ -2738,8 +2751,12 @@ end
 # unwatched beside it (#423). This closes that, derived rather than stated: a
 # copy is byte-identical at the moment it is made, so a name both scripts define
 # whose bodies already agree is a fresh duplicate and must be named above. The
-# names that differ on purpose -- format_duration, rotate_logs, and the entry
-# points main, load_config, _run and their kin -- never reach it.
+# names that differ on purpose -- the entry points main, load_config, _run and
+# their kin -- never reach it. format_duration and rotate_logs stood in that
+# list until #658 and were the counter-example rather than the illustration:
+# they differed by one literal each, which is near-identical rather than
+# deliberately different, and near-identical is exactly what neither this
+# stanza nor the table above could see. They are converged and listed now.
 shared_definition_names = script_definitions.values.map { |definitions| definitions.keys.to_set }.reduce(:&)
 check_floor(failures, shared_definition_names.length, 4,
             "top-level names both scripts/*.py programs define")
