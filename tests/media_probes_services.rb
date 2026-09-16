@@ -333,6 +333,97 @@ def exercise_komga_capability_register(failures)
   end
 end
 
+# The verify phase's REFUSAL branch, which nothing else reaches: every other
+# probe drives the final verification on its passing branch, and after #647 the
+# three conditions travel through two indirections before `assert` sees them --
+# komga_managed_users_verify_conditions, the role's
+# managed_users_verify_conditions, and `that:` templating the list. A list of
+# non-empty strings is truthy, so plumbing that delivered them as VALUES rather
+# than as expressions would print exactly what a converged run prints. Only a
+# state the conditions must reject tells the two apart.
+#
+# The absent-identity row is also the short-circuit proof: the second and third
+# conditions read the single match, which does not exist for an identity with
+# none, so a `that:` list evaluated all at once would raise instead of refusing.
+def exercise_komga_verification(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  drift = "A managed Komga identity is absent, duplicated, or differs from its exact " \
+          "declared email and roles."
+  cases = [
+    ["converged", [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                     "roles" => %w[USER PAGE_STREAMING] }], true],
+    ["drifted roles", [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                         "roles" => %w[USER KOBO_SYNC] }], false],
+    ["absent identity", [{ "id" => "komga-other", "email" => "other@example.invalid",
+                           "roles" => %w[USER] }], false],
+    ["duplicated identity", [{ "id" => "komga-one", "email" => "reader@example.invalid",
+                               "roles" => %w[USER PAGE_STREAMING] },
+                             { "id" => "komga-two", "email" => "reader@example.invalid",
+                               "roles" => %w[USER PAGE_STREAMING] }], false]
+  ]
+  cases.each do |label, listing, expected|
+    with_http_service(->(_request) { [200, listing] }) do |port, requests|
+      variables = {
+        "komga_api" => "http://127.0.0.1:#{port}",
+        "vault_komga_admin_email" => "admin@example.invalid",
+        "vault_komga_admin_password" => "admin-secret",
+        "vault_managed_komga_users" => managed
+      }
+      stdout, stderr, status = run_playbook([includes_for("komga").last], variables)
+      output = stdout + stderr
+      if status.success? != expected
+        failures << "Komga #{label} verification #{expected ? 'failed' : 'succeeded'}: " \
+                    "#{failure_tail(output)}"
+      end
+      # The duplicate is refused earlier, by the ambiguity guard, so only the two
+      # rows the final verification itself owns assert its diagnostic.
+      failures << "Komga #{label} verification did not refuse with its own diagnostic" if
+        ["drifted roles", "absent identity"].include?(label) &&
+        !HttpFixtureSupport.refused_with?(output, drift)
+      failures << "Komga #{label} verification mutated the service" if
+        requests.any? { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+    end
+  end
+end
+
+# roles/managed_users takes six parameters meta/argument_specs.yml cannot
+# declare, because Ansible templates every declared option at role entry and
+# each of these is a template over a per-identity `item` or over the match the
+# role binds. The role asserts their PRESENCE instead, through q('varnames'),
+# which is a mechanism nothing else here uses -- so it is exercised rather than
+# trusted, by dropping one from a copy of the shim.
+def exercise_komga_parameter_contract(failures)
+  shim = YAML.safe_load_file(KOMGA_SHIM, aliases: false)
+  %w[managed_users_create_body managed_users_repair_condition
+     managed_users_list_json].each do |dropped|
+    mutant = Marshal.load(Marshal.dump(shim))
+    mutant.find { |task| task.key?("ansible.builtin.include_role") }.fetch("vars").delete(dropped)
+    # The shim's parameter and Komga's default for it are the same value by two
+    # names, so both have to go or the default still supplies it.
+    overrides = HARNESS_MANAGED_USER_DEFAULTS.reject do |name, _value|
+      name == dropped.sub("managed_users_", "komga_managed_users_")
+    end
+    stdout, stderr, status = HttpFixtureSupport.run_playbook(
+      mutant,
+      HARNESS_TIMING_DEFAULTS.merge(overrides).merge(HARNESS_RELEASE_DEFAULTS).merge(
+        "komga_managed_users_phase" => "reconcile",
+        "komga_api" => "http://127.0.0.1:#{HttpFixtureSupport.refusing_port}",
+        "vault_komga_admin_email" => "admin@example.invalid",
+        "vault_komga_admin_password" => "admin-secret",
+        "vault_managed_komga_users" => []
+      ),
+      prefix: "nas-platform-komga-parameter-contract-"
+    )
+    output = stdout + stderr
+    failures << "Komga run without #{dropped} succeeded" if status.success?
+    failures << "Komga run without #{dropped} did not name it: #{failure_tail(output)}" unless
+      HttpFixtureSupport.refused_with?(
+        output, "A caller of roles/managed_users did not supply #{dropped}."
+      )
+  end
+end
+
 def exercise_check_mode(failures)
   cases = [
     ["Audiobookshelf", "audiobookshelf", "fixture-token",

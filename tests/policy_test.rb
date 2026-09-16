@@ -1603,11 +1603,13 @@ end
 # BASE_FIXTURE_PATHS states: a check reading a *named* file that the sandbox
 # lacks crashes, loudly, but a check whose subjects come from a glob does not --
 # it iterates zero times and reports success, and a vacuous pass is
-# indistinguishable from compliance. 26 role directories in the working tree
+# indistinguishable from compliance. 27 role directories in the working tree
 # against 22 in the mutation sandbox, and the floor is sized against the
 # sandbox. Fifteen sits seven under it, clear of what a collapse leaves (zero
 # for a glob that stopped matching, a handful for a roles/ layout change) and
-# clear of attrition at a retired service or two.
+# clear of attrition at a retired service or two. The working-tree figure was 26
+# until #647 added roles/managed_users; nothing checks this sentence, so it has
+# to be corrected by hand whenever it moves.
 interface_roles = Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }
 check_floor(failures, interface_roles.length, 15, "roles declaring an interface")
 interface_roles.each do |role|

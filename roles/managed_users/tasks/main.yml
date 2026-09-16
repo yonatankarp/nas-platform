@@ -29,7 +29,8 @@
       implement. The tasks in this file are gated on managed_users_phase, so an
       unrecognised phase silently skips them.
 
-# meta/argument_specs.yml cannot declare the seven parameters below, because
+# meta/argument_specs.yml cannot declare six of the parameters this role takes,
+# because
 # Ansible templates every declared option at role entry and each of these is a
 # template over a per-identity `item` or over the task-scoped
 # managed_users_match. That leaves them unchecked, so what can be checked at
@@ -43,22 +44,27 @@
   ansible.builtin.assert:
     that:
       - >-
-        q('varnames', '^' ~ (managed_users_deferred_parameters | join('$|^')) ~ '$')
-        | unique | length == managed_users_deferred_parameters | length
+        managed_users_deferred_parameters
+        | difference(managed_users_supplied_parameters) | length == 0
     fail_msg: >-
-      A caller of roles/managed_users did not supply every deferred parameter.
+      A caller of roles/managed_users did not supply
+      {{ managed_users_deferred_parameters |
+         difference(managed_users_supplied_parameters) | join(', ') }}.
       meta/argument_specs.yml cannot declare these, so their absence is caught
-      here rather than by Ansible: {{ managed_users_deferred_parameters |
-      join(', ') }}.
+      here rather than by Ansible.
   vars:
+    # The seventh, managed_users_authenticate_body, is deliberately absent: it
+    # is the one deferred parameter this role defaults, so it is always in
+    # scope and a row for it would assert nothing.
     managed_users_deferred_parameters:
       - managed_users_list_json
-      - managed_users_authenticate_body
       - managed_users_authenticate_identity
       - managed_users_create_body
       - managed_users_reconcile_path
       - managed_users_repair_body
       - managed_users_repair_condition
+    managed_users_supplied_parameters: >-
+      {{ q('varnames', '^' ~ (managed_users_deferred_parameters | join('$|^')) ~ '$') }}
 
 # The two accumulators below are accumulated across a loop, so they are reset
 # rather than merely defaulted. A role called twice in one play -- reconcile
