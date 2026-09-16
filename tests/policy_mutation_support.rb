@@ -729,6 +729,42 @@ POLICY_AUDIT_SITES = {}
 # widens that to all eight, and the census must read the same in both modes.
 POLICY_MUTATION_CENSUS = { mutations: 0, single_script: 0, integration: 0, sites: {} }
 
+# The floor under the two figures above, and a lower bound rather than a claim
+# about what they currently are (#725).
+#
+# The census is a dynamic subject list, which is this repository's recurring way
+# for a guard to stop guarding: a refactor that stopped `expect_failure` rows
+# registering would re-derive fewer rows, find no drift among the ones it still
+# saw, print a clean verdict and finish *faster*. Every other subject list here
+# carries a floor for that reason -- EXPECTED_SELF_SIZING_CONTAINERS,
+# CREDENTIAL_FREE_SERVICES, the per-shard floors in
+# tests/gate_manifest_coverage_test.rb -- and this one carried none.
+#
+# It is a ratchet, not a pin: a run above these numbers passes, a run below them
+# fails and says what to write here. That is what makes it cheap in the direction
+# the file actually moves. Across the twenty-five commits that touched
+# tests/policy_manifest_test.rb between 2026-09-07 and 2026-09-16, the textual
+# count of `expect_failure(` in it went 179 -> 215: fourteen of the twenty-four
+# steps moved it up, ten left it alone and none moved it down. A pin would have
+# been edited fourteen times in nine days, which is the churn #652 deleted three
+# prose counts over, and a ratchet would have been edited never.
+#
+# That is a count of one token in one file, not a census: the census is what the
+# run holds, and the two agree on 215 call sites here only because every call
+# site in that file happens to be one textual call today. It is quoted as
+# evidence of the direction of travel and nothing else.
+#
+# This is not the prose baseline #435 retired, and the difference is that this
+# one is executed. A stated figure could disagree with the run for weeks -- that
+# is exactly how #435's wrong baseline read as a discrepancy against a correct
+# measurement. This one cannot: every run compares itself against it, so it is
+# either cleared or red. What it asserts is only that the list has not collapsed.
+#
+# Refreshing it is the two-place cost #469 accepted for the gate manifest, and
+# for the same reason: a prune that shrinks the census lands as a visible diff
+# here instead of as a quieter, faster pass.
+POLICY_MUTATION_CENSUS_BASELINE = { mutations: 301, call_sites: 215 }.freeze
+
 # What `--audit` did not re-derive, so its verdict states its own scope.
 #
 # The unit is one assertion that mutates a fixture sandbox and asserts on what a
@@ -877,20 +913,57 @@ def record_mutation_census(declared, site)
   POLICY_MUTATION_CENSUS[:sites][site.lineno] = true
 end
 
-# Printed, not asserted: there is no correct value here to pin, only a current
-# one, and the run is the only thing that knows it. Mutations and call sites are
-# both reported because they differ -- a loop is one declaration covering
-# several mutations -- and conflating them is one of the two ways the stated
-# figures were got wrong by hand.
+# Printed in full and floored on two of the four figures (#725). There is still
+# no correct value to pin here, only a current one, which is why what is asserted
+# is a lower bound and not the number itself. Mutations and call sites are both
+# reported, and both floored, because they differ -- a loop is one declaration
+# covering several mutations -- and conflating them is one of the two ways the
+# stated figures were got wrong by hand.
+#
+# The floor is taken as an argument so tests/policy_audit_coverage_test.rb can
+# drive it with synthetic figures, the way it drives every other counter here,
+# rather than against whatever the tree happens to hold on the day.
+#
+# The headroom is printed rather than bounded. A ratchet tolerates any rise, so
+# the baseline drifts below the real figure between refreshes and the span it
+# cannot see is exactly that gap; capping the gap would red a plain addition,
+# which is the one direction this file moves. Printing it puts the gap in front
+# of whoever reads the census.
 #
 # Printed before report/1 so it survives a failing run: a run that fails is
 # exactly when someone is reading these numbers.
-def report_mutation_census
-  puts "policy mutation census: #{POLICY_MUTATION_CENSUS[:mutations]} expect_failure mutations " \
-       "at #{POLICY_MUTATION_CENSUS[:sites].length} call sites; " \
+def report_mutation_census(failures, baseline: POLICY_MUTATION_CENSUS_BASELINE)
+  observed = { mutations: POLICY_MUTATION_CENSUS[:mutations],
+               call_sites: POLICY_MUTATION_CENSUS[:sites].length }
+  puts "policy mutation census: #{observed[:mutations]} expect_failure mutations " \
+       "at #{observed[:call_sites]} call sites; " \
        "#{POLICY_MUTATION_CENSUS[:single_script]} declare a single script, " \
        "#{POLICY_MUTATION_CENSUS[:integration]} declare " \
        "#{POLICY_SCRIPTS_BY_NAME.fetch(:integration)}"
+  puts "policy mutation census floor: #{baseline.fetch(:mutations)} mutations at " \
+       "#{baseline.fetch(:call_sites)} call sites, " \
+       "headroom #{format('%+d', observed[:mutations] - baseline.fetch(:mutations))} mutations " \
+       "#{format('%+d', observed[:call_sites] - baseline.fetch(:call_sites))} call sites"
+  check_mutation_census_floor(failures, observed, baseline)
+end
+
+# The collapse, reported as the two figures it is counted in. Both are checked
+# because a refactor can take either one on its own: rows can stop registering
+# while their call sites still run, and a whole file of call sites can go without
+# the mutation count following it down proportionally.
+#
+# The message states the value to write, because the legitimate drop and the
+# defect look identical from here -- only the diff that caused them says which it
+# was, and the person holding that diff is the one reading this line.
+def check_mutation_census_floor(failures, observed, baseline)
+  { mutations: "expect_failure mutations", call_sites: "call sites" }.each do |figure, noun|
+    next if observed.fetch(figure) >= baseline.fetch(figure)
+
+    failures << "policy mutation census: #{observed.fetch(figure)} #{noun}, below the floor of " \
+                "#{baseline.fetch(figure)} declared by POLICY_MUTATION_CENSUS_BASELINE in " \
+                "tests/policy_mutation_support.rb. A deliberate prune writes #{observed.fetch(figure)} " \
+                "there in the same diff; anything else has stopped registering rows that still exist"
+  end
 end
 
 def record_audit_detection(label, message, declared, results, site)
@@ -937,11 +1010,21 @@ end
 # run: stating either is the defect this reports, one level down, and the number
 # outside the audit rots on the next row added.
 #
-# The floor is on the re-derived side only. A dynamic subject list that silently
-# goes empty is how a guard here stops guarding while still passing, and a file
-# whose call sites run into the hundreds cannot legitimately fall to one. The
-# floor is two rather than the count of the day, which would rot -- what it
-# catches is the list collapsing, and any real count clears it by miles.
+# The floor here is on the re-derived side only. A dynamic subject list that
+# silently goes empty is how a guard here stops guarding while still passing, and
+# a file whose call sites run into the hundreds cannot legitimately fall to one.
+# Two is what it takes to catch that list emptying, and any real count clears it
+# by miles.
+#
+# It stayed at two when POLICY_MUTATION_CENSUS_BASELINE arrived (#725), and the
+# two are not the same guard. This one holds under `--audit` alone, on figures
+# the audit itself collects, and it is the one a synthetic run can drive to one
+# site. The census floor is a real count and it runs in both modes -- which is
+# what puts it in CI, where `--audit` never runs -- and under `--audit` it bounds
+# these figures too, because every row that records a census entry records an
+# audited one on the next line of expect_failure. So the ratchet covers the
+# re-derived half in the mode where a real tree is what is being counted, and
+# this floor covers what is left: a collapse seen by a run nobody ratcheted.
 #
 # There is deliberately no floor on the bypass count: routing a shape through
 # expect_failure would make zero the honest number, and the tripwire below
