@@ -1,4 +1,4 @@
-"""Beszel 0.18.7 persisted telemetry validation and bounded polling."""
+"""Beszel 0.19.0 persisted telemetry validation and bounded polling."""
 
 from datetime import datetime, timezone
 import re
@@ -116,33 +116,49 @@ def poll_telemetry(
     wall_clock=lambda: datetime.now(timezone.utc),
     sleep=time.sleep,
 ):
-    """Poll both collections until ready or one monotonic deadline expires."""
+    """Poll both collections until ready or one monotonic deadline expires.
+
+    Every return carries transient_failures, the number of collection requests
+    that were retried away. Suppressing them is right -- a 5xx or a socket
+    timeout inside the deadline is exactly what the retry loop is for -- but
+    suppressing them without counting made two different failures produce one
+    report: a hub that answered nothing and an agent that collected nothing both
+    left the records None, so the role named missing_categories either way and
+    read as a broken agent. The count carries no record content and no
+    credential, which is why it can go into evidence at all.
+
+    Attached at each return rather than folded into evaluate_telemetry: a fetch
+    that fails after the last evaluation still has to be counted, and two of the
+    four returns sit exactly there. It is on the passing return as well, so the
+    role can read the key on a converge where nothing was missing.
+    """
     deadline = monotonic() + timeout_seconds
     system_record = None
     container_record = None
+    transient_failures = 0
     evidence = evaluate_telemetry(
         system_id, system_record, container_record, required_categories, freshness_seconds, wall_clock()
     )
     while True:
         remaining = deadline - monotonic()
         if remaining <= 0:
-            return evidence
+            return dict(evidence, transient_failures=transient_failures)
         try:
             candidate = fetcher("system_stats", min(request_timeout_seconds, remaining))
             if candidate is not None:
                 system_record = candidate
         except TransientTelemetryError:
-            pass
+            transient_failures += 1
 
         remaining = deadline - monotonic()
         if remaining <= 0:
-            return evidence
+            return dict(evidence, transient_failures=transient_failures)
         try:
             candidate = fetcher("container_stats", min(request_timeout_seconds, remaining))
             if candidate is not None:
                 container_record = candidate
         except TransientTelemetryError:
-            pass
+            transient_failures += 1
 
         evidence = evaluate_telemetry(
             system_id,
@@ -153,9 +169,9 @@ def poll_telemetry(
             wall_clock(),
         )
         if not evidence["missing_categories"]:
-            return evidence
+            return dict(evidence, transient_failures=transient_failures)
 
         remaining = deadline - monotonic()
         if remaining <= 0:
-            return evidence
+            return dict(evidence, transient_failures=transient_failures)
         sleep(min(delay_seconds, remaining))

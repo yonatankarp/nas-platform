@@ -31,7 +31,11 @@ EXAMPLES = r"""
 
 RETURN = r"""
 evidence:
-  description: Safe category and record-ID evidence.
+  description: >-
+    Safe category and record-ID evidence, plus transient_failures -- how many
+    collection requests the poll retried away. A missing category with a
+    non-zero count is a hub that could not be read; the same category with a
+    zero count is an agent that collected nothing.
   type: dict
   returned: always
 """

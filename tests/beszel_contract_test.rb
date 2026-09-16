@@ -453,7 +453,11 @@ STATIC_ROWS = [
     break: lambda { |root|
       mutate_text(root, "roles/beszel/tasks/configure.yml",
                   "beszel_telemetry_probe_result.evidence.", "beszel_unread_evidence.",
-                  occurrences: 4)
+                  # Five since #658 gave the evidence a transient_failures count
+                  # and the role a fact for it. Stated rather than derived, so
+                  # a reading that stops landing is an edit here rather than a
+                  # mutation that plants less than it says it does.
+                  occurrences: 5)
     },
     expects: "role treats live health as persisted telemetry"
   },

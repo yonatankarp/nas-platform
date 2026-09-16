@@ -236,7 +236,13 @@ if resolve_evidence && verify_evidence
       "evidence" => {
         "system_id" => "system-safe", "system_stats_id" => "[invalid]",
         "container_stats_id" => "container-stats-safe",
-        "missing_categories" => %w[core disk gpu]
+        "missing_categories" => %w[core disk gpu],
+        # The probe returns this from every one of its returns (#658). Present
+        # here because the role resolves it on every converge: a fixture that
+        # omitted it would fail the set_fact rather than the assertion this
+        # case is about, and it is the number that tells an unreadable hub from
+        # an agent that collected nothing.
+        "transient_failures" => 4
       }
     }
   }
@@ -245,6 +251,8 @@ if resolve_evidence && verify_evidence
   failures << "Ansible malformed telemetry unexpectedly verified" if status.success?
   failures << "Ansible malformed telemetry omitted safe category diagnostics" unless
     output.include?("core,disk,gpu")
+  failures << "Ansible malformed telemetry omitted the retried-away fetch count" unless
+    output.include?("fetch failures=4")
   failures << "Ansible malformed telemetry omitted safe system ID" unless output.include?("system-safe")
   failures << "Ansible malformed telemetry did not sanitize the record ID" unless output.include?("[invalid]")
   failures << "Ansible malformed telemetry leaked an unsafe record ID" if output.include?("sensitive password")

@@ -134,6 +134,22 @@ EMERGENCY_EXPIRE_SECONDS = 3600
 # that reports nothing at all. The gate is where a developer's mistake belongs.
 EMERGENCY_MAX_RETRIES = 50
 
+# The deadline on one Pushover publish, and it is two claims rather than one.
+# It bounds the HTTP call, and -- because publish runs inside the exclusive
+# flock process_event holds, which is the ceiling interlock and must not be
+# moved -- it is also the bound on how long a hung Pushover serialises every
+# concurrent Dozzle POST behind it. That second claim is the reason the
+# interlock is accepted at all, and it was resting on a bare literal at the
+# call site: the argument was in a comment and the number was not named
+# anywhere (#658). Deliberately not spelled NOTIFICATION_TIMEOUT_SECONDS,
+# which is what the two scripts/*.py programs call the deadline on their own
+# curl: those are cron process budgets with nothing held across them, and
+# tests/policy_test.rb pins that name byte-identical wherever it appears, so
+# sharing it would assert the two must always be the same number. They need
+# not be -- lowering this one to shorten a lock hold is a change the relay can
+# make alone.
+PUBLISH_TIMEOUT_SECONDS = 10
+
 # Pushover refuses a message longer than 1024 characters, and refuses it with a
 # 4xx -- so an over-long alert is not a truncated alert, it is a lost one. The
 # bound below is on the ESCAPED length rather than on the input, which is the
@@ -1033,6 +1049,12 @@ def open_directory_no_symlinks(path):
         raise StateError("state directory is not absolute")
     flags = os.O_RDONLY | os.O_DIRECTORY
     no_follow = getattr(os, "O_NOFOLLOW", 0)
+    # Bound before the try so the handler can ask whether this function owns a
+    # descriptor instead of asking the interpreter whether it made the name.
+    # `"directory_fd" in locals()` answered the same question correctly and was
+    # the one place in this file where resource ownership was decided by
+    # introspection; LockedState below already writes it this way (#658).
+    directory_fd = None
     try:
         directory_fd = os.open(absolute, flags | no_follow)
         details = os.fstat(directory_fd)
@@ -1044,7 +1066,7 @@ def open_directory_no_symlinks(path):
             raise StateError("unsafe state directory")
         return directory_fd
     except (OSError, StateError) as error:
-        if "directory_fd" in locals():
+        if directory_fd is not None:
             os.close(directory_fd)
         if isinstance(error, StateError):
             raise
@@ -1637,7 +1659,7 @@ def publish(config, notification, token):
     # which subclasses OSError, so the broad branch below would swallow every
     # rejection if it came first.
     try:
-        with NO_REDIRECT_OPENER.open(request, timeout=10) as response:
+        with NO_REDIRECT_OPENER.open(request, timeout=PUBLISH_TIMEOUT_SECONDS) as response:
             if not 200 <= response.status < 300:
                 # Defensive rather than reached: urllib raises HTTPError for
                 # anything at or above 400, and the redirect handler refuses 3xx
@@ -1968,8 +1990,9 @@ def process_event(config, event, floor):
         # looked like protection the whole time.
         #
         # SO `publish` IS DELIBERATELY INSIDE THE LOCK, and the cost is real and
-        # is not an oversight: it holds a 10-second HTTP timeout, so a hung
-        # Pushover serialises every concurrent Dozzle POST behind it. That is
+        # is not an oversight: it holds the HTTP timeout named by
+        # PUBLISH_TIMEOUT_SECONDS, so a hung Pushover serialises every
+        # concurrent Dozzle POST behind it for that long. That is
         # accepted here because the timeout bounds it and this relay's event
         # volume is a handful of container transitions, not a stream. Moving the
         # publish out is the obvious throughput fix and it BREACHES THE CEILING

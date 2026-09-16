@@ -1605,9 +1605,9 @@ class RunTest(PollerTestCase):
 
 
 class LogTest(PollerTestCase):
-    def test_attempt_log_is_private_and_linked_as_latest(self):
+    def test_the_run_log_is_private_and_linked_as_latest(self):
         config = self.loaded_config()
-        with production_auto_deploy.attempt_log(config, MAIN_SHA) as log:
+        with production_auto_deploy.run_log(config, MAIN_SHA) as log:
             log.write(b"hello\n")
             path = Path(log.name)
         self.assertEqual(path.stat().st_mode & 0o777, 0o600)
@@ -1618,9 +1618,9 @@ class LogTest(PollerTestCase):
 
     def test_latest_moves_to_the_newest_attempt(self):
         config = self.loaded_config()
-        with production_auto_deploy.attempt_log(config, MAIN_SHA) as first:
+        with production_auto_deploy.run_log(config, MAIN_SHA) as first:
             first_path = Path(first.name)
-        with production_auto_deploy.attempt_log(config, OTHER_SHA) as second:
+        with production_auto_deploy.run_log(config, OTHER_SHA) as second:
             second_path = Path(second.name)
         self.assertNotEqual(first_path, second_path)
         self.assertEqual((config.log_root / "latest").resolve(), second_path.resolve())
@@ -1652,6 +1652,63 @@ class LogTest(PollerTestCase):
 
         self.assertTrue(boundary.exists(), "30 days back is inside retention")
         self.assertTrue(malformed.exists(), "an unparsable stamp is left alone")
+
+    def test_the_suffix_is_what_makes_a_run_log_findable(self):
+        """run_log is the byte-identical copy now, and its input is the suffix.
+
+        The two scripts wrote the same context manager under two names with one
+        literal apart, which the identity pin could not see (#658). What that
+        cost this program is the property below: an attempt's output has to be
+        reachable by the revision that produced it, and the suffix is the only
+        thing carrying that. LOG_PATTERN is what rotate_logs then matches, so a
+        suffix the pattern does not admit is a log nothing ever removes.
+        """
+        config = self.loaded_config()
+
+        with production_auto_deploy.run_log(config, MAIN_SHA) as log:
+            name = Path(log.name).name
+
+        self.assertTrue(name.endswith(f"-{MAIN_SHA}"), name)
+        self.assertIsNotNone(production_auto_deploy.LOG_PATTERN.fullmatch(name), name)
+
+
+class DurationTest(unittest.TestCase):
+    """The split that made format_duration a byte-identical copy (#658).
+
+    format_duration used to take the two recorded timestamps here and seconds
+    in the other script, so its divmod tail was duplicated where nothing could
+    compare it. Parsing is duration_between's now and the tail is shared, which
+    moves a decision across the seam: "unknown" for an unparseable pair belongs
+    to duration_between and "unknown" for a negative span belongs to
+    format_duration. Both are asserted, because a split that dropped either
+    would still render every ordinary deployment correctly.
+    """
+
+    def test_an_unparsable_pair_is_unknown_rather_than_guessed(self):
+        self.assertEqual(production_auto_deploy.duration_between("start", "finish"), "unknown")
+        self.assertEqual(
+            production_auto_deploy.duration_between("2026-08-20T10:00:00Z", ""), "unknown"
+        )
+
+    def test_a_finish_before_its_start_is_unknown(self):
+        self.assertEqual(
+            production_auto_deploy.duration_between(
+                "2026-08-20T10:00:00Z", "2026-08-20T09:00:00Z"
+            ),
+            "unknown",
+        )
+        self.assertEqual(production_auto_deploy.format_duration(-1), "unknown")
+
+    def test_the_three_renderings_are_what_the_other_script_renders(self):
+        for seconds, rendered in ((9, "9s"), (61, "1m 1s"), (3661, "1h 1m 1s"), (0, "0s")):
+            with self.subTest(seconds=seconds):
+                self.assertEqual(production_auto_deploy.format_duration(seconds), rendered)
+        self.assertEqual(
+            production_auto_deploy.duration_between(
+                "2026-08-20T09:00:00Z", "2026-08-20T10:01:01Z"
+            ),
+            "1h 1m 1s",
+        )
 
 
 class PushoverTransportTest(PollerTestCase):
@@ -4768,6 +4825,25 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 self.main("--poll")
 
         self.assertIs(raised.exception, error)
+        self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
+
+    def test_an_unusable_state_directory_is_a_sentence_and_still_pings_fail(self):
+        # Not a mock: deployment_lock opens state_root/deployment.lock before
+        # anything else, so a state_root the installer never created is a real
+        # OSError out of poll(). Cron keeps only the most recent output, and
+        # --verify and the prune already report this class as a sentence; the
+        # branch that runs every five minutes reported it as a traceback (#658).
+        missing = self.root / ".local/share/nas-platform/absent-state"
+        self.configure(state_root=str(missing))
+
+        code, output = self.main("--poll")
+
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            output.strip(),
+            f"production auto-deploy: {missing / 'deployment.lock'} is unusable",
+        )
+        self.assertNotIn("Traceback", output)
         self.assertEqual(self.pinged(), [self.POLLER_URL + "/fail"])
 
     def test_an_unusable_configuration_cannot_ping_and_is_left_to_the_grace_period(self):

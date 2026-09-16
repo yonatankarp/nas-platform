@@ -471,6 +471,13 @@ class PruneRunTest(PruneTestCase):
         # --disable first, which is the only place curl honours it: the prune
         # passes HOME, so without it ~/.curlrc's proxy and headers ride along.
         self.assertEqual(send["argv"][0], "--disable")
+        # Read off the constant rather than restated as "10": the literal and
+        # the process deadline fifteen lines below it were two spellings of one
+        # budget, and only one of them would have followed a change (#658).
+        self.assertEqual(
+            send["argv"][send["argv"].index("--max-time") + 1],
+            str(image_prune.NOTIFICATION_TIMEOUT_SECONDS),
+        )
 
     def test_a_week_with_nothing_to_reclaim_stays_quiet(self):
         self.stub("docker", body="echo 'Total reclaimed space: 0B'\nexit 0")
