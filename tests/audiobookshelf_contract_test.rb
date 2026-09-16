@@ -541,6 +541,32 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf direct authentication proof is absent"
   },
   {
+    # Since #647 the per-user logins the budget counts are roles/managed_users'
+    # generic request, and only the shim's bindings make that request this
+    # service's /login. A shim pointed elsewhere must not still be counted.
+    name: "a managed-user shim whose login path is no longer /login",
+    mode: "authentication-budget-self-test",
+    break: lambda { |root|
+      edit_yaml(root, "roles/audiobookshelf/defaults/main.yml") do |document|
+        document["audiobookshelf_managed_users_authenticate_path"] = "api/login"
+      end
+    },
+    expects: "Audiobookshelf managed-user shim does not bind the shared login"
+  },
+  {
+    # The other half: the shared role is what is actually read. Renaming its
+    # authenticate request must change the model rather than go unseen.
+    name: "a shared managed-user role whose login request was renamed",
+    mode: "authentication-budget-self-test",
+    break: lambda { |root|
+      edit_text(root, "roles/managed_users/tasks/main.yml") do |source|
+        source.sub('"Authenticate existing managed users: {{ managed_users_title }}"',
+                   '"Probe existing managed users: {{ managed_users_title }}"')
+      end
+    },
+    expects: "Audiobookshelf managed-user authentication task model differs"
+  },
+  {
     # Diagnostics and drift snapshots are written under the report root, so a
     # report root that is a symlink is somewhere else's directory.
     name: "a report root that is a symlink",
@@ -1035,6 +1061,20 @@ PROGRAM_MUTATIONS = [
     to: 'repo_root.join("tests/contracts/audiobookshelf.sh").read',
     rows: ["the authentication budget self-test"],
     detects: "expected success"
+  },
+  {
+    label: "the managed-user shim login binding check",
+    program: :runtime,
+    from: 'fail_contract("Audiobookshelf managed-user shim does not bind the shared login") unless',
+    to: "nil unless true ||",
+    rows: ["a managed-user shim whose login path is no longer /login"]
+  },
+  {
+    label: "the managed-user authentication task model check",
+    program: :runtime,
+    from: 'fail_contract("Audiobookshelf managed-user authentication task model differs") unless',
+    to: "nil unless true ||",
+    rows: ["a shared managed-user role whose login request was renamed"]
   },
   {
     label: "the direct authentication proof",
