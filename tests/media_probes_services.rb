@@ -162,6 +162,33 @@ def exercise_audiobookshelf_converged(failures)
     failures << "Audiobookshelf converged review sent a request beyond the listing" unless
       requests.all? { |request| request["method"] == "GET" && request["target"] == "/api/users" }
   end
+
+  # The refusal this service has always made and komga does not: a login that
+  # succeeds but echoes the declared username in another case is not proof the
+  # declared identity holds that password. roles/managed_users compares komga's
+  # emails normalised, so this is the row that fails if audiobookshelf ever
+  # inherits that comparison.
+  recased = lambda do |request|
+    request["target"] == "/login" ? [200, { "user" => { "username" => "Reader" } }] : responder.call(request)
+  end
+  with_http_service(recased) do |port, requests|
+    variables = {
+      "audiobookshelf_api" => "http://127.0.0.1:#{port}",
+      "vault_managed_audiobookshelf_users" => managed
+    }
+    stdout, stderr, status = run_playbook([includes_for("audiobookshelf", "fixture-token").first],
+                                          variables)
+    output = stdout + stderr
+    failures << "Audiobookshelf re-cased login echo was accepted" if status.success?
+    failures << "Audiobookshelf re-cased login echo did not refuse with its own diagnostic: " \
+                "#{failure_tail(output)}" unless
+      HttpFixtureSupport.refused_with?(
+        output, "Existing Audiobookshelf managed user does not accept its preserved vault password."
+      )
+    failures << "Audiobookshelf re-cased login echo reached a mutation" if
+      requests.any? { |request| %w[PUT PATCH DELETE].include?(request["method"]) ||
+        (request["method"] == "POST" && request["target"] != "/login") }
+  end
 end
 
 def exercise_jellyfin(failures)

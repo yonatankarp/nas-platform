@@ -1325,11 +1325,16 @@ credential guard — and a service's own file is a shim that names the role and
 maps its parameters. `roles/komga/tasks/managed_users.yml` and
 `roles/komga/defaults/main.yml` are the reference for that shim, and the values
 it maps live in the defaults so the shim stays a one-to-one map. #647 hoisted
-komga; audiobookshelf, beszel, jellyfin, paperless-ngx and immich are still
+komga, then audiobookshelf; beszel, jellyfin, paperless-ngx and immich are still
 hand-written copies and are being converted in later chunks, so read komga
-rather than the nearest file. A step the shared role cannot express stays in the
-service's own tasks beside the shim, which is where Immich's preference profiles
-and Jellyfin's policy merge will stay.
+rather than the nearest file. `roles/audiobookshelf/defaults/main.yml` is the
+reference for the two things komga does not need: a paginated listing envelope,
+whose refusals go in `managed_users_listing_conditions`, and a login that proves
+the credential in a request body rather than over basic auth, with the
+authenticated identity compared exactly rather than normalised. A step the
+shared role cannot express stays in the service's own tasks beside the shim,
+which is where Immich's preference profiles and Jellyfin's policy merge will
+stay.
 
 `config/managed-user-capabilities.yml` is that role's own input as well as the
 register: it reads the service's row off the deployed release and refuses a
