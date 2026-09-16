@@ -70,6 +70,22 @@ argument_specs:
         description: Relative path of the complete-user listing, as the register declares it.
         type: str
         required: true
+      managed_users_listing_conditions:
+        description: >-
+          BRACE-FREE expressions a complete listing must satisfy, asserted in
+          order against the first listing and against the listing re-read after
+          creation. Defaults to the one condition komga needs; a paginated
+          envelope states its pagination refusals here.
+        type: list
+        elements: str
+        required: false
+      managed_users_authenticate_identity_normalized:
+        description: >-
+          Whether the identity an authenticate response echoes may differ from
+          the declared one by case or surrounding whitespace. False requires it
+          to be exactly equal.
+        type: bool
+        required: false
       managed_users_admin_headers:
         description: Headers carrying administrative authentication, when the service uses them.
         type: dict
@@ -95,6 +111,12 @@ argument_specs:
         type: bool
         required: false
       managed_users_authenticate_body_format:
+        description: >-
+          Paired with managed_users_authenticate_body, which is undeclared for
+          the reason above and is evaluated with managed_users_authenticating_user
+          bound to the declared user in both authenticate requests -- `item` in
+          one and `item.item` in the other, so a body cannot name either
+          directly.
         type: str
         required: false
       managed_users_create_path:

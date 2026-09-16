@@ -55,3 +55,97 @@ audiobookshelf_library_settings:
     - absMetadata
   markAsFinishedPercentComplete: null
   markAsFinishedTimeRemaining: 10
+
+# Audiobookshelf's half of roles/managed_users. tasks/managed_users.yml maps these
+# onto that role's parameters one for one, so this block is the whole statement
+# of what Audiobookshelf's managed-user contract is; roles/komga/defaults/main.yml
+# is the block to compare it against.
+#
+# The four relative paths are asserted against config/managed-user-capabilities.yml
+# on the deployed release before any request is sent.
+audiobookshelf_managed_users_identity_attribute: username
+audiobookshelf_managed_users_id_attribute: id
+audiobookshelf_managed_users_list_path: api/users
+audiobookshelf_managed_users_authenticate_path: login
+audiobookshelf_managed_users_create_path: api/users
+audiobookshelf_managed_users_reconcile_interface: api/users/{id}
+audiobookshelf_managed_users_create_status: [200]
+audiobookshelf_managed_users_repair_status: [200]
+# The login response is required to echo the declared username exactly, not
+# merely up to case -- the refusal this service has always made.
+audiobookshelf_managed_users_authenticate_identity_normalized: false
+
+# The users listing is a paginated envelope, and a truncated listing reads as an
+# absent identity, which the next step would create a second time. BRACE-FREE and
+# ordered: the envelope is proved a mapping before any key is read out of it.
+# The shared role asserts these against the first listing and again against the
+# listing it re-reads after creation.
+audiobookshelf_managed_users_listing_conditions:
+  - managed_users_listing.json is mapping
+  - managed_users_listing.json.users | type_debug == 'list'
+  - managed_users_listing.json.hasMore | default(false) | bool == false
+  - managed_users_listing.json.nextPage | default(none) is none
+  - >-
+    managed_users_listing.json.total is not defined or
+    managed_users_listing.json.total | int ==
+      managed_users_listing.json.users | length
+
+# Evaluated inside the shared role's loops, against its own names: the listing it
+# registered, the single match it bound, `item`, and the declared user it binds
+# as managed_users_authenticating_user for both authenticate requests.
+audiobookshelf_managed_users_list_json: "{{ managed_users_listing.json.users }}"
+audiobookshelf_managed_users_authenticate_body:
+  username: "{{ managed_users_authenticating_user.username }}"
+  password: "{{ managed_users_authenticating_user.password }}"
+audiobookshelf_managed_users_authenticate_identity: "{{ item.json.user.username | default('') }}"
+audiobookshelf_managed_users_reconcile_path: >-
+  api/users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
+audiobookshelf_managed_users_create_body:
+  username: "{{ item.username }}"
+  password: "{{ item.password }}"
+  type: "{{ item.type }}"
+  isActive: "{{ item.is_active }}"
+  permissions: "{{ item.permissions.flags }}"
+  librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+  itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
+# The pinned permission fields, split. Nothing password-shaped may appear here:
+# the capability register declares an existing identity's password update
+# forbidden, and the shared role refuses a repair body carrying one.
+audiobookshelf_managed_users_repair_body:
+  type: "{{ item.type }}"
+  isActive: "{{ item.is_active }}"
+  permissions: "{{ item.permissions.flags }}"
+  librariesAccessible: "{{ item.permissions.librariesAccessible }}"
+  itemTagsSelected: "{{ item.permissions.itemTagsSelected }}"
+# Only the declared permission flags are compared: Audiobookshelf expands the
+# permissions object with flags nobody declared, and a repair must not reset them.
+audiobookshelf_managed_users_repair_condition: >-
+  {{ managed_users_match.type != item.type or
+     managed_users_match.isActive | bool != item.is_active | bool or
+     (managed_users_match.permissions | dict2items |
+      selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) !=
+       item.permissions.flags or
+     managed_users_match.librariesAccessible != item.permissions.librariesAccessible or
+     managed_users_match.itemTagsSelected != item.permissions.itemTagsSelected }}
+# Brace-free; the first condition is what makes the rest safe, because
+# managed_users_match is an empty mapping for an identity with no match.
+audiobookshelf_managed_users_verify_conditions:
+  - managed_users_matches[item.username] | length == 1
+  - managed_users_match.username == item.username
+  - managed_users_match.type == item.type
+  - managed_users_match.isActive | bool == item.is_active | bool
+  - >-
+    (managed_users_match.permissions | dict2items |
+     selectattr('key', 'in', item.permissions.flags.keys()) | items2dict) ==
+      item.permissions.flags
+  - >-
+    managed_users_match.librariesAccessible ==
+    item.permissions.librariesAccessible
+  - >-
+    managed_users_match.itemTagsSelected ==
+    item.permissions.itemTagsSelected
+audiobookshelf_managed_users_verify_fail_msg: >-
+  A managed Audiobookshelf identity is absent, duplicated, aliased, or
+  differs from its exact declared non-secret state.
+audiobookshelf_managed_users_plan_create_message: AUDIOBOOKSHELF_PLAN_MANAGED_USER_CREATE
+audiobookshelf_managed_users_plan_repair_message: AUDIOBOOKSHELF_PLAN_MANAGED_USER_REPAIR

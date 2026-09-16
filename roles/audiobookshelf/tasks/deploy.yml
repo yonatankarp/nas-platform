@@ -26,6 +26,9 @@
     deployment_target_extra_paths:
       - "{{ audiobookshelf_effective_config_host_path }}"
       - "{{ audiobookshelf_effective_backup_host_path }}"
+      # roles/managed_users reads the capability register off the deployed
+      # release, the way roles/komga names it for the same reason.
+      - "{{ platform_current_dir }}/config/managed-user-capabilities.yml"
 
 - name: Render the Audiobookshelf environment
   ansible.builtin.template:

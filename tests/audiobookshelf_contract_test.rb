@@ -81,6 +81,7 @@ FIXTURE_FILES = %w[
   roles/audiobookshelf/defaults/main.yml
   roles/audiobookshelf/meta/argument_specs.yml
   roles/audiobookshelf/templates/env.j2
+  roles/managed_users/tasks/main.yml
   services/audiobookshelf/compose.yml
   services/audiobookshelf/compose.mac.yml
   inventory/group_vars/all/service_audiobookshelf.yml
