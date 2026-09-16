@@ -219,6 +219,261 @@ def exercise_komga(failures)
   end
 end
 
+# The run where nothing needs creating and nothing needs repairing. exercise_komga
+# above drives a service that is missing one identity and has the wrong roles on
+# another, so every guard it exercises is exercised on its FAILING branch -- and
+# a fail_msg that dies when it is finalized dies on the PASSING one, after every
+# earlier assertion has held. A converged fixture is the only run that asks
+# whether this reconciliation can report success at all, and it is also what
+# proves the repair decision is a decision: exercise_komga would still pass if
+# every identity were always repaired.
+def exercise_komga_converged(failures)
+  users = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+             "password" => "reader-secret", "roles" => %w[USER PAGE_STREAMING] },
+           { "id" => "komga-friend", "email" => "friend@example.invalid",
+             "password" => "friend-secret", "roles" => %w[USER KOBO_SYNC] }]
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/v2/users"]
+      [200, users.map { |user| user.reject { |key, _| key == "password" } }]
+    when ["GET", "/api/v2/users/me"]
+      email, password = basic_credentials(request)
+      authenticated = users.find { |user| user["email"] == email && user["password"] == password }
+      authenticated ? [200, authenticated.reject { |key, _| key == "password" }] : [401, {}]
+    else [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => managed
+    }
+    stdout, stderr, status = run_playbook(includes_for("komga"), variables)
+    failures << "Komga converged fixture failed: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+    mutations = requests.select { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+    failures << "Komga converged fixture mutated a converged service: " \
+                "#{mutations.map { |request| request['target'] }}" unless mutations.empty?
+    failures << "Komga converged fixture did not authenticate the existing identity" unless
+      requests.any? do |request|
+        request["target"] == "/api/v2/users/me" &&
+          basic_credentials(request) == %w[reader@example.invalid reader-secret]
+      end
+    failures << "Komga converged fixture did not reach its final verification" unless
+      requests.count { |request| request["target"] == "/api/v2/users" && request["method"] == "GET" } == 3
+  end
+end
+
+# Both branches of the capability-register read, and both directions of each.
+# The review branch exists because deployment_bundle stages and activates
+# nothing under --check, so on the first converge that ships the register
+# platform_current_dir still names a release that predates it. A probe that
+# forgot to name a release at all would land in that branch and report green,
+# which is why the first row asserts the token is ABSENT when the register is
+# there.
+def exercise_komga_capability_register(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/v2/users"]
+      [200, [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+               "roles" => %w[USER PAGE_STREAMING] }]]
+    when ["GET", "/api/v2/users/me"]
+      [200, { "id" => "komga-reader", "email" => "reader@example.invalid",
+              "roles" => %w[USER PAGE_STREAMING] }]
+    else [500, {}]
+    end
+  end
+  register = YAML.safe_load_file(File.join(ROOT, "config", "managed-user-capabilities.yml"))
+  Dir.mktmpdir("nas-platform-komga-register-") do |root|
+    stale = File.join(root, "stale-release")
+    drifted = File.join(root, "drifted-release")
+    FileUtils.mkdir_p(stale)
+    FileUtils.mkdir_p(File.join(drifted, "config"))
+    drifted_register = Marshal.load(Marshal.dump(register))
+    drifted_register.fetch("services").fetch("komga").fetch("interfaces")["list"] = "api/v1/users"
+    File.write(File.join(drifted, "config", "managed-user-capabilities.yml"),
+               YAML.dump(drifted_register))
+
+    review = "MANAGED_USERS_REGISTER_UNREVIEWABLE"
+    cases = [
+      ["register present under review", ROOT, ["--check"], true, nil, review],
+      ["register absent under review", stale, ["--check"], true, review, nil],
+      ["register absent on a converge", stale, [], false,
+       "is absent from the deployed release", nil],
+      ["register drifted from this role", drifted, [], false,
+       "does not authorise this reconciliation of komga", nil]
+    ]
+    cases.each do |label, release, arguments, expected, required, forbidden|
+      with_http_service(responder) do |port, _requests|
+        variables = {
+          "komga_api" => "http://127.0.0.1:#{port}",
+          "vault_komga_admin_email" => "admin@example.invalid",
+          "vault_komga_admin_password" => "admin-secret",
+          "vault_managed_komga_users" => managed,
+          "platform_current_dir" => release
+        }
+        stdout, stderr, status = run_playbook([includes_for("komga").first], variables, *arguments)
+        output = stdout + stderr
+        if status.success? != expected
+          failures << "Komga #{label} fixture #{expected ? 'failed' : 'succeeded'}: " \
+                      "#{failure_tail(output)}"
+        end
+        failures << "Komga #{label} fixture omitted #{required.inspect}" if
+          required && !output.include?(required)
+        failures << "Komga #{label} fixture emitted #{forbidden.inspect}" if
+          forbidden && output.include?(forbidden)
+      end
+    end
+  end
+end
+
+# The verify phase's REFUSAL branch, which nothing else reaches: every other
+# probe drives the final verification on its passing branch, and after #647 the
+# three conditions travel through two indirections before `assert` sees them --
+# komga_managed_users_verify_conditions, the role's
+# managed_users_verify_conditions, and `that:` templating the list. A list of
+# non-empty strings is truthy, so plumbing that delivered them as VALUES rather
+# than as expressions would print exactly what a converged run prints. Only a
+# state the conditions must reject tells the two apart.
+#
+# The absent-identity row is also the short-circuit proof: the second and third
+# conditions read the single match, which does not exist for an identity with
+# none, so a `that:` list evaluated all at once would raise instead of refusing.
+def exercise_komga_verification(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  drift = "A managed Komga identity is absent, duplicated, or differs from its exact " \
+          "declared email and roles."
+  cases = [
+    ["converged", [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                     "roles" => %w[USER PAGE_STREAMING] }], true],
+    ["drifted roles", [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                         "roles" => %w[USER KOBO_SYNC] }], false],
+    ["absent identity", [{ "id" => "komga-other", "email" => "other@example.invalid",
+                           "roles" => %w[USER] }], false],
+    ["duplicated identity", [{ "id" => "komga-one", "email" => "reader@example.invalid",
+                               "roles" => %w[USER PAGE_STREAMING] },
+                             { "id" => "komga-two", "email" => "reader@example.invalid",
+                               "roles" => %w[USER PAGE_STREAMING] }], false]
+  ]
+  cases.each do |label, listing, expected|
+    with_http_service(->(_request) { [200, listing] }) do |port, requests|
+      variables = {
+        "komga_api" => "http://127.0.0.1:#{port}",
+        "vault_komga_admin_email" => "admin@example.invalid",
+        "vault_komga_admin_password" => "admin-secret",
+        "vault_managed_komga_users" => managed
+      }
+      stdout, stderr, status = run_playbook([includes_for("komga").last], variables)
+      output = stdout + stderr
+      if status.success? != expected
+        failures << "Komga #{label} verification #{expected ? 'failed' : 'succeeded'}: " \
+                    "#{failure_tail(output)}"
+      end
+      # The duplicate is refused earlier, by the ambiguity guard, so only the two
+      # rows the final verification itself owns assert its diagnostic.
+      failures << "Komga #{label} verification did not refuse with its own diagnostic" if
+        ["drifted roles", "absent identity"].include?(label) &&
+        !HttpFixtureSupport.refused_with?(output, drift)
+      failures << "Komga #{label} verification mutated the service" if
+        requests.any? { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+    end
+  end
+end
+
+# roles/managed_users takes six parameters meta/argument_specs.yml cannot
+# declare, because Ansible templates every declared option at role entry and
+# each of these is a template over a per-identity `item` or over the match the
+# role binds. The role asserts their PRESENCE instead, through q('varnames'),
+# which is a mechanism nothing else here uses -- so it is exercised rather than
+# trusted, by dropping one from a copy of the shim.
+def exercise_komga_parameter_contract(failures)
+  shim = YAML.safe_load_file(KOMGA_SHIM, aliases: false)
+  %w[managed_users_create_body managed_users_repair_condition
+     managed_users_list_json].each do |dropped|
+    mutant = Marshal.load(Marshal.dump(shim))
+    mutant.find { |task| task.key?("ansible.builtin.include_role") }.fetch("vars").delete(dropped)
+    # The shim's parameter and Komga's default for it are the same value by two
+    # names, so both have to go or the default still supplies it.
+    overrides = HARNESS_MANAGED_USER_DEFAULTS.reject do |name, _value|
+      name == dropped.sub("managed_users_", "komga_managed_users_")
+    end
+    stdout, stderr, status = HttpFixtureSupport.run_playbook(
+      mutant,
+      HARNESS_TIMING_DEFAULTS.merge(overrides).merge(HARNESS_RELEASE_DEFAULTS).merge(
+        "komga_managed_users_phase" => "reconcile",
+        "komga_api" => "http://127.0.0.1:#{HttpFixtureSupport.refusing_port}",
+        "vault_komga_admin_email" => "admin@example.invalid",
+        "vault_komga_admin_password" => "admin-secret",
+        "vault_managed_komga_users" => []
+      ),
+      prefix: "nas-platform-komga-parameter-contract-"
+    )
+    output = stdout + stderr
+    failures << "Komga run without #{dropped} succeeded" if status.success?
+    failures << "Komga run without #{dropped} did not name it: #{failure_tail(output)}" unless
+      HttpFixtureSupport.refused_with?(
+        output, "A caller of roles/managed_users did not supply #{dropped}."
+      )
+  end
+end
+
+# What a --check review REPORTS. The two plan literals were unpinned before
+# #647, which was neutral while they were `msg:` constants in Komga's own file;
+# they are now a parameter, and the decision behind the repair one is a fact the
+# role resolves from a caller-supplied template. A repair decision that silently
+# resolved false, or a plan message that arrived empty, would leave a review
+# printing nothing and changed=0 -- which reads exactly like a converged host.
+def exercise_komga_review_plan(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] },
+             { "email" => "new@example.invalid", "password" => "new-secret",
+               "roles" => ["KOREADER_SYNC"] }]
+  listing = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+               "roles" => %w[USER KOBO_SYNC] }]
+  with_http_service(->(_request) { [200, listing] }) do |port, requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => managed
+    }
+    stdout, stderr, status = run_playbook([includes_for("komga").first], variables, "--check")
+    output = stdout + stderr
+    failures << "Komga review fixture failed: #{failure_tail(output)}" unless status.success?
+    %w[KOMGA_PLAN_MANAGED_USER_CREATE KOMGA_PLAN_MANAGED_USER_REPAIR].each do |literal|
+      failures << "Komga review omitted #{literal}" unless output.include?(literal)
+    end
+    failures << "Komga review mutated the service" if
+      requests.any? { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+  end
+
+  # The other direction: a converged host must report neither plan, or the
+  # decision is not a decision.
+  converged = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                 "roles" => %w[USER PAGE_STREAMING] }]
+  with_http_service(->(_request) { [200, converged] }) do |port, _requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => [managed.first]
+    }
+    stdout, stderr, status = run_playbook([includes_for("komga").first], variables, "--check")
+    output = stdout + stderr
+    failures << "Komga converged review failed: #{failure_tail(output)}" unless status.success?
+    %w[KOMGA_PLAN_MANAGED_USER_CREATE KOMGA_PLAN_MANAGED_USER_REPAIR].each do |literal|
+      failures << "Komga converged review reported #{literal}" if output.include?(literal)
+    end
+  end
+end
+
 def exercise_check_mode(failures)
   cases = [
     ["Audiobookshelf", "audiobookshelf", "fixture-token",

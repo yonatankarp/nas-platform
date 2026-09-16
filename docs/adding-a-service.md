@@ -1318,8 +1318,23 @@ performing them.
 Managed non-administrator users are a separate mechanism: they live under
 `vault_managed_<role>_users` and are converged by a `tasks/managed_users.yml`
 included twice, once with a `reconcile` phase and once with a `verify` phase.
-`roles/komga/tasks/managed_users.yml` and `config/managed-user-capabilities.yml`
-are the reference.
+
+For a service whose users are an HTTP API, do not write that lifecycle again.
+`roles/managed_users` is it — the seventeen steps, in order, with every
+credential guard — and a service's own file is a shim that names the role and
+maps its parameters. `roles/komga/tasks/managed_users.yml` and
+`roles/komga/defaults/main.yml` are the reference for that shim, and the values
+it maps live in the defaults so the shim stays a one-to-one map. #647 hoisted
+komga; audiobookshelf, beszel, jellyfin, paperless-ngx and immich are still
+hand-written copies and are being converted in later chunks, so read komga
+rather than the nearest file. A step the shared role cannot express stays in the
+service's own tasks beside the shim, which is where Immich's preference profiles
+and Jellyfin's policy merge will stay.
+
+`config/managed-user-capabilities.yml` is that role's own input as well as the
+register: it reads the service's row off the deployed release and refuses a
+`mode` it does not implement, a row that permits password rotation, or interface
+strings that disagree with the endpoints the shim configured.
 
 Any task file gated on such a phase must open with an unconditional `assert`
 naming exactly the phases it implements. `include_tasks` never applies
@@ -1327,6 +1342,12 @@ naming exactly the phases it implements. `include_tasks` never applies
 skips the entire file and the run still reports success — and `verify.yml` reaches
 every verification it owns through this mechanism. `ruby tests/policy_test.rb`
 enforces it: the phases the file declares must equal the phases its callers pass.
+A role's own `tasks/main.yml` has a second route to the same property, and only
+that file does: `include_role` *does* apply the argument spec, so an option
+declared `required: true` whose `choices` are exactly those phases is enforced by
+Ansible on every caller, including ones this repository does not contain. That is
+how `roles/managed_users` satisfies the rule with no `include_tasks` caller at
+all.
 
 `config/managed-user-capabilities.yml` is not optional for services that skip that
 mechanism. It is the register of how *every* service handles identity, so a service

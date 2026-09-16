@@ -1,0 +1,144 @@
+---
+argument_specs:
+  main:
+    short_description: Reconcile a service's declared managed users over its HTTP API
+    description: >-
+      The HTTP managed-user skeleton every API-driven service shares. The caller
+      supplies its endpoints, its identity attribute, its request bodies and its
+      conditions; this role owns the lifecycle, the ambiguity refusals, the
+      credential preservation guarantee and the capability-register check.
+
+      Seven parameters are deliberately NOT declared below:
+      managed_users_list_json, managed_users_authenticate_body,
+      managed_users_authenticate_identity, managed_users_create_body,
+      managed_users_reconcile_path, managed_users_repair_body and
+      managed_users_repair_condition. Each is a template evaluated once per
+      declared identity, against `item` or against a task-scoped
+      managed_users_match, and Ansible's own argument validation templates every
+      DECLARED option eagerly, at role entry, where neither is bound -- measured
+      2026-09-16: declaring one fails the run at "Validating arguments against
+      arg spec 'main'" with "'item' is undefined", from the variable's
+      definition site rather than from any task. Declaring them would therefore
+      make this role uncallable rather than better checked. What is available at
+      role entry is their PRESENCE, without resolving them, and tasks/main.yml
+      asserts exactly that through q('varnames') as its second task.
+    options:
+      managed_users_phase:
+        description: >-
+          Which half of the lifecycle to run. Declared with choices because this
+          role is reached only through include_role, which -- unlike
+          include_tasks -- applies this file: a phase the role does not
+          implement is refused by Ansible before the first task, rather than
+          silently skipping every gated task while the run reports success.
+        type: str
+        required: true
+        choices: [reconcile, verify]
+      managed_users_service:
+        description: >-
+          The manifest service directory, which is the row key in
+          config/managed-user-capabilities.yml.
+        type: str
+        required: true
+      managed_users_title:
+        description: The service's display name, used in every task name and message.
+        type: str
+        required: true
+      managed_users_declared:
+        description: The exact declared managed-user set, from the vault.
+        type: list
+        elements: dict
+        required: true
+      managed_users_identity_attribute:
+        description: >-
+          The attribute that identifies a user in both the declaration and the
+          API listing.
+        type: str
+        required: true
+      managed_users_id_attribute:
+        description: The attribute carrying the API identifier of a listed user.
+        type: str
+        required: false
+      managed_users_api:
+        description: The service's API base URL, without a trailing slash.
+        type: str
+        required: true
+      managed_users_register_path:
+        description: The deployed managed-user capability register.
+        type: str
+        required: false
+      managed_users_list_path:
+        description: Relative path of the complete-user listing, as the register declares it.
+        type: str
+        required: true
+      managed_users_admin_headers:
+        description: Headers carrying administrative authentication, when the service uses them.
+        type: dict
+        required: false
+      managed_users_admin_username:
+        type: str
+        required: false
+      managed_users_admin_password:
+        type: str
+        required: false
+      managed_users_admin_basic:
+        description: Whether administrative requests force HTTP basic authentication.
+        type: bool
+        required: false
+      managed_users_authenticate_path:
+        description: Relative path that proves an identity's own credential.
+        type: str
+        required: true
+      managed_users_authenticate_method:
+        type: str
+        required: false
+      managed_users_authenticate_basic:
+        type: bool
+        required: false
+      managed_users_authenticate_body_format:
+        type: str
+        required: false
+      managed_users_create_path:
+        description: Relative path that creates a user, as the register declares it.
+        type: str
+        required: true
+      managed_users_create_status:
+        type: list
+        elements: int
+        required: false
+      managed_users_reconcile_method:
+        type: str
+        required: false
+      managed_users_reconcile_interface:
+        description: >-
+          The register's interfaces.reconcile value, which carries a placeholder
+          where managed_users_reconcile_path carries the rendered identifier.
+        type: str
+        required: true
+      managed_users_repair_status:
+        type: list
+        elements: int
+        required: false
+      managed_users_verify_conditions:
+        description: >-
+          BRACE-FREE expressions the final verification asserts, in order, with
+          managed_users_match bound. Unbraced so `assert` evaluates them itself
+          and stops at the first false, rather than the role finalizing all of
+          them as one task argument.
+        type: list
+        elements: str
+        required: true
+      managed_users_verify_fail_msg:
+        type: str
+        required: true
+      managed_users_plan_create_message:
+        description: The literal a check-mode review prints for a planned creation.
+        type: str
+        required: true
+      managed_users_plan_repair_message:
+        description: The literal a check-mode review prints for a planned repair.
+        type: str
+        required: true
+      platform_current_dir:
+        description: The deployed release the capability register is read from.
+        type: str
+        required: true

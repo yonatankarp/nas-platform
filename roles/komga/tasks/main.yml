@@ -6,7 +6,12 @@
   vars:
     deployment_target_service: komga
     deployment_target_require_current_release: true
-    deployment_target_extra_paths: []
+    # roles/managed_users reads the capability register off the deployed
+    # release, which is not one of the five paths deployment_target_service
+    # derives, so this role names it here the way roles/arr names the deployed
+    # Configarr declaration.
+    deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/config/managed-user-capabilities.yml"
 
 - name: Render the Komga environment
   ansible.builtin.template:

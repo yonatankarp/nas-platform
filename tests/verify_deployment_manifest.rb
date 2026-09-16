@@ -18,17 +18,21 @@ if ARGV == ["--self-test"]
     image = "example.invalid/configarr:1.0@sha256:#{'a' * 64}"
     compose_path = File.join(repository, "services/arr/compose.yml")
     catalog_path = File.join(repository, "config/media-acquisition.yml")
+    register_path = File.join(repository, "config/managed-user-capabilities.yml")
     runtime_path = File.join(repository, "roles/arr/files/configarr/config.yml")
     source_manifest_path = File.join(repository, "services/manifest.yml")
     File.write(compose_path, YAML.dump("services" => {
       "configarr" => { "profiles" => ["jobs"], "image" => image }
     }))
     File.write(catalog_path, YAML.dump("projects" => {}))
+    File.write(register_path, YAML.dump("services" => {}))
     File.write(runtime_path, YAML.dump("config" => true))
     File.write(source_manifest_path, YAML.dump("services" => [{
       "name" => "arr", "role" => "arr", "status" => "implemented"
     }]))
     FileUtils.install(catalog_path, File.join(release, "config/media-acquisition.yml"), mode: 0o644)
+    FileUtils.install(register_path,
+                      File.join(release, "config/managed-user-capabilities.yml"), mode: 0o644)
 
     git_sha = "b" * 40
     manifest_path = File.join(release, "manifest.yml")
@@ -40,6 +44,10 @@ if ARGV == ["--self-test"]
         "path" => "config/media-acquisition.yml",
         "mode" => "0644",
         "checksum_sha256" => Digest::SHA256.file(catalog_path).hexdigest
+      }, {
+        "path" => "config/managed-user-capabilities.yml",
+        "mode" => "0644",
+        "checksum_sha256" => Digest::SHA256.file(register_path).hexdigest
       }],
       "services" => [{
         "name" => "arr",
@@ -93,13 +101,21 @@ source_manifest = load_yaml.call(source_manifest_path)
 implemented = source_manifest.fetch("services").select do |service|
   %w[implemented accepted].include?(service.fetch("status"))
 end
-catalog_relative_path = "config/media-acquisition.yml"
-catalog_source_path = File.join(repository_root, catalog_relative_path)
-expected_platform_inputs = [{
-  "path" => "config/media-acquisition.yml",
-  "mode" => "0644",
-  "checksum_sha256" => Digest::SHA256.file(catalog_source_path).hexdigest
-}]
+# The controller files deployment_bundle ships into the release outside any
+# service directory, in the order manifest.yml.j2 renders them. Each carries the
+# noun its own refusals are phrased with, because a diagnostic that named a
+# generic "platform input" would not tell an operator which file drifted.
+PLATFORM_INPUTS = [
+  ["config/media-acquisition.yml", "acquisition catalog"],
+  ["config/managed-user-capabilities.yml", "managed-user capability register"]
+].freeze
+expected_platform_inputs = PLATFORM_INPUTS.map do |relative_path, _label|
+  {
+    "path" => relative_path,
+    "mode" => "0644",
+    "checksum_sha256" => Digest::SHA256.file(File.join(repository_root, relative_path)).hexdigest
+  }
+end
 
 override_changed_image = false
 override_added_image = false
@@ -162,8 +178,6 @@ begin
 rescue SystemCallError
   abort "deployment release root cannot be resolved safely"
 end
-catalog_parent_path = File.join(release_root, "config")
-staged_catalog_path = File.join(catalog_parent_path, "media-acquisition.yml")
 safe_lstat = lambda do |path, diagnostic|
   File.lstat(path)
 rescue SystemCallError
@@ -175,49 +189,51 @@ release_root_stat = safe_lstat.call(
 )
 abort "deployment release root must be a real directory" unless
   release_root_stat.directory? && !release_root_stat.symlink?
-catalog_parent_stat = safe_lstat.call(
-  catalog_parent_path, "staged acquisition catalog parent must be a real directory"
-)
-abort "staged acquisition catalog parent must be a real directory" unless
-  catalog_parent_stat.directory? && !catalog_parent_stat.symlink?
-staged_catalog_stat = safe_lstat.call(
-  staged_catalog_path, "staged acquisition catalog is missing"
-)
-abort "staged acquisition catalog must be a regular non-symlink file" unless
-  staged_catalog_stat.file? && !staged_catalog_stat.symlink?
-abort "staged acquisition catalog mode must be 0644" unless
-  staged_catalog_stat.mode & 0o7777 == 0o644
 
-staged_catalog_digest = Digest::SHA256.new
-begin
-  File.open(staged_catalog_path, File::RDONLY | File::NOFOLLOW) do |file|
-    opened_stat = file.stat
-    abort "staged acquisition catalog changed before hashing" unless
-      opened_stat.file? && stat_identity.call(opened_stat) == stat_identity.call(staged_catalog_stat)
-    while (chunk = file.read(16 * 1024))
-      staged_catalog_digest << chunk
+PLATFORM_INPUTS.each_with_index do |(relative_path, label), index|
+  staged_path = File.join(release_root, relative_path)
+  staged_parent_path = File.dirname(staged_path)
+  staged_parent_stat = safe_lstat.call(
+    staged_parent_path, "staged #{label} parent must be a real directory"
+  )
+  abort "staged #{label} parent must be a real directory" unless
+    staged_parent_stat.directory? && !staged_parent_stat.symlink?
+  staged_stat = safe_lstat.call(staged_path, "staged #{label} is missing")
+  abort "staged #{label} must be a regular non-symlink file" unless
+    staged_stat.file? && !staged_stat.symlink?
+  abort "staged #{label} mode must be 0644" unless
+    staged_stat.mode & 0o7777 == 0o644
+
+  staged_digest = Digest::SHA256.new
+  begin
+    File.open(staged_path, File::RDONLY | File::NOFOLLOW) do |file|
+      opened_stat = file.stat
+      abort "staged #{label} changed before hashing" unless
+        opened_stat.file? && stat_identity.call(opened_stat) == stat_identity.call(staged_stat)
+      while (chunk = file.read(16 * 1024))
+        staged_digest << chunk
+      end
     end
+  rescue SystemCallError
+    abort "staged #{label} could not be read safely"
   end
-rescue SystemCallError
-  abort "staged acquisition catalog could not be read safely"
-end
 
-release_root_after = safe_lstat.call(
-  release_root, "deployment release root changed during verification"
-)
-catalog_parent_after = safe_lstat.call(
-  catalog_parent_path, "staged acquisition catalog path changed during verification"
-)
-staged_catalog_after = safe_lstat.call(
-  staged_catalog_path, "staged acquisition catalog path changed during verification"
-)
-abort "staged acquisition catalog path changed during verification" unless
-  stat_identity.call(release_root_after) == stat_identity.call(release_root_stat) &&
-    stat_identity.call(catalog_parent_after) == stat_identity.call(catalog_parent_stat) &&
-    stat_identity.call(staged_catalog_after) == stat_identity.call(staged_catalog_stat)
-staged_catalog_checksum = staged_catalog_digest.hexdigest
-abort "staged acquisition catalog differs from manifest checksum" unless
-  staged_catalog_checksum == expected_platform_inputs.first.fetch("checksum_sha256")
+  release_root_after = safe_lstat.call(
+    release_root, "deployment release root changed during verification"
+  )
+  staged_parent_after = safe_lstat.call(
+    staged_parent_path, "staged #{label} path changed during verification"
+  )
+  staged_after = safe_lstat.call(
+    staged_path, "staged #{label} path changed during verification"
+  )
+  abort "staged #{label} path changed during verification" unless
+    stat_identity.call(release_root_after) == stat_identity.call(release_root_stat) &&
+      stat_identity.call(staged_parent_after) == stat_identity.call(staged_parent_stat) &&
+      stat_identity.call(staged_after) == stat_identity.call(staged_stat)
+  abort "staged #{label} differs from manifest checksum" unless
+    staged_digest.hexdigest == expected_platform_inputs[index].fetch("checksum_sha256")
+end
 if require_image_merge
   abort "platform fixture did not replace an image" unless override_changed_image
   abort "platform fixture did not add an image" unless override_added_image

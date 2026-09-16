@@ -10,6 +10,7 @@
 # frozen_string_literal: true
 
 require "base64"
+require "fileutils"
 require "json"
 require "open3"
 require "tmpdir"
@@ -35,9 +36,33 @@ JELLYFIN_PLUGIN_PACKAGES = [
   { "Name" => "Open Subtitles", "AssemblyGuid" => JELLYFIN_OPENSUBTITLES_ID,
     "RepositoryUrl" => "https://repo.jellyfin.org/files/plugin/manifest.json" }
 ].freeze
+# Komga's managed-user lifecycle is roles/managed_users behind a shim (#647), so
+# the contract below reads the shared role with its title substituted. That keeps
+# every property this file asserted before -- the ten lifecycle steps in order,
+# no_log on every request, no DELETE, the check-mode gates -- asserted against
+# the tasks Komga actually runs, rather than against a shim that runs none of
+# them. audiobookshelf and jellyfin still read their own files unchanged.
+SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "main.yml")
+SHARED_MANAGED_USER_TITLES = { "komga" => "Komga" }.freeze
+KOMGA_SHIM = File.join(ROOT, "roles", "komga", "tasks", "managed_users.yml")
+
+# The vault password's route to the authenticate requests, in two halves,
+# because through a shared role it is no longer one file's business. The shared
+# role holds `item.password` literally -- a parameter there would make this a
+# check on a name rather than on a value -- and the shim is what binds `item` to
+# the vault's declared set. Either half alone is a green check that says nothing.
 KOMGA_AUTH_PASSWORD_EXPRESSIONS = {
-  "Authenticate existing Komga managed users" => "{{ item.password }}",
-  "Authenticate newly created Komga managed users" => "{{ item.item.password }}"
+  "Authenticate existing managed users: Komga" => "{{ item.password }}",
+  "Authenticate newly created managed users: Komga" => "{{ item.item.password }}"
+}.freeze
+KOMGA_SHIM_PARAMETERS = {
+  "managed_users_phase" => "{{ komga_managed_users_phase }}",
+  "managed_users_service" => "komga",
+  "managed_users_title" => "Komga",
+  "managed_users_declared" => "{{ vault_managed_komga_users }}",
+  "managed_users_api" => "{{ komga_api }}",
+  "managed_users_admin_username" => "{{ vault_komga_admin_email }}",
+  "managed_users_admin_password" => "{{ vault_komga_admin_password }}"
 }.freeze
 
 REQUIRED_TASKS = {
@@ -66,19 +91,61 @@ REQUIRED_TASKS = {
     "Verify exact Jellyfin managed users"
   ],
   "komga" => [
-    "List complete Komga users for managed-user reconciliation",
-    "Refuse incomplete Komga managed-user listing",
-    "Refuse ambiguous normalized Komga managed identities",
-    "Authenticate existing Komga managed users",
-    "Require preserved Komga managed-user credentials",
-    "Create absent Komga managed users",
-    "Authenticate newly created Komga managed users",
-    "Require newly created Komga managed-user credentials",
-    "Repair Komga managed-user roles",
-    "Verify exact Komga managed users"
+    "List complete users for managed-user reconciliation: Komga",
+    "Refuse incomplete managed-user listing: Komga",
+    "Refuse ambiguous normalized managed identities: Komga",
+    "Authenticate existing managed users: Komga",
+    "Require preserved managed-user credentials: Komga",
+    "Create absent managed users: Komga",
+    "Authenticate newly created managed users: Komga",
+    "Require newly created managed-user credentials: Komga",
+    "Repair non-secret managed-user properties: Komga",
+    "Verify exact managed users: Komga"
   ]
 }.freeze
 
+
+# The task list a service's contract is asserted against. For a service that has
+# adopted roles/managed_users this is that role with {{ managed_users_title }}
+# substituted, which is why no task name in it may begin with the template: the
+# substitution happens on the source text, before it is parsed.
+def contract_source_tasks(service)
+  title = SHARED_MANAGED_USER_TITLES[service]
+  path = title ? SHARED_MANAGED_USER_ROLE : File.join(ROOT, "roles", service, "tasks",
+                                                      "managed_users.yml")
+  source = File.read(path)
+  source = source.gsub("{{ managed_users_title }}", title) if title
+  YAML.safe_load(source, aliases: false)
+end
+
+# What the shim has to carry, now that the lifecycle is elsewhere: it names the
+# shared role, and it binds the parameters whose values this suite's other
+# assertions assume. managed_users_declared is the load-bearing one -- the
+# authenticate requests read item.password, and this is what makes `item` a
+# vault-declared user rather than anything else.
+def komga_shim_failures(shim_tasks, defaults)
+  failures = []
+  include = shim_tasks.find { |task| task.key?("ansible.builtin.include_role") }
+  failures << "komga shim does not include the shared managed-user role" unless
+    include&.dig("ansible.builtin.include_role", "name") == "managed_users"
+  supplied = include&.fetch("vars", nil) || {}
+  KOMGA_SHIM_PARAMETERS.each do |name, value|
+    failures << "komga shim does not pass #{name} as #{value}" unless supplied[name] == value
+  end
+
+  # The repair body is a parameter now, so the shared role's own `body:` is a
+  # reference and reading it proves nothing. Komga's declared value is the
+  # subject, and it is the same property: repairing an existing identity must
+  # never carry a credential.
+  repair_body = defaults["komga_managed_users_repair_body"]
+  if repair_body.is_a?(Hash)
+    failures << "komga existing-user repair contains secret fields" unless
+      repair_body.keys.map(&:to_s).grep(/password|passwd|secret|token/i).empty?
+  else
+    failures << "komga existing-user repair body is not a declared mapping"
+  end
+  failures
+end
 
 def task_name(task)
   task.fetch("name", "")
@@ -137,12 +204,37 @@ HARNESS_TIMING_DEFAULTS = (
   end
 end.freeze
 
+# The same reasoning one step further, for the services whose managed-user
+# reconciliation is roles/managed_users behind a shim: the probe includes the
+# shim directly, so Ansible loads neither the service's defaults nor the shared
+# role's, and every komga_managed_users_* parameter the shim maps would be
+# undefined. Read from the real defaults file rather than restated, so the probe
+# drives the production contract and a changed endpoint is one edit.
+MANAGED_USER_PARAMETER = /\A(?:#{SERVICES.join('|')})_managed_users_\w+\z/
+HARNESS_MANAGED_USER_DEFAULTS = SERVICES.each_with_object({}) do |service, defaults|
+  YAML.safe_load_file(File.join(ROOT, "roles", service, "defaults", "main.yml")).each do |name, value|
+    defaults[name] = value if name.match?(MANAGED_USER_PARAMETER)
+  end
+end.freeze
+
+# roles/managed_users reads config/managed-user-capabilities.yml off the
+# DEPLOYED release, so a probe has to name one. The repository root is a release
+# that carries the register, which is the branch every probe but the stale-release
+# one wants; that probe overrides this with a directory that has no config/ at
+# all. Naming it here rather than per probe is what stops a probe that forgot it
+# from landing in the skip branch and reporting green.
+HARNESS_RELEASE_DEFAULTS = { "platform_current_dir" => ROOT }.freeze
+
 # Named the same as the shared runner it wraps: every probe passes its own
 # variables and the harness timings underneath them, which is the one thing this
 # suite adds to the shared runner.
 def run_playbook(tasks, variables, *arguments)
-  HttpFixtureSupport.run_playbook(tasks, HARNESS_TIMING_DEFAULTS.merge(variables), *arguments,
-                                  prefix: "nas-platform-media-managed-users-")
+  HttpFixtureSupport.run_playbook(
+    tasks,
+    HARNESS_TIMING_DEFAULTS.merge(HARNESS_MANAGED_USER_DEFAULTS)
+                           .merge(HARNESS_RELEASE_DEFAULTS).merge(variables),
+    *arguments, prefix: "nas-platform-media-managed-users-"
+  )
 end
 
 def with_http_service(responder, &block)

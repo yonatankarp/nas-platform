@@ -1879,6 +1879,26 @@ expect_failure(failures, "role phase gate opens without an assert",
              "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
 end
 
+# The caller half of the same gate, which until #647 no row exercised: the
+# comment above records that a correctly-asserted phase-gated file produces
+# exactly this one diagnostic, so writing it that way plants the caller defect
+# alone. It is worth a row of its own now, because that half acquired a second
+# route -- a file reached by include_role is validated by its role's own
+# argument spec, which include_tasks never applies -- and the subject here is a
+# file reached by NEITHER, in a role whose argument spec declares no such option.
+# A re-anchor that accidentally admitted every file would pass without this.
+expect_failure(failures, "role phase gate has no caller",
+               "roles/kapowarr/tasks/reconcile_stage.yml: declares kapowarr_reconcile_phase " \
+               "phases provision but its callers pass none",
+               detected_by: %i[policy]) do |root|
+  File.write(File.join(root, "roles", "kapowarr", "tasks", "reconcile_stage.yml"),
+             "---\n- name: Validate the stage phase\n  ansible.builtin.assert:\n" \
+             "    that:\n      - kapowarr_reconcile_phase in ['provision']\n" \
+             "    fail_msg: An unrecognised phase would skip this file silently.\n\n" \
+             "- name: Reconcile one stage\n  ansible.builtin.debug:\n" \
+             "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
+end
+
 expect_failure(failures, "role deploys without reporting it",
                "role kapowarr: deploys Compose services but declares 0 deployment reports, not one",
                detected_by: %i[policy]) do |root|
@@ -2104,6 +2124,15 @@ expect_failure(failures, "acquisition catalog controller validation moved after 
   File.write(path, YAML.dump(tasks))
 end
 
+expect_failure(failures, "managed-user capability register controller validation removed",
+               "controller inputs must validate the required managed-user capability register",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  File.write(path, File.read(path).gsub(
+    "[playbook_dir ~ '/config/managed-user-capabilities.yml', '0']", "[]"
+  ))
+end
+
 expect_failure(failures, "Immich classifier release copy removed",
                "deployment bundle must package the exact Immich classifier with mode 0644",
                detected_by: %i[deployment]) do |root|
@@ -2137,6 +2166,17 @@ expect_failure(failures, "acquisition catalog release mode changed",
   File.write(path, YAML.dump(tasks))
 end
 
+expect_failure(failures, "managed-user capability register release copy removed",
+               "deployment bundle must stage the exact managed-user capability register with mode 0644",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task["name"] == "Copy the managed-user capability register from the controller"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "Immich classifier manifest integrity removed",
                "deployment manifest must bind runtime helper paths, modes, and checksums",
                detected_by: %i[deployment]) do |root|
@@ -2156,6 +2196,26 @@ expect_failure(failures, "acquisition catalog manifest checksum removed",
   ))
 end
 
+expect_failure(failures, "managed-user capability register manifest checksum removed",
+               "deployment manifest must bind the exact managed-user capability register path and checksum",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "lookup('file', playbook_dir ~ '/config/managed-user-capabilities.yml', rstrip=false)",
+    "'unbound-register'"
+  ))
+end
+
+expect_failure(failures, "managed-user capability register manifest verifier removed",
+               "deployment manifest verifier must require the exact platform input digests and " \
+               "detect staged-byte mutation",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub(
+    '["config/managed-user-capabilities.yml", "managed-user capability register"]', "[]"
+  ))
+end
+
 expect_failure(failures, "Immich classifier manifest verifier removed",
                "deployment manifest verifier must reproduce runtime helper integrity",
                detected_by: %i[deployment]) do |root|
@@ -2166,7 +2226,8 @@ expect_failure(failures, "Immich classifier manifest verifier removed",
 end
 
 expect_failure(failures, "acquisition staged-byte verification removed",
-               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation",
+               "deployment manifest verifier must require the exact platform input digests and " \
+               "detect staged-byte mutation",
                detected_by: %i[deployment]) do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub("File.dirname(manifest_path)", "repository_root"))

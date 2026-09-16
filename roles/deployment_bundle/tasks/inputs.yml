@@ -10,7 +10,8 @@
   vars:
     deployment_controller_inputs: >-
       {{ [[playbook_dir ~ '/services/manifest.yml', '0'],
-          [playbook_dir ~ '/config/media-acquisition.yml', '0']] }}
+          [playbook_dir ~ '/config/media-acquisition.yml', '0'],
+          [playbook_dir ~ '/config/managed-user-capabilities.yml', '0']] }}
 
 - name: Resolve implemented services from the validated controller manifest
   ansible.builtin.set_fact:

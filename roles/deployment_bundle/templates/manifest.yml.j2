@@ -6,6 +6,9 @@ platform_inputs:
   - path: config/media-acquisition.yml
     mode: "0644"
     checksum_sha256: {{ (lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false) | hash('sha256')) | to_json }}
+  - path: config/managed-user-capabilities.yml
+    mode: "0644"
+    checksum_sha256: {{ (lookup('file', playbook_dir ~ '/config/managed-user-capabilities.yml', rstrip=false) | hash('sha256')) | to_json }}
 services:
 {% for service in deployment_bundle_services %}
   - name: {{ service.name | to_json }}

@@ -15,29 +15,48 @@ def exercise_komga_fail_closed(failures)
     "vault_komga_admin_password" => "admin-secret",
     "vault_managed_komga_users" => managed
   }
+  # Each scenario carries the refusal it must produce. The path anchor this
+  # replaces was satisfied by the "included:" banner the run prints whenever the
+  # file merely RUNS, which is the #419 shape: it would have reported the
+  # property holding for a run that failed anywhere else, and after #647 it
+  # reported it for a run whose refusals come from roles/managed_users. A
+  # diagnostic is emitted only by the path that refuses.
   scenarios = {
-    "incomplete listing" => lambda { |_request| [200, { "content" => [], "last" => false }] },
-    "duplicate identity" => lambda do |_request|
-      [200, [{ "id" => "one", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] },
-             { "id" => "two", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }]]
-    end,
-    "authentication failure" => lambda do |request|
-      if request["target"] == "/api/v2/users"
-        [200, [{ "id" => "reader", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }]]
-      else
-        [401, {}]
-      end
-    end
+    "incomplete listing" => [
+      lambda { |_request| [200, { "content" => [], "last" => false }] },
+      "Komga returned an unsupported or paginated users response; reconciliation " \
+      "is refusing a partial identity view."
+    ],
+    "duplicate identity" => [
+      lambda do |_request|
+        [200, [{ "id" => "one", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] },
+               { "id" => "two", "email" => "reader@example.invalid", "roles" => %w[USER KOBO_SYNC] }]]
+      end,
+      "Komga contains duplicate normalized managed identities"
+    ],
+    "authentication failure" => [
+      lambda do |request|
+        if request["target"] == "/api/v2/users"
+          [200, [{ "id" => "reader", "email" => "reader@example.invalid",
+                   "roles" => %w[USER KOBO_SYNC] }]]
+        else
+          [401, {}]
+        end
+      end,
+      "Existing Komga managed user does not accept its preserved vault password."
+    ]
   }
-  scenarios.each do |label, responder|
+  scenarios.each do |label, (responder, diagnostic)|
     with_http_service(responder) do |port, requests|
       fixture_vars = variables.merge("komga_api" => "http://127.0.0.1:#{port}")
       stdout, stderr, status = run_playbook([includes_for("komga").first], fixture_vars)
+      output = stdout + stderr
       failures << "Komga #{label} fixture unexpectedly succeeded" if status.success?
       failures << "Komga #{label} fixture reached a mutation" if
         requests.any? { |request| %w[POST PATCH DELETE].include?(request["method"]) }
-      failures << "Komga #{label} fixture did not fail in managed-user tasks: #{failure_tail(stdout + stderr)}" unless
-        (stdout + stderr).include?("roles/komga/tasks/managed_users.yml")
+      failures << "Komga #{label} fixture did not refuse with its own diagnostic: " \
+                  "#{failure_tail(output)}" unless
+        HttpFixtureSupport.refused_with?(output, diagnostic)
     end
   end
 end

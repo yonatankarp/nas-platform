@@ -1603,11 +1603,13 @@ end
 # BASE_FIXTURE_PATHS states: a check reading a *named* file that the sandbox
 # lacks crashes, loudly, but a check whose subjects come from a glob does not --
 # it iterates zero times and reports success, and a vacuous pass is
-# indistinguishable from compliance. 26 role directories in the working tree
+# indistinguishable from compliance. 27 role directories in the working tree
 # against 22 in the mutation sandbox, and the floor is sized against the
 # sandbox. Fifteen sits seven under it, clear of what a collapse leaves (zero
 # for a glob that stopped matching, a handful for a roles/ layout change) and
-# clear of attrition at a retired service or two.
+# clear of attrition at a retired service or two. The working-tree figure was 26
+# until #647 added roles/managed_users; nothing checks this sentence, so it has
+# to be corrected by hand whenever it moves.
 interface_roles = Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }
 check_floor(failures, interface_roles.length, 15, "roles declaring an interface")
 interface_roles.each do |role|
@@ -2440,12 +2442,37 @@ phase_task_files.each do |path|
     end
   end
 end
+# A role's own tasks/main.yml has a second route to the same property, and it is
+# the stronger one. The caller scan above reads include_tasks, which is where the
+# rule came from: include_tasks never applies meta/argument_specs.yml, so nothing
+# but this check stands between a renamed call site and a file that silently
+# skips everything it owns. A file reached by include_role is not in that
+# position -- Ansible applies the role's argument spec before its first task, so
+# an option declared `required: true` with `choices` equal to the phases the file
+# implements is enforced by Ansible on every caller, including ones this
+# repository does not contain. So that counts as reached, and the check that
+# every declared phase is exercised holds either way; it does not count for any
+# other file in the role, because the argument spec applies to the entrypoint
+# alone.
 declared_phases.each do |relative_path, declarations|
+  role_name = relative_path.split("/")[1].to_s
+  entrypoint = relative_path == "roles/#{role_name}/tasks/main.yml"
+  spec_path = File.join(ROOT, "roles", role_name, "meta", "argument_specs.yml")
+  spec_options = if entrypoint && File.file?(spec_path)
+                   YAML.safe_load_file(spec_path).dig("argument_specs", "main", "options") || {}
+                 else
+                   {}
+                 end
   declarations.each do |variable, phases|
     reached = (passed_phases.dig(relative_path, variable) || []).uniq.sort
-    check(failures, reached == phases,
+    option = spec_options[variable]
+    enforced_by_argument_spec = option.is_a?(Hash) && option["required"] == true &&
+                                Array(option["choices"]).map(&:to_s).sort == phases
+    check(failures, reached == phases || enforced_by_argument_spec,
           "#{relative_path}: declares #{variable} phases #{phases.join(', ')} but its callers " \
-          "pass #{reached.empty? ? 'none' : reached.join(', ')}")
+          "pass #{reached.empty? ? 'none' : reached.join(', ')}, and " \
+          "roles/#{role_name}/meta/argument_specs.yml does not declare #{variable} as a required " \
+          "option whose choices are exactly those phases")
   end
 end
 

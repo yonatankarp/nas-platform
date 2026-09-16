@@ -1056,6 +1056,8 @@ mkdir -p "$manifest_controller/config" "$manifest_controller/roles" \
   "$manifest_docker_root" "$manifest_media_root"
 cp "$repo_dir/config/media-acquisition.yml" \
   "$manifest_controller/config/media-acquisition.yml"
+cp "$repo_dir/config/managed-user-capabilities.yml" \
+  "$manifest_controller/config/managed-user-capabilities.yml"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
 mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich"
 cp "$repo_dir/services/dozzle/alert_relay.py" \
@@ -1123,6 +1125,8 @@ create_controller_symlink_fixture() {
     "$fixture_root/services/demo" "$outside_root"
   cp "$repo_dir/config/media-acquisition.yml" \
     "$fixture_root/config/media-acquisition.yml"
+  cp "$repo_dir/config/managed-user-capabilities.yml" \
+    "$fixture_root/config/managed-user-capabilities.yml"
   cp -R "$repo_dir/roles/deployment_bundle" "$fixture_root/roles/"
 
   if [ "$symlink_kind" = manifest ]; then

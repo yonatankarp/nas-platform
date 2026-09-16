@@ -1,0 +1,28 @@
+---
+# The managed-user capability register, read from the DEPLOYED release rather
+# than from the controller checkout: roles/arr/tasks/configarr.yml is the
+# precedent, and the reason is the same -- what the target honours is what the
+# target carries. Every caller lists this path in its own
+# deployment_target_extra_paths.
+managed_users_register_path: >-
+  {{ platform_current_dir }}/config/managed-user-capabilities.yml
+
+# Administrative credentials for the list, create and repair requests. A service
+# authenticating with a bearer or API-key header sets managed_users_admin_headers
+# and leaves these omitted.
+managed_users_admin_headers: {}
+managed_users_admin_username: "{{ omit }}"
+managed_users_admin_password: "{{ omit }}"
+managed_users_admin_basic: true
+
+# The per-identity authentication probe. komga answers a GET against the
+# identity's own basic credentials; the POST services send a credential body.
+managed_users_authenticate_method: GET
+managed_users_authenticate_basic: true
+managed_users_authenticate_body: "{{ omit }}"
+managed_users_authenticate_body_format: "{{ omit }}"
+
+managed_users_id_attribute: id
+managed_users_create_status: [201]
+managed_users_reconcile_method: PATCH
+managed_users_repair_status: [204]
