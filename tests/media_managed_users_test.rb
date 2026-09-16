@@ -100,25 +100,37 @@ failures << "media managed-user mutation self-test is not registered" unless
   policy.lines.include?("ruby tests/media_managed_users_test.rb --self-test\n")
 
 if ARGV == ["--self-test"] && failures.empty?
+  # What this run proves, said out loud. Every plant below used to record only
+  # its own survival, so a passing --self-test printed the same line as a plain
+  # run -- and a plant that stopped biting, or one nobody noticed had been
+  # skipped, read as the contract holding. The tally is the difference between
+  # the two runs.
+  detected = []
+  plant = lambda do |label, found|
+    found ? detected << label : failures << "#{label} mutant survived"
+  end
+
   SERVICES.each do |service|
     tasks = contract_source_tasks(service)
     repair = tasks.find { |task| task_name(task).match?(/Repair .* managed-user/) }
     mutant = Marshal.load(Marshal.dump(tasks))
     mutant_repair = mutant.find { |task| task_name(task) == task_name(repair) }
     mutant_repair.fetch("ansible.builtin.uri")["body"] = { "password" => "forbidden" }
-    unless contract_failures(service, mutant).any? { |failure| failure.include?("secret fields") }
-      failures << "#{service} password-update mutant survived"
-    end
+    plant.call("#{service} password-update",
+               contract_failures(service, mutant).any? { |failure| failure.include?("secret fields") })
 
-    if %w[audiobookshelf jellyfin].include?(service) &&
-       !contract_failures(service, mutant).any? { |failure| failure.match?(/split|complete current policy/) }
-      failures << "#{service} pinned merge/body mutant survived"
+    if %w[audiobookshelf jellyfin].include?(service)
+      plant.call("#{service} pinned merge/body",
+                 contract_failures(service, mutant).any? do |failure|
+                   failure.match?(/split|complete current policy/)
+                 end)
     end
 
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
-    unless contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
-      failures << "#{service} final-verification mutant survived"
-    end
+    plant.call("#{service} final-verification",
+               contract_failures(service, missing_verify).any? do |failure|
+                 failure.include?("Verify exact")
+               end)
 
     next unless service == "komga"
 
@@ -129,40 +141,46 @@ if ARGV == ["--self-test"] && failures.empty?
     rebound = Marshal.load(Marshal.dump(shim))
     rebound.find { |task| task.key?("ansible.builtin.include_role") }
            .fetch("vars")["managed_users_declared"] = "{{ komga_unmanaged_users }}"
-    unless komga_shim_failures(rebound, defaults).any? do |failure|
-      failure.include?("managed_users_declared")
-    end
-      failures << "Komga shim declared-set mutant survived"
-    end
+    plant.call("Komga shim declared-set",
+               komga_shim_failures(rebound, defaults).any? do |failure|
+                 failure.include?("managed_users_declared")
+               end)
 
     detached = Marshal.load(Marshal.dump(shim))
     detached.find { |task| task.key?("ansible.builtin.include_role") }
             .fetch("ansible.builtin.include_role")["name"] = "komga"
-    unless komga_shim_failures(detached, defaults).any? do |failure|
-      failure.include?("does not include the shared managed-user role")
-    end
-      failures << "Komga shim shared-role mutant survived"
-    end
+    plant.call("Komga shim shared-role",
+               komga_shim_failures(detached, defaults).any? do |failure|
+                 failure.include?("does not include the shared managed-user role")
+               end)
 
     credentialed = Marshal.load(Marshal.dump(defaults))
     credentialed["komga_managed_users_repair_body"]["password"] = "{{ item.password }}"
-    unless komga_shim_failures(shim, credentialed).any? do |failure|
-      failure.include?("secret fields")
-    end
-      failures << "Komga declared repair-body password mutant survived"
-    end
+    plant.call("Komga declared repair-body password",
+               komga_shim_failures(shim, credentialed).any? do |failure|
+                 failure.include?("secret fields")
+               end)
 
     KOMGA_AUTH_PASSWORD_EXPRESSIONS.each do |auth_name, expected_password|
       wrong_password = Marshal.load(Marshal.dump(tasks))
       wrong_password.find { |task| task_name(task) == auth_name }
                     .fetch("ansible.builtin.uri")["url_password"] = "{{ wrong_password }}"
-      unless contract_failures(service, wrong_password).any? do |failure|
-        failure.include?("vault password expression") && failure.include?(auth_name)
-      end
-        failures << "Komga #{auth_name} wrong-password mutant survived (expected #{expected_password})"
-      end
+      plant.call("#{auth_name.inspect} wrong-password (expected #{expected_password})",
+                 contract_failures(service, wrong_password).any? do |failure|
+                   failure.include?("vault password expression") && failure.include?(auth_name)
+                 end)
     end
   end
+
+  detected.each { |label| puts "self-test detected: #{label}" }
+  # A stated count rather than non-emptiness: each of the three services plants a
+  # password-update and a final-verification, audiobookshelf and jellyfin add
+  # their pinned repair body, and Komga adds three shim plants and its two
+  # authenticate expressions. A service the loop stopped reaching would still
+  # leave this list non-empty, and the first draft of this line said 17 -- which
+  # is the whole reason the tally is printed rather than counted in a comment.
+  failures << "media managed-user self-test planted #{detected.length} defects, expected 13" unless
+    detected.length == 13
 end
 
 if ARGV.empty?
