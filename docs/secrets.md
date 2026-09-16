@@ -784,10 +784,11 @@ Authored as `vault_managed_beszel_users` in `inventory/group_vars/all/vault_besz
 `email` is the normalized login identity; `password` is its preserved clear
 credential; `role` is `user` or `admin`; and `verified` must be `true`.
 Beszel password authentication requires verified users -- read against 0.18.7,
-a dated record rather than a claim about the pin in `services/beszel/compose.yml`
--- so an existing unverified identity fails with credential-migration guidance and is never
-auto-verified. A managed identity cannot duplicate either the Beszel superuser
-or the existing primary application user.
+a dated record rather than a claim about the pin in
+`services/beszel/compose.yml` -- so an existing unverified identity fails with
+credential-migration guidance and is never auto-verified. A managed identity
+cannot duplicate either the Beszel superuser or the existing primary application
+user.
 
 #### dozzle managed users
 

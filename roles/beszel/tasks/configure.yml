@@ -505,9 +505,9 @@
     # pin in services/beszel/compose.yml: the hub stores core, disk, and GPU
     # fields together in the newest one-minute system_stats record. Container
     # samples are written separately and only when the agent actually observes
-    # containers. Querying these
-    # persisted PocketBase collections proves collection capability; health,
-    # system status, and the live WebSocket cannot substitute for these reads.
+    # containers. Querying these persisted PocketBase collections proves
+    # collection capability; health, system status, and the live WebSocket
+    # cannot substitute for these reads.
     - name: Poll persisted Beszel telemetry collections
       tags: [platform_verify_beszel]
       beszel_telemetry_probe:
