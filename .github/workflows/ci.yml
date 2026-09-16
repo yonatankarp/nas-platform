@@ -9,7 +9,7 @@ on:
     # The minute is off the hour and off the half hour because GitHub delays
     # scheduled runs hardest at those boundaries. The hour is chosen so that the
     # whole plausible fire window misses this repository's merge window; the hour
-    # itself is not the property. CLAUDE.md, "A `cron` is a lower bound on when
+    # itself is not the property. docs/ci-performance-history.md, "A `cron` is a lower bound on when
     # the sweep lands", carries the measured delays and how to re-check them.
     - cron: '47 17 * * *'
   workflow_dispatch:
@@ -130,8 +130,8 @@ jobs:
   static:
     # Three shards, each a runner with its own worker pool running one shard of
     # the manifest. Why more cores rather than extraction, and why three is where
-    # it stops paying, is CLAUDE.md's "The `static` budget" and "The fifth
-    # occurrence" sections; read the gate's own slowest-check report rather than a
+    # it stops paying, is docs/ci-performance-history.md's "The `static` budget" and
+    # "The fifth occurrence" sections, whose rules CLAUDE.md keeps; read the gate's own slowest-check report rather than a
     # number quoted anywhere. This timeout stays well above the observed runtime
     # so a slow runner cannot cancel a passing gate the way the previous one did.
     #
@@ -573,8 +573,8 @@ jobs:
             validate-vault.yml
 
   mutation:
-    # Extracted from the policy gate, which it was the floor of; CLAUDE.md's
-    # "The `static` budget" section carries the measurement. Nothing about the
+    # Extracted from the policy gate, which it was the floor of;
+    # docs/ci-performance-history.md's "The `static` budget" section carries the measurement. Nothing about the
     # mutations is routed more narrowly than the gate, because a mutation is
     # planted in a copy of the whole repository and any file can change what the
     # policy set says.
@@ -814,8 +814,8 @@ jobs:
   suites:
     # 90 rather than 60 because idempotence-check's own work grew when its guard
     # started doing its job, and a lane killed at its ceiling would read as the fix
-    # regressing rather than as the guard working. CLAUDE.md, "A guard that was
-    # green while proving 6% of what it claimed", carries the numbers.
+    # regressing rather than as the guard working. docs/ci-performance-history.md, "A guard
+    # that was green while proving 6% of what it claimed", carries the numbers.
     timeout-minutes: 90
     name: ${{ matrix.suite }}
     needs:

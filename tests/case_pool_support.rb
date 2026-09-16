@@ -31,7 +31,8 @@ require "etc"
 # does not spawn 16 Ansible runs per check.
 #
 # Sizing *down* to leave room for the rest of the gate is not the fix and has
-# been measured: CLAUDE.md records the static job going from 32 minutes to over
+# been measured: docs/ci-performance-history.md records the static job going from 32 minutes
+# to over
 # 45 when the acquisition pool was halved, because the throughput lost exceeded
 # the contention saved.
 #

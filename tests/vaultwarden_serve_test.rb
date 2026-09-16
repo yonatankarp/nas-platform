@@ -383,7 +383,8 @@ end
 # The plants. Each is a one-edit regression in the shipped stage that a reader
 # could plausibly make, and the rows it must break. A checker that reports a
 # clean tree proves nothing until it has been shown a defect it is supposed to
-# find -- CLAUDE.md records what believing an unproven AST checker cost.
+# find -- docs/ci-performance-history.md records what believing an unproven AST checker
+# cost.
 MUTATIONS = [
   { "name" => "the Serve lookup stops normalising case",
     "from" => "[(platform_public_host ~ ':' ~ vaultwarden_tailscale_serve_port) | lower]",
