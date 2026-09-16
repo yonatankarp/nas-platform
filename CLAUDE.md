@@ -203,8 +203,9 @@ tests/mac/run.sh --lane fresh \
 **Vault is always first, and credentials flow one direction.** Every credential
 is authored in the encrypted vault under `inventory/group_vars/all/` — each
 service's own keys and its `vault_managed_<role>_users` list in
-`vault_<role>.yml`, and the Pushover user key with its four application tokens in
-`vault_pushover.yml` — and pushed
+`vault_<role>.yml`, the Pushover user key with its four application tokens in
+`vault_pushover.yml`, and the two healthchecks.io ping URLs in
+`vault_healthchecks.yml` — and pushed
 outward. Nothing
 is ever read back from a running service, which is why a run converges in a
 single pass. Where a service would normally hand a human a generated value to
@@ -220,6 +221,24 @@ the default arguments, `meta/argument_specs.yml` is the enforced type signature
 `.env` on the target at mode `0600`. Service name and role name may differ —
 `paperless-ngx` / `paperless_ngx` — because directories use hyphens and role
 names cannot. `services/manifest.yml` is the mapping.
+
+**An option whose value templates over a loop variable cannot be declared, and
+that is Ansible's rule rather than a style choice.** Role argument validation
+templates every *declared* option at role entry, before any loop binds, so an
+option whose value is a template over `item` — or over a task-scoped register,
+or a fact the role itself sets later — fails the run there: `'item' is
+undefined`, reported from the variable's definition site rather than from the
+task that would have used it, which is what makes it hard to recognise. Leaving
+it undeclared is correct, because lazy templating then resolves it per item at
+the point of use. **`is defined` is not the workaround, and it fails in the
+worse direction**: evaluating it templates the value, the undefined `item`
+raises inside that, and the test swallows it and reads *false* — so the guard
+refuses a parameter that is perfectly well defined, and says so about the
+parameter rather than about the loop. Assert such a parameter's presence with
+`q('varnames', '^<name>$')`, which matches variable *names* without resolving
+them, the way `roles/vault_contract` already collects the managed-user lists.
+The `required: true` half above is unaffected: a vault credential that is not a
+per-item template still belongs in the spec.
 
 **The target never runs against this checkout.** `roles/deployment_bundle`
 assembles an immutable release from the controller checkout, installs it at
@@ -258,8 +277,12 @@ the key, so the simplest override is one that omits it.
 can run several isolated copies of the platform side by side.
 
 **A pin is not freely reversible where the container migrates its own store.**
-Bindery, Immich, Paperless-ngx, Nextcloud and Kapowarr each apply their own schema
-migrations when they start, and each documents it beside its `image:`. That
+Bindery, Immich, Paperless-ngx, Nextcloud, Karakeep and Kapowarr each apply their
+own schema migrations when they start, and each documents it beside its `image:`.
+`SELF_MIGRATING_APPLICATION_IMAGES` in `tests/renovate_policy_test.rb` is where
+that set is authored — it keys each image by the `services/` directory that pins
+it, so a name no longer appearing as an `image:` fails rather than guarding
+nothing, and it is what to read instead of this sentence. That
 makes a version bump one-way: the newer image writes a schema the older one
 declines to open, and it declines *inside the container*, so the symptom is a
 crash loop rather than a failure a play reports. #511 is what that costs — a
@@ -268,7 +291,9 @@ release went back to a pin that knew 1..80, and the host sat behind it for three
 days with every converge failing at that role and the poller not advancing. Two
 controls, at opposite ends. `renovate.json` withholds `major`, `minor` and
 `patch` for those images **from automerge** — a digest refresh on an unchanged
-tag moves no version and stays automerged — which is a wider scope than the
+tag moves no version and stays automerged, except for Immich, which is withheld
+not by that rule but by its own manual-coupling rule, for every update type and
+so digests too — which is a wider scope than the
 database-major rule beside it and deliberately so. It withholds the *merge*, not
 the pull request, and that is the one place it departs from the two major-only
 rules beside it, which carry `dependencyDashboardApproval` and suppress the pull
@@ -281,9 +306,12 @@ reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions
 rather than schema versions because the schema lives in a store only the
 application can open; the role names the three routes to the real version and
-why each was rejected. Bindery and Kapowarr (#671) are its callers today, and the
-role takes the manifest directory, the Compose service key and the project name
-as arguments so the other three can adopt it unchanged.
+why each was rejected. It has already spread past the set above: Bindery,
+Kapowarr (#671), Karakeep — twice, once for Meilisearch's index — and Vaultwarden
+call it today, and the Vaultwarden call site records a second reason for it, a
+CVE floor under the pin that this guard does not read. The role takes the
+manifest directory, the Compose service key and the project name as arguments, so
+the self-migrating images that have not adopted it can do so unchanged.
 
 **Container CPU policy.** Production containers are pinned to logical CPUs `0-2`
 of four, each with a workload-specific 0.5–3.0 CPU ceiling. Ansible derives and
@@ -378,8 +406,8 @@ Adding a service means adding one file. Nothing else lists the contributors —
 `tests/nas_storage_support.rb` applies the same rule on the Ruby side and every
 static reader goes through it, because a sixtieth list is the one nobody edits.
 
-Four things that shape are paying for, and they are the reason not to simplify
-it back. The `vars` dictionary is deprecated and **removed in ansible-core
+Four things are what that shape is paying for, and they are the reason not to
+simplify it back. The `vars` dictionary is deprecated and **removed in ansible-core
 2.24**, and `hostvars` is undefined while group_vars are still being assembled,
 so the varnames/vars lookup pair is not a style choice but the only supported
 form. The `sort(attribute='path')` is load-bearing: `host_prep` loops in order
@@ -533,10 +561,12 @@ The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
 for: `static`, `docs`, `vault`, `reconciliation` and three suite legs instead of
-all nineteen (#395). Read that off `tests/ci/classify_changes.rb --full`, whose
-`suites` array is the matrix: this sentence said sixteen, then seventeen, while
-a full run dispatched nineteen, and several comments under `tests/ci/` still
-carry a count of their own that nothing bumps either. One leg stands for the
+the whole matrix (#395). Read the size of that matrix off
+`tests/ci/classify_changes.rb --full`, whose `suites` array is it, rather than
+from any prose: this sentence carried a literal through sixteen, then seventeen,
+while a full run dispatched more than either, and the comments under `tests/ci/`
+that restated it went stale the same way. Nothing bumps such a copy, so #652
+removed them rather than correcting them again. One leg stands for the
 rest because the matrix is uniform and
 stays so under test: `tests/ci/workflow_test.rb` executes the suites job's own
 `case "$SUITE"` for every suite and asserts the argv, and
@@ -1004,29 +1034,33 @@ subset, so it proves nothing this lane does not. Reclaiming that leg is the next
 move, and it costs edits to `suites.conf`, `classify_changes.rb`,
 `tests/ci/workflow_test.rb`, `tests/policy_ci_test.rb` and the roster above.
 
-**Measured on run `34514486089`, the first that dispatched them.** The shards
-ran 14.1, 9.9, 9.7, 9.9 and 7.5 minutes, so the projected 14–16 held at the top
-and was pessimistic everywhere else. Each converged real work and then reported
-`changed=0`: phase 1 changed 43, 37, 19, 28 and 30 things against phase-1 task
-counts of 697, 547, 375, 521 and 500. The run wall fell from 32.5 minutes to
-**24.1**.
+**Measured on run `34514486089`, the first that dispatched them, when the split
+was five shards rather than today's.** Read the figures below as that run and
+not as the partition in the tree, which `tests/ci/suites.conf` holds and
+`tests/idempotence_shard_partition_test.rb` counts. Those five ran 14.1, 9.9,
+9.7, 9.9 and 7.5 minutes, so the
+projected 14–16 held at the top and was pessimistic everywhere else. Each
+converged real work and then reported `changed=0`: phase 1 changed 43, 37, 19,
+28 and 30 things against phase-1 task counts of 697, 547, 375, 521 and 500. The
+run wall fell from 32.5 minutes to **24.1**.
 
 Two projections in the paragraph this replaces were wrong, and the shape of the
 error is worth more than the numbers. The repeated prerequisites were estimated
-at about 860 task-results per shard from the corrupted per-role table; the five
-shards actually run 2640 phase-1 results against the unsharded lane's 1649, which
-puts the repetition nearer **250** per shard — so the asymptote is around 6
-minutes rather than the 10 claimed, and more shards would still buy something.
-(The two runs are different trees, one before AdGuard and one after, so read that
-as a magnitude and not a figure.) The estimate came from a table this file
+from the corrupted per-role table at roughly three times what that run then
+measured, so the asymptote was nearer 6 minutes than the 10 claimed and more
+shards would still buy something. A sixth was cut out of shard 1 afterwards, for
+the reason `suites.conf` records beside the rows. (The runs compared were
+different trees, one before AdGuard and one after, so that was a magnitude and
+not a figure.) The estimate came from a table this file
 already documents as unreliable, which is precisely the trap: a projection built
 on data known to be corrupt reads exactly like a measurement once it is written
 down.
 
-**Queue is now a visible term.** `idempotence-1` finished last at 18:50:01
-despite running only 14.1 minutes, because it did not start until 18:35:54 — the
-matrix grew by four legs against an account that peaked at exactly 20 concurrent
-jobs, so some of the shard win converts into waiting rather than into wall.
+**Queue is now a visible term.** On that same run `idempotence-1` finished last
+at 18:50:01 despite running only 14.1 minutes, because it did not start until
+18:35:54 — the matrix had grown by four legs against an account that peaked at
+exactly 20 concurrent jobs, so some of the shard win converts into waiting
+rather than into wall. Every shard added since pays that again.
 
 **The shards are numbered rather than named, and the split balances estimated
 cost.** The three heavyweights by the phase-1 role table — paperless at 120.5s,
@@ -1036,7 +1070,8 @@ nextcloud and immich together as "documents" at roughly 229s against 58 for the
 lightest, a 3.9x spread in the one direction that sets the wall. Numbering makes
 a rebalance free, which matters here because a named partition that stops
 matching its names is the same stale claim this file has had to correct twice
-already. The current spread is about 1.3x.
+already — and the partition has been rebalanced since, which is the reason the
+spread it achieves is not quoted here.
 
 **The split is provisional and its weights are estimates rather than measurements.** The only
 per-role timings available are corrupted: with `display_skipped_hosts = False`
@@ -1205,8 +1240,12 @@ costs something: with no admin panel and no SMTP, a closed door leaves a fresh
 database with no route to a first account at all, so registration stays open and
 the tailnet is the whole of the control — anything that joins the tailnet can
 register here. What makes that a perimeter rather than a wish is one Compose
-line: this is the only service on the platform published on `127.0.0.1` rather
-than the wildcard, so Tailscale Serve is the only route to the door. It shipped
+line: this is the only service anyone logs in to that is published on
+`127.0.0.1` rather than the wildcard, so Tailscale Serve is the only route to
+the door. One other container is bound there — Beszel's `socket-proxy` sidecar,
+on 2375 — and it is not a counter-example but the same decision: it publishes no
+door, only a read-only Docker socket that must never leave the host, and the
+Beszel hub beside it takes the wildcard like every other service. It shipped
 as a wildcard and an uninvited registration from a LAN address succeeded, which
 is why the binding is stated wherever the perimeter is.
 `inventory/group_vars/all/service_vaultwarden.yml` carries that argument and its

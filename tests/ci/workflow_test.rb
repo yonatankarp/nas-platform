@@ -349,9 +349,9 @@ jobs.each do |job_name, job|
 end
 
 # Every job on the same runner image. This is what lets one matrix leg stand for
-# the other sixteen: a change to this file now dispatches three suites rather
-# than seventeen (#395), so a per-leg environment that varied by job would be a
-# difference the legs that do run cannot observe.
+# the rest: a change to this file now dispatches three suites rather
+# than the whole matrix (#395), so a per-leg environment that varied by job would
+# be a difference the legs that do run cannot observe.
 jobs.each do |job_name, job|
   check(failures, job["runs-on"] == "ubuntu-latest",
         "job #{job_name} must run on ubuntu-latest, found #{job['runs-on'].inspect}")
@@ -893,11 +893,11 @@ integration_step = integration_steps.first || {}
 
 # Nothing in this job that has not been reasoned about above. Every other
 # property of a suite leg is asserted per-suite -- the matrix expression, the
-# argv for all seventeen suites with tags and without, the registry logins
-# derived from the compose files, the runner image, the timeout floor -- but
-# until #395 a *step* could be added here and be asserted by nothing. That is
-# the one way a leg's behaviour could change while the route dispatches three
-# legs of seventeen: a step that only a heavy suite trips over would reach main
+# argv for every suite with tags and without, the registry logins derived from
+# the compose files, the runner image, the timeout floor -- but until #395 a
+# *step* could be added here and be asserted by nothing. That is the one way a
+# leg's behaviour could change while the route dispatches three legs out of the
+# whole matrix: a step that only a heavy suite trips over would reach main
 # green. The `static` job has been pinned this way by name since it existed;
 # this is the same property, derived rather than named so that adding a registry
 # stays one edit.
