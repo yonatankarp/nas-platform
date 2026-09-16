@@ -100,6 +100,15 @@ module HttpFixtureSupport
   # do -- but it narrows it from the whole body of the test to the gap between
   # this probe and the caller's own connect, and it turns the remaining failure
   # into a loud one: every attempt answering is a raise, not a pass.
+  #
+  # Releasing the port is therefore correct HERE and must stay that way, which is
+  # worth saying because a port helper elsewhere that releases what its caller is
+  # about to bind is a bug and was one (#736). The difference is not in the code,
+  # which is nearly the same five lines, but in what the caller does next: a
+  # caller that BINDS the port needs it held until that bind, while these rows
+  # need nothing listening on it at all, so holding it would defeat the only
+  # property they are asking about. A future reader unifying the two would take
+  # one of them apart.
   def refusing_port(attempts: 32)
     attempts.times do
       port = begin

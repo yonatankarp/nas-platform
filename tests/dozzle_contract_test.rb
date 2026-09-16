@@ -1238,7 +1238,12 @@ STUB
 def with_runtime_stub(state, relay_port: 8081, recorder: false)
   merged = { dispatchers: [desired_dispatcher(relay_port)], rules: desired_rules }.merge(state)
   # Only the beszel-notify rows open the recorder, and they get a real free port.
-  merged[:recorder_port] = free_local_port if recorder
+  # Reserved rather than sampled, and released just above the yield: the binder
+  # is the runtime subprocess the caller's block spawns, so holding the socket
+  # across the yield would refuse every one of those rows with the very message
+  # #736 is about.
+  recorder_reservation = ReservedLocalPort.new if recorder
+  merged[:recorder_port] = recorder_reservation.number if recorder_reservation
   stub = StubApi.new(merged)
   dozzle_port = stub.start
   Dir.mktmpdir("nas-platform-dozzle-runtime.") do |raw|
@@ -1253,6 +1258,9 @@ def with_runtime_stub(state, relay_port: 8081, recorder: false)
     FileUtils.mkdir_p(bin)
     File.write(File.join(bin, "ansible-vault"), VAULT_STUB)
     File.chmod(0o755, File.join(bin, "ansible-vault"))
+    # Everything above is setup the runtime subprocess must not race; from here
+    # the port belongs to whatever the block spawns.
+    recorder_reservation&.release_to_binder
     yield({
       "PATH" => "#{bin}:#{ENV.fetch('PATH')}",
       "DOZZLE_STUB_VAULT" => vault,
@@ -1271,6 +1279,8 @@ def with_runtime_stub(state, relay_port: 8081, recorder: false)
   end
 ensure
   stub&.stop
+  # Cleanup for a failure that never reached the release above.
+  recorder_reservation&.release_to_binder
 end
 
 RUNTIME_ROWS = [
@@ -1701,11 +1711,164 @@ def recorder_module(port)
   holder
 end
 
-def free_local_port
-  server = TCPServer.new("127.0.0.1", 0)
-  port = server.addr[1]
-  server.close
-  port
+# A loopback port held by a listening socket until whoever is about to bind it
+# is ready to take it.
+#
+# What this replaces is `free_local_port`, which asked the kernel for a port and
+# closed the socket before returning the number. The port was then back in the
+# kernel's free pool for the whole of the caller's setup, and the callers here
+# spend a long time there: `recorder_failures` builds a module out of the
+# runtime program, makes a temporary directory, spawns the relay and then waits
+# up to twenty seconds for it to listen, all between the sample and the bind.
+# `tests/validate-policy.sh` packs its checks into `nproc` workers and several
+# of them allocate ports the same way, so that window is contended by
+# construction rather than by bad luck. On `43fc2ed9` something took one:
+# `main` went red on a Renovate digest bump that touches nothing near Dozzle,
+# with `Pushover recorder could not listen on 35039: Errno::EADDRINUSE` reported
+# as a wrong-reason refusal in a self-test row, and the deployment poller stopped
+# advancing until the leg was re-run by hand (#736).
+#
+# Holding the socket is only half the fix. The port exists here for a bind the
+# caller is about to make, so the reservation has to be given up at the instant
+# before that bind and not a statement earlier -- which is what
+# `release_to_binder` names, and why it is a separate call rather than something
+# this class could do for itself. Where the binder runs in this process there is
+# then nothing at all between the release and the bind; where it is a child, the
+# gap is the spawn.
+#
+# The socket binds the wildcard address because that is what the binders claim:
+# the runtime program's recorder listens on `0.0.0.0`, so a reservation on
+# `127.0.0.1` would be a narrower claim than the one it has to win.
+class ReservedLocalPort
+  attr_reader :number
+
+  def initialize
+    @holder = TCPServer.new("0.0.0.0", 0)
+    @number = @holder.addr[1]
+  end
+
+  # Gives the port up to whoever binds it next. Call it immediately before that
+  # bind. Idempotent, so an error path that never reached a binder can call it
+  # as plain cleanup.
+  def release_to_binder
+    @holder.close unless @holder.closed?
+    @number
+  end
+
+  def held?
+    !@holder.closed?
+  end
+end
+
+# A second process that binds +port+ and keeps it, which is what a pooled check
+# on the same machine is. Returns [bound, pid]; the caller reaps the pid.
+#
+# A second process rather than a second socket here: the thing #736 lost the
+# port to was another program on the machine, and a claim about what the kernel
+# refuses across processes is worth nothing if it is only ever tested within
+# one.
+PORT_THIEF_PROGRAM = <<~'RUBY'
+  require "socket"
+  begin
+    server = TCPServer.new("0.0.0.0", Integer(ARGV[0], 10))
+  rescue SystemCallError => error
+    $stdout.puts("refused #{error.class}")
+    $stdout.flush
+    exit 0
+  end
+  $stdout.puts("bound #{server.addr[1]}")
+  $stdout.flush
+  sleep
+RUBY
+
+def steal_port(port)
+  reader, writer = IO.pipe
+  pid = spawn(RbConfig.ruby, "-e", PORT_THIEF_PROGRAM, port.to_s,
+              out: writer, err: File::NULL)
+  writer.close
+  verdict = reader.gets.to_s
+  [verdict.start_with?("bound"), pid]
+ensure
+  reader&.close unless reader&.closed?
+  writer&.close unless writer&.closed?
+end
+
+def reap_thief(pid)
+  return if pid.nil?
+
+  begin
+    Process.kill("TERM", pid)
+  rescue Errno::ESRCH
+    nil
+  end
+  Process.wait(pid)
+rescue Errno::ECHILD
+  nil
+end
+
+# Proves ReservedLocalPort reserves, against a real second process and in both
+# directions, rather than asserting that a helper with the right name exists.
+#
+# The two directions are not symmetrical and the case is built around the
+# difference. A held port being REFUSED is a kernel property: the refusal is
+# certain, so that direction races nothing and is where the detection lives. A
+# released port being TAKEN is a race the thief has to win, so that direction is
+# the control and is retried. A check whose failing path needs a race won is the
+# defect this whole issue is about, and writing one into the gate to prove the
+# fix would red an unrelated pull request exactly the way #736 did.
+#
+# The control is not decoration. Without it, the detecting direction passes on a
+# `steal_port` that has stopped binding anything at all -- a spawn that fails, a
+# verdict that stops being parsed -- and reports a reservation that reserves.
+# Retrying it cannot mask a defect either: a ReservedLocalPort that stopped
+# holding fails the detecting direction whatever the control does afterwards.
+#
+# What this case does NOT prove is that the window it closed was ever lost in
+# anger. That is history, and #736 has it.
+PORT_CONTROL_ATTEMPTS = 5
+
+def port_reservation_failures
+  failures = []
+  thief = nil
+
+  # The detecting direction. No retry: if the reservation holds, the refusal is
+  # certain, and if it does not, one attempt is enough to say so.
+  reservation = ReservedLocalPort.new
+  begin
+    stolen, thief = steal_port(reservation.number)
+    failures << "port reservation: a second process bound #{reservation.number} while the " \
+                "reservation was held, so ReservedLocalPort is not reserving anything" if
+      stolen
+  ensure
+    reap_thief(thief)
+    thief = nil
+  end
+
+  failures << "port reservation: the reservation released its port before anyone asked " \
+              "for it" unless reservation.held?
+
+  # The control, and the handover in the same breath: a port given up through
+  # release_to_binder is one a second process can take. Losing an attempt means
+  # something outside this check took the port first, which is a statement about
+  # the machine and not about the reservation, so it is retried rather than
+  # reported.
+  bound = false
+  attempts = 0
+  while attempts < PORT_CONTROL_ATTEMPTS && !bound
+    attempts += 1
+    released = ReservedLocalPort.new.release_to_binder
+    begin
+      bound, thief = steal_port(released)
+    ensure
+      reap_thief(thief)
+      thief = nil
+    end
+  end
+  failures << "port reservation: no second process could bind a released port in " \
+              "#{attempts} attempts, so either release_to_binder does not release or the " \
+              "direction above is passing on a probe that binds nothing" unless bound
+
+  failures
 end
 
 def post_through_relay(relay_port, payload, token)
@@ -1721,8 +1884,14 @@ end
 
 def recorder_failures
   failures = []
-  recorder_port = free_local_port
-  relay_port = free_local_port
+  # Both ports are held from here until the statement before the bind that needs
+  # them, because everything between the two -- the module build, the temporary
+  # directory, the spawn and the relay's start-up wait -- is setup neither bind
+  # may race. See ReservedLocalPort.
+  recorder_reservation = ReservedLocalPort.new
+  relay_reservation = ReservedLocalPort.new
+  recorder_port = recorder_reservation.number
+  relay_port = relay_reservation.number
   helpers = recorder_module(recorder_port)
   relay_token = "recorder-case-relay-token"
   pushover_token = "recorder-case-pushover-token"
@@ -1747,6 +1916,9 @@ def recorder_failures
       "ALERT_STATE_PATH" => File.join(state_directory, "alert-relay.json"),
       "PYTHONDONTWRITEBYTECODE" => "1"
     }
+    # Released on the line before the spawn: the relay is the binder, and what
+    # is left of the window is the fork itself.
+    relay_reservation.release_to_binder
     relay = spawn(environment, "python3", RELAY_SCRIPT,
                   out: File::NULL, err: File::NULL)
     begin
@@ -1764,6 +1936,11 @@ def recorder_failures
 
       captured = nil
       begin
+      # The recorder binds in this process, so releasing here leaves nothing
+      # between the reservation and the bind. This is the line #736 was about:
+      # until it existed, the port had been free since before the spawn above
+      # and the twenty-second wait beneath it.
+      recorder_reservation.release_to_binder
       helpers.with_pushover_recorder(pushover_token, pushover_user_key) do |reader|
         # A container name carrying the characters that separate the two
         # encodings: a space becomes `+` under quote_plus, and the message
@@ -1833,6 +2010,12 @@ def recorder_failures
     end
   end
   failures
+ensure
+  # Cleanup, not a handover: the early returns above leave by a path where no
+  # binder ever arrived, and a held socket outliving this method would take a
+  # port away from every other check in the pool.
+  recorder_reservation&.release_to_binder
+  relay_reservation&.release_to_binder
 end
 
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
@@ -2724,7 +2907,8 @@ end
 
 failures = group_render_failures + labels_failures + stack_failures + alerts_failures +
            planned_failures + runtime_failures + runtime_sequence_failures +
-           wrapper_failures + stdin_failures + pushover_port_failures + recorder_failures
+           wrapper_failures + stdin_failures + pushover_port_failures + recorder_failures +
+           port_reservation_failures
 unless failures.empty?
   failures.each { |failure| warn "FAIL #{failure}" }
   abort "#{failures.length} Dozzle contract violation(s)"
@@ -2734,4 +2918,5 @@ puts "dozzle contract: #{GROUP_RENDER_ROWS.length} group render, #{LABEL_ROWS.le
      "#{STACK_ROWS.length} stack, #{ALERTS_ROWS.length} alert, #{PLANNED_ROWS.length} planned " \
      "and #{RUNTIME_ROWS.length} runtime properties hold, the notify mode's recorder " \
      "decodes what the deployed relay actually POSTs and redacts the credentials out of " \
-     "it, and the wrapper reaches all six programs with an empty stdin"
+     "it, the wrapper reaches all six programs with an empty stdin, and a reserved " \
+     "loopback port is one a second process is refused while a released one is not"

@@ -100,13 +100,28 @@ RELAY_EXIT_TIMEOUT_SECONDS = float(
 
 
 def reserve_local_port():
-    """Return a free local TCP port, deliberately never the deployed default."""
+    """Hold a free local TCP port, deliberately never the deployed default.
+
+    Returns (port, holder). The holder is a bound, listening socket and the
+    caller closes it on the line before whatever binds the port -- not earlier.
+
+    This used to close the socket before returning the number, which put the
+    port back in the kernel's free pool for the whole of the caller's setup.
+    `tests/validate-policy.sh` runs its checks in a pool of `nproc` workers and
+    several of them allocate ports this way, so that window is contended by
+    construction; the Ruby sibling of this function lost a port in it and
+    reddened `main` on an unrelated pull request (#736). Nothing here has been
+    observed losing one, which is a statement about luck rather than about the
+    shape.
+    """
     while True:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-            probe.bind(("127.0.0.1", 0))
-            port = probe.getsockname()[1]
+        holder = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        holder.bind(("127.0.0.1", 0))
+        holder.listen(1)
+        port = holder.getsockname()[1]
         if port != DEPLOYED_PORT:
-            return port
+            return port, holder
+        holder.close()
 
 
 def load_relay_module():
@@ -1194,7 +1209,8 @@ class DozzleAlertRelayTest(unittest.TestCase):
         # The port is read back from a live listener rather than from the relay's
         # source text: a main() that ignored ALERT_RELAY_PORT and bound its own
         # number would leave nothing answering here.
-        port = reserve_local_port()
+        port, holder = reserve_local_port()
+        self.addCleanup(holder.close)
         self.assertNotEqual(port, DEPLOYED_PORT)
         created = []
         real_create_server = self.relay_module.create_server
@@ -1207,6 +1223,10 @@ class DozzleAlertRelayTest(unittest.TestCase):
         environment = self.environment(ALERT_RELAY_PORT=str(port))
         with mock.patch.object(self.relay_module, "create_server", capture), \
                 mock.patch.dict(os.environ, environment):
+            # Given up on the line before the thread that binds it, so the
+            # patching and environment work above happens with the port still
+            # reserved.
+            holder.close()
             thread = threading.Thread(target=self.relay_module.main, daemon=True)
             thread.start()
             try:
@@ -3177,7 +3197,8 @@ class RelayProcessSignalTest(unittest.TestCase):
 
         `changes` overrides the environment below; None removes a name.
         """
-        port = reserve_local_port()
+        port, holder = reserve_local_port()
+        self.addCleanup(holder.close)
         environment = dict(os.environ)
         environment.update(
             {
@@ -3202,6 +3223,10 @@ class RelayProcessSignalTest(unittest.TestCase):
                 environment.pop(name, None)
             else:
                 environment[name] = value
+        # Given up on the line before the spawn: the relay is the binder, and
+        # what is left of the window is the fork itself rather than all of the
+        # environment assembly above.
+        holder.close()
         process = subprocess.Popen(  # noqa: S603 - fixed argv, no shell
             [sys.executable, str(RELAY_PATH)],
             env=environment,
