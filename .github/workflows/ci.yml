@@ -140,6 +140,12 @@ jobs:
     # shard number is a step that runs on one leg, so tests/ci/workflow_test.rb
     # refuses an `if` on any static step -- otherwise a check quietly becomes a
     # check that runs a third as often.
+    #
+    # What remains here is what a shard genuinely needs. The toolchain install
+    # stays triplicated because the gate's own manifest runs "$ansible_python"
+    # and ansible-playbook checks on every shard; the six steps that did not vary
+    # by shard are gone, three of them into the gate's manifest and three into
+    # the `lint` job below (#653).
     timeout-minutes: 45
     name: static (${{ matrix.shard }})
     needs: changes
@@ -199,8 +205,8 @@ jobs:
       # documented `pip install -r controller-requirements.txt` with a resolver
       # wall of text naming no cause (#655). The version is read from
       # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: four jobs carry this pair
-      # byte-identically, and a literal repeated four times is four places a bump
+      # are read from controller-requirements.txt: five jobs carry this pair
+      # byte-identically, and a literal repeated five times is five places a bump
       # has to find. pyenv reads that file too, so a contributor gets the same
       # interpreter without being told to.
       - name: Set up Python
@@ -219,7 +225,7 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # Never name a version here: four jobs carry this block byte-identically,
+          # Never name a version here: five jobs carry this block byte-identically,
           # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -232,10 +238,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` used to install collections a second
-          # time inside ansible-lint, which this flag cannot reach; its lint step
-          # passes --offline so that call no longer happens and this is the only
-          # galaxy call in every job (#719).
+          # cache costs it nothing. ansible-lint used to install collections a
+          # second time from inside itself, which this flag cannot reach; the
+          # `lint` job passes --offline so that call no longer happens and this
+          # is the only galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The shard reaches the gate through the environment rather than by
@@ -248,17 +254,86 @@ jobs:
           POLICY_SHARD: ${{ matrix.shard }}
         run: tests/validate-policy.sh "$POLICY_SHARD"
 
-      - name: Check integration sandbox cleanup
-        run: tests/integration_cleanup_test.sh
+  lint:
+    # The shard-independent half of what `static` used to be. Every step below
+    # produces the same verdict on every shard, so running them inside the matrix
+    # ran each of them three times per pull request and charged all three to the
+    # job with the stated 10-15 minute budget (#653).
+    #
+    # An `if:` on the step was the obvious trim and is refused by
+    # tests/ci/workflow_test.rb, deliberately: a step conditioned on the shard is
+    # a check that runs on one leg of three, which is the silent-coverage-loss
+    # shape #469 wrote the union guard against. So the checks move to a runner of
+    # their own instead, the way `mutation` and `reconciliation` did -- with the
+    # difference that those left the gate because they were its floor, and these
+    # leave the matrix because they were never per-shard work at all.
+    #
+    # The three single-command checks that stood beside them went the other way,
+    # into tests/validate-policy.sh, where they run once as one line of one shard
+    # and gain the manifest declaration guard they had no equivalent of here.
+    # What stayed is what cannot be a manifest line: ansible-lint and
+    # ansible-playbook are not this repository's own programs, and the ephemeral
+    # vault self-test is asserted by tests/policy_vault_test.rb against the
+    # workflow's own dependency install rather than against the gate.
+    #
+    # Gated on the same classifier output as `static`, not on a narrower lane:
+    # lint and a syntax check read every play and every role, so there is no
+    # subset of files that cannot change what they say.
+    timeout-minutes: 15
+    needs: changes
+    if: ${{ needs.changes.outputs.static == 'true' }}
+    runs-on: ubuntu-latest
 
-      - name: Check Immich probe status rendering
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # The venv below is built with whatever `python3` the runner image happens
+      # to ship, and controller-requirements.txt pins ansible-core 2.21.4, which
+      # requires Python 3.12 or newer. Nothing declared that floor, so a runner
+      # image moving its default interpreter -- in either direction -- silently
+      # changed the toolchain CI resolved, and a contributor on 3.11 met the
+      # documented `pip install -r controller-requirements.txt` with a resolver
+      # wall of text naming no cause (#655). The version is read from
+      # .python-version rather than written here, for the same reason the pins
+      # are read from controller-requirements.txt: five jobs carry this pair
+      # byte-identically, and a literal repeated five times is five places a bump
+      # has to find. pyenv reads that file too, so a contributor gets the same
+      # interpreter without being told to.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Install Ansible tooling
         run: |
-          ansible_python="$(dirname "$(readlink -f "$(command -v ansible-playbook)")")/python"
-          test -x "$ansible_python"
-          PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py
-
-      - name: Check generated credential redaction
-        run: tests/generate-secrets-redaction-test.sh
+          # All three ship in the ubuntu-latest image, so this normally installs
+          # nothing. Guarded because an unconditional apt-get update stalled
+          # mid-download for 161 minutes on 2026-08-19; the guard still recovers
+          # automatically if the image ever drops them.
+          if ! command -v htpasswd >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
+          fi
+          #
+          # Never name a version here: five jobs carry this block byte-identically,
+          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          python3 -m venv "$RUNNER_TEMP/ansible"
+          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
+          # --no-cache because the Galaxy API cache is written in two steps: a
+          # blank entry with a 24-hour expiry first, its `results` filled in when
+          # the response arrives. _call_galaxy writes that entry *before* issuing
+          # the request and retries six deep around it, so one transient HTTP
+          # error re-enters, finds its own blank entry unexpired and refuses --
+          # a single flaky request reds a leg no diff caused, from a clean cache,
+          # in one sequential process. An ephemeral runner HOME is no protection.
+          # This step is the only reader of what it writes, so declining the
+          # cache costs it nothing. ansible-lint used to install collections a
+          # second time from inside itself, which this flag cannot reach; the
+          # `lint` job passes --offline so that call no longer happens and this
+          # is the only galaxy call in every job (#719).
+          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Check silent ephemeral vault generation
         run: |
@@ -275,7 +350,7 @@ jobs:
       # `ansible-galaxy collection install` on requirements.yml, from inside a
       # library, with no --no-cache and nowhere to pass one. That is the second
       # galaxy call in this job and the only one #704's flag cannot reach, so it
-      # carries the whole failure the step above describes (#719). The flag is on
+      # carries the whole failure the toolchain step describes (#719). The flag is on
       # the command rather than `offline: true` in .ansible-lint because the
       # config file is read by a developer's bare `ansible-lint` too, where the
       # self-healing install is the thing that makes a first run work; scoped
@@ -285,12 +360,12 @@ jobs:
       # collections ("far less violations will be reported").
       #
       # It turns off two things. The install: lint then resolves modules from the
-      # $HOME/.ansible/collections the step above populated, rather than
+      # $HOME/.ansible/collections the toolchain step populated, rather than
       # installing its own copy under <tree>/.ansible, and it refuses loudly --
       # 18 syntax-check[unknown-module] and exit 2 -- if that step did not run,
       # so the new dependency cannot fail quietly. And the schema refresh, which
-      # leaves the schemas bundled with the pinned ansible-lint in force, so the
-      # gate's verdict stops depending on a network fetch. Measured on a fresh
+      # leaves the schemas bundled with the pinned ansible-lint in force, so this
+      # job's verdict stops depending on a network fetch. Measured on a fresh
       # HOME with nothing cached, that costs nothing here: 387 files processed
       # either way, 0 failures either way.
       - name: Lint Ansible
@@ -362,8 +437,8 @@ jobs:
       # documented `pip install -r controller-requirements.txt` with a resolver
       # wall of text naming no cause (#655). The version is read from
       # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: four jobs carry this pair
-      # byte-identically, and a literal repeated four times is four places a bump
+      # are read from controller-requirements.txt: five jobs carry this pair
+      # byte-identically, and a literal repeated five times is five places a bump
       # has to find. pyenv reads that file too, so a contributor gets the same
       # interpreter without being told to.
       - name: Set up Python
@@ -382,7 +457,7 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # Never name a version here: four jobs carry this block byte-identically,
+          # Never name a version here: five jobs carry this block byte-identically,
           # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -395,10 +470,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` used to install collections a second
-          # time inside ansible-lint, which this flag cannot reach; its lint step
-          # passes --offline so that call no longer happens and this is the only
-          # galaxy call in every job (#719).
+          # cache costs it nothing. ansible-lint used to install collections a
+          # second time from inside itself, which this flag cannot reach; the
+          # `lint` job passes --offline so that call no longer happens and this
+          # is the only galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Validate the encrypted vault
@@ -459,8 +534,8 @@ jobs:
       # documented `pip install -r controller-requirements.txt` with a resolver
       # wall of text naming no cause (#655). The version is read from
       # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: four jobs carry this pair
-      # byte-identically, and a literal repeated four times is four places a bump
+      # are read from controller-requirements.txt: five jobs carry this pair
+      # byte-identically, and a literal repeated five times is five places a bump
       # has to find. pyenv reads that file too, so a contributor gets the same
       # interpreter without being told to.
       - name: Set up Python
@@ -479,7 +554,7 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # Never name a version here: four jobs carry this block byte-identically,
+          # Never name a version here: five jobs carry this block byte-identically,
           # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -492,10 +567,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` used to install collections a second
-          # time inside ansible-lint, which this flag cannot reach; its lint step
-          # passes --offline so that call no longer happens and this is the only
-          # galaxy call in every job (#719).
+          # cache costs it nothing. ansible-lint used to install collections a
+          # second time from inside itself, which this flag cannot reach; the
+          # `lint` job passes --offline so that call no longer happens and this
+          # is the only galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       # The harness syntax-checks a play in every sandbox it builds and renders
@@ -536,8 +611,8 @@ jobs:
       # documented `pip install -r controller-requirements.txt` with a resolver
       # wall of text naming no cause (#655). The version is read from
       # .python-version rather than written here, for the same reason the pins
-      # are read from controller-requirements.txt: four jobs carry this pair
-      # byte-identically, and a literal repeated four times is four places a bump
+      # are read from controller-requirements.txt: five jobs carry this pair
+      # byte-identically, and a literal repeated five times is five places a bump
       # has to find. pyenv reads that file too, so a contributor gets the same
       # interpreter without being told to.
       - name: Set up Python
@@ -556,7 +631,7 @@ jobs:
             sudo apt-get -o Acquire::Retries=3 install --yes apache2-utils openssh-client openssl
           fi
           #
-          # Never name a version here: four jobs carry this block byte-identically,
+          # Never name a version here: five jobs carry this block byte-identically,
           # and the pins live in controller-requirements.txt alone (CLAUDE.md).
           python3 -m venv "$RUNNER_TEMP/ansible"
           "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
@@ -569,10 +644,10 @@ jobs:
           # a single flaky request reds a leg no diff caused, from a clean cache,
           # in one sequential process. An ephemeral runner HOME is no protection.
           # This step is the only reader of what it writes, so declining the
-          # cache costs it nothing. `static` used to install collections a second
-          # time inside ansible-lint, which this flag cannot reach; its lint step
-          # passes --offline so that call no longer happens and this is the only
-          # galaxy call in every job (#719).
+          # cache costs it nothing. ansible-lint used to install collections a
+          # second time from inside itself, which this flag cannot reach; the
+          # `lint` job passes --offline so that call no longer happens and this
+          # is the only galaxy call in every job (#719).
           "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
 
       - name: Check media acquisition reconciliation
@@ -736,6 +811,7 @@ jobs:
     needs:
       - changes
       - static
+      - lint
       - docs
       - vault
       - mutation
@@ -753,6 +829,7 @@ jobs:
           ruby tests/ci/validate_results.rb \
             changes="${{ needs.changes.result }}" \
             static="${{ needs.static.result }}" \
+            lint="${{ needs.lint.result }}" \
             docs="${{ needs.docs.result }}" \
             vault="${{ needs.vault.result }}" \
             mutation="${{ needs.mutation.result }}" \

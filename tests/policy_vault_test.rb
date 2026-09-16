@@ -682,7 +682,17 @@ check(failures,
           ci_commands.any? { |line| line.include?(dependency) }
         end,
       "CI must run the silent ephemeral vault self-test with explicit dependencies")
-check(failures, ci_commands.any? { |line| line.include?("tests/generate-secrets-redaction-test.sh") },
+# The redaction test moved out of the static job's steps and into the policy
+# gate's manifest (#653): as a step it ran once per shard for a verdict that
+# cannot vary by shard. So this reads the manifest rather than the workflow, and
+# it is the same claim -- CI still executes it, by the one route that now runs
+# it. The ephemeral self-test above stays on the workflow, because what that
+# check asserts is the dependency install beside it, which only a job has.
+gate_manifest_commands = PolicySupport.gate_shards(
+  File.join(ROOT, "tests", "validate-policy.sh")
+).values.flatten
+check(failures,
+      gate_manifest_commands.count("tests/generate-secrets-redaction-test.sh") == 1,
       "CI must execute the generated-secret redaction test")
 
 ephemeral_helper = ephemeral_generator_source

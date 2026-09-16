@@ -642,6 +642,30 @@ check(failures,
       end,
       "the media acquisition reconciliation checks belong to their own CI job, " \
       "not to validate-policy.sh")
+# The traffic in the other direction (#653). These three were steps of the
+# `static` job, which is a three-shard matrix, so each ran three times per pull
+# request for a verdict that cannot vary by shard. They are manifest lines now,
+# which makes them run once and puts them under the declaration guard in
+# tests/gate_manifest_coverage_test.rb -- as workflow steps the only thing
+# holding them was a literal in tests/ci/workflow_test.rb.
+#
+# Required from here as well, and in both directions, because this is the script
+# that runs on a mutated copy of the tree: a check the gate stopped registering
+# and the workflow no longer carries is a guard that silently stopped running,
+# and a check registered in both places is the triplication coming back one line
+# at a time.
+{
+  "tests/integration_cleanup_test.sh" => "the integration sandbox cleanup test",
+  'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py' =>
+    "the Immich probe status rendering test",
+  "tests/generate-secrets-redaction-test.sh" => "the generated credential redaction test"
+}.each do |command, description|
+  check(failures, validation_commands.count(command) == 1,
+        "validate-policy.sh must run #{description} exactly once: it left the static job so " \
+        "that it runs once rather than once per shard")
+  check(failures, ci_commands.none? { |line| line == command },
+        "#{description} belongs to validate-policy.sh alone, not to a workflow step beside it")
+end
 # The policy mutation harness left the gate for the same reason: it builds a
 # sandbox and runs the whole policy set once per mutation, which made it the
 # gate's floor rather than one more check in its pool. CI must still run it --
