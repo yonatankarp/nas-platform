@@ -230,8 +230,11 @@ or a fact the role itself sets later — fails the run there: `'item' is
 undefined`, reported from the variable's definition site rather than from the
 task that would have used it, which is what makes it hard to recognise. Leaving
 it undeclared is correct, because lazy templating then resolves it per item at
-the point of use. `is defined` is not the workaround — evaluating it templates
-the value and fails identically. Assert such a parameter's presence with
+the point of use. **`is defined` is not the workaround, and it fails in the
+worse direction**: evaluating it templates the value, the undefined `item`
+raises inside that, and the test swallows it and reads *false* — so the guard
+refuses a parameter that is perfectly well defined, and says so about the
+parameter rather than about the loop. Assert such a parameter's presence with
 `q('varnames', '^<name>$')`, which matches variable *names* without resolving
 them, the way `roles/vault_contract` already collects the managed-user lists.
 The `required: true` half above is unaffected: a vault credential that is not a
