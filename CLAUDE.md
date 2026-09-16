@@ -804,14 +804,17 @@ gate's own slowest-checks report. The current split was drawn by #517 against
 four post-merge `main` runs, and those figures are recorded in
 `tests/gate_manifest_coverage_test.rb` beside the lists they justify. It
 balances cost rather than count, which is why the shards hold uneven numbers of
-checks. Read that count off the gate's own report rather than from here: it was
-53/53/61 over 167 when #517 drew the split and is 57/56/64 over 177 today, and
-this sentence stood at 51/52/61 through both of those, then went stale three
-times more inside #548 alone -- once within one pull request of being corrected,
-again in the pull request that corrected it, and a third time when #547's
-Vaultwarden checks merged in beside #548's AdGuard ones without either branch
-being able to see the other's additions. Four corrections in one issue is the
-evidence for reading the gate's own report instead of this line. Three things
+checks. Read that count off `ruby tests/gate_manifest_coverage_test.rb`'s own
+summary line, which prints it; **this sentence deliberately no longer states
+it**, and #652 is why. It was 53/53/61 over 167 when #517 drew the split, and
+the restatement that used to follow that figure went on claiming 51/52/61 long
+after the split had moved, then went stale three times more inside #548 alone -- once within
+one pull request of being corrected, again in the pull request that corrected
+it, and a third time when #547's Vaultwarden checks merged in beside #548's
+AdGuard ones without either branch being able to see the other's additions.
+Nothing in this repository compares a count in prose against the lists it
+describes, in any of the three places that stated it, so #652 deleted all three
+rather than correcting them once more. Three things
 constrain a future rebalance, all three stated beside the lists: a check's
 recorded seconds are its wall time at that shard's load rather
 than work that can be carried elsewhere, so an arithmetic projection from that

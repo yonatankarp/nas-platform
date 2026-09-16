@@ -74,11 +74,21 @@ failures = []
 # readable.
 #
 # WHICH SHARD A CHECK GOES IN is a balance decision, and what it balances is
-# COST, not count. The counts below are 57/56/64 and that asymmetry is the
-# result rather than a defect: #469 drew the partition round robin, which
-# balances count because count is all a partition without a cost table can
-# balance, and by #517 the three shards were 53/54/57 checks carrying a 2.2x
-# spread of work. Nothing had gone wrong; nothing had been balancing cost.
+# COST, not count. The lists below therefore hold UNEVEN numbers of checks, and
+# that asymmetry is the result rather than a defect: #469 drew the partition
+# round robin, which balances count because count is all a partition without a
+# cost table can balance, and by #517 the three shards were 53/54/57 checks
+# carrying a 2.2x spread of work. Nothing had gone wrong; nothing had been
+# balancing cost.
+#
+# The three counts are deliberately NOT written here, and #652 is why: a
+# restatement went stale in this comment, in tests/validate-policy.sh and in
+# CLAUDE.md simultaneously, repeatedly, because nothing compares a number in a
+# comment against the lists beside it -- including in the file that holds them.
+# Running this check prints them, which is the one place they cannot drift:
+#
+#   ruby tests/gate_manifest_coverage_test.rb
+#   gate manifest: N declared checks across 3 shards (1: ..., 2: ..., 3: ...)
 #
 # THE MEASUREMENT, four post-merge `main` runs (#517). Each shard's leg is its
 # own runner, so the three columns of one run are three different machines and a
