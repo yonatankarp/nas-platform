@@ -786,6 +786,11 @@ generator_play = YAML.safe_load_file(File.join(ROOT, "generate-secrets.yml")).fi
 generator_source = File.read(File.join(ROOT, "generate-secrets.yml"))
 generator_plain_expression = generator_play.dig("vars", "vault_plain_path").to_s
 generator_plain_relative = generator_plain_expression.sub(%r{\A\{\{\s*playbook_dir\s*\}\}/}, "")
+# The single-file vault #612 retired. Named here rather than derived because
+# nothing in the tree declares it any more -- that is what retired means -- and
+# it is what both this section's refusals and the play's own third stat target
+# are about.
+retired_vault_relative = "inventory/group_vars/all/vault.yml"
 check(failures, !generator_plain_relative.empty? && !generator_plain_relative.include?("{{"),
       "generate-secrets.yml must declare vault_plain_path under {{ playbook_dir }}, because " \
       "docs/secrets.md consumes it as a repository-relative path " \
@@ -794,16 +799,45 @@ check(failures, !generator_plain_relative.empty? && !generator_plain_relative.in
 # Exactly one, not at least one. A floor of one is satisfied by an eighteen-file
 # generator, which is precisely what this pair of checks exists to refuse: one
 # plaintext artifact, and the guide moves that one.
-generator_file_writes = Array(generator_play["tasks"]).select do |task|
-  task.is_a?(Hash) && (task.key?("ansible.builtin.template") || task.key?("ansible.builtin.copy"))
+#
+# Every task the play can reach, not the top-level list. Reading only
+# generator_play["tasks"] was evaded on the first attempt by a second
+# ansible.builtin.copy wrapped in a `block:` -- this script, tests/policy_vault_test.rb
+# and `ansible-lint --strict` on the production profile all reported clean, so
+# the eighteen-file shape the comment above says this refuses walked straight
+# past it. A check that reads one nesting level is a check against the shape
+# nobody would have written anyway.
+#
+# The short forms are matched beside the FQCN ones for the same reason. lint's
+# fqcn[action-core] does reject `template:` today, which makes it a second gate
+# rather than this one's excuse: a rule that check depends on is a rule that can
+# be relaxed in a file this script never reads.
+GENERATOR_WRITE_MODULES = %w[
+  ansible.builtin.template ansible.builtin.copy template copy
+].freeze
+def generator_reachable_tasks(node)
+  case node
+  when Array then node.flat_map { |child| generator_reachable_tasks(child) }
+  when Hash
+    [node] + %w[block rescue always].flat_map { |key| generator_reachable_tasks(node[key]) }
+  else []
+  end
+end
+generator_file_writes = generator_reachable_tasks(
+  %w[pre_tasks tasks post_tasks handlers].map { |section| generator_play[section] }
+).filter_map do |task|
+  module_key = GENERATOR_WRITE_MODULES.find { |name| task.key?(name) }
+  [task, module_key] if module_key
 end
 check(failures, generator_file_writes.length == 1,
       "generate-secrets.yml must write exactly one plaintext artifact, found " \
-      "#{generator_file_writes.length} (#{generator_file_writes.map { |task| task['name'] }.inspect}). " \
+      "#{generator_file_writes.length} " \
+      "(#{generator_file_writes.map { |task, _module_key| task['name'] }.inspect}). " \
       "docs/secrets.md's brand-new starter moves a single file into a protected temporary " \
       "directory and encrypts it to $PLATFORM_VAULT_FILE; a generator emitting more would leave " \
       "that procedure moving one artifact and abandoning the rest as plaintext in the checkout")
-generator_write_destination = generator_file_writes.first&.values&.grep(Hash)&.first.to_h["dest"].to_s
+generator_write_task, generator_write_module = generator_file_writes.first
+generator_write_destination = generator_write_task.to_h.fetch(generator_write_module, {}).to_h["dest"].to_s
 check(failures, generator_write_destination.include?("vault_plain_path"),
       "generate-secrets.yml's plaintext task must write vault_plain_path, the variable this " \
       "script derives the guide's expectations from (found #{generator_write_destination.inspect})")
@@ -822,6 +856,23 @@ check(failures, brand_new_plain_mentions >= 8,
       "#{brand_new_plain_mentions} times (expected at least 8, measured 10 when this check " \
       "landed): its existence, symlink and nonempty guards all name the generator's output, and " \
       "a rename that reached only the `mv` would leave the rest guarding a path nothing writes")
+# What the floor alone cannot see, and it was measured going unseen: renaming two
+# of the ten -- the preflight guard at the top of generate_brand_new_secrets --
+# leaves eight, which clears the floor, while the wrapper now refuses on a path
+# nothing writes. A floor counts what is right and says nothing about what is
+# wrong beside it, so this asks the other question instead, in both directions:
+# the only paths this section may name under inventory/group_vars/all/ are the
+# generator's own output and the retired single file it refuses. Anything else is
+# a rename that reached some occurrences and not the rest.
+brand_new_group_vars_paths =
+  brand_new_starter.scan(%r{inventory/group_vars/all/[A-Za-z0-9._-]+}).uniq.sort
+permitted_group_vars_paths = [generator_plain_relative, retired_vault_relative].uniq.sort
+check(failures, brand_new_group_vars_paths == permitted_group_vars_paths,
+      "## Brand-new platform starter names #{brand_new_group_vars_paths.inspect} under " \
+      "inventory/group_vars/all/, but the only paths it may name there are " \
+      "#{permitted_group_vars_paths.inspect}: the generator's own output and the retired " \
+      "single file it refuses. A third name is a rename that reached some of this section's " \
+      "guards and not the others, which the occurrence floor above cannot see")
 
 # The other end of the same tie. The play never writes the encrypted artifact --
 # the guide does, at $PLATFORM_VAULT_FILE -- but the play refuses to run when it
@@ -844,7 +895,6 @@ check(failures,
 # single file #612 retired sitting beside the eighteen per-service ones, loaded
 # first because `.` sorts before `_` and encrypted under a different password, so
 # group_vars decryption failed outright.
-retired_vault_relative = "inventory/group_vars/all/vault.yml"
 check(failures,
       !generator_source.match?(/mv\s+\S*vault-plain\.yml\s+\S*group_vars\/all\/vault\.yml/),
       "generate-secrets.yml still instructs moving its plaintext to #{retired_vault_relative}, " \
