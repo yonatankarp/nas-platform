@@ -1033,8 +1033,9 @@ move, and it costs edits to `suites.conf`, `classify_changes.rb`,
 
 **Measured on run `34514486089`, the first that dispatched them, when the split
 was five shards rather than today's.** Read the figures below as that run and
-not as the partition in the tree, which `tests/ci/suites.conf` is the only
-statement of. Those five ran 14.1, 9.9, 9.7, 9.9 and 7.5 minutes, so the
+not as the partition in the tree, which `tests/ci/suites.conf` holds and
+`tests/idempotence_shard_partition_test.rb` counts. Those five ran 14.1, 9.9,
+9.7, 9.9 and 7.5 minutes, so the
 projected 14–16 held at the top and was pessimistic everywhere else. Each
 converged real work and then reported `changed=0`: phase 1 changed 43, 37, 19,
 28 and 30 things against phase-1 task counts of 697, 547, 375, 521 and 500. The
@@ -1044,8 +1045,8 @@ Two projections in the paragraph this replaces were wrong, and the shape of the
 error is worth more than the numbers. The repeated prerequisites were estimated
 from the corrupted per-role table at roughly three times what that run then
 measured, so the asymptote was nearer 6 minutes than the 10 claimed and more
-shards would still buy something — which is why a sixth was cut from shard 1
-afterwards, and `suites.conf` carries that argument. (The runs compared were
+shards would still buy something. A sixth was cut out of shard 1 afterwards, for
+the reason `suites.conf` records beside the rows. (The runs compared were
 different trees, one before AdGuard and one after, so that was a magnitude and
 not a figure.) The estimate came from a table this file
 already documents as unreliable, which is precisely the trap: a projection built
