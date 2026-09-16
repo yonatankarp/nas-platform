@@ -678,6 +678,20 @@ end
 # play writes today and the per-service variant of that same name, which a literal
 # cannot satisfy. A renamed output therefore fails here instead of becoming
 # committable.
+# A subset of git's own matcher, and the subset is stated rather than implied.
+# It handles the three forms this file uses for credential artifacts -- a bare
+# glob matched against any path segment, a slashed pattern matched against the
+# whole relative path, and `!` negation with last-match-wins -- and it does not
+# implement `**` or the rule that a directory pattern ignores everything beneath
+# it. Compared against `git check-ignore --no-index` over 25 paths on
+# 2026-09-16, it disagreed on exactly three: `.ansible/x`, `mac-proof-reports/r.txt`
+# and `a/secrets/b`, every one of them a descendant of a directory pattern, and
+# every one in the direction of reporting NOT ignored where git ignores. That is
+# the direction this may err in: a false refusal here is loud and wrong in a way
+# somebody fixes, while a false "ignored" would pass the check with plaintext
+# credentials committable, which is the whole thing it exists to refuse. If a
+# future subject needs a directory or `**` pattern, extend this rather than
+# assuming it already answers for one.
 def gitignore_ignores?(gitignore, relative_path)
   ignored = false
   gitignore.lines.each do |raw|
