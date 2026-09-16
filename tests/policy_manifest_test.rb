@@ -1865,6 +1865,26 @@ expect_failure(failures, "role phase gate opens without an assert",
              "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
 end
 
+# The caller half of the same gate, which until #647 no row exercised: the
+# comment above records that a correctly-asserted phase-gated file produces
+# exactly this one diagnostic, so writing it that way plants the caller defect
+# alone. It is worth a row of its own now, because that half acquired a second
+# route -- a file reached by include_role is validated by its role's own
+# argument spec, which include_tasks never applies -- and the subject here is a
+# file reached by NEITHER, in a role whose argument spec declares no such option.
+# A re-anchor that accidentally admitted every file would pass without this.
+expect_failure(failures, "role phase gate has no caller",
+               "roles/kapowarr/tasks/reconcile_stage.yml: declares kapowarr_reconcile_phase " \
+               "phases provision but its callers pass none",
+               detected_by: %i[policy]) do |root|
+  File.write(File.join(root, "roles", "kapowarr", "tasks", "reconcile_stage.yml"),
+             "---\n- name: Validate the stage phase\n  ansible.builtin.assert:\n" \
+             "    that:\n      - kapowarr_reconcile_phase in ['provision']\n" \
+             "    fail_msg: An unrecognised phase would skip this file silently.\n\n" \
+             "- name: Reconcile one stage\n  ansible.builtin.debug:\n" \
+             "    msg: reconciling\n  when: kapowarr_reconcile_phase == 'provision'\n")
+end
+
 expect_failure(failures, "role deploys without reporting it",
                "role kapowarr: deploys Compose services but declares 0 deployment reports, not one",
                detected_by: %i[policy]) do |root|
