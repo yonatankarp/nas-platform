@@ -2212,7 +2212,8 @@ expect_failure(failures, "Immich classifier manifest verifier removed",
 end
 
 expect_failure(failures, "acquisition staged-byte verification removed",
-               "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation",
+               "deployment manifest verifier must require the exact platform input digests and " \
+               "detect staged-byte mutation",
                detected_by: %i[deployment]) do |root|
   path = File.join(root, "tests", "verify_deployment_manifest.rb")
   File.write(path, File.read(path).gsub("File.dirname(manifest_path)", "repository_root"))

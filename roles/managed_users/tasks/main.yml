@@ -196,10 +196,12 @@
       carries a credential-shaped key. Repairing an existing identity must never
       update its password; the capability register declares that update
       forbidden.
-  vars:
-    managed_users_match: >-
-      {{ managed_users_matches[item[managed_users_identity_attribute]] |
-         first | default({}) }}
+  # Deliberately NOT binding managed_users_match: this refusal runs before the
+  # listing, so there are no matches to bind, and a body that reached for one
+  # here would subscript an empty mapping. Reading the body's KEYS needs neither
+  # -- a mapping literal's keys are its own, whatever its values interpolate --
+  # and running before the first request is what makes this a refusal rather
+  # than a report.
   loop: "{{ managed_users_declared }}"
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
