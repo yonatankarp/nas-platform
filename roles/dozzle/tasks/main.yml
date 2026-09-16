@@ -378,7 +378,7 @@
   ansible.builtin.assert:
     that:
       - dozzle_managed_dispatcher_ids
-        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | reject('match', platform_safe_api_identifier_pattern)
         | list | length == 0
     fail_msg: Managed Dozzle dispatcher identity contains an unsafe API identifier.
 
@@ -492,7 +492,7 @@
   ansible.builtin.assert:
     that:
       - dozzle_managed_rule_ids[item.name]
-        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | reject('match', platform_safe_api_identifier_pattern)
         | list | length == 0
     fail_msg: Managed Dozzle alert rule identity contains an unsafe API identifier.
   loop: "{{ dozzle_alerts }}"

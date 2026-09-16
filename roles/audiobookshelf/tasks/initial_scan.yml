@@ -121,7 +121,7 @@
             not audiobookshelf_initial_scan_marker_present or
             audiobookshelf_initial_scan_marker_state.library_id is none or
             audiobookshelf_initial_scan_marker_state.library_id | string is
-              match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+              match(platform_safe_api_identifier_pattern)
           - >-
             not audiobookshelf_initial_scan_marker_present or
             audiobookshelf_initial_scan_marker_state.folder_paths | type_debug == 'list'
@@ -222,7 +222,7 @@
 - name: Require safe current managed Audiobookshelf library ID
   ansible.builtin.assert:
     that:
-      - audiobookshelf_current_library.id | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      - audiobookshelf_current_library.id | string is match(platform_safe_api_identifier_pattern)
     fail_msg: The current managed Audiobookshelf library has an unsafe API identifier.
   when: audiobookshelf_current_library | length > 0
 

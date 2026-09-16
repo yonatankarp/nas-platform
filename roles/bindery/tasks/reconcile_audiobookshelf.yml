@@ -130,7 +130,7 @@
       - bindery_audiobookshelf_library_matches | length == 1
       - bindery_audiobookshelf_library_matches
         | map(attribute='id') | map('string')
-        | reject('match', '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+        | reject('match', platform_safe_api_identifier_pattern)
         | list | length == 0
     fail_msg: >-
       Audiobookshelf does not hold exactly one book library named

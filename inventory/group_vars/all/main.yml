@@ -88,6 +88,15 @@ platform_download_retries: 5
 platform_download_delay: 5
 platform_download_timeout: 30
 
+# The shape every identifier a service API hands back must have before a role
+# interpolates it into a URL, a body or a comparison: an ASCII alphanumeric
+# first character, then at most 127 more drawn from alphanumerics and `_.:-`.
+# It was a literal in fifteen places across six roles, so tightening it was a
+# fifteen-file edit with nothing holding the copies together (#647). A service
+# whose identifiers are narrower -- a UUID -- asserts its own pattern instead of
+# this one; this is the platform's floor, not a type.
+platform_safe_api_identifier_pattern: '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'
+
 # Storage inventory, composed from every nas_storage_* contributor in this
 # directory. host_prep creates ordinary entries and validates preservation-only
 # entries, the policy test cross-checks them against Compose volume sources, and

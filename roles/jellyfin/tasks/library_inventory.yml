@@ -15,7 +15,7 @@
       - item.Name | length <= 255
       - item.Name is not search('[\x00-\x1f\x7f]')
       - item.ItemId | default(none) is string
-      - item.ItemId | default('') | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+      - item.ItemId | default('') | string is match(platform_safe_api_identifier_pattern)
       - item.CollectionType | default(none) is string
       - item.Locations | default(none) | type_debug == 'list'
       - item.Locations | select('string') | list | length == item.Locations | length

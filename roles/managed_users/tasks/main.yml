@@ -283,7 +283,7 @@
       - >-
         managed_users_matches[item[managed_users_identity_attribute]] | length == 0 or
         managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute]
-          | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+          | string is match(platform_safe_api_identifier_pattern)
     fail_msg: >-
       {{ managed_users_title }} returned an unsafe managed-user API identifier.
   loop: "{{ managed_users_declared }}"
@@ -437,7 +437,7 @@
          selectattr(managed_users_identity_attribute, 'equalto',
                     item.item[managed_users_identity_attribute]) |
          first)[managed_users_id_attribute] | string
-          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+          is match(platform_safe_api_identifier_pattern)
   loop: >-
     {{ managed_users_creation.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
