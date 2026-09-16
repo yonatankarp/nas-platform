@@ -94,6 +94,18 @@ services:
           python3 -c "import urllib.request;
           urllib.request.urlopen('http://127.0.0.1:5656/api/public', timeout=5)"
     # /app/db is the SQLite database of the whole comic library and is recovery:
-    # critical. 30s commits the open transaction; an interrupted download is
-    # already retried from the queue that database holds.
-    stop_grace_period: 30s
+    # critical, but no grace period lets it close today, so this states Docker's
+    # own 10s rather than buying a window nothing uses (#696). Measured on the
+    # NAS against v1.3.2: SIGTERM reaches the supervisor and Kapowarr logs
+    # "Shutting down Kapowarr", then its shutdown handler raises at
+    # backend/features/tasks.py:284 -- stop_handle() joins a queued task whose
+    # thread never started ("cannot join thread before it is started") -- the
+    # orderly shutdown aborts with non-daemon threads still running, and the
+    # process stays wedged until Docker SIGKILLs it: 30.46s and exit 137 under
+    # the 30s this used to declare. A longer window only hangs longer. SQLite's
+    # journal keeps the store crash-safe, so what the kill costs is in-flight
+    # work rather than corruption; an interrupted download is already retried
+    # from the queue that database holds. The defect is upstream, and a longer
+    # window is worth declaring again only once a pin fixes it and a stop is
+    # measured to finish inside one.
+    stop_grace_period: 10s

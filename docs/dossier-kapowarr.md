@@ -188,7 +188,10 @@ from the image the container was created from, it stops the container and copies
 `Kapowarr.db` and any `-wal`/`-shm` beside it into `pre-upgrade-backup/` at 0600,
 the `roles/vaultwarden` shape. A file copy of a stopped store, because v1.3.1 has
 no backup route and neither image ships `sqlite3`; a clean v1.3.1 stop leaves
-`Kapowarr.db` alone with no log beside it. Confirmed.
+`Kapowarr.db` alone with no log beside it. Confirmed. A v1.3.2 stop is not clean:
+its shutdown handler raises at `backend/features/tasks.py:284` and the process
+waits out the grace period to a SIGKILL, measured at 30.46s and exit 137 (#696),
+so that copy carries whatever log the kill left.
 
 **Database backups land in the database directory, and that is left alone.**
 v1.3.2 adds `db_backup_folder` and `db_backup_amount` (default 3), and a
