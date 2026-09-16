@@ -38,8 +38,9 @@ SUITES_PATH = File.join(REPO_ROOT, "tests/ci/suites.conf")
 ALWAYS_TAGS = %w[always preflight].freeze
 SHARED_PREREQUISITE_TAGS = %w[host_prep deployment_bundle].freeze
 # A stated number, for the reason tests/gate_manifest_coverage_test.rb states one:
-# a partition that should hold five shards and holds one satisfies every
-# non-emptiness test there is.
+# a partition that should hold every shard below and holds one satisfies every
+# non-emptiness test there is. This constant is the only restatement of the
+# count, which is why it is a constant and not a comment.
 EXPECTED_SHARD_COUNT = 6
 
 def site_tag_universe(site_source)

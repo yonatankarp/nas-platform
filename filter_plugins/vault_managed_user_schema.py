@@ -11,10 +11,14 @@ failed, by path, without ever putting a value in the message. `no_log` on an
 "audiobookshelf managed user has invalid field" into
 "audiobookshelf[2].permissions.flags.download: must be a boolean".
 
-Semantics are matched to Ansible's Jinja tests, verified on ansible-core 2.21.3:
-`is integer` rejects booleans, `is boolean` rejects integers, `is string` rejects
-None and ints, and `is match` anchors at the start only, so patterns needing a
-full match carry their own `$`.
+Semantics are matched to Ansible's Jinja tests: `is integer` rejects booleans,
+`is boolean` rejects integers, `is string` rejects None and ints, and `is match`
+anchors at the start only, so patterns needing a full match carry their own `$`.
+That was checked by hand against ansible-core 2.21.3 and has not been re-checked
+since -- it is a dated record of one reading, not a statement about the version
+`controller-requirements.txt` pins today, and nothing here asserts these
+semantics against the running interpreter. Re-deriving it means running the
+expressions, not bumping the number.
 """
 
 import importlib.util

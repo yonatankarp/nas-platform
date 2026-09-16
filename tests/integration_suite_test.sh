@@ -624,7 +624,14 @@ assert_idempotence_recap_rejected 'task-output false match before failed recap' 
 # planted in tests/integration_controller_execution_test.sh -- case_arr and
 # case_downloaders each swap the two lines and require the observed order of the
 # plays to catch it.
-grep -qF 'requests_version=2.34.2' "$integration" || {
+# What has to hold is that the pin EXISTS and is in a form Renovate's custom
+# manager can bump, not what its value is today. This read the literal 2.34.2
+# until #652, in a file no `managerFilePatterns` covers -- so the next requests
+# bump would have moved tests/integration.sh, left this copy behind and redded
+# the gate on Renovate's own pull request. The pattern below is that manager's
+# `matchStrings` regex with anchors: a value it could not bump fails here rather
+# than silently stopping being bumped.
+grep -qE '^requests_version=[0-9]+\.[0-9]+\.[0-9]+$' "$integration" || {
   printf '%s\n' 'integration controller does not pin docker_container_info runtime support' >&2
   exit 1
 }

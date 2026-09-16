@@ -1261,8 +1261,8 @@ end
 # The workflow file is the one routed path that no check reads: it *defines* the
 # jobs everything else is routed to. Its route therefore has to buy job coverage
 # -- one leg of every job in the workflow -- rather than the reader coverage
-# every other entry buys, and #395 narrowed it to that from falling open to all
-# seventeen suites.
+# every other entry buys, and #395 narrowed it to that from falling open to every
+# suite in the matrix.
 #
 # The coverage is derived from the workflow rather than restated, so a job added
 # tomorrow and gated on a classifier output this route does not turn on fails
@@ -1316,8 +1316,8 @@ if defined?(ClassifyChanges)
         "#{routed_workflow_path} still dispatches every suite, which is what #395 removed")
   # A service lane, and one that drags no companion in with it. The matrix is
   # uniform by construction -- tests/ci/workflow_test.rb executes the job's own
-  # `case "$SUITE"` for all seventeen suites and asserts the argv, in `static`,
-  # which any change here also selects -- so one leg proves what seventeen do.
+  # `case "$SUITE"` for every suite and asserts the argv, in `static`,
+  # which any change here also selects -- so one leg proves what all of them do.
   check(failures, ClassifyChanges::SERVICE_LANES.include?(ClassifyChanges::CI_WORKFLOW_SUITE_LANE),
         "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} is no longer a service lane")
   check(failures, ClassifyChanges::COMPANION_LANES.fetch(ClassifyChanges::CI_WORKFLOW_SUITE_LANE, []).empty?,

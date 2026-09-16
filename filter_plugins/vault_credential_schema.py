@@ -20,10 +20,14 @@ an exception for "this one is not really a secret" is how such a rule stops
 holding. `JELLYFIN_ADMIN_USERNAME` and the OpenSubtitles and ComicVine
 placeholders are the comparands, and they stay out of the output.
 
-Semantics are matched to Ansible's Jinja tests, verified on ansible-core 2.21.3:
-`is match` anchors at the start only, so patterns needing a full match carry
-their own end anchor; `is search` is unanchored; `| length > 0` accepted
-whitespace, so these rules reject only a zero length.
+Semantics are matched to Ansible's Jinja tests: `is match` anchors at the start
+only, so patterns needing a full match carry their own end anchor; `is search` is
+unanchored; `| length > 0` accepted whitespace, so these rules reject only a zero
+length. That was checked by hand against ansible-core 2.21.3 and has not been
+re-checked since -- it is a dated record of one reading, not a statement about
+the version `controller-requirements.txt` pins today, and nothing here asserts
+these semantics against the running interpreter. Re-deriving it means running the
+expressions, not bumping the number.
 
 **The rules here are deliberately no stricter than the conditions they replace,
 including where those conditions were accidentally lax.** Role argument

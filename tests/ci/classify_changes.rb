@@ -91,7 +91,7 @@ module ClassifyChanges
   # that: tests/integration.sh removes the committed per-service vaults and
   # installs the sandbox vault at inventory/group_vars/all/vault.yml before any
   # play runs, so no suite ever reads the committed ones. Falling open to every
-  # lane was costing a full seventeen-suite matrix to re-prove one line.
+  # lane was costing the whole suite matrix to re-prove one line.
   # renovate.json is read by tests/renovate_policy_test.rb and by no play at all.
   #
   # vault.yml itself is no longer committed (#612 moved its last key into the
@@ -303,8 +303,8 @@ module ClassifyChanges
   # documentation check and no reconciliation check opens it. Read that before
   # "correcting" the entry back to the readers.
   #
-  # It fell open to everything until #395, and that was seventeen suite legs to
-  # prove nothing about any suite: 33 of the 45 commits that touched this file
+  # It fell open to everything until #395, and that was every suite leg in the
+  # matrix to prove nothing about any suite: 33 of the 45 commits that touched this file
   # between 2026-06-01 and 2026-09-05 changed nothing else that selected a single
   # lane, and paid for the whole matrix twice -- once on the pull request, once on
   # the merge.
@@ -313,10 +313,10 @@ module ClassifyChanges
   # that way under test. The `suites` job is one job template; the only
   # suite-dependent thing in it is the `case "$SUITE"` that decides whether
   # --tags is passed, and tests/ci/workflow_test.rb executes that shell for every
-  # one of the seventeen suites, with tags and without, and asserts the argv --
+  # suite in the matrix, with tags and without, and asserts the argv --
   # in `static`, which any change here still selects. What no static check can
   # prove is that the job's *steps* still work on a runner, and one leg proves
-  # that as well as seventeen. tests/ci/classify_changes_test.rb derives the rest
+  # that as well as all of them would. tests/ci/classify_changes_test.rb derives the rest
   # from the workflow itself: it reads every `needs.changes.outputs.*` a job is
   # gated on and fails unless this selection turns that job on, so a new job
   # gated on a new output cannot land here unrouted.
