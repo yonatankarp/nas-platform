@@ -38,7 +38,9 @@ module HttpFixtureSupport
   # its own still wins, because these sit underneath it.
   PLATFORM_FIXTURE_VARIABLES = YAML.safe_load_file(
     File.join(REPOSITORY_ROOT, "inventory", "group_vars", "all", "main.yml")
-  ).slice("platform_safe_api_identifier_pattern").freeze
+  ).then do |vars|
+    { "platform_safe_api_identifier_pattern" => vars.fetch("platform_safe_api_identifier_pattern") }
+  end.freeze
 
   # The reason phrases the fixtures used to spell out one map at a time. A
   # caller states its own with reason:, as a literal phrase, a status-to-phrase
