@@ -242,7 +242,28 @@ jobs:
           # second time from inside itself, which this flag cannot reach; the
           # `lint` job passes --offline so that call no longer happens and this
           # is the only galaxy call in every job (#719).
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
+          #
+          # Retried because --no-cache closes a corrupt cache and does nothing for
+          # a TCP reset: `Connection reset by peer` from galaxy.ansible.com red a
+          # leg three times in eighteen hours, each green on an unchanged re-run,
+          # and on `main` a red run holds the poller back with nothing reporting
+          # it (#747). Three attempts, ten then twenty seconds apart, cover a
+          # blip; a failure that outlasts them is no longer transient and still
+          # reds the step, with every attempt's error left in the log above it.
+          # The attempt sits in an `if` because the step runs under `bash -e`,
+          # which would otherwise end it at the first failure. `tests/ci/workflow_test.rb`
+          # runs this loop against a stubbed ansible-galaxy.
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ansible-galaxy collection install failed $attempt times; not transient (#747)" >&2
+              exit 1
+            fi
+            echo "ansible-galaxy collection install failed (attempt $attempt of 3); retrying" >&2
+            sleep $((attempt * 10))
+          done
 
       # The shard reaches the gate through the environment rather than by
       # interpolating a matrix value into shell source, as every other matrix here
@@ -333,7 +354,28 @@ jobs:
           # second time from inside itself, which this flag cannot reach; the
           # `lint` job passes --offline so that call no longer happens and this
           # is the only galaxy call in every job (#719).
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
+          #
+          # Retried because --no-cache closes a corrupt cache and does nothing for
+          # a TCP reset: `Connection reset by peer` from galaxy.ansible.com red a
+          # leg three times in eighteen hours, each green on an unchanged re-run,
+          # and on `main` a red run holds the poller back with nothing reporting
+          # it (#747). Three attempts, ten then twenty seconds apart, cover a
+          # blip; a failure that outlasts them is no longer transient and still
+          # reds the step, with every attempt's error left in the log above it.
+          # The attempt sits in an `if` because the step runs under `bash -e`,
+          # which would otherwise end it at the first failure. `tests/ci/workflow_test.rb`
+          # runs this loop against a stubbed ansible-galaxy.
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ansible-galaxy collection install failed $attempt times; not transient (#747)" >&2
+              exit 1
+            fi
+            echo "ansible-galaxy collection install failed (attempt $attempt of 3); retrying" >&2
+            sleep $((attempt * 10))
+          done
 
       - name: Check silent ephemeral vault generation
         run: |
@@ -474,7 +516,28 @@ jobs:
           # second time from inside itself, which this flag cannot reach; the
           # `lint` job passes --offline so that call no longer happens and this
           # is the only galaxy call in every job (#719).
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
+          #
+          # Retried because --no-cache closes a corrupt cache and does nothing for
+          # a TCP reset: `Connection reset by peer` from galaxy.ansible.com red a
+          # leg three times in eighteen hours, each green on an unchanged re-run,
+          # and on `main` a red run holds the poller back with nothing reporting
+          # it (#747). Three attempts, ten then twenty seconds apart, cover a
+          # blip; a failure that outlasts them is no longer transient and still
+          # reds the step, with every attempt's error left in the log above it.
+          # The attempt sits in an `if` because the step runs under `bash -e`,
+          # which would otherwise end it at the first failure. `tests/ci/workflow_test.rb`
+          # runs this loop against a stubbed ansible-galaxy.
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ansible-galaxy collection install failed $attempt times; not transient (#747)" >&2
+              exit 1
+            fi
+            echo "ansible-galaxy collection install failed (attempt $attempt of 3); retrying" >&2
+            sleep $((attempt * 10))
+          done
 
       - name: Validate the encrypted vault
         env:
@@ -571,7 +634,28 @@ jobs:
           # second time from inside itself, which this flag cannot reach; the
           # `lint` job passes --offline so that call no longer happens and this
           # is the only galaxy call in every job (#719).
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
+          #
+          # Retried because --no-cache closes a corrupt cache and does nothing for
+          # a TCP reset: `Connection reset by peer` from galaxy.ansible.com red a
+          # leg three times in eighteen hours, each green on an unchanged re-run,
+          # and on `main` a red run holds the poller back with nothing reporting
+          # it (#747). Three attempts, ten then twenty seconds apart, cover a
+          # blip; a failure that outlasts them is no longer transient and still
+          # reds the step, with every attempt's error left in the log above it.
+          # The attempt sits in an `if` because the step runs under `bash -e`,
+          # which would otherwise end it at the first failure. `tests/ci/workflow_test.rb`
+          # runs this loop against a stubbed ansible-galaxy.
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ansible-galaxy collection install failed $attempt times; not transient (#747)" >&2
+              exit 1
+            fi
+            echo "ansible-galaxy collection install failed (attempt $attempt of 3); retrying" >&2
+            sleep $((attempt * 10))
+          done
 
       # The harness syntax-checks a play in every sandbox it builds and renders
       # role defaults through Ansible, so it needs the gate's toolchain.
@@ -648,7 +732,28 @@ jobs:
           # second time from inside itself, which this flag cannot reach; the
           # `lint` job passes --offline so that call no longer happens and this
           # is the only galaxy call in every job (#719).
-          "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml
+          #
+          # Retried because --no-cache closes a corrupt cache and does nothing for
+          # a TCP reset: `Connection reset by peer` from galaxy.ansible.com red a
+          # leg three times in eighteen hours, each green on an unchanged re-run,
+          # and on `main` a red run holds the poller back with nothing reporting
+          # it (#747). Three attempts, ten then twenty seconds apart, cover a
+          # blip; a failure that outlasts them is no longer transient and still
+          # reds the step, with every attempt's error left in the log above it.
+          # The attempt sits in an `if` because the step runs under `bash -e`,
+          # which would otherwise end it at the first failure. `tests/ci/workflow_test.rb`
+          # runs this loop against a stubbed ansible-galaxy.
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/ansible/bin/ansible-galaxy" collection install --no-cache -r requirements.yml; then
+              break
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::ansible-galaxy collection install failed $attempt times; not transient (#747)" >&2
+              exit 1
+            fi
+            echo "ansible-galaxy collection install failed (attempt $attempt of 3); retrying" >&2
+            sleep $((attempt * 10))
+          done
 
       - name: Check media acquisition reconciliation
         env:

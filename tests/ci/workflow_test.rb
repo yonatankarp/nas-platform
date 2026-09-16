@@ -642,6 +642,76 @@ toolchain_installs.each do |name, body|
         "the #{name} job must not restate a pin controller-requirements.txt already authors")
 end
 
+# The Galaxy install is retried, because a TCP reset from galaxy.ansible.com red
+# a leg three times in eighteen hours and on `main` a red run stalls the poller
+# silently (#747). Two halves. Every `ansible-galaxy collection install` in any
+# step of any job sits inside the retry loop, so a new job that copies the bare
+# command fails here rather than reintroducing the flake. And the loop itself is
+# run -- extracted from the workflow, under the `bash -e` GitHub runs steps with,
+# against a stubbed ansible-galaxy -- so a loop that stops retrying, retries a
+# success, or swallows a persistent failure is caught by what it does rather than
+# by how it reads. `sleep` is stubbed to record the backoff instead of waiting it.
+GALAXY_INSTALL_LOOP = /^for attempt in 1 2 3; do\n.*?^done$/m
+galaxy_retry_loops = []
+jobs.each do |name, job|
+  Array(job["steps"]).each do |step|
+    body = step.is_a?(Hash) ? step["run"].to_s : ""
+    loops = body.to_enum(:scan, GALAXY_INSTALL_LOOP).map { Regexp.last_match }
+    galaxy_retry_loops.concat(loops.map { |match| match[0] })
+    body.to_enum(:scan, /^.*ansible-galaxy collection install.*$/).each do
+      offset = Regexp.last_match.begin(0)
+      check(failures, loops.any? { |match| match.begin(0) <= offset && offset < match.end(0) },
+            "the #{name} job's #{step['name'].inspect} step runs `ansible-galaxy collection install` " \
+            "outside the retry loop; a transient Galaxy reset would red it (#747)")
+    end
+  end
+end
+check(failures, galaxy_retry_loops.length >= 4,
+      "found #{galaxy_retry_loops.length} Galaxy retry loops where at least four jobs install " \
+      "collections; this check is proving less than it reads as")
+
+def run_galaxy_retry(loop_source, succeed_on)
+  Dir.mktmpdir("ci-galaxy-retry-") do |root|
+    stub = File.join(root, "ansible", "bin", "ansible-galaxy")
+    FileUtils.mkdir_p(File.dirname(stub))
+    File.write(stub, <<~SH)
+      #!/bin/sh
+      count=$(( $(cat "$RUNNER_TEMP/calls" 2>/dev/null || echo 0) + 1 ))
+      echo "$count" >"$RUNNER_TEMP/calls"
+      [ "$count" -ge #{succeed_on} ] && exit 0
+      echo "stub galaxy: Connection reset by peer (call $count)" >&2
+      exit 1
+    SH
+    File.chmod(0o755, stub)
+    script = %(sleep() { printf '%s\\n' "$1" >>"$RUNNER_TEMP/sleeps"; }\n#{loop_source}\necho reached-end\n)
+    stdout, stderr, status = Open3.capture3(
+      { "RUNNER_TEMP" => root }, "bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", script,
+      chdir: root
+    )
+    read = ->(file) { File.file?(File.join(root, file)) ? File.read(File.join(root, file)).split : [] }
+    { success: status.success?, stdout: stdout, stderr: stderr,
+      calls: read.call("calls").last.to_i, sleeps: read.call("sleeps") }
+  end
+end
+
+if (galaxy_loop = galaxy_retry_loops.first)
+  first = run_galaxy_retry(galaxy_loop, 1)
+  check(failures, first[:success] && first[:calls] == 1 && first[:sleeps].empty? &&
+                  first[:stdout].include?("reached-end"),
+        "a Galaxy install that succeeds at once must run once and not wait, got #{first.inspect}")
+  third = run_galaxy_retry(galaxy_loop, 3)
+  check(failures, third[:success] && third[:calls] == 3 && third[:sleeps] == %w[10 20] &&
+                  third[:stdout].include?("reached-end"),
+        "a Galaxy install that fails twice then succeeds must pass on the third attempt after " \
+        "backing off 10s then 20s, got #{third.inspect}")
+  never = run_galaxy_retry(galaxy_loop, 99)
+  check(failures, !never[:success] && never[:calls] == 3 && !never[:stdout].include?("reached-end") &&
+                  never[:stderr].include?("Connection reset by peer (call 3)") &&
+                  never[:stderr].include?("::error::"),
+        "a Galaxy install that always fails must red the step after exactly three attempts with " \
+        "the last error visible, got #{never.inspect}")
+end
+
 # The interpreter that venv is built with, held the same way and for the same
 # reason. controller-requirements.txt pins ansible-core 2.21.4, which requires
 # Python 3.12 or newer, and nothing declared that floor: the venv took whatever
