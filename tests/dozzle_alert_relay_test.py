@@ -1887,7 +1887,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
         obvious fix for a hung upstream serialising every Dozzle POST, and it
         breaches the ceiling with BudgetFloor still there and still looking like
         protection. Read as source structure rather than behaviour because a
-        concurrency test for this would be a race against a 10-second timeout;
+        concurrency test for this would be a race against PUBLISH_TIMEOUT_SECONDS;
         this cannot flake and it fails the moment somebody takes the trap.
         """
         tree = ast.parse(RELAY_PATH.read_text(encoding="utf-8"))
@@ -3161,6 +3161,65 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.assertEqual(
                         len(re.findall(rf"<{tag}\b", message)), message.count(f"</{tag}>"), tag
                     )
+
+
+class RelayStateDirectoryTest(unittest.TestCase):
+    """The three refusals of open_directory_no_symlinks, and what each owns.
+
+    The handler closes a descriptor this function opened, and the question it
+    has to answer is whether there is one: os.open may have raised, in which
+    case there is nothing to close and closing an unbound name would be the
+    error instead. That was decided by asking the interpreter whether it had
+    made the name (`"directory_fd" in locals()`); it is `directory_fd = None`
+    and `is not None` now, which is how LockedState in the same file already
+    writes it (#658).
+
+    Both halves are driven rather than read, because the half with nothing to
+    close is the one an ownership bug reaches first: a relative path and an
+    absent directory never open anything, and a 0o755 directory opens one and
+    then refuses it.
+
+    Its own TestCase, with no servers running, because it spies on os.open and
+    os.close process-wide: beside the two server threads DozzleAlertRelayTest
+    starts, an unrelated descriptor opened inside that window would land in
+    these lists and the case would fail for a reason that is not this function.
+    """
+
+    def setUp(self):
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.root = Path(self.temporary_directory.name)
+        self.relay_module = load_relay_module()
+
+    def test_a_refused_state_directory_closes_the_descriptor_it_opened(self):
+        unsafe = self.root / "unsafe"
+        unsafe.mkdir(mode=0o755)
+
+        for label, path, opens in (
+            ("relative", Path("relative/state"), False),
+            ("absent", self.root / "absent", False),
+            ("world-readable", unsafe, True),
+        ):
+            with self.subTest(label):
+                opened, closed = [], []
+                real_open, real_close = os.open, os.close
+
+                def spy_open(*arguments, _real=real_open, _seen=opened, **keywords):
+                    descriptor = _real(*arguments, **keywords)
+                    _seen.append(descriptor)
+                    return descriptor
+
+                def spy_close(descriptor, _real=real_close, _seen=closed):
+                    _seen.append(descriptor)
+                    return _real(descriptor)
+
+                with mock.patch.object(os, "open", spy_open), \
+                        mock.patch.object(os, "close", spy_close):
+                    with self.assertRaises(self.relay_module.StateError):
+                        self.relay_module.open_directory_no_symlinks(path)
+
+                self.assertEqual(bool(opened), opens, f"opened={opened}")
+                self.assertEqual(closed, opened, "every descriptor opened must be closed")
 
 
 class RelayProcessSignalTest(unittest.TestCase):
