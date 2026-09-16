@@ -145,6 +145,14 @@
   changed_when: false
   when: not ansible_check_mode
 
+- name: Copy the managed-user capability register from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/config/managed-user-capabilities.yml"
+    dest: "{{ deployment_bundle_staging_dir }}/config/managed-user-capabilities.yml"
+    mode: "0644"
+  changed_when: false
+  when: not ansible_check_mode
+
 - name: Create implemented service staging directories
   ansible.builtin.file:
     path: "{{ deployment_bundle_staging_dir }}/services/{{ item.name }}"

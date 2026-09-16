@@ -80,10 +80,10 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   FileUtils.cp(File.join(ROOT, "roles", "arr", "files", "configarr", "config.yml"),
                controller_configarr)
   FileUtils.mkdir_p(File.join(controller, "config"))
-  FileUtils.cp(
-    File.join(ROOT, "config", "media-acquisition.yml"),
-    File.join(controller, "config", "media-acquisition.yml")
-  )
+  %w[media-acquisition.yml managed-user-capabilities.yml].each do |platform_input|
+    FileUtils.cp(File.join(ROOT, "config", platform_input),
+                 File.join(controller, "config", platform_input))
+  end
   run_command("git", "init", "-q", chdir: controller)
   run_command("git", "config", "user.name", "NAS platform test", chdir: controller)
   run_command("git", "config", "user.email", "test@example.invalid", chdir: controller)
@@ -119,12 +119,14 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
     File.realpath(current) == release_root
 
   manifest = YAML.safe_load_file(File.join(release_root, "manifest.yml"))
-  catalog_source = File.join(controller, "config", "media-acquisition.yml")
-  expected_platform_inputs = [{
-    "path" => "config/media-acquisition.yml",
-    "mode" => "0644",
-    "checksum_sha256" => Digest::SHA256.file(catalog_source).hexdigest
-  }]
+  expected_platform_inputs =
+    %w[config/media-acquisition.yml config/managed-user-capabilities.yml].map do |platform_input|
+      {
+        "path" => platform_input,
+        "mode" => "0644",
+        "checksum_sha256" => Digest::SHA256.file(File.join(controller, platform_input)).hexdigest
+      }
+    end
   fail_test("manifest omits exact platform input integrity") unless
     manifest.fetch("platform_inputs") == expected_platform_inputs
   immich = manifest.fetch("services").find { |service| service.fetch("name") == "immich" }
@@ -158,6 +160,7 @@ Dir.mktmpdir("nas-platform-immich-release-helper-") do |temporary|
   fail_test("deployment manifest verifier rejected the release: #{verify_output}#{verify_error}") unless
     verify_status.success?
 
+  catalog_source = File.join(controller, "config", "media-acquisition.yml")
   catalog_bytes = File.binread(catalog_source)
   fail_test("catalog fixture is unexpectedly empty") if catalog_bytes.empty?
   tampered_catalog_bytes = catalog_bytes.dup

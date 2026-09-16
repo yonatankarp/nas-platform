@@ -271,6 +271,14 @@ check(failures,
       !catalog_validation_index.nil? &&
         !manifest_parse_index.nil? && catalog_validation_index < manifest_parse_index,
       "controller inputs must validate the required acquisition catalog before parsing inputs")
+# The second platform input, bundled the way the catalog is (#647).
+# roles/managed_users reads it from the DEPLOYED release, so nothing in this
+# repository proves the file a target honours unless the bundle carries it.
+check(failures,
+      validated_inputs.include?(
+        "playbook_dir ~ '/config/managed-user-capabilities.yml', '0'"
+      ),
+      "controller inputs must validate the required managed-user capability register")
 
 target_preflight_index = Array(site_play["pre_tasks"]).index do |task|
   include_role = task["ansible.builtin.include_role"]
@@ -329,6 +337,18 @@ check(failures,
         catalog_copy&.dig("changed_when") == false &&
         catalog_copy&.dig("when") == "not ansible_check_mode",
       "deployment bundle must stage the exact acquisition catalog bytes with mode 0644")
+register_copy = deployment_tasks.find do |task|
+  task["name"] == "Copy the managed-user capability register from the controller"
+end
+check(failures,
+      register_copy&.dig("ansible.builtin.copy", "src") ==
+        "{{ playbook_dir }}/config/managed-user-capabilities.yml" &&
+        register_copy&.dig("ansible.builtin.copy", "dest") ==
+          "{{ deployment_bundle_staging_dir }}/config/managed-user-capabilities.yml" &&
+        register_copy&.dig("ansible.builtin.copy", "mode") == "0644" &&
+        register_copy&.dig("changed_when") == false &&
+        register_copy&.dig("when") == "not ansible_check_mode",
+      "deployment bundle must stage the exact managed-user capability register with mode 0644")
 # One containment validation covers every path this role mutates, so the role
 # body must run it exactly once and must run it before the first mutation. The
 # guard is what keeps a full converge from repeating the play's own pre_task
@@ -517,6 +537,12 @@ check(failures,
         ) && deployment_manifest_template.include?("hash('sha256')") &&
         deployment_manifest_template.include?("| to_json"),
       "deployment manifest must bind the exact acquisition catalog path, mode, and checksum")
+check(failures,
+      deployment_manifest_template.include?("- path: config/managed-user-capabilities.yml") &&
+        deployment_manifest_template.include?(
+          "lookup('file', playbook_dir ~ '/config/managed-user-capabilities.yml', rstrip=false)"
+        ),
+      "deployment manifest must bind the exact managed-user capability register path and checksum")
 compose_metadata_filter = File.read(
   File.join(ROOT, "filter_plugins", "compose_metadata.py")
 )
@@ -592,11 +618,15 @@ check(failures, manifest_verifier.include?("RUNTIME_FILES") &&
       "deployment manifest verifier must reproduce runtime helper integrity")
 check(failures,
       manifest_verifier.include?('"platform_inputs"') &&
-        manifest_verifier.include?('"path" => "config/media-acquisition.yml"') &&
+        manifest_verifier.include?('["config/media-acquisition.yml", "acquisition catalog"]') &&
+        manifest_verifier.include?(
+          '["config/managed-user-capabilities.yml", "managed-user capability register"]'
+        ) &&
         manifest_verifier.include?('"mode" => "0644"') &&
         manifest_verifier.include?("Digest::SHA256.file") &&
         manifest_verifier.include?("File.dirname(manifest_path)"),
-      "deployment manifest verifier must require the exact catalog digest and detect staged-byte mutation")
+      "deployment manifest verifier must require the exact platform input digests and detect " \
+      "staged-byte mutation")
 
 immich_classifier = File.join(ROOT, "services", "immich", "classify_restore.py")
 check(failures, owned_file?(immich_classifier, File.join(ROOT, "services", "immich")) &&

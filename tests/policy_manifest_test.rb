@@ -2090,6 +2090,15 @@ expect_failure(failures, "acquisition catalog controller validation moved after 
   File.write(path, YAML.dump(tasks))
 end
 
+expect_failure(failures, "managed-user capability register controller validation removed",
+               "controller inputs must validate the required managed-user capability register",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "inputs.yml")
+  File.write(path, File.read(path).gsub(
+    "[playbook_dir ~ '/config/managed-user-capabilities.yml', '0']", "[]"
+  ))
+end
+
 expect_failure(failures, "Immich classifier release copy removed",
                "deployment bundle must package the exact Immich classifier with mode 0644",
                detected_by: %i[deployment]) do |root|
@@ -2123,6 +2132,17 @@ expect_failure(failures, "acquisition catalog release mode changed",
   File.write(path, YAML.dump(tasks))
 end
 
+expect_failure(failures, "managed-user capability register release copy removed",
+               "deployment bundle must stage the exact managed-user capability register with mode 0644",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "tasks", "main.yml")
+  tasks = YAML.safe_load_file(path)
+  tasks.reject! do |task|
+    task["name"] == "Copy the managed-user capability register from the controller"
+  end
+  File.write(path, YAML.dump(tasks))
+end
+
 expect_failure(failures, "Immich classifier manifest integrity removed",
                "deployment manifest must bind runtime helper paths, modes, and checksums",
                detected_by: %i[deployment]) do |root|
@@ -2139,6 +2159,26 @@ expect_failure(failures, "acquisition catalog manifest checksum removed",
   File.write(path, File.read(path).gsub(
     "lookup('file', playbook_dir ~ '/config/media-acquisition.yml', rstrip=false)",
     "'unbound-catalog'"
+  ))
+end
+
+expect_failure(failures, "managed-user capability register manifest checksum removed",
+               "deployment manifest must bind the exact managed-user capability register path and checksum",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles", "deployment_bundle", "templates", "manifest.yml.j2")
+  File.write(path, File.read(path).gsub(
+    "lookup('file', playbook_dir ~ '/config/managed-user-capabilities.yml', rstrip=false)",
+    "'unbound-register'"
+  ))
+end
+
+expect_failure(failures, "managed-user capability register manifest verifier removed",
+               "deployment manifest verifier must require the exact platform input digests and " \
+               "detect staged-byte mutation",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "tests", "verify_deployment_manifest.rb")
+  File.write(path, File.read(path).gsub(
+    '["config/managed-user-capabilities.yml", "managed-user capability register"]', "[]"
   ))
 end
 
