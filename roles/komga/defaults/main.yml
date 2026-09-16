@@ -70,3 +70,57 @@ komga_libraries:
   - name: Ebooks
     root: /data/Ebooks
     settings: {}
+
+# Komga's half of roles/managed_users. tasks/managed_users.yml maps these onto
+# that role's parameters one for one, so this block is the whole statement of
+# what Komga's managed-user contract is, and it is the block a reader compares
+# against another service's.
+#
+# The four relative paths are asserted against config/managed-user-capabilities.yml
+# on the deployed release before any request is sent, so a drift between the
+# register and this file fails the run rather than reconciling against an
+# interface nobody declared.
+komga_managed_users_identity_attribute: email
+komga_managed_users_id_attribute: id
+komga_managed_users_list_path: api/v2/users
+komga_managed_users_authenticate_path: api/v2/users/me
+komga_managed_users_create_path: api/v2/users
+komga_managed_users_reconcile_interface: api/v2/users/{id}
+komga_managed_users_create_status: [201]
+komga_managed_users_repair_status: [204]
+
+# Evaluated inside the shared role's loops, against its own names: the listing
+# it registered, the single match it bound, and `item`, the declared user. They
+# are written here rather than there because they are what differs between
+# services.
+komga_managed_users_list_json: "{{ managed_users_listing.json }}"
+komga_managed_users_authenticate_identity: "{{ item.json.email | default('') }}"
+komga_managed_users_reconcile_path: >-
+  api/v2/users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
+komga_managed_users_create_body:
+  email: "{{ item.email }}"
+  password: "{{ item.password }}"
+  roles: "{{ item.roles }}"
+# Roles only. Komga's own USER role is granted to every account and is not
+# declared, so it is differenced out of both sides of every comparison. Nothing
+# password-shaped may appear here: the capability register declares an existing
+# identity's password update forbidden, and the shared role refuses a repair
+# body carrying a credential-shaped key.
+komga_managed_users_repair_body:
+  roles: "{{ item.roles }}"
+komga_managed_users_repair_condition: >-
+  {{ (managed_users_match.roles | difference(['USER']) | sort) != (item.roles | sort) }}
+# Brace-free, because the shared role hands these to `assert` unresolved so it
+# evaluates them in order and stops at the first false. The first condition is
+# what makes the two after it safe: managed_users_match is an empty mapping for
+# an identity with no match.
+komga_managed_users_verify_conditions:
+  - managed_users_matches[item.email] | length == 1
+  - managed_users_match.email | trim | lower == item.email | trim | lower
+  - >-
+    (managed_users_match.roles | difference(['USER']) | sort) == (item.roles | sort)
+komga_managed_users_verify_fail_msg: >-
+  A managed Komga identity is absent, duplicated, or differs from its exact
+  declared email and roles.
+komga_managed_users_plan_create_message: KOMGA_PLAN_MANAGED_USER_CREATE
+komga_managed_users_plan_repair_message: KOMGA_PLAN_MANAGED_USER_REPAIR
