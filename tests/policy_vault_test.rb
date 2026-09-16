@@ -700,9 +700,16 @@ vault_gitignore = File.read(File.join(ROOT, ".gitignore"))
 generator_plain_expression = secret_generator.dig("vars", "vault_plain_path").to_s
 generator_plain_relative = generator_plain_expression.sub(%r{\A\{\{\s*playbook_dir\s*\}\}/}, "")
 check(failures, !generator_plain_relative.empty? && !generator_plain_relative.include?("{{"),
+      # Deliberately does not name the canonical secrets guide by path.
+      # tests/ci/classify_changes_test.rb derives "a check reads this document"
+      # from the literal path appearing in the check's own source, and this
+      # script runs only in static while that guide routes to the docs job by
+      # the decision recorded in tests/ci/classify_changes.rb. Naming it here
+      # would claim a coupling this script does not have and demand that every
+      # edit to the guide pay for the fifteen-minute job.
       "generate-secrets.yml must declare vault_plain_path as a repository-relative path under " \
-      "{{ playbook_dir }}, because .gitignore and docs/secrets.md are both read against that " \
-      "relative name (found #{generator_plain_expression.inspect})")
+      "{{ playbook_dir }}, because .gitignore and the canonical secrets guide are both read " \
+      "against that relative name (found #{generator_plain_expression.inspect})")
 generator_plain_basename = File.basename(generator_plain_relative)
 check(failures, generator_plain_basename.start_with?("vault"),
       "generate-secrets.yml's plaintext output #{generator_plain_basename.inspect} no longer " \
