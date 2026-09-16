@@ -27,3 +27,12 @@ container_health_refuse: true
 # so a refusal says the run has already retried instead of reading as a service
 # that needs one more converge.
 container_health_retried: false
+# The three below are read only by tasks/recover.yml, the shared orchestration
+# around this mechanism. They are the caller's OWN deployment arguments, passed
+# rather than derived from container_health_service_name: the role that deploys a
+# stack out of the installed release is the role that declared those five paths
+# to roles/deployment_bundle, and deriving them here would put a second
+# expression for them somewhere that declaration cannot see.
+container_health_compose_dir: ""
+container_health_compose_files: []
+container_health_env_files: []

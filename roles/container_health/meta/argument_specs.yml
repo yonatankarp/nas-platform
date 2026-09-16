@@ -15,3 +15,25 @@ argument_specs:
         type: bool
       container_health_retried:
         type: bool
+  recover:
+    short_description: Detect, force-recreate once and take the verdict on a wedged Compose project
+    options:
+      container_health_service_name:
+        type: str
+        required: true
+      container_health_project_name:
+        type: str
+        required: true
+      container_health_compose_dir:
+        type: str
+        required: true
+      container_health_compose_files:
+        type: list
+        elements: str
+        required: true
+      container_health_env_files:
+        type: list
+        elements: str
+        required: true
+      container_health_deploy_failure_message:
+        type: str

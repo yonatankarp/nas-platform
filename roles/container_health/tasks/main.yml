@@ -21,13 +21,22 @@
 # evidence, publishes the Compose services that are stuck, and -- on the pass
 # that is the verdict -- refuses.
 #
-# The force-recreate itself belongs to the CALLING role rather than to this one.
-# tests/policy_deployment_test.rb requires the role that starts a stack out of
-# the installed release to be the role that declared those five paths and
-# rendered that .env, and a shared role structurally is neither. So a caller
-# that wants a bounded recovery calls this role twice with its own single
-# force-recreate between the two passes; roles/bindery/tasks/main.yml is the
-# worked example.
+# A caller that wants a bounded recovery calls this role twice with a single
+# force-recreate between the two passes. tasks/recover.yml beside this file is
+# that sequence, written once for the six roles that held it byte-identically
+# (#646); roles/bindery/tasks/main.yml is the worked example of a caller that
+# still spells it out, and tests/container_health_wiring_test.rb records why each
+# of the seven does.
+#
+# This comment used to say the force-recreate belonged to the CALLING role
+# because tests/policy_deployment_test.rb requires the role that starts a stack
+# out of the installed release to be the role that declared those five paths and
+# rendered that .env. That was measured false in #646: the predicate asks only
+# whether SOME Compose task in the role addresses the release directory, both
+# Compose files and the rendered .env, and the plain deploy satisfies it alone.
+# The claim holds for the PLAIN DEPLOY, which is why that one stays in the
+# calling role and why tasks/recover.yml takes those four values as parameters
+# rather than deriving them here.
 #
 # A converge that reports success while a container it manages is crash-looping
 # is the silence that cost those three days, and a refusal costs a failed play
