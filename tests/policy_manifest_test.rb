@@ -2583,11 +2583,34 @@ expect_failure(failures, "ephemeral self-test removed from CI",
   File.write(path, File.read(path).gsub("tests/generate-ephemeral-vault.sh --self-test", "true"))
 end
 
-expect_failure(failures, "generator redaction test removed from CI",
+# Planted in the manifest rather than in ci.yml since #653, which is where that
+# check now runs: it was a step of the three-shard `static` job, so it ran three
+# times for a verdict that cannot vary by shard. The line is removed rather than
+# rewritten, because a rewrite would leave the gate dispatching a command that
+# does not exist and the plant would be caught by the gate failing rather than
+# by the policy script objecting.
+expect_failure(failures, "generator redaction test removed from the policy gate",
                "CI must execute the generated-secret redaction test",
-               detected_by: %i[vault]) do |root|
-  path = File.join(root, ".github", "workflows", "ci.yml")
-  File.write(path, File.read(path).gsub("tests/generate-secrets-redaction-test.sh", "true"))
+               detected_by: %i[ci vault]) do |root|
+  path = File.join(root, "tests", "validate-policy.sh")
+  command = "tests/generate-secrets-redaction-test.sh"
+  File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+end
+
+# The other two checks #653 moved out of the static job's steps and into the
+# manifest, planted the same way. Detected by the CI policy alone: nothing else
+# requires either line, which is the point of requiring them from there.
+{
+  "integration sandbox cleanup test" => "tests/integration_cleanup_test.sh",
+  "Immich probe status rendering test" =>
+    'PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py'
+}.each do |name, command|
+  expect_failure(failures, "#{name} removed from the policy gate",
+                 "validate-policy.sh must run the #{name} exactly once",
+                 detected_by: %i[ci]) do |root|
+    path = File.join(root, "tests", "validate-policy.sh")
+    File.write(path, File.read(path).lines.reject { |line| line.strip == command }.join)
+  end
 end
 
 expect_failure(failures, "integration ephemeral helper bypassed",

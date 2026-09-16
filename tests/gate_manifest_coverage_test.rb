@@ -174,6 +174,29 @@ failures = []
 # that sheds heavy neighbours should record its remaining checks as cheaper. Do
 # not promise a number for that; let the next runs measure it.
 #
+# WHAT #653 ADDED, one line to each shard, and why they landed where they did.
+# `tests/integration_cleanup_test.sh`, `tests/immich_probe_status_test.py` and
+# `tests/generate-secrets-redaction-test.sh` were steps of the `static` job, so
+# each ran once per shard for a verdict that cannot vary by shard. One line each
+# is what makes them run once, and it is also what gives them the declaration
+# guard this file is: as workflow steps nothing held them but a literal in
+# tests/ci/workflow_test.rb, which is itself one line of one shard.
+#
+# The cleanup test is the one whose placement is a decision rather than a
+# rotation. It starts real containers, so SPREAD THE WAITS applies to it before
+# the cost rule does, and shard 3 already holds the gate's one known wait -- it
+# went to shard 1, which holds none. The other two are work: the Immich probe
+# test renders through the gate's own interpreter and the redaction test stubs
+# `docker` rather than running one.
+#
+# Measured on run 35041492555, the first that dispatched them, and the figure is
+# a bound rather than a reading: the gate prints only its slowest ten, and none
+# of the three is in any shard's. So each is under its own shard's tenth place --
+# 44s in shard 1, 34s in shard 2, 40s in shard 3 -- against shard floors of 212,
+# 233 and 238. None of them is a floor and the cleanup test did not turn out to
+# be a second wait in shard 1. That is one run against a 30% shard-level runner
+# variance, so it settles the placement rather than the cost.
+#
 # REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
 # manual act and it is meant to be: the gate prints its ten slowest checks on
 # every run, pass or fail, so the figures above can be replaced with a current
@@ -248,6 +271,7 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/vaultwarden_serve_test.rb --self-test
   ruby tests/role_forward_reference_test.rb
   ruby tests/release_path_read_test.rb
+  tests/integration_cleanup_test.sh
 CHECKS
 
 SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
@@ -308,6 +332,7 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   tests/mac/snapshot-immich.sh --self-test
   ruby tests/mac/pin-protected-input-test.rb
   ruby tests/mac/read-integration-ports-test.rb --self-test
+  PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_probe_status_test.py
 CHECKS
 
 SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
@@ -375,6 +400,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/immich_user_onboarding_test.rb
   ruby tests/media_managed_users_test.rb
   tests/sandbox_cleanup_acquisition_ownership_test.sh
+  tests/generate-secrets-redaction-test.sh
 CHECKS
 
 SHARDS = { "1" => SHARD_1, "2" => SHARD_2, "3" => SHARD_3 }.freeze
