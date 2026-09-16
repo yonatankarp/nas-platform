@@ -603,7 +603,7 @@ ENTRY_FIELDS.each do |service, fields|
 end
 check(failures,
       docs.include?("`verified` must be `true`") &&
-        docs.include?("Beszel 0.18.7 password authentication requires verified users"),
+        docs.include?("Beszel password authentication requires verified users"),
       "secrets guide must document the Beszel verified authentication prerequisite")
 check(failures,
       docs.include?("validates bcrypt shape only") &&

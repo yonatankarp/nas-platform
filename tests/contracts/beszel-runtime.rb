@@ -216,7 +216,8 @@ end
 case MODE
 when "drift"
   managed_system = exact_record(managed_systems, "managed system")
-  # Beszel 0.18.7 pins the users authRule to verified=true. Keep the primary
+  # Beszel pins the users authRule to verified=true (read against 0.18.7, a
+  # dated record; services/beszel/compose.yml carries the pin). Keep the primary
   # identity authentication-compatible so convergence can prove its preserved
   # password before repairing the independently mutable role.
   request("patch", endpoint(HUB, "/api/collections/users/records/#{user_id}"), token: admin_token,
