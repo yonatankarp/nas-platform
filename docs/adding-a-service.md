@@ -96,7 +96,13 @@ obligations added since, each named here as it lands:
   detect / repair-once / verdict sequence (#537). Closed in both directions, so a
   new service that deploys a Compose project is either wired like `roles/bindery`
   or exempted there in writing with the reason its deployment is multi-phase or
-  computed; it cannot be silently neither.
+  computed; it cannot be silently neither. Since #646 a wired service also says
+  *how* it is wired, in a second pair of lists in the same file and closed the
+  same way: it takes `roles/container_health/tasks/recover.yml`, which is the one
+  copy of that sequence, or it carries its own with the divergence that makes it
+  one written down. Six roles held that sequence byte-identically over 114 lines
+  before the split, so the pair is what stops an eighth copy arriving unread. Same
+  file, so the total below does not move.
 
 - `tests/contracts/dozzle.sh` — the Dozzle render roster (#656). Every stack in
   `services/manifest.yml` is rendered in its three platform variants and held to

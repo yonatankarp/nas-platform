@@ -1,0 +1,117 @@
+---
+# The orchestration around the mechanism in main.yml: detect without refusing,
+# spend exactly one bounded force-recreate, then take the verdict. #509 built the
+# mechanism and #537 wired thirteen roles into it, but left this sequence written
+# out in each of them; six carried it byte-identically over 114 lines, rationale
+# comments included, with nothing holding them in agreement (#646).
+#
+# It is NOT the plain deployment, which stays in the calling role, and that is a
+# constraint rather than a preference. tests/policy_deployment_test.rb requires
+# the role that starts a stack out of the installed release to be the role that
+# declared those five paths to roles/deployment_bundle and rendered that .env,
+# and it reads that off a Compose task naming the release directory, both Compose
+# files and the rendered .env literally -- which only a task in the role itself
+# can carry. Measured in #646: with the plain deploy left behind, that check
+# stays green with the force-recreate here, because it asks whether SOME such
+# task exists and not whether every one of them does. So the force-recreate takes
+# the same four values as parameters, which keeps it addressing exactly the
+# release the caller declared.
+#
+# The file is `recover.yml` rather than `deploy.yml` because four roles already
+# carry a `tasks/deploy.yml` of their own meaning the service's whole deploy
+# stage, and because nothing here deploys.
+
+# Play scope, and that is the whole reason this task exists. set_fact writes a
+# fact that SURVIVES INTO THE NEXT ROLE, and the per-role names this sequence
+# used to carry made a leak between services impossible. One shared name does
+# not: a recreate that fails in the first of six callers would otherwise still be
+# set when the fifth takes its verdict, and that caller would refuse naming
+# another service's failure. The two other values crossing this boundary clear
+# themselves -- container_health_stuck_services is rewritten by the detect pass
+# immediately below, and container_health_wedged_recreate re-registers even when
+# its task is skipped -- so this message is the only one that has to be reset,
+# and it is reset unconditionally rather than in a rescue that may not run.
+- name: Clear any recreate failure carried by an earlier service
+  ansible.builtin.set_fact:
+    container_health_recreate_failure_message: ""
+
+# Immediately after the deployment and before everything that trusts it. A
+# container in `Restarting` still appears in `docker container ls --quiet`, so
+# the CPU verification below would sail straight past one and the readiness probe
+# after it would fail on a timeout that names nothing (#510).
+#
+# This pass detects, prints the evidence and publishes
+# container_health_stuck_services WITHOUT refusing, because the recreate below
+# has to happen before the verdict. It still re-raises a deployment failure that
+# no stuck container explains.
+- name: Detect a container that runs but never serves in {{ container_health_service_name }}
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_refuse: false
+
+# EXACTLY ONE force-recreate, of only the services Docker says are stuck.
+# FORCED, because `up -d` against an unchanged specification keeps the same
+# container and recreates nothing; `dependencies: false` renders as --no-deps, so
+# a healthy sibling in the same project is not taken down to repair one container.
+# CONDITIONAL, and that condition is the whole idempotence argument: the list is
+# empty on a converged host and empty under --check, so this task is skipped on
+# every run that has nothing to repair. BOUNDED AT ONE PER RUN by being a single
+# task rather than a loop, with the verdict below re-checking, so a container
+# looping for a reason a recreate cannot fix never goes green and never becomes
+# an invisible retry loop.
+- name: Recreate a container that runs but never serves in {{ container_health_service_name }}
+  block:
+    - name: Force-recreate the stuck services of {{ container_health_service_name }}
+      community.docker.docker_compose_v2:
+        project_src: "{{ container_health_compose_dir }}"
+        project_name: "{{ container_health_project_name }}"
+        files: "{{ container_health_compose_files }}"
+        env_files: "{{ container_health_env_files }}"
+        services: "{{ container_health_stuck_services }}"
+        dependencies: false
+        recreate: always
+        state: present
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      when: container_health_stuck_services | default([]) | length > 0
+      register: container_health_wedged_recreate
+  rescue:
+    # Carried rather than re-raised here. `--wait` fails a container that came
+    # back unhealthy, which the re-check below diagnoses far better than Compose
+    # can; a recreate that failed for any OTHER reason left no stuck container
+    # behind, and the second pass re-raises this message unchanged for that case.
+    - name: Record the recreate that did not recover {{ container_health_service_name }}
+      ansible.builtin.set_fact:
+        container_health_recreate_failure_message: >-
+          The force-recreate reported: {{ ansible_failed_result.msg
+          | default('no message') }}
+
+# Whether a recreate was actually spent, recorded before the second pass
+# overwrites the list it was decided from.
+- name: Record whether a recreate was spent for {{ container_health_service_name }}
+  ansible.builtin.set_fact:
+    container_health_recreate_spent: >-
+      {{ container_health_stuck_services | default([]) | length > 0 }}
+
+- name: Report the wedged-container recovery check mode defers for {{ container_health_service_name }}
+  ansible.builtin.debug:
+    msg: >-
+      A live run would read every container of Compose project
+      {{ container_health_project_name }} that Docker reports as restarting or
+      unhealthy, print its state, force-recreate exactly those services once
+      with no dependencies, and fail naming that retry if any of them came back
+      stuck. Compose's dry run starts nothing and does not wait on container
+      health, so check mode cannot reach that path and recreates nothing.
+  when: ansible_check_mode
+
+# The verdict. Nothing stuck here means the recreate worked, or that there was
+# never anything to repair; either way the run continues. Anything still stuck
+# fails, and says the retry has already been spent.
+- name: Refuse a container that stayed wedged after its recreate in {{ container_health_service_name }}
+  ansible.builtin.include_role:
+    name: container_health
+  vars:
+    container_health_deploy_failure_message: >-
+      {{ container_health_recreate_failure_message | default('') }}
+    container_health_retried: "{{ container_health_recreate_spent }}"

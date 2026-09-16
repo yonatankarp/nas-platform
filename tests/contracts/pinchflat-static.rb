@@ -135,15 +135,22 @@ if failures.empty?
   tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/pinchflat/tasks/main.yml"), aliases: true)
   )
-  # Two `up`s since #537, told apart by `recreate`: the deployment, and the
-  # bounded recovery roles/container_health brackets. Counted separately rather
-  # than as a total of two, so a second plain deployment is still refused and a
-  # force-recreate spent twice in one converge is still refused.
+  # One `up` here since #646, which is the deployment. The bounded recovery that
+  # #537 bracketed it with moved to roles/container_health/tasks/recover.yml --
+  # this role held 114 lines of it byte-identical with five others -- so what is
+  # counted here is the include that spends it rather than the force-recreate
+  # itself. Counted separately from the deployment rather than as a total, so a
+  # second plain deployment is still refused and a recovery included twice in one
+  # converge is still refused; roles/container_health/tasks/recover.yml holding
+  # exactly one force-recreate is tests/container_health_wiring_test.rb's.
   compose_ups = tasks.select { |task| task.dig("community.docker.docker_compose_v2", "state") == "present" }
   failures << "Pinchflat must deploy through docker_compose_v2" unless
     compose_ups.count { |task| !task["community.docker.docker_compose_v2"].key?("recreate") } == 1
   failures << "Pinchflat must force-recreate a stuck container exactly once per converge" unless
-    compose_ups.count { |task| task["community.docker.docker_compose_v2"]["recreate"] == "always" } == 1
+    tasks.count { |task|
+      task.dig("ansible.builtin.include_role", "name") == "container_health" &&
+        task.dig("ansible.builtin.include_role", "tasks_from") == "recover"
+    } == 1
   failures << "Pinchflat must verify its effective project CPU policy" unless
     tasks.count { |task| task.dig("vars", "container_cpu_service_name") == "pinchflat" } == 1
 

@@ -1935,6 +1935,29 @@ check_floor(failures, compose_exec_tasks, 12,
 # one message per service on every converge, including the ones that changed
 # nothing.
 deployment_reports_declared = false
+shared_recovery_callers = 0
+# Roles holding a `state: present` Compose task and NO plain deployment, which is
+# what the narrowing below exempts from owing a deployment report. Stated in both
+# directions rather than left as a predicate, because the exemption is otherwise
+# invisible: such a role owes no report here AND is not a subject of
+# tests/container_health_wiring_test.rb either, whose sweep discovers roles by
+# the same plain-deployment predicate. A second role arriving in that shape would
+# deploy Compose with nothing asking anything of it, which is the silence this
+# repository keeps closing.
+REPORT_FREE_COMPOSE_ROLES = %w[container_health].freeze
+# Stated, because the list below is NARROWED against the inspected tree before it
+# is compared, and a narrowed subject list that empties passes vacuously -- which
+# is the same class #646 hoisted a 114-line duplication to prevent one level up.
+# Emptying the constant to make a failure go away is what this refuses.
+REPORT_FREE_COMPOSE_ROLE_COUNT = 1
+# The only reason the narrowing is allowed to drop a role: the mutation fixture
+# copies a curated subset of the repository and omits these four deliberately,
+# each for a reason tests/policy_mutation_support.rb records beside them. A
+# narrowing for any other reason is a role that left the tree, not a fixture that
+# never had it.
+MUTATION_FIXTURE_ABSENT_ROLES = %w[container_cpu container_health image_downgrade_guard
+                                   image_prune].freeze
+report_free_deployers = []
 Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |role|
   name = File.basename(role)
   tasks = load_role_tasks(role, failures)
@@ -1946,9 +1969,25 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
   end
   next if deployments.empty?
 
+  # Every `up` still has to register, roles/container_health's shared recovery
+  # included: the report's gate is what tells a converge that changed something
+  # from one that did not, and an unregistered `up` cannot reach it.
   registers = deployments.map { |task| task["register"] }
   check(failures, registers.all? { |register| register.is_a?(String) },
         "role #{name}: every Compose deployment must register its result for the deployment report")
+
+  # The report is owed by the role that DEPLOYS A SERVICE, which is the role
+  # holding a plain `up`. Since #646 that is no longer the same set as "holds a
+  # `state: present` task": roles/container_health/tasks/recover.yml holds the
+  # shared force-recreate for six callers and is not a service, so it owes no
+  # report of its own -- it would have nothing to name, and the report label
+  # belongs to the caller. The clause below is what keeps its `up` reported
+  # rather than exempt.
+  plain_deployments = deployments.reject { |task| task["community.docker.docker_compose_v2"].key?("recreate") }
+  if plain_deployments.empty?
+    report_free_deployers << name
+    next
+  end
 
   reports = tasks.select do |task|
     task.dig("ansible.builtin.include_role", "name") == "deployment_bundle" &&
@@ -1966,7 +2005,64 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
   gate = report_vars["deployment_report_changed"].to_s
   check(failures, registers.compact.all? { |register| gate.include?(register) },
         "role #{name}: deployment report ignores a registered Compose deployment")
+
+  # The other half of the exemption above, derived from the include rather than
+  # listed. A force-recreate that repaired a wedged container changed the
+  # deployment as surely as the `up` did, and it is now registered in a file this
+  # role does not own -- so a caller that spends the shared recovery and does not
+  # name its register reports nothing on the one converge an operator most wants
+  # to hear about.
+  next unless tasks.any? do |task|
+    task.dig("ansible.builtin.include_role", "name") == "container_health" &&
+      task.dig("ansible.builtin.include_role", "tasks_from") == "recover"
+  end
+
+  shared_recovery_callers += 1
+  check(failures, gate.include?("container_health_wedged_recreate"),
+        "role #{name}: includes the shared container-health recovery but its deployment report " \
+        "ignores container_health_wedged_recreate, the register that recovery writes; a converge " \
+        "that repaired a wedged container would report nothing")
 end
+# A floor rather than `!zero?`, for the reason every derived subject list in this
+# repository carries one: six roles take the shared recovery today, and a
+# selector that stopped matching would pass the clause above vacuously while
+# reporting a clean sweep. Four rather than six so the first legitimate
+# conversion away from it is not a failure.
+check_floor(failures, shared_recovery_callers, 4,
+            "roles whose deployment report must name the shared recovery's register")
+# Held against the roles the INSPECTED TREE actually has rather than against the
+# constant outright, which is what lets one assertion cover both trees this script
+# runs in. roles/container_health is deliberately not copied into a mutation
+# sandbox -- tests/policy_mutation_support.rb names it as one of four absent roles
+# and says why -- so an unconditional equality reddens all 150-plus sandbox rows
+# for a role the fixture never had. Both directions still hold wherever the
+# subject exists, which is the working tree in CI's `static` job and here: a new
+# report-free role fails, and a listed one that stops being report-free fails too.
+# It goes vacuous only where the subject was deliberately left out.
+expected_report_free = REPORT_FREE_COMPOSE_ROLES.select { |role| Dir.exist?(File.join(ROOT, "roles", role)) }
+check(failures, REPORT_FREE_COMPOSE_ROLES.length == REPORT_FREE_COMPOSE_ROLE_COUNT,
+      "REPORT_FREE_COMPOSE_ROLES holds #{REPORT_FREE_COMPOSE_ROLES.length} role(s), not " \
+      "#{REPORT_FREE_COMPOSE_ROLE_COUNT}; the pin below is narrowed against the inspected tree " \
+      "before it is compared, so an emptied constant would compare [] against [] and report a " \
+      "clean sweep having checked nothing")
+narrowed = REPORT_FREE_COMPOSE_ROLES - expected_report_free
+check(failures, (narrowed - MUTATION_FIXTURE_ABSENT_ROLES).empty?,
+      "#{(narrowed - MUTATION_FIXTURE_ABSENT_ROLES).inspect} is pinned as running a Compose `up` " \
+      "with no plain deployment but its role directory is not in the inspected tree, and the " \
+      "mutation fixture does not omit it; a role that left the tree is a stale pin rather than a " \
+      "narrowing")
+# What the two above still cannot see, stated rather than implied: deleting
+# roles/container_health from the REAL tree narrows this legally, because the
+# fixture omits that role too. Two things catch that instead, both loudly. The
+# shared-recovery floor above requires four callers of tasks_from: recover, and
+# tests/container_health_wiring_test.rb resolves that include for six roles and
+# fails every property of the sequence when the file behind it is gone.
+check(failures, report_free_deployers.sort == expected_report_free.sort,
+      "roles that run a Compose `up` without a plain deployment are " \
+      "#{report_free_deployers.sort.inspect}, not #{expected_report_free.sort.inspect}. Such " \
+      "a role owes no deployment report here and is not a container-health subject either, so a " \
+      "new one deploys Compose with nothing asking anything of it; argue it here or give it a " \
+      "plain deployment")
 
 # A pre-upgrade copy that stops a container before copying its store must start
 # that container again when the copy fails, on its old image, and only over a store
