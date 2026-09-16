@@ -17,9 +17,12 @@
 # on demand, and neither image ships a sqlite3 binary -- measured. SQLite is not
 # safely copied file by file while it is open, so the container is stopped
 # first, which costs nothing here: an upgrade is pending, so it is about to be
-# recreated anyway. services/kapowarr/compose.yml declares stop_grace_period:
-# 30s so the store is closed rather than left with a log to recover; measured
-# against v1.3.1, a clean stop leaves Kapowarr.db alone with no -wal beside it.
+# recreated anyway. Measured against v1.3.1, a clean stop leaves Kapowarr.db
+# alone with no -wal beside it. v1.3.2 does not stop cleanly: its shutdown
+# handler crashes and Docker SIGKILLs it at the grace deadline (#696, recorded
+# beside stop_grace_period in services/kapowarr/compose.yml), so a stop can
+# leave a write-ahead log behind -- which is why the copy below reads the store's
+# files rather than taking Kapowarr.db alone.
 #
 # IT RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on an actual image change, so a
 # converged host reports no change.
