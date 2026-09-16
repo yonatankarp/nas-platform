@@ -127,7 +127,13 @@ invoke_runner() {
   [ -z "$invoke_var" ] || set -- "$@" "$invoke_var=$invoke_value"
   set -- "$@" sh "$invoke_program" --lane fresh \
     --vault-file /dev/null --vault-password-file /dev/null
-  "$@" 2>&1 || true
+  # stdin from /dev/null, and it is load-bearing rather than tidy. Every loop
+  # below reads the case table on the loop's own stdin, which each invocation
+  # inherits: a run.sh that ever read stdin would eat the rows of the cases still
+  # to come, and the loop would end early having silently tested fewer variables
+  # than it declared. That is the same shape as the hole this whole check exists
+  # to close, so it is shut here rather than relied upon not to open.
+  "$@" </dev/null 2>&1 || true
 }
 
 # The exit status is not the assertion. Every invocation here exits nonzero --
@@ -190,10 +196,17 @@ missing=$(comm -13 "$scratch/observed" "$scratch/declared" | tr '\n' ' ' | sed '
 baseline_passes "$runner_path" ||
   note_failure "tests/mac/run.sh refused a cleared environment: $(invoke_runner "$runner_path" '' '')"
 
+cases_run=0
 while read -r case_name case_message; do
+  cases_run=$((cases_run + 1))
   case_refuses "$runner_path" "$case_name" "$case_message" ||
     note_failure "tests/mac/run.sh did not refuse $case_name with '$case_message': got '$(invoke_runner "$runner_path" "$case_name" reserved-environment-test)'"
 done < "$scratch/table"
+# The loop is the subject list, so it says how far it got. A loop that ended
+# early -- on a row the reader could not parse, or because something downstream
+# consumed the table -- otherwise reports every case it never ran as passing.
+[ "$cases_run" -eq "$reserved_count" ] ||
+  note_failure "ran $cases_run of $reserved_count declared cases: the case table was not read to the end"
 
 # The guards test whether a variable is SET, not whether it is non-empty, and an
 # empty value is the case that tells those two apart. RUBYOPT= loads nothing by
