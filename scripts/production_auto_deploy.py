@@ -94,6 +94,25 @@ VERIFY_TIMEOUT_SECONDS = 30 * 60
 # own budget, so a service run that timed out still leaves it one. The hold is at
 # most 30 + 10 per hourly-only tag: 40 minutes today, under the hourly cadence.
 HOURLY_ONLY_VERIFY_TIMEOUT_SECONDS = 10 * 60
+# How long --verify waits for a deployment to release the lock before skipping
+# the hour. A skipped verify pings nothing, and the hourly check tolerates
+# one missed ping, so a single collision spends the whole grace period and the
+# second one alerts -- for a cause that is neither a failure nor anything an
+# operator can act on. A deployment runs about 18 minutes on this host and the
+# poller starts one every five, so the verify cron lands inside one often enough
+# to have made that alert routine: the pair observed on 2026-09-16 was a DOWN and
+# an UP one second apart, the recovering run's own ping arriving as the grace
+# expired. Waiting turns the common collision into a ping in the same hour. The
+# budget comes from the cadence and not from the deployment: 15 waiting plus the
+# 40-minute worst-case hold above is 55 minutes, so a verify that waits its whole
+# budget and then runs its longest still ends before the next hour's cron. A
+# deployment with longer left than that is skipped exactly as before -- the skip
+# stays the signal for a verify that cannot run at all.
+VERIFY_LOCK_WAIT_SECONDS = 15 * 60
+# How often a waiting acquire re-attempts. Short against both the wait above and
+# a deployment, so verify starts within seconds of the release rather than at the
+# end of a coarse interval, and long enough that an idle wait costs nothing.
+LOCK_WAIT_POLL_SECONDS = 10
 # One palette for styled messages: mid-tones that read on Pushover's light and
 # dark themes alike. Green is recovered, healthy or new; red failed or killed;
 # amber degraded; grey metadata. Spelled identically in scripts/image_prune.py
@@ -1011,15 +1030,45 @@ def read_lock_holder(config: Config) -> dict | None:
     return payload if isinstance(payload, dict) else None
 
 
+def _acquire_lock(descriptor: int, wait_seconds: float) -> bool:
+    """Take the flock, re-attempting for wait_seconds. False: somebody still holds it.
+
+    A poll rather than a blocking flock, because the bound is the whole point: a
+    deployment that hangs must not hold a caller past the cadence it belongs to,
+    and flock offers no timeout. SIGALRM would supply one and is process-global
+    in a script whose every mode runs subprocesses under their own budgets.
+
+    A wait of zero is one non-blocking attempt and no sleep, which is the
+    behaviour every caller had before the parameter existed.
+    """
+
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(LOCK_WAIT_POLL_SECONDS, remaining))
+
+
 @contextmanager
-def deployment_lock(config: Config, holder: str = "poll") -> Iterator[bool]:
-    """Serialise deployments; yield False when another holder already runs one."""
+def deployment_lock(config: Config, holder: str = "poll",
+                    wait_seconds: float = 0.0) -> Iterator[bool]:
+    """Serialise deployments; yield False when another holder already runs one.
+
+    wait_seconds re-attempts the acquire for that long before giving up. It
+    defaults to not waiting at all, which is what every caller but --verify
+    wants: a poll tick that waited out a deployment would run its own against a
+    revision the finished one had already deployed, and an operator converge
+    refused at once is a message rather than a terminal that has stopped.
+    """
 
     descriptor = os.open(lock_path(config), os.O_WRONLY | os.O_CREAT, 0o600)
     try:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if not _acquire_lock(descriptor, wait_seconds):
             yield False
             return
         _record_lock_holder(descriptor, holder)
@@ -2533,18 +2582,38 @@ def verify(config: Config) -> bool | None:
     activated -- and that failure has already paged. Verification resumes with
     the next successful deployment.
 
-    Under the deployment lock, taken without waiting (#326): a deployment in
-    progress runs verify.yml itself, and the next hour tries again. Nothing here
-    writes the attempted record or the last success, so a failed verify cannot
-    hold back the next poll.
+    Under the deployment lock (#326), waited for up to VERIFY_LOCK_WAIT_SECONDS
+    rather than taken or abandoned on one attempt. A deployment in progress runs
+    verify.yml itself, so the hour is not unverified while one holds the lock --
+    but the external check hears only the ping, and a skip pings nothing, so
+    abandoning the hour spent a grace period the next collision then alerted on.
+    Waiting spends minutes instead. It holds nothing while it waits, so a
+    deployment is not delayed by a verify queued behind it. Nothing here writes
+    the attempted record or the last success, so a failed verify cannot hold back
+    the next poll.
     """
 
-    with deployment_lock(config, holder="verify") as acquired:
+    # Said before the wait rather than after it, because --verify is an operator
+    # command too and fifteen silent minutes read as a hang. Racy in both
+    # directions by construction -- the probe takes no lock, so a deployment can
+    # start or end either side of it -- and harmless in both: the notice can
+    # appear before a wait that turns out to be instant, or be absent from one
+    # that waits, and neither changes what the acquire below does.
+    if VERIFY_LOCK_WAIT_SECONDS and deployment_lock_held(config):
+        print(
+            "production auto-deploy: verify waiting up to "
+            f"{int(VERIFY_LOCK_WAIT_SECONDS // 60)} minutes for "
+            f"{_holder_description(read_lock_holder(config))} to release "
+            f"{lock_path(config)}"
+        )
+    with deployment_lock(config, holder="verify",
+                         wait_seconds=VERIFY_LOCK_WAIT_SECONDS) as acquired:
         if not acquired:
             print(
                 "production auto-deploy: verify skipped, "
-                f"{_holder_description(read_lock_holder(config))} holds "
-                f"{lock_path(config)}"
+                f"{_holder_description(read_lock_holder(config))} still holds "
+                f"{lock_path(config)} after "
+                f"{int(VERIFY_LOCK_WAIT_SECONDS // 60)} minutes"
             )
             return None
         deployed = read_state(config)["last_successful"]

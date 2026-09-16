@@ -2,6 +2,7 @@
 
 import contextlib
 from datetime import datetime, timedelta, timezone
+import inspect
 import io
 import itertools
 import json
@@ -3949,33 +3950,115 @@ class VerifyTest(PollerTestCase):
         self.assertEqual(self.playbook_runs(), [])
         self.assertEqual(self.pages(), [])
 
-    def test_a_held_lock_is_skipped_at_once_without_a_page(self):
-        self.mark_deployed()
+    def hold_the_lock(self, seconds=None):
+        """Another process holding the deployment lock, already acquired on return.
+
+        A real second process, because the flock is what --verify waits on and a
+        lock held in this one would be re-entered rather than waited for. It
+        releases after `seconds`, or when the test ends if that is None.
+        """
+
+        release = ("    sys.stdin.read()\n" if seconds is None
+                   else f"    time.sleep({seconds!r})\n")
         holder = subprocess.Popen(
             [sys.executable, "-c",
-             "import sys\n"
+             "import sys, time\n"
              f"sys.path.insert(0, {str(SCRIPTS)!r})\n"
              "import production_auto_deploy as p\n"
              f"config = p.load_config({str(self.config_path)!r})\n"
              "with p.deployment_lock(config) as acquired:\n"
              "    print(acquired, flush=True)\n"
-             "    sys.stdin.read()\n"],
+             + release],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
         )
         self.addCleanup(holder.wait)
         self.addCleanup(holder.stdin.close)
         self.addCleanup(holder.stdout.close)
         self.assertEqual(holder.stdout.readline().strip(), "True")
+        return holder
+
+    def waiting_for_the_lock(self, wait_seconds):
+        """--verify's wait, shortened so a test can outlast or outlive it."""
+
+        return mock.patch.multiple(
+            production_auto_deploy,
+            VERIFY_LOCK_WAIT_SECONDS=wait_seconds,
+            LOCK_WAIT_POLL_SECONDS=0.01,
+        )
+
+    def test_a_lock_still_held_at_the_end_of_the_wait_is_skipped_without_a_page(self):
+        self.mark_deployed()
+        holder = self.hold_the_lock()
         started = datetime.now()
-        code, output = self.run_verify(playbook_exit=2)
+        with self.waiting_for_the_lock(0.3):
+            code, output = self.run_verify(playbook_exit=2)
         elapsed = (datetime.now() - started).total_seconds()
 
         self.assertEqual(code, 0)
         self.assertIn("poll", output)
         self.assertIn(f"pid {holder.pid}", output)
-        self.assertLess(elapsed, 2)
+        self.assertIn("still holds", output)
+        # An operator runs --verify by hand too, so the wait says so rather than
+        # reading as a hang.
+        self.assertIn("waiting up to", output)
+        self.assertGreaterEqual(elapsed, 0.3)
         self.assertEqual(self.playbook_runs(), [])
         self.assertEqual(self.pages(), [])
+
+    def test_a_deployment_that_releases_inside_the_wait_is_verified_and_pings(self):
+        # The hour the collision used to cost. A skipped verify pings nothing and
+        # the check tolerates one missed ping, so abandoning the hour spent the
+        # whole grace period on a deployment doing exactly what it should.
+        self.enable_verify_ping()
+        self.mark_deployed()
+        self.hold_the_lock(seconds=0.3)
+        with self.waiting_for_the_lock(30):
+            code, output = self.run_verify()
+
+        self.assertEqual(code, 0)
+        self.assertIn("waiting up to", output)
+        self.assertNotIn("verify skipped", output)
+        self.assertEqual(self.verify_pings(),
+                         [{"url": self.VERIFY_PING_URL, "held": False}])
+        services, array = self.playbook_runs()
+        for run in (services, array):
+            self.assertTrue(run["held"], "verify.yml must run under the deployment lock")
+            self.assertEqual(json.loads(run["lock_record"])["holder"], "verify")
+
+    def test_the_wait_holds_nothing_so_a_deployment_is_never_queued_behind_it(self):
+        # verify() waits on the flock without taking it, so the deployment it is
+        # waiting for keeps the lock for exactly as long as it needs.
+        self.mark_deployed()
+        self.hold_the_lock(seconds=0.3)
+        with self.waiting_for_the_lock(30):
+            self.assertEqual(production_auto_deploy.deployment_lock_held(self.config), True)
+            code, _output = self.run_verify()
+
+        self.assertEqual(code, 0)
+        self.assertFalse(production_auto_deploy.deployment_lock_held(self.config))
+
+    def test_the_other_callers_still_refuse_a_held_lock_on_one_attempt(self):
+        # Only --verify waits. A poll tick that waited would deploy a revision
+        # the deployment it waited for had already deployed, and --converge
+        # refused at once is a message rather than a terminal that has stopped.
+        # The default is read first and not merely timed: a default argument is
+        # bound at import, so waiting_for_the_lock cannot shorten one, and a
+        # default that had grown --verify's wait would fail the timing below
+        # fifteen minutes from now rather than at once.
+        self.assertEqual(
+            inspect.signature(production_auto_deploy.deployment_lock)
+            .parameters["wait_seconds"].default,
+            0.0,
+        )
+        self.hold_the_lock()
+        for holder in ("poll", "operator converge", "prune"):
+            with self.subTest(holder=holder):
+                started = datetime.now()
+                with production_auto_deploy.deployment_lock(
+                    self.config, holder=holder
+                ) as acquired:
+                    self.assertFalse(acquired)
+                self.assertLess((datetime.now() - started).total_seconds(), 2)
 
     def test_a_missing_ansible_playbook_is_an_error_rather_than_a_verdict(self):
         self.mark_deployed()

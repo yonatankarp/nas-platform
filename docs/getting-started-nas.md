@@ -487,14 +487,36 @@ GitHub access remains read-only and uses no PAT.
 Every alert above is raised on this NAS, so a stopped NAS, Docker daemon or cron
 raises none. Two healthchecks.io checks report that from outside: create one for
 the poll tick (period 5 minutes, grace 15) and one for the hourly verification
-(period 1 hour, grace 2), and put their ping URLs in the vault as the
-[secrets guide](secrets.md) describes. Each `--poll` pings its check, or its
+(period 1 hour, grace 2 hours 30 minutes), and put their ping URLs in the vault
+as the [secrets guide](secrets.md) describes. Each `--poll` pings its check, or its
 `/fail` URL when the tick failed. Each `--verify` that runs pings the other:
 plain when verification passed, and `/fail` when it failed or could not run at
 all, because from outside a verification that could not run is a failure. A
 skipped one pings nothing, so a verification that keeps skipping alerts once the
 grace runs out. A ping that cannot be delivered never
 changes what the poller does.
+
+**Both halves of that grace are load-bearing, and it was 2 hours before a flap
+made the arithmetic explicit.** The two hours are what makes the check alert on
+two consecutive missed runs rather than on one: a single skip is a state the
+poller recovers from by itself, and paging for it is noise. The extra thirty
+minutes are for the run's own length -- a verify pings when it *finishes*, three
+or so minutes after the cron minute, so a grace of exactly two hours puts the
+deadline at the moment the recovering run is pinging. On 2026-09-16 that arrived
+as a DOWN and an UP one second apart, which is a page carrying no information at
+all. Whatever the period and grace become, keep the slack wider than a verify
+run: a deadline that lands inside a run alerts on the clock rather than on the
+NAS.
+
+The skips those two hours absorb used to be routine. A deployment holds the
+deployment lock for about eighteen minutes and the poller starts one every five,
+so the hourly `--verify` landed inside one often; it skipped, pinged nothing, and
+spent the grace period on a deployment doing exactly what it should. `--verify`
+now waits up to fifteen minutes for that lock before giving up, which is bounded
+by the hourly cadence rather than by the deployment -- fifteen waiting plus a
+verify's own forty-minute worst case still ends before the next hour's cron. It
+holds nothing while it waits, so the deployment it is waiting for is not delayed.
+A lock still held at the end of that wait skips the hour exactly as before.
 
 Each revision is attempted once for any failure that reached the NAS, and a
 newer successful SHA can proceed normally. The one exception is a failure that
