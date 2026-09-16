@@ -893,11 +893,11 @@ integration_step = integration_steps.first || {}
 
 # Nothing in this job that has not been reasoned about above. Every other
 # property of a suite leg is asserted per-suite -- the matrix expression, the
-# argv for every suite with tags and without, the registry logins
-# derived from the compose files, the runner image, the timeout floor -- but
-# until #395 a *step* could be added here and be asserted by nothing. That is
-# the one way a leg's behaviour could change while the route dispatches three
-# legs out of the whole matrix: a step that only a heavy suite trips over would reach main
+# argv for every suite with tags and without, the registry logins derived from
+# the compose files, the runner image, the timeout floor -- but until #395 a
+# *step* could be added here and be asserted by nothing. That is the one way a
+# leg's behaviour could change while the route dispatches three legs out of the
+# whole matrix: a step that only a heavy suite trips over would reach main
 # green. The `static` job has been pinned this way by name since it existed;
 # this is the same property, derived rather than named so that adding a registry
 # stays one edit.

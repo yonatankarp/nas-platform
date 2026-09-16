@@ -304,22 +304,22 @@ module ClassifyChanges
   # "correcting" the entry back to the readers.
   #
   # It fell open to everything until #395, and that was every suite leg in the
-  # matrix to prove nothing about any suite: 33 of the 45 commits that touched this file
-  # between 2026-06-01 and 2026-09-05 changed nothing else that selected a single
-  # lane, and paid for the whole matrix twice -- once on the pull request, once on
-  # the merge.
+  # matrix to prove nothing about any suite: 33 of the 45 commits that touched
+  # this file between 2026-06-01 and 2026-09-05 changed nothing else that
+  # selected a single lane, and paid for the whole matrix twice -- once on the
+  # pull request, once on the merge.
   #
   # Three legs are enough because the matrix is uniform by construction and stays
   # that way under test. The `suites` job is one job template; the only
   # suite-dependent thing in it is the `case "$SUITE"` that decides whether
   # --tags is passed, and tests/ci/workflow_test.rb executes that shell for every
-  # suite in the matrix, with tags and without, and asserts the argv --
-  # in `static`, which any change here still selects. What no static check can
+  # suite in the matrix, with tags and without, and asserts the argv -- in
+  # `static`, which any change here still selects. What no static check can
   # prove is that the job's *steps* still work on a runner, and one leg proves
-  # that as well as all of them would. tests/ci/classify_changes_test.rb derives the rest
-  # from the workflow itself: it reads every `needs.changes.outputs.*` a job is
-  # gated on and fails unless this selection turns that job on, so a new job
-  # gated on a new output cannot land here unrouted.
+  # that as well as all of them would. tests/ci/classify_changes_test.rb derives
+  # the rest from the workflow itself: it reads every `needs.changes.outputs.*`
+  # a job is gated on and fails unless this selection turns that job on, so a
+  # new job gated on a new output cannot land here unrouted.
   #
   # A service lane rather than `foundation`: selecting foundation empties
   # selected_tags in write_github_outputs, which would flip the smoke leg onto

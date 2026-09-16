@@ -20,7 +20,9 @@ hand against ansible-core 2.21.2 and has not been re-checked since -- it is a
 dated record of one reading, not a statement about the version
 `controller-requirements.txt` pins today, and nothing here asserts these
 semantics against the running interpreter. Re-deriving it means running the
-expressions, not bumping the number. Every preference field is optional, because the original conditions
+expressions, not bumping the number.
+
+Every preference field is optional, because the original conditions
 read `field | default(<literal>)` before testing; `default` substitutes only for
 an undefined key, so a key present and null was rejected then and is rejected
 here. A non-string compared against an enum also failed, since `5 in ['asc',
