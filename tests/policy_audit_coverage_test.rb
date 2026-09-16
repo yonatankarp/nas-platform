@@ -11,8 +11,12 @@
 # report is read back, which takes a second because no policy script runs.
 #
 # What this cannot check is the figures a real tree produces. Those come from the
-# audit itself, and they are printed rather than asserted -- there is no correct
-# value to pin, only a current one.
+# run itself, and there is no correct value to pin, only a current one. Since
+# #725 there is a lower bound on two of them -- POLICY_MUTATION_CENSUS_BASELINE,
+# which a shrinking census fails against and a growing one does not -- and the
+# same division applies to it: the arithmetic of the floor is driven here with
+# synthetic figures and synthetic baselines, and whether a real tree clears the
+# real baseline is something only the real run says.
 
 require "stringio"
 
@@ -55,6 +59,35 @@ def capture_audit(failures)
     $stdout = previous_stdout
   end
   captured.string
+end
+
+# The census half, captured the same way and for the same reason: the floor
+# reports through `failures` and the headroom only through stdout, so a check
+# reading one of them would pass while the other said nothing.
+#
+# The baseline is splatted rather than defaulted here. A default of its own would
+# have been the committed constant again, so the case below that means to reach
+# report_mutation_census's *own* default would have been reaching this one
+# instead -- which is what it did until a planted vacuous default passed it.
+def capture_census(failures, **baseline_argument)
+  captured = StringIO.new
+  previous_stdout = $stdout
+  begin
+    $stdout = captured
+    report_mutation_census(failures, **baseline_argument)
+  ensure
+    $stdout = previous_stdout
+  end
+  captured.string
+end
+
+# A census of a given size. The call sites are keyed by line number in the real
+# harness, so the keys here are arbitrary and only their count is read.
+def set_census(mutations:, call_sites:)
+  POLICY_MUTATION_CENSUS[:mutations] = mutations
+  POLICY_MUTATION_CENSUS[:single_script] = mutations
+  POLICY_MUTATION_CENSUS[:integration] = 0
+  POLICY_MUTATION_CENSUS[:sites] = (1..call_sites).to_h { |lineno| [lineno, true] }
 end
 
 # Where the tripwire's arithmetic comes from. The subtraction that catches an
@@ -176,6 +209,94 @@ check(failures, drift.any? { |failure| failure.include?("line 51") && failure.in
 check(failures,
       drift.any? { |failure| failure.include?("line 52") && failure.include?("no longer detect it") },
       "a script that has stopped detecting a row must be reported, got #{drift.inspect}")
+
+# The census floor (#725). Everything above is about the audit's own report,
+# which a human reaches by spending twenty-five minutes; the census is printed by
+# every run of the harness, including the one CI runs, so the floor that catches
+# a collapsing subject list lives there.
+#
+# Asserted through expect_failure rather than by calling the recorder, because
+# what silently stops working is the wiring: a row that no longer registers is
+# the whole defect, and a recorder called directly would count a row nothing
+# registered. run_policy_scripts is stubbed above, so this runs no policy script.
+reset_coverage
+set_census(mutations: 0, call_sites: 0)
+expect_failure([], "synthetic census row", "planted", detected_by: %i[policy]) { |_root| nil }
+check(failures, POLICY_MUTATION_CENSUS[:mutations] == 1 && POLICY_MUTATION_CENSUS[:sites].length == 1,
+      "expect_failure must count every mutation and its call site into the census: the floor is " \
+      "read off those counters and reads short without them, got " \
+      "#{POLICY_MUTATION_CENSUS[:mutations]} mutations at #{POLICY_MUTATION_CENSUS[:sites].length} sites")
+
+# A synthetic baseline, so these cases do not rot the next time the real one is
+# refreshed -- and so the real constant is exercised separately, below, where
+# nothing but its own arithmetic can be what passes.
+synthetic_baseline = { mutations: 10, call_sites: 4 }
+
+# The rise, which is the direction this file moves in: a census above the floor
+# reports no failure and prints the gap the floor cannot see.
+set_census(mutations: 12, call_sites: 5)
+grown = []
+report = capture_census(grown, baseline: synthetic_baseline)
+check(failures, grown.empty?,
+      "a census above its floor must report no failure, got #{grown.inspect}")
+check(failures, report.include?("headroom +2 mutations +1 call sites"),
+      "the census must print how far it stands above the floor, since a ratchet cannot see that " \
+      "span: #{report.strip.inspect}")
+
+# The boundary. A floor is cleared by standing on it, or a legitimate refresh
+# reds the run that wrote it.
+set_census(mutations: 10, call_sites: 4)
+exact = []
+capture_census(exact, baseline: synthetic_baseline)
+check(failures, exact.empty?,
+      "a census exactly at its floor must report no failure, got #{exact.inspect}")
+
+# The collapse, in each figure on its own. Separately, because they move
+# separately -- a loop is one call site covering several mutations -- and a check
+# reading only the mutation count would pass a file whose call sites had gone.
+set_census(mutations: 3, call_sites: 4)
+shrunk = []
+capture_census(shrunk, baseline: synthetic_baseline)
+check(failures, shrunk.any? do |failure|
+        failure.include?("3 expect_failure mutations, below the floor of 10") &&
+          failure.include?("POLICY_MUTATION_CENSUS_BASELINE")
+      end,
+      "a census below its floor must name the figure, the floor and the constant that declares " \
+      "it, got #{shrunk.inspect}")
+
+set_census(mutations: 12, call_sites: 2)
+pruned_sites = []
+capture_census(pruned_sites, baseline: synthetic_baseline)
+check(failures, pruned_sites.any? { |failure| failure.include?("2 call sites, below the floor of 4") },
+      "call sites must be floored on their own, not only through the mutation count, got " \
+      "#{pruned_sites.inspect}")
+
+# The real constant, reached through the default argument. Every case above
+# passes a baseline of its own, so all of them would still pass if the default
+# were an empty hash or a zero -- which is the floor not being there at all.
+collapsed_census = []
+set_census(mutations: 0, call_sites: 0)
+capture_census(collapsed_census)
+check(failures, collapsed_census.length == 2 &&
+        collapsed_census.all? { |failure| failure.include?("POLICY_MUTATION_CENSUS_BASELINE") },
+      "a census of nothing must fail against the committed baseline by default, in both figures, " \
+      "got #{collapsed_census.inspect}")
+check(failures,
+      collapsed_census.any? do |failure|
+        failure.include?("below the floor of #{POLICY_MUTATION_CENSUS_BASELINE.fetch(:mutations)}")
+      end,
+      "the default floor must be the committed baseline itself, got #{collapsed_census.inspect}")
+
+# The baseline's own shape, derived rather than stated: a floor that had been
+# zeroed, or whose two figures had been swapped, would be cleared by a census
+# that had collapsed. Every call site carries at least one mutation, so the
+# mutation figure can never legitimately be the smaller of the two.
+check(failures,
+      POLICY_MUTATION_CENSUS_BASELINE.fetch(:call_sites).is_a?(Integer) &&
+        POLICY_MUTATION_CENSUS_BASELINE.fetch(:call_sites).positive? &&
+        POLICY_MUTATION_CENSUS_BASELINE.fetch(:mutations) >= POLICY_MUTATION_CENSUS_BASELINE.fetch(:call_sites),
+      "POLICY_MUTATION_CENSUS_BASELINE must floor both figures with positive counts and at least " \
+      "as many mutations as call sites, got #{POLICY_MUTATION_CENSUS_BASELINE.inspect}")
 
 # The two shapes that execute a checker themselves are invisible to the
 # subtraction above -- nothing counts a run this file never sees -- so their

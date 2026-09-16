@@ -27,7 +27,16 @@
 # declare no set and are outside the re-derivation entirely. That is safe, and it
 # is narrower than "the audit came back clean" sounds, so the audit now prints
 # how many assertions it did not re-derive alongside how many it did (#439).
-# Both figures are counted by the run; neither is stated anywhere.
+# Both figures are counted by the run rather than stated.
+#
+# What is stated is a floor under the census, POLICY_MUTATION_CENSUS_BASELINE in
+# the support file, and only a floor: a run at or above it passes whatever the
+# real figures are, and a run below it fails and says what to write there (#725).
+# Without it a refactor that stopped rows registering would re-derive fewer of
+# them, find no drift among the ones it still saw, print a clean verdict and
+# finish faster -- the fastest green there is, and indistinguishable from a real
+# pass. The floor moves with a prune and not with an addition, which is the
+# direction this file actually moves in.
 
 require_relative "policy_mutation_support"
 
@@ -3202,5 +3211,5 @@ expect_failure(failures, "relay message helper diverged from the scripts",
 end
 
 audit_policy_detection(failures)
-report_mutation_census
+report_mutation_census(failures)
 report(failures, "policy manifest: all mutation checks hold", "policy manifest regression(s)")
