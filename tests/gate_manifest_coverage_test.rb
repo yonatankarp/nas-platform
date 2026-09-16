@@ -187,9 +187,15 @@ failures = []
 # the cost rule does, and shard 3 already holds the gate's one known wait -- it
 # went to shard 1, which holds none. The other two are work: the Immich probe
 # test renders through the gate's own interpreter and the redaction test stubs
-# `docker` rather than running one. None of the three has been measured inside a
-# contended pool yet, so treat this split as provisional and re-read the gate's
-# own slowest-checks report before quoting it.
+# `docker` rather than running one.
+#
+# Measured on run 35041492555, the first that dispatched them, and the figure is
+# a bound rather than a reading: the gate prints only its slowest ten, and none
+# of the three is in any shard's. So each is under its own shard's tenth place --
+# 44s in shard 1, 34s in shard 2, 40s in shard 3 -- against shard floors of 212,
+# 233 and 238. None of them is a floor and the cleanup test did not turn out to
+# be a second wait in shard 1. That is one run against a 30% shard-level runner
+# variance, so it settles the placement rather than the cost.
 #
 # REBALANCING IS EXPECTED as checks are added, removed and made faster. It is a
 # manual act and it is meant to be: the gate prints its ten slowest checks on

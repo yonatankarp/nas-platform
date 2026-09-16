@@ -842,9 +842,21 @@ whatever the load while a low one on a busy machine is a lower bound and not a
 verdict. One run also cannot confirm a rebalance: shard-level runner variance is
 around 30%, so read two or three and ask whether the *worst* leg fell.
 
-The job wall exceeds the gate wall the report prints by 122 to 154 seconds
-(mean 139) — checkout, tooling and collection install — so budget against the
-gate's own figure rather than the job's.
+The job wall exceeds the gate wall the report prints, so budget against the
+gate's own figure rather than the job's. That residual used to be stated here as
+122 to 154 seconds attributed to "checkout, tooling and collection install", and
+both halves were wrong (#653). The attribution was incomplete: eight steps sat
+outside the gate, and the six of them that did not vary by shard — lint, the
+three syntax checks, and three single-command checks now in the manifest — cost
+148, 142 and 111 seconds on the three legs of push run `35038260896`, all of it
+inside that residual. And the range does not
+hold once they are removed, because what is left is dominated by one step whose
+cost swings: `Install Ansible tooling` ran 136/201/193s on `35038260896` and
+38/35/44s on `35041492555`, which moved the residual from 139/205/198s to
+45/41/52s over the same three legs. **Read it off the run rather than from here**
+— job wall minus the gate's printed wall, per shard — and expect the answer to
+track that install rather than a fixed number. One run each, a push against a
+pull request, so treat both as observations and not as a range.
 
 ### The suites carry no such budget, and their clock is mostly queue
 
