@@ -664,6 +664,115 @@ secret_bearing_generator_tasks.each do |task_name|
         "generate-secrets.yml must redact secret-bearing task #{task_name}")
 end
 
+# THE SAFETY HALF OF #641. .gitignore carried the literal
+# `inventory/group_vars/all/vault-plain.yml`, which ignores exactly the file the
+# generator emits today and nothing else. The generator names its plaintext
+# output after the artifact that output becomes, so the per-service shape #641
+# weighed -- vault_<role>-plain.yml, one file per service -- would have made
+# plaintext credentials committable while that line still read as covering the
+# generator's output. Nothing would have said so: `git status` would simply have
+# offered them.
+#
+# So this is derived from the play rather than restated. It reads vault_plain_path
+# out of generate-secrets.yml and requires .gitignore to ignore both the name the
+# play writes today and the per-service variant of that same name, which a literal
+# cannot satisfy. A renamed output therefore fails here instead of becoming
+# committable.
+# A subset of git's own matcher, and the subset is stated rather than implied.
+# It handles the three forms this file uses for credential artifacts -- a bare
+# glob matched against any path segment, a slashed pattern matched against the
+# whole relative path, and `!` negation with last-match-wins -- and it does not
+# implement `**` or the rule that a directory pattern ignores everything beneath
+# it. Compared against `git check-ignore --no-index` over 25 paths on
+# 2026-09-16, it disagreed on exactly three: `.ansible/x`, `mac-proof-reports/r.txt`
+# and `a/secrets/b`, every one of them a descendant of a directory pattern, and
+# every one in the direction of reporting NOT ignored where git ignores. That is
+# the direction this may err in: a false refusal here is loud and wrong in a way
+# somebody fixes, while a false "ignored" would pass the check with plaintext
+# credentials committable, which is the whole thing it exists to refuse. If a
+# future subject needs a directory or `**` pattern, extend this rather than
+# assuming it already answers for one.
+def gitignore_ignores?(gitignore, relative_path)
+  ignored = false
+  gitignore.lines.each do |raw|
+    line = raw.strip
+    next if line.empty? || line.start_with?("#")
+
+    negated = line.start_with?("!")
+    # THE ONE PERMISSIVE SHAPE IN HERE, and it is reachable by a plausible future
+    # edit rather than by today's file. git reads a leading `/` as an anchor to
+    # the repository root; this strips it, so a `/vault-plain.yml` written to
+    # TIGHTEN the pattern would be read here as matching any segment and report
+    # inventory/group_vars/all/vault-plain.yml as ignored, which git does not.
+    # That is the direction that matters: the check would stay green while
+    # plaintext at the generator's own output became committable. Anchor-aware
+    # matching is what to add if a rooted pattern is ever wanted here; do not
+    # simply write one.
+    pattern = (negated ? line[1..] : line).delete_prefix("/")
+    matched = if pattern.include?("/")
+                File.fnmatch?(pattern, relative_path, File::FNM_PATHNAME)
+              else
+                relative_path.split("/").any? { |segment| File.fnmatch?(pattern, segment) }
+              end
+    ignored = !negated if matched
+  end
+  ignored
+end
+
+vault_gitignore = File.read(File.join(ROOT, ".gitignore"))
+generator_plain_expression = secret_generator.dig("vars", "vault_plain_path").to_s
+generator_plain_relative = generator_plain_expression.sub(%r{\A\{\{\s*playbook_dir\s*\}\}/}, "")
+# Tests the prefix, which is what the sentence below claims. It used to test only
+# that the remainder was non-empty and held no `{{`, and an absolute
+# `/tmp/inventory/group_vars/all/vault-plain.yml` satisfied that: the two checks
+# under it then passed by proving .gitignore ignores a path that is not in this
+# repository, because an unanchored pattern matches any segment of any path. The
+# whole script reported `vault policy: all properties hold` while the property
+# its message names -- that plaintext at the generator's output cannot be
+# committed -- had been refuted by nothing at all. A check that passes on an
+# input it cannot reason about is worse than no check, because its green is read
+# as the property.
+generator_plain_under_playbook_dir =
+  generator_plain_expression.match?(%r{\A\{\{\s*playbook_dir\s*\}\}/}) &&
+  !generator_plain_relative.empty? &&
+  !generator_plain_relative.include?("{{") &&
+  !generator_plain_relative.start_with?("/")
+check(failures, generator_plain_under_playbook_dir,
+      # Deliberately does not name the canonical secrets guide by path.
+      # tests/ci/classify_changes_test.rb derives "a check reads this document"
+      # from the literal path appearing in the check's own source, and this
+      # script runs only in static while that guide routes to the docs job by
+      # the decision recorded in tests/ci/classify_changes.rb. Naming it here
+      # would claim a coupling this script does not have and demand that every
+      # edit to the guide pay for the fifteen-minute job.
+      "generate-secrets.yml must declare vault_plain_path as a repository-relative path under " \
+      "{{ playbook_dir }}, because .gitignore and the canonical secrets guide are both read " \
+      "against that relative name (found #{generator_plain_expression.inspect})")
+generator_plain_basename = File.basename(generator_plain_relative)
+check(failures, generator_plain_basename.start_with?("vault"),
+      "generate-secrets.yml's plaintext output #{generator_plain_basename.inspect} no longer " \
+      "begins with `vault`, so the per-service variant this script derives from it is no longer " \
+      "the shape .gitignore has to cover. Re-derive it here rather than dropping the check")
+generator_plain_per_service = File.join(
+  File.dirname(generator_plain_relative),
+  generator_plain_basename.sub(/\Avault/, "vault_arr")
+)
+# Gated on the derivation above rather than run regardless. An input this script
+# cannot reason about makes these two claims about a path outside the repository,
+# and a green line is read as the property. The gate is safe from going quiet
+# because the only way to reach it is a check that has already failed, so the
+# script is red either way -- what changes is whether it is red for the right
+# reason or green for none.
+if generator_plain_under_playbook_dir
+  check(failures, gitignore_ignores?(vault_gitignore, generator_plain_relative),
+        ".gitignore does not ignore #{generator_plain_relative}, which is the plaintext " \
+        "generate-secrets.yml writes: every credential on the platform would be committable")
+  check(failures, gitignore_ignores?(vault_gitignore, generator_plain_per_service),
+        ".gitignore does not ignore #{generator_plain_per_service}: a literal line covers only " \
+        "the one name the generator writes today, and a per-service plaintext output would be " \
+        "committable. Use a pattern, as *.decrypted.yml beside it already is")
+end
+
 # The workflow is read as the scripts its steps run. A command named in a step's
 # comment, or in a step whose `if:` never fires, is not a command CI executes,
 # and the whole-file substring could not tell those from a real `run:`.

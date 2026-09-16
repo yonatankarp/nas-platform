@@ -1094,6 +1094,20 @@ expect_failure(failures, "untracked ANSIBLE_HOME",
   mutate_text(root, ".gitignore", /^\.ansible\/\n/, "")
 end
 
+# The regression this plants is the one #641 found and is the reason the line is
+# a pattern: a literal ignores the single filename generate-secrets.yml emits
+# today and nothing else, so renaming that output -- to the per-service
+# vault_<role>-plain.yml shape #641 weighed -- makes plaintext credentials
+# committable, and `git status` simply offers them. The mutant is exactly the
+# line the repository carried before, so the plant is the historical defect
+# rather than a manufactured one.
+expect_failure(failures, "literal ignore for the generator's plaintext output",
+               "a literal line covers only the one name the generator writes today",
+               detected_by: %i[vault]) do |root|
+  mutate_text(root, ".gitignore", /^\*-plain\.yml\n/,
+              "inventory/group_vars/all/vault-plain.yml\n")
+end
+
 expect_failure(failures, "nonfunctional physical-path filter",
                "Mac physical-path filter must reject ambiguous or relative paths",
                detected_by: %i[policy]) do |root|

@@ -76,12 +76,19 @@ assert_no_sentinel() {
 
 success_dir="$test_root/success"
 mkdir -p "$success_dir" "$success_dir/state"
+# All three of the play's vault paths are redirected into the sandbox, not only
+# the two it writes and refuses on: vault_retired_path defaults into the real
+# checkout, so leaving it would make this fixture's verdict depend on whether the
+# operator happens to have a stray inventory/group_vars/all/vault.yml there. What
+# that guard does is tests/secrets_docs_test.rb's subject; this fixture's is
+# redaction.
 set +e
 PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$success_dir/state" \
   ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
     -e generate_brand_new_platform=true \
     -e vault_plain_path="$success_dir/vault-plain.yml" \
-    -e vault_encrypted_path="$success_dir/vault.yml" \
+    -e vault_external_path="$success_dir/vault.yml" \
+    -e vault_retired_path="$success_dir/retired-vault.yml" \
     -e audiobookshelf_admin_password=SENTINEL_GENERATED_PASSWORD \
     -e dozzle_admin_password=SENTINEL_GENERATED_PASSWORD_DOZZLE \
     -e trailarr_admin_password=SENTINEL_GENERATED_PASSWORD_TRAILARR \
@@ -113,7 +120,8 @@ if PATH="$fake_bin:$PATH" FAKE_DOCKER_STATE="$failure_dir/state" \
     ansible-playbook -i localhost, -c local "$repo_dir/generate-secrets.yml" --diff \
       -e generate_brand_new_platform=true \
       -e vault_plain_path="$failure_dir/vault-plain.yml" \
-      -e vault_encrypted_path="$failure_dir/vault.yml" \
+      -e vault_external_path="$failure_dir/vault.yml" \
+      -e vault_retired_path="$failure_dir/retired-vault.yml" \
       -e audiobookshelf_admin_password=SENTINEL_GENERATED_PASSWORD \
       -e dozzle_admin_password=SENTINEL_GENERATED_PASSWORD_DOZZLE \
       -e trailarr_admin_password=SENTINEL_GENERATED_PASSWORD_TRAILARR \
