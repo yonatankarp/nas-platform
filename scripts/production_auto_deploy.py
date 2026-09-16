@@ -1570,7 +1570,7 @@ def pushover_verdict(returncode: int, output: bytes) -> str:
 
 
 def format_duration(seconds: int) -> str:
-    """Render an elapsed run, which is minutes at worst.
+    """Render an elapsed span as hours, minutes and seconds.
 
     Identical to the copy in the other script by construction, and
     tests/policy_test.rb compares the two definitions as text so it stays that
