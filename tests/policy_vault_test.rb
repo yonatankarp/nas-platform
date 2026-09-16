@@ -664,6 +664,62 @@ secret_bearing_generator_tasks.each do |task_name|
         "generate-secrets.yml must redact secret-bearing task #{task_name}")
 end
 
+# THE SAFETY HALF OF #641. .gitignore carried the literal
+# `inventory/group_vars/all/vault-plain.yml`, which ignores exactly the file the
+# generator emits today and nothing else. The generator names its plaintext
+# output after the artifact that output becomes, so the per-service shape #641
+# weighed -- vault_<role>-plain.yml, one file per service -- would have made
+# plaintext credentials committable while that line still read as covering the
+# generator's output. Nothing would have said so: `git status` would simply have
+# offered them.
+#
+# So this is derived from the play rather than restated. It reads vault_plain_path
+# out of generate-secrets.yml and requires .gitignore to ignore both the name the
+# play writes today and the per-service variant of that same name, which a literal
+# cannot satisfy. A renamed output therefore fails here instead of becoming
+# committable.
+def gitignore_ignores?(gitignore, relative_path)
+  ignored = false
+  gitignore.lines.each do |raw|
+    line = raw.strip
+    next if line.empty? || line.start_with?("#")
+
+    negated = line.start_with?("!")
+    pattern = (negated ? line[1..] : line).delete_prefix("/")
+    matched = if pattern.include?("/")
+                File.fnmatch?(pattern, relative_path, File::FNM_PATHNAME)
+              else
+                relative_path.split("/").any? { |segment| File.fnmatch?(pattern, segment) }
+              end
+    ignored = !negated if matched
+  end
+  ignored
+end
+
+vault_gitignore = File.read(File.join(ROOT, ".gitignore"))
+generator_plain_expression = secret_generator.dig("vars", "vault_plain_path").to_s
+generator_plain_relative = generator_plain_expression.sub(%r{\A\{\{\s*playbook_dir\s*\}\}/}, "")
+check(failures, !generator_plain_relative.empty? && !generator_plain_relative.include?("{{"),
+      "generate-secrets.yml must declare vault_plain_path as a repository-relative path under " \
+      "{{ playbook_dir }}, because .gitignore and docs/secrets.md are both read against that " \
+      "relative name (found #{generator_plain_expression.inspect})")
+generator_plain_basename = File.basename(generator_plain_relative)
+check(failures, generator_plain_basename.start_with?("vault"),
+      "generate-secrets.yml's plaintext output #{generator_plain_basename.inspect} no longer " \
+      "begins with `vault`, so the per-service variant this script derives from it is no longer " \
+      "the shape .gitignore has to cover. Re-derive it here rather than dropping the check")
+generator_plain_per_service = File.join(
+  File.dirname(generator_plain_relative),
+  generator_plain_basename.sub(/\Avault/, "vault_arr")
+)
+check(failures, gitignore_ignores?(vault_gitignore, generator_plain_relative),
+      ".gitignore does not ignore #{generator_plain_relative}, which is the plaintext " \
+      "generate-secrets.yml writes: every credential on the platform would be committable")
+check(failures, gitignore_ignores?(vault_gitignore, generator_plain_per_service),
+      ".gitignore does not ignore #{generator_plain_per_service}: a literal line covers only " \
+      "the one name the generator writes today, and a per-service plaintext output would be " \
+      "committable. Use a pattern, as *.decrypted.yml beside it already is")
+
 # The workflow is read as the scripts its steps run. A command named in a step's
 # comment, or in a step whose `if:` never fires, is not a command CI executes,
 # and the whole-file substring could not tell those from a real `run:`.

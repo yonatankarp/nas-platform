@@ -4,7 +4,18 @@
 # Vault password and any decrypted copy. The encrypted vault itself IS committed.
 .vault-password
 vault-password*
-inventory/group_vars/all/vault-plain.yml
+# A PATTERN, not the literal inventory/group_vars/all/vault-plain.yml this line
+# carried until #641. generate-secrets.yml names its plaintext output after the
+# artifact it becomes, so any renaming of that output -- the per-service
+# vault_<role>-plain.yml shape #641 weighed, one file per service -- would have
+# left plaintext credentials committable while this line still read as covering
+# the generator's output. Unanchored like *.decrypted.yml below, so a plaintext
+# rendering anywhere in the tree is ignored rather than only the one path the
+# generator writes today; tests/policy_vault_test.rb derives the generator's own
+# output name from the play and requires this to ignore it and its per-service
+# variant. templates/vault-plain.yml.j2 is tracked and does not match, because
+# a name ending .j2 does not end -plain.yml.
+*-plain.yml
 *.decrypted.yml
 
 # Credentials and keys. The certificate belongs here beside its key rather
