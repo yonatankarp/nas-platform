@@ -137,6 +137,15 @@ module ClassifyChanges
   # an edit turning it back into a live owner would falsify the check without
   # touching it. That is a coupling, and it selects static because the check that
   # depends on it runs there rather than in docs.
+  #
+  # docs/ci-performance-history.md is the evidence half of CLAUDE.md's CI
+  # performance sections, moved out by #652. The text selected static while it
+  # lived in CLAUDE.md, because tests/policy_test.rb sweeps it for retired
+  # declarations, and that sweep still reads it under docs/ -- so it keeps the
+  # route rather than losing the half of its coverage a docs-only change would.
+  # The derivation names it too, because tests/case_pool_support.rb -- which every
+  # pooled check loads -- and a few other checks cite it by path for the
+  # measurements behind them.
   STATIC_ONLY_PATHS = %w[
     .gitignore
     CLAUDE.md
@@ -145,6 +154,7 @@ module ClassifyChanges
     docs/ansible-basics.md
     docs/asustor-adm-rollout.md
     docs/bazarr-providers.md
+    docs/ci-performance-history.md
     docs/getting-started-mac.md
     docs/getting-started-nas.md
     docs/getting-started.md

@@ -29,7 +29,8 @@
 # SystemExit there, which in_parallel_cases deliberately does not rescue, so the
 # run ends on it with nothing reported rather than naming the plant that failed.
 #
-# On the cost of this file, which CLAUDE.md's `static` budget section is about:
+# On the cost of this file, which the `static` budget rules in CLAUDE.md and their
+# evidence in docs/ci-performance-history.md are about:
 # every invocation that must end in a refusal by the wrapper substitutes a stub
 # for the runtime half, and every invocation that reaches the real runtime half
 # carries each of its timeout budgets in its own environment. Nothing here is
@@ -1127,7 +1128,7 @@ RUNTIME_ROWS = [
     # reaches its verdict on the first request and does not wait at all. Left at
     # the shared budget this single row was 30.9s of the check's 36.3s and took
     # its CPU-to-elapsed ratio to 33% -- a check that waits becomes the floor for
-    # its whole shard, which is what CLAUDE.md's `static` budget section is about
+    # its whole shard, which is what docs/ci-performance-history.md is about
     # and what #331 cost the seerr self-test 368 seconds to learn.
     name: "a status endpoint answering 500 with an empty body",
     given: { status_code: 500 },

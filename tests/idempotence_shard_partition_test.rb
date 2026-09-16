@@ -4,7 +4,8 @@
 # The untagged idempotence-check lane is decomposed into shards, and this is what
 # holds the decomposition together.
 #
-# CLAUDE.md records why a guard has to exist before the partition does: sharding
+# docs/ci-performance-history.md records why a guard has to exist before the partition does:
+# sharding
 # is an unusually efficient way to manufacture the defect this repository keeps
 # closing. Drop a tag from the split and nothing converges it, every shard passes,
 # and the gate goes green *faster* than it did before. The static gate answered

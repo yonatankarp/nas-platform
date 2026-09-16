@@ -48,7 +48,8 @@
 #
 # The readiness budget is cut to ten seconds for that reason. This invocation
 # must end in a refusal, so the real budget buys nothing but sleep -- the same
-# reasoning CLAUDE.md records for the contract suites whose deadline rows were
+# reasoning docs/ci-performance-history.md records for the contract suites whose deadline
+# rows were
 # costing the static gate minutes apiece.
 #
 # The drift is deliberately left in place: the reconcile phase converges, and the

@@ -133,7 +133,7 @@ end
 #
 # Folded into every run rather than a separate --self-test invocation, because
 # the sweep costs under a second and a guard that proves itself on every run is
-# one fewer manifest line to keep true. CLAUDE.md records what trusting an
+# one fewer manifest line to keep true. docs/ci-performance-history.md records what trusting an
 # unproven static checker cost: this one is shown the real #547 defect, and a
 # guarded reference it must leave alone, before its clean report means anything.
 PLANT_ROLE = "vaultwarden"

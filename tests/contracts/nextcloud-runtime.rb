@@ -25,7 +25,8 @@ require "uri"
 require "yaml"
 
 # Every budget is an environment input, on the first lines of the file, and each
-# one is used at an explicit call site. CLAUDE.md records the `static` job's time
+# one is used at an explicit call site. docs/ci-performance-history.md records the `static`
+# job's time
 # budget being blown four times, and the fourth was exactly this shape: a
 # self-test whose planted regression let an invocation through to a runtime half
 # that then spent its whole readiness budget against a port nothing was
