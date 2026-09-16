@@ -1,0 +1,543 @@
+---
+# The HTTP managed-user skeleton, hoisted out of roles/komga (#647). Every
+# service-specific value arrives as a parameter; nothing here names a service.
+#
+# Two kinds of caller-supplied condition live in this file and they are written
+# differently, because each form is forced by where it is used rather than
+# chosen:
+#
+#   * managed_users_repair_condition is a BRACED template string. It is consumed
+#     by `when:`, which ansible-lint --strict (no-jinja-when) refuses to let
+#     carry Jinja braces, so the braces live in the parameter's VALUE and the
+#     role resolves them once into a boolean fact the `when:` then reads.
+#   * managed_users_verify_conditions is a list of BRACE-FREE expressions. They
+#     are consumed by `assert: that:`, which evaluates its conditions in order
+#     and stops at the first false. Resolving them to booleans first would
+#     finalize every one of them as a task argument -- which is the same hazard
+#     the fail_msg note below describes -- and would lose that short-circuit.
+#
+# No fail_msg in this file indexes a match list or subscripts a key that the
+# task before it did not already prove present. Ansible finalizes a task's
+# arguments BEFORE deciding whether the assertion holds, so such a message dies
+# on the PASSING path, after every earlier assertion passed.
+- name: Validate the managed-user phase
+  ansible.builtin.assert:
+    that:
+      - managed_users_phase in ['reconcile', 'verify']
+    fail_msg: >-
+      Managed-user reconciliation was included with a phase it does not
+      implement. The tasks in this file are gated on managed_users_phase, so an
+      unrecognised phase silently skips them.
+
+# meta/argument_specs.yml cannot declare the seven parameters below, because
+# Ansible templates every declared option at role entry and each of these is a
+# template over a per-identity `item` or over the task-scoped
+# managed_users_match. That leaves them unchecked, so what can be checked at
+# role entry is checked here: that each was supplied at all. q('varnames')
+# matches variable NAMES and never resolves a value, which is the whole reason
+# it can ask this question when `is defined` cannot -- `is defined` would
+# template the value and fail on the undefined `item` exactly as the argument
+# spec does. A missing one otherwise surfaces as an undefined-variable trace
+# midway through the reconciliation, after requests have already been sent.
+- name: Require every deferred managed-user parameter
+  ansible.builtin.assert:
+    that:
+      - >-
+        q('varnames', '^' ~ (managed_users_deferred_parameters | join('$|^')) ~ '$')
+        | unique | length == managed_users_deferred_parameters | length
+    fail_msg: >-
+      A caller of roles/managed_users did not supply every deferred parameter.
+      meta/argument_specs.yml cannot declare these, so their absence is caught
+      here rather than by Ansible: {{ managed_users_deferred_parameters |
+      join(', ') }}.
+  vars:
+    managed_users_deferred_parameters:
+      - managed_users_list_json
+      - managed_users_authenticate_body
+      - managed_users_authenticate_identity
+      - managed_users_create_body
+      - managed_users_reconcile_path
+      - managed_users_repair_body
+      - managed_users_repair_condition
+
+# The two accumulators below are accumulated across a loop, so they are reset
+# rather than merely defaulted. A role called twice in one play -- reconcile
+# then verify, which is exactly how site.yml and verify.yml reach it -- would
+# otherwise carry the first call's keys into the second, and once a second
+# service adopts this role it would carry that service's identities too.
+- name: Reset resolved managed-user decisions
+  ansible.builtin.set_fact:
+    managed_users_matches: {}
+    managed_users_repairs: {}
+
+# config/managed-user-capabilities.yml is the platform's declaration of what
+# each service's managed-user contract is, and this role implements exactly one
+# shape of it: an HTTP API that refuses password rotation and forbids updating
+# an existing identity's password. Reading the register here is what stops a
+# service whose register row says django_cli, declarative_file,
+# declarative_environment, single_identity_settings or user_owned from being
+# routed through this skeleton by a caller that simply passed the parameters.
+#
+# The register is committed plaintext -- it names endpoints and policies, never
+# a credential -- so unlike roles/arr/tasks/configarr.yml, which reads a file
+# the deployed service resolves its secrets against, nothing in this chain
+# carries no_log. The refusals below have to be readable, and the review branch
+# has to print.
+- name: Stat the deployed managed-user capability register
+  ansible.builtin.stat:
+    path: "{{ managed_users_register_path }}"
+  register: managed_users_register_stat
+  changed_when: false
+  # A read, and one that has to really happen under --check: the whole point of
+  # the branch below is to report what is actually on the deployed release.
+  check_mode: false
+
+# Under --check on an already-converged host, deployment_bundle stages and
+# activates nothing (`when: not ansible_check_mode`), so platform_current_dir
+# still names the PREVIOUS release -- which, the first time this ships, predates
+# the register. That is the documented shape for anything a check-mode review
+# cannot simulate: say so as an explicit debug rather than refusing a review
+# that was always going to be reviewing the old tree.
+- name: Report a managed-user capability register the deployed release predates
+  ansible.builtin.debug:
+    msg: >-
+      MANAGED_USERS_REGISTER_UNREVIEWABLE: {{ managed_users_register_path }} is
+      absent, so the release currently deployed predates the managed-user
+      capability register and this review cannot verify that
+      {{ managed_users_service }} still honours the contract this role
+      implements. Converging will deploy the register and the next review will
+      check it.
+  when:
+    - ansible_check_mode
+    - not managed_users_register_stat.stat.exists
+  changed_when: false
+
+- name: Require the deployed managed-user capability register
+  ansible.builtin.assert:
+    that:
+      - managed_users_register_stat.stat.exists
+    fail_msg: >-
+      {{ managed_users_register_path }} is absent from the deployed release.
+      This role reconciles identities only against a release that declares the
+      managed-user contract it implements; deploy the release that carries
+      config/managed-user-capabilities.yml before reconciling
+      {{ managed_users_service }}.
+  when: not ansible_check_mode
+
+- name: Read the deployed managed-user capability register
+  ansible.builtin.slurp:
+    src: "{{ managed_users_register_path }}"
+  register: managed_users_register_read
+  changed_when: false
+  check_mode: false
+  when: managed_users_register_stat.stat.exists
+
+# Two assertions rather than one, and the split is the fail_msg rule above: the
+# second names the row, so the first has to prove the row is there. Membership
+# is tested with `in` rather than by subscripting, because subscripting an
+# absent key raises instead of evaluating to undefined.
+- name: Require a managed-user capability register row for this service
+  ansible.builtin.assert:
+    that:
+      - managed_users_service in (managed_users_register_document.services | default({}))
+    fail_msg: >-
+      The deployed managed-user capability register declares no row for
+      {{ managed_users_service }}, so nothing states the contract this
+      reconciliation would be honouring.
+  vars:
+    managed_users_register_document: >-
+      {{ managed_users_register_read.content | b64decode | from_yaml }}
+  when: managed_users_register_stat.stat.exists
+
+- name: Require the managed-user capability register to authorise this reconciliation
+  ansible.builtin.assert:
+    that:
+      - managed_users_register.mode == 'api'
+      - managed_users_register.password_rotation == 'refuse'
+      - managed_users_register.existing_identity_password_update == 'forbidden'
+      - managed_users_register.interfaces.list == managed_users_list_path
+      - managed_users_register.interfaces.create == managed_users_create_path
+      - managed_users_register.interfaces.authenticate == managed_users_authenticate_path
+      - managed_users_register.interfaces.reconcile == managed_users_reconcile_interface
+    fail_msg: >-
+      The deployed managed-user capability register does not authorise this
+      reconciliation of {{ managed_users_service }}. This role implements one
+      contract -- mode api, password_rotation refuse,
+      existing_identity_password_update forbidden -- over the exact relative
+      interfaces it was configured with: list {{ managed_users_list_path }},
+      create {{ managed_users_create_path }}, authenticate
+      {{ managed_users_authenticate_path }}, reconcile
+      {{ managed_users_reconcile_interface }}. Reconcile the register and this
+      role's parameters, or give the service a reconciliation of its own.
+  vars:
+    managed_users_register: >-
+      {{ (managed_users_register_read.content | b64decode |
+          from_yaml).services[managed_users_service] }}
+  when: managed_users_register_stat.stat.exists
+
+# existing_identity_password_update is `forbidden` for every service in the
+# register, and the repair body is the one request in this file that could
+# quietly break it. The body is a caller-supplied mapping, so the refusal reads
+# its keys rather than trusting the review that admitted it.
+- name: Refuse a managed-user repair body carrying a credential
+  ansible.builtin.assert:
+    that:
+      - >-
+        managed_users_repair_body.keys() | list |
+        select('search', '(?i)password|passwd|secret|token') | list | length == 0
+    fail_msg: >-
+      The managed-user repair body configured for {{ managed_users_service }}
+      carries a credential-shaped key. Repairing an existing identity must never
+      update its password; the capability register declares that update
+      forbidden.
+  vars:
+    managed_users_match: >-
+      {{ managed_users_matches[item[managed_users_identity_attribute]] |
+         first | default({}) }}
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
+
+- name: "List complete users for managed-user reconciliation: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_list_path }}"
+    url_username: "{{ managed_users_admin_username }}"
+    url_password: "{{ managed_users_admin_password }}"
+    force_basic_auth: "{{ managed_users_admin_basic }}"
+    headers: "{{ managed_users_admin_headers }}"
+    status_code: [200]
+    return_content: true
+  register: managed_users_listing_response
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# managed_users_list_json is expressed against managed_users_listing, so the
+# single parameter covers both the first listing and the post-creation one: the
+# role rebinds the name, the caller states the extraction once. beszel and
+# audiobookshelf wrap the list in a key, komga does not.
+- name: "Resolve the complete managed-user listing: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_listing: "{{ managed_users_listing_response }}"
+  no_log: true
+
+- name: "Refuse incomplete managed-user listing: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - managed_users_list_json | type_debug == 'list'
+    fail_msg: >-
+      {{ managed_users_title }} returned an unsupported or paginated users
+      response; reconciliation is refusing a partial identity view.
+
+- name: "Resolve normalized managed identities: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_matches: >-
+      {{ managed_users_matches |
+         combine(dict([(item[managed_users_identity_attribute],
+           managed_users_list_json |
+           selectattr(managed_users_identity_attribute, 'equalto',
+                      item[managed_users_identity_attribute]) | list)])) }}
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
+
+# The two conditions this replaces are the one decision all six HTTP-driven
+# managed-user roles share; filter_plugins/managed_user_identity.py explains why
+# they are also the only one, and carries them for every service. The errors it
+# returns name an API attribute and a count, never an identity, so they are safe
+# to print from a task running under no_log.
+- name: "Refuse ambiguous normalized managed identities: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        managed_users_list_json | managed_user_ambiguity_errors(
+          managed_users_identity_attribute,
+          item[managed_users_identity_attribute],
+          managed_users_matches[item[managed_users_identity_attribute]]
+        ) | length == 0
+    fail_msg: >-
+      {{ managed_users_title }} contains duplicate normalized managed
+      identities; resolve the ambiguity manually before reconciliation:
+      {{ managed_users_list_json | managed_user_ambiguity_errors(
+           managed_users_identity_attribute,
+           item[managed_users_identity_attribute],
+           managed_users_matches[item[managed_users_identity_attribute]]
+         ) | join('; ') }}
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
+
+- name: "Require safe managed-user identifiers: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - >-
+        managed_users_matches[item[managed_users_identity_attribute]] | length == 0 or
+        managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute]
+          | string is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: >-
+      {{ managed_users_title }} returned an unsafe managed-user API identifier.
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
+
+# item.password, literally, in both authenticate tasks. The declared user's own
+# vault password is the one value this role must not route through an
+# indirection: a parameter would make the check that proves the vault password
+# reaches this request a check on a name rather than on a value.
+- name: "Authenticate existing managed users: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
+    method: "{{ managed_users_authenticate_method }}"
+    url_username: "{{ item[managed_users_identity_attribute] }}"
+    url_password: "{{ item.password }}"
+    force_basic_auth: "{{ managed_users_authenticate_basic }}"
+    body_format: "{{ managed_users_authenticate_body_format }}"
+    body: "{{ managed_users_authenticate_body }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: managed_users_authentication
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - managed_users_matches[item[managed_users_identity_attribute]] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: "Require preserved managed-user credentials: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - >-
+        managed_users_authenticate_identity | trim | lower ==
+        item.item[managed_users_identity_attribute] | trim | lower
+    fail_msg: >-
+      Existing {{ managed_users_title }} managed user does not accept its
+      preserved vault password. Run the reviewed credential-migration procedure;
+      Ansible will not reset it automatically.
+  loop: >-
+    {{ managed_users_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: "Report planned managed-user creation: {{ managed_users_title }}"
+  ansible.builtin.debug:
+    msg: "{{ managed_users_plan_create_message }}"
+  when:
+    - managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - managed_users_matches[item[managed_users_identity_attribute]] | length == 0
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  changed_when: true
+
+- name: "Create absent managed users: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_create_path }}"
+    method: POST
+    url_username: "{{ managed_users_admin_username }}"
+    url_password: "{{ managed_users_admin_password }}"
+    force_basic_auth: "{{ managed_users_admin_basic }}"
+    headers: "{{ managed_users_admin_headers }}"
+    body_format: json
+    body: "{{ managed_users_create_body }}"
+    status_code: "{{ managed_users_create_status }}"
+  register: managed_users_creation
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - managed_users_matches[item[managed_users_identity_attribute]] | length == 0
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  changed_when: true
+  no_log: true
+
+- name: "Re-list users after managed-user creation: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_list_path }}"
+    url_username: "{{ managed_users_admin_username }}"
+    url_password: "{{ managed_users_admin_password }}"
+    force_basic_auth: "{{ managed_users_admin_basic }}"
+    headers: "{{ managed_users_admin_headers }}"
+    status_code: [200]
+    return_content: true
+  register: managed_users_refreshed_response
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: "Resolve the refreshed managed-user listing: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_listing: "{{ managed_users_refreshed_response }}"
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: "Require exact newly created managed identities: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - managed_users_list_json | type_debug == 'list'
+      - >-
+        managed_users_list_json |
+        selectattr(managed_users_identity_attribute, 'equalto',
+                   item.item[managed_users_identity_attribute]) | list | length == 1
+      - >-
+        managed_users_list_json | map(attribute=managed_users_identity_attribute) |
+        map('trim') | map('lower') |
+        select('equalto', item.item[managed_users_identity_attribute] | trim | lower) |
+        list | length == 1
+      - >-
+        (managed_users_list_json |
+         selectattr(managed_users_identity_attribute, 'equalto',
+                    item.item[managed_users_identity_attribute]) |
+         first)[managed_users_id_attribute] | string
+          is match('^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
+    fail_msg: >-
+      {{ managed_users_title }} did not return one exact safe newly created
+      managed identity; reconciliation refuses any subsequent repair.
+  loop: >-
+    {{ managed_users_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: "Authenticate newly created managed users: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
+    method: "{{ managed_users_authenticate_method }}"
+    url_username: "{{ item.item[managed_users_identity_attribute] }}"
+    url_password: "{{ item.item.password }}"
+    force_basic_auth: "{{ managed_users_authenticate_basic }}"
+    body_format: "{{ managed_users_authenticate_body_format }}"
+    body: "{{ managed_users_authenticate_body }}"
+    status_code: "{{ range(100, 600) | list }}"
+    return_content: true
+  register: managed_users_new_authentication
+  loop: >-
+    {{ managed_users_creation.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  failed_when: false
+  changed_when: false
+  no_log: true
+
+- name: "Require newly created managed-user credentials: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - item.status | default(0) | int == 200
+      - >-
+        managed_users_authenticate_identity | trim | lower ==
+        item.item.item[managed_users_identity_attribute] | trim | lower
+    fail_msg: >-
+      Newly created {{ managed_users_title }} managed user does not accept its
+      vault password. Run the reviewed credential-migration procedure; Ansible
+      will not reset it automatically or continue privilege reconciliation.
+  loop: >-
+    {{ managed_users_new_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+# The caller's repair condition, resolved once per declared identity into a
+# boolean the two tasks below read from `when:`. The inline conditional is what
+# makes it total: a caller's condition may index the single match, which does
+# not exist for an identity with none, and Jinja evaluates neither branch it did
+# not take.
+- name: "Resolve managed-user repair decisions: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_repairs: >-
+      {{ managed_users_repairs | combine({
+           item[managed_users_identity_attribute]:
+             ((managed_users_repair_condition | bool)
+              if managed_users_matches[item[managed_users_identity_attribute]] | length == 1
+              else false) }) }}
+  vars:
+    managed_users_match: >-
+      {{ managed_users_matches[item[managed_users_identity_attribute]] |
+         first | default({}) }}
+  when: managed_users_phase == 'reconcile'
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
+
+- name: "Report planned managed-user repair: {{ managed_users_title }}"
+  ansible.builtin.debug:
+    msg: "{{ managed_users_plan_repair_message }}"
+  when:
+    - managed_users_phase == 'reconcile'
+    - ansible_check_mode
+    - managed_users_repairs[item[managed_users_identity_attribute]]
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  changed_when: true
+
+- name: "Repair managed-user properties: {{ managed_users_title }}"
+  ansible.builtin.uri:
+    url: "{{ managed_users_api }}/{{ managed_users_reconcile_path }}"
+    method: "{{ managed_users_reconcile_method }}"
+    url_username: "{{ managed_users_admin_username }}"
+    url_password: "{{ managed_users_admin_password }}"
+    force_basic_auth: "{{ managed_users_admin_basic }}"
+    headers: "{{ managed_users_admin_headers }}"
+    body_format: json
+    body: "{{ managed_users_repair_body }}"
+    status_code: "{{ managed_users_repair_status }}"
+  vars:
+    managed_users_match: >-
+      {{ managed_users_matches[item[managed_users_identity_attribute]] |
+         first | default({}) }}
+  when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+    - managed_users_repairs[item[managed_users_identity_attribute]]
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  changed_when: true
+  no_log: true
+
+- name: "Verify exact managed users: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that: "{{ managed_users_verify_conditions }}"
+    fail_msg: "{{ managed_users_verify_fail_msg }}"
+  vars:
+    managed_users_match: >-
+      {{ managed_users_matches[item[managed_users_identity_attribute]] |
+         first | default({}) }}
+  when: managed_users_phase == 'verify'
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  no_log: true
