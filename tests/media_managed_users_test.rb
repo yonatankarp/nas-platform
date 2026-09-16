@@ -39,6 +39,8 @@ PROBES = [
   [%w[all jellyfin_libraries], method(:exercise_jellyfin_library_rename_identity_refresh)],
   [%w[all jellyfin_libraries], method(:exercise_jellyfin_library_shape_preflight)],
   [%w[all komga], method(:exercise_komga)],
+  [%w[all komga], method(:exercise_komga_converged)],
+  [%w[all komga], method(:exercise_komga_capability_register)],
   [%w[all check_mode], method(:exercise_check_mode)],
   [%w[all check_mode], method(:exercise_jellyfin_fresh_check_mode)],
   [%w[all jellyfin_identity], method(:exercise_jellyfin_recovery_marker_safety)],
@@ -61,11 +63,21 @@ SERVICES.each do |service|
   next unless File.file?(managed_path)
 
   begin
-    tasks = YAML.safe_load_file(managed_path, aliases: false)
+    tasks = contract_source_tasks(service)
     failures << "#{service} managed-user tasks must be a task list" unless tasks.is_a?(Array)
     failures.concat(contract_failures(service, tasks)) if tasks.is_a?(Array)
   rescue Psych::SyntaxError => error
     failures << "#{service} managed-user tasks are invalid YAML: #{error.message.lines.first.strip}"
+  end
+
+  # The shim's own obligations, which the lifecycle above no longer covers for a
+  # service that has adopted the shared role.
+  if SHARED_MANAGED_USER_TITLES.key?(service)
+    failures.concat(komga_shim_failures(
+                      YAML.safe_load_file(managed_path, aliases: false),
+                      YAML.safe_load_file(File.join(ROOT, "roles", service, "defaults", "main.yml"),
+                                          aliases: false)
+                    ))
   end
 
   # An include has to be declared by a task, not merely mentioned. The source-text
@@ -86,9 +98,7 @@ failures << "media managed-user mutation self-test is not registered" unless
 
 if ARGV == ["--self-test"] && failures.empty?
   SERVICES.each do |service|
-    tasks = YAML.safe_load_file(
-      File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false
-    )
+    tasks = contract_source_tasks(service)
     repair = tasks.find { |task| task_name(task).match?(/Repair .* managed-user/) }
     mutant = Marshal.load(Marshal.dump(tasks))
     mutant_repair = mutant.find { |task| task_name(task) == task_name(repair) }
@@ -108,6 +118,36 @@ if ARGV == ["--self-test"] && failures.empty?
     end
 
     next unless service == "komga"
+
+    # The shim's two halves of the vault-password route, each planted on its own.
+    shim = YAML.safe_load_file(KOMGA_SHIM, aliases: false)
+    defaults = YAML.safe_load_file(File.join(ROOT, "roles", "komga", "defaults", "main.yml"),
+                                   aliases: false)
+    rebound = Marshal.load(Marshal.dump(shim))
+    rebound.find { |task| task.key?("ansible.builtin.include_role") }
+           .fetch("vars")["managed_users_declared"] = "{{ komga_unmanaged_users }}"
+    unless komga_shim_failures(rebound, defaults).any? do |failure|
+      failure.include?("managed_users_declared")
+    end
+      failures << "Komga shim declared-set mutant survived"
+    end
+
+    detached = Marshal.load(Marshal.dump(shim))
+    detached.find { |task| task.key?("ansible.builtin.include_role") }
+            .fetch("ansible.builtin.include_role")["name"] = "komga"
+    unless komga_shim_failures(detached, defaults).any? do |failure|
+      failure.include?("does not include the shared managed-user role")
+    end
+      failures << "Komga shim shared-role mutant survived"
+    end
+
+    credentialed = Marshal.load(Marshal.dump(defaults))
+    credentialed["komga_managed_users_repair_body"]["password"] = "{{ item.password }}"
+    unless komga_shim_failures(shim, credentialed).any? do |failure|
+      failure.include?("secret fields")
+    end
+      failures << "Komga declared repair-body password mutant survived"
+    end
 
     KOMGA_AUTH_PASSWORD_EXPRESSIONS.each do |auth_name, expected_password|
       wrong_password = Marshal.load(Marshal.dump(tasks))

@@ -219,6 +219,120 @@ def exercise_komga(failures)
   end
 end
 
+# The run where nothing needs creating and nothing needs repairing. exercise_komga
+# above drives a service that is missing one identity and has the wrong roles on
+# another, so every guard it exercises is exercised on its FAILING branch -- and
+# a fail_msg that dies when it is finalized dies on the PASSING one, after every
+# earlier assertion has held. A converged fixture is the only run that asks
+# whether this reconciliation can report success at all, and it is also what
+# proves the repair decision is a decision: exercise_komga would still pass if
+# every identity were always repaired.
+def exercise_komga_converged(failures)
+  users = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+             "password" => "reader-secret", "roles" => %w[USER PAGE_STREAMING] },
+           { "id" => "komga-friend", "email" => "friend@example.invalid",
+             "password" => "friend-secret", "roles" => %w[USER KOBO_SYNC] }]
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/v2/users"]
+      [200, users.map { |user| user.reject { |key, _| key == "password" } }]
+    when ["GET", "/api/v2/users/me"]
+      email, password = basic_credentials(request)
+      authenticated = users.find { |user| user["email"] == email && user["password"] == password }
+      authenticated ? [200, authenticated.reject { |key, _| key == "password" }] : [401, {}]
+    else [500, {}]
+    end
+  end
+  with_http_service(responder) do |port, requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => managed
+    }
+    stdout, stderr, status = run_playbook(includes_for("komga"), variables)
+    failures << "Komga converged fixture failed: #{failure_tail(stdout + stderr)}" unless
+      status.success?
+    mutations = requests.select { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+    failures << "Komga converged fixture mutated a converged service: " \
+                "#{mutations.map { |request| request['target'] }}" unless mutations.empty?
+    failures << "Komga converged fixture did not authenticate the existing identity" unless
+      requests.any? do |request|
+        request["target"] == "/api/v2/users/me" &&
+          basic_credentials(request) == %w[reader@example.invalid reader-secret]
+      end
+    failures << "Komga converged fixture did not reach its final verification" unless
+      requests.count { |request| request["target"] == "/api/v2/users" && request["method"] == "GET" } == 3
+  end
+end
+
+# Both branches of the capability-register read, and both directions of each.
+# The review branch exists because deployment_bundle stages and activates
+# nothing under --check, so on the first converge that ships the register
+# platform_current_dir still names a release that predates it. A probe that
+# forgot to name a release at all would land in that branch and report green,
+# which is why the first row asserts the token is ABSENT when the register is
+# there.
+def exercise_komga_capability_register(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] }]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/api/v2/users"]
+      [200, [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+               "roles" => %w[USER PAGE_STREAMING] }]]
+    when ["GET", "/api/v2/users/me"]
+      [200, { "id" => "komga-reader", "email" => "reader@example.invalid",
+              "roles" => %w[USER PAGE_STREAMING] }]
+    else [500, {}]
+    end
+  end
+  register = YAML.safe_load_file(File.join(ROOT, "config", "managed-user-capabilities.yml"))
+  Dir.mktmpdir("nas-platform-komga-register-") do |root|
+    stale = File.join(root, "stale-release")
+    drifted = File.join(root, "drifted-release")
+    FileUtils.mkdir_p(stale)
+    FileUtils.mkdir_p(File.join(drifted, "config"))
+    drifted_register = Marshal.load(Marshal.dump(register))
+    drifted_register.fetch("services").fetch("komga").fetch("interfaces")["list"] = "api/v1/users"
+    File.write(File.join(drifted, "config", "managed-user-capabilities.yml"),
+               YAML.dump(drifted_register))
+
+    review = "MANAGED_USERS_REGISTER_UNREVIEWABLE"
+    cases = [
+      ["register present under review", ROOT, ["--check"], true, nil, review],
+      ["register absent under review", stale, ["--check"], true, review, nil],
+      ["register absent on a converge", stale, [], false,
+       "is absent from the deployed release", nil],
+      ["register drifted from this role", drifted, [], false,
+       "does not authorise this reconciliation of komga", nil]
+    ]
+    cases.each do |label, release, arguments, expected, required, forbidden|
+      with_http_service(responder) do |port, _requests|
+        variables = {
+          "komga_api" => "http://127.0.0.1:#{port}",
+          "vault_komga_admin_email" => "admin@example.invalid",
+          "vault_komga_admin_password" => "admin-secret",
+          "vault_managed_komga_users" => managed,
+          "platform_current_dir" => release
+        }
+        stdout, stderr, status = run_playbook([includes_for("komga").first], variables, *arguments)
+        output = stdout + stderr
+        if status.success? != expected
+          failures << "Komga #{label} fixture #{expected ? 'failed' : 'succeeded'}: " \
+                      "#{failure_tail(output)}"
+        end
+        failures << "Komga #{label} fixture omitted #{required.inspect}" if
+          required && !output.include?(required)
+        failures << "Komga #{label} fixture emitted #{forbidden.inspect}" if
+          forbidden && output.include?(forbidden)
+      end
+    end
+  end
+end
+
 def exercise_check_mode(failures)
   cases = [
     ["Audiobookshelf", "audiobookshelf", "fixture-token",

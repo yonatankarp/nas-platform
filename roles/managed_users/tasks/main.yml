@@ -503,7 +503,7 @@
     label: "{{ managed_users_service }}-managed-user"
   changed_when: true
 
-- name: "Repair managed-user properties: {{ managed_users_title }}"
+- name: "Repair non-secret managed-user properties: {{ managed_users_title }}"
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_reconcile_path }}"
     method: "{{ managed_users_reconcile_method }}"

@@ -461,6 +461,12 @@ def run_tasks(port, arguments = [], managed_users: [], migration_allowed: false,
     "vault_komga_admin_password" => "admin-secret",
     "komga_claim_status" => { "json" => { "isClaimed" => true } },
     "vault_managed_komga_users" => managed_users,
+    # The library slice carries the managed-user include, which since #647
+    # reaches roles/managed_users and reads the capability register off the
+    # DEPLOYED release. The repository root is a release that carries it, so the
+    # probe drives the branch a converged host is in rather than the review
+    # branch; tests/media_probes_services.rb owns the other one.
+    "platform_current_dir" => ROOT,
     MIGRATION_INPUT => migration_allowed
   )
   run_playbook(library_tasks(role_source), variables, *arguments,
