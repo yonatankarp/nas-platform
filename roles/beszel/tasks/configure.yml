@@ -531,6 +531,12 @@
           {{ beszel_telemetry_probe_result.evidence.container_stats_id }}
         beszel_telemetry_missing_categories: >-
           {{ beszel_telemetry_probe_result.evidence.missing_categories }}
+        # How many collection requests the probe retried away. Read on every
+        # converge, not only a failing one: the probe returns the key from all
+        # four of its returns, so a passing run resolves it too rather than
+        # dying here after every assertion before it passed.
+        beszel_telemetry_transient_failures: >-
+          {{ beszel_telemetry_probe_result.evidence.transient_failures }}
       no_log: true
 
     - name: Verify persisted Beszel telemetry categories
@@ -543,7 +549,10 @@
           ID {{ beszel_telemetry_system_id }}: categories={{
           beszel_telemetry_missing_categories | join(',') }};
           record IDs=system_stats:{{ beszel_telemetry_system_stats_id }},container_stats:{{
-          beszel_telemetry_container_stats_id }}.
+          beszel_telemetry_container_stats_id }};
+          retried-away fetch failures={{ beszel_telemetry_transient_failures }}.
+          A non-zero count is a hub that could not be read within the deadline;
+          zero is an agent that reached the hub and collected nothing.
       no_log: false
 
     - name: Reconcile each managed alert
