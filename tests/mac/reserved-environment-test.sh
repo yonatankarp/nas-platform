@@ -31,10 +31,13 @@
 # This test is portable despite driving run.sh, which the comment in
 # tests/mac/run-phase-status-test.sh says requires Darwin. That requirement is
 # at run.sh:592, inside the preflight phase; these guards are at 37-51, before
-# argument parsing. Every invocation here dies far above it, which is also why
-# the whole check costs seconds: each one ends in a refusal and waits for
-# nothing. The #319 lesson about READY_TIMEOUT_SECONDS applies in reverse --
-# there is no wait here to spread across a shard.
+# argument parsing. Every invocation here dies far above it, which is also what
+# makes the check cheap: each one ends in a refusal and waits for nothing.
+# Measured in a Linux container rather than asserted -- 36ms for the plain run's
+# twenty invocations and 753ms for the self-test's three hundred and sixty-one.
+# The #319 lesson about READY_TIMEOUT_SECONDS applies in reverse: there is no
+# wait here to spread across a shard, so neither line competes for a worker slot
+# it is not using.
 set -eu
 set +x
 
@@ -94,10 +97,15 @@ awk '{print $1}' "$scratch/table" | sort -u > "$scratch/declared"
 reserved_names=$(awk '{print $1}' "$scratch/table" | tr '\n' ' ')
 reserved_count=$(grep -c . "$scratch/declared")
 
-# A floor rather than a non-emptiness test, for the reason stated wherever this
-# repository builds a subject list at runtime: a table that collapsed to one row
-# would satisfy every non-emptiness check there is.
-RESERVED_FLOOR=18
+# A collapse floor, and deliberately well below the eighteen rather than equal to
+# them. Membership is owned by the both-directions comparison below, which names
+# the variable that moved; this floor answers the different question of whether
+# the parse still works at all. Set at eighteen it fires on any legitimate
+# removal as well, and says "the parse has broken" about a guard that shrank on
+# purpose -- a true statement replaced by a false one. Twelve is above the
+# eleven-name language chain, so it takes more than one whole guard going
+# unparsed to satisfy it.
+RESERVED_FLOOR=12
 
 failures=0
 note_failure() {
@@ -166,16 +174,15 @@ grep -o '\[ -z "\${[A-Z_][A-Z_0-9]*+x}" \]' "$runner_path" |
   sed 's/.*{//; s/+x.*//' | sort -u > "$scratch/observed"
 observed_count=$(grep -c . "$scratch/observed" || true)
 
-if [ "$observed_count" -lt "$RESERVED_FLOOR" ]; then
-  note_failure "tests/mac/run.sh's reserved-environment guards parse to $observed_count names, below the floor of $RESERVED_FLOOR: the parse has broken rather than the guard shrunk"
-else
-  undeclared=$(comm -23 "$scratch/observed" "$scratch/declared" | tr '\n' ' ' | sed 's/ *$//')
-  missing=$(comm -13 "$scratch/observed" "$scratch/declared" | tr '\n' ' ' | sed 's/ *$//')
-  [ -z "$undeclared" ] ||
-    note_failure "tests/mac/run.sh guards variables this test does not exercise: $undeclared"
-  [ -z "$missing" ] ||
-    note_failure "this test declares variables tests/mac/run.sh no longer guards: $missing"
-fi
+[ "$observed_count" -ge "$RESERVED_FLOOR" ] ||
+  note_failure "tests/mac/run.sh's reserved-environment guards parse to $observed_count names, below the collapse floor of $RESERVED_FLOOR: this test no longer reads the guards it polices"
+
+undeclared=$(comm -23 "$scratch/observed" "$scratch/declared" | tr '\n' ' ' | sed 's/ *$//')
+missing=$(comm -13 "$scratch/observed" "$scratch/declared" | tr '\n' ' ' | sed 's/ *$//')
+[ -z "$undeclared" ] ||
+  note_failure "tests/mac/run.sh guards variables this test does not exercise: $undeclared"
+[ -z "$missing" ] ||
+  note_failure "this test declares variables tests/mac/run.sh no longer guards: $missing"
 
 # ---------------------------------------------------------------------------
 # The refusals themselves.

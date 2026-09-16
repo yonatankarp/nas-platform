@@ -327,6 +327,8 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/kapowarr_contract_test.rb
   tests/integration_suite_test.sh
   tests/mac/run-phase-status-test.sh
+  tests/mac/reserved-environment-test.sh
+  tests/mac/reserved-environment-test.sh --self-test
   tests/mac/audiobookshelf-drift-hook-test.sh
   tests/contracts/audiobookshelf-audio-test.sh
   tests/mac/snapshot-immich.sh --self-test
