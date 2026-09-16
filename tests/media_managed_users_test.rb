@@ -43,6 +43,7 @@ PROBES = [
   [%w[all komga], method(:exercise_komga_capability_register)],
   [%w[all komga], method(:exercise_komga_verification)],
   [%w[all komga], method(:exercise_komga_parameter_contract)],
+  [%w[all komga], method(:exercise_komga_review_plan)],
   [%w[all check_mode], method(:exercise_check_mode)],
   [%w[all check_mode], method(:exercise_jellyfin_fresh_check_mode)],
   [%w[all jellyfin_identity], method(:exercise_jellyfin_recovery_marker_safety)],

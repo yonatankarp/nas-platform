@@ -424,6 +424,56 @@ def exercise_komga_parameter_contract(failures)
   end
 end
 
+# What a --check review REPORTS. The two plan literals were unpinned before
+# #647, which was neutral while they were `msg:` constants in Komga's own file;
+# they are now a parameter, and the decision behind the repair one is a fact the
+# role resolves from a caller-supplied template. A repair decision that silently
+# resolved false, or a plan message that arrived empty, would leave a review
+# printing nothing and changed=0 -- which reads exactly like a converged host.
+def exercise_komga_review_plan(failures)
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret",
+               "roles" => ["PAGE_STREAMING"] },
+             { "email" => "new@example.invalid", "password" => "new-secret",
+               "roles" => ["KOREADER_SYNC"] }]
+  listing = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+               "roles" => %w[USER KOBO_SYNC] }]
+  with_http_service(->(_request) { [200, listing] }) do |port, requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => managed
+    }
+    stdout, stderr, status = run_playbook([includes_for("komga").first], variables, "--check")
+    output = stdout + stderr
+    failures << "Komga review fixture failed: #{failure_tail(output)}" unless status.success?
+    %w[KOMGA_PLAN_MANAGED_USER_CREATE KOMGA_PLAN_MANAGED_USER_REPAIR].each do |literal|
+      failures << "Komga review omitted #{literal}" unless output.include?(literal)
+    end
+    failures << "Komga review mutated the service" if
+      requests.any? { |request| %w[POST PUT PATCH DELETE].include?(request["method"]) }
+  end
+
+  # The other direction: a converged host must report neither plan, or the
+  # decision is not a decision.
+  converged = [{ "id" => "komga-reader", "email" => "reader@example.invalid",
+                 "roles" => %w[USER PAGE_STREAMING] }]
+  with_http_service(->(_request) { [200, converged] }) do |port, _requests|
+    variables = {
+      "komga_api" => "http://127.0.0.1:#{port}",
+      "vault_komga_admin_email" => "admin@example.invalid",
+      "vault_komga_admin_password" => "admin-secret",
+      "vault_managed_komga_users" => [managed.first]
+    }
+    stdout, stderr, status = run_playbook([includes_for("komga").first], variables, "--check")
+    output = stdout + stderr
+    failures << "Komga converged review failed: #{failure_tail(output)}" unless status.success?
+    %w[KOMGA_PLAN_MANAGED_USER_CREATE KOMGA_PLAN_MANAGED_USER_REPAIR].each do |literal|
+      failures << "Komga converged review reported #{literal}" if output.include?(literal)
+    end
+  end
+end
+
 def exercise_check_mode(failures)
   cases = [
     ["Audiobookshelf", "audiobookshelf", "fixture-token",
