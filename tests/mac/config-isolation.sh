@@ -158,6 +158,7 @@ render() {
 
   env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_CONTAINER_CPUSET=0-2 \
     NAS_UID=1000 NAS_GID=100 TZ=UTC \
+    PLATFORM_CURRENT_DIR="$repo_dir" \
     KAPOWARR_CONFIG_PATH="$temporary_dir/$label-kapowarr-config" \
     KAPOWARR_BOOKS_PATH="$temporary_dir/$label-media/Books" \
     KAPOWARR_HOST_PORT="$kapowarr_port" \

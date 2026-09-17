@@ -74,9 +74,20 @@ services:
     # tree. Kapowarr no longer rewrites ownership on a directory the NAS owns,
     # which is the same arrangement SABnzbd's staging siblings have always had:
     # host_prep creates them and the platform identity writes into them.
+    #
+    # The third mount is a carried patch, not configuration. v1.3.2's
+    # TaskHandler joins a queued task's thread without asking whether it was
+    # ever started, so a stop with such a task at the head of the queue raised
+    # out of Kapowarr's shutdown handler and the container waited out its grace
+    # period to a SIGKILL (#696). services/kapowarr/tasks.py is that upstream
+    # file with the two joins guarded and nothing else, and its trailer records
+    # the image it was derived from; tests/contracts/kapowarr-static.rb holds
+    # that record equal to the image line above, so a bump cannot mount this
+    # file over code it was not derived from.
     volumes:
       - ${KAPOWARR_CONFIG_PATH:?}:/app/db
       - ${KAPOWARR_BOOKS_PATH:?}:/data/books
+      - ${PLATFORM_CURRENT_DIR:?}/services/kapowarr/tasks.py:/app/backend/features/tasks.py:ro
     environment:
       TZ: ${TZ:?}
       # The entrypoint starts as root, remaps its own account to this pair and
@@ -94,18 +105,17 @@ services:
           python3 -c "import urllib.request;
           urllib.request.urlopen('http://127.0.0.1:5656/api/public', timeout=5)"
     # /app/db is the SQLite database of the whole comic library and is recovery:
-    # critical, but no grace period lets it close today, so this states Docker's
-    # own 10s rather than buying a window nothing uses (#696). Measured on the
-    # NAS against v1.3.2: SIGTERM reaches the supervisor and Kapowarr logs
-    # "Shutting down Kapowarr", then its shutdown handler raises at
-    # backend/features/tasks.py:284 -- stop_handle() joins a queued task whose
-    # thread never started ("cannot join thread before it is started") -- the
-    # orderly shutdown aborts with non-daemon threads still running, and the
-    # process stays wedged until Docker SIGKILLs it: 30.46s and exit 137 under
-    # the 30s this used to declare. A longer window only hangs longer. SQLite's
-    # journal keeps the store crash-safe, so what the kill costs is in-flight
-    # work rather than corruption; an interrupted download is already retried
-    # from the queue that database holds. The defect is upstream, and a longer
-    # window is worth declaring again only once a pin fixes it and a stop is
-    # measured to finish inside one.
+    # critical. With the patch mounted above, a stop runs Kapowarr's own shutdown
+    # to the end: waitress gives its request threads 5 seconds, the task and
+    # download handlers join what is running, and the process exits 0. Measured
+    # against v1.3.2 on Docker Desktop, patched: 0.22s with an unstarted task at
+    # the head of the queue, and 5.25-5.35s with request threads still busy from
+    # 300 concurrent task submissions, which is waitress's 5-second floor. 10s
+    # covers that floor and leaves the rest for the joins. Unpatched, the same
+    # unstarted head raised "cannot join thread before it is started" from
+    # stop_handle() and exited 1 locally; on the NAS it held the process to
+    # Docker's SIGKILL, 30.46s and exit 137 under the 30s this used to declare
+    # (#696). SQLite's journal keeps the store crash-safe if a stop is ever cut
+    # short, so what a kill costs is in-flight work rather than corruption; an
+    # interrupted download is already retried from the queue that database holds.
     stop_grace_period: 10s

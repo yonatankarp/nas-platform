@@ -257,7 +257,8 @@ check(failures, validated_inputs.include?("playbook_dir ~ '/services/manifest.ym
 check(failures, validated_inputs.include?("playbook_dir ~ '/services/dozzle/alert_relay.py', '0'") &&
                 validated_inputs.include?(
                   "playbook_dir ~ '/services/immich/classify_restore.py', '0'"
-                ),
+                ) &&
+                validated_inputs.include?("playbook_dir ~ '/services/kapowarr/tasks.py', '0'"),
       "controller inputs must validate every tracked runtime helper")
 catalog_validation_index = input_tasks.index do |task|
   task["ansible.builtin.include_tasks"] == "controller_input.yml" &&
@@ -317,6 +318,16 @@ check(failures,
           "{{ deployment_bundle_staging_dir }}/services/immich/classify_restore.py" &&
         immich_helper_copy&.dig("ansible.builtin.copy", "mode") == "0644",
       "deployment bundle must package the exact Immich classifier with mode 0644")
+kapowarr_patch_copy = deployment_tasks.find do |task|
+  task["name"] == "Copy the carried Kapowarr task handler patch from the controller"
+end
+check(failures,
+      kapowarr_patch_copy&.dig("ansible.builtin.copy", "src") ==
+        "{{ playbook_dir }}/services/kapowarr/tasks.py" &&
+        kapowarr_patch_copy&.dig("ansible.builtin.copy", "dest") ==
+          "{{ deployment_bundle_staging_dir }}/services/kapowarr/tasks.py" &&
+        kapowarr_patch_copy&.dig("ansible.builtin.copy", "mode") == "0644",
+      "deployment bundle must package the carried Kapowarr patch with mode 0644")
 staging_directory_task = deployment_tasks.find do |task|
   task["name"] == "Create the clean staging release"
 end
@@ -517,6 +528,7 @@ check(failures, deployment_manifest_template.include?("platform_compose") &&
       "deployment manifest images must merge canonical and platform Compose services")
 check(failures, deployment_manifest_template.include?("runtime_files:") &&
                 deployment_manifest_template.include?("'immich': ['classify_restore.py']") &&
+                deployment_manifest_template.include?("'kapowarr': ['tasks.py']") &&
                 deployment_manifest_template.include?("mode: \"0644\"") &&
                 deployment_manifest_template.include?("runtime_file") &&
                 deployment_manifest_template.include?("hash('sha256')"),
