@@ -846,7 +846,7 @@ check(failures, suites_job.dig("strategy", "matrix").to_h.keys == ["suite"],
 # slowest leg was idempotence-check at an observed 19.4-20.7 minutes, and it was
 # that fast because its phases 2 and 3 were running 88 of 1495 tasks; a lane that
 # re-converges the whole play twice more projects to 35-45, and the pre-pull's
-# retry ladder can add five on a rate-limited image. The floor is the projection
+# retry ladder can add eight on a rate-limited image (five until #762 widened it). The floor is the projection
 # plus that, not the observation.
 suites_budget = suites_job["timeout-minutes"]
 check(failures, suites_budget.is_a?(Integer) && suites_budget >= 90,
