@@ -21,10 +21,13 @@
 # alone with no -wal beside it. Unpatched, v1.3.2 did not: with an unstarted task
 # at the head of its queue its shutdown handler raised, and on the NAS Docker
 # SIGKILLed it at the grace deadline (#696). The carried patch that
-# services/kapowarr/compose.yml mounts lets that stop finish and exit 0, but the
-# container this task stops is the one being replaced, and the first upgrade
-# after the patch landed stops a container created without it. So the copy below
-# still reads the store's -wal and -shm rather than taking Kapowarr.db alone.
+# services/kapowarr/compose.yml mounts lets that stop finish and exit 0, and the
+# deploy that lands the patch recreates Kapowarr with it mounted, so the
+# container this task stops has the patch. The one exception is an image bump
+# landing in the same deploy as the patch: this task runs before that deploy's
+# Compose, so it would stop the unpatched container. The copy below reads the
+# store's -wal and -shm rather than Kapowarr.db alone for that case, and because
+# a stop cut short for any other reason leaves them too.
 #
 # IT RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on an actual image change, so a
 # converged host reports no change.

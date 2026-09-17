@@ -258,6 +258,34 @@ STATIC_ROWS = [
     expects: "the Kapowarr patch must guard both task thread joins exactly once"
   },
   {
+    # A changed bind source does not recreate a container, so without the label a
+    # patch edited in a later release stays unloaded in the running container.
+    name: "a container not labelled with the carried patch's sha256",
+    break: lambda { |root|
+      compose_service(root) { |service, _| service["labels"].delete("dev.nas-platform.kapowarr.task-patch-sha256") }
+    },
+    expects: "Kapowarr must label its container with the carried patch's sha256"
+  },
+  {
+    name: "an environment that does not export the carried patch's sha256",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/templates/env.j2",
+                  "KAPOWARR_TASK_PATCH_SHA256={{ kapowarr_task_patch_sha256 }}\n", "")
+    },
+    expects: "Kapowarr env must export the carried patch's release sha256 exactly once"
+  },
+  {
+    name: "a patch checksum read after the environment it labels is rendered",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        stat = document.find { |task| task["register"] == "kapowarr_task_patch" }
+        document.delete(stat)
+        document << stat
+      end
+    },
+    expects: "Kapowarr must checksum the release's carried patch before rendering its environment"
+  },
+  {
     name: "an environment that does not export the release root the patch is mounted from",
     break: lambda { |root|
       mutate_text(root, "roles/kapowarr/templates/env.j2",
@@ -2093,6 +2121,27 @@ PROGRAM_MUTATIONS = [
     from: 'patch_guards.keys.all? { |guarded| patch_body.scan(guarded).length == 1 }',
     to: "true",
     rows: ["a carried patch that lost its shutdown guard"]
+  },
+  {
+    label: "the carried patch label check",
+    program: :static,
+    from: 'service.dig("labels", "dev.nas-platform.kapowarr.task-patch-sha256") == "${KAPOWARR_TASK_PATCH_SHA256:?}"',
+    to: "true",
+    rows: ["a container not labelled with the carried patch's sha256"]
+  },
+  {
+    label: "the carried patch sha256 export check",
+    program: :static,
+    from: '[["KAPOWARR_TASK_PATCH_SHA256", "{{ kapowarr_task_patch_sha256 }}"]]',
+    to: 'env_assignments.select { |name, _value| name == "KAPOWARR_TASK_PATCH_SHA256" }',
+    rows: ["an environment that does not export the carried patch's sha256"]
+  },
+  {
+    label: "the carried patch checksum ordering check",
+    program: :static,
+    from: "patch_stat_index && env_render_index && patch_stat_index < env_render_index",
+    to: "true",
+    rows: ["a patch checksum read after the environment it labels is rendered"]
   },
   {
     label: "the release root export check",

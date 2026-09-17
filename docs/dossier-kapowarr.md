@@ -196,9 +196,9 @@ NAS the process waited out the grace period to a SIGKILL, 30.46s and exit 137
 is the upstream file with both thread joins guarded by `is_alive()`, mounted
 read-only over the image's own, and `tests/contracts/kapowarr-static.rb` refuses
 the tree unless the image that file records is the Compose pin. Patched, the same
-stop measured 0.22s and exit 0. The copy still reads the log pair, because the
-container it stops is the old one, which on the first upgrade after the patch did
-not have it.
+stop measured 0.22s and exit 0. The copy still reads the log pair, because an
+image bump landing in the same deploy as the patch stops the container before
+Compose has recreated it with the patch mounted.
 
 **Database backups land in the database directory, and that is left alone.**
 v1.3.2 adds `db_backup_folder` and `db_backup_amount` (default 3), and a

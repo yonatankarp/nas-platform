@@ -47,6 +47,9 @@ services:
     cpus: 1.0
     labels:
       dev.dozzle.name: kapowarr
+      # The carried patch's sha256 (#696, the volumes below): a changed bind
+      # source alone does not recreate a container, a changed label does.
+      dev.nas-platform.kapowarr.task-patch-sha256: ${KAPOWARR_TASK_PATCH_SHA256:?}
     ports:
       - "5656:5656"
     # The comics library and the staging directory that feeds it arrive inside

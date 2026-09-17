@@ -186,6 +186,15 @@ if failures.empty?
     env_assignments.select { |name, _value| name.start_with?("KAPOWARR_") && name.end_with?("_PATH") } ==
       [["KAPOWARR_CONFIG_PATH", "{{ kapowarr_config_host_path }}"],
        ["KAPOWARR_BOOKS_PATH", "{{ kapowarr_books_host_path }}"]]
+  # A changed bind source does not recreate a container; a changed label does.
+  # So the patch's own sha256, read from the release on the target, reaches a
+  # label, and editing the patch recreates Kapowarr instead of leaving the old
+  # file loaded (the alert relay's arrangement in services/dozzle).
+  failures << "Kapowarr must label its container with the carried patch's sha256" unless
+    service.dig("labels", "dev.nas-platform.kapowarr.task-patch-sha256") == "${KAPOWARR_TASK_PATCH_SHA256:?}"
+  failures << "Kapowarr env must export the carried patch's release sha256 exactly once" unless
+    env_assignments.select { |name, _value| name == "KAPOWARR_TASK_PATCH_SHA256" } ==
+      [["KAPOWARR_TASK_PATCH_SHA256", "{{ kapowarr_task_patch_sha256 }}"]]
   failures << "Kapowarr env must export the release root the patch is mounted from exactly once" unless
     env_assignments.select { |name, _value| name == "PLATFORM_CURRENT_DIR" } ==
       [["PLATFORM_CURRENT_DIR", "{{ platform_current_dir }}"]]
@@ -197,6 +206,15 @@ if failures.empty?
   tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/main.yml"), aliases: true)
   )
+  patch_stat_index = tasks.index do |task|
+    stat = task["ansible.builtin.stat"]
+    task["register"] == "kapowarr_task_patch" && stat.is_a?(Hash) &&
+      stat["path"] == "{{ platform_current_dir }}/services/kapowarr/tasks.py" &&
+      stat["follow"] == false && stat["get_checksum"] == true && stat["checksum_algorithm"] == "sha256"
+  end
+  env_render_index = tasks.index { |task| task.dig("ansible.builtin.template", "src") == "env.j2" }
+  failures << "Kapowarr must checksum the release's carried patch before rendering its environment" unless
+    patch_stat_index && env_render_index && patch_stat_index < env_render_index
   # One `up` here since #646, which is the deployment. The bounded recovery that
   # #537 bracketed it with moved to roles/container_health/tasks/recover.yml --
   # this role held 114 lines of it byte-identical with five others -- so what is
