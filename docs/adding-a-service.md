@@ -1325,9 +1325,11 @@ credential guard — and a service's own file is a shim that names the role and
 maps its parameters. `roles/komga/tasks/managed_users.yml` and
 `roles/komga/defaults/main.yml` are the reference for that shim, and the values
 it maps live in the defaults so the shim stays a one-to-one map. #647 hoisted
-komga, then audiobookshelf, then beszel, then jellyfin; paperless-ngx and immich
-are still hand-written copies and are being converted in later chunks, so read
-komga rather than the nearest file. `roles/audiobookshelf/defaults/main.yml` is the
+komga, then audiobookshelf, then beszel, then jellyfin, then immich, so read
+komga rather than the nearest file. Paperless-ngx keeps its own
+`tasks/managed_users.yml` by design: its users are Django records reached through
+`docker_compose_v2_exec` (register `mode: django_cli`), with token-bound repair,
+and the shared role refuses every mode but `api` on purpose. `roles/audiobookshelf/defaults/main.yml` is the
 reference for the two things komga does not need: a paginated listing envelope,
 whose refusals go in `managed_users_listing_conditions`, and a login that proves
 the credential in a request body rather than over basic auth, with the
@@ -1350,12 +1352,20 @@ expected policies after the role returns. When it has to run between two of the
 role's steps, the role runs it through a hook: `managed_users_before_create_tasks`
 (after existing credentials are proved, before creation) or
 `managed_users_after_creation_tasks` (once the post-creation re-list is bound,
-before the role reads it), each a path relative to `roles/managed_users/tasks`.
+before the role reads it), `managed_users_before_repair_tasks` (after the
+stable-identity refusal, before the repair, in reconcile and verify) or
+`managed_users_before_verify_tasks` (immediately before the exact verification,
+verify only), each a path relative to `roles/managed_users/tasks`.
 `roles/jellyfin/tasks/managed_users_existing_policies.yml` and
-`managed_users_refreshed_policies.yml` are the reference, and
+`managed_users_refreshed_policies.yml` are the reference for the first two, and
 `managed_users_reresolve_after_creation` is what makes the repair merge into the
-re-read records without binding authenticated identities. Immich's preference
-profiles are expected to take the same route.
+re-read records without binding authenticated identities.
+`roles/immich/tasks/managed_users.yml`, its defaults and its three
+`managed_users_*.yml` hook files are the reference for the last two, for a
+preference repair that has to follow the account repair (beside the shim, after
+the role), for `managed_users_authenticate_status` when a login answers other
+than 200, and for `managed_users_match_normalized`, which matches a listed
+identity by its `trim | lower` fold rather than exactly.
 
 `config/managed-user-capabilities.yml` is that role's own input as well as the
 register: it reads the service's row off the deployed release and refuses a
