@@ -45,18 +45,21 @@ REQUIRED_TASKS = {
     "Repair Paperless managed-user non-secret properties",
     "Verify exact Paperless managed users"
   ],
+  # Beszel's lifecycle is roles/managed_users (#647), so these are that role's
+  # task names with its title substituted; see beszel_contract_tasks.
   "beszel" => [
-    "List complete Beszel users for managed-user reconciliation",
-    "Refuse incomplete Beszel managed-user listing",
-    "Refuse ambiguous normalized Beszel managed identities",
-    "Authenticate existing Beszel managed users",
-    "Require preserved Beszel managed-user credentials",
-    "Create absent Beszel managed users",
-    "Require exact newly created Beszel managed identities",
-    "Authenticate newly created Beszel managed users",
-    "Require newly created Beszel managed-user credentials",
-    "Repair Beszel managed-user role and verification",
-    "Verify exact Beszel managed users"
+    "List complete users for managed-user reconciliation: Beszel",
+    "Refuse incomplete managed-user listing: Beszel",
+    "Refuse ambiguous normalized managed identities: Beszel",
+    "Authenticate existing managed users: Beszel",
+    "Require preserved managed-user credentials: Beszel",
+    "Create absent managed users: Beszel",
+    "Require exact newly created managed identities: Beszel",
+    "Authenticate newly created managed users: Beszel",
+    "Require newly created managed-user credentials: Beszel",
+    "Require stable authenticated managed identities: Beszel",
+    "Repair non-secret managed-user properties: Beszel",
+    "Verify exact managed users: Beszel"
   ]
 }.freeze
 
@@ -78,6 +81,87 @@ def task_name(task)
   task.fetch("name", "")
 end
 
+SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "main.yml")
+SHARED_MANAGED_USER_DEFAULTS = File.join(ROOT, "roles", "managed_users", "defaults", "main.yml")
+BESZEL_SHIM = File.join(ROOT, "roles", "beszel", "tasks", "managed_users.yml")
+BESZEL_DEFAULTS = File.join(ROOT, "roles", "beszel", "defaults", "main.yml")
+
+def beszel_managed_user_defaults
+  YAML.safe_load_file(BESZEL_DEFAULTS, aliases: false).select do |key, _value|
+    key.start_with?("beszel_managed_users_")
+  end
+end
+
+# Beszel reaches roles/managed_users through a shim (#647), so the task list its
+# contract is asserted against is what production actually runs: the shared role
+# with Beszel's title substituted, and every request body, id expression and the
+# binding switch followed through the shim's vars to Beszel's own defaults. A
+# body that is only a "{{ managed_users_create_body }}" reference proves nothing,
+# which is why the checks below never read the shared role's own text for one.
+# When the shim stops binding authenticated identities, the tasks and conditions
+# that switch gates are removed from the view, exactly as Ansible would skip or
+# short-circuit them, so the binding checks fail by name.
+def beszel_contract_tasks(shim_tasks = YAML.safe_load_file(BESZEL_SHIM, aliases: false),
+                          defaults = beszel_managed_user_defaults)
+  include = Array(shim_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
+  return shim_tasks unless include&.dig("ansible.builtin.include_role", "name") == "managed_users"
+
+  supplied = include.fetch("vars", {})
+  resolve = lambda do |name|
+    value = supplied[name]
+    reference = value.is_a?(String) ? value[/\A\{\{ (\w+) \}\}\z/, 1] : nil
+    reference && defaults.key?(reference) ? defaults[reference] : value
+  end
+  tasks = YAML.safe_load(File.read(SHARED_MANAGED_USER_ROLE).gsub("{{ managed_users_title }}", "Beszel"),
+                         aliases: false)
+  bound = resolve.call("managed_users_bind_authenticated_ids") == true
+  authenticated_id = resolve.call("managed_users_authenticated_id").to_s[/\A\{\{ (.*) \}\}\z/, 1]
+  tasks.filter_map do |task|
+    next nil if !bound && Array(task["when"]).include?("managed_users_bind_authenticated_ids | bool")
+
+    uri = task["ansible.builtin.uri"]
+    if uri.is_a?(Hash) && uri["url"].is_a?(String)
+      uri["url"] = uri["url"].gsub(/\{\{ (managed_users_\w+_path) \}\}/) { resolve.call(Regexp.last_match(1)).to_s }
+    end
+    if uri.is_a?(Hash) && uri["body"].is_a?(String)
+      parameter = uri["body"][/\A\{\{ (managed_users_\w+_body) \}\}\z/, 1]
+      uri["body"] = resolve.call(parameter) if parameter
+    end
+    conditions = task.dig("ansible.builtin.assert", "that")
+    if conditions.is_a?(Array)
+      conditions.reject! { |condition| condition.to_s.start_with?("not managed_users_bind_authenticated_ids") } unless bound
+      conditions.map! { |condition| condition.to_s.gsub("managed_users_authenticated_id ", "(#{authenticated_id}) ") } if
+        bound && authenticated_id
+    end
+    task
+  end
+end
+
+# A behaviour mutant of Beszel's lifecycle. The mutated task list is the shared
+# role, so the shim's include_role becomes an include_tasks of a mutated copy of
+# roles/managed_users/tasks/main.yml, carrying the shared role's defaults that
+# include_role would have loaded. Everything else the shim passes is unchanged.
+def write_beszel_shared_role_mutant(directory, name)
+  shared = YAML.safe_load_file(SHARED_MANAGED_USER_ROLE, aliases: false)
+  yield shared
+  shared_path = File.join(directory, "#{name}_managed_users.yml")
+  File.write(shared_path, YAML.dump(shared), mode: "w", perm: 0o600)
+  shim = YAML.safe_load_file(BESZEL_SHIM, aliases: false)
+  include = shim.find { |task| task.key?("ansible.builtin.include_role") }
+  include.delete("ansible.builtin.include_role")
+  include["ansible.builtin.include_tasks"] = shared_path
+  include["vars"] = YAML.safe_load_file(SHARED_MANAGED_USER_DEFAULTS, aliases: false).merge(include["vars"])
+  path = File.join(directory, "#{name}.yml")
+  File.write(path, YAML.dump(shim), mode: "w", perm: 0o600)
+  path
+end
+
+def service_contract_tasks(service)
+  return beszel_contract_tasks if service == "beszel"
+
+  YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false)
+end
+
 def contract_failures(service, tasks)
   failures = []
   names = tasks.map { |task| task_name(task) }
@@ -86,6 +170,18 @@ def contract_failures(service, tasks)
   initial_fact = "#{fact_prefix}_initial_authenticated_managed_user_ids"
   initialization = tasks.find do |task|
     task_name(task) == "Initialize #{service_label} managed-user binding facts"
+  end
+  # The shared role has no separate initialization: each binding task defaults
+  # the play-scoped initial map itself, and the reset at role entry must leave
+  # that map alone or verify would compare against nothing reconcile proved.
+  if service == "beszel"
+    initial_fact = "managed_users_initial_authenticated_ids"
+    initialization = tasks.find do |task|
+      task_name(task) == "Bind authenticated existing managed-user identifiers: Beszel"
+    end
+    reset = tasks.find { |task| task_name(task) == "Reset resolved managed-user decisions" }
+    failures << "Beszel initial authenticated-ID map is reset at role entry" if
+      reset.nil? || reset.dig("ansible.builtin.set_fact")&.key?(initial_fact)
   end
   failures << "#{service_label} initial authenticated-ID map is not initialized safely" unless
     initialization&.dig("ansible.builtin.set_fact", initial_fact).to_s.include?("default({})")
@@ -228,8 +324,8 @@ def contract_failures(service, tasks)
     failures << "Paperless omits effective post-list reauthentication" unless
       names.include?("Authenticate effective Paperless managed users after re-list")
   elsif service == "beszel"
-    create = tasks.find { |task| task_name(task) == "Create absent Beszel managed users" }
-    repair = tasks.find { |task| task_name(task) == "Repair Beszel managed-user role and verification" }
+    create = tasks.find { |task| task_name(task) == "Create absent managed users: Beszel" }
+    repair = tasks.find { |task| task_name(task) == "Repair non-secret managed-user properties: Beszel" }
     failures << "Beszel absent-user creation must set the pinned authentication prerequisite" unless
       create&.dig("ansible.builtin.uri", "body", "verified") == true
     failures << "Beszel absent-user creation grants privilege before credential proof" unless
@@ -239,8 +335,8 @@ def contract_failures(service, tasks)
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[role verified]
     ownership_words = tasks.to_s.scan(/universal_tokens|user_settings|systems|alerts/)
     failures << "Beszel additional-user tasks cross the primary ownership boundary" unless ownership_words.empty?
-    preserved = tasks.find { |task| task_name(task) == "Require preserved Beszel managed-user credentials" }
-    created = tasks.find { |task| task_name(task) == "Require newly created Beszel managed-user credentials" }
+    preserved = tasks.find { |task| task_name(task) == "Require preserved managed-user credentials: Beszel" }
+    created = tasks.find { |task| task_name(task) == "Require newly created managed-user credentials: Beszel" }
     failures << "Beszel existing auth is not bound to the listed record ID" unless
       preserved&.dig("ansible.builtin.assert", "that").to_s.include?("record.id") &&
       preserved&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
@@ -248,7 +344,7 @@ def contract_failures(service, tasks)
       created&.dig("ansible.builtin.assert", "that").to_s.include?("record.id") &&
       created&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
     failures << "Beszel omits stable authenticated-ID enforcement before repair" unless
-      names.include?("Require stable authenticated Beszel managed identities")
+      names.include?("Require stable authenticated managed identities: Beszel")
   end
   failures
 end
@@ -281,6 +377,11 @@ def managed_includes(service, extra_vars = {}, path: nil)
       File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
     )
     role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
+  elsif service == "beszel"
+    # The shim is included directly, so Ansible loads neither Beszel's defaults
+    # nor the shared role's release input; the repository root is a release that
+    # carries config/managed-user-capabilities.yml.
+    role_vars = beszel_managed_user_defaults.merge("platform_current_dir" => ROOT)
   end
   # include_tasks does not set role_path, but the production path reaches these
   # tasks through include_role, which does. Scripts loaded from the role's files/
@@ -745,7 +846,7 @@ def exercise_immich_invalid_avatar_policy(failures)
   end
 end
 
-def exercise_beszel(failures, task_path: nil)
+def exercise_beszel(failures, task_path: nil, extra_vars: {})
   users = [
     { "id" => "reader123456789", "email" => "reader@example.invalid", "password" => "reader-secret",
       "role" => "user", "verified" => true },
@@ -785,8 +886,8 @@ def exercise_beszel(failures, task_path: nil)
   end
   with_http_service(responder) do |port, requests|
     vars = { "beszel_api" => "http://127.0.0.1:#{port}", "beszel_auth" => { "json" => { "token" => "admin" } },
-             "beszel_complete_users" => { "json" => listing.call }, "vault_managed_beszel_users" => managed }
-    stdout, stderr, status = run_playbook(managed_includes("beszel", {}, path: task_path), vars)
+             "vault_managed_beszel_users" => managed }
+    stdout, stderr, status = run_playbook(managed_includes("beszel", extra_vars, path: task_path), vars)
     failures << "Beszel behavior fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
     failures << "Beszel unmanaged user was not preserved" unless users.any? { |user| user["email"] == "friend@example.invalid" }
     failures << "Beszel repair escaped role and verified" if requests.any? do |request|
@@ -1038,12 +1139,17 @@ def exercise_fail_closed_and_check_mode(failures)
   listing = { "items" => [beszel_user], "totalPages" => 1, "totalItems" => 1 }
   beszel_vars = { "beszel_api" => "http://127.0.0.1:1",
                   "beszel_auth" => { "json" => { "token" => "admin" } },
-                  "beszel_complete_users" => { "json" => listing },
                   "vault_managed_beszel_users" => [
                     { "email" => "reader@example.invalid", "password" => "reader-secret",
                       "role" => "admin", "verified" => true }
                   ] }
-  with_http_service(->(_request) { [400, {}] }) do |port, requests|
+  # The shared role reads the listing itself, where Beszel's own copy reused the
+  # one application_user.yml had read, so the stub answers that one read-only
+  # request and refuses everything else as before.
+  beszel_listing_request = ["GET", "/api/collections/users/records?perPage=500"]
+  with_http_service(lambda { |request|
+    [request["method"], request["target"]] == beszel_listing_request ? [200, listing] : [400, {}]
+  }) do |port, requests|
     vars = beszel_vars.merge("beszel_api" => "http://127.0.0.1:#{port}")
     stdout, stderr, status = run_playbook([managed_includes("beszel").first], vars)
     failures << "Beszel existing-unverified fixture unexpectedly succeeded" if status.success?
@@ -1053,14 +1159,21 @@ def exercise_fail_closed_and_check_mode(failures)
         "Existing Beszel managed user does not accept its preserved vault password."
       )
     failures << "Beszel existing-unverified failure reached a mutation" if
-      requests.any? { |request| request["method"] != "POST" ||
-        request["target"] != "/api/collections/users/auth-with-password" }
+      requests.any? do |request|
+        [request["method"], request["target"]] != beszel_listing_request &&
+          [request["method"], request["target"]] != ["POST", "/api/collections/users/auth-with-password"]
+      end
   end
-  with_http_service(->(_request) { [500, {}] }) do |port, requests|
+  with_http_service(lambda { |request|
+    [request["method"], request["target"]] == beszel_listing_request ? [200, listing] : [500, {}]
+  }) do |port, requests|
     vars = beszel_vars.merge("beszel_api" => "http://127.0.0.1:#{port}")
-    _stdout, _stderr, status = run_playbook([managed_includes("beszel").first], vars, "--check")
-    failures << "Beszel check-mode fixture failed" unless status.success?
-    failures << "Beszel check mode authenticated or mutated" unless requests.empty?
+    stdout, stderr, status = run_playbook([managed_includes("beszel").first], vars, "--check")
+    failures << "Beszel check-mode fixture failed: #{failure_tail(stdout + stderr)}" unless status.success?
+    failures << "Beszel check mode authenticated or mutated" unless
+      requests.all? { |request| [request["method"], request["target"]] == beszel_listing_request }
+    failures << "Beszel check mode did not plan the role repair" unless
+      (stdout + stderr).include?("BESZEL_PLAN_MANAGED_USER_REPAIR")
   end
 end
 
@@ -1192,7 +1305,6 @@ def exercise_mangled_created_credentials(failures)
   end
 
   beszel_users = []
-  initial = { "items" => [], "totalPages" => 1, "totalItems" => 0 }
   with_http_service(lambda { |request|
     case [request["method"], request["target"]]
     when ["POST", "/api/collections/users/records"]
@@ -1209,7 +1321,6 @@ def exercise_mangled_created_credentials(failures)
   }) do |port, requests|
     vars = { "beszel_api" => "http://127.0.0.1:#{port}",
              "beszel_auth" => { "json" => { "token" => "admin" } },
-             "beszel_complete_users" => { "json" => initial },
              "vault_managed_beszel_users" => [
                { "email" => "new@example.invalid", "password" => "expected",
                  "role" => "admin", "verified" => true }
@@ -1285,20 +1396,22 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
   old_beszel = { "id" => "reader123456789", "email" => "reader@example.invalid",
                  "role" => "user", "verified" => false }
   replacement_beszel = old_beszel.merge("id" => "replace123456789")
+  # The first listing names the record the credential proves; every later one
+  # names its replacement, so the swap lands between credential proof and repair.
+  beszel_reads = 0
   with_http_service(lambda { |request|
     case [request["method"], request["target"]]
     when ["POST", "/api/collections/users/auth-with-password"]
       [200, { "record" => old_beszel, "token" => "user-token" }]
     when ["GET", "/api/collections/users/records?perPage=500"]
-      [200, { "items" => [replacement_beszel], "totalPages" => 1, "totalItems" => 1 }]
+      beszel_reads += 1
+      [200, { "items" => [beszel_reads == 1 ? old_beszel : replacement_beszel],
+              "totalPages" => 1, "totalItems" => 1 }]
     else [200, {}]
     end
   }) do |port, requests|
     vars = { "beszel_api" => "http://127.0.0.1:#{port}",
              "beszel_auth" => { "json" => { "token" => "admin" } },
-             "beszel_complete_users" => {
-               "json" => { "items" => [old_beszel], "totalPages" => 1, "totalItems" => 1 }
-             },
              "vault_managed_beszel_users" => [
                { "email" => "reader@example.invalid", "password" => "secret",
                  "role" => "admin", "verified" => true }
@@ -1312,7 +1425,7 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     failures << "Beszel identity-swap fixture missed stable-ID assertion" unless
       HttpFixtureSupport.refused_with?(
         stdout + stderr,
-        "A Beszel managed email resolved to a different record after credential proof."
+        "A managed Beszel identity resolved to a different record after credential proof."
       )
   end
   exercise_paperless(failures, scenario: :swap, task_path: task_paths["paperless_ngx"])
@@ -1324,7 +1437,7 @@ SERVICES.each do |service|
   failures << "#{service} managed-user tasks are absent" unless File.file?(path)
   next unless File.file?(path)
 
-  tasks = YAML.safe_load_file(path, aliases: false)
+  tasks = service_contract_tasks(service)
   failures << "#{service} managed-user tasks must be a task list" unless tasks.is_a?(Array)
   failures.concat(contract_failures(service, tasks)) if tasks.is_a?(Array)
   # An include, not a mention. The file name appears in this role's comments and
@@ -1349,9 +1462,7 @@ if ARGV == ["--self-test"]
   SERVICES.each do |service|
     next unless failures.empty?
 
-    tasks = YAML.safe_load_file(
-      File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false
-    )
+    tasks = service_contract_tasks(service)
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
     unless contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
       failures << "#{service} final-verification mutant survived"
@@ -1370,7 +1481,7 @@ if ARGV == ["--self-test"]
     if service == "beszel"
       [nil, false].each do |verified_value|
         create_mutant = Marshal.load(Marshal.dump(tasks))
-        create = create_mutant.find { |task| task_name(task) == "Create absent Beszel managed users" }
+        create = create_mutant.find { |task| task_name(task) == "Create absent managed users: Beszel" }
         body = create.fetch("ansible.builtin.uri").fetch("body")
         verified_value.nil? ? body.delete("verified") : body["verified"] = verified_value
         detected = contract_failures(service, create_mutant).any? do |failure|
@@ -1379,6 +1490,25 @@ if ARGV == ["--self-test"]
         unless detected
           failures << "beszel create verified prerequisite mutant survived"
         end
+      end
+
+      # The binding is one switch in the shim now; turning it off must fail the
+      # two record-id bindings and the stable-identity refusal by name.
+      unbound_shim = YAML.safe_load_file(BESZEL_SHIM, aliases: false)
+      unbound_shim.find { |task| task.key?("ansible.builtin.include_role") }
+                  .fetch("vars")["managed_users_bind_authenticated_ids"] = false
+      unbound = contract_failures(service, beszel_contract_tasks(unbound_shim))
+      unless ["existing auth is not bound", "new auth is not bound", "omits stable authenticated-ID"].all? do |text|
+        unbound.any? { |failure| failure.include?(text) }
+      end
+        failures << "beszel unbound-identity mutant survived"
+      end
+
+      reset_mutant = Marshal.load(Marshal.dump(tasks))
+      reset_mutant.find { |task| task_name(task) == "Reset resolved managed-user decisions" }
+                  .fetch("ansible.builtin.set_fact")["managed_users_initial_authenticated_ids"] = {}
+      unless contract_failures(service, reset_mutant).any? { |failure| failure.include?("reset at role entry") }
+        failures << "beszel initial-map reset mutant survived"
       end
     end
 
@@ -1400,6 +1530,13 @@ if ARGV == ["--self-test"]
       Dir.mktmpdir("nas-platform-database-binding-mutants-") do |directory|
         task_paths = {}
         SERVICES.each do |service|
+          if service == "beszel"
+            task_paths[service] = write_beszel_shared_role_mutant(directory, "beszel_unstable") do |shared|
+              removed = shared.reject! { |task| task_name(task).start_with?("Require stable authenticated") }
+              raise "beszel stable-identity mutant planted nothing" unless removed
+            end
+            next
+          end
           tasks = YAML.safe_load_file(
             File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false
           )
@@ -1425,17 +1562,13 @@ if ARGV == ["--self-test"]
           end
         end
 
-        beszel_create_mutant = YAML.safe_load_file(
-          File.join(ROOT, "roles", "beszel", "tasks", "managed_users.yml"), aliases: false
-        )
-        create = beszel_create_mutant.find do |task|
-          task_name(task) == "Create absent Beszel managed users"
-        end
-        create.fetch("ansible.builtin.uri").fetch("body").delete("verified")
-        create_mutant_path = File.join(directory, "beszel_create.yml")
-        File.write(create_mutant_path, YAML.dump(beszel_create_mutant), mode: "w", perm: 0o600)
+        # Beszel's create body is its own default now, so the mutant overrides
+        # that default rather than editing a task.
+        unverified_create_body = beszel_managed_user_defaults.fetch("beszel_managed_users_create_body").dup
+        raise "beszel unverified-create mutant planted nothing" unless unverified_create_body.delete("verified")
         create_mutant_failures = []
-        exercise_beszel(create_mutant_failures, task_path: create_mutant_path)
+        exercise_beszel(create_mutant_failures,
+                        extra_vars: { "beszel_managed_users_create_body" => unverified_create_body })
         unless create_mutant_failures.any? { |failure| failure.start_with?("Beszel behavior fixture failed:") }
           failures << "beszel unverified-create mutant survived behavior fixtures"
         end
