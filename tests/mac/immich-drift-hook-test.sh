@@ -9,7 +9,8 @@
 # else. That is exactly reachable here: tests/contracts/immich-runtime.rb's drift
 # mode installs a system-configuration drift alongside the managed-user
 # preference drift, and "Require the managed Immich settings" runs strictly after
-# "Verify exact Immich managed user preferences" in roles/immich/tasks/main.yml.
+# "Verify exact Immich managed user preferences", which roles/immich/tasks/main.yml
+# reaches through its managed-user verify include and roles/managed_users (#647).
 # A preferences guard that stopped refusing would still fail the run at the
 # settings guard, one task later, with the task-name anchor none the wiser.
 #
@@ -91,20 +92,20 @@ printf '%s\n' VERIFY_IMMICH >> "${PLATFORM_HOOK_EVENTS:?}"
 printf '%s\n' 'PLAY [nas] *********************************************************************'
 case ${PLATFORM_HOOK_SCENARIO:?} in
   accepted)
-    printf '%s\n' 'TASK [immich : Verify exact Immich managed user preferences] ********************'
+    printf '%s\n' 'TASK [managed_users : Verify exact Immich managed user preferences] *************'
     exit 0
     ;;
   guard-passed)
     # The plant. The preferences guard ran and passed -- its banner is printed
     # either way -- and the run failed one task later on the settings drift the
     # same fixture installs.
-    printf '%s\n' 'TASK [immich : Verify exact Immich managed user preferences] ********************'
+    printf '%s\n' 'TASK [managed_users : Verify exact Immich managed user preferences] *************'
     printf '%s\n' 'TASK [immich : Require the managed Immich settings] *****************************'
     printf '%s\n' '[ERROR]: Task failed: Action failed: The managed Immich settings are absent or drifted.'
     exit 2
     ;;
   refusal)
-    printf '%s\n' 'TASK [immich : Verify exact Immich managed user preferences] ********************'
+    printf '%s\n' 'TASK [managed_users : Verify exact Immich managed user preferences] *************'
     printf '%s\n' "[ERROR]: Task failed: Action failed: An Immich managed user's declared preference leaves differ from its effective profile."
     printf '%s\n' 'failed: [nas] (item=(censored due to no_log)) => {"censored": "the output has been hidden due to the fact that '"'"'no_log: true'"'"' was specified for this result", "changed": false}'
     exit 2

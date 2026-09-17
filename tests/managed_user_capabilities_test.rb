@@ -63,10 +63,10 @@ EXPECTED_SERVICES = {
   "immich" => MULTI_USER_DEFAULTS.merge(
     "mode" => "api",
     "interfaces" => {
-      "list" => "admin/users",
+      "list" => "admin/users?withDeleted=true",
       "create" => "admin/users",
       "authenticate" => "auth/login",
-      "reconcile" => "admin/users"
+      "reconcile" => "admin/users/{id}"
     }
   ),
   "jellyfin" => MULTI_USER_DEFAULTS.merge(

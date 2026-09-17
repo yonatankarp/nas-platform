@@ -75,7 +75,11 @@ FIXTURE_FILES = %w[
   roles/immich/tasks/user_onboarding.yml
   roles/immich/tasks/configured_password.yml
   roles/immich/tasks/managed_users.yml
+  roles/immich/tasks/managed_users_existing_targets.yml
+  roles/immich/tasks/managed_users_effective_targets.yml
+  roles/immich/tasks/managed_users_preference_verification.yml
   roles/immich/defaults/main.yml
+  roles/managed_users/tasks/main.yml
   services/immich/compose.yml
   services/immich/compose.mac.yml
   services/immich/compose.integration.yml
@@ -345,13 +349,13 @@ STATIC_ROWS = [
   },
   {
     name: "the managed-user preference read gone",
-    break: ->(root) { rename_task(root, "roles/immich/tasks/managed_users.yml", "Read Immich managed user preferences") },
+    break: ->(root) { rename_task(root, "roles/immich/tasks/managed_users_effective_targets.yml", "Read Immich managed user preferences") },
     expects: "managed user preference read is absent"
   },
   {
     name: "a managed-user preference read that stops addressing a target",
     break: lambda { |root|
-      edit_yaml(root, "roles/immich/tasks/managed_users.yml") do |document|
+      edit_yaml(root, "roles/immich/tasks/managed_users_effective_targets.yml") do |document|
         target = document.find { |task| task.is_a?(Hash) && task["name"] == "Read Immich managed user preferences" }
         raise "fixture has no managed preference read" unless target
 
@@ -387,7 +391,21 @@ STATIC_ROWS = [
   },
   {
     name: "the non-administrator guard on preference targets gone",
-    break: ->(root) { rename_task(root, "roles/immich/tasks/managed_users.yml", "Require non-administrator Immich managed preference targets") },
+    break: ->(root) { rename_task(root, "roles/immich/tasks/managed_users_existing_targets.yml", "Require non-administrator Immich managed preference targets") },
+    expects: "managed user preference non-administrator guard is absent"
+  },
+  {
+    # The guard lives in a file roles/managed_users runs through a hook, so the
+    # static program has to follow the hook to see it. A hook that stops naming
+    # the file removes the guard from what the role executes.
+    name: "the before-create hook no longer naming the preference target refusals",
+    break: lambda { |root|
+      edit_yaml(root, "roles/immich/defaults/main.yml") do |document|
+        raise "fixture has no before-create hook" unless document.key?("immich_managed_users_before_create_tasks")
+
+        document["immich_managed_users_before_create_tasks"] = ""
+      end
+    },
     expects: "managed user preference non-administrator guard is absent"
   },
   {

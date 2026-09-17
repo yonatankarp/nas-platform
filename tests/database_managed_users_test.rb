@@ -16,22 +16,27 @@ include TestScaffold
 
 SERVICES = %w[immich paperless_ngx beszel].freeze
 REQUIRED_TASKS = {
+  # Immich's lifecycle is roles/managed_users too (#647), with its preference
+  # tasks spliced in where the shared role's hooks run them; see
+  # immich_contract_tasks. That is a static order, so the verify phase's
+  # preference verdict -- the before-verify hook -- precedes the exact
+  # verification, and the reconcile preference repair that follows the whole
+  # role is held separately in contract_failures.
   "immich" => [
-    "List complete Immich users for managed-user reconciliation",
-    "Refuse incomplete Immich managed-user listing",
-    "Refuse ambiguous normalized Immich managed identities",
-    "Authenticate existing Immich managed users",
-    "Require preserved Immich managed-user credentials",
+    "List complete users for managed-user reconciliation: Immich",
+    "Refuse incomplete managed-user listing: Immich",
+    "Refuse ambiguous normalized managed identities: Immich",
+    "Authenticate existing managed users: Immich",
+    "Require preserved managed-user credentials: Immich",
     "Require non-administrator Immich managed preference targets",
-    "Create absent Immich managed users",
-    "Require exact newly created Immich managed identities",
-    "Authenticate newly created Immich managed users",
-    "Require newly created Immich managed-user credentials",
+    "Create absent managed users: Immich",
+    "Require exact newly created managed identities: Immich",
+    "Authenticate newly created managed users: Immich",
+    "Require newly created managed-user credentials: Immich",
     "Read Immich managed user preferences",
-    "Repair Immich managed-user non-secret properties",
-    "Repair Immich managed user preferences",
+    "Repair non-secret managed-user properties: Immich",
     "Verify exact Immich managed user preferences",
-    "Verify exact Immich managed users"
+    "Verify exact managed users: Immich"
   ],
   "paperless_ngx" => [
     "List complete sanitized Paperless users for managed-user reconciliation",
@@ -85,10 +90,19 @@ SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "m
 SHARED_MANAGED_USER_DEFAULTS = File.join(ROOT, "roles", "managed_users", "defaults", "main.yml")
 BESZEL_SHIM = File.join(ROOT, "roles", "beszel", "tasks", "managed_users.yml")
 BESZEL_DEFAULTS = File.join(ROOT, "roles", "beszel", "defaults", "main.yml")
+IMMICH_SHIM = File.join(ROOT, "roles", "immich", "tasks", "managed_users.yml")
+IMMICH_DEFAULTS = File.join(ROOT, "roles", "immich", "defaults", "main.yml")
+SHARED_MANAGED_USER_TASKS_DIRECTORY = File.dirname(SHARED_MANAGED_USER_ROLE)
 
 def beszel_managed_user_defaults
   YAML.safe_load_file(BESZEL_DEFAULTS, aliases: false).select do |key, _value|
     key.start_with?("beszel_managed_users_")
+  end
+end
+
+def immich_managed_user_defaults
+  YAML.safe_load_file(IMMICH_DEFAULTS, aliases: false).select do |key, _value|
+    key.start_with?("immich_managed_users_")
   end
 end
 
@@ -106,14 +120,54 @@ def beszel_contract_tasks(shim_tasks = YAML.safe_load_file(BESZEL_SHIM, aliases:
   include = Array(shim_tasks).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
   return shim_tasks unless include&.dig("ansible.builtin.include_role", "name") == "managed_users"
 
+  shared_role_contract_tasks(include, defaults, "Beszel")
+end
+
+# Immich reaches roles/managed_users the same way, and keeps its preference
+# profiles in its own task files that the shared role runs through its hooks. So
+# its view is the shim's own tasks around the shared role's, with every hook
+# include replaced by the tasks of the file it names -- resolved from
+# roles/managed_users/tasks exactly as include_tasks resolves it -- and the
+# shim's own include of the preference verdicts replaced the same way. A hook
+# that names a file that is not there contributes nothing, so the checks that
+# need its tasks fail by name.
+def immich_contract_tasks(shim_tasks = YAML.safe_load_file(IMMICH_SHIM, aliases: false),
+                          defaults = immich_managed_user_defaults)
+  index = Array(shim_tasks).index { |task| task.is_a?(Hash) && task.key?("ansible.builtin.include_role") }
+  return shim_tasks unless index && shim_tasks[index].dig("ansible.builtin.include_role", "name") == "managed_users"
+
+  load_tasks = lambda do |path|
+    File.file?(path) ? Array(YAML.safe_load_file(path, aliases: false)) : []
+  end
+  expand_shim = lambda do |tasks|
+    tasks.flat_map do |task|
+      included = task["ansible.builtin.include_tasks"]
+      included.is_a?(String) ? load_tasks.call(File.join(File.dirname(IMMICH_SHIM), included)) : [task]
+    end
+  end
+  expand_shim.call(shim_tasks[0...index]) +
+    shared_role_contract_tasks(shim_tasks[index], defaults, "Immich", expand_hooks: load_tasks) +
+    expand_shim.call(shim_tasks[(index + 1)..])
+end
+
+def shared_role_contract_tasks(include, defaults, title, expand_hooks: nil)
   supplied = include.fetch("vars", {})
   resolve = lambda do |name|
     value = supplied[name]
     reference = value.is_a?(String) ? value[/\A\{\{ (\w+) \}\}\z/, 1] : nil
     reference && defaults.key?(reference) ? defaults[reference] : value
   end
-  tasks = YAML.safe_load(File.read(SHARED_MANAGED_USER_ROLE).gsub("{{ managed_users_title }}", "Beszel"),
+  tasks = YAML.safe_load(File.read(SHARED_MANAGED_USER_ROLE).gsub("{{ managed_users_title }}", title),
                          aliases: false)
+  if expand_hooks
+    tasks = tasks.flat_map do |task|
+      parameter = task["ansible.builtin.include_tasks"].to_s[/\A\{\{ (managed_users_\w+_tasks) \}\}\z/, 1]
+      next [task] unless parameter
+
+      hook = resolve.call(parameter).to_s
+      hook.empty? ? [] : expand_hooks.call(File.expand_path(hook, SHARED_MANAGED_USER_TASKS_DIRECTORY))
+    end
+  end
   bound = resolve.call("managed_users_bind_authenticated_ids") == true
   authenticated_id = resolve.call("managed_users_authenticated_id").to_s[/\A\{\{ (.*) \}\}\z/, 1]
   tasks.filter_map do |task|
@@ -126,6 +180,14 @@ def beszel_contract_tasks(shim_tasks = YAML.safe_load_file(BESZEL_SHIM, aliases:
     if uri.is_a?(Hash) && uri["body"].is_a?(String)
       parameter = uri["body"][/\A\{\{ (managed_users_\w+_body) \}\}\z/, 1]
       uri["body"] = resolve.call(parameter) if parameter
+    end
+    # A method the caller leaves to the shared role is that role's default.
+    if uri.is_a?(Hash) && uri["method"].is_a?(String)
+      parameter = uri["method"][/\A\{\{ (managed_users_\w+_method) \}\}\z/, 1]
+      if parameter
+        uri["method"] = resolve.call(parameter) ||
+                        YAML.safe_load_file(SHARED_MANAGED_USER_DEFAULTS, aliases: false)[parameter]
+      end
     end
     conditions = task.dig("ansible.builtin.assert", "that")
     if conditions.is_a?(Array)
@@ -141,16 +203,43 @@ end
 # role, so the shim's include_role becomes an include_tasks of a mutated copy of
 # roles/managed_users/tasks/main.yml, carrying the shared role's defaults that
 # include_role would have loaded. Everything else the shim passes is unchanged.
-def write_beszel_shared_role_mutant(directory, name)
+def write_beszel_shared_role_mutant(directory, name, &block)
+  write_shared_role_mutant(directory, name, BESZEL_SHIM, {}, &block)
+end
+
+# Immich's shim names its hook files relative to roles/managed_users/tasks,
+# which the mutated copy no longer lives in, so the mutant names them absolutely;
+# the shim's own include of its preference verdicts is made absolute for the
+# same reason.
+def write_immich_shared_role_mutant(directory, name, &block)
+  hooks = immich_managed_user_defaults.select { |key, _value| key.end_with?("_tasks") }
+                                      .transform_values do |path|
+    File.expand_path(path, SHARED_MANAGED_USER_TASKS_DIRECTORY)
+  end
+  write_shared_role_mutant(directory, name, IMMICH_SHIM, hooks, &block)
+end
+
+def write_shared_role_mutant(directory, name, shim_path, overrides)
   shared = YAML.safe_load_file(SHARED_MANAGED_USER_ROLE, aliases: false)
   yield shared
   shared_path = File.join(directory, "#{name}_managed_users.yml")
   File.write(shared_path, YAML.dump(shared), mode: "w", perm: 0o600)
-  shim = YAML.safe_load_file(BESZEL_SHIM, aliases: false)
+  shim = YAML.safe_load_file(shim_path, aliases: false)
   include = shim.find { |task| task.key?("ansible.builtin.include_role") }
   include.delete("ansible.builtin.include_role")
   include["ansible.builtin.include_tasks"] = shared_path
   include["vars"] = YAML.safe_load_file(SHARED_MANAGED_USER_DEFAULTS, aliases: false).merge(include["vars"])
+  hook_parameters = include["vars"].select { |_key, value| value.to_s.match?(/\A\{\{ \w+_tasks \}\}\z/) }
+  hook_parameters.each do |key, value|
+    reference = value[/\A\{\{ (\w+) \}\}\z/, 1]
+    include["vars"][key] = overrides.fetch(reference) if overrides.key?(reference)
+  end
+  shim.each do |task|
+    included = task["ansible.builtin.include_tasks"]
+    next if task.equal?(include) || !included.is_a?(String)
+
+    task["ansible.builtin.include_tasks"] = File.join(File.dirname(shim_path), included)
+  end
   path = File.join(directory, "#{name}.yml")
   File.write(path, YAML.dump(shim), mode: "w", perm: 0o600)
   path
@@ -158,6 +247,7 @@ end
 
 def service_contract_tasks(service)
   return beszel_contract_tasks if service == "beszel"
+  return immich_contract_tasks if service == "immich"
 
   YAML.safe_load_file(File.join(ROOT, "roles", service, "tasks", "managed_users.yml"), aliases: false)
 end
@@ -174,13 +264,13 @@ def contract_failures(service, tasks)
   # The shared role has no separate initialization: each binding task defaults
   # the play-scoped initial map itself, and the reset at role entry must leave
   # that map alone or verify would compare against nothing reconcile proved.
-  if service == "beszel"
+  if %w[beszel immich].include?(service)
     initial_fact = "managed_users_initial_authenticated_ids"
     initialization = tasks.find do |task|
-      task_name(task) == "Bind authenticated existing managed-user identifiers: Beszel"
+      task_name(task) == "Bind authenticated existing managed-user identifiers: #{service_label}"
     end
     reset = tasks.find { |task| task_name(task) == "Reset resolved managed-user decisions" }
-    failures << "Beszel initial authenticated-ID map is reset at role entry" if
+    failures << "#{service_label} initial authenticated-ID map is reset at role entry" if
       reset.nil? || reset.dig("ansible.builtin.set_fact")&.key?(initial_fact)
   end
   failures << "#{service_label} initial authenticated-ID map is not initialized safely" unless
@@ -226,12 +316,12 @@ def contract_failures(service, tasks)
   end
 
   if service == "immich"
-    repair = tasks.find { |task| task_name(task) == "Repair Immich managed-user non-secret properties" }
+    repair = tasks.find { |task| task_name(task) == "Repair non-secret managed-user properties: Immich" }
     failures << "Immich repair must use the pinned v3 PATCH endpoint" unless
       repair&.dig("ansible.builtin.uri", "method") == "PATCH"
     failures << "Immich repair must contain only name and quotaSizeInBytes" unless
       repair&.dig("ansible.builtin.uri", "body")&.keys&.map(&:to_s)&.sort == %w[name quotaSizeInBytes]
-    create = tasks.find { |task| task_name(task) == "Create absent Immich managed users" }
+    create = tasks.find { |task| task_name(task) == "Create absent managed users: Immich" }
     create_body = create&.dig("ansible.builtin.uri", "body")
     failures << "Immich create must use the exact safe account projection" unless
       create_body&.keys&.map(&:to_s)&.sort == %w[email name password shouldChangePassword].sort &&
@@ -240,16 +330,29 @@ def contract_failures(service, tasks)
       task.dig("ansible.builtin.uri", "method") == "PATCH" &&
         task.dig("ansible.builtin.uri", "body").to_s.match?(/password/i)
     end
-    preserved = tasks.find { |task| task_name(task) == "Require preserved Immich managed-user credentials" }
-    created = tasks.find { |task| task_name(task) == "Require newly created Immich managed-user credentials" }
+    preserved = tasks.find { |task| task_name(task) == "Require preserved managed-user credentials: Immich" }
+    created = tasks.find { |task| task_name(task) == "Require newly created managed-user credentials: Immich" }
+    # The shared role names the listed record's id through its id-attribute
+    # parameter, which Immich's defaults pin to `id`.
+    listed_id = /\.id\b|\[managed_users_id_attribute\]/
     failures << "Immich existing auth is not bound to the listed user ID" unless
       preserved&.dig("ansible.builtin.assert", "that").to_s.include?("userId") &&
-      preserved&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+      preserved&.dig("ansible.builtin.assert", "that").to_s.match?(listed_id) &&
+      immich_managed_user_defaults["immich_managed_users_id_attribute"] == "id"
     failures << "Immich new auth is not bound to the re-resolved user ID" unless
       created&.dig("ansible.builtin.assert", "that").to_s.include?("userId") &&
-      created&.dig("ansible.builtin.assert", "that").to_s.include?(".id")
+      created&.dig("ansible.builtin.assert", "that").to_s.match?(listed_id) &&
+      immich_managed_user_defaults["immich_managed_users_id_attribute"] == "id"
     failures << "Immich omits stable authenticated-ID enforcement before repair" unless
-      names.include?("Require stable authenticated Immich managed identities")
+      names.include?("Require stable authenticated managed identities: Immich")
+    # The reconcile preference repair follows the account repair, after the
+    # whole role, and its read-back verdict follows it; the verify phase's
+    # verdict is the earlier occurrence REQUIRED_TASKS holds.
+    preference_repair_position = names.index("Repair Immich managed user preferences")
+    failures << "Immich preference repair must follow the account repair and precede its read-back verdict" unless
+      preference_repair_position &&
+      names.index("Repair non-secret managed-user properties: Immich").to_i < preference_repair_position &&
+      names.rindex("Verify exact Immich managed user preferences").to_i > preference_repair_position
     preference_read = tasks.find do |task|
       task_name(task) == "Read Immich managed user preferences"
     end
@@ -377,6 +480,9 @@ def managed_includes(service, extra_vars = {}, path: nil)
       File.join(ROOT, "roles", "immich", "defaults", "main.yml"), aliases: false
     )
     role_vars = defaults.select { |key, _value| key.start_with?("immich_managed_user_preference_") }
+    # As for Beszel below: the shim is included directly, so neither its account
+    # parameters nor the shared role's release input are loaded by Ansible.
+    role_vars = role_vars.merge(immich_managed_user_defaults).merge("platform_current_dir" => ROOT)
   elsif service == "beszel"
     # The shim is included directly, so Ansible loads neither Beszel's defaults
     # nor the shared role's release input; the repository root is a release that
@@ -744,7 +850,7 @@ def exercise_immich_normalized_duplicate_refusal(failures)
     failures << "Immich normalized duplicate fixture missed ambiguity refusal" unless
       HttpFixtureSupport.refused_with?(
         stdout + stderr,
-        "Immich contains a duplicate normalized managed email:"
+        "Immich contains duplicate normalized managed identities; resolve the ambiguity manually before reconciliation:"
       )
     failures << "Immich normalized duplicate fixture reached mutation" if
       requests.any? { |request| %w[POST PATCH PUT DELETE].include?(request["method"]) }
@@ -1470,7 +1576,7 @@ def exercise_identity_swap_refusal(failures, task_paths: {})
     failures << "Immich identity-swap fixture missed stable-ID assertion" unless
       HttpFixtureSupport.refused_with?(
         stdout + stderr,
-        "An Immich managed email resolved to a different record after credential proof."
+        "A managed Immich identity resolved to a different record after credential proof."
       )
   end
 
@@ -1540,19 +1646,22 @@ failures << "database managed-user self-test is not registered" unless
   policy.lines.include?("ruby tests/database_managed_users_test.rb --self-test\n")
 
 if ARGV == ["--self-test"]
-  # Every Beszel plant names itself when it is detected, and the count is held
-  # against a stated number, so a plant that stops running is a failure rather
-  # than a quieter pass. Beszel's is the lifecycle #647 moved onto the shared
-  # role; the other two services still report through survivors alone.
+  # Every Beszel and Immich plant names itself when it is detected, and each
+  # count is held against a stated number, so a plant that stops running is a
+  # failure rather than a quieter pass. Theirs are the lifecycles #647 moved onto
+  # the shared role; Paperless still reports through survivors alone.
   beszel_detected = []
   expected_beszel_plants = 9
+  immich_detected = []
+  expected_immich_plants = 6
+  plants_detected = { "beszel" => beszel_detected, "immich" => immich_detected }
   SERVICES.each do |service|
     next unless failures.empty?
 
     tasks = service_contract_tasks(service)
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
     if contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
-      beszel_detected << "final verification removed" if service == "beszel"
+      plants_detected[service]&.<<("final verification removed")
     else
       failures << "#{service} final-verification mutant survived"
     end
@@ -1564,7 +1673,7 @@ if ARGV == ["--self-test"]
       repair.fetch("ansible.builtin.uri").fetch("body")["password"] = "forbidden"
     end
     if contract_failures(service, mutant).any? { |failure| failure.include?("password path") }
-      beszel_detected << "password in the repair body" if service == "beszel"
+      plants_detected[service]&.<<("password in the repair body")
     else
       failures << "#{service} existing-password-update mutant survived"
     end
@@ -1599,6 +1708,34 @@ if ARGV == ["--self-test"]
         beszel_detected << "shim stops binding authenticated identities"
       end
 
+    end
+
+    if service == "immich"
+      # The same binding switch, in Immich's shim.
+      unbound_shim = YAML.safe_load_file(IMMICH_SHIM, aliases: false)
+      unbound_shim.find { |task| task.key?("ansible.builtin.include_role") }
+                  .fetch("vars")["managed_users_bind_authenticated_ids"] = false
+      unbound = contract_failures(service, immich_contract_tasks(unbound_shim))
+      if ["existing auth is not bound", "new auth is not bound", "omits stable authenticated-ID"].all? do |text|
+        unbound.any? { |failure| failure.include?(text) }
+      end
+        immich_detected << "shim stops binding authenticated identities"
+      else
+        failures << "immich unbound-identity mutant survived"
+      end
+
+      # The pre-creation refusal of an administrator target lives in a hook
+      # file; a hook that stops naming it removes the refusal from the view.
+      unhooked = immich_managed_user_defaults.merge("immich_managed_users_before_create_tasks" => "")
+      if contract_failures(service, immich_contract_tasks(YAML.safe_load_file(IMMICH_SHIM, aliases: false), unhooked))
+         .any? { |failure| failure.include?("Require non-administrator Immich managed preference targets") }
+        immich_detected << "before-create hook no longer names the target refusals"
+      else
+        failures << "immich before-create hook mutant survived"
+      end
+    end
+
+    if service == "beszel"
       reset_mutant = Marshal.load(Marshal.dump(tasks))
       reset_mutant.find { |task| task_name(task) == "Reset resolved managed-user decisions" }
                   .fetch("ansible.builtin.set_fact")["managed_users_initial_authenticated_ids"] = {}
@@ -1615,7 +1752,7 @@ if ARGV == ["--self-test"]
     end
     secret_task["no_log"] = false
     if contract_failures(service, visible_secret).any? { |failure| failure.include?("lacks no_log") }
-      beszel_detected << "no_log removed from #{task_name(secret_task)}" if service == "beszel"
+      plants_detected[service]&.<<("no_log removed from #{task_name(secret_task)}")
     else
       failures << "#{service} no-log mutant survived"
     end
@@ -1633,6 +1770,13 @@ if ARGV == ["--self-test"]
             task_paths[service] = write_beszel_shared_role_mutant(directory, "beszel_unstable") do |shared|
               removed = shared.reject! { |task| task_name(task).start_with?("Require stable authenticated") }
               raise "beszel stable-identity mutant planted nothing" unless removed
+            end
+            next
+          end
+          if service == "immich"
+            task_paths[service] = write_immich_shared_role_mutant(directory, "immich_unstable") do |shared|
+              removed = shared.reject! { |task| task_name(task).start_with?("Require stable authenticated") }
+              raise "immich stable-identity mutant planted nothing" unless removed
             end
             next
           end
@@ -1657,7 +1801,7 @@ if ARGV == ["--self-test"]
           label = service == "paperless_ngx" ? "Paperless" : service.capitalize
           if mutant_failures.any? { |failure| failure == "#{label} identity-swap fixture unexpectedly succeeded" } &&
              mutant_failures.any? { |failure| failure.include?("#{label} identity-swap fixture reached") }
-            beszel_detected << "stable authenticated-identity refusal removed (behaviour)" if service == "beszel"
+            plants_detected[service]&.<<("stable authenticated-identity refusal removed (behaviour)")
           else
             failures << "#{service} authenticated-ID binding mutant survived behavior fixtures"
           end
@@ -1738,9 +1882,13 @@ if ARGV == ["--self-test"]
   end
   if failures.empty?
     beszel_detected.each { |plant| puts "self-test detected: beszel #{plant}" }
+    immich_detected.each { |plant| puts "self-test detected: immich #{plant}" }
     failures << "beszel self-test detected #{beszel_detected.length} planted regressions, " \
                 "expected #{expected_beszel_plants}" unless beszel_detected.length == expected_beszel_plants
-    puts "database managed users: self-test detects #{beszel_detected.length} planted beszel regressions"
+    failures << "immich self-test detected #{immich_detected.length} planted regressions, " \
+                "expected #{expected_immich_plants}" unless immich_detected.length == expected_immich_plants
+    puts "database managed users: self-test detects #{beszel_detected.length} planted beszel regressions " \
+         "and #{immich_detected.length} planted immich regressions"
   end
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }

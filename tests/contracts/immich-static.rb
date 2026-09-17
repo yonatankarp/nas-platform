@@ -220,9 +220,51 @@ refuse("runtime contract permits a dormant supported preference sentinel") unles
     "designated partial profile has no supported unowned preference sentinel"
   ) && contract_source.include?("supported unowned managed preference")
 
-managed_user_tasks = YAML.safe_load_file(
-  File.join(root, "roles", "immich", "tasks", "managed_users.yml"), aliases: true
-)
+# The managed-user lifecycle is roles/managed_users reached through Immich's
+# shim (#647), with Immich's preference tasks in files the shared role runs
+# through its hooks and one the shim includes after it. What the role executes
+# is therefore that expansion, in execution order: the shim's tasks around the
+# shared role's, each hook include replaced by the tasks of the file its
+# defaults name -- resolved from roles/managed_users/tasks, as include_tasks
+# resolves it -- and each shim include by the file it names. A file that is not
+# there contributes nothing, so the checks below that need its tasks refuse by
+# name rather than reading a reference as though it were the tasks.
+immich_tasks_dir = File.join(root, "roles", "immich", "tasks")
+shared_tasks_dir = File.join(root, "roles", "managed_users", "tasks")
+read_tasks = lambda do |path|
+  File.file?(path) ? Array(YAML.safe_load_file(path, aliases: true)) : []
+end
+expand_includes = lambda do |tasks, directory, resolve|
+  tasks.flat_map do |task|
+    included = task["ansible.builtin.include_tasks"]
+    next [task] unless included.is_a?(String)
+
+    target = resolve.call(included)
+    target.to_s.empty? ? [] : read_tasks.call(File.expand_path(target, directory))
+  end
+end
+managed_user_tasks = read_tasks.call(File.join(immich_tasks_dir, "managed_users.yml"))
+shared_include = managed_user_tasks.index do |task|
+  task.dig("ansible.builtin.include_role", "name") == "managed_users"
+end
+if shared_include
+  include_vars = managed_user_tasks[shared_include].fetch("vars", {})
+  resolve_hook = lambda do |reference|
+    parameter = reference[/\A\{\{ (managed_users_\w+_tasks) \}\}\z/, 1]
+    next reference unless parameter
+
+    value = include_vars[parameter].to_s
+    default_name = value[/\A\{\{ (\w+) \}\}\z/, 1]
+    default_name ? defaults[default_name] : value
+  end
+  shared_tasks = read_tasks.call(File.join(shared_tasks_dir, "main.yml")).map do |task|
+    YAML.safe_load(YAML.dump(task).gsub("{{ managed_users_title }}", "Immich"), aliases: true)
+  end
+  managed_user_tasks =
+    expand_includes.call(managed_user_tasks[0...shared_include], immich_tasks_dir, ->(path) { path }) +
+    expand_includes.call(shared_tasks, shared_tasks_dir, resolve_hook) +
+    expand_includes.call(managed_user_tasks[(shared_include + 1)..], immich_tasks_dir, ->(path) { path })
+end
 configured_password_path = File.join(
   root, "roles", "immich", "tasks", "configured_password.yml"
 )
@@ -298,8 +340,8 @@ refuse("avatar preference authoritative admin-user verification is absent") unle
 refuse("authoritative admin-user pre-read must cover profiles without avatar ownership") if
   Array(user_read["when"]).to_s.include?("desired_avatar_colors")
 task_positions = managed_user_tasks.each_with_index.to_h { |task, index| [task["name"], index] }
-first_managed_mutation = task_positions.fetch("Repair Immich managed-user non-secret properties")
-create_position = task_positions.fetch("Create absent Immich managed users")
+first_managed_mutation = task_positions.fetch("Repair non-secret managed-user properties: Immich")
+create_position = task_positions.fetch("Create absent managed users: Immich")
 [
   "Validate effective Immich managed user preference policies",
   "Read existing Immich managed user preferences before creation",

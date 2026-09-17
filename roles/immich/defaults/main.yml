@@ -101,3 +101,80 @@ immich_managed_user_preference_profiles:
     tags:
       enabled: false
       sidebarWeb: false
+
+# Immich's half of roles/managed_users. tasks/managed_users.yml maps these onto
+# that role's parameters one for one; roles/komga, roles/audiobookshelf,
+# roles/beszel and roles/jellyfin carry the blocks to compare it against.
+#
+# The four relative paths are asserted against config/managed-user-capabilities.yml
+# on the deployed release before any request is sent.
+immich_managed_users_identity_attribute: email
+immich_managed_users_id_attribute: id
+immich_managed_users_list_path: admin/users?withDeleted=true
+immich_managed_users_authenticate_path: auth/login
+immich_managed_users_create_path: admin/users
+immich_managed_users_reconcile_interface: admin/users/{id}
+# A successful login creates a session, and Immich answers it 201.
+immich_managed_users_authenticate_status: 201
+immich_managed_users_create_status: [201]
+immich_managed_users_repair_status: [200]
+# Immich user ids are UUIDs. Narrower than platform_safe_api_identifier_pattern,
+# so it is kept rather than widened.
+immich_managed_users_id_pattern: '^[0-9A-Fa-f-]{36}$'
+
+# The Immich-only reads and refusals roles/managed_users runs between its own
+# steps: the existing preference targets before creation, the effective ones
+# before the repair, and the preference and avatar verdicts before the exact
+# verification. Relative to roles/managed_users/tasks.
+immich_managed_users_before_create_tasks: ../../immich/tasks/managed_users_existing_targets.yml
+immich_managed_users_before_repair_tasks: ../../immich/tasks/managed_users_effective_targets.yml
+immich_managed_users_before_verify_tasks: ../../immich/tasks/managed_users_preference_verification.yml
+
+# Evaluated inside the shared role's loops, against its own names: the listing it
+# registered, the single match it bound, `item`, and the declared user it binds
+# as managed_users_authenticating_user for both authenticate requests.
+immich_managed_users_list_json: "{{ managed_users_listing.json }}"
+immich_managed_users_authenticate_body:
+  email: "{{ managed_users_authenticating_user.email }}"
+  password: "{{ managed_users_authenticating_user.password }}"
+immich_managed_users_authenticate_identity: "{{ item.json.userEmail | default('') }}"
+# The user id a successful login returns; the shared role requires it to be the
+# listed record's id, and refuses a repair whose record is not it.
+immich_managed_users_authenticated_id: "{{ item.json.userId | default('') }}"
+immich_managed_users_reconcile_path: >-
+  admin/users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
+# Creation grants nothing beyond the account itself; quota is set by repair,
+# after the new credential is proved.
+immich_managed_users_create_body:
+  email: "{{ item.email }}"
+  password: "{{ item.password }}"
+  name: "{{ item.name }}"
+  shouldChangePassword: false
+# Nothing password-shaped may appear here: the capability register declares an
+# existing identity's password update forbidden, and the shared role refuses a
+# repair body carrying one.
+immich_managed_users_repair_body:
+  name: "{{ item.name }}"
+  quotaSizeInBytes: "{{ item.quota_size }}"
+immich_managed_users_repair_condition: >-
+  {{ managed_users_match.name != item.name or
+     managed_users_match.quotaSizeInBytes != item.quota_size }}
+# Brace-free; the first condition is what makes the rest safe, because
+# managed_users_match is an empty mapping for an identity with no match. The last
+# two compare against the ids this phase's own authentication proved and the
+# first one proved in this play.
+immich_managed_users_verify_conditions:
+  - managed_users_matches[item.email] | length == 1
+  - managed_users_match.email | trim | lower == item.email | trim | lower
+  - managed_users_match.name == item.name
+  - managed_users_match.quotaSizeInBytes == item.quota_size
+  - managed_users_match.status == 'active'
+  - managed_users_match.id == managed_users_authenticated_ids[item.email]
+  - >-
+    managed_users_match.id ==
+    managed_users_initial_authenticated_ids[managed_users_service][item.email]
+immich_managed_users_verify_fail_msg: >-
+  A managed Immich identity is absent, duplicated, inactive, or differs from its
+  exact projection.
+immich_managed_users_plan_create_message: IMMICH_PLAN_MANAGED_USER_CREATE
+immich_managed_users_plan_repair_message: IMMICH_PLAN_MANAGED_USER_REPAIR
