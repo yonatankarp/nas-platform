@@ -72,6 +72,7 @@ UNGUARDED_RELEASE_READS = [
 # The reads that must STAY guarded. Stated rather than derived, because "no
 # unguarded reads appeared" is satisfied just as well by the read being deleted.
 GUARDED_RELEASE_READS = [
+  "roles/audiobookshelf/tasks/settings.yml",
   "roles/vaultwarden/tasks/deploy.yml",
   "roles/vaultwarden/tasks/verify.yml"
 ].freeze

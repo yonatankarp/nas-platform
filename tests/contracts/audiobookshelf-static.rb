@@ -174,6 +174,23 @@ if mode == "static"
   required_tasks.each do |name|
     abort "Audiobookshelf contract failed: missing #{name}" unless role_task_names.include?(name)
   end
+  # The schema gate names the release it was validated against by reading the
+  # pin, never a literal: a literal fails every Renovate bump (#753, #765) while the
+  # per-key type assertions beside it are what guard the schema.
+  schema_conditions = Array(all_role_tasks.find { |task| task["name"] == "Validate current Audiobookshelf server settings schema" }
+                                          &.dig("ansible.builtin.assert", "that")).map(&:to_s)
+  pinned_compose_read = all_role_tasks.find { |task| task["name"] == "Read the Audiobookshelf image this release pins" }
+  pinned_version_fact = all_role_tasks.find { |task| task["name"] == "Resolve the Audiobookshelf version this release pins" }
+  abort "Audiobookshelf contract failed: running server version is not compared against the pinned image" unless
+    schema_conditions.any? { |condition| condition.end_with?(" or audiobookshelf_pinned_version | length > 0") } &&
+      schema_conditions.any? do |condition|
+        condition.end_with?(" or audiobookshelf_server_settings_before.json.serverSettings.version == audiobookshelf_pinned_version")
+      end &&
+      schema_conditions.none? { |condition| condition.include?("serverSettings.version ==") && condition.match?(/['"][0-9]/) } &&
+      pinned_compose_read&.dig("ansible.builtin.slurp", "path") ==
+        "{{ platform_current_dir }}/services/audiobookshelf/compose.yml" &&
+      pinned_version_fact&.dig("ansible.builtin.set_fact", "audiobookshelf_pinned_version").to_s
+                         .include?("audiobookshelf_pinned_compose.content")
   settings_reads = role_tasks.each_with_index.filter_map do |task, index|
     uri = task.is_a?(Hash) ? task["ansible.builtin.uri"] : nil
     [task, uri, index] if uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/api/authorize"
@@ -204,6 +221,16 @@ if mode == "static"
   abort "Audiobookshelf contract failed: authoritative timezone is not checked on every settings read" unless
     timezone_assertions.length >= 3
   patch_body = settings_patch.fetch(0).fetch(1).fetch("body").to_s
+  # From 2.36.1 PATCH /api/settings answers 200 and drops any key outside its
+  # patchable set, backupPath among them, so the path has its own route.
+  backup_path_patch = all_role_tasks.find do |task|
+    uri = task["ansible.builtin.uri"]
+    uri.is_a?(Hash) && uri["url"] == "{{ audiobookshelf_api }}/api/backups/path"
+  end
+  abort "Audiobookshelf contract failed: backupPath is sent where Audiobookshelf drops it" unless
+    patch_body.include?("rejectattr('key', 'equalto', 'backupPath')") &&
+      backup_path_patch && backup_path_patch.dig("ansible.builtin.uri", "method") == "PATCH" &&
+      backup_path_patch["no_log"] == true && Array(backup_path_patch["when"]).include?("not ansible_check_mode")
   abort "Audiobookshelf contract failed: non-persisted timezone is included in PATCH" if
     patch_body.include?("timeZone") || defaults.fetch("audiobookshelf_owned_server_settings").key?("timeZone")
   drift_commit_branch = File.read(contract_source_path)

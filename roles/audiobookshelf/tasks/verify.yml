@@ -43,7 +43,7 @@
     that:
       - audiobookshelf_verify_login_status | int != 401
     fail_msg: >-
-      Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0
+      Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf
       exposes no unauthenticated API path to reactivate an inactive root; verify vault credentials
       or reactivate it through an already-authorized root session, then rerun.
   when:

@@ -26,13 +26,91 @@
   check_mode: false
   no_log: true
 
+# The schema assertion below was validated by hand against one Audiobookshelf
+# release, and it used to name that release as a literal. Audiobookshelf writes
+# its own package version into serverSettings.version at every start, so the
+# literal was a proxy for "the server is the release whose schema was checked",
+# and every Renovate bump went red on it without any schema having moved (#753, #765).
+# The version is now read from the pin the running container was deployed from,
+# so the assertion still refuses a server that is not the pinned release, and the
+# per-key type assertions beside it are what guard the schema itself.
+#
+# The pin is read from the INSTALLED release, and that is also what makes the
+# comparison right under --check. A review installs no release and recreates no
+# container, so on the run that bumps the image `current` still pins the old
+# version and the server still runs it: the two agree. On the live converge
+# deployment_bundle installs the new release and Compose recreates the
+# container before this runs, so both are the new version. Under --check a
+# `current` that predates this service carries no services/audiobookshelf at
+# all, so the path is statted first and three states are kept apart, the way
+# roles/vaultwarden/tasks/deploy.yml keeps them (#547): present compares,
+# absent under check mode reports, absent on a live run fails.
+- name: Read whether the installed release carries the Audiobookshelf Compose file
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
+  register: audiobookshelf_pinned_compose_present
+  changed_when: false
+  check_mode: false
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Require a live Audiobookshelf converge to have installed its own Compose file
+  ansible.builtin.assert:
+    that:
+      - audiobookshelf_pinned_compose_present.stat.exists
+    fail_msg: >-
+      {{ platform_current_dir }}/services/audiobookshelf/compose.yml is missing on a
+      run that is not a review. deployment_bundle installs the release before this
+      role runs, so the release is incomplete, and the settings gate cannot tell
+      which Audiobookshelf version it is meant to be talking to.
+  when: not ansible_check_mode
+
+- name: Report the Audiobookshelf version comparison this review cannot make
+  ansible.builtin.debug:
+    msg: >-
+      {{ platform_current_dir }}/services/audiobookshelf/compose.yml does not
+      exist, so this review cannot compare the running Audiobookshelf against a
+      pin. That is expected: check mode installs no release, so `current` still
+      names one that does not carry this service, and nothing is mutated by this
+      run. The schema assertions still run.
+  when:
+    - ansible_check_mode
+    - audiobookshelf_initialized | bool
+    - not audiobookshelf_pinned_compose_present.stat.exists
+
+- name: Read the Audiobookshelf image this release pins
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
+  register: audiobookshelf_pinned_compose
+  when:
+    - not ansible_check_mode or audiobookshelf_initialized | bool
+    - audiobookshelf_pinned_compose_present.stat.exists
+
+- name: Resolve the Audiobookshelf version this release pins
+  ansible.builtin.set_fact:
+    audiobookshelf_pinned_version: >-
+      {{ (audiobookshelf_pinned_compose.content | b64decode | from_yaml)
+           .services.audiobookshelf.image
+         | regex_replace('@.*$', '') | regex_replace('^.*/', '')
+         | regex_search('(?<=:)v?[0-9]+(\.[0-9]+)*') | default('', true)
+         | regex_replace('^v', '') }}
+  when:
+    - not ansible_check_mode or audiobookshelf_initialized | bool
+    - audiobookshelf_pinned_compose_present.stat.exists
+
 - name: Validate current Audiobookshelf server settings schema
   ansible.builtin.assert:
     that:
       - audiobookshelf_server_settings_before.json is mapping
       - audiobookshelf_server_settings_before.json.serverSettings is mapping
       - audiobookshelf_server_settings_before.json.serverSettings.id == 'server-settings'
-      - audiobookshelf_server_settings_before.json.serverSettings.version == '2.36.0'
+      # Short-circuits before the pin, which is undefined on the one path that
+      # reaches here without it: a review whose release lacks this service.
+      - >-
+        (ansible_check_mode and not audiobookshelf_pinned_compose_present.stat.exists)
+        or audiobookshelf_pinned_version | length > 0
+      - >-
+        (ansible_check_mode and not audiobookshelf_pinned_compose_present.stat.exists)
+        or audiobookshelf_server_settings_before.json.serverSettings.version == audiobookshelf_pinned_version
       - audiobookshelf_server_settings_before.json.serverSettings.timeZone | type_debug == 'str'
       - audiobookshelf_server_settings_before.json.serverSettings.timeZone == 'Europe/Berlin'
       - audiobookshelf_server_settings_before.json.serverSettings.storeCoverWithItem | type_debug == 'bool'
@@ -54,8 +132,10 @@
       - (audiobookshelf_server_settings_before.json.serverSettings.backupSchedule | type_debug) in ['str', 'bool']
       - audiobookshelf_server_settings_before.json.serverSettings.backupsToKeep | type_debug == 'int'
     fail_msg: >-
-      Audiobookshelf 2.36.0 returned an unsupported server-settings schema;
-      refusing to mutate settings.
+      Audiobookshelf reported version
+      {{ audiobookshelf_server_settings_before.json.serverSettings.version | default('none') }}
+      against pinned {{ audiobookshelf_pinned_version | default('none') }}, or returned an
+      unsupported server-settings schema; refusing to mutate settings.
   when: not ansible_check_mode or audiobookshelf_initialized | bool
 
 - name: Resolve Audiobookshelf server settings reconciliation requirement
@@ -83,11 +163,33 @@
     headers:
       Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
     body_format: json
-    body: "{{ audiobookshelf_desired_server_settings }}"
+    # backupPath is verified with the rest but never sent here. From 2.36.1
+    # PATCH /api/settings filters its body to ServerSettings.patchableSettingsKeys,
+    # which does not name backupPath, and answers 200 having dropped it. The
+    # dedicated route below is the one that also reloads the backup manager.
+    body: >-
+      {{ audiobookshelf_desired_server_settings | dict2items
+         | rejectattr('key', 'equalto', 'backupPath') | items2dict }}
     status_code: [200]
   when:
     - not ansible_check_mode
     - audiobookshelf_server_settings_drifted | bool
+  changed_when: true
+  no_log: true
+
+- name: Reconcile the Audiobookshelf backup path
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/backups/path"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    body_format: json
+    body:
+      path: "{{ audiobookshelf_backup_container_path }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_server_settings_before.json.serverSettings.backupPath != audiobookshelf_backup_container_path
   changed_when: true
   no_log: true
 

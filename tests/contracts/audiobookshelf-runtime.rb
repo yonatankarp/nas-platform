@@ -751,7 +751,7 @@ def inactive_admin_diagnostic_leaked?(output, vault, username, password, retaine
 end
 
 def inactive_admin_refusal!(username, password, retained_token, vault)
-  limitation = "Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf 2.36.0"
+  limitation = "Managed Audiobookshelf administrator cannot authenticate. Pinned Audiobookshelf"
   recovery_username = "task9-contract-recovery-root"
   users = request("get", "/api/users", token: retained_token).last.fetch("users")
   original = exact_vault_named_administrator(users, username, type: "root", active: true)
