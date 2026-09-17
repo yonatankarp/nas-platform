@@ -175,7 +175,7 @@ if mode == "static"
     abort "Audiobookshelf contract failed: missing #{name}" unless role_task_names.include?(name)
   end
   # The schema gate names the release it was validated against by reading the
-  # pin, never a literal: a literal fails every Renovate bump (#753) while the
+  # pin, never a literal: a literal fails every Renovate bump (#753, #765) while the
   # per-key type assertions beside it are what guard the schema.
   schema_conditions = Array(all_role_tasks.find { |task| task["name"] == "Validate current Audiobookshelf server settings schema" }
                                           &.dig("ansible.builtin.assert", "that")).map(&:to_s)

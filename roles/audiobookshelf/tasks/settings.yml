@@ -30,7 +30,7 @@
 # release, and it used to name that release as a literal. Audiobookshelf writes
 # its own package version into serverSettings.version at every start, so the
 # literal was a proxy for "the server is the release whose schema was checked",
-# and every Renovate bump went red on it without any schema having moved (#753).
+# and every Renovate bump went red on it without any schema having moved (#753, #765).
 # The version is now read from the pin the running container was deployed from,
 # so the assertion still refuses a server that is not the pinned release, and the
 # per-key type assertions beside it are what guard the schema itself.
