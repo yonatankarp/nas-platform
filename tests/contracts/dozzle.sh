@@ -145,6 +145,7 @@ render_group_contract() {
     BINDERY_MEDIA_PATH=/tmp/dozzle-contract/media \
     KAPOWARR_HOST_PORT=35656 KAPOWARR_CONFIG_PATH=/tmp/dozzle-contract/kapowarr-config \
     KAPOWARR_BOOKS_PATH=/tmp/dozzle-contract/books \
+    KAPOWARR_TASK_PATCH_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     KAPOWARR_COMICS_PATH=/tmp/dozzle-contract/comics \
     KAPOWARR_DOWNLOADS_PATH=/tmp/dozzle-contract/kapowarr-downloads \
     KARAKEEP_HOST_PORT=33000 KARAKEEP_PUBLISH_ADDRESS=127.0.0.1 \
