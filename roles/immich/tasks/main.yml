@@ -8,6 +8,7 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ platform_current_dir }}/services/immich/classify_restore.py"
+      - "{{ platform_current_dir }}/config/managed-user-capabilities.yml"
 
 - name: Derive the effective Immich storage roots
   ansible.builtin.set_fact:

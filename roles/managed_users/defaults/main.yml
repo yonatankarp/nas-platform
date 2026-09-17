@@ -24,11 +24,34 @@ managed_users_authenticate_body_format: "{{ omit }}"
 # Headers every authenticate request carries that are not the identity's own
 # credential. jellyfin names its client on every call, login included.
 managed_users_authenticate_headers: {}
+# The status a successful authenticate answers. immich's login creates a session
+# and answers 201.
+managed_users_authenticate_status: 200
 
 # The attribute naming a user in the API listing, when it is not the attribute
 # naming the user in the declaration. jellyfin declares `username` and lists
 # `Name`; everywhere else the two are one word.
 managed_users_listed_identity_attribute: "{{ managed_users_identity_attribute }}"
+
+# The records a listing holds for one identity. The role binds the identity per
+# task as managed_users_matching_identity and resolves this against
+# managed_users_list_json -- the first listing, or the one re-read after
+# creation. Exact attribute equality by default; immich, whose server folds the
+# email it stores and whose listing has always been bucketed by
+# `trim | lower`, sets managed_users_match_normalized and matches the folded
+# bucket instead. Either way managed_user_ambiguity_errors then refuses a listing
+# in which the folded count and the match count disagree.
+managed_users_match_normalized: false
+managed_users_identity_matches: >-
+  {{ (managed_users_list_json |
+      zip(managed_users_list_json | map(attribute=managed_users_listed_identity_attribute) |
+          map('trim') | map('lower')) |
+      selectattr('1', 'equalto', managed_users_matching_identity | trim | lower) |
+      map('first') | list)
+     if managed_users_match_normalized | bool else
+     (managed_users_list_json |
+      selectattr(managed_users_listed_identity_attribute, 'equalto',
+                 managed_users_matching_identity) | list) }}
 
 managed_users_id_attribute: id
 managed_users_create_status: [201]
@@ -81,5 +104,11 @@ managed_users_reresolve_after_creation: false
 #     planned or performed; preflight and reconcile, --check included.
 #   after_creation: once the listing re-read after creation is bound, before
 #     this role reads it; reconcile only, never under --check.
+#   before_repair: after the stable-identity refusal, before the repair; reconcile
+#     and verify, --check included. immich reads and refuses the records its
+#     preference repair targets here, so nothing it refuses is patched.
+#   before_verify: immediately before the exact verification; verify only.
 managed_users_before_create_tasks: ""
 managed_users_after_creation_tasks: ""
+managed_users_before_repair_tasks: ""
+managed_users_before_verify_tasks: ""

@@ -1,0 +1,76 @@
+---
+# Run by roles/managed_users after the stable-identity refusal and before the
+# repair (managed_users_before_repair_tasks), in reconcile and verify, --check
+# included. managed_users_matches holds the listing re-read after creation in a
+# reconcile that created or re-read, and the first listing otherwise. The reads
+# registered here are what tasks/managed_users.yml repairs from and what the
+# verify phase's preference verdicts compare.
+- name: Read Immich managed user preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         managed_users_matches[item.email][0].id | urlencode }}/preferences
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_preference_reads
+  when: managed_users_matches[item.email] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require supported Immich managed user preference responses
+  ansible.builtin.assert:
+    that:
+      - item.json | default(none) | immich_preference_response_errors | length == 0
+    fail_msg: >-
+      Immich returned an unsupported managed user preference response:
+      {{ item.json | default(none) | immich_preference_response_errors | join('; ') }}
+  loop: >-
+    {{ immich_managed_user_preference_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Read Immich managed user avatar preferences
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         managed_users_matches[item.email][0].id | urlencode }}
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_managed_user_avatar_reads
+  when: managed_users_matches[item.email] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Require supported Immich managed user avatar responses
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == managed_users_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - >-
+        item.item.email not in immich_managed_user_desired_avatar_colors or
+        item.json.avatarColor is string
+    fail_msg: Immich returned an unsupported or unsafe managed user avatar response.
+  loop: >-
+    {{ immich_managed_user_avatar_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true

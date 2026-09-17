@@ -1,0 +1,85 @@
+---
+# Run by roles/managed_users between the existing-credential proof and the
+# creation plan (managed_users_before_create_tasks), in reconcile, --check
+# included. Every existing identity's preference and user records are read and
+# refused here, before anything is created, so an administrator or an
+# unsupported response stops the whole batch rather than the half after it.
+- name: Read existing Immich managed user preferences before creation
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         managed_users_matches[item.email][0].id | urlencode }}/preferences
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_existing_managed_user_preference_reads
+  when:
+    - managed_users_matches[item.email] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Read existing Immich managed users before creation
+  ansible.builtin.uri:
+    url: >-
+      {{ immich_api }}/admin/users/{{
+         managed_users_matches[item.email][0].id | urlencode }}
+    headers:
+      Authorization: "Bearer {{ immich_managed_users_token }}"
+    status_code: [200]
+    return_content: true
+  register: immich_existing_managed_user_reads
+  when:
+    - managed_users_matches[item.email] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: immich-managed-user
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+# The thirty-six conditions this and its post-creation twin each spelled out are
+# one table in filter_plugins/immich_response_schema.py, called from both. Every
+# name that reaches fail_msg is an Immich API literal from that table, so the
+# operator is told which field of which scope Immich returned wrongly; item is
+# a vault managed-user record and never leaves this task, which is why only
+# item.json is passed in and why no_log stays.
+- name: Require supported existing Immich managed user preference responses
+  ansible.builtin.assert:
+    that:
+      - item.json | default(none) | immich_preference_response_errors | length == 0
+    fail_msg: >-
+      Immich returned an unsupported existing managed user preference response:
+      {{ item.json | default(none) | immich_preference_response_errors | join('; ') }}
+  loop: >-
+    {{ immich_existing_managed_user_preference_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true
+
+- name: Require non-administrator Immich managed preference targets
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == managed_users_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - >-
+        item.item.email not in immich_managed_user_desired_avatar_colors or
+        item.json.avatarColor is string
+    fail_msg: >-
+      An existing Immich managed preference target is inactive, unsupported, or an administrator;
+      batch reconciliation refuses every mutation.
+  loop: >-
+    {{ immich_existing_managed_user_reads.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  no_log: true

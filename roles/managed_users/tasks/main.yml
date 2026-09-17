@@ -253,9 +253,9 @@
     managed_users_matches: >-
       {{ managed_users_matches |
          combine(dict([(item[managed_users_identity_attribute],
-           managed_users_list_json |
-           selectattr(managed_users_listed_identity_attribute, 'equalto',
-                      item[managed_users_identity_attribute]) | list)])) }}
+           managed_users_identity_matches)])) }}
+  vars:
+    managed_users_matching_identity: "{{ item[managed_users_identity_attribute] }}"
   loop: "{{ managed_users_declared }}"
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
@@ -349,7 +349,7 @@
 - name: "Require preserved managed-user credentials: {{ managed_users_title }}"
   ansible.builtin.assert:
     that:
-      - item.status | default(0) | int == 200
+      - item.status | default(0) | int == managed_users_authenticate_status | int
       - >-
         managed_users_authenticate_identity ==
         item.item[managed_users_identity_attribute] or
@@ -495,21 +495,16 @@
     # identities mean anything, so the caller's listing conditions come first
     # and the whole list short-circuits in order.
     managed_users_new_identity_conditions:
-      - >-
-        managed_users_list_json |
-        selectattr(managed_users_listed_identity_attribute, 'equalto',
-                   item.item[managed_users_identity_attribute]) | list | length == 1
+      - managed_users_identity_matches | length == 1
       - >-
         managed_users_list_json | map(attribute=managed_users_listed_identity_attribute) |
         map('trim') | map('lower') |
         select('equalto', item.item[managed_users_identity_attribute] | trim | lower) |
         list | length == 1
       - >-
-        (managed_users_list_json |
-         selectattr(managed_users_listed_identity_attribute, 'equalto',
-                    item.item[managed_users_identity_attribute]) |
-         first)[managed_users_id_attribute] | string
+        (managed_users_identity_matches | first)[managed_users_id_attribute] | string
           is match(managed_users_id_pattern)
+    managed_users_matching_identity: "{{ item.item[managed_users_identity_attribute] }}"
   loop: >-
     {{ managed_users_creation.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
@@ -551,7 +546,7 @@
 - name: "Require newly created managed-user credentials: {{ managed_users_title }}"
   ansible.builtin.assert:
     that:
-      - item.status | default(0) | int == 200
+      - item.status | default(0) | int == managed_users_authenticate_status | int
       - >-
         managed_users_authenticate_identity ==
         item.item.item[managed_users_identity_attribute] or
@@ -563,14 +558,13 @@
       - >-
         not managed_users_bind_authenticated_ids | bool or
         managed_users_authenticated_id ==
-        (managed_users_list_json |
-         selectattr(managed_users_listed_identity_attribute, 'equalto',
-                    item.item.item[managed_users_identity_attribute]) |
-         first)[managed_users_id_attribute]
+        (managed_users_identity_matches | first)[managed_users_id_attribute]
     fail_msg: >-
       Newly created {{ managed_users_title }} managed user does not accept its
       vault password. Run the reviewed credential-migration procedure; Ansible
       will not reset it automatically or continue privilege reconciliation.
+  vars:
+    managed_users_matching_identity: "{{ item.item.item[managed_users_identity_attribute] }}"
   loop: >-
     {{ managed_users_new_authentication.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
@@ -619,9 +613,9 @@
     managed_users_matches: >-
       {{ managed_users_matches |
          combine(dict([(item[managed_users_identity_attribute],
-           managed_users_list_json |
-           selectattr(managed_users_listed_identity_attribute, 'equalto',
-                      item[managed_users_identity_attribute]) | list)])) }}
+           managed_users_identity_matches)])) }}
+  vars:
+    managed_users_matching_identity: "{{ item[managed_users_identity_attribute] }}"
   loop: "{{ managed_users_declared }}"
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
@@ -692,6 +686,17 @@
     - not ansible_check_mode
   no_log: true
 
+# A caller's own reads and refusals over the identities about to be repaired, run
+# after the stable-identity refusal and before the repair, so nothing it refuses
+# is ever patched. It runs in verify too, where no repair follows, because the
+# final verification is what it then feeds; --check included, like the reads a
+# review has to make. Its tasks see the matches the repair will use.
+- name: "Run the caller's refusals before managed-user repair: {{ managed_users_title }}"
+  ansible.builtin.include_tasks: "{{ managed_users_before_repair_tasks }}"
+  when:
+    - managed_users_before_repair_tasks | length > 0
+    - managed_users_phase in ['reconcile', 'verify']
+
 - name: "Repair non-secret managed-user properties: {{ managed_users_title }}"
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_reconcile_path }}"
@@ -716,6 +721,15 @@
     label: "{{ managed_users_service }}-managed-user"
   changed_when: true
   no_log: true
+
+# A caller's own verifications, run in the verify phase immediately before this
+# role's, so a caller whose verification covers more than the listed record keeps
+# its verdicts ahead of the exact-record one.
+- name: "Run the caller's verifications before exact managed-user verification: {{ managed_users_title }}"
+  ansible.builtin.include_tasks: "{{ managed_users_before_verify_tasks }}"
+  when:
+    - managed_users_before_verify_tasks | length > 0
+    - managed_users_phase == 'verify'
 
 - name: "Verify exact managed users: {{ managed_users_title }}"
   ansible.builtin.assert:

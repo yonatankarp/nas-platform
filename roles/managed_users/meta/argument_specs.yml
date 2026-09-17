@@ -134,6 +134,26 @@ argument_specs:
           empty runs nothing.
         type: str
         required: false
+      managed_users_before_repair_tasks:
+        description: >-
+          A caller task file run after the stable-identity refusal and before
+          the repair, in reconcile and verify, --check included. Relative to
+          this role's tasks directory; empty runs nothing.
+        type: str
+        required: false
+      managed_users_before_verify_tasks:
+        description: >-
+          A caller task file run immediately before the exact verification, in
+          verify only. Relative to this role's tasks directory; empty runs
+          nothing.
+        type: str
+        required: false
+      managed_users_match_normalized:
+        description: >-
+          Match a listed identity to a declared one after trim and lower rather
+          than by exact equality, so the match list is the folded bucket.
+        type: bool
+        required: false
       managed_users_admin_headers:
         description: Headers carrying administrative authentication, when the service uses them.
         type: dict
@@ -155,6 +175,10 @@ argument_specs:
       managed_users_authenticate_headers:
         description: Headers both authenticate requests carry besides the identity's credential.
         type: dict
+        required: false
+      managed_users_authenticate_status:
+        description: The status a successful authenticate request answers.
+        type: int
         required: false
       managed_users_authenticate_method:
         type: str

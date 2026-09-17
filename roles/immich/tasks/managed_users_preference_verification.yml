@@ -1,0 +1,46 @@
+---
+# The preference and avatar verdicts, over whichever reads the includer names:
+# immich_managed_user_preference_checks and immich_managed_user_avatar_checks.
+# tasks/managed_users.yml includes this after its reconcile read-backs, naming
+# those; in the verify phase roles/managed_users includes it immediately before
+# its exact verification (managed_users_before_verify_tasks), naming the reads
+# managed_users_effective_targets.yml registered, because verify repairs and
+# re-reads nothing.
+- name: Verify exact Immich managed user preferences
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - >-
+        item.json | combine(
+          immich_managed_user_desired_preferences[item.item.email], recursive=True
+        ) == item.json
+    fail_msg: An Immich managed user's declared preference leaves differ from its effective profile.
+  loop: >-
+    {{ immich_managed_user_preference_checks.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  when:
+    - not ansible_check_mode
+  no_log: true
+
+- name: Verify exact Immich managed user avatar preference
+  ansible.builtin.assert:
+    that:
+      - item.json | type_debug == 'dict'
+      - item.json.id == managed_users_matches[item.item.email][0].id
+      - item.json.email | trim | lower == item.item.email | trim | lower
+      - item.json.status == 'active'
+      - item.json.isAdmin is boolean
+      - not item.json.isAdmin
+      - item.json.avatarColor == immich_managed_user_desired_avatar_colors[item.item.email]
+    fail_msg: An Immich managed user's durable avatar preference differs from its effective profile.
+  loop: >-
+    {{ immich_managed_user_avatar_checks.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: immich-managed-user
+  when:
+    - not ansible_check_mode
+    - item.item.email in immich_managed_user_desired_avatar_colors
+  no_log: true
