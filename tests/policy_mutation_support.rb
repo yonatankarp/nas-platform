@@ -27,6 +27,7 @@ require "open3"
 require "rbconfig"
 require "tmpdir"
 require "yaml"
+require_relative "case_pool_support"
 require_relative "policy_support"
 
 include PolicySupport
@@ -836,13 +837,67 @@ def run_policy_scripts(scripts)
     copy_fixture(ROOT, sandbox)
     initialize_fixture_index(sandbox)
     yield sandbox
-    scripts.map do |script|
-      Thread.new do
-        stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
-        [script, stdout + stderr, status.success?]
-      end
-    end.map(&:value)
+    execute_policy_scripts(scripts, sandbox)
   end
+end
+
+def execute_policy_scripts(scripts, sandbox)
+  scripts.map do |script|
+    Thread.new do
+      stdout, stderr, status = capture3_without_git_routing(RbConfig.ruby, script, chdir: sandbox)
+      [script, stdout + stderr, status.success?]
+    end
+  end.map(&:value)
+end
+
+# expect_failure rows, run CASE_POOL_WORKERS at a time (#727). The rows are
+# straight-line top-level calls rather than an enumerable, so they cannot go
+# through in_parallel_cases; instead each row's mutation block runs in the
+# calling thread, at the point in the file where it is written -- so a block
+# reads the locals it closes over exactly as the serial harness did -- and only
+# the policy scripts run later, in a thread holding one of CASE_POOL_WORKERS
+# slots. The slot is taken before the sandbox is built, so at most that many
+# sandboxes exist at once. Every counter is still written in the calling thread
+# except the audit's re-derivation, which is under POLICY_ROW_LOCK.
+#
+# A row's findings are inserted into its failure list at the position the list
+# had when the row was written, so the report reads in the serial order.
+# POLICY_JOBS=1 makes CASE_POOL_WORKERS one, which takes the serial path.
+POLICY_ROW_SLOTS = SizedQueue.new([CASE_POOL_WORKERS, 1].max)
+POLICY_ROW_LOCK = Mutex.new
+POLICY_PENDING_ROWS = []
+
+def defer_policy_row(failures, scripts, settle, &mutation)
+  return failures.concat(settle.call(run_policy_scripts(scripts, &mutation))) if CASE_POOL_WORKERS <= 1
+
+  POLICY_AUDIT_COVERAGE[:policy_runs] += 1
+  POLICY_ROW_SLOTS.push(true)
+  sandbox = Dir.mktmpdir("nas-platform-policy-")
+  begin
+    copy_fixture(ROOT, sandbox)
+    initialize_fixture_index(sandbox)
+    mutation.call(sandbox)
+  rescue Exception # rubocop:disable Lint/RescueException -- release the slot, then re-raise
+    FileUtils.rm_rf(sandbox)
+    POLICY_ROW_SLOTS.pop
+    raise
+  end
+  worker = Thread.new do
+    settle.call(execute_policy_scripts(scripts, sandbox))
+  ensure
+    FileUtils.rm_rf(sandbox)
+    POLICY_ROW_SLOTS.pop
+  end
+  POLICY_PENDING_ROWS << [failures, failures.length, worker]
+end
+
+# Waits for every deferred row and files its findings. Idempotent, and called by
+# both reporters, so a harness that reports cannot report before its rows ran.
+def drain_policy_rows
+  rows = POLICY_PENDING_ROWS.dup
+  POLICY_PENDING_ROWS.clear
+  settled = rows.map { |failures, position, worker| [failures, position, worker.value] }
+  settled.reverse_each { |failures, position, findings| failures.insert(position, *findings) }
 end
 
 # The route around the audit: it takes an explicit script list -- including
@@ -888,13 +943,17 @@ def expect_failure(failures, label, message, detected_by:)
   site = caller_locations(1, 1).first
   record_mutation_census(detected_by, site)
   scripts = POLICY_SCRIPTS if POLICY_AUDIT
-  results = run_policy_scripts(scripts) { |root| yield root }
-  record_audit_detection(label, message, detected_by, results, site) if POLICY_AUDIT
+  settle = lambda do |results; output, findings|
+    POLICY_ROW_LOCK.synchronize { record_audit_detection(label, message, detected_by, results, site) } if POLICY_AUDIT
 
-  output = results.map { |_script, script_output, _ok| script_output }.join
-  failures << "#{label}: policy unexpectedly passed" if results.all? { |_s, _o, ok| ok }
-  failures << "#{label}: missing failure message #{message.inspect}" unless output.include?(message)
-  failures << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
+    output = results.map { |_script, script_output, _ok| script_output }.join
+    findings = []
+    findings << "#{label}: policy unexpectedly passed" if results.all? { |_s, _o, ok| ok }
+    findings << "#{label}: missing failure message #{message.inspect}" unless output.include?(message)
+    findings << "#{label}: emitted a Ruby stack trace" if output.match?(/\.rb:\d+:in [`']/)
+    findings
+  end
+  defer_policy_row(failures, scripts, settle) { |root| yield root }
 end
 
 # A script detects a mutation if it rejects it, names it, or crashes on it --
@@ -933,6 +992,7 @@ end
 # Printed before report/1 so it survives a failing run: a run that fails is
 # exactly when someone is reading these numbers.
 def report_mutation_census(failures, baseline: POLICY_MUTATION_CENSUS_BASELINE)
+  drain_policy_rows
   observed = { mutations: POLICY_MUTATION_CENSUS[:mutations],
                call_sites: POLICY_MUTATION_CENSUS[:sites].length }
   puts "policy mutation census: #{observed[:mutations]} expect_failure mutations " \
@@ -994,6 +1054,7 @@ end
 # is coverage the row has stopped running; one that stops detecting it is a stale
 # entry paying for a subprocess that proves nothing.
 def audit_policy_detection(failures)
+  drain_policy_rows
   return unless POLICY_AUDIT
 
   POLICY_AUDIT_SITES.each do |lineno, entry|

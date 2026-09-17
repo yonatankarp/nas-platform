@@ -24,6 +24,9 @@ require "stringio"
 # POLICY_AUDIT is read from ARGV when the support file loads, and every figure
 # here exists only under `--audit`. Set before the require, not after.
 ARGV.replace(["--audit"])
+# The stub of run_policy_scripts below is only reached on the serial path; the
+# pooled one builds a real sandbox (#727).
+ENV["CASE_POOL_WORKERS"] = "1"
 require_relative "policy_mutation_support"
 
 include TestScaffold
