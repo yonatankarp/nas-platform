@@ -19,7 +19,10 @@
 # synthetic figures and synthetic baselines, and whether a real tree clears the
 # real baseline is something only the real run says.
 
+require "open3"
+require "rbconfig"
 require "stringio"
+require "tmpdir"
 
 # POLICY_AUDIT is read from ARGV when the support file loads, and every figure
 # here exists only under `--audit`. Set before the require, not after.
@@ -329,6 +332,82 @@ check(failures,
           "as an assertion the audit did not re-derive")
   end
 end
+
+# The pool (#727), which everything above pins to one worker. Run in child
+# processes so each meets CASE_POOL_WORKERS when the support file loads; the
+# sandbox and the policy scripts are stubbed, and each row sleeps for as long as
+# it says, so the rows written first finish last.
+POOLED_ROWS_CHILD = <<~'RUBY'
+  ARGV.replace(["--audit"])
+  require ENV.fetch("POLICY_MUTATION_SUPPORT")
+  def copy_fixture(_source, _sandbox); end
+  def initialize_fixture_index(_sandbox); end
+  def execute_policy_scripts(scripts, sandbox)
+    sleep Float(File.read(File.join(sandbox, "delay")))
+    scripts.map { |script| [script, "", !%w[policy vault].include?(POLICY_SCRIPTS_BY_NAME.key(script).to_s)] }
+  end
+  failures = []
+  %w[0.4 0.3 0.2 0.1].each_with_index do |delay, index|
+    case index
+    when 0 then expect_failure(failures, "row one", "planted", detected_by: %i[policy]) { |root| File.write(File.join(root, "delay"), delay) }
+    when 1 then expect_failure(failures, "row two", "planted", detected_by: %i[policy]) { |root| File.write(File.join(root, "delay"), delay) }
+    when 2 then expect_failure(failures, "row three", "planted", detected_by: %i[policy]) { |root| File.write(File.join(root, "delay"), delay) }
+    else expect_failure(failures, "row four", "planted", detected_by: %i[policy]) { |root| File.write(File.join(root, "delay"), delay) }
+    end
+  end
+  %w[0.4 0.1].each do |delay|
+    expect_failure(failures, "loop iteration #{delay}", "planted", detected_by: %i[policy]) { |root| File.write(File.join(root, "delay"), delay) }
+  end
+  if ENV["PLANT_PROCESS_STATE_WRITE"]
+    expect_failure(failures, "pending", "planted", detected_by: %i[policy vault]) { |root| File.write(File.join(root, "delay"), "0.5") }
+    { "ENV[]=" => -> { ENV["POLICY_POOL_PLANT"] = "1" }, "ENV.delete" => -> { ENV.delete("POLICY_POOL_PLANT") },
+      "Dir.chdir" => -> { Dir.chdir(Dir.pwd) }, "File.umask" => -> { File.umask(File.umask) } }.each do |name, write|
+      write.call
+      puts "UNGUARDED #{name}"
+    rescue RuntimeError => error
+      puts "REFUSED #{name}: #{error.message}"
+    end
+    drain_policy_rows
+    ENV["POLICY_POOL_PLANT"] = "1"
+    puts "ALLOWED after drain"
+  end
+  audit_policy_detection(failures)
+  puts failures.grep(/detected_by/)
+RUBY
+
+def pooled_rows_output(workers, extra = {})
+  Dir.mktmpdir("policy-pool-order-") do |dir|
+    child = File.join(dir, "child.rb")
+    File.write(child, POOLED_ROWS_CHILD)
+    environment = { "CASE_POOL_WORKERS" => workers, "POLICY_JOBS" => nil,
+                    "POLICY_MUTATION_SUPPORT" => File.join(ROOT, "tests", "policy_mutation_support.rb") }
+    stdout, stderr, status = Open3.capture3(environment.merge(extra),
+                                            RbConfig.ruby, child)
+    [stdout, stderr, status.success?]
+  end
+end
+
+serial_out, serial_err, serial_ok = pooled_rows_output("1")
+pooled_out, pooled_err, pooled_ok = pooled_rows_output("4")
+drift = pooled_out.lines.grep(/detected_by/)
+check(failures, serial_ok && pooled_ok, "the pooled-order child failed to run: #{serial_err}#{pooled_err}")
+check(failures, drift.length == 5 && drift.last.include?("loop iteration 0.4"),
+      "the pooled audit must report each drifted call site once, a loop under its first iteration's " \
+      "label, got #{pooled_out.inspect}")
+check(failures, pooled_out == serial_out,
+      "the pooled audit must print its drift in the serial order, whichever row finishes first: " \
+      "serial #{serial_out.inspect}, pooled #{pooled_out.inspect}")
+
+# A row's scripts are still running while later rows are written, so a write to
+# process-wide state would reach them. The support file refuses one while rows
+# are pending, which holds whatever the spelling of the row that makes it.
+guarded_out, guarded_err, = pooled_rows_output("4", "PLANT_PROCESS_STATE_WRITE" => "1")
+["ENV[]=", "ENV.delete", "Dir.chdir", "File.umask"].each do |name|
+  check(failures, guarded_out.match?(/^REFUSED #{Regexp.escape(name)}: .*drain_policy_rows/),
+        "#{name} must be refused while pooled rows are pending, got #{guarded_out.inspect} #{guarded_err}")
+end
+check(failures, guarded_out.include?("ALLOWED after drain"),
+      "a process-wide write must be allowed once the pool has drained, got #{guarded_out.inspect} #{guarded_err}")
 
 report(failures, "policy audit coverage: the audit reports its own scope",
        "policy audit coverage regression(s)")

@@ -869,6 +869,31 @@ POLICY_ROW_SLOTS = SizedQueue.new([CASE_POOL_WORKERS, 1].max)
 POLICY_ROW_LOCK = Mutex.new
 POLICY_PENDING_ROWS = []
 
+# A pooled row's scripts are still running while later rows are written, so a
+# write to process-wide state would reach them. Refused while any row is
+# pending, whatever the row's spelling: drain_policy_rows first.
+module PolicyRowProcessState
+  def self.refuse(what)
+    return if POLICY_PENDING_ROWS.empty?
+
+    raise "#{what} while #{POLICY_PENDING_ROWS.length} pooled policy rows are pending; call drain_policy_rows first"
+  end
+
+  def self.guard(target, name, methods, &applies)
+    target.singleton_class.prepend(Module.new do
+      methods.each do |method|
+        define_method(method) do |*args, &block|
+          PolicyRowProcessState.refuse("#{name}#{method == :[]= ? '[]=' : ".#{method}"}") if applies.nil? || applies.call(args)
+          super(*args, &block)
+        end
+      end
+    end)
+  end
+end
+PolicyRowProcessState.guard(ENV, "ENV", %i[[]= store delete update merge! replace clear])
+PolicyRowProcessState.guard(Dir, "Dir", %i[chdir])
+PolicyRowProcessState.guard(File, "File", %i[umask]) { |args| !args.empty? }
+
 def defer_policy_row(failures, scripts, settle, &mutation)
   return failures.concat(settle.call(run_policy_scripts(scripts, &mutation))) if CASE_POOL_WORKERS <= 1
 
@@ -945,8 +970,9 @@ def expect_failure(failures, label, message, detected_by:)
   site = caller_locations(1, 1).first
   record_mutation_census(detected_by, site)
   scripts = POLICY_SCRIPTS if POLICY_AUDIT
+  audit_entry = register_audit_site(label, detected_by, site) if POLICY_AUDIT
   settle = lambda do |results; output, findings|
-    POLICY_ROW_LOCK.synchronize { record_audit_detection(label, message, detected_by, results, site) } if POLICY_AUDIT
+    POLICY_ROW_LOCK.synchronize { merge_audit_detection(audit_entry, message, results) } if POLICY_AUDIT
 
     output = results.map { |_script, script_output, _ok| script_output }.join
     findings = []
@@ -1029,8 +1055,19 @@ def check_mutation_census_floor(failures, observed, baseline)
 end
 
 def record_audit_detection(label, message, declared, results, site)
+  merge_audit_detection(register_audit_site(label, declared, site), message, results)
+end
+
+# Split for the pool (#727): the entry is created in the calling thread, so the
+# sites are keyed in file order and a loop keeps its first iteration's label;
+# only the detecting set is merged when a row's scripts finish, in any order.
+def register_audit_site(label, declared, site)
   entry = POLICY_AUDIT_SITES[site.lineno] ||= { declared: declared, actual: [], label: label, mutations: 0 }
   entry[:mutations] += 1
+  entry
+end
+
+def merge_audit_detection(entry, message, results)
   entry[:actual] |= detecting_script_names(message, results)
 end
 
