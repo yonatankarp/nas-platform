@@ -962,6 +962,36 @@ def exercise_beszel_converged(failures)
     failures << "Beszel converged check mode authenticated or mutated" unless
       requests.all? { |request| [request["method"], request["target"]] == read }
   end
+  # verify.yml runs the verify phase on its own, hourly, with no reconcile before
+  # it to have proved any credential: the phase must prove them itself.
+  with_http_service(responder) do |port, requests|
+    stdout, stderr, status = run_playbook(managed_includes("beszel").last(1),
+                                          base.merge("beszel_api" => "http://127.0.0.1:#{port}"))
+    output = stdout + stderr
+    failures << "Beszel verify-only fixture failed: #{failure_tail(output)}" unless status.success?
+    failures << "Beszel verify-only fixture did not prove the credential" unless
+      requests.count { |request| [request["method"], request["target"]] == proof } == 1
+    failures << "Beszel verify-only fixture sent a mutation" unless
+      requests.all? { |request| [read, proof].include?([request["method"], request["target"]]) }
+  end
+  # And an identity absent from the listing refuses on its own verification
+  # message, which is the conditions short-circuiting before they subscript the
+  # id maps no authentication wrote for it.
+  absent = [{ "email" => "absent@example.invalid", "password" => "absent-secret", "role" => "user",
+              "verified" => true }]
+  with_http_service(responder) do |port, requests|
+    stdout, stderr, status = run_playbook(
+      managed_includes("beszel").last(1),
+      base.merge("beszel_api" => "http://127.0.0.1:#{port}", "vault_managed_beszel_users" => absent)
+    )
+    failures << "Beszel verify-only absent identity unexpectedly succeeded" if status.success?
+    failures << "Beszel verify-only absent identity missed the verification refusal" unless
+      HttpFixtureSupport.refused_with?(
+        stdout + stderr, "A managed Beszel identity is absent, duplicated, or differs from its exact projection."
+      )
+    failures << "Beszel verify-only absent identity authenticated or mutated" unless
+      requests.all? { |request| [request["method"], request["target"]] == read }
+  end
 end
 
 def exercise_paperless(failures, scenario: :normal, task_path: nil)
@@ -1510,12 +1540,20 @@ failures << "database managed-user self-test is not registered" unless
   policy.lines.include?("ruby tests/database_managed_users_test.rb --self-test\n")
 
 if ARGV == ["--self-test"]
+  # Every Beszel plant names itself when it is detected, and the count is held
+  # against a stated number, so a plant that stops running is a failure rather
+  # than a quieter pass. Beszel's is the lifecycle #647 moved onto the shared
+  # role; the other two services still report through survivors alone.
+  beszel_detected = []
+  expected_beszel_plants = 9
   SERVICES.each do |service|
     next unless failures.empty?
 
     tasks = service_contract_tasks(service)
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
-    unless contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
+    if contract_failures(service, missing_verify).any? { |failure| failure.include?("Verify exact") }
+      beszel_detected << "final verification removed" if service == "beszel"
+    else
       failures << "#{service} final-verification mutant survived"
     end
     mutant = Marshal.load(Marshal.dump(tasks))
@@ -1525,7 +1563,9 @@ if ARGV == ["--self-test"]
     else
       repair.fetch("ansible.builtin.uri").fetch("body")["password"] = "forbidden"
     end
-    unless contract_failures(service, mutant).any? { |failure| failure.include?("password path") }
+    if contract_failures(service, mutant).any? { |failure| failure.include?("password path") }
+      beszel_detected << "password in the repair body" if service == "beszel"
+    else
       failures << "#{service} existing-password-update mutant survived"
     end
 
@@ -1538,7 +1578,9 @@ if ARGV == ["--self-test"]
         detected = contract_failures(service, create_mutant).any? do |failure|
           failure.include?("authentication prerequisite")
         end
-        unless detected
+        if detected
+          beszel_detected << "create body verified #{verified_value.nil? ? 'removed' : 'false'}"
+        else
           failures << "beszel create verified prerequisite mutant survived"
         end
       end
@@ -1553,12 +1595,16 @@ if ARGV == ["--self-test"]
         unbound.any? { |failure| failure.include?(text) }
       end
         failures << "beszel unbound-identity mutant survived"
+      else
+        beszel_detected << "shim stops binding authenticated identities"
       end
 
       reset_mutant = Marshal.load(Marshal.dump(tasks))
       reset_mutant.find { |task| task_name(task) == "Reset resolved managed-user decisions" }
                   .fetch("ansible.builtin.set_fact")["managed_users_initial_authenticated_ids"] = {}
-      unless contract_failures(service, reset_mutant).any? { |failure| failure.include?("reset at role entry") }
+      if contract_failures(service, reset_mutant).any? { |failure| failure.include?("reset at role entry") }
+        beszel_detected << "initial authenticated-id map reset at role entry"
+      else
         failures << "beszel initial-map reset mutant survived"
       end
     end
@@ -1568,7 +1614,9 @@ if ARGV == ["--self-test"]
       task.key?("ansible.builtin.uri") || task.key?("community.docker.docker_compose_v2_exec")
     end
     secret_task["no_log"] = false
-    unless contract_failures(service, visible_secret).any? { |failure| failure.include?("lacks no_log") }
+    if contract_failures(service, visible_secret).any? { |failure| failure.include?("lacks no_log") }
+      beszel_detected << "no_log removed from #{task_name(secret_task)}" if service == "beszel"
+    else
       failures << "#{service} no-log mutant survived"
     end
   end
@@ -1607,8 +1655,10 @@ if ARGV == ["--self-test"]
         exercise_identity_swap_refusal(mutant_failures, task_paths: task_paths)
         SERVICES.each do |service|
           label = service == "paperless_ngx" ? "Paperless" : service.capitalize
-          unless mutant_failures.any? { |failure| failure == "#{label} identity-swap fixture unexpectedly succeeded" } &&
-                 mutant_failures.any? { |failure| failure.include?("#{label} identity-swap fixture reached") }
+          if mutant_failures.any? { |failure| failure == "#{label} identity-swap fixture unexpectedly succeeded" } &&
+             mutant_failures.any? { |failure| failure.include?("#{label} identity-swap fixture reached") }
+            beszel_detected << "stable authenticated-identity refusal removed (behaviour)" if service == "beszel"
+          else
             failures << "#{service} authenticated-ID binding mutant survived behavior fixtures"
           end
         end
@@ -1620,7 +1670,9 @@ if ARGV == ["--self-test"]
         create_mutant_failures = []
         exercise_beszel(create_mutant_failures,
                         extra_vars: { "beszel_managed_users_create_body" => unverified_create_body })
-        unless create_mutant_failures.any? { |failure| failure.start_with?("Beszel behavior fixture failed:") }
+        if create_mutant_failures.any? { |failure| failure.start_with?("Beszel behavior fixture failed:") }
+          beszel_detected << "unverified create (behaviour)"
+        else
           failures << "beszel unverified-create mutant survived behavior fixtures"
         end
 
@@ -1683,6 +1735,12 @@ if ARGV == ["--self-test"]
           missing_initialization_detected
       end
     end
+  end
+  if failures.empty?
+    beszel_detected.each { |plant| puts "self-test detected: beszel #{plant}" }
+    failures << "beszel self-test detected #{beszel_detected.length} planted regressions, " \
+                "expected #{expected_beszel_plants}" unless beszel_detected.length == expected_beszel_plants
+    puts "database managed users: self-test detects #{beszel_detected.length} planted beszel regressions"
   end
 elsif ARGV.empty?
   if ENV.fetch("PATH", "").split(File::PATH_SEPARATOR).any? { |directory| File.executable?(File.join(directory, "ansible-playbook")) }
