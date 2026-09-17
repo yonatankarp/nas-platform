@@ -21,6 +21,14 @@ managed_users_authenticate_method: GET
 managed_users_authenticate_basic: true
 managed_users_authenticate_body: "{{ omit }}"
 managed_users_authenticate_body_format: "{{ omit }}"
+# Headers every authenticate request carries that are not the identity's own
+# credential. jellyfin names its client on every call, login included.
+managed_users_authenticate_headers: {}
+
+# The attribute naming a user in the API listing, when it is not the attribute
+# naming the user in the declaration. jellyfin declares `username` and lists
+# `Name`; everywhere else the two are one word.
+managed_users_listed_identity_attribute: "{{ managed_users_identity_attribute }}"
 
 managed_users_id_attribute: id
 managed_users_create_status: [201]
@@ -57,3 +65,21 @@ managed_users_id_pattern: "{{ platform_safe_api_identifier_pattern }}"
 # credential proved. The two id maps it keeps are readable from
 # managed_users_verify_conditions.
 managed_users_bind_authenticated_ids: false
+
+# Re-resolve matches from the listing re-read after creation without binding
+# authenticated identities (jellyfin, whose repair merges into the re-read
+# policy). managed_users_bind_authenticated_ids implies it.
+managed_users_reresolve_after_creation: false
+
+# Task files a caller runs INSIDE this role, for refusals that must hold between
+# two of its steps. Each is a path include_tasks resolves from this role's own
+# tasks directory, so a caller names its file as ../../<role>/tasks/<file>.yml.
+# The file runs with this role's names in scope (managed_users_matches,
+# managed_users_listing, managed_users_creation, managed_users_declared) and is
+# already gated on the phases of the steps around it.
+#   before_create: after existing credentials are proved, before creation is
+#     planned or performed; preflight and reconcile, --check included.
+#   after_creation: once the listing re-read after creation is bound, before
+#     this role reads it; reconcile only, never under --check.
+managed_users_before_create_tasks: ""
+managed_users_after_creation_tasks: ""

@@ -24,6 +24,7 @@ PROBES = [
   [%w[all audiobookshelf], method(:exercise_audiobookshelf)],
   [%w[all audiobookshelf], method(:exercise_audiobookshelf_converged)],
   [%w[all jellyfin], method(:exercise_jellyfin)],
+  [%w[all jellyfin], method(:exercise_jellyfin_converged)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_settings)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_server_configuration_refresh)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_policy_preflight)],
@@ -121,13 +122,6 @@ if ARGV == ["--self-test"] && failures.empty?
     plant.call("#{service} password-update",
                contract_failures(service, mutant).any? { |failure| failure.include?("secret fields") })
 
-    if service == "jellyfin"
-      plant.call("#{service} pinned merge/body",
-                 contract_failures(service, mutant).any? do |failure|
-                   failure.match?(/split|complete current policy/)
-                 end)
-    end
-
     missing_verify = tasks.reject { |task| task_name(task) == REQUIRED_TASKS.fetch(service).last }
     plant.call("#{service} final-verification",
                contract_failures(service, missing_verify).any? do |failure|
@@ -159,11 +153,49 @@ if ARGV == ["--self-test"] && failures.empty?
                end)
 
     credentialed = Marshal.load(Marshal.dump(defaults))
-    credentialed["#{service}_managed_users_repair_body"]["password"] = "{{ item.password }}"
+    if service == "jellyfin"
+      credentialed["jellyfin_managed_users_repair_body"] =
+        credentialed["jellyfin_managed_users_repair_body"].sub(" }}", " | combine({'Password': item.password}) }}")
+    else
+      credentialed["#{service}_managed_users_repair_body"]["password"] = "{{ item.password }}"
+    end
     plant.call("#{title} declared repair-body password",
                shim_failures(service, shim, credentialed).any? do |failure|
                  failure.include?("secret fields")
                end)
+
+    if service == "jellyfin"
+      # The complete-policy merge, which used to be read off the task body.
+      unmerged = Marshal.load(Marshal.dump(defaults))
+      unmerged["jellyfin_managed_users_repair_body"] = "{{ item.policy }}"
+      plant.call("Jellyfin declared complete-policy merge",
+                 shim_failures(service, shim, unmerged).any? do |failure|
+                   failure.include?("complete current policy")
+                 end)
+      # The hooks: one that no longer reaches its file, and a file that lost
+      # the refusal it exists for.
+      unhooked = Marshal.load(Marshal.dump(defaults))
+      unhooked["jellyfin_managed_users_before_create_tasks"] = ""
+      plant.call("Jellyfin before-create hook path",
+                 shim_failures(service, shim, unhooked).any? do |failure|
+                   failure.include?("jellyfin_managed_users_before_create_tasks does not name")
+                 end)
+      Dir.mktmpdir("jellyfin-hook-plant-") do |directory|
+        JELLYFIN_HOOK_TASKS.each_value do |file, _names|
+          FileUtils.cp(File.join(JELLYFIN_TASKS, file), directory)
+        end
+        planted = File.join(directory, "managed_users_refreshed_policies.yml")
+        stripped = YAML.safe_load_file(planted, aliases: false).reject do |task|
+          task_name(task) == "Require complete safe refreshed Jellyfin managed-user policies"
+        end
+        File.write(planted, YAML.dump(stripped))
+        plant.call("Jellyfin refreshed-policy refusal removed from its hook",
+                   jellyfin_hook_failures(defaults, directory).any? do |failure|
+                     failure.include?("omits Require complete safe refreshed Jellyfin")
+                   end)
+      end
+      next
+    end
 
     if service == "audiobookshelf"
       unsplit = Marshal.load(Marshal.dump(defaults))
@@ -188,15 +220,15 @@ if ARGV == ["--self-test"] && failures.empty?
 
   detected.each { |label| puts "self-test detected: #{label}" }
   # A stated count rather than non-emptiness: each of the three services plants a
-  # password-update and a final-verification; jellyfin adds its pinned repair
-  # body; each shim service (audiobookshelf, komga) adds three shim plants;
-  # audiobookshelf adds its declared pinned repair body and Komga its two
-  # authenticate expressions. A service the loop stopped reaching would still
+  # password-update and a final-verification; each shim service (all three now)
+  # adds three shim plants; audiobookshelf adds its declared pinned repair body,
+  # jellyfin its declared complete-policy merge and two hook plants, and Komga
+  # its two authenticate expressions. A service the loop stopped reaching would still
   # leave this list non-empty, and the first draft of this line said 17 against
   # an actual 13 -- which is the whole reason the tally is printed rather than
   # counted in a comment.
-  failures << "media managed-user self-test planted #{detected.length} defects, expected 16" unless
-    detected.length == 16
+  failures << "media managed-user self-test planted #{detected.length} defects, expected 21" unless
+    detected.length == 21
 end
 
 if ARGV.empty?

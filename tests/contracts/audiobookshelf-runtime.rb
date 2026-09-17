@@ -408,7 +408,9 @@ def exact_role_auth_model(main_tasks, managed_tasks)
       verify["when"] == ["not ansible_check_mode", "audiobookshelf_reconcile_token is not defined"]
   fail_contract("Audiobookshelf managed-user authentication guards differ") unless
     existing["when"] == [
-      "managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool",
+      # preflight is Jellyfin's phase; Audiobookshelf's shim refuses it, so the
+      # login still runs once per identity per converge (#647).
+      "managed_users_phase in ['preflight', 'reconcile'] or managed_users_bind_authenticated_ids | bool",
       "not ansible_check_mode",
       "managed_users_matches[item[managed_users_identity_attribute]] | length == 1"
     ] && existing["loop"] == "{{ managed_users_declared }}" &&

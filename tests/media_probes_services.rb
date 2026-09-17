@@ -272,6 +272,67 @@ def exercise_jellyfin(failures)
   end
 end
 
+# A converged Jellyfin, driven through every phase its role passes -- preflight,
+# reconcile, verify -- and then the two shapes production reaches separately:
+# a --check review of reconcile, and verify alone, which is what verify.yml runs
+# hourly. Nothing may be created or repaired, preflight may send nothing but the
+# listing and one login per existing identity, and the review plans nothing.
+# Preflight is the phase only Jellyfin has, so this is its only behavioural probe.
+def exercise_jellyfin_converged(failures)
+  policy = {
+    "AuthenticationProviderId" => "Jellyfin.Server.Implementations.Users.DefaultAuthenticationProvider",
+    "PasswordResetProviderId" => "Jellyfin.Server.Implementations.Users.DefaultPasswordResetProvider",
+    "IsAdministrator" => false, "EnableAllFolders" => false, "IsHidden" => true
+  }
+  users = [{ "Id" => "a" * 32, "Name" => "reader", "Policy" => policy },
+           { "Id" => "b" * 32, "Name" => "friend", "Policy" => policy }]
+  managed = [{ "username" => "reader", "password" => "reader-secret",
+               "policy" => { "IsAdministrator" => false, "EnableAllFolders" => false } }]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when ["GET", "/Users"] then [200, users]
+    when ["POST", "/Users/AuthenticateByName"]
+      request["json"] == { "Username" => "reader", "Pw" => "reader-secret" } ?
+        [200, { "User" => users[0] }] : [401, {}]
+    else [500, {}]
+    end
+  end
+  managed_file = File.join(ROOT, "roles", "jellyfin", "tasks", "managed_users.yml")
+  phase = lambda do |name|
+    { "name" => "#{name} fixture jellyfin", "ansible.builtin.include_tasks" => managed_file,
+      "vars" => { "jellyfin_managed_users_phase" => name, "jellyfin_managed_users_token" => "admin-token" } }
+  end
+  logins = ->(requests) { requests.count { |request| request["target"] == "/Users/AuthenticateByName" } }
+  mutations = lambda do |requests|
+    requests.reject { |request| request["method"] == "GET" || request["target"] == "/Users/AuthenticateByName" }
+  end
+  [
+    ["all three phases", %w[preflight reconcile verify], [], 4, 2],
+    ["preflight alone", %w[preflight], [], 1, 1],
+    ["reconcile review", %w[reconcile], ["--check"], 1, 0],
+    ["verify alone", %w[verify], [], 1, 0]
+  ].each do |label, phases, arguments, listings, expected_logins|
+    with_http_service(responder) do |port, requests|
+      variables = { "jellyfin_api" => "http://127.0.0.1:#{port}",
+                    "jellyfin_client_header" => "MediaBrowser Fixture",
+                    "vault_managed_jellyfin_users" => managed }
+      stdout, stderr, status = run_playbook(phases.map { |name| phase.call(name) }, variables, *arguments)
+      output = stdout + stderr
+      failures << "Jellyfin converged #{label} failed: #{failure_tail(output)}" unless status.success?
+      failures << "Jellyfin converged #{label} reported a change" unless output.match?(/changed=0\s/)
+      failures << "Jellyfin converged #{label} mutated: #{mutations.call(requests).map { |r| r['target'] }}" unless
+        mutations.call(requests).empty?
+      failures << "Jellyfin converged #{label} logged in #{logins.call(requests)} times, not #{expected_logins}" unless
+        logins.call(requests) == expected_logins
+      failures << "Jellyfin converged #{label} did not list users #{listings} times" unless
+        requests.count { |request| request["target"] == "/Users" } == listings
+      %w[JELLYFIN_PLAN_MANAGED_USER_CREATE JELLYFIN_PLAN_MANAGED_USER_REPAIR].each do |literal|
+        failures << "Jellyfin converged #{label} planned #{literal}" if output.include?(literal)
+      end
+    end
+  end
+end
+
 def exercise_komga(failures)
   supported_roles = %w[ADMIN FILE_DOWNLOAD PAGE_STREAMING KOBO_SYNC KOREADER_SYNC]
   users = [

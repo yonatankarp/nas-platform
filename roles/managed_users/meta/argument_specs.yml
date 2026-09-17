@@ -25,14 +25,16 @@ argument_specs:
     options:
       managed_users_phase:
         description: >-
-          Which half of the lifecycle to run. Declared with choices because this
+          Which part of the lifecycle to run: preflight proves existing
+          credentials and runs the caller's before-create refusals, and creates
+          or repairs nothing. Declared with choices because this
           role is reached only through include_role, which -- unlike
           include_tasks -- applies this file: a phase the role does not
           implement is refused by Ansible before the first task, rather than
           silently skipping every gated task while the run reports success.
         type: str
         required: true
-        choices: [reconcile, verify]
+        choices: [preflight, reconcile, verify]
       managed_users_service:
         description: >-
           The manifest service directory, which is the row key in
@@ -54,6 +56,13 @@ argument_specs:
           API listing.
         type: str
         required: true
+      managed_users_listed_identity_attribute:
+        description: >-
+          The attribute that identifies a user in the API listing, when it
+          differs from managed_users_identity_attribute's name for it in the
+          declaration. Defaults to managed_users_identity_attribute.
+        type: str
+        required: false
       managed_users_id_attribute:
         description: The attribute carrying the API identifier of a listed user.
         type: str
@@ -105,6 +114,26 @@ argument_specs:
           refuses a repair whose record is not the one the credential proved.
         type: bool
         required: false
+      managed_users_reresolve_after_creation:
+        description: >-
+          Re-resolve matches from the listing re-read after creation without
+          binding authenticated identities.
+        type: bool
+        required: false
+      managed_users_before_create_tasks:
+        description: >-
+          A caller task file run after existing credentials are proved and
+          before creation, in preflight and reconcile. Relative to this role's
+          tasks directory; empty runs nothing.
+        type: str
+        required: false
+      managed_users_after_creation_tasks:
+        description: >-
+          A caller task file run once the listing re-read after creation is
+          bound, before this role reads it, in reconcile outside --check. Relative to this role's tasks directory;
+          empty runs nothing.
+        type: str
+        required: false
       managed_users_admin_headers:
         description: Headers carrying administrative authentication, when the service uses them.
         type: dict
@@ -123,6 +152,10 @@ argument_specs:
         description: Relative path that proves an identity's own credential.
         type: str
         required: true
+      managed_users_authenticate_headers:
+        description: Headers both authenticate requests carry besides the identity's credential.
+        type: dict
+        required: false
       managed_users_authenticate_method:
         type: str
         required: false
