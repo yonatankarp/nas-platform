@@ -18,11 +18,13 @@
 # safely copied file by file while it is open, so the container is stopped
 # first, which costs nothing here: an upgrade is pending, so it is about to be
 # recreated anyway. Measured against v1.3.1, a clean stop leaves Kapowarr.db
-# alone with no -wal beside it. v1.3.2 does not stop cleanly: its shutdown
-# handler crashes and Docker SIGKILLs it at the grace deadline (#696, recorded
-# beside stop_grace_period in services/kapowarr/compose.yml), so a stop can
-# leave a write-ahead log behind -- which is why the copy below reads the store's
-# files rather than taking Kapowarr.db alone.
+# alone with no -wal beside it. Unpatched, v1.3.2 did not: with an unstarted task
+# at the head of its queue its shutdown handler raised, and on the NAS Docker
+# SIGKILLed it at the grace deadline (#696). The carried patch that
+# services/kapowarr/compose.yml mounts lets that stop finish and exit 0, but the
+# container this task stops is the one being replaced, and the first upgrade
+# after the patch landed stops a container created without it. So the copy below
+# still reads the store's -wal and -shm rather than taking Kapowarr.db alone.
 #
 # IT RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on an actual image change, so a
 # converged host reports no change.

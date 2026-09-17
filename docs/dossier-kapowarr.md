@@ -188,10 +188,17 @@ from the image the container was created from, it stops the container and copies
 `Kapowarr.db` and any `-wal`/`-shm` beside it into `pre-upgrade-backup/` at 0600,
 the `roles/vaultwarden` shape. A file copy of a stopped store, because v1.3.1 has
 no backup route and neither image ships `sqlite3`; a clean v1.3.1 stop leaves
-`Kapowarr.db` alone with no log beside it. Confirmed. A v1.3.2 stop is not clean:
-its shutdown handler raises at `backend/features/tasks.py:284` and the process
-waits out the grace period to a SIGKILL, measured at 30.46s and exit 137 (#696),
-so that copy carries whatever log the kill left.
+`Kapowarr.db` alone with no log beside it. Confirmed. An unpatched v1.3.2 stop is
+not always clean: with a queued task whose thread never started at the head of the
+queue, its shutdown handler raises at `backend/features/tasks.py:284`, and on the
+NAS the process waited out the grace period to a SIGKILL, 30.46s and exit 137
+(#696). The platform carries a two-line patch for it: `services/kapowarr/tasks.py`
+is the upstream file with both thread joins guarded by `is_alive()`, mounted
+read-only over the image's own, and `tests/contracts/kapowarr-static.rb` refuses
+the tree unless the image that file records is the Compose pin. Patched, the same
+stop measured 0.22s and exit 0. The copy still reads the log pair, because the
+container it stops is the old one, which on the first upgrade after the patch did
+not have it.
 
 **Database backups land in the database directory, and that is left alone.**
 v1.3.2 adds `db_backup_folder` and `db_backup_amount` (default 3), and a
