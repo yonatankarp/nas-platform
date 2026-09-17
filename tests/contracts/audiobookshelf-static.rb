@@ -182,8 +182,10 @@ if mode == "static"
   pinned_compose_read = all_role_tasks.find { |task| task["name"] == "Read the Audiobookshelf image this release pins" }
   pinned_version_fact = all_role_tasks.find { |task| task["name"] == "Resolve the Audiobookshelf version this release pins" }
   abort "Audiobookshelf contract failed: running server version is not compared against the pinned image" unless
-    schema_conditions.include?("audiobookshelf_pinned_version | length > 0") &&
-      schema_conditions.include?("audiobookshelf_server_settings_before.json.serverSettings.version == audiobookshelf_pinned_version") &&
+    schema_conditions.any? { |condition| condition.end_with?(" or audiobookshelf_pinned_version | length > 0") } &&
+      schema_conditions.any? do |condition|
+        condition.end_with?(" or audiobookshelf_server_settings_before.json.serverSettings.version == audiobookshelf_pinned_version")
+      end &&
       schema_conditions.none? { |condition| condition.include?("serverSettings.version ==") && condition.match?(/['"][0-9]/) } &&
       pinned_compose_read&.dig("ansible.builtin.slurp", "path") ==
         "{{ platform_current_dir }}/services/audiobookshelf/compose.yml" &&

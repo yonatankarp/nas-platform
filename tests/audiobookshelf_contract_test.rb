@@ -1030,7 +1030,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the pinned-version comparison check",
     program: :static,
-    from: 'schema_conditions.include?("audiobookshelf_pinned_version | length > 0") &&',
+    from: 'schema_conditions.any? { |condition| condition.end_with?(" or audiobookshelf_pinned_version | length > 0") } &&',
     to: "true ||",
     rows: [
       "the settings schema gate pinned to a literal version",
