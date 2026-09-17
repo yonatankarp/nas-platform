@@ -3,7 +3,10 @@
 # bound as managed_users_listing, before that role reads anything out of it
 # (managed_users_after_creation_tasks), in reconcile outside --check. The shared
 # role re-resolves its matches from this listing further on, and the repair
-# merges into exactly these records, so these are the records proved here.
+# merges into exactly these records, so these are the records proved here. That
+# holds only while 'Name' below and jellyfin_managed_users_listed_identity_attribute
+# name the same attribute: the shim's expected-policy record subscripts the
+# re-resolved match on the strength of this file's length check.
 - name: Require safe newly created Jellyfin managed-user identifiers
   ansible.builtin.assert:
     that:
