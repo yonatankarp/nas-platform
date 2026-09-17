@@ -74,9 +74,9 @@ planted regression.
 check to a policy script. Each mutation row names the policy scripts that detect
 its planted defect and runs only those; `--audit` runs all eight again and fails
 on any row whose declared set has drifted. It costs what the narrowing removed
--- about half an hour on a runner -- so pull requests and pushes run the narrow
-form and only the nightly and `workflow_dispatch` run `--audit`, in place of it
-(#727). Drift therefore reds the nightly a day late rather than the pull request
+-- about half an hour on a runner before its rows were pooled -- so pull
+requests and pushes run the narrow form and only the nightly and
+`workflow_dispatch` run `--audit`, in place of it (#727). Drift therefore reds the nightly a day late rather than the pull request
 that caused it.
 
 Adding a file that a policy check *reads* carries an obligation of its own: list

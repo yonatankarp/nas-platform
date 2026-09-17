@@ -498,3 +498,29 @@ Three things about it generalise:
   right.** Its `[ -z $INTEGRATION_TAGS ]` degenerated identically and happened to
   land on the branch that was already correct, so no plant can prove its quoting;
   the case comment says so rather than implying coverage a plant does not give.
+
+## The mutation audit joined the nightly, and its rows stopped running serially
+
+**2026-09-17 (#727).** `ruby tests/policy_manifest_test.rb --audit` re-derives
+every row's `detected_by` against all eight policy scripts, and until then it
+ran in no job, so #715 found two rows that had drifted behind a green gate. On
+two 4-core runners it took 30.5 and 34.5 minutes at CPU/elapsed 1.13–1.70: work,
+but mostly one row at a time, leaving over half the runner idle. The `mutation`
+job now runs it on `schedule` and `workflow_dispatch` in place of the narrow
+form, whose output it includes, at `timeout-minutes: 60`.
+
+The idle cores were the lever. `expect_failure` rows now run their policy
+scripts in `CASE_POOL_WORKERS` slots while each row's mutation block still runs
+in file order in the calling thread. The rows are straight-line top-level calls,
+not an enumerable, so they could not go through `in_parallel_cases`. Measured
+back to back on a 12-core Mac at `POLICY_JOBS=4 CASE_POOL_WORKERS=4`:
+
+| run | before | after |
+|---|---|---|
+| `--audit` | 1185s wall, 1859s user+sys | 410s and 413s wall, 2199s and 2274s user+sys |
+| narrow | 567s wall, 584s user+sys (`POLICY_JOBS=1`, the serial path) | 235s wall, 602s user+sys |
+
+Both audits reported identical verdicts. A drifted `detected_by` planted
+under the pool was still reported by line and exited 1. The CPU barely moved,
+so the pool removed waiting rather than adding work. On a runner, that work
+divided across four cores is the new floor, and no runner has measured it yet.
