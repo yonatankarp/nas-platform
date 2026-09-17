@@ -913,6 +913,57 @@ def exercise_beszel(failures, task_path: nil, extra_vars: {})
   end
 end
 
+# The path the live NAS takes on every five-minute tick: every declared identity
+# already exists with its declared role and verified flag. Reconcile and verify
+# must send nothing but reads and credential proofs, report no change, and a
+# --check review of the same host must plan nothing.
+def exercise_beszel_converged(failures)
+  users = [
+    { "id" => "reader123456789", "email" => "reader@example.invalid", "password" => "reader-secret",
+      "role" => "admin", "verified" => true },
+    { "id" => "friend123456789", "email" => "friend@example.invalid", "password" => "friend-secret",
+      "role" => "user", "verified" => true }
+  ]
+  managed = [{ "email" => "reader@example.invalid", "password" => "reader-secret", "role" => "admin",
+               "verified" => true }]
+  listing = { "items" => users.map { |user| user.reject { |key, _| key == "password" } },
+              "totalPages" => 1, "totalItems" => users.length }
+  read = ["GET", "/api/collections/users/records?perPage=500"]
+  proof = ["POST", "/api/collections/users/auth-with-password"]
+  responder = lambda do |request|
+    case [request["method"], request["target"]]
+    when read then [200, listing]
+    when proof
+      body = request.fetch("json")
+      user = users.find { |candidate| candidate["email"] == body["identity"] && candidate["password"] == body["password"] }
+      user ? [200, { "record" => user.reject { |key, _| key == "password" }, "token" => "user-token" }] : [400, {}]
+    else [500, {}]
+    end
+  end
+  base = { "beszel_auth" => { "json" => { "token" => "admin" } }, "vault_managed_beszel_users" => managed }
+  with_http_service(responder) do |port, requests|
+    stdout, stderr, status = run_playbook(managed_includes("beszel"),
+                                          base.merge("beszel_api" => "http://127.0.0.1:#{port}"))
+    output = stdout + stderr
+    failures << "Beszel converged fixture failed: #{failure_tail(output)}" unless status.success?
+    failures << "Beszel converged fixture reported a change" unless output.match?(/\blocalhost\s+: ok=\d+\s+changed=0\b/)
+    failures << "Beszel converged fixture sent a mutation" unless
+      requests.all? { |request| [read, proof].include?([request["method"], request["target"]]) }
+    failures << "Beszel converged fixture did not re-prove the credential in both phases" unless
+      requests.count { |request| [request["method"], request["target"]] == proof } == 2
+  end
+  with_http_service(responder) do |port, requests|
+    stdout, stderr, status = run_playbook(managed_includes("beszel").first(1),
+                                          base.merge("beszel_api" => "http://127.0.0.1:#{port}"), "--check")
+    output = stdout + stderr
+    failures << "Beszel converged check-mode fixture failed: #{failure_tail(output)}" unless status.success?
+    failures << "Beszel converged check mode planned a change" if
+      output.include?("BESZEL_PLAN_MANAGED_USER_") || !output.match?(/\blocalhost\s+: ok=\d+\s+changed=0\b/)
+    failures << "Beszel converged check mode authenticated or mutated" unless
+      requests.all? { |request| [request["method"], request["target"]] == read }
+  end
+end
+
 def exercise_paperless(failures, scenario: :normal, task_path: nil)
   state = {
     "users" => [
@@ -1649,6 +1700,7 @@ elsif ARGV.empty?
       ->(collected) { exercise_immich_schema_fail_closed(collected, resource: :admin) },
       ->(collected) { exercise_immich_invalid_avatar_policy(collected) },
       ->(collected) { exercise_beszel(collected) },
+      ->(collected) { exercise_beszel_converged(collected) },
       ->(collected) { exercise_paperless(collected) },
       ->(collected) { exercise_paperless(collected, scenario: :empty) },
       ->(collected) { exercise_paperless(collected, scenario: :mangled) },
