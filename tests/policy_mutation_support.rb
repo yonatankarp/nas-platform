@@ -484,6 +484,8 @@ def check_fixture_index_hostile_environment(failures)
     before_index, = Open3.capture3(clean_environment, "git", "-C", unrelated,
                                    "diff", "--cached", "--binary")
 
+    # ENV is process-wide, so no pooled row may be spawning scripts while it is hostile.
+    drain_policy_rows
     previous = hostile.to_h { |name, _value| [name, ENV.key?(name) ? ENV[name] : nil] }
     absent = hostile.keys.reject { |name| ENV.key?(name) }
     hostile.each { |name, value| ENV[name] = value }
