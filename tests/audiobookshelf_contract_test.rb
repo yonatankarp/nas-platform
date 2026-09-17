@@ -334,6 +334,39 @@ STATIC_ROWS = [
     expects: "unsupported GET /api/settings is assumed"
   },
   {
+    # The literal #753 went red on: every Renovate bump failed a gate whose
+    # schema had not moved. The version is read from the pin instead.
+    name: "the settings schema gate pinned to a literal version",
+    break: lambda { |root|
+      edit_role_task(root, "Validate current Audiobookshelf server settings schema") do |task|
+        assertion = task.fetch("ansible.builtin.assert")
+        assertion["that"] = Array(assertion["that"]).map do |condition|
+          condition.to_s.sub("== audiobookshelf_pinned_version", "== '2.36.0'")
+        end
+      end
+    },
+    expects: "running server version is not compared against the pinned image"
+  },
+  {
+    name: "an unparseable pin accepted by the settings schema gate",
+    break: lambda { |root|
+      edit_role_task(root, "Validate current Audiobookshelf server settings schema") do |task|
+        assertion = task.fetch("ansible.builtin.assert")
+        assertion["that"] = Array(assertion["that"]).reject { |condition| condition.to_s.include?("| length > 0") }
+      end
+    },
+    expects: "running server version is not compared against the pinned image"
+  },
+  {
+    name: "backupPath sent through the settings PATCH that drops it",
+    break: lambda { |root|
+      edit_role_task(root, "Reconcile owned Audiobookshelf server settings") do |task|
+        task.fetch("ansible.builtin.uri")["body"] = "{{ audiobookshelf_desired_server_settings }}"
+      end
+    },
+    expects: "backupPath is sent where Audiobookshelf drops it"
+  },
+  {
     name: "an authoritative settings read that logs its own response",
     break: lambda { |root|
       edit_role_task(root, "Read Audiobookshelf server settings for reconciliation") do |task|
@@ -993,6 +1026,23 @@ PROGRAM_MUTATIONS = [
     from: 'settings_patch.length == 1 && settings_patch.fetch(0).fetch(1)["method"] == "PATCH" &&',
     to: "true ||",
     rows: ["an unconditional settings PATCH"]
+  },
+  {
+    label: "the pinned-version comparison check",
+    program: :static,
+    from: 'schema_conditions.include?("audiobookshelf_pinned_version | length > 0") &&',
+    to: "true ||",
+    rows: [
+      "the settings schema gate pinned to a literal version",
+      "an unparseable pin accepted by the settings schema gate"
+    ]
+  },
+  {
+    label: "the backupPath route check",
+    program: :static,
+    from: %q{patch_body.include?("rejectattr('key', 'equalto', 'backupPath')") &&},
+    to: "true ||",
+    rows: ["backupPath sent through the settings PATCH that drops it"]
   },
   {
     label: "the timezone assertion count",
