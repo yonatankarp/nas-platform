@@ -24,6 +24,7 @@ PROBES = [
   [%w[all audiobookshelf], method(:exercise_audiobookshelf)],
   [%w[all audiobookshelf], method(:exercise_audiobookshelf_converged)],
   [%w[all jellyfin], method(:exercise_jellyfin)],
+  [%w[all jellyfin], method(:exercise_jellyfin_converged)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_settings)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_server_configuration_refresh)],
   [%w[all jellyfin_settings], method(:exercise_jellyfin_policy_preflight)],
