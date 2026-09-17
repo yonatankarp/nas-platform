@@ -1020,7 +1020,7 @@ end
 # two are not the same guard. This one holds under `--audit` alone, on figures
 # the audit itself collects, and it is the one a synthetic run can drive to one
 # site. The census floor is a real count and it runs in both modes -- which is
-# what puts it in CI, where `--audit` never runs -- and under `--audit` it bounds
+# what puts it on every pull request, where `--audit` does not run -- and under `--audit` it bounds
 # these figures too, because every row that records a census entry records an
 # audited one on the next line of expect_failure. So the ratchet covers the
 # re-derived half in the mode where a real tree is what is being counted, and

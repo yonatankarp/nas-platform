@@ -578,7 +578,17 @@ jobs:
     # mutations is routed more narrowly than the gate, because a mutation is
     # planted in a copy of the whole repository and any file can change what the
     # policy set says.
-    timeout-minutes: 45
+    #
+    # The nightly and workflow_dispatch -- the two `--full` triggers -- run
+    # `--audit` instead of the narrow form: it re-derives every row's
+    # `detected_by` against all eight policy scripts, and until #727 it ran in
+    # no job at all, so drift accumulated behind a green gate (#715). It
+    # replaces the narrow run rather than sitting beside it, because its output
+    # includes the narrow run's. #727 measured it on two 4-core runners at 30.5
+    # and 34.5 minutes (CPU/elapsed 1.13-1.70); 60 is that maximum plus setup
+    # with room for the ~30% runner-to-runner spread. Drift reds the nightly,
+    # which blocks no deploy: the poller reads push runs only.
+    timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
     runs-on: ubuntu-latest
@@ -659,8 +669,27 @@ jobs:
 
       # The harness syntax-checks a play in every sandbox it builds and renders
       # role defaults through Ansible, so it needs the gate's toolchain.
+      #
+      # The event arrives through env rather than as an expression in the
+      # script. The bare form is written first on purpose: a mutation row plants
+      # its removal by rewriting the first mention of it in this file. An event
+      # this does not name fails rather than silently picking a form.
       - name: Check policy mutation coverage
-        run: ruby tests/policy_manifest_test.rb
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request|push)
+              ruby tests/policy_manifest_test.rb
+              ;;
+            schedule|workflow_dispatch)
+              ruby tests/policy_manifest_test.rb --audit
+              ;;
+            *)
+              echo "::error::no mutation harness form declared for event '$EVENT_NAME'" >&2
+              exit 1
+              ;;
+          esac
 
   reconciliation:
     # The media acquisition reconciliation contract is 373 Ansible runs. One

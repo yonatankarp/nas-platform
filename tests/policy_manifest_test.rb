@@ -1413,6 +1413,16 @@ expect_failure(failures, "CI drops the policy mutation job",
   File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb", "true"))
 end
 
+# The nightly falling back to the narrow form still passes and still prints the
+# census, and re-derives nothing: the invisibility #727 closed.
+expect_failure(failures, "CI drops the nightly mutation audit",
+               "CI must run ruby tests/policy_manifest_test.rb --audit on the nightly",
+               detected_by: %i[ci]) do |root|
+  path = File.join(root, ".github", "workflows", "ci.yml")
+  File.write(path, File.read(path).sub("ruby tests/policy_manifest_test.rb --audit",
+                                       "ruby tests/policy_manifest_test.rb"))
+end
+
 expect_failure(failures, "integration omits contract execution", "integration must execute registered contracts",
                detected_by: %i[integration]) do |root|
   path = File.join(root, "tests", "integration_controller.sh")

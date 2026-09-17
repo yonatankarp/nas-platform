@@ -1,12 +1,13 @@
 #!/usr/bin/env ruby
 # The mutation audit's coverage report, checked without running the audit.
 #
-# `ruby tests/policy_manifest_test.rb --audit` is deliberately out of CI: it
-# re-runs all eight policy scripts per row and costs twenty-five minutes. The
-# report it prints -- how many mutations it re-derived, and how many it could not
-# see -- carries two guards, and both of them exist because #439 found the audit
-# claiming a wider verdict than it had. A guard reachable only by a human
-# spending twenty-five minutes is the same defect one level down, so this checks
+# `ruby tests/policy_manifest_test.rb --audit` runs only on the nightly and
+# workflow_dispatch (#727): it re-runs all eight policy scripts per row and costs
+# about half an hour. The report it prints -- how many mutations it re-derived,
+# and how many it could not see -- carries two guards, and both of them exist
+# because #439 found the audit claiming a wider verdict than it had. A guard
+# reachable only a day after the change that broke it is the same defect one
+# level down, so this checks
 # the reporting directly: the counters are driven with synthetic rows and the
 # report is read back, which takes a second because no policy script runs.
 #
@@ -211,8 +212,8 @@ check(failures,
       "a script that has stopped detecting a row must be reported, got #{drift.inspect}")
 
 # The census floor (#725). Everything above is about the audit's own report,
-# which a human reaches by spending twenty-five minutes; the census is printed by
-# every run of the harness, including the one CI runs, so the floor that catches
+# which only the nightly reaches (#727); the census is printed by
+# every run of the harness, including the one every pull request runs, so the floor that catches
 # a collapsing subject list lives there.
 #
 # Asserted through expect_failure rather than by calling the recorder, because

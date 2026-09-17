@@ -676,13 +676,18 @@ check(failures,
       "the policy mutation harness belongs to its own CI job, not to validate-policy.sh")
 check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb"),
       "CI must run ruby tests/policy_manifest_test.rb")
-# What that job runs is the harness without `--audit`, so the two guards on the
-# audit's own coverage report -- the floor under what it re-derived, and the
-# tripwire on what it did not -- are reachable in CI only through the check that
-# drives them with synthetic rows. It belongs to the gate rather than to the
-# mutation job because it runs no policy script and costs under a second, and it
-# has to be somewhere: a guard whose only caller is a human spending
-# twenty-five minutes is the narrower-than-it-reads coverage #439 was about.
+# And the audit, which the nightly runs in place of the narrow form (#727). Until
+# then it ran in no job, and two rows' `detected_by` drifted behind a green gate
+# (#715). Dropping it leaves the nightly running the narrow form, which still
+# passes; tests/ci/workflow_test.rb proves which event reaches which form.
+check(failures, ci_commands.include?("ruby tests/policy_manifest_test.rb --audit"),
+      "CI must run ruby tests/policy_manifest_test.rb --audit on the nightly")
+# Pull requests and pushes still run the harness without `--audit`, and the
+# nightly's audit is a day late, so the two guards on the audit's own coverage
+# report -- the floor under what it re-derived, and the tripwire on what it did
+# not -- are reachable on a change only through the check that drives them with
+# synthetic rows. It belongs to the gate rather than to the mutation job because
+# it runs no policy script and costs under a second.
 check(failures,
       validation_commands.count("ruby tests/policy_audit_coverage_test.rb") == 1,
       "validate-policy.sh must run ruby tests/policy_audit_coverage_test.rb exactly once")
