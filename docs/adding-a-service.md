@@ -1325,9 +1325,9 @@ credential guard — and a service's own file is a shim that names the role and
 maps its parameters. `roles/komga/tasks/managed_users.yml` and
 `roles/komga/defaults/main.yml` are the reference for that shim, and the values
 it maps live in the defaults so the shim stays a one-to-one map. #647 hoisted
-komga, then audiobookshelf, then beszel; jellyfin, paperless-ngx and immich are
-still hand-written copies and are being converted in later chunks, so read komga
-rather than the nearest file. `roles/audiobookshelf/defaults/main.yml` is the
+komga, then audiobookshelf, then beszel, then jellyfin; paperless-ngx and immich
+are still hand-written copies and are being converted in later chunks, so read
+komga rather than the nearest file. `roles/audiobookshelf/defaults/main.yml` is the
 reference for the two things komga does not need: a paginated listing envelope,
 whose refusals go in `managed_users_listing_conditions`, and a login that proves
 the credential in a request body rather than over basic auth, with the
@@ -1338,10 +1338,24 @@ whose credential must authenticate as the very record the listing names:
 re-proves credentials in the verify phase too, repairs a newly created record in
 the same run, and refuses a repair whose record changed after credential proof;
 `managed_users_id_pattern` keeps an identifier pattern narrower than the
-platform's. A step the
-shared role cannot express stays in the service's own tasks beside the shim,
-which is where Immich's preference profiles and Jellyfin's policy merge will
-stay.
+platform's. `roles/jellyfin/defaults/main.yml` and its shim are the reference
+for three more: a listing that names the identity with a different attribute
+than the vault does (`managed_users_listed_identity_attribute`), a login that
+carries a header of its own (`managed_users_authenticate_headers`), and a
+`preflight` phase that proves existing credentials and runs the service's
+before-create refusals without creating or repairing anything. A step the shared
+role cannot express stays in the service's own tasks. When it only has to run
+before or after the role, it sits beside the shim, the way Jellyfin records its
+expected policies after the role returns. When it has to run between two of the
+role's steps, the role runs it through a hook: `managed_users_before_create_tasks`
+(after existing credentials are proved, before creation) or
+`managed_users_after_creation_tasks` (once the post-creation re-list is bound,
+before the role reads it), each a path relative to `roles/managed_users/tasks`.
+`roles/jellyfin/tasks/managed_users_existing_policies.yml` and
+`managed_users_refreshed_policies.yml` are the reference, and
+`managed_users_reresolve_after_creation` is what makes the repair merge into the
+re-read records without binding authenticated identities. Immich's preference
+profiles are expected to take the same route.
 
 `config/managed-user-capabilities.yml` is that role's own input as well as the
 register: it reads the service's row off the deployed release and refuses a
