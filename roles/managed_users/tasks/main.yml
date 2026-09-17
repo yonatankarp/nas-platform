@@ -44,11 +44,11 @@
   ansible.builtin.assert:
     that:
       - >-
-        managed_users_deferred_parameters
+        managed_users_required_parameters
         | difference(managed_users_supplied_parameters) | length == 0
     fail_msg: >-
       A caller of roles/managed_users did not supply
-      {{ managed_users_deferred_parameters |
+      {{ managed_users_required_parameters |
          difference(managed_users_supplied_parameters) | join(', ') }}.
       meta/argument_specs.yml cannot declare these, so their absence is caught
       here rather than by Ansible.
@@ -63,18 +63,29 @@
       - managed_users_reconcile_path
       - managed_users_repair_body
       - managed_users_repair_condition
+    # Needed only by a caller that binds authenticated identities.
+    managed_users_required_parameters: >-
+      {{ managed_users_deferred_parameters +
+         (['managed_users_authenticated_id']
+          if managed_users_bind_authenticated_ids | bool else []) }}
     managed_users_supplied_parameters: >-
-      {{ q('varnames', '^' ~ (managed_users_deferred_parameters | join('$|^')) ~ '$') }}
+      {{ q('varnames', '^' ~ (managed_users_required_parameters | join('$|^')) ~ '$') }}
 
-# The two accumulators below are accumulated across a loop, so they are reset
+# The accumulators below are accumulated across a loop, so they are reset
 # rather than merely defaulted. A role called twice in one play -- reconcile
 # then verify, which is exactly how site.yml and verify.yml reach it -- would
 # otherwise carry the first call's keys into the second, and once a second
 # service adopts this role it would carry that service's identities too.
+#
+# managed_users_initial_authenticated_ids is deliberately NOT reset: it is the
+# first id each identity's credential proved in this play, and the verify
+# phase compares against the one reconcile proved. It is keyed by service for
+# the reason the reset exists -- two services may declare the same email.
 - name: Reset resolved managed-user decisions
   ansible.builtin.set_fact:
     managed_users_matches: {}
     managed_users_repairs: {}
+    managed_users_authenticated_ids: {}
 
 # config/managed-user-capabilities.yml is the platform's declaration of what
 # each service's managed-user contract is, and this role implements exactly one
@@ -283,7 +294,7 @@
       - >-
         managed_users_matches[item[managed_users_identity_attribute]] | length == 0 or
         managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute]
-          | string is match(platform_safe_api_identifier_pattern)
+          | string is match(managed_users_id_pattern)
     fail_msg: >-
       {{ managed_users_title }} returned an unsafe managed-user API identifier.
   loop: "{{ managed_users_declared }}"
@@ -318,8 +329,11 @@
   vars:
     managed_users_authenticating_user: "{{ item }}"
   register: managed_users_authentication
+  # A credential-bound service re-proves every credential in the verify phase
+  # too, because its verification compares the listed record against the id
+  # the credential authenticates as now, not only against the one reconcile saw.
   when:
-    - managed_users_phase == 'reconcile'
+    - managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
     - managed_users_matches[item[managed_users_identity_attribute]] | length == 1
   loop: "{{ managed_users_declared }}"
@@ -339,6 +353,12 @@
         (managed_users_authenticate_identity_normalized | bool and
          managed_users_authenticate_identity | trim | lower ==
          item.item[managed_users_identity_attribute] | trim | lower)
+      # The authentication ran only for an identity with exactly one match, so
+      # the subscript below is always in range.
+      - >-
+        not managed_users_bind_authenticated_ids | bool or
+        managed_users_authenticated_id ==
+        managed_users_matches[item.item[managed_users_identity_attribute]][0][managed_users_id_attribute]
     fail_msg: >-
       Existing {{ managed_users_title }} managed user does not accept its
       preserved vault password. Run the reviewed credential-migration procedure;
@@ -349,7 +369,35 @@
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
   when:
-    - managed_users_phase == 'reconcile'
+    - managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool
+    - not ansible_check_mode
+  no_log: true
+
+# Both id maps are written from the authenticate result only after the assert
+# above proved it names the listed record. The initial map keeps the first id
+# an identity proved in this play; the other always holds the latest.
+- name: "Bind authenticated existing managed-user identifiers: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_initial_authenticated_ids: >-
+      {{ managed_users_initial_authenticated_ids | default({}) | combine({
+           managed_users_service: {
+             managed_users_bound_identity:
+               (managed_users_initial_authenticated_ids | default({})).get(
+                 managed_users_service, {}
+               ).get(managed_users_bound_identity, managed_users_authenticated_id)
+           }}, recursive=true) }}
+    managed_users_authenticated_ids: >-
+      {{ managed_users_authenticated_ids |
+         combine({managed_users_bound_identity: managed_users_authenticated_id}) }}
+  vars:
+    managed_users_bound_identity: "{{ item.item[managed_users_identity_attribute] }}"
+  loop: >-
+    {{ managed_users_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
   no_log: true
 
@@ -437,7 +485,7 @@
          selectattr(managed_users_identity_attribute, 'equalto',
                     item.item[managed_users_identity_attribute]) |
          first)[managed_users_id_attribute] | string
-          is match(platform_safe_api_identifier_pattern)
+          is match(managed_users_id_pattern)
   loop: >-
     {{ managed_users_creation.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
@@ -485,6 +533,15 @@
         (managed_users_authenticate_identity_normalized | bool and
          managed_users_authenticate_identity | trim | lower ==
          item.item.item[managed_users_identity_attribute] | trim | lower)
+      # managed_users_listing is the re-read listing here, and the task before
+      # the authentication proved it holds exactly one such record.
+      - >-
+        not managed_users_bind_authenticated_ids | bool or
+        managed_users_authenticated_id ==
+        (managed_users_list_json |
+         selectattr(managed_users_identity_attribute, 'equalto',
+                    item.item.item[managed_users_identity_attribute]) |
+         first)[managed_users_id_attribute]
     fail_msg: >-
       Newly created {{ managed_users_title }} managed user does not accept its
       vault password. Run the reviewed credential-migration procedure; Ansible
@@ -495,6 +552,55 @@
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
   when:
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+- name: "Bind authenticated newly created managed-user identifiers: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_initial_authenticated_ids: >-
+      {{ managed_users_initial_authenticated_ids | default({}) | combine({
+           managed_users_service: {
+             managed_users_bound_identity:
+               (managed_users_initial_authenticated_ids | default({})).get(
+                 managed_users_service, {}
+               ).get(managed_users_bound_identity, managed_users_authenticated_id)
+           }}, recursive=true) }}
+    managed_users_authenticated_ids: >-
+      {{ managed_users_authenticated_ids |
+         combine({managed_users_bound_identity: managed_users_authenticated_id}) }}
+  vars:
+    managed_users_bound_identity: "{{ item.item.item[managed_users_identity_attribute] }}"
+  loop: >-
+    {{ managed_users_new_authentication.results | default([]) |
+       rejectattr('skipped', 'defined') | list }}
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_bind_authenticated_ids | bool
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+# A credential-bound service repairs against the listing re-read after creation,
+# so an identity created without its declared properties is repaired in this
+# run rather than the next one. The stable-identity refusal below is what makes
+# that safe: a record that changed between the two listings is refused, not
+# repaired. Under --check nothing was created or re-read, so the first listing
+# stands, and the plan below reports against it.
+- name: "Re-resolve managed identities after creation: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_matches: >-
+      {{ managed_users_matches |
+         combine(dict([(item[managed_users_identity_attribute],
+           managed_users_list_json |
+           selectattr(managed_users_identity_attribute, 'equalto',
+                      item[managed_users_identity_attribute]) | list)])) }}
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_bind_authenticated_ids | bool
     - managed_users_phase == 'reconcile'
     - not ansible_check_mode
   no_log: true
@@ -533,6 +639,32 @@
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
   changed_when: true
+
+# Every declared identity, not only those about to be repaired: the old
+# per-service copies refused a replaced record whether or not it had drifted.
+# No fail_msg subscript, per the rule at the top of this file.
+- name: "Require stable authenticated managed identities: {{ managed_users_title }}"
+  ansible.builtin.assert:
+    that:
+      - managed_users_matches[item[managed_users_identity_attribute]] | length == 1
+      - >-
+        managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute] ==
+        managed_users_authenticated_ids[item[managed_users_identity_attribute]]
+      - >-
+        managed_users_matches[item[managed_users_identity_attribute]][0][managed_users_id_attribute] ==
+        managed_users_initial_authenticated_ids[managed_users_service][item[managed_users_identity_attribute]]
+    fail_msg: >-
+      A managed {{ managed_users_title }} identity resolved to a different record
+      after credential proof. Run the reviewed credential-migration procedure;
+      Ansible will not mutate a replacement identity.
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_bind_authenticated_ids | bool
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
 
 - name: "Repair non-secret managed-user properties: {{ managed_users_title }}"
   ansible.builtin.uri:

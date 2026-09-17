@@ -40,3 +40,20 @@ managed_users_listing_conditions:
 # surrounding whitespace. komga compares emails normalised; audiobookshelf has
 # always required the login response to echo the declared username exactly.
 managed_users_authenticate_identity_normalized: true
+
+# The pattern a listed API identifier must match before this role puts it in a
+# request path. The platform's contract by default; a service whose identifiers
+# have a narrower, known shape (beszel's PocketBase record ids) states it, so
+# moving onto this role never widens the guard it had.
+managed_users_id_pattern: "{{ platform_safe_api_identifier_pattern }}"
+
+# Credential-bound identities (beszel). When true the role proves, in BOTH
+# phases, that each identity's credential authenticates as the very record the
+# listing names; records the id each authentication returns
+# (managed_users_authenticated_id, evaluated against the authenticate result);
+# re-resolves its matches from the listing re-read after creation, so a record
+# created without its declared properties is repaired in the same run; and
+# refuses to repair any identity whose resolved record is not the one its
+# credential proved. The two id maps it keeps are readable from
+# managed_users_verify_conditions.
+managed_users_bind_authenticated_ids: false

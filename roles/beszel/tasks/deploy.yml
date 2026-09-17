@@ -26,6 +26,9 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ nas_docker_root }}/beszel/hub/id_ed25519"
+      # roles/managed_users reads the capability register off the deployed
+      # release, the way roles/komga and roles/audiobookshelf name it.
+      - "{{ platform_current_dir }}/config/managed-user-capabilities.yml"
 
 - name: Select the Beszel mounted state root
   tags: [platform_verify_beszel]

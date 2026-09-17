@@ -36,10 +36,10 @@ EXPECTED_SERVICES = {
   "beszel" => MULTI_USER_DEFAULTS.merge(
     "mode" => "api",
     "interfaces" => {
-      "list" => "PocketBase users collection",
-      "create" => "PocketBase users collection",
-      "authenticate" => "PocketBase users collection",
-      "reconcile" => "PocketBase users collection"
+      "list" => "api/collections/users/records?perPage=500",
+      "create" => "api/collections/users/records",
+      "authenticate" => "api/collections/users/auth-with-password",
+      "reconcile" => "api/collections/users/records/{id}"
     }
   ),
   "dozzle" => MULTI_USER_DEFAULTS.merge(

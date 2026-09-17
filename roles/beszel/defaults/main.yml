@@ -104,3 +104,85 @@ beszel_notification_url: >-
 # redirectable to prove the task's own branches without involving the real
 # service.
 beszel_pushover_validation_url: https://api.pushover.net/1/users/validate.json
+
+# Beszel's half of roles/managed_users. tasks/managed_users.yml maps these onto
+# that role's parameters one for one, so this block is the whole statement of
+# what Beszel's managed-user contract is; roles/komga/defaults/main.yml and
+# roles/audiobookshelf/defaults/main.yml are the blocks to compare it against.
+#
+# The four relative paths are asserted against config/managed-user-capabilities.yml
+# on the deployed release before any request is sent.
+beszel_managed_users_identity_attribute: email
+beszel_managed_users_id_attribute: id
+beszel_managed_users_list_path: api/collections/users/records?perPage=500
+beszel_managed_users_authenticate_path: api/collections/users/auth-with-password
+beszel_managed_users_create_path: api/collections/users/records
+beszel_managed_users_reconcile_interface: api/collections/users/records/{id}
+beszel_managed_users_create_status: [200]
+beszel_managed_users_repair_status: [200]
+# The PocketBase record-id pattern this role has always put in front of a request
+# path. It is not a subset of platform_safe_api_identifier_pattern in either
+# direction, so it is kept exactly rather than replaced by the platform's.
+beszel_managed_users_id_pattern: '^[A-Za-z0-9_-]{1,64}$'
+
+# The listing is a paginated PocketBase envelope, and a truncated listing reads
+# as an absent identity, which the next step would create a second time.
+# BRACE-FREE and ordered: the envelope is proved a mapping before any key is
+# read out of it.
+beszel_managed_users_listing_conditions:
+  - managed_users_listing.json is mapping
+  - managed_users_listing.json.get('items', []) | type_debug == 'list'
+  - managed_users_listing.json.get('totalPages', 0) | int <= 1
+  - >-
+    managed_users_listing.json.get('totalItems',
+      managed_users_listing.json.get('items', []) | length) | int ==
+    managed_users_listing.json.get('items', []) | length
+
+# Evaluated inside the shared role's loops, against its own names: the listing it
+# registered, the single match it bound, `item`, and the declared user it binds
+# as managed_users_authenticating_user for both authenticate requests.
+beszel_managed_users_list_json: "{{ managed_users_listing.json.get('items', []) }}"
+beszel_managed_users_authenticate_body:
+  identity: "{{ managed_users_authenticating_user.email }}"
+  password: "{{ managed_users_authenticating_user.password }}"
+beszel_managed_users_authenticate_identity: "{{ item.json.record.email | default('') }}"
+# The record id a successful authentication returns; the shared role requires it
+# to be the listed record's id, and refuses a repair whose record is not it.
+beszel_managed_users_authenticated_id: "{{ item.json.record.id | default('') }}"
+beszel_managed_users_reconcile_path: >-
+  api/collections/users/records/{{ managed_users_match[managed_users_id_attribute] | urlencode }}
+# Creation grants no privilege: role is left to PocketBase's default, and only
+# repair -- after the new credential is proved -- sets it. verified is the
+# authentication prerequisite, not a privilege.
+beszel_managed_users_create_body:
+  email: "{{ item.email }}"
+  password: "{{ item.password }}"
+  passwordConfirm: "{{ item.password }}"
+  verified: true
+# Nothing password-shaped may appear here: the capability register declares an
+# existing identity's password update forbidden, and the shared role refuses a
+# repair body carrying one.
+beszel_managed_users_repair_body:
+  role: "{{ item.role }}"
+  verified: "{{ item.verified }}"
+beszel_managed_users_repair_condition: >-
+  {{ managed_users_match.role != item.role or
+     managed_users_match.verified | bool != item.verified | bool }}
+# Brace-free; the first condition is what makes the rest safe, because
+# managed_users_match is an empty mapping for an identity with no match. The
+# last two compare against the ids this phase's own authentication proved and
+# the first one proved in this play.
+beszel_managed_users_verify_conditions:
+  - managed_users_matches[item.email] | length == 1
+  - managed_users_match.email | trim | lower == item.email | trim | lower
+  - managed_users_match.role == item.role
+  - managed_users_match.verified | bool == item.verified | bool
+  - managed_users_match.id == managed_users_authenticated_ids[item.email]
+  - >-
+    managed_users_match.id ==
+    managed_users_initial_authenticated_ids[managed_users_service][item.email]
+beszel_managed_users_verify_fail_msg: >-
+  A managed Beszel identity is absent, duplicated, or differs from its exact
+  projection.
+beszel_managed_users_plan_create_message: BESZEL_PLAN_MANAGED_USER_CREATE
+beszel_managed_users_plan_repair_message: BESZEL_PLAN_MANAGED_USER_REPAIR
