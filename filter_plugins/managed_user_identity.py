@@ -22,9 +22,10 @@ what stops a service that treats `Alice@example.com` and `alice@example.com` as
 one account from being reconciled as if they were two, which would let a repair
 land on the wrong record.
 
-Immich reaches the same guarantee by construction: it indexes the listing by
-normalised email first, so its match list *is* the normalised bucket and the
-second condition is identically true. Calling this from Immich therefore adds no
+Immich reaches the same guarantee by construction: it matches the listing by
+normalised email (`managed_users_match_normalized` in `roles/managed_users`), so
+its match list *is* the normalised bucket and the second condition is
+identically true. Calling this from Immich therefore adds no
 behaviour, and keeps the sixth role from being the one that drifts.
 
 Audiobookshelf additionally asserted `matches[0].username == identity`. Its
@@ -40,9 +41,9 @@ What this module deliberately does **not** absorb:
   `^[A-Za-z0-9_-]{1,64}$`, `^[0-9A-Fa-f-]{36}$`) and Paperless has none, because
   its identifier is a database primary key. Moving a regex behind a parameter
   moves no decision.
-* **Match resolution itself.** Five roles build the match map with a looped
-  `set_fact`; Immich builds a normalised index instead. Those are different
-  semantics, not different arguments.
+* **Match resolution itself.** Exact matching and Immich's normalised bucket
+  are different semantics; `roles/managed_users` carries both behind
+  `managed_users_match_normalized`, and Paperless-ngx resolves its own.
 * **Listing completeness, authentication and repair.** One, four and five
   conditions respectively across the six, against different transports, request
   bodies and response shapes.
