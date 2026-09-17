@@ -23,7 +23,7 @@
 - name: Validate the managed-user phase
   ansible.builtin.assert:
     that:
-      - managed_users_phase in ['reconcile', 'verify']
+      - managed_users_phase in ['preflight', 'reconcile', 'verify']
     fail_msg: >-
       Managed-user reconciliation was included with a phase it does not
       implement. The tasks in this file are gated on managed_users_phase, so an
@@ -254,7 +254,7 @@
       {{ managed_users_matches |
          combine(dict([(item[managed_users_identity_attribute],
            managed_users_list_json |
-           selectattr(managed_users_identity_attribute, 'equalto',
+           selectattr(managed_users_listed_identity_attribute, 'equalto',
                       item[managed_users_identity_attribute]) | list)])) }}
   loop: "{{ managed_users_declared }}"
   loop_control:
@@ -271,7 +271,7 @@
     that:
       - >-
         managed_users_list_json | managed_user_ambiguity_errors(
-          managed_users_identity_attribute,
+          managed_users_listed_identity_attribute,
           item[managed_users_identity_attribute],
           managed_users_matches[item[managed_users_identity_attribute]]
         ) | length == 0
@@ -279,7 +279,7 @@
       {{ managed_users_title }} contains duplicate normalized managed
       identities; resolve the ambiguity manually before reconciliation:
       {{ managed_users_list_json | managed_user_ambiguity_errors(
-           managed_users_identity_attribute,
+           managed_users_listed_identity_attribute,
            item[managed_users_identity_attribute],
            managed_users_matches[item[managed_users_identity_attribute]]
          ) | join('; ') }}
@@ -322,6 +322,7 @@
       {{ item[managed_users_identity_attribute] if managed_users_authenticate_basic else omit }}
     url_password: "{{ item.password if managed_users_authenticate_basic else omit }}"
     force_basic_auth: "{{ managed_users_authenticate_basic }}"
+    headers: "{{ managed_users_authenticate_headers }}"
     body_format: "{{ managed_users_authenticate_body_format }}"
     body: "{{ managed_users_authenticate_body }}"
     status_code: "{{ range(100, 600) | list }}"
@@ -332,8 +333,10 @@
   # A credential-bound service re-proves every credential in the verify phase
   # too, because its verification compares the listed record against the id
   # the credential authenticates as now, not only against the one reconcile saw.
+  # preflight (jellyfin) proves every existing credential before the service's
+  # role mutates anything else, and stops before creation.
   when:
-    - managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool
+    - managed_users_phase in ['preflight', 'reconcile'] or managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
     - managed_users_matches[item[managed_users_identity_attribute]] | length == 1
   loop: "{{ managed_users_declared }}"
@@ -369,7 +372,7 @@
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
   when:
-    - managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool
+    - managed_users_phase in ['preflight', 'reconcile'] or managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
   no_log: true
 
@@ -400,6 +403,16 @@
     - managed_users_bind_authenticated_ids | bool
     - not ansible_check_mode
   no_log: true
+
+# A caller's own refusals that must hold before anything is created: they read
+# the matches this role resolved and the credentials it proved, and a shim can
+# only put tasks before or after the role. Gated here on the phases whose tasks
+# surround it, so the caller's file gates on nothing but its own subject.
+- name: "Run the caller's refusals before managed-user creation: {{ managed_users_title }}"
+  ansible.builtin.include_tasks: "{{ managed_users_before_create_tasks }}"
+  when:
+    - managed_users_before_create_tasks | length > 0
+    - managed_users_phase in ['preflight', 'reconcile']
 
 - name: "Report planned managed-user creation: {{ managed_users_title }}"
   ansible.builtin.debug:
@@ -473,16 +486,16 @@
     managed_users_new_identity_conditions:
       - >-
         managed_users_list_json |
-        selectattr(managed_users_identity_attribute, 'equalto',
+        selectattr(managed_users_listed_identity_attribute, 'equalto',
                    item.item[managed_users_identity_attribute]) | list | length == 1
       - >-
-        managed_users_list_json | map(attribute=managed_users_identity_attribute) |
+        managed_users_list_json | map(attribute=managed_users_listed_identity_attribute) |
         map('trim') | map('lower') |
         select('equalto', item.item[managed_users_identity_attribute] | trim | lower) |
         list | length == 1
       - >-
         (managed_users_list_json |
-         selectattr(managed_users_identity_attribute, 'equalto',
+         selectattr(managed_users_listed_identity_attribute, 'equalto',
                     item.item[managed_users_identity_attribute]) |
          first)[managed_users_id_attribute] | string
           is match(managed_users_id_pattern)
@@ -496,6 +509,44 @@
     - not ansible_check_mode
   no_log: true
 
+# A credential-bound service, or one that asks (jellyfin), repairs against the
+# listing re-read after creation, so an identity created without its declared
+# properties is repaired in this run rather than the next one. For a bound
+# service the stable-identity refusal below is what makes that safe: a record
+# that changed between the two listings is refused, not repaired. Under --check
+# nothing was created or re-read, so the first listing stands, and the plan
+# below reports against it.
+#
+# It sits before the newly created credentials are proved, rather than after,
+# because nothing from here to the repair decisions reads the matches except
+# the caller's hook below, which has to see the re-read records.
+- name: "Re-resolve managed identities after creation: {{ managed_users_title }}"
+  ansible.builtin.set_fact:
+    managed_users_matches: >-
+      {{ managed_users_matches |
+         combine(dict([(item[managed_users_identity_attribute],
+           managed_users_list_json |
+           selectattr(managed_users_listed_identity_attribute, 'equalto',
+                      item[managed_users_identity_attribute]) | list)])) }}
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: "{{ managed_users_service }}-managed-user"
+  when:
+    - managed_users_bind_authenticated_ids | bool or managed_users_reresolve_after_creation | bool
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+  no_log: true
+
+# A caller's own refusals over the listing re-read after creation, run where
+# the re-read and re-resolved records exist and before any newly created
+# credential is proved. Gated exactly as the re-list is.
+- name: "Run the caller's refusals after managed-user creation: {{ managed_users_title }}"
+  ansible.builtin.include_tasks: "{{ managed_users_after_creation_tasks }}"
+  when:
+    - managed_users_after_creation_tasks | length > 0
+    - managed_users_phase == 'reconcile'
+    - not ansible_check_mode
+
 - name: "Authenticate newly created managed users: {{ managed_users_title }}"
   ansible.builtin.uri:
     url: "{{ managed_users_api }}/{{ managed_users_authenticate_path }}"
@@ -504,6 +555,7 @@
       {{ item.item[managed_users_identity_attribute] if managed_users_authenticate_basic else omit }}
     url_password: "{{ item.item.password if managed_users_authenticate_basic else omit }}"
     force_basic_auth: "{{ managed_users_authenticate_basic }}"
+    headers: "{{ managed_users_authenticate_headers }}"
     body_format: "{{ managed_users_authenticate_body_format }}"
     body: "{{ managed_users_authenticate_body }}"
     status_code: "{{ range(100, 600) | list }}"
@@ -539,7 +591,7 @@
         not managed_users_bind_authenticated_ids | bool or
         managed_users_authenticated_id ==
         (managed_users_list_json |
-         selectattr(managed_users_identity_attribute, 'equalto',
+         selectattr(managed_users_listed_identity_attribute, 'equalto',
                     item.item.item[managed_users_identity_attribute]) |
          first)[managed_users_id_attribute]
     fail_msg: >-
@@ -574,29 +626,6 @@
   loop: >-
     {{ managed_users_new_authentication.results | default([]) |
        rejectattr('skipped', 'defined') | list }}
-  loop_control:
-    label: "{{ managed_users_service }}-managed-user"
-  when:
-    - managed_users_bind_authenticated_ids | bool
-    - managed_users_phase == 'reconcile'
-    - not ansible_check_mode
-  no_log: true
-
-# A credential-bound service repairs against the listing re-read after creation,
-# so an identity created without its declared properties is repaired in this
-# run rather than the next one. The stable-identity refusal below is what makes
-# that safe: a record that changed between the two listings is refused, not
-# repaired. Under --check nothing was created or re-read, so the first listing
-# stands, and the plan below reports against it.
-- name: "Re-resolve managed identities after creation: {{ managed_users_title }}"
-  ansible.builtin.set_fact:
-    managed_users_matches: >-
-      {{ managed_users_matches |
-         combine(dict([(item[managed_users_identity_attribute],
-           managed_users_list_json |
-           selectattr(managed_users_identity_attribute, 'equalto',
-                      item[managed_users_identity_attribute]) | list)])) }}
-  loop: "{{ managed_users_declared }}"
   loop_control:
     label: "{{ managed_users_service }}-managed-user"
   when:
