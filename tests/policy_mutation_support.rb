@@ -125,6 +125,7 @@ BASE_FIXTURE_PATHS = %w[
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/immich/classify_restore.py
+  services/kapowarr/tasks.py
   scripts/production_auto_deploy.py
   scripts/image_prune.py
   templates/vault-plain.yml.j2

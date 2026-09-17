@@ -6,6 +6,7 @@
 #
 # usage: kapowarr-static.rb REPOSITORY
 #
+require "digest"
 require "yaml"
 
 root = ARGV.fetch(0)
@@ -19,6 +20,7 @@ required = %w[
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
   services/kapowarr/compose.integration.yml
+  services/kapowarr/tasks.py
   inventory/group_vars/all/service_kapowarr.yml
   inventory/group_vars/all/media_libraries.yml
   inventory/group_vars/all/media_acquisition.yml
@@ -78,8 +80,37 @@ if failures.empty?
   failures << "Kapowarr must mount its database and one parent of its library and staging" unless
     Array(service["volumes"]) == [
       "${KAPOWARR_CONFIG_PATH:?}:/app/db",
-      "${KAPOWARR_BOOKS_PATH:?}:/data/books"
+      "${KAPOWARR_BOOKS_PATH:?}:/data/books",
+      "${PLATFORM_CURRENT_DIR:?}/services/kapowarr/tasks.py:/app/backend/features/tasks.py:ro"
     ]
+
+  # The carried task handler patch (#696) is upstream code mounted over the
+  # image's own, so it is only correct against the image it was derived from. Its
+  # trailer records that image and the sha256 of the upstream file; the image must
+  # be the Compose pin exactly, and reverting the two guarded joins must give back
+  # that upstream file byte for byte. A Renovate bump fails here until the patch
+  # is derived again or deleted, rather than mounting old code over new.
+  patch_source = File.read(File.join(root, "services/kapowarr/tasks.py"))
+  patch_marker = "\n# --- nas-platform carried patch (#696) ---\n"
+  patch_body, _marker, patch_trailer = patch_source.partition(patch_marker)
+  patch_record = patch_trailer.lines.filter_map do |line|
+    match = line.match(/\A# (upstream_sha256|image): (\S+)\n?\z/)
+    match && [match[1], match[2]]
+  end.to_h
+  failures << "the Kapowarr patch must record the image it was derived from as the Compose pin" unless
+    !patch_trailer.empty? && patch_record["image"] == service["image"]
+  patch_guards = {
+    "            if self.queue[0]['thread'].is_alive(): self.queue[0]['thread'].join()\n" =>
+      "            self.queue[0]['thread'].join()\n",
+    "        if task['thread'].is_alive(): task['thread'].join()\n" =>
+      "        task['thread'].join()\n"
+  }
+  failures << "the Kapowarr patch must guard both task thread joins exactly once" unless
+    patch_guards.keys.all? { |guarded| patch_body.scan(guarded).length == 1 }
+  reverted = patch_guards.reduce(patch_body) { |body, (guarded, upstream)| body.sub(guarded, upstream) }
+  failures << "the Kapowarr patch must be the recorded upstream file with only the two joins guarded" unless
+    patch_record["upstream_sha256"].to_s.match?(/\A\h{64}\z/) &&
+    Digest::SHA256.hexdigest(reverted) == patch_record["upstream_sha256"]
 
   # The published port and the container port are both pinned by
   # config/media-acquisition.yml, and the Mac override republishes only the host
@@ -155,6 +186,18 @@ if failures.empty?
     env_assignments.select { |name, _value| name.start_with?("KAPOWARR_") && name.end_with?("_PATH") } ==
       [["KAPOWARR_CONFIG_PATH", "{{ kapowarr_config_host_path }}"],
        ["KAPOWARR_BOOKS_PATH", "{{ kapowarr_books_host_path }}"]]
+  # A changed bind source does not recreate a container; a changed label does.
+  # So the patch's own sha256, read from the release on the target, reaches a
+  # label, and editing the patch recreates Kapowarr instead of leaving the old
+  # file loaded (the alert relay's arrangement in services/dozzle).
+  failures << "Kapowarr must label its container with the carried patch's sha256" unless
+    service.dig("labels", "dev.nas-platform.kapowarr.task-patch-sha256") == "${KAPOWARR_TASK_PATCH_SHA256:?}"
+  failures << "Kapowarr env must export the carried patch's release sha256 exactly once" unless
+    env_assignments.select { |name, _value| name == "KAPOWARR_TASK_PATCH_SHA256" } ==
+      [["KAPOWARR_TASK_PATCH_SHA256", "{{ kapowarr_task_patch_sha256 }}"]]
+  failures << "Kapowarr env must export the release root the patch is mounted from exactly once" unless
+    env_assignments.select { |name, _value| name == "PLATFORM_CURRENT_DIR" } ==
+      [["PLATFORM_CURRENT_DIR", "{{ platform_current_dir }}"]]
   # Kapowarr reads no credential from its environment: every one lives in its own
   # database. A credential appearing here would be a copy nothing consumes.
   failures << "the Kapowarr environment must carry no vault credential" if
@@ -163,6 +206,15 @@ if failures.empty?
   tasks = flatten_tasks(
     YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/main.yml"), aliases: true)
   )
+  patch_stat_index = tasks.index do |task|
+    stat = task["ansible.builtin.stat"]
+    task["register"] == "kapowarr_task_patch" && stat.is_a?(Hash) &&
+      stat["path"] == "{{ platform_current_dir }}/services/kapowarr/tasks.py" &&
+      stat["follow"] == false && stat["get_checksum"] == true && stat["checksum_algorithm"] == "sha256"
+  end
+  env_render_index = tasks.index { |task| task.dig("ansible.builtin.template", "src") == "env.j2" }
+  failures << "Kapowarr must checksum the release's carried patch before rendering its environment" unless
+    patch_stat_index && env_render_index && patch_stat_index < env_render_index
   # One `up` here since #646, which is the deployment. The bounded recovery that
   # #537 bracketed it with moved to roles/container_health/tasks/recover.yml --
   # this role held 114 lines of it byte-identical with five others -- so what is

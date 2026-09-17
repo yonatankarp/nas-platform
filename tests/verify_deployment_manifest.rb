@@ -90,7 +90,8 @@ require_image_merge = merge_mode == "require-image-merge"
 RUNTIME_FILES = {
   "arr" => ["configarr.yml"],
   "dozzle" => ["alert_relay.py"],
-  "immich" => ["classify_restore.py"]
+  "immich" => ["classify_restore.py"],
+  "kapowarr" => ["tasks.py"]
 }.freeze
 RUNTIME_FILE_SOURCES = {
   ["arr", "configarr.yml"] => "roles/arr/files/configarr/config.yml"

@@ -68,6 +68,7 @@ MODE_REFUSAL = "kapowarr contract accepts only static or run"
 # Exactly what the static program reads: its own `required` list plus the shared
 # flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR.
 FIXTURE_FILES = %w[
+  services/kapowarr/tasks.py
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
@@ -222,6 +223,75 @@ STATIC_ROWS = [
       end
     },
     expects: "Kapowarr must mount its database and one parent of its library and staging"
+  },
+  {
+    # The carried task handler patch (#696) mounts upstream code over the image's
+    # own. A pin that moves while the patch stays would put v1.3.2's file over
+    # whatever the new image ships, which is the whole reason the patch records
+    # the image it was derived from.
+    name: "a Compose pin the carried task handler patch was not derived from",
+    break: lambda { |root|
+      mutate_text(root, "services/kapowarr/compose.yml",
+                  "sha256:cd3f004caff59636dde73b06df5b2f8068b485b47ff5fe82f6129562c0f2ac3b",
+                  "sha256:#{'0' * 64}")
+    },
+    expects: "the Kapowarr patch must record the image it was derived from as the Compose pin"
+  },
+  {
+    name: "a carried patch changing more than the two joins it records",
+    break: lambda { |root|
+      mutate_text(root, "services/kapowarr/tasks.py",
+                  "LOGGER.debug('Stopping task thread')",
+                  "LOGGER.info('Stopping task thread')")
+    },
+    expects: "the Kapowarr patch must be the recorded upstream file with only the two joins guarded"
+  },
+  {
+    # Reverting the file to upstream still hashes to the recorded sha256, so the
+    # derivation check alone would accept a patch that no longer patches.
+    name: "a carried patch that lost its shutdown guard",
+    break: lambda { |root|
+      mutate_text(root, "services/kapowarr/tasks.py",
+                  "\n            if self.queue[0]['thread'].is_alive(): self.queue[0]['thread'].join()\n",
+                  "\n            self.queue[0]['thread'].join()\n")
+    },
+    expects: "the Kapowarr patch must guard both task thread joins exactly once"
+  },
+  {
+    # A changed bind source does not recreate a container, so without the label a
+    # patch edited in a later release stays unloaded in the running container.
+    name: "a container not labelled with the carried patch's sha256",
+    break: lambda { |root|
+      compose_service(root) { |service, _| service["labels"].delete("dev.nas-platform.kapowarr.task-patch-sha256") }
+    },
+    expects: "Kapowarr must label its container with the carried patch's sha256"
+  },
+  {
+    name: "an environment that does not export the carried patch's sha256",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/templates/env.j2",
+                  "KAPOWARR_TASK_PATCH_SHA256={{ kapowarr_task_patch_sha256 }}\n", "")
+    },
+    expects: "Kapowarr env must export the carried patch's release sha256 exactly once"
+  },
+  {
+    name: "a patch checksum read after the environment it labels is rendered",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        stat = document.find { |task| task["register"] == "kapowarr_task_patch" }
+        document.delete(stat)
+        document << stat
+      end
+    },
+    expects: "Kapowarr must checksum the release's carried patch before rendering its environment"
+  },
+  {
+    name: "an environment that does not export the release root the patch is mounted from",
+    break: lambda { |root|
+      mutate_text(root, "roles/kapowarr/templates/env.j2",
+                  "PLATFORM_CURRENT_DIR={{ platform_current_dir }}\n", "")
+    },
+    expects: "Kapowarr env must export the release root the patch is mounted from exactly once"
   },
   {
     name: "a web UI port the platform does not publish",
@@ -2025,10 +2095,60 @@ PROGRAM_MUTATIONS = [
     program: :static,
     from: 'Array(service["volumes"]) == [
       "${KAPOWARR_CONFIG_PATH:?}:/app/db",
-      "${KAPOWARR_BOOKS_PATH:?}:/data/books"
+      "${KAPOWARR_BOOKS_PATH:?}:/data/books",
+      "${PLATFORM_CURRENT_DIR:?}/services/kapowarr/tasks.py:/app/backend/features/tasks.py:ro"
     ]',
     to: "true",
     rows: ["a mount per directory rather than one parent of the library and its staging"]
+  },
+  {
+    label: "the carried patch's image record check",
+    program: :static,
+    from: '!patch_trailer.empty? && patch_record["image"] == service["image"]',
+    to: "true",
+    rows: ["a Compose pin the carried task handler patch was not derived from"]
+  },
+  {
+    label: "the carried patch's upstream derivation check",
+    program: :static,
+    from: 'Digest::SHA256.hexdigest(reverted) == patch_record["upstream_sha256"]',
+    to: "true",
+    rows: ["a carried patch changing more than the two joins it records"]
+  },
+  {
+    label: "the carried patch's guard presence check",
+    program: :static,
+    from: 'patch_guards.keys.all? { |guarded| patch_body.scan(guarded).length == 1 }',
+    to: "true",
+    rows: ["a carried patch that lost its shutdown guard"]
+  },
+  {
+    label: "the carried patch label check",
+    program: :static,
+    from: 'service.dig("labels", "dev.nas-platform.kapowarr.task-patch-sha256") == "${KAPOWARR_TASK_PATCH_SHA256:?}"',
+    to: "true",
+    rows: ["a container not labelled with the carried patch's sha256"]
+  },
+  {
+    label: "the carried patch sha256 export check",
+    program: :static,
+    from: '[["KAPOWARR_TASK_PATCH_SHA256", "{{ kapowarr_task_patch_sha256 }}"]]',
+    to: 'env_assignments.select { |name, _value| name == "KAPOWARR_TASK_PATCH_SHA256" }',
+    rows: ["an environment that does not export the carried patch's sha256"]
+  },
+  {
+    label: "the carried patch checksum ordering check",
+    program: :static,
+    from: "patch_stat_index && env_render_index && patch_stat_index < env_render_index",
+    to: "true",
+    rows: ["a patch checksum read after the environment it labels is rendered"]
+  },
+  {
+    label: "the release root export check",
+    program: :static,
+    from: '[["PLATFORM_CURRENT_DIR", "{{ platform_current_dir }}"]]',
+    to: 'env_assignments.select { |name, _value| name == "PLATFORM_CURRENT_DIR" }',
+    rows: ["an environment that does not export the release root the patch is mounted from"]
   },
   {
     label: "the shipped-interpreter health probe check",

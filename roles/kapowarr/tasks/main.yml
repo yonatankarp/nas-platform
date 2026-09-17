@@ -7,6 +7,7 @@
     deployment_target_service: kapowarr
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
+      - "{{ platform_current_dir }}/services/kapowarr/tasks.py"
       - "{{ kapowarr_config_host_path }}"
       # The comics library is named because the volume folder migration below
       # moves directories inside it. Naming it here is what runs this role's
@@ -39,6 +40,46 @@
       - vault_kapowarr_admin_password is match('^[^\r\n]+$')
     fail_msg: Kapowarr administrator credentials must be nonempty single-line values.
   no_log: true
+
+# The carried task handler patch (#696) is bind-mounted, and a changed bind
+# source is not a changed container: Compose would leave the old patch loaded.
+# Its sha256 reaches a container label through the environment, so a changed
+# patch is a changed definition and Compose recreates. services/dozzle carries
+# alert_relay.py to its relay the same way.
+- name: Inspect the carried Kapowarr task handler patch
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/kapowarr/tasks.py"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: kapowarr_task_patch
+
+# Under --check the release is staged nowhere, so `current` is still the
+# previous release, and the deploy that introduces the patch finds no file there.
+# Only then is the controller's copy hashed instead: it is the byte-identical
+# source deployment_bundle copies into the release on a real run.
+- name: Require the carried Kapowarr task handler patch to be a regular file
+  ansible.builtin.assert:
+    that:
+      - >-
+        (kapowarr_task_patch.stat.exists and
+         (kapowarr_task_patch.stat.isreg | default(false)) and
+         not (kapowarr_task_patch.stat.islnk | default(false))) or
+        (ansible_check_mode and not kapowarr_task_patch.stat.exists)
+    fail_msg: The carried Kapowarr task handler patch must be a regular file in the release.
+
+- name: Resolve the carried Kapowarr task handler patch checksum
+  ansible.builtin.set_fact:
+    kapowarr_task_patch_sha256: >-
+      {{ kapowarr_task_patch.stat.checksum if kapowarr_task_patch.stat.exists
+         else (lookup('ansible.builtin.file', playbook_dir ~ '/services/kapowarr/tasks.py', rstrip=false)
+               | hash('sha256')) }}
+
+- name: Require a sha256 for the carried Kapowarr task handler patch
+  ansible.builtin.assert:
+    that:
+      - kapowarr_task_patch_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: The carried Kapowarr task handler patch checksum must be a sha256.
 
 - name: Render the Kapowarr environment
   ansible.builtin.template:

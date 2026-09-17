@@ -80,7 +80,8 @@
                | selectattr('name', 'equalto', 'arr') | list | length == 1
             else [])
          + [[playbook_dir ~ '/services/dozzle/alert_relay.py', '0'],
-            [playbook_dir ~ '/services/immich/classify_restore.py', '0']] }}
+            [playbook_dir ~ '/services/immich/classify_restore.py', '0'],
+            [playbook_dir ~ '/services/kapowarr/tasks.py', '0']] }}
 
 - name: Record controller input validation
   ansible.builtin.set_fact:
