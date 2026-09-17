@@ -27,7 +27,8 @@ accept the duration forms Docker has emitted for this failure, including
 nanoseconds, `us` or `µs`, milliseconds, seconds, and minutes. An absent or
 unrecognized value falls back to the local policy.
 
-The local policy uses six attempts by default. Its exponential delays begin at
+The local policy uses six attempts by default (ten since #762, after ghcr.io
+refused for longer than six attempts wait). Its exponential delays begin at
 five seconds and grow as 5, 10, 20, 40, and 60 seconds; the local component is
 capped at sixty seconds so one image cannot consume the entire suite timeout.
 Parsed registry durations are rounded up to whole seconds and clamped to the

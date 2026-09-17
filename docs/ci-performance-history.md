@@ -492,7 +492,8 @@ Three things about it generalise:
   each of them reported before. The `suites` budget went from 60 to
   90 for it, because a lane killed at its ceiling would read as the fix
   regressing rather than as the guard working, and because the pre-pull's own
-  retry ladder can add another five minutes on a rate-limited image. Any future
+  retry ladder can add another eight minutes on a rate-limited image
+  (five until #762 raised its default from six attempts to ten). Any future
   reading of "the suites are slow" has to start after that, not before it.
 - **`perform_initial_converge` was accidentally right, which is not the same as
   right.** Its `[ -z $INTEGRATION_TAGS ]` degenerated identically and happened to

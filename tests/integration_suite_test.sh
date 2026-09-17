@@ -1239,6 +1239,32 @@ assert_toolchain_pull_set "$({ compose_images immich; } | sort -u)"
 # cases stay readable as arithmetic.
 PREPULL_TOOLCHAIN=off
 
+# The default budget has to outlast a real ghcr.io refusal window (#762). Four
+# times between 2026-09-11 and 2026-09-17 an immich image was refused six times
+# in a row with exactly this text and the six-attempt default gave up, while
+# other images in the same batch got through on attempt 4 or 5. An empty
+# attempts argument leaves INTEGRATION_IMAGE_PULL_ATTEMPTS empty, so the
+# script's own default is what runs here: every other case sets that
+# variable, so none of them would notice a change to the default.
+immich_server_prefix=ghcr.io/immich-app/immich-server:
+compose_images immich | grep -q "^$immich_server_prefix" ||
+  prepull_fail "no immich image starts with $immich_server_prefix any more"
+immich_server_image=$(compose_images immich | grep "^$immich_server_prefix")
+PREPULL_REFUSE_PREFIX=$immich_server_prefix PREPULL_RETRY_AFTER=333.368µs \
+  run_prepull 6 '' --suite immich
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "the default budget gave up on the six refusals observed in #762 ($prepull_status): $(grep 'could not pull' "$prepull_output")"
+grep -qF 'toomanyrequests: retry-after: 333.368µs, allowed: 44000/minute' "$prepull_output" ||
+  prepull_fail 'the #762 case never drove the observed refusal'
+assert_pull_count "$immich_server_image" 7
+# Still bounded: past the ceiling the default gives up and says so.
+PREPULL_REFUSE_PREFIX=$immich_server_prefix PREPULL_RETRY_AFTER=333.368µs \
+  run_prepull 99 '' --suite immich
+[ "$prepull_status" -ne 0 ] || prepull_fail 'the default budget never gives up'
+grep -qF "could not pull $immich_server_image in 10 attempt(s)" "$prepull_output" ||
+  prepull_fail "the default budget is not ten attempts: $(grep 'could not pull' "$prepull_output")"
+unset PREPULL_REFUSE_PREFIX PREPULL_RETRY_AFTER
+
 # A registry that refuses twice and then answers must still produce a successful
 # pre-pull, with the pull retried rather than the suite failed. foundation
 # converges no service, so this costs one image and two backoffs.

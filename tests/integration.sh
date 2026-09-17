@@ -378,8 +378,15 @@ bounded_integer() {
   '
 }
 
-image_pull_attempts=$(bounded_integer "${INTEGRATION_IMAGE_PULL_ATTEMPTS:-6}" \
-  6 2 "$image_pull_attempt_limit")
+# Ten, the ceiling, rather than six (#762). Six attempts waited about 152
+# seconds in total, and ghcr.io's "toomanyrequests ... allowed: 44000/minute"
+# lasted longer than that four times in a week: each time, other images in the
+# same batch got through on attempt 4 or 5 while the one that failed used up
+# all six. Ten waits about seven minutes. The first batch holding a refused
+# image is the last one launched, so a registry that never answers costs about
+# eight minutes before the lane fails, not eight minutes per image.
+image_pull_attempts=$(bounded_integer "${INTEGRATION_IMAGE_PULL_ATTEMPTS:-10}" \
+  10 2 "$image_pull_attempt_limit")
 image_pull_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_DELAY:-5}" \
   5 1 "$image_pull_delay_limit")
 image_pull_max_delay=$(bounded_integer "${INTEGRATION_IMAGE_PULL_MAX_DELAY:-60}" \
