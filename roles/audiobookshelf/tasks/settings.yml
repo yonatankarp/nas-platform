@@ -26,13 +26,38 @@
   check_mode: false
   no_log: true
 
+# The schema assertion below was validated by hand against one Audiobookshelf
+# release, and it used to name that release as a literal. Audiobookshelf writes
+# its own package version into serverSettings.version at every start, so the
+# literal was a proxy for "the server is the release whose schema was checked",
+# and every Renovate bump went red on it without any schema having moved (#753).
+# The version is now read from the pin the running container was deployed from,
+# so the assertion still refuses a server that is not the pinned release, and the
+# per-key type assertions beside it are what guard the schema itself.
+- name: Read the Audiobookshelf image this release pins
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/audiobookshelf/compose.yml"
+  register: audiobookshelf_pinned_compose
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
+- name: Resolve the Audiobookshelf version this release pins
+  ansible.builtin.set_fact:
+    audiobookshelf_pinned_version: >-
+      {{ (audiobookshelf_pinned_compose.content | b64decode | from_yaml)
+           .services.audiobookshelf.image
+         | regex_replace('@.*$', '') | regex_replace('^.*/', '')
+         | regex_search('(?<=:)v?[0-9]+(\.[0-9]+)*') | default('', true)
+         | regex_replace('^v', '') }}
+  when: not ansible_check_mode or audiobookshelf_initialized | bool
+
 - name: Validate current Audiobookshelf server settings schema
   ansible.builtin.assert:
     that:
       - audiobookshelf_server_settings_before.json is mapping
       - audiobookshelf_server_settings_before.json.serverSettings is mapping
       - audiobookshelf_server_settings_before.json.serverSettings.id == 'server-settings'
-      - audiobookshelf_server_settings_before.json.serverSettings.version == '2.36.0'
+      - audiobookshelf_pinned_version | length > 0
+      - audiobookshelf_server_settings_before.json.serverSettings.version == audiobookshelf_pinned_version
       - audiobookshelf_server_settings_before.json.serverSettings.timeZone | type_debug == 'str'
       - audiobookshelf_server_settings_before.json.serverSettings.timeZone == 'Europe/Berlin'
       - audiobookshelf_server_settings_before.json.serverSettings.storeCoverWithItem | type_debug == 'bool'
@@ -54,8 +79,10 @@
       - (audiobookshelf_server_settings_before.json.serverSettings.backupSchedule | type_debug) in ['str', 'bool']
       - audiobookshelf_server_settings_before.json.serverSettings.backupsToKeep | type_debug == 'int'
     fail_msg: >-
-      Audiobookshelf 2.36.0 returned an unsupported server-settings schema;
-      refusing to mutate settings.
+      Audiobookshelf reported version
+      {{ audiobookshelf_server_settings_before.json.serverSettings.version | default('none') }}
+      against pinned {{ audiobookshelf_pinned_version | default('none') }}, or returned an
+      unsupported server-settings schema; refusing to mutate settings.
   when: not ansible_check_mode or audiobookshelf_initialized | bool
 
 - name: Resolve Audiobookshelf server settings reconciliation requirement
@@ -83,11 +110,33 @@
     headers:
       Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
     body_format: json
-    body: "{{ audiobookshelf_desired_server_settings }}"
+    # backupPath is verified with the rest but never sent here. From 2.36.1
+    # PATCH /api/settings filters its body to ServerSettings.patchableSettingsKeys,
+    # which does not name backupPath, and answers 200 having dropped it. The
+    # dedicated route below is the one that also reloads the backup manager.
+    body: >-
+      {{ audiobookshelf_desired_server_settings | dict2items
+         | rejectattr('key', 'equalto', 'backupPath') | items2dict }}
     status_code: [200]
   when:
     - not ansible_check_mode
     - audiobookshelf_server_settings_drifted | bool
+  changed_when: true
+  no_log: true
+
+- name: Reconcile the Audiobookshelf backup path
+  ansible.builtin.uri:
+    url: "{{ audiobookshelf_api }}/api/backups/path"
+    method: PATCH
+    headers:
+      Authorization: "Bearer {{ audiobookshelf_reconcile_token }}"
+    body_format: json
+    body:
+      path: "{{ audiobookshelf_backup_container_path }}"
+    status_code: [200]
+  when:
+    - not ansible_check_mode
+    - audiobookshelf_server_settings_before.json.serverSettings.backupPath != audiobookshelf_backup_container_path
   changed_when: true
   no_log: true
 
