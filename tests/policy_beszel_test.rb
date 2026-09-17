@@ -157,7 +157,7 @@ end
 check(failures,
       beszel_complete_user_read&.dig("ansible.builtin.uri", "url") ==
         "{{ beszel_api }}/api/collections/users/records?perPage=500",
-      "Beszel managed users must reuse one explicitly bounded complete users collection")
+      "Beszel application-user reconciliation must read one explicitly bounded complete users collection")
 beszel_complete_user_assert = beszel_tasks.find do |task|
   task["name"] == "Require a complete PocketBase users collection"
 end

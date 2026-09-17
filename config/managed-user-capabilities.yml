@@ -27,10 +27,10 @@ services:
     existing_identity_password_update: forbidden
     mode: api
     interfaces:
-      list: PocketBase users collection
-      create: PocketBase users collection
-      authenticate: PocketBase users collection
-      reconcile: PocketBase users collection
+      list: api/collections/users/records?perPage=500
+      create: api/collections/users/records
+      authenticate: api/collections/users/auth-with-password
+      reconcile: api/collections/users/records/{id}
   dozzle:
     preserves_unmanaged_users: true
     password_rotation: refuse

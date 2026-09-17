@@ -367,6 +367,12 @@ def audiobookshelf_managed_user_tasks(repo_root)
       defaults["audiobookshelf_managed_users_authenticate_path"] == "login" &&
       bound["managed_users_authenticate_method"] == "POST" &&
       bound["managed_users_declared"] == "{{ vault_managed_audiobookshelf_users }}"
+  # The existing-user login also runs in the verify phase for a service that
+  # binds authenticated identities (#647, beszel). Audiobookshelf must not, or
+  # the per-user login budget below counts one login where there are two.
+  fail_contract("Audiobookshelf managed-user shim binds authenticated identities") unless
+    [nil, false].include?(bound["managed_users_bind_authenticated_ids"]) &&
+      !bound.key?("managed_users_authenticated_id")
   YAML.safe_load(
     repo_root.join("roles/managed_users/tasks/main.yml").read
              .gsub("{{ managed_users_title }}", "Audiobookshelf")
@@ -402,7 +408,7 @@ def exact_role_auth_model(main_tasks, managed_tasks)
       verify["when"] == ["not ansible_check_mode", "audiobookshelf_reconcile_token is not defined"]
   fail_contract("Audiobookshelf managed-user authentication guards differ") unless
     existing["when"] == [
-      "managed_users_phase == 'reconcile'",
+      "managed_users_phase == 'reconcile' or managed_users_bind_authenticated_ids | bool",
       "not ansible_check_mode",
       "managed_users_matches[item[managed_users_identity_attribute]] | length == 1"
     ] && existing["loop"] == "{{ managed_users_declared }}" &&

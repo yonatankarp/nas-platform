@@ -8,11 +8,11 @@ argument_specs:
       conditions; this role owns the lifecycle, the ambiguity refusals, the
       credential preservation guarantee and the capability-register check.
 
-      Seven parameters are deliberately NOT declared below:
+      Eight parameters are deliberately NOT declared below:
       managed_users_list_json, managed_users_authenticate_body,
-      managed_users_authenticate_identity, managed_users_create_body,
-      managed_users_reconcile_path, managed_users_repair_body and
-      managed_users_repair_condition. Each is a template evaluated once per
+      managed_users_authenticate_identity, managed_users_authenticated_id,
+      managed_users_create_body, managed_users_reconcile_path,
+      managed_users_repair_body and managed_users_repair_condition. Each is a template evaluated once per
       declared identity, against `item` or against a task-scoped
       managed_users_match, and Ansible's own argument validation templates every
       DECLARED option eagerly, at role entry, where neither is bound -- measured
@@ -84,6 +84,25 @@ argument_specs:
           Whether the identity an authenticate response echoes may differ from
           the declared one by case or surrounding whitespace. False requires it
           to be exactly equal.
+        type: bool
+        required: false
+      managed_users_id_pattern:
+        description: >-
+          The pattern a listed or newly created identity's API identifier must
+          match. Defaults to platform_safe_api_identifier_pattern; a service
+          with a narrower identifier shape states it.
+        type: str
+        required: false
+      managed_users_bind_authenticated_ids:
+        description: >-
+          Credential-bound identities. True authenticates existing identities in
+          the verify phase as well, requires each authentication to return the
+          listed record's id (managed_users_authenticated_id, undeclared for the
+          reason above and required when this is true), keeps
+          managed_users_authenticated_ids and
+          managed_users_initial_authenticated_ids[managed_users_service],
+          re-resolves matches from the listing re-read after creation, and
+          refuses a repair whose record is not the one the credential proved.
         type: bool
         required: false
       managed_users_admin_headers:

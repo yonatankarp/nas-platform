@@ -554,6 +554,20 @@ RUNTIME_ROWS = [
     expects: "Audiobookshelf managed-user shim does not bind the shared login"
   },
   {
+    # The shared role re-proves every credential in the verify phase for a
+    # service that binds authenticated identities (#647, beszel). A shim that
+    # turned that on here would double the per-user logins the budget counts.
+    name: "a managed-user shim that binds authenticated identities",
+    mode: "authentication-budget-self-test",
+    break: lambda { |root|
+      edit_yaml(root, "roles/audiobookshelf/tasks/managed_users.yml") do |document|
+        document.find { |task| task.key?("ansible.builtin.include_role") }
+                .fetch("vars")["managed_users_bind_authenticated_ids"] = true
+      end
+    },
+    expects: "Audiobookshelf managed-user shim binds authenticated identities"
+  },
+  {
     # The other half: the shared role is what is actually read. Renaming its
     # authenticate request must change the model rather than go unseen.
     name: "a shared managed-user role whose login request was renamed",
@@ -1068,6 +1082,13 @@ PROGRAM_MUTATIONS = [
     from: 'fail_contract("Audiobookshelf managed-user shim does not bind the shared login") unless',
     to: "nil unless true ||",
     rows: ["a managed-user shim whose login path is no longer /login"]
+  },
+  {
+    label: "the managed-user shim identity-binding check",
+    program: :runtime,
+    from: 'fail_contract("Audiobookshelf managed-user shim binds authenticated identities") unless',
+    to: "nil unless true ||",
+    rows: ["a managed-user shim that binds authenticated identities"]
   },
   {
     label: "the managed-user authentication task model check",
