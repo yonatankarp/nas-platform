@@ -181,6 +181,14 @@ def shared_role_contract_tasks(include, defaults, title, expand_hooks: nil)
       parameter = uri["body"][/\A\{\{ (managed_users_\w+_body) \}\}\z/, 1]
       uri["body"] = resolve.call(parameter) if parameter
     end
+    # A method the caller leaves to the shared role is that role's default.
+    if uri.is_a?(Hash) && uri["method"].is_a?(String)
+      parameter = uri["method"][/\A\{\{ (managed_users_\w+_method) \}\}\z/, 1]
+      if parameter
+        uri["method"] = resolve.call(parameter) ||
+                        YAML.safe_load_file(SHARED_MANAGED_USER_DEFAULTS, aliases: false)[parameter]
+      end
+    end
     conditions = task.dig("ansible.builtin.assert", "that")
     if conditions.is_a?(Array)
       conditions.reject! { |condition| condition.to_s.start_with?("not managed_users_bind_authenticated_ids") } unless bound
