@@ -395,6 +395,20 @@ STATIC_ROWS = [
     expects: "managed user preference non-administrator guard is absent"
   },
   {
+    # The guard lives in a file roles/managed_users runs through a hook, so the
+    # static program has to follow the hook to see it. A hook that stops naming
+    # the file removes the guard from what the role executes.
+    name: "the before-create hook no longer naming the preference target refusals",
+    break: lambda { |root|
+      edit_yaml(root, "roles/immich/defaults/main.yml") do |document|
+        raise "fixture has no before-create hook" unless document.key?("immich_managed_users_before_create_tasks")
+
+        document["immich_managed_users_before_create_tasks"] = ""
+      end
+    },
+    expects: "managed user preference non-administrator guard is absent"
+  },
+  {
     name: "a configured-password task renamed",
     break: ->(root) { rename_task(root, "roles/immich/tasks/configured_password.yml", "Require unique desired configured Immich identities") },
     expects: "configured-password"
