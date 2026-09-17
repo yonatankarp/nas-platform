@@ -174,3 +174,89 @@ jellyfin_scheduled_task_triggers:
   RefreshLibrary:
     - Type: IntervalTrigger
       IntervalTicks: 36000000000
+
+# Jellyfin's half of roles/managed_users. tasks/managed_users.yml maps these onto
+# that role's parameters one for one; roles/komga, roles/audiobookshelf and
+# roles/beszel carry the blocks to compare it against.
+#
+# The four relative paths are asserted against config/managed-user-capabilities.yml
+# on the deployed release before any request is sent.
+jellyfin_managed_users_identity_attribute: username
+# The vault authors the identity as `username`; Jellyfin lists it as `Name`.
+jellyfin_managed_users_listed_identity_attribute: Name
+jellyfin_managed_users_id_attribute: Id
+jellyfin_managed_users_list_path: Users
+jellyfin_managed_users_authenticate_path: Users/AuthenticateByName
+jellyfin_managed_users_create_path: Users/New
+jellyfin_managed_users_reconcile_interface: Users/{id}/Policy
+jellyfin_managed_users_create_status: [200]
+jellyfin_managed_users_repair_status: [204]
+# Jellyfin user ids are GUIDs, with or without hyphens. Narrower than
+# platform_safe_api_identifier_pattern, so it is kept rather than widened.
+jellyfin_managed_users_id_pattern: '^[A-Fa-f0-9-]{32,36}$'
+
+# Policy keys, compared lowercased, that must never appear in a complete policy
+# this role is about to POST back. Jellyfin's policy endpoint replaces the whole
+# policy, so the listed policy is the body, and a credential-shaped key in it
+# would be sent.
+jellyfin_managed_users_forbidden_policy_fields:
+  - password
+  - passwordhash
+  - password_hash
+  - passwordconfirm
+  - password_confirmation
+  - token
+  - access_token
+  - secret
+  - credential
+  - api_key
+  - apikey
+
+# The Jellyfin-only refusals roles/managed_users runs between its own steps:
+# the complete-policy preflight before creation, and the created-identity and
+# refreshed-policy refusals after the re-list. Relative to roles/managed_users/tasks.
+jellyfin_managed_users_before_create_tasks: ../../jellyfin/tasks/managed_users_existing_policies.yml
+jellyfin_managed_users_after_creation_tasks: ../../jellyfin/tasks/managed_users_refreshed_policies.yml
+
+# Evaluated inside the shared role's loops, against its own names: the listing it
+# registered, the single match it bound, `item`, and the declared user it binds
+# as managed_users_authenticating_user for both authenticate requests.
+jellyfin_managed_users_list_json: "{{ managed_users_listing.json }}"
+jellyfin_managed_users_authenticate_body:
+  Username: "{{ managed_users_authenticating_user.username }}"
+  Pw: "{{ managed_users_authenticating_user.password }}"
+jellyfin_managed_users_authenticate_identity: "{{ item.json.User.Name | default('') }}"
+jellyfin_managed_users_reconcile_path: >-
+  Users/{{ managed_users_match[managed_users_id_attribute] | urlencode }}/Policy
+# Creation grants no policy: only repair, after the new credential is proved and
+# the re-read policy is proved complete, sets it.
+jellyfin_managed_users_create_body:
+  Name: "{{ item.username }}"
+  Password: "{{ item.password }}"
+# The complete current policy with the declared fields merged over it, because
+# the endpoint replaces the whole policy. The defaults make the body evaluable
+# with no match bound, which is how the shared role's credential-key refusal
+# reads it before the listing: its keys are then the declared policy's.
+jellyfin_managed_users_repair_body: >-
+  {{ (managed_users_match | default({})).Policy | default({}) |
+     combine(item.policy, recursive=false) }}
+jellyfin_managed_users_repair_condition: >-
+  {{ (managed_users_match.Policy | dict2items |
+      selectattr('key', 'in', item.policy.keys()) | items2dict) != item.policy }}
+# Brace-free; the first condition is what makes the rest safe, because
+# managed_users_match is an empty mapping for an identity with no match. The last
+# compares against the complete policy this play's reconcile phase expected.
+jellyfin_managed_users_verify_conditions:
+  - managed_users_matches[item.username] | length == 1
+  - managed_users_match.Name | trim | lower == item.username | trim | lower
+  - >-
+    (managed_users_match.Policy | dict2items |
+     selectattr('key', 'in', item.policy.keys()) | items2dict) == item.policy
+  - >-
+    jellyfin_managed_user_expected_policies is not defined or
+    managed_users_match.Policy == jellyfin_managed_user_expected_policies[item.username]
+jellyfin_managed_users_verify_fail_msg: >-
+  A managed Jellyfin identity is absent, duplicated, or differs from its exact
+  declared policy fields.
+jellyfin_managed_users_plan_create_message: JELLYFIN_PLAN_MANAGED_USER_CREATE
+jellyfin_managed_users_plan_repair_message: JELLYFIN_PLAN_MANAGED_USER_REPAIR

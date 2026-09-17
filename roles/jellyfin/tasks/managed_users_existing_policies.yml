@@ -1,0 +1,31 @@
+---
+# Run by roles/managed_users between the existing-credential proof and the
+# creation plan (managed_users_before_create_tasks), in preflight and reconcile,
+# --check included. Jellyfin's policy endpoint replaces the whole policy, so the
+# listed policy becomes the repair body: it has to carry both provider ids and
+# no credential-shaped key before anything is created or repaired.
+- name: Require complete safe existing Jellyfin managed-user policies
+  ansible.builtin.assert:
+    that:
+      - managed_users_matches[item.username][0].Policy is mapping
+      - >-
+        managed_users_matches[item.username][0].Policy.keys() |
+        reject('string') | list | length == 0
+      - >-
+        managed_users_matches[item.username][0].Policy.keys() | map('lower') |
+        intersect(jellyfin_managed_users_forbidden_policy_fields) | length == 0
+      - >-
+        managed_users_matches[item.username][0].Policy.AuthenticationProviderId |
+        default('') | string | length > 0
+      - >-
+        managed_users_matches[item.username][0].Policy.PasswordResetProviderId |
+        default('') | string | length > 0
+    fail_msg: >-
+      Jellyfin returned an incomplete or unsafe complete policy; reconciliation
+      refuses to replace policy state without preserved provider identifiers.
+  when:
+    - managed_users_matches[item.username] | length == 1
+  loop: "{{ managed_users_declared }}"
+  loop_control:
+    label: jellyfin-managed-user
+  no_log: true
