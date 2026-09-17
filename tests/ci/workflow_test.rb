@@ -333,6 +333,23 @@ def integration_argv(script, suite, selected_tags)
   end
 end
 
+# Runs the mutation step's own shell against a stub `ruby` that echoes its
+# arguments, so which harness form each event reaches is proven by argv rather
+# than by the step's source text.
+def mutation_argv(script, event_name)
+  Dir.mktmpdir("ci-mutation-form-") do |root|
+    stub = File.join(root, "bin", "ruby")
+    FileUtils.mkdir_p(File.dirname(stub))
+    File.write(stub, %(#!/bin/sh\nprintf '%s\\n' "$@"\n))
+    File.chmod(0o755, stub)
+    stdout, _stderr, status = Open3.capture3(
+      { "EVENT_NAME" => event_name, "PATH" => "#{File.dirname(stub)}:#{ENV.fetch('PATH')}" },
+      "sh", "-c", script, chdir: root
+    )
+    return [status.success?, stdout.lines(chomp: true)]
+  end
+end
+
 workflow = YAML.safe_load_file(WORKFLOW_PATH, aliases: false)
 # Psych follows YAML 1.1 here and may deserialize the plain `on` key as true.
 triggers = workflow["on"] || workflow[true]
@@ -606,6 +623,32 @@ check(failures, jobs.dig("mutation", "strategy").nil?,
 mutation_commands = normalize_shell(run_steps(jobs.fetch("mutation", {}))).lines.map(&:chomp)
 check(failures, mutation_commands.include?("ruby tests/policy_manifest_test.rb"),
       "the mutation job must run tests/policy_manifest_test.rb")
+# The nightly and workflow_dispatch run `--audit`, everything else the narrow
+# form (#727). Executed per event, because the defect this guards is the nightly
+# silently falling back to the narrow run -- which still passes, still prints the
+# census, and re-derives nothing. The event must come through env, and an event
+# the step does not name must fail rather than pick a form.
+mutation_step = Array(jobs.dig("mutation", "steps")).find { |step| step["name"] == "Check policy mutation coverage" } || {}
+check(failures, mutation_step.dig("env", "EVENT_NAME") == "${{ github.event_name }}",
+      "the mutation step must receive the event name through env")
+check(failures, !mutation_step["run"].to_s.include?("${{"),
+      "the mutation step must not interpolate expressions into shell source")
+{
+  "schedule" => ["tests/policy_manifest_test.rb", "--audit"],
+  "workflow_dispatch" => ["tests/policy_manifest_test.rb", "--audit"],
+  "pull_request" => ["tests/policy_manifest_test.rb"],
+  "push" => ["tests/policy_manifest_test.rb"]
+}.each do |event_name, expected|
+  ok, argv = mutation_argv(mutation_step["run"].to_s, event_name)
+  check(failures, ok && argv == expected,
+        "the mutation step on #{event_name} must run ruby #{expected.join(' ')}, found #{argv.inspect}")
+end
+ok, argv = mutation_argv(mutation_step["run"].to_s, "merge_group")
+check(failures, !ok && argv.empty?,
+      "the mutation step must refuse an event it declares no harness form for, found #{argv.inspect}")
+check(failures, jobs.dig("mutation", "timeout-minutes").to_i >= 60,
+      "the mutation job runs --audit on the nightly, measured at up to 34.5 minutes on a " \
+      "runner (#727); its timeout must stay at 60 or above")
 # The harness syntax-checks a play in every sandbox and renders role defaults
 # through the policy set, so it needs the toolchain the gate installs. Without
 # this the job would fail on a missing ansible-playbook rather than on a policy.
