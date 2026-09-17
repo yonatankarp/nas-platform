@@ -41,10 +41,11 @@ JELLYFIN_PLUGIN_PACKAGES = [
 # service's title substituted. That keeps every property this file asserted
 # before -- the ten lifecycle steps in order, no_log on every request, no DELETE,
 # the check-mode gates -- asserted against the tasks the service actually runs,
-# rather than against a shim that runs none of them. jellyfin still reads its
-# own file unchanged.
+# rather than against a shim that runs none of them. Jellyfin joined them too;
+# its policy refusals are its own hook files, which shim_failures holds.
 SHARED_MANAGED_USER_ROLE = File.join(ROOT, "roles", "managed_users", "tasks", "main.yml")
-SHARED_MANAGED_USER_TITLES = { "audiobookshelf" => "Audiobookshelf", "komga" => "Komga" }.freeze
+SHARED_MANAGED_USER_TITLES = { "audiobookshelf" => "Audiobookshelf", "jellyfin" => "Jellyfin",
+                               "komga" => "Komga" }.freeze
 KOMGA_SHIM = File.join(ROOT, "roles", "komga", "tasks", "managed_users.yml")
 
 # The vault password's route to the authenticate requests, in two halves,
@@ -81,8 +82,30 @@ AUDIOBOOKSHELF_SHIM_PARAMETERS = {
   "managed_users_authenticate_basic" => false,
   "managed_users_authenticate_body" => "{{ audiobookshelf_managed_users_authenticate_body }}"
 }.freeze
+# Jellyfin's two hooks are what keep its policy refusals running inside the
+# lifecycle, and re-resolution is what makes the repair merge into the re-read
+# policy; a shim that dropped any of the three would still converge a fixture
+# that needs no refusal.
+JELLYFIN_SHIM_PARAMETERS = {
+  "managed_users_phase" => "{{ jellyfin_managed_users_phase }}",
+  "managed_users_service" => "jellyfin",
+  "managed_users_title" => "Jellyfin",
+  "managed_users_declared" => "{{ vault_managed_jellyfin_users }}",
+  "managed_users_api" => "{{ jellyfin_api }}",
+  "managed_users_admin_headers" => {
+    "Authorization" => "{{ jellyfin_client_header }}, Token=\"{{ jellyfin_managed_users_token }}\""
+  },
+  "managed_users_admin_basic" => false,
+  "managed_users_authenticate_basic" => false,
+  "managed_users_authenticate_headers" => { "Authorization" => "{{ jellyfin_client_header }}" },
+  "managed_users_authenticate_body" => "{{ jellyfin_managed_users_authenticate_body }}",
+  "managed_users_reresolve_after_creation" => true,
+  "managed_users_before_create_tasks" => "{{ jellyfin_managed_users_before_create_tasks }}",
+  "managed_users_after_creation_tasks" => "{{ jellyfin_managed_users_after_creation_tasks }}"
+}.freeze
 SHIM_PARAMETERS = {
   "audiobookshelf" => AUDIOBOOKSHELF_SHIM_PARAMETERS,
+  "jellyfin" => JELLYFIN_SHIM_PARAMETERS,
   "komga" => KOMGA_SHIM_PARAMETERS
 }.freeze
 
@@ -100,16 +123,18 @@ REQUIRED_TASKS = {
     "Verify exact managed users: Audiobookshelf"
   ],
   "jellyfin" => [
-    "List complete Jellyfin users for managed-user reconciliation",
-    "Refuse incomplete Jellyfin managed-user listing",
-    "Refuse ambiguous normalized Jellyfin managed identities",
-    "Authenticate existing Jellyfin managed users",
-    "Require preserved Jellyfin managed-user credentials",
-    "Create absent Jellyfin managed users with initial passwords",
-    "Authenticate newly created Jellyfin managed users",
-    "Require newly created Jellyfin managed-user credentials",
-    "Repair Jellyfin managed-user policies",
-    "Verify exact Jellyfin managed users"
+    "List complete users for managed-user reconciliation: Jellyfin",
+    "Refuse incomplete managed-user listing: Jellyfin",
+    "Refuse ambiguous normalized managed identities: Jellyfin",
+    "Authenticate existing managed users: Jellyfin",
+    "Require preserved managed-user credentials: Jellyfin",
+    "Run the caller's refusals before managed-user creation: Jellyfin",
+    "Create absent managed users: Jellyfin",
+    "Run the caller's refusals after managed-user creation: Jellyfin",
+    "Authenticate newly created managed users: Jellyfin",
+    "Require newly created managed-user credentials: Jellyfin",
+    "Repair non-secret managed-user properties: Jellyfin",
+    "Verify exact managed users: Jellyfin"
   ],
   "komga" => [
     "List complete users for managed-user reconciliation: Komga",
@@ -159,7 +184,18 @@ def shim_failures(service, shim_tasks, defaults)
   # subject, and it is the same property: repairing an existing identity must
   # never carry a credential.
   repair_body = defaults["#{service}_managed_users_repair_body"]
-  if repair_body.is_a?(Hash)
+  if service == "jellyfin"
+    # Jellyfin's policy endpoint replaces the whole policy, so its body is the
+    # complete listed policy with the declared fields merged over it -- a
+    # template, not a mapping. What it must still never do is name a credential.
+    body = repair_body.to_s
+    failures << "jellyfin existing-user repair contains secret fields" if
+      body.match?(/password|passwd|secret|token/i)
+    failures << "jellyfin repair does not merge into the complete current policy" unless
+      body.include?(".Policy") && body.include?("combine(item.policy")
+    # The two refusals the shared role cannot state, held where they now live.
+    failures.concat(jellyfin_hook_failures(defaults))
+  elsif repair_body.is_a?(Hash)
     failures << "#{service} existing-user repair contains secret fields" unless
       repair_body.keys.map(&:to_s).grep(/password|passwd|secret|token/i).empty?
     # Audiobookshelf's pinned permission fields, moved here from the task body
@@ -171,6 +207,46 @@ def shim_failures(service, shim_tasks, defaults)
     failures << "#{service} existing-user repair body is not a declared mapping"
   end
   failures
+end
+
+# Jellyfin's policy refusals run inside roles/managed_users through its hooks, so
+# a hook path that stopped resolving to the file, or a file that lost a refusal,
+# would leave a converge that still passes every fixture needing no refusal.
+JELLYFIN_HOOK_TASKS = {
+  "jellyfin_managed_users_before_create_tasks" => [
+    "managed_users_existing_policies.yml",
+    ["Require complete safe existing Jellyfin managed-user policies"]
+  ],
+  "jellyfin_managed_users_after_creation_tasks" => [
+    "managed_users_refreshed_policies.yml",
+    ["Require safe newly created Jellyfin managed-user identifiers",
+     "Refuse incomplete refreshed Jellyfin managed-user listing",
+     "Require complete safe refreshed Jellyfin managed-user policies"]
+  ]
+}.freeze
+
+JELLYFIN_TASKS = File.join(ROOT, "roles", "jellyfin", "tasks")
+
+# hook_directory is where the hook files are read from; only the self-test moves
+# it, to read a planted copy while the path the defaults name stays the real one.
+def jellyfin_hook_failures(defaults, hook_directory = JELLYFIN_TASKS)
+  shared_tasks = File.dirname(SHARED_MANAGED_USER_ROLE)
+  JELLYFIN_HOOK_TASKS.flat_map do |parameter, (file, names)|
+    path = File.expand_path(defaults[parameter].to_s, shared_tasks)
+    next ["jellyfin #{parameter} does not name roles/jellyfin/tasks/#{file}"] unless
+      path == File.join(JELLYFIN_TASKS, file) && File.file?(path)
+
+    hook = Array(YAML.safe_load_file(File.join(hook_directory, file), aliases: false))
+    present = hook.map { |task| task_name(task) }
+    failures = (names - present).map { |name| "jellyfin #{file} omits #{name}" }
+    failures << "jellyfin #{file} refusals are out of order" unless
+      failures.any? || (present & names) == names
+    Array(hook).each do |task|
+      failures << "jellyfin #{file} loops without no_log: #{task_name(task)}" if
+        task.key?("loop") && task["no_log"] != true
+    end
+    failures
+  end
 end
 
 def task_name(task)
@@ -373,14 +449,8 @@ def contract_failures(service, tasks)
     failures << "#{service} existing-user repair contains secret fields" unless forbidden.empty?
   end
 
-  repair = tasks.find { |task| task_name(task).match?(/Repair .* managed-user/) && uri_task?(task) }
-  # audiobookshelf's pinned repair fields are its declared default now, so
-  # shim_failures reads them there.
-  if service == "jellyfin"
-    body = repair&.dig("ansible.builtin.uri", "body").to_s
-    failures << "jellyfin repair does not merge into the complete current policy" unless
-      body.include?(".Policy") && body.include?("combine(item.policy")
-  end
+  # audiobookshelf's pinned repair fields and jellyfin's complete-policy merge
+  # are their declared defaults now, so shim_failures reads them there.
 
   auth_assert = tasks.find { |task| task_name(task).start_with?("Require preserved") }
   guidance = auth_assert&.dig("ansible.builtin.assert", "fail_msg").to_s

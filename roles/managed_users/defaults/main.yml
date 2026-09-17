@@ -79,7 +79,7 @@ managed_users_reresolve_after_creation: false
 # already gated on the phases of the steps around it.
 #   before_create: after existing credentials are proved, before creation is
 #     planned or performed; preflight and reconcile, --check included.
-#   after_creation: after the re-list and re-resolution, before a newly created
-#     credential is proved; reconcile only, never under --check.
+#   after_creation: once the listing re-read after creation is bound, before
+#     this role reads it; reconcile only, never under --check.
 managed_users_before_create_tasks: ""
 managed_users_after_creation_tasks: ""

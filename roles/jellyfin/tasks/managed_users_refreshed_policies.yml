@@ -1,9 +1,9 @@
 ---
-# Run by roles/managed_users after the post-creation re-list and re-resolution,
-# before a newly created credential is proved (managed_users_after_creation_tasks),
-# in reconcile outside --check. managed_users_listing is the re-read listing and
-# managed_users_matches has been re-resolved from it, and the repair merges into
-# exactly these records.
+# Run by roles/managed_users as soon as the listing re-read after creation is
+# bound as managed_users_listing, before that role reads anything out of it
+# (managed_users_after_creation_tasks), in reconcile outside --check. The shared
+# role re-resolves its matches from this listing further on, and the repair
+# merges into exactly these records, so these are the records proved here.
 - name: Require safe newly created Jellyfin managed-user identifiers
   ansible.builtin.assert:
     that:
@@ -28,30 +28,34 @@
 - name: Require complete safe refreshed Jellyfin managed-user policies
   ansible.builtin.assert:
     that:
-      - managed_users_matches[item.username] | length == 1
+      - jellyfin_refreshed_matches | length == 1
       - >-
         managed_users_listing.json | map(attribute='Name') |
         map('trim') | map('lower') | select('equalto', item.username | trim | lower) |
         list | length == 1
       - >-
-        managed_users_matches[item.username][0].Id | string
+        jellyfin_refreshed_matches[0].Id | string
           is match(jellyfin_managed_users_id_pattern)
-      - managed_users_matches[item.username][0].Policy is mapping
+      - jellyfin_refreshed_matches[0].Policy is mapping
       - >-
-        managed_users_matches[item.username][0].Policy.keys() |
+        jellyfin_refreshed_matches[0].Policy.keys() |
         reject('string') | list | length == 0
       - >-
-        managed_users_matches[item.username][0].Policy.keys() | map('lower') |
+        jellyfin_refreshed_matches[0].Policy.keys() | map('lower') |
         intersect(jellyfin_managed_users_forbidden_policy_fields) | length == 0
       - >-
-        managed_users_matches[item.username][0].Policy.AuthenticationProviderId |
+        jellyfin_refreshed_matches[0].Policy.AuthenticationProviderId |
         default('') | string | length > 0
       - >-
-        managed_users_matches[item.username][0].Policy.PasswordResetProviderId |
+        jellyfin_refreshed_matches[0].Policy.PasswordResetProviderId |
         default('') | string | length > 0
     fail_msg: >-
       Jellyfin returned an absent, ambiguous, incomplete, or unsafe refreshed
       policy; reconciliation refuses to replace policy state.
+  vars:
+    jellyfin_refreshed_matches: >-
+      {{ managed_users_listing.json |
+         selectattr('Name', 'equalto', item.username) | list }}
   loop: "{{ managed_users_declared }}"
   loop_control:
     label: jellyfin-managed-user

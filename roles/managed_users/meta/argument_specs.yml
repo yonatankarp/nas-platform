@@ -129,9 +129,8 @@ argument_specs:
         required: false
       managed_users_after_creation_tasks:
         description: >-
-          A caller task file run after the post-creation re-list and
-          re-resolution and before newly created credentials are proved, in
-          reconcile outside --check. Relative to this role's tasks directory;
+          A caller task file run once the listing re-read after creation is
+          bound, before this role reads it, in reconcile outside --check. Relative to this role's tasks directory;
           empty runs nothing.
         type: str
         required: false
