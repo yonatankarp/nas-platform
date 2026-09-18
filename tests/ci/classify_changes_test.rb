@@ -1013,6 +1013,46 @@ if defined?(ClassifyChanges)
     check(failures, unseeded.nil?,
           "a service with no seed-and-verify program must not be an upgrade subject, " \
           "got #{unseeded.inspect}")
+
+    # A FALL-OPEN THAT MOVED A SUBJECT PIN MUST STILL DISPATCH THE LANE, and
+    # this is the case that was wrong first: the unmapped-path return fires
+    # inside the loop, before the subject was resolved, so the lane was forced
+    # off however the pins had moved. The pull request that introduced the lane
+    # touches tests/integration.sh, which is unmapped, so the lane could not
+    # have run on its own change -- and neither could a Renovate bump that
+    # happened to touch anything else.
+    write_compose.call(compose, pin.call("v1.3.3", 5), "2g")
+    File.write(File.join(root, "unexpected-new-runtime-file"), "unmapped\n")
+    system("git", "-C", root, "add", "-A", exception: true)
+    system("git", "-C", root, "commit", "-qm", "bump beside an unmapped path", exception: true)
+    fall_open_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    fall_open = Dir.chdir(root) do
+      ClassifyChanges.classify(
+        ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+        base: komga_head, head: fall_open_head
+      )
+    end
+    check(failures, fall_open.fetch("upgrade"),
+          "a fall-open whose diff moved a subject pin must still dispatch the upgrade lane")
+    check(failures, ClassifyChanges.suites(fall_open).include?("upgrade"),
+          "the fall-open selection must carry the upgrade suite, got " \
+          "#{ClassifyChanges.suites(fall_open).inspect}")
+    # ... and the shards rather than the single idempotence pass, because it is
+    # still a fall-open. The upgrade lane is additive to that, not a form of it.
+    check(failures, !fall_open.fetch(IDEMPOTENCE_LANE) &&
+                    IDEMPOTENCE_SHARD_LANES.all? { |lane| fall_open.fetch(lane) },
+          "a fall-open must keep taking the idempotence shards")
+
+    # The other half, and the reason `--full` needs no special case: it reaches
+    # the resolution with no base revision, so there is no subject and the lane
+    # stays off rather than dispatching a leg that would refuse for want of its
+    # inputs.
+    unmapped_only = Dir.chdir(root) do
+      ClassifyChanges.classify(["unexpected-new-runtime-file"],
+                               base: komga_head, head: fall_open_head)
+    end
+    check(failures, !unmapped_only.fetch("upgrade"),
+          "a fall-open that moved no subject pin must not dispatch the upgrade lane")
   end
 end
 

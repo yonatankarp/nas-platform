@@ -373,6 +373,16 @@ module ClassifyChanges
     selection = LANES.to_h { |lane| [lane, false] }
     return everything(selection, sharded: false) if full
 
+    # Resolved HERE, before the loop below, because that loop can return: an
+    # unmapped path falls open, and a fall-open used to force the upgrade lane
+    # off however the pins had moved. That is not a hypothetical -- the pull
+    # request that introduced this lane touches tests/integration.sh, which is
+    # unmapped, so the lane could not have dispatched on its own change, and
+    # neither could a Renovate pin bump that happened to touch anything else.
+    # `--full` and `--files` reach this with base nil and get nil back, so they
+    # stay off without a special case of their own.
+    @upgrade_subject = upgrade_subject(paths, base, head)
+
     tagged_lanes = []
     reconciliation_owned = false
     paths.each do |raw_path|
@@ -430,7 +440,6 @@ module ClassifyChanges
     selection["static"] = true if reconciliation_owned
     selection["reconciliation"] = true if reconciliation_owned ||
                                           RECONCILIATION_LANES.any? { |lane| selection.fetch(lane) }
-    @upgrade_subject = upgrade_subject(paths, base, head)
     selection[UPGRADE_LANE] = !@upgrade_subject.nil?
     selection
   end
@@ -511,11 +520,17 @@ module ClassifyChanges
   # for the slowest job in the run to re-prove, in one 32-minute pass, what five
   # shards prove in the time of the longest of them.
   def everything(selection, sharded:)
-    # UPGRADE_LANE is off in both forms. It is the one lane that takes a BASE
-    # revision as an input, and neither `--full` nor a fall-open has one to give
-    # it -- so turning it on here would dispatch a leg that refuses for want of
-    # its inputs, which is a red nightly saying nothing about the tree.
-    off = (sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES) + [UPGRADE_LANE]
+    # UPGRADE_LANE is the one lane a full selection does not automatically turn
+    # on, and the condition is the SUBJECT rather than the form. `--full` and
+    # `--files` have no base revision to resolve one from, so it stays off there
+    # and a leg that would refuse for want of its inputs is never dispatched. A
+    # fall-open does have one, and a fall-open whose diff moved a subject's pin
+    # dispatches the lane: a fall-open already runs 25 legs, so one more is
+    # marginal, and forcing it off there left the lane unable to run on any pull
+    # request that also touched an unmapped path -- including the one that
+    # introduced it.
+    off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES
+    off += [UPGRADE_LANE] if @upgrade_subject.nil?
     selection.to_h { |lane, _| [lane, !off.include?(lane)] }
   end
 

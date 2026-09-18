@@ -29,12 +29,80 @@ require "json"
 require "open3"
 require "socket"
 require "tmpdir"
+require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
 failures = []
 
 def check(failures, condition, message)
   failures << message unless condition
+end
+
+# ---------------------------------------------------------------------------
+# The subject roster, stated here and closed in both directions.
+#
+# tests/ci/classify_changes.rb and tests/integration.sh both DERIVE which
+# services the upgrade lane can take as a subject, from which ones carry a
+# seed-and-verify program. A derivation is the right shape -- it makes adding a
+# service one new file rather than two list edits -- but it has the failure
+# every derivation has: a list that quietly empties satisfies every loop in
+# both readers and reports a pass, with the lane simply never dispatching
+# again. So the set is stated once, here, and asserted both ways.
+#
+# The three properties under it are what stop a subject from being ADDED into a
+# silently dead lane, which is a real hazard rather than a hypothetical one:
+# the basename of the program is used as three different names at once.
+#
+#   * services/<name>/compose.yml       -- what the classifier compares pins in
+#                                          and what the controller repins
+#   * tests/contracts/<name>.sh         -- what run_contract dispatches seed and
+#                                          verify through
+#   * a manifest service directory      -- what deployment_target_service takes
+#
+# Those coincide for every service here and for most of the platform, but NOT
+# for all of it: paperless-ngx's contract is tests/contracts/paperless.sh, so a
+# future paperless-upgrade.rb would name a compose path that does not exist and
+# the lane would resolve no subject and never dispatch -- green, and invisible.
+# Rather than plumb a name map through a POSIX shell launcher for a case that
+# does not exist yet, the divergence is made impossible: a program whose
+# basename is not all three of those names fails here, at the gate, before
+# anything is wired to it.
+EXPECTED_UPGRADE_SUBJECTS = %w[bindery kapowarr].freeze
+
+observed_subjects = Dir.glob(File.join(ROOT, "tests", "contracts", "*-upgrade.rb"))
+                       .map { |path| File.basename(path, ".rb").delete_suffix("-upgrade") }
+                       .sort
+check(failures, observed_subjects == EXPECTED_UPGRADE_SUBJECTS,
+      "the upgrade lane's subjects are #{observed_subjects.inspect}, expected " \
+      "#{EXPECTED_UPGRADE_SUBJECTS.inspect}: both readers derive this set from the same " \
+      "directory, so a subject added or lost without this line moving changes what the lane " \
+      "can run with nothing to say so")
+
+manifest_services = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
+                        .fetch("services")
+                        .select { |entry| entry["status"] == "implemented" }
+                        .map { |entry| entry.fetch("name") }
+EXPECTED_UPGRADE_SUBJECTS.each do |subject|
+  check(failures, manifest_services.include?(subject),
+        "upgrade subject #{subject} is not an implemented service directory in " \
+        "services/manifest.yml, so tests/ci/classify_changes.rb would compare pins in a " \
+        "services/#{subject}/compose.yml that does not exist and the lane would never dispatch")
+  check(failures, File.file?(File.join(ROOT, "services", subject, "compose.yml")),
+        "upgrade subject #{subject} has no services/#{subject}/compose.yml to repin")
+  check(failures, File.file?(File.join(ROOT, "tests", "contracts", "#{subject}.sh")),
+        "upgrade subject #{subject} has no tests/contracts/#{subject}.sh, which is what " \
+        "run_contract dispatches its seed and verify through")
+end
+
+# Reported and stopped here rather than accumulated, because every case below
+# runs one of these programs: an emptied roster otherwise surfaces as an
+# Errno::ENOENT backtrace from the first case, which is loud but says nothing
+# about the roster that emptied. Measured -- removing both programs did exactly
+# that before this exit was added.
+unless failures.empty?
+  failures.each { |message| warn "FAIL #{message}" }
+  warn "#{failures.length} upgrade subject roster failure(s)"
+  exit 1
 end
 
 # A one-connection-at-a-time HTTP/1.1 server. Enough for two programs that make
