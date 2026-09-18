@@ -317,13 +317,26 @@ if batching_rule
         "requirements.yml and tests/integration.sh are unmapped paths that fall open to every " \
         "lane and all six idempotence shards, so batching one in costs more than the group saves")
 
+  # All negations and nothing else, which is two properties in one assertion.
+  # The original one is that the group reaches every image and narrows by
+  # negation: an explicit allowlist would silently omit every service added
+  # after it was written. The second arrived with #775. A negation list is also
+  # the only spelling Renovate ACCEPTS here -- it refuses a matchPackageNames
+  # holding "*" alongside other patterns, and it refuses the whole config, so
+  # the repository stops getting pull requests at all until the file parses.
+  # This rule shipped in #771 opening with "*" because this test required it to,
+  # and Renovate had stopped the day after. Behaviour is unchanged either way:
+  # matchRegexOrGlobList skips its positive-pattern check when there are no
+  # positive patterns, so ["!a"] and ["*", "!a"] resolve identically. Requiring
+  # all-negations is therefore the same reach as before and additionally the
+  # thing that keeps "*" from being put back for readability.
   names = Array(batching_rule["matchPackageNames"])
-  check(failures, names.first == "*",
-        "the batching group must open with \"*\" and narrow by negation; an explicit list would " \
-        "silently omit every service added after it was written")
-  excluded = names.drop(1).filter_map { |name| name.delete_prefix("!") if name.start_with?("!") }
-  check(failures, excluded.length == names.length - 1,
-        "every entry after \"*\" in the batching group must be a negation")
+  check(failures, names.any? && names.all? { |name| name.start_with?("!") },
+        "the batching group must be a list of negations and nothing else. It must narrow by " \
+        "negation rather than name an allowlist, which would silently omit every service " \
+        "added after it was written -- and a bare \"*\" alongside those negations is the one " \
+        "spelling Renovate rejects outright, which stops pull requests repository-wide (#775)")
+  excluded = names.filter_map { |name| name.delete_prefix("!") if name.start_with?("!") }
   check(failures, excluded.to_set == GROUP_EXCLUDED_IMAGES,
         "the batching group's exclusions must equal the withheld set exactly. Missing: " \
         "#{(GROUP_EXCLUDED_IMAGES - excluded.to_set).to_a.sort.inspect}; unexpected: " \
