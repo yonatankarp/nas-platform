@@ -391,6 +391,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/beszel_contract_test.rb
   ruby tests/beszel_pushover_validation_test.rb
   tests/integration_controller_execution_test.sh
+  tests/integration_lifecycle_test.sh
   tests/mac/manual-validation-runner-test.sh
   tests/mac/immich-drift-hook-test.sh
   ruby tests/mac/report.rb --self-test
