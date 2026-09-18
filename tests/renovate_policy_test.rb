@@ -273,6 +273,74 @@ check(failures, digest_automerge == true && !digest_approval,
       "the automerge resolver reports that a digest refresh of docker.io/gotenberg/gotenberg is " \
       "withheld. The routine rule automerges it, so the Beszel digest assertions above prove nothing")
 
+# The batching group, and the reason it needs an assertion of its own rather
+# than a reading of the rule. Grouping is a CI-cost measure -- the fixed gate is
+# about 37 of a run's ~50 runner-minutes and is paid once per pull request, not
+# once per image -- so it is a rule whose whole safety property lives in what it
+# EXCLUDES. Those exclusions are a second copy of the sets above, and a second
+# copy of a set is exactly what went stale when #501 removed Seafile and left
+# its carve-out behind. Here the drift would not be a rule guarding nothing; it
+# would be a self-migrating image joining an automerged batch, which is #511
+# reopened and reaching the host within five minutes of the merge.
+#
+# So: equality in both directions against the union of the two withheld sets,
+# derived from those constants rather than restated, and a floor under the
+# group's own reach so a negation list that swallowed everything cannot pass by
+# excluding the whole registry.
+GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
+                         IMMICH_PACKAGES.to_a +
+                         HOST_ROOT_EQUIVALENT_IMAGE_GROUP).to_set.freeze
+BATCHED_UPDATE_TYPES = Set.new(%w[minor patch digest pinDigest]).freeze
+
+batching_rules = rules.select { |rule| rule["groupName"] == "container images" }
+check(failures, batching_rules.length == 1,
+      "Renovate must define exactly one batching group for routine container image updates")
+
+batching_rule = batching_rules.first
+if batching_rule
+  # Last, and that is load-bearing rather than tidy. A held package that matched
+  # this rule would carry its groupName onto a shared branch, and the automerge
+  # verdict for a branch whose members disagree is Renovate's business rather
+  # than something this repository should have to know. Ordering it after every
+  # withholding rule makes the question unaskable.
+  check(failures, rules.index(batching_rule) == rules.length - 1,
+        "the batching group must be the last package rule, so no withholding rule can " \
+        "follow it and leave a held image carrying its groupName")
+  check(failures, Array(batching_rule["schedule"]).any?,
+        "the batching group must carry a schedule; without one the branch automerges as soon " \
+        "as it is green and the next arrival opens a fresh one, so no batch ever forms")
+  check(failures, Set.new(Array(batching_rule["matchUpdateTypes"])) == BATCHED_UPDATE_TYPES,
+        "the batching group must match minor, patch, digest and pinDigest: patch alone leaves " \
+        "most of the traffic ungrouped, and major is withheld by the routine rule not matching it")
+  check(failures, Array(batching_rule["matchDatasources"]) == ["docker"],
+        "the batching group must be bound to the docker datasource: controller-requirements.txt, " \
+        "requirements.yml and tests/integration.sh are unmapped paths that fall open to every " \
+        "lane and all six idempotence shards, so batching one in costs more than the group saves")
+
+  names = Array(batching_rule["matchPackageNames"])
+  check(failures, names.first == "*",
+        "the batching group must open with \"*\" and narrow by negation; an explicit list would " \
+        "silently omit every service added after it was written")
+  excluded = names.drop(1).filter_map { |name| name.delete_prefix("!") if name.start_with?("!") }
+  check(failures, excluded.length == names.length - 1,
+        "every entry after \"*\" in the batching group must be a negation")
+  check(failures, excluded.to_set == GROUP_EXCLUDED_IMAGES,
+        "the batching group's exclusions must equal the withheld set exactly. Missing: " \
+        "#{(GROUP_EXCLUDED_IMAGES - excluded.to_set).to_a.sort.inspect}; unexpected: " \
+        "#{(excluded.to_set - GROUP_EXCLUDED_IMAGES).to_a.sort.inspect}. A withheld image that " \
+        "is not excluded joins an automerged batch, which is #511 arriving faster than before")
+
+  # The tripwire the equality needs. Every assertion above is satisfied by a rule
+  # that reaches nothing at all -- a negation list naming the whole registry, a
+  # matchPackageNames that stopped matching -- and such a rule would report a pass
+  # while batching no pull request and saving nothing. Gotenberg holds no store
+  # and is in no withheld set, so it must be reached.
+  check(failures, !excluded.include?("docker.io/gotenberg/gotenberg"),
+        "docker.io/gotenberg/gotenberg is excluded from the batching group. It holds no " \
+        "migrating store and is in no withheld set, so the exclusions have stopped meaning " \
+        "what the assertions above read them as")
+end
+
 # Every pinned version in the integration harness must be tracked by a custom
 # manager. Without this, a pin silently stops being bumped: nothing fails until
 # the pinned value leaves its upstream index, and then every suite fails at
