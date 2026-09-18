@@ -84,6 +84,13 @@ FULL_RUN_SUITES = %w[
   dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
   idempotence-check
 ].freeze
+# The one lane a `--full` run never dispatches because it has no BASE revision to
+# compare against, and so the one that would be invisible to an argv sweep driven
+# by FULL_RUN_SUITES alone. Named here for exactly the reason the shards below
+# are: the sweep has to cover every suite the matrix can dispatch by any route,
+# and the route that reaches this one is a routed pull request rather than
+# `--full`.
+UPGRADE_SUITES = %w[upgrade].freeze
 # The five shards that decompose the untagged idempotence lane. They are not in
 # the list above because a `--full` run does not dispatch them -- it keeps the
 # single unsharded pass -- so an argv sweep driven by that list alone would have
@@ -95,9 +102,11 @@ IDEMPOTENCE_SHARD_SUITES = %w[
 ].freeze
 # Every suite the matrix can ever dispatch, by either route. What the argv sweep
 # below has to cover.
-INTEGRATION_SUITES = (FULL_RUN_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
-TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static docs vault reconciliation suites selected_tags].freeze
+INTEGRATION_SUITES = (FULL_RUN_SUITES + UPGRADE_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
+TAGGED_SUITES = %w[smoke upgrade idempotence-check].freeze
+CLASSIFIER_OUTPUTS =
+  %w[static docs vault reconciliation suites selected_tags
+     upgrade_service upgrade_base_image].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,beszel"
 STATIC_STEP_NAMES = [
   "Check out repository",
@@ -1029,6 +1038,17 @@ check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
       "suites must pass selected tags through the environment")
+# The upgrade lane's subject and base pin reach the harness the same way, and
+# from the classifier rather than from this job: the `changes` job is the one
+# that checks out at fetch-depth 0, and this one takes actions/checkout's
+# default depth of 1, so a base revision is not readable from here at all. A
+# lane dispatched without them refuses rather than converging one version twice.
+{ "INTEGRATION_UPGRADE_SERVICE" => "upgrade_service",
+  "INTEGRATION_UPGRADE_BASE_IMAGE" => "upgrade_base_image" }.each do |name, output|
+  check(failures,
+        integration_step.dig("env", name) == "${{ needs.changes.outputs.#{output} }}",
+        "suites must pass #{name} from the classifier's #{output} output")
+end
 integration_run = integration_step["run"].to_s
 check(failures, !integration_run.match?(/\beval\b/), "suites must not use eval")
 

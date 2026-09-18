@@ -52,6 +52,8 @@ jobs:
       reconciliation: ${{ steps.classify.outputs.reconciliation }}
       suites: ${{ steps.classify.outputs.suites }}
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
+      upgrade_service: ${{ steps.classify.outputs.upgrade_service }}
+      upgrade_base_image: ${{ steps.classify.outputs.upgrade_base_image }}
 
     steps:
       - name: Check out repository
@@ -924,9 +926,17 @@ jobs:
         env:
           SUITE: ${{ matrix.suite }}
           SELECTED_TAGS: ${{ needs.changes.outputs.selected_tags }}
+          # The upgrade lane's two inputs. The classifier resolves them from the
+          # same diff it routes on, in the one job that checks out at
+          # fetch-depth 0 -- this job takes actions/checkout's default depth of
+          # 1, so the base revision is not readable from here. They are empty
+          # for every other lane, and the harness refuses the upgrade lane
+          # without both.
+          INTEGRATION_UPGRADE_SERVICE: ${{ needs.changes.outputs.upgrade_service }}
+          INTEGRATION_UPGRADE_BASE_IMAGE: ${{ needs.changes.outputs.upgrade_base_image }}
         run: |
           case "$SUITE" in
-            smoke|idempotence-check)
+            smoke|upgrade|idempotence-check)
               if [ -n "$SELECTED_TAGS" ]; then
                 tests/integration.sh --suite "$SUITE" --tags "$SELECTED_TAGS" site.yml
               else

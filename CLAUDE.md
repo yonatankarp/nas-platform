@@ -102,7 +102,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2
+nextcloud vaultwarden karakeep upgrade idempotence-check idempotence-1 idempotence-2
 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
@@ -116,6 +116,41 @@ three properties: the run converges, a second run changes nothing, and
 `--check --diff` works. Bugs that pass syntax check and lint — a fact that only
 exists on Linux, a `command` task silently skipped under `--check` — are caught
 only here.
+
+**`upgrade` is the one lane that does not start from an empty store, and it is
+the only one that can see a migration at all (#773).** Every other lane builds a
+disposable sandbox, `host_prep` creates the service directories empty and the
+service initialises fresh — so every one of them takes the fresh-install path and
+nothing anywhere opens a store a previous version wrote. That is the entire class
+#511 and #671 fell into, invisible here by construction. This lane converges the
+**base** branch's pin of one service, writes rows through that service's own HTTP
+API, repins to the head image and converges again, so the head container runs its
+own migration against a store the base container wrote, and then reads those rows
+back.
+
+Three things about it are worth knowing before changing it:
+
+- **Its subject and base pin are inputs, not tags.** `INTEGRATION_UPGRADE_SERVICE`
+  and `INTEGRATION_UPGRADE_BASE_IMAGE`, refused rather than clamped, and emitted
+  by `tests/ci/classify_changes.rb` from the same diff it routes on. The base
+  cannot be read from inside the lane: the `suites` job checks out at
+  `actions/checkout`'s default depth of 1, unlike `changes`, `static`, `mutation`
+  and `reconciliation`.
+- **A repin is two commits, not two file writes.** `deployment_bundle` keys its
+  immutable release on `platform_release_id` and refuses to mutate a release
+  `current` already points at, so rewriting `compose.yml` without moving HEAD is
+  that refusal rather than a repin.
+- **Which services it can take as a subject is derived**, from which ones carry a
+  `tests/contracts/<svc>-upgrade.rb`. Bindery and Kapowarr today, being the two
+  with actual incidents. A subject with no such program is refused, because a
+  lane that converges, migrates and asserts nothing is green while proving less
+  than the fresh-install lanes it exists to complement. Per-service seeds are
+  irreducibly bespoke — different stores behind different APIs — so adding one is
+  one new file and no list edits.
+
+It is off for `--full` and off when routing falls open, in both cases because
+neither has a base revision to give it. So the nightly does not run it, and only
+a routed pull request or the merge that lands it does.
 
 ### Deploying / reviewing
 
