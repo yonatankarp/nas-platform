@@ -32,6 +32,20 @@ require "tmpdir"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
+
+# No arguments, and `--self-test` in particular is refused rather than ignored.
+# Accepting it silently would print this file's ordinary success line in answer
+# to a request for its planted-regression proof, which is the vacuous pass this
+# repository keeps closing, in miniature. There is no self-test to implement
+# here for a reason worth stating: every case below IS a planted loss -- the row
+# deleted, the row re-created under another id, the key that did not survive,
+# the rotation that changed nothing -- and each requires the program under test
+# to refuse. The plants are the body, not a mode.
+unless ARGV.empty?
+  warn "usage: contract_upgrade_seed_test.rb (no arguments; its cases are already planted losses)"
+  exit 2
+end
+
 failures = []
 
 def check(failures, condition, message)
