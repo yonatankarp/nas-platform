@@ -23,7 +23,10 @@
 #     missing, and it deletes none. An extra user is therefore left exactly as
 #     found by the converge that follows -- unlike root folders, settings, the
 #     Prowlarr instance and the download client, every one of which the role
-#     reconciles.
+#     reconciles. Checked across the whole of roles/bindery/tasks/ rather than
+#     its main.yml alone, because that is where a prune would hide: the one
+#     DELETE the role issues is against Audiobookshelf's /api/api-keys, in
+#     reconcile_audiobookshelf.yml, and reaches no Bindery user at all.
 #
 # The username carries a random suffix so the row cannot be confused with
 # anything the platform authors, and so a re-run against a surviving sandbox
@@ -37,6 +40,7 @@
 # is invisible to a lane that seeds a user. That is the second of the three
 # limits issue #773 states, narrowed rather than closed.
 
+require "fileutils"
 require "json"
 require "net/http"
 require "open3"
@@ -46,6 +50,11 @@ require "yaml"
 
 READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_BINDERY_READY_TIMEOUT", "120"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BINDERY_PORT'), 10)}")
+# tests/integration.sh creates $sandbox/reports at mode 0777 and run_contract
+# exports it as PLATFORM_REPORT_ROOT, so this directory exists for the one
+# caller there is. The mkdir below is still taken: nothing that runs outside a
+# real lane exercises this write, so a caller that set the variable somewhere
+# else would find out only after a full base converge.
 RECORD = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "upgrade-bindery.json")
 
 def fail_contract(message)
@@ -133,6 +142,7 @@ when "seed"
   fail_contract("Bindery did not store exactly one canary user") unless seeded.length == 1
   id = seeded.first["id"]
   fail_contract("Bindery assigned the canary user no id") if id.nil?
+  FileUtils.mkdir_p(File.dirname(RECORD))
   File.write(RECORD, JSON.generate("username" => username, "id" => id))
   puts "bindery upgrade seed: canary user #{username} stored as id #{id}"
 when "verify"

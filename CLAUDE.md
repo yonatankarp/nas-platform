@@ -152,6 +152,18 @@ It is off for `--full` and off when routing falls open, in both cases because
 neither has a base revision to give it. So the nightly does not run it, and only
 a routed pull request or the merge that lands it does.
 
+**A rollback reds this lane, and that is the guard rather than a defect.** A
+revert or a Renovate rollback makes the base newer than the head, so the
+classifier selects the lane — the pins differ — the first converge runs the newer
+image, and the second meets `roles/image_downgrade_guard`, which both Bindery and
+Kapowarr call before their backup and their Compose deployment and which refuses
+a pin older than one that has already run. The lane therefore goes red on the
+pull request that is the *correct* fix for a bad migration, with a message about
+that guard and not about the store. It is left that way deliberately: comparing
+versions across arbitrary tags is exactly what that role exists to do, and a
+direction check in the classifier would be a second, worse copy of it. Read the
+refusal literally and merge past the lane.
+
 ### Deploying / reviewing
 
 **The NAS deploys itself.** `roles/production_auto_deploy` installs a poller that

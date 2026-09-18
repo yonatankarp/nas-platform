@@ -51,6 +51,7 @@
 # closed.
 
 require "digest"
+require "fileutils"
 require "json"
 require "net/http"
 require "open3"
@@ -59,6 +60,11 @@ require "yaml"
 
 READY_TIMEOUT_SECONDS = Integer(ENV.fetch("PLATFORM_KAPOWARR_READY_TIMEOUT", "120"), 10)
 BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_KAPOWARR_PORT'), 10)}")
+# tests/integration.sh creates $sandbox/reports at mode 0777 and run_contract
+# exports it as PLATFORM_REPORT_ROOT, so this directory exists for the one
+# caller there is. The mkdir below is still taken: nothing that runs outside a
+# real lane exercises this write, so a caller that set the variable somewhere
+# else would find out only after a full base converge.
 RECORD = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "upgrade-kapowarr.json")
 
 def fail_contract(message)
@@ -141,6 +147,7 @@ when "seed"
     "fresh login returned the same value), so this lane would have nothing the base image " \
     "wrote that the head image has to carry"
   ) if rotated == key
+  FileUtils.mkdir_p(File.dirname(RECORD))
   File.write(RECORD, JSON.generate("api_key_sha256" => Digest::SHA256.hexdigest(rotated)))
   File.chmod(0o600, RECORD)
   puts "kapowarr upgrade seed: application API key rotated and recorded by digest"

@@ -707,6 +707,16 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           exit 1
           ;;
       esac
+      # A ROLLBACK REDS THIS LANE AT roles/image_downgrade_guard, not here, and
+      # that is left deliberately. A revert or a Renovate rollback makes the
+      # base newer than the head, the pins differ so the lane is selected, the
+      # first converge runs the newer image and the second meets that guard --
+      # which both callers include before their backup and their Compose
+      # deployment, and which refuses a pin older than one that has already run.
+      # So the failure names the guard rather than the store. Comparing versions
+      # across arbitrary tags is exactly what that role exists to do; a
+      # direction check here would be a second and worse copy of it.
+      #
       # A base equal to the head converges the same version twice and asserts a
       # migration that never ran. It is refused rather than tolerated, because
       # the result is green and says nothing -- which is the whole failure this
