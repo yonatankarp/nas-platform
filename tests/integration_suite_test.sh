@@ -1097,6 +1097,21 @@ if grep -q 'immich' "$pull_log"; then
   prepull_fail 'the beszel suite pulled images it never converges'
 fi
 
+# The upgrade lane converges TWO versions of one service, and only the head one
+# is written in a compose.yml the enumeration can read. Without the base here,
+# its pull happens inside community.docker.docker_compose_v2 on the first
+# converge instead -- which is exactly the registry refusal this whole ladder
+# exists to absorb, on the one pull the lane cannot retry.
+upgrade_base_fixture='docker.io/mrcas/kapowarr:v1.3.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+INTEGRATION_UPGRADE_SERVICE=kapowarr \
+  INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_base_fixture \
+  run_prepull 0 4 --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
+unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "the upgrade suite's pre-pull failed ($prepull_status)"
+assert_toolchain_pull_set "$({ compose_images kapowarr
+                               printf '%s\n' "$upgrade_base_fixture"; } | sort -u)"
+
 # The pre-pull fetches image_pull_width images at once, and the input is what
 # says how many. Serial it was 272 seconds of the smoke lane's 1151 -- 33 images,
 # one at a time -- so the property is worth an assertion of its own rather than a
