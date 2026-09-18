@@ -299,13 +299,48 @@ assert_lifecycle() {
 }
 
 assert_output \
-  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
+  'foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep upgrade idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full' \
   --list-suites
 
 for suite_name in foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full; do
   assert_lifecycle 'converge
 success' "$suite_name"
 done
+
+# The upgrade lane is the one suite whose plan is not `converge success`, and
+# it is asserted here in full rather than through assert_lifecycle, whose
+# active-service guard refuses a `seed` event -- correctly, for every other
+# suite, where a seed in an observation would mean the observation had run
+# something. Here the seed IS the plan. Emitting it is still a pure read: the
+# Docker log assertion below is the same one assert_lifecycle makes.
+rm -f "$docker_log"
+upgrade_plan=$(run_integration --observe-lifecycle --suite upgrade)
+[ "$upgrade_plan" = 'converge
+seed
+repin
+converge
+verify
+success' ] || {
+  printf 'unexpected upgrade lifecycle plan:\n%s\n' "$upgrade_plan" >&2
+  exit 1
+}
+[ ! -e "$docker_log" ] || {
+  printf 'upgrade lifecycle observation caused a side effect: %s\n' \
+    "$(cat "$docker_log")" >&2
+  exit 1
+}
+
+# And the table accepts it. A plan the runner emits and the consumer refuses is
+# a lane that cannot start, so the two are asserted against each other rather
+# than each against a literal.
+upgrade_validated=$(run_integration --consume-lifecycle --suite upgrade) || {
+  printf '%s\n' 'the lifecycle table refused the upgrade plan' >&2
+  exit 1
+}
+[ "$upgrade_validated" = "$upgrade_plan" ] || {
+  printf 'lifecycle table rewrote the upgrade plan:\n%s\n' "$upgrade_validated" >&2
+  exit 1
+}
 
 status=0
 invalid_controller_plan=$(INTEGRATION_RUN_SERVICE_SCENARIOS=invalid \
@@ -752,6 +787,46 @@ assert_rejected 'integration suite options must precede the playbook' \
   --suite smoke custom.yml --tags=beszel
 assert_rejected 'unexpected integration suite argument: --check' \
   --suite smoke custom.yml --check
+
+# The upgrade lane's two inputs. Refusing rather than clamping is the point:
+# there is no nearest valid image reference, and the value reaches a docker pull
+# argument and a literal substitution inside the sandbox's compose.yml.
+assert_rejected \
+  'the upgrade suite requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE' \
+  --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
+upgrade_valid_image='docker.io/mrcas/kapowarr:v1.3.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+for bad_image in \
+  'docker.io/mrcas/kapowarr:v1.3.1' \
+  'docker.io/mrcas/kapowarr@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+  'docker.io/mrcas/kapowarr:v1.3.1@sha256:0123456789abcdef' \
+  'docker.io/mrcas/kapowarr:v1.3.1@sha256:0123456789ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef' \
+  'docker.io/mrcas/kapowarr:v1.3.1@sha512:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+  'docker.io/mrcas/kapo warr:v1.3.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' \
+  'docker.io/mrcas/kapowarr;touch x:v1.3.1@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+do
+  INTEGRATION_UPGRADE_SERVICE=kapowarr INTEGRATION_UPGRADE_BASE_IMAGE=$bad_image \
+    assert_rejected "invalid integration upgrade base image: $bad_image" \
+      --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
+done
+INTEGRATION_UPGRADE_SERVICE=Kapowarr INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_valid_image \
+  assert_rejected 'invalid integration upgrade service: Kapowarr' \
+    --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
+INTEGRATION_UPGRADE_SERVICE=nosuchservice INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_valid_image \
+  assert_rejected 'unknown integration upgrade service: nosuchservice' \
+    --suite upgrade --tags host_prep,deployment_bundle,kapowarr site.yml
+# A subject with no seed-and-verify program is refused rather than run. A lane
+# that converges, migrates and asserts nothing is green while proving less than
+# the fresh-install lanes it exists to complement, and that is the shape this
+# repository keeps closing.
+INTEGRATION_UPGRADE_SERVICE=komga INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_valid_image \
+  assert_rejected 'integration upgrade service komga has no seed-and-verify program' \
+    --suite upgrade --tags host_prep,deployment_bundle,komga site.yml
+# The assignments above are prefixes on a function call, so POSIX keeps them set
+# in the caller after it returns -- the same trap assert_retry_after_sleep below
+# records. Leaving them set refuses every later case in this file, because the
+# shape checks apply wherever a value is set rather than only to the upgrade
+# suite.
+unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
 
 [ ! -e "$docker_log" ] || {
   printf 'dispatch inspection reached Docker: %s\n' "$(cat "$docker_log")" >&2
