@@ -462,11 +462,24 @@ module ClassifyChanges
   def upgrade_subject(paths, base, head)
     return nil unless base && head
 
+    # The MERGE BASE, not the base tip, and the two are not the same claim.
+    # changed_paths diffs `base...head`, which is the merge base against head --
+    # so the paths this is handed are the pull request's own changes. Reading the
+    # pin at `base` instead would take whatever main's tip pins, and when main
+    # has moved that pin since the branch forked, the lane would converge main's
+    # version and then the head's and red at roles/image_downgrade_guard on a
+    # pull request performing no downgrade at all. Narrow -- both sides would
+    # have edited the same `image:` line, so such a pull request conflicts and
+    # gets no CI run -- but the two halves have to agree what "base" means, and
+    # one line is cheaper than the argument.
+    merge_base, _error, status = Open3.capture3("git", "merge-base", base, head)
+    comparison = status.success? && !merge_base.strip.empty? ? merge_base.strip : base
+
     UPGRADE_SUBJECTS.each do |service|
       compose = "services/#{service}/compose.yml"
       next unless paths.include?(compose)
 
-      base_image = pinned_image(base, compose)
+      base_image = pinned_image(comparison, compose)
       head_image = pinned_image(head, compose)
       next if base_image.nil? || head_image.nil? || base_image == head_image
       # A subject whose own lane has no tags could only be converged by

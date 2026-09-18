@@ -816,6 +816,58 @@ case_upgrade() {
     fail "the upgrade lane left $upgrade_revisions revision(s), expected 3"
 }
 
+# The three refusals that stand in front of the lane, none of which had a case.
+# The first is the one the whole issue exists for: a base equal to the head
+# converges ONE version twice and asserts a migration that never ran, which is
+# the fresh-install path every other lane already takes -- green, and proving
+# strictly less than the lane it is pretending to be.
+case_upgrade_refusals() {
+  upgrade_head_image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
+    "$repo_dir/services/kapowarr/compose.yml")
+
+  run_upgrade_refusal() {
+    refusal_service=$1
+    refusal_base=$2
+    refusal_expected=$3
+    build_upgrade_git_fixture
+    CASE_UPGRADE_SERVICE=$refusal_service
+    CASE_UPGRADE_BASE_IMAGE=$refusal_base
+    export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+    run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
+    unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+    expect_nonzero_status
+    expect_output "$refusal_expected"
+    # Nothing may converge on the way to a refusal: the whole point is that the
+    # lane does not start rather than that it reports afterwards.
+    expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]'
+  }
+
+  run_upgrade_refusal kapowarr "$upgrade_head_image" \
+    'the upgrade base and head pins of kapowarr are identical'
+  # The second refusal, and beszel is the subject because it is a real multi-image
+  # stack -- four `image:` lines, hub, agent and the socket proxy -- so the
+  # ambiguity is the repository's own rather than a fixture's. A rewrite that
+  # picked one of four would repin a container the lane is not upgrading and
+  # converge the subject unchanged.
+  run_upgrade_refusal beszel "$upgrade_base_image" \
+    'the upgrade subject beszel does not pin exactly one image'
+}
+
+# The subject whose compose definition is absent. Separate from the case above
+# because the controller reaches it earlier -- before it has read any pin -- and
+# because the fixture has to be missing a file the others need present.
+case_upgrade_missing_compose() {
+  build_upgrade_git_fixture
+  CASE_UPGRADE_SERVICE=nosuchservice
+  CASE_UPGRADE_BASE_IMAGE=$upgrade_base_image
+  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
+  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  expect_nonzero_status
+  expect_output 'no compose definition for the upgrade subject nosuchservice'
+  expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]'
+}
+
 # The smoke lane stops after the converge, and is the cheapest place to observe
 # the toolchain the controller installs when it is not running from an image
 # that already has it -- the path a developer's first run and a fork's CI take.
@@ -968,7 +1020,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga upgrade toolchain_install \
+    downloaders bindery seerr jellyfin komga upgrade upgrade_refusals \
+    upgrade_missing_compose toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -1092,6 +1145,18 @@ plant 'upgrade repin never committed' upgrade program \
 plant 'upgrade converge dropped' upgrade program \
   'run_selected_play "$@" || upgrade_converge_status=$?' \
   'upgrade_converge_status=0' 1
+# The three refusals that stand in front of the lane. The first is the one the
+# whole issue exists for: without it a base equal to the head converges one
+# version twice and reports success, which is the fresh-install path every other
+# lane already takes.
+plant 'identical base and head pins tolerated' upgrade_refusals program \
+  '[ "$upgrade_head_image" != "$upgrade_base_image" ] || {' \
+  'if false; then' 1
+plant 'an ambiguous multi-image subject tolerated' upgrade_refusals program \
+  'the upgrade subject %s does not pin exactly one image' \
+  'the upgrade subject %s was read' 1
+plant 'a missing compose definition tolerated' upgrade_missing_compose program \
+  '[ -f "$upgrade_compose" ] || {' 'if false; then' 1
 plant 'docker_container_info runtime support not installed' toolchain_install \
   program '"requests==$requests_version"' '"requests-not-installed"' 1
 

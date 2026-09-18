@@ -1120,6 +1120,31 @@ if defined?(ClassifyChanges)
     check(failures, stale&.include?("does not match the resolved subject"),
           "writing a selection beside a later classification's subject must be refused, got " \
           "#{stale.inspect}")
+
+    # THE BASE IS THE MERGE BASE, not the base tip. changed_paths diffs
+    # `base...head`, so the paths handed in are the branch's own changes; reading
+    # the pin at the base TIP would take whatever that ref pins now. Constructed
+    # here: the branch forks, then the base ref moves its own pin, and the
+    # subject's base must still be what the branch forked from. Reading the tip
+    # instead reports a base the branch never had -- and on a base whose pin is
+    # NEWER, the lane converges that and then the head and reds at
+    # image_downgrade_guard on a pull request performing no downgrade.
+    system("git", "-C", root, "checkout", "-q", "-b", "fork", fall_open_head, exception: true)
+    write_compose.call(compose, pin.call("v1.4.0", 7), "2g")
+    system("git", "-C", root, "commit", "-qam", "branch bumps to v1.4.0", exception: true)
+    branch_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    system("git", "-C", root, "checkout", "-q", "main", exception: true) ||
+      system("git", "-C", root, "checkout", "-q", "master", exception: true)
+    write_compose.call(compose, pin.call("v1.9.9", 9), "2g")
+    system("git", "-C", root, "commit", "-qam", "base moves on without the branch", exception: true)
+    moved_base = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+
+    forked = Dir.chdir(root) do
+      ClassifyChanges.upgrade_subject(["services/kapowarr/compose.yml"], moved_base, branch_head)
+    end
+    check(failures, forked == ["kapowarr", pin.call("v1.3.3", 5)],
+          "the upgrade base must be the pin at the merge base, not at the base tip " \
+          "(#{pin.call('v1.9.9', 9)}), got #{forked.inspect}")
   end
 end
 
