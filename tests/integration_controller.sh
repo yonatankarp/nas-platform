@@ -650,21 +650,31 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     # treat the reference's own dots and slashes as pattern syntax, and a
     # silent zero-replacement rewrite is the failure that would leave the lane
     # converging one version twice and reporting success.
+    #
+    # Written as a shell read loop rather than as the obvious awk one-liner
+    # because tests/policy_test.rb refuses `$0` anywhere in this file -- it is
+    # how a program here would resolve a path from where the file sits instead
+    # of from CONTROLLER_REPO_DIR -- and awk's own whole-record variable is
+    # spelled the same way. The loop is a hundred lines of YAML once per repin.
     rewrite_subject_image() {
-      awk -v from="$1" -v to="$2" '
-        {
-          stripped = $0
-          sub(/^[[:space:]]+/, "", stripped)
-          if (stripped == "image: " from) {
-            match($0, /^[[:space:]]*/)
-            printf "%simage: %s\n", substr($0, 1, RLENGTH), to
-            replaced++
-            next
-          }
-          print
-        }
-        END { if (replaced != 1) exit 1 }
-      ' "$upgrade_compose" > "$upgrade_compose.repin"
+      rewrite_from=$1
+      rewrite_to=$2
+      rewrite_count=0
+      : > "$upgrade_compose.repin"
+      # The `|| [ -n "$rewrite_line" ]` keeps a final line with no trailing
+      # newline, which `read` reports as end of input while still having read it.
+      while IFS= read -r rewrite_line || [ -n "$rewrite_line" ]; do
+        rewrite_indent=${rewrite_line%%[! ]*}
+        rewrite_stripped=${rewrite_line#"$rewrite_indent"}
+        if [ "$rewrite_stripped" = "image: $rewrite_from" ]; then
+          printf '%simage: %s\n' "$rewrite_indent" "$rewrite_to" \
+            >> "$upgrade_compose.repin"
+          rewrite_count=$((rewrite_count + 1))
+        else
+          printf '%s\n' "$rewrite_line" >> "$upgrade_compose.repin"
+        fi
+      done < "$upgrade_compose"
+      [ "$rewrite_count" -eq 1 ] || return 1
       mv "$upgrade_compose.repin" "$upgrade_compose"
     }
 

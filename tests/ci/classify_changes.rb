@@ -56,6 +56,19 @@ module ClassifyChanges
   IDEMPOTENCE_SHARD_LANES = SUITES.keys.filter do |lane|
     lane.start_with?("idempotence_") && lane != IDEMPOTENCE_LANE
   end.freeze
+  # The one lane that is never selected by a path and never by `--full`: it needs
+  # a BASE to compare against, and only the --diff mode has one. `--full` and a
+  # fall-open therefore leave it off rather than dispatching a lane that would
+  # refuse for want of its inputs.
+  UPGRADE_LANE = "upgrade"
+  # Which services the upgrade lane can take as its subject, DERIVED from which
+  # ones carry a seed-and-verify program rather than restated here.
+  # tests/integration.sh applies the same rule against the same directory, so the
+  # runner and the classifier cannot disagree about what is runnable, and adding a
+  # service to the lane is one new file rather than two list edits.
+  UPGRADE_SUBJECTS = Dir.glob(File.expand_path("../contracts/*-upgrade.rb", __dir__))
+                        .map { |path| File.basename(path, ".rb").delete_suffix("-upgrade") }
+                        .sort.freeze
   # The tags CI narrows the site to for each lane it selects by tag. Planned
   # acquisition suites converge only the shared inert foundation and validate it
   # with their static contract.
@@ -355,7 +368,8 @@ module ClassifyChanges
 
   module_function
 
-  def classify(paths, full: false)
+  def classify(paths, full: false, base: nil, head: nil)
+    @upgrade_subject = nil
     selection = LANES.to_h { |lane| [lane, false] }
     return everything(selection, sharded: false) if full
 
@@ -416,7 +430,55 @@ module ClassifyChanges
     selection["static"] = true if reconciliation_owned
     selection["reconciliation"] = true if reconciliation_owned ||
                                           RECONCILIATION_LANES.any? { |lane| selection.fetch(lane) }
+    @upgrade_subject = upgrade_subject(paths, base, head)
+    selection[UPGRADE_LANE] = !@upgrade_subject.nil?
     selection
+  end
+
+  # The subject the upgrade lane converges, and the image reference the BASE
+  # branch pins it to, or nil when there is nothing to migrate.
+  #
+  # Both halves have to hold. A compose.yml can change without its `image:`
+  # moving -- a memory limit, a mount, a logging option -- and converging the
+  # same version twice proves nothing while costing a full lane, so the pin is
+  # compared rather than the file. And the base is read with `git show` rather
+  # than from the working tree: this runs in the `changes` job, which is the one
+  # job that checks out at fetch-depth 0, and on a pull_request the checkout is
+  # the merge commit rather than the head, so both sides are named explicitly.
+  #
+  # ONE SUBJECT, and the limit is stated rather than hidden: a diff that moves
+  # two subjects' pins proves the first of them in UPGRADE_SUBJECTS order. The
+  # alternative is a second matrix dimension for a case Renovate produces one
+  # image at a time, and #771's batch withholds these images from it.
+  def upgrade_subject(paths, base, head)
+    return nil unless base && head
+
+    UPGRADE_SUBJECTS.each do |service|
+      compose = "services/#{service}/compose.yml"
+      next unless paths.include?(compose)
+
+      base_image = pinned_image(base, compose)
+      head_image = pinned_image(head, compose)
+      next if base_image.nil? || head_image.nil? || base_image == head_image
+
+      return [service, base_image]
+    end
+    nil
+  end
+
+  # The single `image:` a service's canonical compose.yml pins, at one revision.
+  # nil for anything else -- an unreadable path, a file that pins none, a file
+  # that pins several -- because every one of those is a subject the lane cannot
+  # repin unambiguously, and guessing at one is how a lane converges the wrong
+  # version and reports success.
+  def pinned_image(revision, path)
+    content, _error, status = Open3.capture3("git", "show", "#{revision}:#{path}")
+    return nil unless status.success?
+
+    images = content.lines.filter_map do |line|
+      line[/\A\s*image:\s*(\S+)\s*\z/, 1]
+    end
+    images.length == 1 ? images.first : nil
   end
 
   def changed_paths(base, head)
@@ -449,7 +511,11 @@ module ClassifyChanges
   # for the slowest job in the run to re-prove, in one 32-minute pass, what five
   # shards prove in the time of the longest of them.
   def everything(selection, sharded:)
-    off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES
+    # UPGRADE_LANE is off in both forms. It is the one lane that takes a BASE
+    # revision as an input, and neither `--full` nor a fall-open has one to give
+    # it -- so turning it on here would dispatch a leg that refuses for want of
+    # its inputs, which is a red nightly saying nothing about the tree.
+    off = (sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES) + [UPGRADE_LANE]
     selection.to_h { |lane, _| [lane, !off.include?(lane)] }
   end
 
@@ -464,6 +530,9 @@ module ClassifyChanges
                           .uniq
            end
     io.puts "selected_tags=#{tags.join(',')}"
+    service, base_image = @upgrade_subject
+    io.puts "upgrade_service=#{service}"
+    io.puts "upgrade_base_image=#{base_image}"
   end
 
   def suites(selection)
@@ -621,7 +690,7 @@ module ClassifyChanges
                 when :full
                   classify([], full: true)
                 when :diff
-                  classify(changed_paths(mode[1], mode[2]))
+                  classify(changed_paths(mode[1], mode[2]), base: mode[1], head: mode[2])
                 when :files
                   classify(mode[1])
                 end
