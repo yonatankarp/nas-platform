@@ -131,7 +131,8 @@ PREAMBLE
 build_checkout() {
   rm -rf "$checkout"
   mkdir -p "$checkout/tests/ci" "$checkout/tests/contracts" "$checkout/tests/mac" \
-    "$checkout/inventory/group_vars/all" "$checkout/services/beszel"
+    "$checkout/inventory/group_vars/all" "$checkout/services/beszel" \
+    "$checkout/services/kapowarr"
 
   # Read for real: the controller runs the lifecycle producer/consumer out of the
   # checkout, and both the suite roster and the consumer's refusals are theirs.
@@ -141,6 +142,17 @@ build_checkout() {
   cp "$repo_dir/tests/ci/suites.conf" "$checkout/tests/ci/suites.conf"
   chmod 0755 "$checkout/tests/integration.sh"
   cp "$repo_dir/services/beszel/compose.yml" "$checkout/services/beszel/compose.yml"
+  # The upgrade lane's subject, read for real: the controller finds the head pin
+  # by reading this file and rewrites that exact line, so a fixture pin invented
+  # here would prove the rewrite against a shape the repository does not have.
+  cp "$repo_dir/services/kapowarr/compose.yml" "$checkout/services/kapowarr/compose.yml"
+  # Present, not stubbed, and never executed: the contract wrapper beside it is a
+  # stub. tests/integration.sh derives which services the upgrade lane may take
+  # as a subject from which ones have this file, so a fixture without it refuses
+  # the lane before a single event runs -- which is what a missing copy here
+  # looked like the first time.
+  cp "$repo_dir/tests/contracts/kapowarr-upgrade.rb" \
+    "$checkout/tests/contracts/kapowarr-upgrade.rb"
   cp "$repo_dir/inventory/group_vars/all/main.yml" \
     "$checkout/inventory/group_vars/all/main.yml"
   printf '%s\n' '---' > "$checkout/inventory/local.yml"
@@ -407,11 +419,16 @@ run_controller() {
     PLATFORM_PAPERLESS_FIXTURE_PRESEEDED=false
     PLATFORM_KOMGA_FIXTURE_PRESEEDED=false
     PLATFORM_JELLYFIN_FIXTURE_PRESEEDED=false
+    # Empty for every lane but the upgrade one, which is what the launcher passes
+    # and what the controller refuses that lane without.
+    INTEGRATION_UPGRADE_SERVICE=${CASE_UPGRADE_SERVICE-}
+    INTEGRATION_UPGRADE_BASE_IMAGE=${CASE_UPGRADE_BASE_IMAGE-}
     export PATH HOME CONTROLLER_STUB_LOG PLATFORM_INTEGRATION_SANDBOX \
       PLATFORM_INTEGRATION_PROJECT_NAMESPACE INTEGRATION_SUITE INTEGRATION_TAGS \
       INTEGRATION_RUN_SERVICE_SCENARIOS INTEGRATION_TOOLCHAIN_PREINSTALLED \
       MEDIA_CONTROL_COLLISION_IMAGE PLATFORM_PAPERLESS_FIXTURE_PRESEEDED \
-      PLATFORM_KOMGA_FIXTURE_PRESEEDED PLATFORM_JELLYFIN_FIXTURE_PRESEEDED
+      PLATFORM_KOMGA_FIXTURE_PRESEEDED PLATFORM_JELLYFIN_FIXTURE_PRESEEDED \
+      INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
     cd "$checkout" || exit 1
     exec sh "$checkout/tests/integration_controller.sh" "$@"
   ) > "$run_output" 2>&1 || run_status=$?
@@ -725,6 +742,80 @@ case_komga() {
   expect_log_order 'contract komga argv=[seed]' 'contract komga argv=[run]'
 }
 
+# The upgrade lane, which is the one lane that does not start from an empty
+# store. Everything it adds over a service lane happens inside the controller --
+# rewriting the subject's pin, committing it so platform_release_id moves, the
+# two converges either side of a seed, and the verify -- so this is the only
+# place any of it can be observed without a Docker daemon and a real migration.
+#
+# The checkout is made a git repository here rather than in build_checkout
+# because the repin COMMITS: deployment_bundle keys its immutable release on
+# `git rev-parse HEAD` and refuses to mutate a release `current` already points
+# at, so a lane that rewrote compose.yml without moving HEAD would meet that
+# refusal instead of upgrading. Rebuilt per run, because a plant that breaks the
+# repin leaves the fixture pinned at the base image and the next case would then
+# read a head equal to its base.
+upgrade_base_image=docker.io/mrcas/kapowarr:v0.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
+
+build_upgrade_git_fixture() {
+  rm -rf "$checkout/.git"
+  cp "$repo_dir/services/kapowarr/compose.yml" \
+    "$checkout/services/kapowarr/compose.yml"
+  git -C "$checkout" init -q
+  git -C "$checkout" add -A
+  git -C "$checkout" -c user.email=ci@example.invalid -c user.name='CI Test' \
+    commit -qm fixture
+}
+
+upgrade_compose_at() {
+  git -C "$checkout" show "$1:services/kapowarr/compose.yml" 2>/dev/null |
+    sed -n 's/^[[:space:]]*image:[[:space:]]*//p'
+}
+
+case_upgrade() {
+  upgrade_head_image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
+    "$repo_dir/services/kapowarr/compose.yml")
+  build_upgrade_git_fixture
+  CASE_UPGRADE_SERVICE=kapowarr
+  CASE_UPGRADE_BASE_IMAGE=$upgrade_base_image
+  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
+  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  expect_status 0
+
+  # Two converges of the same tags, the seed between them and the verify after
+  # the second. Order is the whole property: a seed after the repin migrates an
+  # empty store, and a verify before the second converge reads the rows back
+  # from the image that wrote them.
+  expect_log_count '[site.yml][--tags][host_prep,deployment_bundle,kapowarr]' 2
+  expect_log 'contract kapowarr argv=[seed]'
+  expect_log 'contract kapowarr argv=[verify]'
+  expect_log_order 'contract kapowarr argv=[seed]' 'contract kapowarr argv=[verify]'
+  expect_output 'UPGRADE_SEEDED'
+  expect_output 'UPGRADE_CONVERGED'
+  expect_output 'UPGRADE_VERIFIED'
+  expect_output 'UPGRADE_LANE_COMPLETE'
+  # The second converge is a real converge and not a rehearsal.
+  expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr][--check][--diff]'
+
+  # THE PROPERTY THE WHOLE LANE RESTS ON, read out of the fixture's own history
+  # rather than off the controller's own report: the revision the FIRST converge
+  # assembled its release from pinned the base image, and the revision the second
+  # one assembled pinned the head image. Nothing else in this file can tell an
+  # upgrade from two converges of one version.
+  observed_base=$(upgrade_compose_at 'HEAD~1')
+  observed_head=$(upgrade_compose_at HEAD)
+  [ "$observed_base" = "$upgrade_base_image" ] ||
+    fail "the first converge's revision pinned $observed_base, not the base image"
+  [ "$observed_head" = "$upgrade_head_image" ] ||
+    fail "the second converge's revision pinned $observed_head, not the head image"
+  # And HEAD moved between them, which is what keeps deployment_bundle from
+  # refusing to mutate an active immutable release.
+  upgrade_revisions=$(git -C "$checkout" rev-list --count HEAD)
+  [ "$upgrade_revisions" -eq 3 ] ||
+    fail "the upgrade lane left $upgrade_revisions revision(s), expected 3"
+}
+
 # The smoke lane stops after the converge, and is the cheapest place to observe
 # the toolchain the controller installs when it is not running from an image
 # that already has it -- the path a developer's first run and a fork's CI take.
@@ -877,7 +968,7 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga toolchain_install \
+    downloaders bindery seerr jellyfin komga upgrade toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
   "case_$healthy_case"
@@ -985,6 +1076,22 @@ plant 'Jellyfin owning contract dropped' jellyfin program \
   'run_jellyfin_contract run' ':' 1
 plant 'Komga fixture seed dropped' komga program \
   'run_komga_contract seed' ':' 1
+# The upgrade lane's own plants. The first two are the acceptance proof issue
+# #773 asks for at this level: a lane whose seed or verify has stopped running
+# is a lane that converges twice and asserts nothing, and it would be green and
+# faster. The last three are the pin surgery, without which the lane converges
+# one version twice however faithfully it seeds.
+plant 'upgrade seed dropped' upgrade program \
+  'run_contract "$upgrade_service" seed' ':' 1
+plant 'upgrade verify dropped' upgrade program \
+  'run_contract "$upgrade_service" verify' ':' 1
+plant 'upgrade base pin never committed' upgrade program \
+  'commit_subject_image "integration: $upgrade_service at its base pin"' ':' 1
+plant 'upgrade repin never committed' upgrade program \
+  'commit_subject_image "integration: $upgrade_service at its head pin"' ':' 1
+plant 'upgrade converge dropped' upgrade program \
+  'run_selected_play "$@" || upgrade_converge_status=$?' \
+  'upgrade_converge_status=0' 1
 plant 'docker_container_info runtime support not installed' toolchain_install \
   program '"requests==$requests_version"' '"requests-not-installed"' 1
 
