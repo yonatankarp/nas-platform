@@ -78,6 +78,24 @@ check(failures, observed_subjects == EXPECTED_UPGRADE_SUBJECTS,
       "directory, so a subject added or lost without this line moving changes what the lane " \
       "can run with nothing to say so")
 
+# Read out of the suite table rather than imported from the classifier, like
+# every other list this repository holds against a reader: importing the
+# constant would make this agree with the classifier by construction, and what
+# is being asserted is that a subject HAS a lane with tags, not that the
+# classifier thinks so. This is the fourth of the four things
+# ClassifyChanges.upgrade_subject requires, and it was the one nothing checked:
+# dropping its `next unless` left a subject resolving to nil with no diagnostic
+# anywhere.
+tagged_suite_rows = File.readlines(File.join(ROOT, "tests", "ci", "suites.conf"), chomp: true)
+                        .filter_map do |line|
+  fields = line.sub(/#.*/, "").split
+  next if fields.length != 3
+  next unless %w[acquisition service].include?(fields[1])
+  next if fields[2] == "-"
+
+  [fields[0], fields[2].split(",")]
+end.to_h
+
 manifest_services = YAML.safe_load_file(File.join(ROOT, "services", "manifest.yml"))
                         .fetch("services")
                         .select { |entry| entry["status"] == "implemented" }
@@ -92,6 +110,10 @@ EXPECTED_UPGRADE_SUBJECTS.each do |subject|
   check(failures, File.file?(File.join(ROOT, "tests", "contracts", "#{subject}.sh")),
         "upgrade subject #{subject} has no tests/contracts/#{subject}.sh, which is what " \
         "run_contract dispatches its seed and verify through")
+  check(failures, tagged_suite_rows.key?(subject),
+        "upgrade subject #{subject} is not a tagged row in tests/ci/suites.conf, so the lane " \
+        "would have no tags of its own and could only be converged by converging the whole " \
+        "site -- which is the idempotence lane's cost for a one-service proof")
 end
 
 # Reported and stopped here rather than accumulated, because every case below

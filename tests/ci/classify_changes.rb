@@ -471,10 +471,11 @@ module ClassifyChanges
       next if base_image.nil? || head_image.nil? || base_image == head_image
       # A subject whose own lane has no tags could only be converged by
       # converging the whole site, which is the idempotence lane's cost for a
-      # one-service proof. Both subjects today are tagged lanes, and
-      # tests/contract_upgrade_seed_test.rb holds the roster to names that are
-      # also manifest directories, so this is a closed door rather than a filter
-      # that silently drops things.
+      # one-service proof. tests/contract_upgrade_seed_test.rb requires every
+      # roster entry to be a tagged row in tests/ci/suites.conf, so this is a
+      # closed door rather than a filter that silently drops things -- but only
+      # since that check was added. Before it, dropping this line was undetected
+      # and a subject with no tags resolved nil with no diagnostic anywhere.
       next unless SERVICE_TAGS.key?(service.tr("-", "_"))
 
       return [service, base_image]

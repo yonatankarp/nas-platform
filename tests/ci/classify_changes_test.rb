@@ -1094,6 +1094,32 @@ if defined?(ClassifyChanges)
           ),
           "the upgrade lane must carry its subject's own tags through a fall-open, got " \
           "#{fall_open_output.string[/^upgrade_tags=.*$/].inspect}")
+
+    # THE PAIRING ITSELF, which nothing exercised until now. The subject is the
+    # one output that does not come from the selection write_github_outputs is
+    # handed: classify resolves it into an instance variable, so a caller that
+    # classifies twice and then writes emits the LAST classification's subject
+    # beside the FIRST one's lanes -- silent, and wrong in the direction that
+    # matters, since a lane dispatched with no subject tags converges the whole
+    # site. The guard that refuses it was itself unproved: deleting it left this
+    # file green, because the case above re-classifies immediately before
+    # writing and so can never reach it.
+    stale = Dir.chdir(root) do
+      selection = ClassifyChanges.classify(
+        ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+        base: komga_head, head: fall_open_head
+      )
+      ClassifyChanges.classify(["README.md"])
+      begin
+        ClassifyChanges.write_github_outputs(selection, StringIO.new)
+        nil
+      rescue RuntimeError => e
+        e.message
+      end
+    end
+    check(failures, stale&.include?("does not match the resolved subject"),
+          "writing a selection beside a later classification's subject must be refused, got " \
+          "#{stale.inspect}")
   end
 end
 

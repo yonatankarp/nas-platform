@@ -928,6 +928,20 @@ check(failures,
 check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) == [],
       "an inert change must dispatch no suite")
 
+# The floor under UPGRADE_SUITES, for the reason FULL_RUN_SUITES and
+# IDEMPOTENCE_SHARD_SUITES have theirs: emptying this list to %w[] leaves both
+# the upgrade argv sweep and the empty-tags refusal check running over nothing
+# while this file still prints that every check passed -- green, and faster,
+# which is the shape the sharding section of CLAUDE.md is entirely about. The
+# list is also asserted to be a subset of the suite table rather than a set of
+# names this file invented.
+check(failures, UPGRADE_SUITES == %w[upgrade],
+      "UPGRADE_SUITES must name exactly the upgrade lane, found #{UPGRADE_SUITES.inspect}: an " \
+      "emptied list stops the argv sweep below covering the one suite it was added for")
+check(failures, (UPGRADE_SUITES - ClassifyChanges::SUITES.values).empty?,
+      "UPGRADE_SUITES names a suite tests/ci/suites.conf does not: " \
+      "#{(UPGRADE_SUITES - ClassifyChanges::SUITES.values).inspect}")
+
 suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "suites must check out the repository with the pinned action")

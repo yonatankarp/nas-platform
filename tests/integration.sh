@@ -698,7 +698,18 @@ suite_pull_images() {
   # comment inside the loop exists to report -- caught by
   # tests/integration_suite_test.sh, which plants a missing compose.yml and
   # requires the pre-pull to refuse. The caller sorts -u, so order is free.
-  [ -z "$upgrade_base_image" ] || printf '%s\n' "$upgrade_base_image"
+  #
+  # Gated on the SUITE, not merely on the value being set. The workflow puts both
+  # upgrade inputs on the step environment of every matrix leg -- there is one
+  # step -- so without this gate the beszel lane pulls the Kapowarr base image,
+  # measured with a stub docker under INTEGRATION_PREPULL_ONLY=1. That is two
+  # wasted pulls on a routed bump and twenty-five on a fall-open, against a
+  # Docker Hub allowance of 200 per six hours that a full matrix already spends
+  # about 66 of -- and a rate-limited pull REDS the leg, so it converts a cost
+  # into a possible red on lanes with nothing to do with the upgrade.
+  if [ "$suite" = upgrade ] && [ -n "$upgrade_base_image" ]; then
+    printf '%s\n' "$upgrade_base_image"
+  fi
   printf '%s\n' "$service_image_sources" | while read -r service_tag service_dir; do
     [ -n "$service_tag" ] || continue
     # An empty tag list means the whole play runs, so every implemented service

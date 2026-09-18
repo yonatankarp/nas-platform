@@ -1112,6 +1112,24 @@ unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
 assert_toolchain_pull_set "$({ compose_images kapowarr
                                printf '%s\n' "$upgrade_base_fixture"; } | sort -u)"
 
+# ... and NO other lane pulls it, however the inputs reach them. The workflow has
+# one integration step, so both upgrade inputs sit on the step environment of
+# every matrix leg; a pre-pull gated on the value being set rather than on the
+# suite made the beszel lane fetch the Kapowarr base image. Two wasted pulls on a
+# routed bump, twenty-five on a fall-open, against an allowance a full matrix
+# already spends a third of -- and a rate-limited pull reds the leg it happens
+# on, which would be a lane with nothing to do with the upgrade.
+INTEGRATION_UPGRADE_SERVICE=kapowarr \
+  INTEGRATION_UPGRADE_BASE_IMAGE=$upgrade_base_fixture \
+  run_prepull 0 4 --suite beszel
+unset INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
+[ "$prepull_status" -eq 0 ] ||
+  prepull_fail "the beszel pre-pull failed with the upgrade inputs present ($prepull_status)"
+if grep -qxF "$upgrade_base_fixture" "$pull_log"; then
+  prepull_fail 'a non-upgrade lane pulled the upgrade base image'
+fi
+assert_toolchain_pull_set "$({ compose_images beszel; } | sort -u)"
+
 # The pre-pull fetches image_pull_width images at once, and the input is what
 # says how many. Serial it was 272 seconds of the smoke lane's 1151 -- 33 images,
 # one at a time -- so the property is worth an assertion of its own rather than a
