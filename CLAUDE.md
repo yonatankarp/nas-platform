@@ -146,11 +146,32 @@ Three things about it are worth knowing before changing it:
   lane that converges, migrates and asserts nothing is green while proving less
   than the fresh-install lanes it exists to complement. Per-service seeds are
   irreducibly bespoke — different stores behind different APIs — so adding one is
-  one new file and no list edits.
+  one new file and no list edits. `tests/contract_upgrade_seed_test.rb` puts a
+  stated floor under that derivation and requires each basename to be all three
+  of the names it is used as — a `services/` directory, a
+  `tests/contracts/<name>.sh` wrapper and a manifest service directory — because
+  they diverge for `paperless-ngx` and a subject that diverged would resolve
+  nothing and never dispatch.
 
-It is off for `--full` and off when routing falls open, in both cases because
-neither has a base revision to give it. So the nightly does not run it, and only
-a routed pull request or the merge that lands it does.
+**What switches it off is the absence of a base revision, and nothing else.**
+`--full` and a `--files` classification have none, so the nightly and
+`workflow_dispatch` do not run it. A **fall-open does** have one, and a
+fall-open whose diff moved a subject's pin dispatches the lane like any other
+selection — it already runs 25 legs, so one more is marginal, and forcing it off
+there is what made the lane undispatchable on every pull request that also
+touched an unmapped path, including the one that introduced it.
+
+**One subject per run, and a human pull request can exceed that.** The
+classifier emits the first subject whose pin moved, in `UPGRADE_SUBJECTS` order,
+so a diff moving two of them proves the first. Renovate cannot produce such a
+diff — #771's batch group excludes both of these images — but a hand-written
+pull request bumping Bindery and Kapowarr together can, and it would prove one
+of them.
+
+**#671's shutdown half is not covered.** An upgrade must stop the old container,
+so its exit code and duration ought to be observable, but Compose removes that
+container as part of the same recreate and nothing in this lane is positioned to
+read it first. The migration half is what this lane proves.
 
 **A rollback reds this lane, and that is the guard rather than a defect.** A
 revert or a Renovate rollback makes the base newer than the head, so the
@@ -161,8 +182,12 @@ a pin older than one that has already run. The lane therefore goes red on the
 pull request that is the *correct* fix for a bad migration, with a message about
 that guard and not about the store. It is left that way deliberately: comparing
 versions across arbitrary tags is exactly what that role exists to do, and a
-direction check in the classifier would be a second, worse copy of it. Read the
-refusal literally and merge past the lane.
+direction check in the classifier would be a second, worse copy of it. **What
+that costs is a ruleset bypass, not a click**: `validate` aggregates the
+`suites` result, `validate` is the required check on `main`, and the
+repository-admin bypass on that ruleset is `always` — so merging past this lane
+means an admin taking that bypass, which is the same cost as merging past any
+other red leg.
 
 ### Deploying / reviewing
 
