@@ -135,7 +135,11 @@ Three things about it are worth knowing before changing it:
   by `tests/ci/classify_changes.rb` from the same diff it routes on. The base
   cannot be read from inside the lane: the `suites` job checks out at
   `actions/checkout`'s default depth of 1, unlike `changes`, `static`, `mutation`
-  and `reconciliation`.
+  and `reconciliation`. **Its tags are its subject's, on an `upgrade_tags` output
+  of their own**, never the run's `selected_tags`: that is the union of every
+  tagged lane, and a fall-open empties it — which would send this lane down the
+  untagged branch and converge the whole site twice for a one-service proof. The
+  workflow refuses an empty value rather than degrading to it.
 - **A repin is two commits, not two file writes.** `deployment_bundle` keys its
   immutable release on `platform_release_id` and refuses to mutate a release
   `current` already points at, so rewriting `compose.yml` without moving HEAD is

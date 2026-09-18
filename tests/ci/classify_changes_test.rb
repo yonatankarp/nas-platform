@@ -422,7 +422,8 @@ if defined?(ClassifyChanges)
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
     check(failures,
           service_output.string.end_with?(
-            "selected_tags=#{expected_tags}\nupgrade_service=\nupgrade_base_image=\n"
+            "selected_tags=#{expected_tags}\nupgrade_service=\nupgrade_base_image=\n" \
+            "upgrade_tags=\n"
           ),
           "#{path} emitted the wrong prerequisite tag plan: #{service_output.string.inspect}")
   end
@@ -467,6 +468,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,beszel,dozzle
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
   check(failures, io.string == expected_output,
         "GitHub output or prerequisite tag ordering was incorrect: #{io.string.inspect}")
@@ -509,6 +511,7 @@ if defined?(ClassifyChanges)
     selected_tags=
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
         "--full output must leave selected_tags empty: #{full_output.string.inspect}")
@@ -552,6 +555,7 @@ if defined?(ClassifyChanges)
     selected_tags=
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
 
   shared_output = StringIO.new
@@ -608,6 +612,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,paperless
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
@@ -657,6 +662,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
 
@@ -700,6 +706,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,kapowarr
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
 
@@ -743,6 +750,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,pinchflat
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
@@ -790,6 +798,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,arr,trailarr
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
 
@@ -837,6 +846,7 @@ if defined?(ClassifyChanges)
     selected_tags=host_prep,deployment_bundle,arr,jellyfin,seerr
     upgrade_service=
     upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Seerr-only output must retain its exact tag plan: #{seerr_output.string.inspect}")
 
@@ -845,7 +855,9 @@ if defined?(ClassifyChanges)
   check(failures, io.string.start_with?("static=true\ndocs=true\n"),
         "the README is read by the policy set and by the link gate, so it must select both")
   check(failures,
-        io.string.end_with?("suites=[]\nselected_tags=\nupgrade_service=\nupgrade_base_image=\n"),
+        io.string.end_with?(
+          "suites=[]\nselected_tags=\nupgrade_service=\nupgrade_base_image=\nupgrade_tags=\n"
+        ),
         "protected operator docs must select static CI and emit empty selected_tags")
   # The CI matrix job skips on exactly this literal, so it has to stay compact.
   check(failures, io.string.include?("suites=[]\n"),
@@ -1053,6 +1065,35 @@ if defined?(ClassifyChanges)
     end
     check(failures, !unmapped_only.fetch("upgrade"),
           "a fall-open that moved no subject pin must not dispatch the upgrade lane")
+
+    # And the lane's tags are its SUBJECT's, not the run's. This is the half the
+    # fall-open fix would otherwise have broken: a fall-open selects `foundation`,
+    # which empties selected_tags, so a lane reading that output would converge
+    # the whole site twice for a one-service proof -- the idempotence lane's cost,
+    # on the very selection a Renovate bump lands in whenever it touches anything
+    # unmapped.
+    # Re-classified rather than reusing `fall_open` above, because
+    # write_github_outputs reads the subject classify last resolved: the
+    # unmapped-only case between them resolved none, and pairing that with this
+    # selection is exactly what the refusal inside it now catches.
+    fall_open_output = StringIO.new
+    Dir.chdir(root) do
+      ClassifyChanges.write_github_outputs(
+        ClassifyChanges.classify(
+          ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+          base: komga_head, head: fall_open_head
+        ),
+        fall_open_output
+      )
+    end
+    check(failures, fall_open_output.string.include?("selected_tags=\n"),
+          "a fall-open must still empty selected_tags for the lanes that read it")
+    check(failures,
+          fall_open_output.string.include?(
+            "upgrade_tags=host_prep,deployment_bundle,kapowarr\n"
+          ),
+          "the upgrade lane must carry its subject's own tags through a fall-open, got " \
+          "#{fall_open_output.string[/^upgrade_tags=.*$/].inspect}")
   end
 end
 

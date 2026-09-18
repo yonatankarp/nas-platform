@@ -469,6 +469,13 @@ module ClassifyChanges
       base_image = pinned_image(base, compose)
       head_image = pinned_image(head, compose)
       next if base_image.nil? || head_image.nil? || base_image == head_image
+      # A subject whose own lane has no tags could only be converged by
+      # converging the whole site, which is the idempotence lane's cost for a
+      # one-service proof. Both subjects today are tagged lanes, and
+      # tests/contract_upgrade_seed_test.rb holds the roster to names that are
+      # also manifest directories, so this is a closed door rather than a filter
+      # that silently drops things.
+      next unless SERVICE_TAGS.key?(service.tr("-", "_"))
 
       return [service, base_image]
     end
@@ -545,9 +552,28 @@ module ClassifyChanges
                           .uniq
            end
     io.puts "selected_tags=#{tags.join(',')}"
+    # The subject is the one output that does not come from the selection this is
+    # handed, and that is a coupling worth refusing rather than documenting:
+    # classify resolves it into @upgrade_subject, so a caller that classifies
+    # twice and then writes would emit the LAST classification's subject beside
+    # the FIRST one's lanes. Silent, and wrong in the direction that matters --
+    # a lane dispatched with no subject tags. Caught the first time this pairing
+    # was written, in tests/ci/classify_changes_test.rb.
+    unless selection.fetch(UPGRADE_LANE) == !@upgrade_subject.nil?
+      raise "upgrade selection #{selection.fetch(UPGRADE_LANE)} does not match the resolved " \
+            "subject #{@upgrade_subject.inspect}: write_github_outputs must be given the " \
+            "selection classify resolved that subject for"
+    end
     service, base_image = @upgrade_subject
     io.puts "upgrade_service=#{service}"
     io.puts "upgrade_base_image=#{base_image}"
+    # The upgrade lane's tags are its SUBJECT's, never the run's. selected_tags
+    # is the union of every tagged lane the run selected, and a fall-open empties
+    # it entirely -- which would send this lane down the untagged branch and
+    # converge the whole site twice for a one-service proof. That is not a corner
+    # case: a fall-open is exactly the selection a Renovate bump lands in
+    # whenever it touches anything unmapped.
+    io.puts "upgrade_tags=#{service ? SERVICE_TAGS.fetch(service.tr('-', '_')).join(',') : ''}"
   end
 
   def suites(selection)

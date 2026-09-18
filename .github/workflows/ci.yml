@@ -54,6 +54,7 @@ jobs:
       selected_tags: ${{ steps.classify.outputs.selected_tags }}
       upgrade_service: ${{ steps.classify.outputs.upgrade_service }}
       upgrade_base_image: ${{ steps.classify.outputs.upgrade_base_image }}
+      upgrade_tags: ${{ steps.classify.outputs.upgrade_tags }}
 
     steps:
       - name: Check out repository
@@ -934,9 +935,26 @@ jobs:
           # without both.
           INTEGRATION_UPGRADE_SERVICE: ${{ needs.changes.outputs.upgrade_service }}
           INTEGRATION_UPGRADE_BASE_IMAGE: ${{ needs.changes.outputs.upgrade_base_image }}
+          # The upgrade lane's tags are its SUBJECT's and not the run's:
+          # SELECTED_TAGS is the union of every tagged lane, and a fall-open
+          # empties it, which would converge the whole site twice for a
+          # one-service proof.
+          UPGRADE_TAGS: ${{ needs.changes.outputs.upgrade_tags }}
         run: |
           case "$SUITE" in
-            smoke|upgrade|idempotence-check)
+            upgrade)
+              # Refused rather than degraded. An empty value here is the
+              # untagged branch by another route, and the failure it would
+              # produce -- a 30-minute lane converging the whole site -- reads
+              # as the lane being slow rather than as a classifier that emitted
+              # no subject tags.
+              if [ -z "$UPGRADE_TAGS" ]; then
+                echo 'the upgrade lane was dispatched with no subject tags' >&2
+                exit 1
+              fi
+              tests/integration.sh --suite "$SUITE" --tags "$UPGRADE_TAGS" site.yml
+              ;;
+            smoke|idempotence-check)
               if [ -n "$SELECTED_TAGS" ]; then
                 tests/integration.sh --suite "$SUITE" --tags "$SELECTED_TAGS" site.yml
               else
