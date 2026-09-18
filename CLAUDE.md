@@ -149,13 +149,21 @@ Three things about it are worth knowing before changing it:
   with actual incidents. A subject with no such program is refused, because a
   lane that converges, migrates and asserts nothing is green while proving less
   than the fresh-install lanes it exists to complement. Per-service seeds are
-  irreducibly bespoke — different stores behind different APIs — so adding one is
-  one new file and no list edits. `tests/contract_upgrade_seed_test.rb` puts a
-  stated floor under that derivation and requires each basename to be all three
-  of the names it is used as — a `services/` directory, a
-  `tests/contracts/<name>.sh` wrapper and a manifest service directory — because
-  they diverge for `paperless-ngx` and a subject that diverged would resolve
-  nothing and never dispatch.
+  irreducibly bespoke — different stores behind different APIs — so there is no
+  shared seeder to build. **Adding a third subject is four edits**, and they are
+  named here because this sentence used to claim one:
+  1. `tests/contracts/<svc>-upgrade.rb`, the seed and verify program.
+  2. `EXPECTED_UPGRADE_SUBJECTS` in `tests/contract_upgrade_seed_test.rb` — the
+     stated floor under the derivation, closed both ways. It also requires each
+     basename to be all three of the names it is used as: a `services/`
+     directory, a `tests/contracts/<name>.sh` wrapper and a manifest service
+     directory. Those diverge for `paperless-ngx`, and a subject that diverged
+     would resolve nothing and never dispatch.
+  3. `tests/contracts/<svc>.sh` — the mode guard widened to `seed|verify`, the
+     static half skipped in those modes, and the dispatch arm.
+  4. `tests/<svc>_contract_test.rb` — `MODE_REFUSAL`, the refused-mode sweep
+     (`verify` becomes an accepted mode and has to leave it), and the
+     `"  static|run) ;;"` plant string, all of which the wrapper edit moves.
 
 **What switches it off is the absence of a base revision, and nothing else.**
 `--full` and a `--files` classification have none, so the nightly and
