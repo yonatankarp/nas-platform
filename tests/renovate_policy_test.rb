@@ -318,7 +318,7 @@ if batching_rule
         "lane and all six idempotence shards, so batching one in costs more than the group saves")
 
   # All negations and nothing else, which is two properties in one assertion,
-  # and #777 put the lint job's renovate-config-validator underneath only one of
+  # and #780 put the lint job's renovate-config-validator underneath only one of
   # them. The half the validator now owns is "*": it refuses a
   # matchPackageNames holding "*" alongside other patterns, refuses the whole
   # config for it, and exits non-zero -- which is #775, where this rule shipped
