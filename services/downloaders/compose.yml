@@ -131,6 +131,24 @@ services:
       # Parsing ~1.4GB of signatures takes a minute or two on this host, and a
       # clamd still doing it is not broken. The shared 60s start period would
       # report it unhealthy before it had a chance to answer.
+      #
+      # 240s is deliberately *longer* than the 180s platform_compose_wait_timeout
+      # this stack deploys under, which looks backwards and is the safer of the
+      # two failures. Inside its start period a slow container reports
+      # Health=starting and Status=running, which is neither of the two things
+      # roles/container_health selects on (status=restarting, health=unhealthy),
+      # so the deployment fails on Compose's own wait and leaves clamd running
+      # and still parsing. The poller's next tick five minutes later finds it
+      # healthy and converges. Shorten this below the wait and the opposite
+      # happens: clamd is declared unhealthy while it is merely slow,
+      # container_health force-recreates it, the parse restarts from zero and the
+      # next run is no more likely to finish than the last.
+      #
+      # Whether clamd actually needs more than 180s here has not been measured --
+      # it is one core of a Celeron N5105 against a database this pin will keep
+      # growing. If the first converge after this lands reds at the downloaders
+      # role on a wait timeout, that is this paragraph and not a fault; the tick
+      # after it should be green.
       start_period: 240s
 
   unpackerr:
