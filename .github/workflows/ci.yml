@@ -419,6 +419,47 @@ jobs:
           ansible-playbook generate-secrets.yml --syntax-check
           ansible-playbook -i inventory/local.yml install-production-auto-deploy.yml --syntax-check
 
+      # Nothing in this repository has ever validated renovate.json against
+      # Renovate's own schema, and #775 is what that cost. #771 shipped a
+      # matchPackageNames holding "*" alongside other patterns; Renovate refuses
+      # that, and it refuses the WHOLE config, so the bot stopped opening pull
+      # requests repository-wide -- its own dependency updates included -- the
+      # day after it landed. Both checks that read the file passed on it: JSON
+      # parsing only proves it parses, and tests/renovate_policy_test.rb asserts
+      # hand-written properties, one of which actively REQUIRED the spelling
+      # Renovate rejects. Only Renovate knows Renovate's schema.
+      #
+      # A lint step rather than a tests/validate-policy.sh manifest line, for the
+      # reason ansible-lint is not one either: the gate's manifest is for
+      # programs this repository owns, and it runs offline, while this one is
+      # npm's and resolves `extends` presets. It lands in this job rather than in
+      # `static` because its verdict cannot vary by shard, which is the whole
+      # reason this job exists.
+      #
+      # The pin is the only version literal in this file that is not an action
+      # SHA; a custom manager in renovate.json tracks it, and
+      # tests/renovate_policy_test.rb asserts that coupling so it cannot float.
+      # No --strict: it fails on the pending "after 10pm and before 5am"
+      # schedule migration, which is a warning Renovate applies itself, and
+      # #775's defect is an ERROR that exits non-zero without it.
+      - name: Validate the Renovate configuration
+        run: |
+          renovate_pin=renovate@44.103.2
+          npx --yes --package "$renovate_pin" renovate-config-validator
+
+          # A check that has only ever passed proves nothing, and this one is
+          # bumped by a bot: a Renovate release demoting that refusal to a
+          # warning would leave this step green over a config Renovate rejects.
+          # So show it #775's exact spelling and require it to still fail.
+          # packageRules[-1] is that rule: tests/renovate_policy_test.rb asserts
+          # the batching group is last, so this plants on the rule #771 broke.
+          planted="$(mktemp -d)"
+          python3 -c 'import json,sys; c=json.load(open("renovate.json")); r=c["packageRules"][-1]; r["matchPackageNames"]=["*"]+r["matchPackageNames"]; json.dump(c,open(sys.argv[1],"w"))' "$planted/renovate.json"
+          if (cd "$planted" && npx --yes --package "$renovate_pin" renovate-config-validator); then
+            echo "renovate-config-validator accepted #775's config; it no longer guards against it" >&2
+            exit 1
+          fi
+
   docs:
     # These checks read Markdown and the working tree and nothing else, so they
     # run on a checkout and the Ruby the runner image ships rather than the

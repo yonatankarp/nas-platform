@@ -317,25 +317,37 @@ if batching_rule
         "requirements.yml and tests/integration.sh are unmapped paths that fall open to every " \
         "lane and all six idempotence shards, so batching one in costs more than the group saves")
 
-  # All negations and nothing else, which is two properties in one assertion.
-  # The original one is that the group reaches every image and narrows by
-  # negation: an explicit allowlist would silently omit every service added
-  # after it was written. The second arrived with #775. A negation list is also
-  # the only spelling Renovate ACCEPTS here -- it refuses a matchPackageNames
-  # holding "*" alongside other patterns, and it refuses the whole config, so
-  # the repository stops getting pull requests at all until the file parses.
-  # This rule shipped in #771 opening with "*" because this test required it to,
-  # and Renovate had stopped the day after. Behaviour is unchanged either way:
-  # matchRegexOrGlobList skips its positive-pattern check when there are no
-  # positive patterns, so ["!a"] and ["*", "!a"] resolve identically. Requiring
-  # all-negations is therefore the same reach as before and additionally the
-  # thing that keeps "*" from being put back for readability.
+  # All negations and nothing else, which is two properties in one assertion,
+  # and #777 put the lint job's renovate-config-validator underneath only one of
+  # them. The half the validator now owns is "*": it refuses a
+  # matchPackageNames holding "*" alongside other patterns, refuses the whole
+  # config for it, and exits non-zero -- which is #775, where this rule shipped
+  # in #771 opening with "*" because this test required it to and Renovate
+  # stopped repository-wide the day after. That half is no longer this
+  # assertion's to catch first.
+  #
+  # The half it does NOT own is the one that keeps this line here, and it is a
+  # measurement rather than a reading of the source: renovate-config-validator
+  # 44.103.2 accepts ["ghcr.io/linuxserver/sonarr", "!...", ...] with exit 0 and
+  # "Config validated successfully". A positive pattern that is not "*" is valid
+  # Renovate config, and it silently collapses this group's reach from every
+  # image except eleven to that one image -- while the exclusion-equality check
+  # below passes on it, because that one reads only the "!"-prefixed entries.
+  # So the property this assertion carries is the original one: the group
+  # reaches every image and narrows by negation, because an explicit allowlist
+  # would silently omit every service added after it was written. Dropping "*"
+  # cost nothing either way -- matchRegexOrGlobList skips its positive-pattern
+  # check when there are no positive patterns, so ["!a"] and ["*", "!a"] resolve
+  # identically -- and the validator, not this line, is now what stops "*" being
+  # put back for readability.
   names = Array(batching_rule["matchPackageNames"])
   check(failures, names.any? && names.all? { |name| name.start_with?("!") },
         "the batching group must be a list of negations and nothing else. It must narrow by " \
         "negation rather than name an allowlist, which would silently omit every service " \
-        "added after it was written -- and a bare \"*\" alongside those negations is the one " \
-        "spelling Renovate rejects outright, which stops pull requests repository-wide (#775)")
+        "added after it was written. A positive pattern that is not \"*\" passes " \
+        "renovate-config-validator and narrows this group to that one image; a bare \"*\" is " \
+        "the spelling the validator refuses outright, which stopped pull requests " \
+        "repository-wide (#775)")
   excluded = names.filter_map { |name| name.delete_prefix("!") if name.start_with?("!") }
   check(failures, excluded.to_set == GROUP_EXCLUDED_IMAGES,
         "the batching group's exclusions must equal the withheld set exactly. Missing: " \
@@ -411,6 +423,39 @@ controller_lines.grep(/\A[A-Za-z0-9][A-Za-z0-9._-]*==\d+\.\d+\.\d+\z/).each do |
   check(failures, controller_match_strings.any? { |pattern| pattern.match?(line) },
         "no Renovate custom manager tracks the controller pin #{line.inspect}")
 end
+
+# The renovate-config-validator pin in the lint job, held to the same rule as
+# the harness and controller pins above: a version this repository writes down
+# is a version a custom manager has to track, or it stops moving and nothing
+# says so until the pinned release leaves the registry. Both directions, because
+# each half fails silently on its own -- a pin the manager's regex no longer
+# matches is untracked while every other check stays green, and a manager whose
+# pin was deleted tracks nothing while still looking like coverage.
+WORKFLOW_PATH = File.join(ROOT, ".github", "workflows", "ci.yml")
+workflow_source = File.read(WORKFLOW_PATH)
+validator_pins = workflow_source.scan(/^\s*renovate_pin=renovate@\d+\.\d+\.\d+$/).map(&:strip)
+check(failures, validator_pins.length == 1,
+      "the lint job must carry exactly one renovate-config-validator pin, found " \
+      "#{validator_pins.inspect}")
+
+workflow_managers = Array(config["customManagers"]).select do |manager|
+  Array(manager["managerFilePatterns"]).any? do |pattern|
+    body = pattern.sub(%r{\A/}, "").sub(%r{/\z}, "")
+    Regexp.new(body).match?(".github/workflows/ci.yml")
+  end
+end
+workflow_match_strings = workflow_managers
+                         .flat_map { |manager| Array(manager["matchStrings"]) }
+                         .map { |source| Regexp.new(source) }
+check(failures, workflow_match_strings.any?,
+      "no Renovate custom manager reads .github/workflows/ci.yml, so the " \
+      "renovate-config-validator pin the lint job runs is tracked by nothing")
+validator_pins.each do |line|
+  check(failures, workflow_match_strings.any? { |pattern| pattern.match?(line) },
+        "no Renovate custom manager tracks the workflow pin #{line.inspect}")
+end
+check(failures, workflow_managers.all? { |manager| manager["datasourceTemplate"] == "npm" },
+      "the workflow pin must resolve against npm, which is where renovate ships")
 
 # Alpine package pins must be resolved from the release branch that supplies
 # the runner image. Repology can lag a new Alpine release and report no-result

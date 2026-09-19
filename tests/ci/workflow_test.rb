@@ -125,7 +125,8 @@ LINT_STEP_NAMES = [
   "Install Ansible tooling",
   "Check silent ephemeral vault generation",
   "Lint Ansible",
-  "Check playbook syntax"
+  "Check playbook syntax",
+  "Validate the Renovate configuration"
 ].freeze
 # The commands that job must still run, as whole lines of its joined run text.
 # Moving a check out of `static` and into a job of its own is only half a fix:
@@ -1179,6 +1180,20 @@ check(failures, lint_steps.none? { |step| step.key?("if") },
       "lint steps must be unconditional: the changes job is the only classifier, and a step " \
       "gated on anything else is a check that stopped running without the job reporting it")
 lint_commands = run_steps(lint_job)
+# The renovate-config-validator invocation, matched by shape rather than as a
+# literal. Every other command this job runs is pinned as a whole line, but this
+# one carries a version Renovate bumps, and a literal would mean a bot pull
+# request that reds this test until somebody edits it by hand -- which is how a
+# tracked pin stops being tracked. What has to hold is that the validator still
+# runs and that it still runs pinned: an unpinned invocation is the one floating
+# dependency in the tree, and a Renovate release tightening a rule would then red
+# CI with no diff to point at.
+check(failures, lint_commands.match?(/renovate_pin=renovate@\d+\.\d+\.\d+/),
+      "the lint job must pin the renovate-config-validator version")
+check(failures, lint_commands.include?('npx --yes --package "$renovate_pin" renovate-config-validator'),
+      "the lint job must validate renovate.json against Renovate's own validator: parsing the " \
+      "file and asserting hand-written properties both passed on the config that stopped " \
+      "Renovate repository-wide (#775)")
 LINT_CHECK_COMMANDS.each do |command|
   check(failures, lint_commands.include?(command),
         "the lint job must retain #{command.inspect}")
