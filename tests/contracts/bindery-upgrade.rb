@@ -5,12 +5,6 @@
 #
 # usage: bindery-upgrade.rb (seed|verify)
 #
-# TWO ROWS IN TWO TABLES (#781). A user, and a settings row. One row proves the
-# store opened and was not rebuilt; it does not prove a migration that rewrites
-# one table kept the others, which is the shape both recorded incidents had --
-# #671's migration 47 moved a value between tables and deleted the row it came
-# from.
-#
 # WHY A USER, AND WHY THIS ROUTE.
 #
 # The seed has to satisfy three things at once, and most of Bindery's surface
@@ -39,60 +33,50 @@
 # cannot collide with its own previous seed (a duplicate user is a 500 here,
 # not a no-op).
 #
-# WHY A SETTINGS ROW BESIDE IT, AND WHY A KEY BINDERY HAS NO OPINION ABOUT.
+# WHY THERE IS NO SECOND ROW, WHICH IS A MEASUREMENT AND NOT AN OMISSION.
 #
-# `settings` is a different table reached by a different route, and both halves
-# of its shape are demonstrated rather than assumed: roles/bindery reads
-# `GET /setting` as a list of {key, value} pairs and writes
-# `PUT /setting/<key> {"value": ...}` on every converge, and
-# docs/dossier-bindery.md records that PUT as a 200 upsert.
+# #781 asked each seed to be representative of what its store actually holds,
+# and one row in `users` does not prove a migration that rewrites one table kept
+# the others. #785 therefore added a second row in `settings`, through the
+# generic route roles/bindery already uses -- `PUT /setting/<key>`, read back
+# through `GET /setting` -- under `platform.upgradeCanary`, a key this platform
+# invented so that a version legitimately retiring one of its OWN settings could
+# never be mistaken here for a migration that lost a row.
 #
-# The key is one this platform invents. An observed key such as
-# `authors.bulkRefresh` would carry a false-red risk that has already happened
-# once on this platform: a version that legitimately drops a setting it no
-# longer has is indistinguishable from a migration that lost the row, and this
-# lane gates automerge, so that red would land on a Renovate pull request and
-# send its reader hunting for corruption. A key no Bindery version has ever
-# heard of cannot be dropped for a reason of its own.
+# Bindery refuses that write. Measured on the first real dispatch, the upgrade
+# lane of pull request #779 (bindery v1.36.2 -> v1.37.0, 2026-09-19):
 #
-# The write is SELF-VALIDATING for the reason the Kapowarr seed's rotation is:
-# it is read back and refused unless the store actually holds it, so a route
-# that has moved, or a key Bindery declines to upsert, fails at seed with a
-# message saying so instead of producing a verify that had nothing to check.
+#     PUT /api/v1/setting/platform.upgradeCanary  ->  HTTP 400
+#     GET /api/v1/setting                          ->  the key is absent
 #
-# THAT SECOND CASE IS NOT HYPOTHETICAL, and this is the one risk on a first
-# dispatch worth naming before it is met. Nothing in the tree demonstrates that
-# this route accepts an INVENTED key: the platform has only ever written
-# `autoGrab.enabled` and `telemetry.enabled` through it, both keys Bindery
-# knows, and docs/dossier-bindery.md's "Reproducing the confirmations" lists no
-# settings handler among the upstream sources read, so an unknown-key write was
-# never probed. What the tree DOES record is that the route is not a blind
-# upsert: roles/bindery/tasks/reconcile_audiobookshelf.yml and the dossier both
-# confirm `PUT /setting/abs.api_key` answering 403 with a 404 on the GET,
-# because secret settings live behind their own route. That is a narrower
-# refusal than per-key validation of arbitrary keys -- it says secrets are
-# special, not that unknown keys are rejected -- but it is enough that "this
-# route upserts anything" is an assumption rather than a finding.
+# So the generic settings route validates the key and declines one it does not
+# define. The tree had already recorded the neighbouring half -- secret settings
+# answer 403 there, because they sit behind their own route
+# (roles/bindery/tasks/reconcile_audiobookshelf.yml, and the dossier's
+# "Confirmed") -- and this is the rest of it: the route is not an upsert of
+# arbitrary keys in either direction.
 #
-# If it turns out to be rejected, or if GET serializes a known-key struct rather
-# than dumping the table, this reds at SEED on every Bindery Renovate pull
-# request until the key is changed or this half is dropped -- on the very lane
-# whose purpose is gating that automerge. The read-back is what makes that a
-# loud, named failure at the seed rather than a hollow verify, and the failure
-# message below names the 403 so its reader starts in the right place instead of
-# hunting a migration that did nothing wrong.
+# That closes the invented-key route rather than suggesting a different key. An
+# OBSERVED key would be accepted, but it reintroduces exactly what inventing one
+# avoided: a version that drops a setting it no longer has is indistinguishable
+# from a migration that lost the row, and this lane gates automerge, so that
+# false red lands on a Renovate pull request and sends its reader hunting for
+# corruption. Trading a measured refusal for a speculative false red is not an
+# improvement. Root folders are the other table within reach and are refused too
+# -- roles/bindery's own verification asserts the root list equals exactly its
+# two declared destinations, and it runs inside the upgrade converge.
 #
-# Two roots folders would have been the third table and are not reachable:
-# roles/bindery's own verification asserts the root list equals exactly the two
-# declared destinations, and it runs inside the upgrade converge.
+# So Bindery's seed is one user, for the same kind of reason Kapowarr's is one
+# API key: every other table is behind a constraint, and here the constraint was
+# measured rather than argued. Reopening this means finding a table reachable
+# without inventing a key or guessing a value -- not picking a different key.
 #
-# WHAT VERIFY PROVES, AND WHAT IT DOES NOT. It proves that two rows the base
-# image wrote, in two tables, are still there -- the user with the same
-# database-assigned id -- after the head image opened the store. It does not
-# prove the migration preserved anything this seeder did not write, and it
-# cannot: a migration that is lossy only for books is invisible to a lane that
-# seeds a user and a setting. That is the second of the three limits issue #773
-# states, narrowed rather than closed.
+# WHAT VERIFY PROVES, AND WHAT IT DOES NOT. It proves that a row the base image
+# wrote is still there, with the same database-assigned id, after the head image
+# opened the store. It does not prove the migration preserved anything this
+# seeder did not write, and it cannot: a migration that is lossy only for books
+# is invisible to a lane that seeds a user. That is the second of the three
+# limits issue #773 states, narrowed rather than closed.
 
 require "fileutils"
 require "json"
@@ -110,11 +94,6 @@ BASE = URI("http://127.0.0.1:#{Integer(ENV.fetch('PLATFORM_BINDERY_PORT'), 10)}"
 # real lane exercises this write, so a caller that set the variable somewhere
 # else would find out only after a full base converge.
 RECORD = File.join(ENV.fetch("PLATFORM_REPORT_ROOT"), "upgrade-bindery.json")
-
-# The settings key this program owns. Namespaced under a prefix no Bindery
-# version uses, so that a version which legitimately retires one of its own
-# settings cannot be mistaken here for a migration that lost a row.
-SETTING_KEY = "platform.upgradeCanary"
 
 def fail_contract(message)
   warn "Bindery upgrade contract failed: #{message}"
@@ -138,24 +117,6 @@ def post(path, payload, headers)
                                 headers.merge("Content-Type" => "application/json"))
   message.body = JSON.generate(payload)
   request(message)
-end
-
-def put(path, payload, headers)
-  message = Net::HTTP::Put.new(URI.join(BASE, path),
-                               headers.merge("Content-Type" => "application/json"))
-  message.body = JSON.generate(payload)
-  request(message)
-end
-
-# The settings list, as roles/bindery reads it on every converge: a list of
-# {key, value} pairs, reduced here to the one key this program owns. `nil` means
-# absent, which is what a lost row looks like and is reported as such by the
-# caller rather than raising here.
-def canary_setting(headers, key)
-  settings = parsed(get("/api/v1/setting", headers), "settings")
-  fail_contract("Bindery did not answer a list of settings") unless settings.is_a?(Array)
-  row = settings.find { |entry| entry.is_a?(Hash) && entry["key"] == key }
-  row && row["value"]
 end
 
 def parsed(response, what)
@@ -219,30 +180,9 @@ when "seed"
   fail_contract("Bindery did not store exactly one canary user") unless seeded.length == 1
   id = seeded.first["id"]
   fail_contract("Bindery assigned the canary user no id") if id.nil?
-
-  # The second table. SETTING_KEY is this platform's own, so nothing but a lost
-  # row can remove it.
-  setting_value = SecureRandom.hex(16)
-  written = put("/api/v1/setting/#{SETTING_KEY}", { "value" => setting_value }, headers)
-  stored = canary_setting(headers, SETTING_KEY)
-  fail_contract(
-    "Bindery did not store the canary setting #{SETTING_KEY} (the upsert answered HTTP " \
-    "#{written.code} and a read back returned #{stored.inspect}), so this lane would have " \
-    "nothing in that table the base image wrote. READ THIS BEFORE BLAMING THE BUMP: the " \
-    "generic settings route is known not to be a blind upsert -- PUT /setting/abs.api_key " \
-    "answers 403 with a 404 on the GET, because secret settings sit behind their own route " \
-    "-- and no probe recorded in docs/dossier-bindery.md has ever written a key Bindery does " \
-    "not itself define. So an HTTP 4xx here, or a 200 whose value does not read back, is " \
-    "most likely this seeder's invented key being refused or not surfaced by GET /setting, " \
-    "not a migration that lost a row. If that is what happened, the fix is to this seed, and " \
-    "it is not a reason to hold the image"
-  ) unless stored == setting_value
-
   FileUtils.mkdir_p(File.dirname(RECORD))
-  File.write(RECORD, JSON.generate("username" => username, "id" => id,
-                                   "setting_value" => setting_value))
-  puts "bindery upgrade seed: canary user #{username} stored as id #{id}, and " \
-       "#{SETTING_KEY} stored beside it"
+  File.write(RECORD, JSON.generate("username" => username, "id" => id))
+  puts "bindery upgrade seed: canary user #{username} stored as id #{id}"
 when "verify"
   fail_contract("no Bindery upgrade seed record at #{RECORD}") unless File.file?(RECORD)
 
@@ -262,17 +202,6 @@ when "verify"
     "the seeded Bindery canary user survived under id #{survivors.first['id']} rather than " \
     "#{record.fetch('id')}, so the store was rebuilt rather than migrated"
   ) unless survivors.first["id"] == record.fetch("id")
-
-  # The second table, asserted separately: a migration that rewrites `settings`
-  # and leaves `users` alone passes every assertion above it.
-  stored = canary_setting(headers, SETTING_KEY)
-  fail_contract(
-    "the seeded Bindery canary setting #{SETTING_KEY} did not survive the migration: the " \
-    "store now holds #{stored.inspect} for that key rather than the value the base image " \
-    "wrote. No Bindery version knows this key, so it cannot have been dropped for a reason " \
-    "of its own -- the users table above it survived, so this is one table lost and not the " \
-    "store"
-  ) unless stored == record.fetch("setting_value")
   puts "bindery upgrade verify: canary user #{record.fetch('username')} survived as " \
-       "id #{record.fetch('id')}, and #{SETTING_KEY} survived beside it"
+       "id #{record.fetch('id')}"
 end
