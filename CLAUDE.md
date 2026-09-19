@@ -175,10 +175,12 @@ touched an unmapped path, including the one that introduced it.
 
 **One subject per run, and a human pull request can exceed that.** The
 classifier emits the first subject whose pin moved, in `UPGRADE_SUBJECTS` order,
-so a diff moving two of them proves the first. Renovate cannot produce such a
-diff — #771's batch group excludes both of these images — but a hand-written
-pull request bumping Bindery and Kapowarr together can, and it would prove one
-of them.
+so a diff moving two of them proves the first. Renovate is unlikely to produce
+such a diff — #771's batch group excludes Kapowarr, and included Bindery only
+from #781, when Bindery's automerge hold came off and it rejoined the batch —
+so a batch can now move Bindery's pin, but Kapowarr's never travels with it.
+A hand-written pull request bumping Bindery and Kapowarr together still can,
+and it would prove one of them.
 
 **The lane ends by stopping the head container and reading its exit code
 (#781).** That is the shutdown half of #671, where a patch whose migration was
@@ -396,8 +398,16 @@ crash loop rather than a failure a play reports. #511 is what that costs — a
 Bindery application **minor** migrated the store to `schema_migrations` 81, the
 release went back to a pin that knew 1..80, and the host sat behind it for three
 days with every converge failing at that role and the poller not advancing. Two
-controls, at opposite ends. `renovate.json` withholds `major`, `minor` and
-`patch` for those images **from automerge** — a digest refresh on an unchanged
+controls, at opposite ends. **Bindery is no longer one of the images that rule
+withholds (#781)**, and the exception is worth reading precisely, because its pin
+is still as one-way as the rest: what changed is that the `upgrade` lane now runs
+#511's exact mode — base pin, seeded row, repin, migrate, read back, and a clean
+stop — on the pull request that proposes the bump, so its minors and patches
+automerge on a green lane while its majors still wait for a human. Kapowarr stays
+withheld although the same lane can take it as a subject, because it never has:
+every real execution has been Bindery, and #671's shutdown race is uncovered for
+both. `renovate.json` withholds `major`, `minor` and
+`patch` for the remaining images **from automerge** — a digest refresh on an unchanged
 tag moves no version and stays automerged, except for Immich, which is withheld
 not by that rule but by its own manual-coupling rule, for every update type and
 so digests too — which is a wider scope than the

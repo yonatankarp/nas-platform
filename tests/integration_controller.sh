@@ -917,13 +917,23 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # for that subject may be pre-existing behaviour rather than the bump,
           # which is what the failure message says.
           #
-          # It was not Bindery's only first-dispatch risk, and the other one has
-          # since been settled the hard way: #785's settings canary wrote a key
-          # Bindery does not define, the route answered HTTP 400 on #779's real
-          # run, and tests/contracts/bindery-upgrade.rb now records that as the
-          # reason its seed is one row. THIS arm is the half that remains
-          # unmeasured for Bindery, so a red here is still the first thing to
-          # rule out against pre-existing behaviour rather than the bump.
+          # BOTH OF BINDERY'S FIRST-DISPATCH RISKS HAVE SINCE BEEN SETTLED, and
+          # the paragraph above is kept because it still describes every subject
+          # that has not run yet -- Kapowarr included. #785's settings canary
+          # wrote a key Bindery does not define and the route answered HTTP 400
+          # on #779's real run; tests/contracts/bindery-upgrade.rb records that
+          # as the reason its seed is one row. And this arm ran for Bindery on
+          # the same pull request afterwards:
+          #
+          #     UPGRADE_STOPPED_CONTAINER: ...-bindery exited:0 against a
+          #     configured StopTimeout of <nil>
+          #
+          # So Bindery's clean stop is a measurement now and not an expectation,
+          # and <nil> is the reporting earning its place on its first real run:
+          # it declares no stop_grace_period, so the window was the daemon's ten
+          # seconds and the exit was well inside it. That is one container off
+          # the eleven CLAUDE.md counts -- in this lane, against this pin, which
+          # is a narrower claim than the NAS-side one that paragraph makes.
           upgrade_project=$integration_project_namespace-$upgrade_service
           upgrade_running=$(docker ps \
             --filter "label=com.docker.compose.project=$upgrade_project" \
