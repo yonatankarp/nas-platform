@@ -454,7 +454,15 @@ jobs:
           # packageRules[-1] is that rule: tests/renovate_policy_test.rb asserts
           # the batching group is last, so this plants on the rule #771 broke.
           planted="$(mktemp -d)"
-          python3 -c 'import json,sys; c=json.load(open("renovate.json")); r=c["packageRules"][-1]; r["matchPackageNames"]=["*"]+r["matchPackageNames"]; json.dump(c,open(sys.argv[1],"w"))' "$planted/renovate.json"
+          python3 - "$planted/renovate.json" <<'PY'
+          import json
+          import sys
+
+          config = json.load(open("renovate.json"))
+          rule = config["packageRules"][-1]
+          rule["matchPackageNames"] = ["*"] + rule["matchPackageNames"]
+          json.dump(config, open(sys.argv[1], "w"))
+          PY
           if (cd "$planted" && npx --yes --package "$renovate_pin" renovate-config-validator); then
             echo "renovate-config-validator accepted #775's config; it no longer guards against it" >&2
             exit 1
