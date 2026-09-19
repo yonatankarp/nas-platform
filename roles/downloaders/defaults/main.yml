@@ -61,6 +61,23 @@ downloaders_sabnzbd_category_post_processing: 3
 # then because there was nothing to run.
 downloaders_sabnzbd_category_script: clamav_gate.py
 
+# SABnzbd reports a boolean it has STORED differently from one it has never
+# stored, so both sides of every comparison against `misc` are normalised
+# through this shape. OptionBool seeds its default with `int(default_val)` but
+# `set()` stores `bool_conv(value)`, a Python bool -- and `Option.set` only
+# stores at all when `value != self.get()`, which `True == 1` makes false. So a
+# flag whose declared value already matches SABnzbd's default is never stored
+# and reads back as 0/1, while one that differs is stored and reads back as JSON
+# true/false. `direct_write: 1` is the first (default True) and `script_can_fail:
+# 1` is the second (default False), which is why a plain string comparison
+# verified five settings and then failed forever on the sixth, pushing it on
+# every converge without ever converging.
+#
+# Declaring YAML `true` is not the fix and fails silently in the worse
+# direction: `bool_conv` is `bool(int_conv(value))`, and `int_conv('True')` is 0,
+# so SABnzbd would store the flag as FALSE while this file read as enabling it.
+# That is the same trap `downloaders_sabnzbd_owned_server` records for `enable`.
+# Integers in, normalised comparison out.
 downloaders_sabnzbd_owned_misc:
   cache_limit: 256M
   direct_unpack: 0

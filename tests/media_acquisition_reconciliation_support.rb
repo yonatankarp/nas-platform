@@ -323,9 +323,13 @@ end.freeze
 SABNZBD = {
   "config" => {
     "misc" => { "complete_dir" => "/data/complete", "download_dir" => "/data/incomplete" },
+    # `script` is served because the role verifies it, and it is the gate that
+    # decides whether a completed download is scanned before the arr imports it.
+    # A fixture that omitted it would let the category assertion pass against a
+    # SABnzbd running no post-processing script at all.
     "categories" => [
-      { "name" => "movies", "dir" => "movies" },
-      { "name" => "series", "dir" => "series" }
+      { "name" => "movies", "dir" => "movies", "script" => "clamav_gate.py" },
+      { "name" => "series", "dir" => "series", "script" => "clamav_gate.py" }
     ],
     # The password is ten asterisks because that is what `get_config` returns for
     # it, which is the whole reason the reconciliation projects it out and the
@@ -2497,6 +2501,11 @@ def base_variables(port)
     "vault_downloaders_sabnzbd_server_password" => SECRETS.fetch("usenet_password"),
     "downloaders_sabnzbd_api" => "http://127.0.0.1:#{port}/sabnzbd/api",
     "downloaders_sabnzbd_categories" => { "movies" => "movies", "series" => "series" },
+    # Supplied explicitly like every other role default this probe needs: the
+    # probe builds its own variable set rather than loading roles/downloaders's
+    # defaults, so a name it omits is undefined rather than defaulted, and the
+    # expression reading it fails under a no_log that hides which one it was.
+    "downloaders_sabnzbd_category_script" => "clamav_gate.py",
     "downloaders_sabnzbd_server_name" => "usenet",
     "downloaders_sabnzbd_owned_server" => {
       "enable" => 1, "priority" => 0, "ssl_verify" => 3, "timeout" => 60

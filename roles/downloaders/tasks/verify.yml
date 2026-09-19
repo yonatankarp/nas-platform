@@ -85,9 +85,11 @@
 - name: Verify each bounded SABnzbd miscellaneous setting
   ansible.builtin.assert:
     that:
+      # Normalised on both sides; roles/downloaders/defaults/main.yml records why.
       - >-
-        downloaders_sabnzbd_verification.json.config.misc.get(item.key) | string ==
-        item.value | string
+        downloaders_sabnzbd_verification.json.config.misc.get(item.key)
+          | string | lower | replace('true', '1') | replace('false', '0') ==
+        item.value | string | lower | replace('true', '1') | replace('false', '0')
     fail_msg: A bounded SABnzbd setting differs from the declared value.
   loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
   loop_control:
