@@ -844,6 +844,18 @@ case_upgrade() {
   expect_log 'docker argv=[stop][{ns}-kapowarr]'
   expect_log 'docker argv=[inspect][--format][{{.State.Status}}:{{.State.ExitCode}}][{ns}-kapowarr]'
   expect_log_order 'contract kapowarr argv=[verify]' 'docker argv=[stop][{ns}-kapowarr]'
+  # The window that stop was measured against is READ, not narrated. Without
+  # this the whole StopTimeout arm could be replaced by a literal and every
+  # case here would still pass -- which is what it did until #781 planted it.
+  # Per container, because a project-level line carrying one container's window
+  # would attribute it to the others.
+  expect_log 'docker argv=[inspect][--format][{{.Config.StopTimeout}}][{ns}-kapowarr]'
+  expect_output 'UPGRADE_STOPPED_CONTAINER: {ns}-kapowarr exited:0'
+  # Only running containers are enumerated. An exited container keeps the code
+  # it exited with and `docker stop` answers 0 for it, so `docker ps -a` here
+  # would let a stack that died during the converge read as one that stopped
+  # cleanly.
+  expect_log 'docker argv=[ps][--filter][label=com.docker.compose.project={ns}-kapowarr][--filter][status=running][--format][{{.Names}}]'
   # The second converge is a real converge and not a rehearsal.
   expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr][--check][--diff]'
 

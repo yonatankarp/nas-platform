@@ -906,15 +906,24 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           #
           # ONE RISK ON A FIRST DISPATCH, which is not a defect in this
           # assertion. Kapowarr's clean stop is measured -- services/kapowarr/
-          # tasks.py's trailer and its Compose comment record 0.22s and exit 0
-          # against the pinned image. Bindery's is not measured anywhere: it
+          # compose.yml records 0.22s and exit 0 against the pinned image, and
+          # the tasks.py trailer beside it records the mechanism rather than the
+          # numbers. Bindery's is not measured anywhere: it
           # declares no stop_grace_period, its runtime is distroless with
-          # /bindery as PID 1, and nothing in docs/dossier-bindery.md or
+          # /bindery as PID 1, and nothing in the Bindery dossier or
           # roles/bindery says what it does with a SIGTERM. It is one of the
           # eleven containers CLAUDE.md names as taking Docker's default grace
           # on an expectation rather than a measurement. So the first red here
           # for that subject may be pre-existing behaviour rather than the bump,
           # which is what the failure message says.
+          #
+          # AND IT IS NOT BINDERY'S ONLY ONE. tests/contracts/bindery-upgrade.rb
+          # carries a second, independent first-dispatch risk -- its settings
+          # canary writes a key no Bindery version defines, through a route the
+          # tree records answering 403 for at least one key class. Either reds
+          # the Bindery upgrade lane the first time it runs for real, for a
+          # reason that is this repository's and not the image's, so a reader
+          # meeting a red should rule out both before holding the bump.
           upgrade_project=$integration_project_namespace-$upgrade_service
           upgrade_running=$(docker ps \
             --filter "label=com.docker.compose.project=$upgrade_project" \
@@ -958,16 +967,24 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
             case $upgrade_stop_state in
               exited:0|exited:143) ;;
               *)
-                printf '%s did not stop cleanly: %s after %ss, against a configured StopTimeout of %s (<nil> means the service declared no stop_grace_period, so the daemon default of ten seconds applied). 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
+                printf '%s did not stop cleanly: %s, against a configured StopTimeout of %s (<nil> means the service declared no stop_grace_period, so the daemon default of ten seconds applied). 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
                   "$upgrade_container" "$upgrade_stop_state" \
-                  "$upgrade_stop_elapsed" "$upgrade_stop_grace" >&2
+                  "$upgrade_stop_grace" >&2
                 exit 1
                 ;;
             esac
+            # Per container, because the window is per container and the elapsed
+            # below is the whole loop's. A project-level line carrying one
+            # container's StopTimeout would attribute it to the others, which is
+            # wrong the first time a multi-container subject is added -- and the
+            # obvious next subjects (Nextcloud, Immich, Paperless) all are.
+            printf 'UPGRADE_STOPPED_CONTAINER: %s %s against a configured StopTimeout of %s\n' \
+              "$upgrade_container" "$upgrade_stop_state" "$upgrade_stop_grace"
           done
-          printf 'UPGRADE_STOPPED: %s stopped cleanly in %ss against a configured StopTimeout of %s on %s\n' \
-            "$upgrade_project" "$upgrade_stop_elapsed" \
-            "$upgrade_stop_grace" "$upgrade_head_image"
+          # The total across every container in the project, said as such: it is
+          # not any one container's stop duration. Nothing is asserted on it.
+          printf 'UPGRADE_STOPPED: %s stopped cleanly, %ss for the project as a whole, on %s\n' \
+            "$upgrade_project" "$upgrade_stop_elapsed" "$upgrade_head_image"
           ;;
         success)
           lifecycle_success=true

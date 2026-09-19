@@ -60,6 +60,28 @@
 # that has moved, or a key Bindery declines to upsert, fails at seed with a
 # message saying so instead of producing a verify that had nothing to check.
 #
+# THAT SECOND CASE IS NOT HYPOTHETICAL, and this is the one risk on a first
+# dispatch worth naming before it is met. Nothing in the tree demonstrates that
+# this route accepts an INVENTED key: the platform has only ever written
+# `autoGrab.enabled` and `telemetry.enabled` through it, both keys Bindery
+# knows, and docs/dossier-bindery.md's "Reproducing the confirmations" lists no
+# settings handler among the upstream sources read, so an unknown-key write was
+# never probed. What the tree DOES record is that the route is not a blind
+# upsert: roles/bindery/tasks/reconcile_audiobookshelf.yml and the dossier both
+# confirm `PUT /setting/abs.api_key` answering 403 with a 404 on the GET,
+# because secret settings live behind their own route. That is a narrower
+# refusal than per-key validation of arbitrary keys -- it says secrets are
+# special, not that unknown keys are rejected -- but it is enough that "this
+# route upserts anything" is an assumption rather than a finding.
+#
+# If it turns out to be rejected, or if GET serializes a known-key struct rather
+# than dumping the table, this reds at SEED on every Bindery Renovate pull
+# request until the key is changed or this half is dropped -- on the very lane
+# whose purpose is gating that automerge. The read-back is what makes that a
+# loud, named failure at the seed rather than a hollow verify, and the failure
+# message below names the 403 so its reader starts in the right place instead of
+# hunting a migration that did nothing wrong.
+#
 # Two roots folders would have been the third table and are not reachable:
 # roles/bindery's own verification asserts the root list equals exactly the two
 # declared destinations, and it runs inside the upgrade converge.
@@ -206,7 +228,14 @@ when "seed"
   fail_contract(
     "Bindery did not store the canary setting #{SETTING_KEY} (the upsert answered HTTP " \
     "#{written.code} and a read back returned #{stored.inspect}), so this lane would have " \
-    "nothing in that table the base image wrote"
+    "nothing in that table the base image wrote. READ THIS BEFORE BLAMING THE BUMP: the " \
+    "generic settings route is known not to be a blind upsert -- PUT /setting/abs.api_key " \
+    "answers 403 with a 404 on the GET, because secret settings sit behind their own route " \
+    "-- and no probe recorded in docs/dossier-bindery.md has ever written a key Bindery does " \
+    "not itself define. So an HTTP 4xx here, or a 200 whose value does not read back, is " \
+    "most likely this seeder's invented key being refused or not surfaced by GET /setting, " \
+    "not a migration that lost a row. If that is what happened, the fix is to this seed, and " \
+    "it is not a reason to hold the image"
   ) unless stored == setting_value
 
   FileUtils.mkdir_p(File.dirname(RECORD))
