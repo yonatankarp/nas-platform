@@ -182,6 +182,7 @@
     mode: "0755"
   loop:
     - dozzle
+    - downloaders
     - immich
     - kapowarr
   changed_when: false
@@ -192,6 +193,18 @@
     src: "{{ playbook_dir }}/services/dozzle/alert_relay.py"
     dest: "{{ deployment_bundle_staging_dir }}/services/dozzle/alert_relay.py"
     mode: "0644"
+  changed_when: false
+  when: not ansible_check_mode
+
+# 0755, and the only tracked helper that is not 0644. SABnzbd refuses to offer a
+# post-processing script to a category unless the file carries the executable bit
+# on Unix, and it reports that per job rather than at start-up -- so at 0644 this
+# lands, mounts, reconciles and then silently scans nothing.
+- name: Copy the tracked SABnzbd ClamAV gate from the controller
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/services/downloaders/clamav_gate.py"
+    dest: "{{ deployment_bundle_staging_dir }}/services/downloaders/clamav_gate.py"
+    mode: "0755"
   changed_when: false
   when: not ansible_check_mode
 

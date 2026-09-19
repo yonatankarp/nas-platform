@@ -80,6 +80,7 @@
                | selectattr('name', 'equalto', 'arr') | list | length == 1
             else [])
          + [[playbook_dir ~ '/services/dozzle/alert_relay.py', '0'],
+            [playbook_dir ~ '/services/downloaders/clamav_gate.py', '0'],
             [playbook_dir ~ '/services/immich/classify_restore.py', '0'],
             [playbook_dir ~ '/services/kapowarr/tasks.py', '0']] }}
 
