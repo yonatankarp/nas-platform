@@ -4,9 +4,9 @@ set +x
 
 mode=${1:-run}
 case $mode in
-  static|run) ;;
+  static|run|seed|verify) ;;
   *)
-    printf '%s\n' 'bindery contract accepts only static or run' >&2
+    printf '%s\n' 'bindery contract accepts only static, run, seed or verify' >&2
     exit 2
     ;;
 esac
@@ -22,11 +22,22 @@ contract_repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$contract_repo_dir}
 static_program=$contract_repo_dir/tests/contracts/bindery-static.rb
 runtime_program=$contract_repo_dir/tests/contracts/bindery-runtime.rb
+# The upgrade lane's seed-and-verify half (#773). Resolved from the checkout
+# this script belongs to, like the other two programs, and named here rather
+# than derived so that its absence is a "no such file" at the top of a run
+# instead of a mode that silently does nothing.
+upgrade_program=$contract_repo_dir/tests/contracts/bindery-upgrade.rb
 # No PLATFORM_CONTRACT_REPO_DIR export here, deliberately: unlike the Kapowarr
 # contract, neither Bindery program reads the inspected tree through the
 # environment. The static half carries its own flatten_tasks and takes the tree
 # as its argument, and the runtime half reads none of the repository at all.
-ruby "$static_program" "$repo_dir" </dev/null
+# The static half, which the upgrade modes skip: they assert what a deployed
+# service holds across a version change, and the tree they would inspect is
+# the one the lane is repinning underneath them.
+case $mode in
+  seed|verify) ;;
+  *) ruby "$static_program" "$repo_dir" </dev/null ;;
+esac
 
 [ "$mode" = static ] && {
   printf '%s\n' 'bindery static contract: two-library acquisition ownership holds'
@@ -50,5 +61,9 @@ PLATFORM_BINDERY_CONTAINER=${PLATFORM_PROJECT_NAME:+$PLATFORM_PROJECT_NAME-}bind
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_DOCKER_ROOT PLATFORM_BINDERY_PORT PLATFORM_BINDERY_CONTAINER
 export PLATFORM_BINDERY_USENET
+
+case $mode in
+  seed|verify) exec ruby "$upgrade_program" "$mode" </dev/null ;;
+esac
 
 exec ruby "$runtime_program" </dev/null

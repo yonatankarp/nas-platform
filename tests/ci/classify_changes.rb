@@ -56,6 +56,19 @@ module ClassifyChanges
   IDEMPOTENCE_SHARD_LANES = SUITES.keys.filter do |lane|
     lane.start_with?("idempotence_") && lane != IDEMPOTENCE_LANE
   end.freeze
+  # The one lane that is never selected by a path and never by `--full`: it needs
+  # a BASE to compare against, and only the --diff mode has one. `--full` and a
+  # fall-open therefore leave it off rather than dispatching a lane that would
+  # refuse for want of its inputs.
+  UPGRADE_LANE = "upgrade"
+  # Which services the upgrade lane can take as its subject, DERIVED from which
+  # ones carry a seed-and-verify program rather than restated here.
+  # tests/integration.sh applies the same rule against the same directory, so the
+  # runner and the classifier cannot disagree about what is runnable, and adding a
+  # service to the lane is one new file rather than two list edits.
+  UPGRADE_SUBJECTS = Dir.glob(File.expand_path("../contracts/*-upgrade.rb", __dir__))
+                        .map { |path| File.basename(path, ".rb").delete_suffix("-upgrade") }
+                        .sort.freeze
   # The tags CI narrows the site to for each lane it selects by tag. Planned
   # acquisition suites converge only the shared inert foundation and validate it
   # with their static contract.
@@ -355,9 +368,20 @@ module ClassifyChanges
 
   module_function
 
-  def classify(paths, full: false)
+  def classify(paths, full: false, base: nil, head: nil)
+    @upgrade_subject = nil
     selection = LANES.to_h { |lane| [lane, false] }
     return everything(selection, sharded: false) if full
+
+    # Resolved HERE, before the loop below, because that loop can return: an
+    # unmapped path falls open, and a fall-open used to force the upgrade lane
+    # off however the pins had moved. That is not a hypothetical -- the pull
+    # request that introduced this lane touches tests/integration.sh, which is
+    # unmapped, so the lane could not have dispatched on its own change, and
+    # neither could a Renovate pin bump that happened to touch anything else.
+    # `--full` and `--files` reach this with base nil and get nil back, so they
+    # stay off without a special case of their own.
+    @upgrade_subject = upgrade_subject(paths, base, head)
 
     tagged_lanes = []
     reconciliation_owned = false
@@ -416,7 +440,75 @@ module ClassifyChanges
     selection["static"] = true if reconciliation_owned
     selection["reconciliation"] = true if reconciliation_owned ||
                                           RECONCILIATION_LANES.any? { |lane| selection.fetch(lane) }
+    selection[UPGRADE_LANE] = !@upgrade_subject.nil?
     selection
+  end
+
+  # The subject the upgrade lane converges, and the image reference the BASE
+  # branch pins it to, or nil when there is nothing to migrate.
+  #
+  # Both halves have to hold. A compose.yml can change without its `image:`
+  # moving -- a memory limit, a mount, a logging option -- and converging the
+  # same version twice proves nothing while costing a full lane, so the pin is
+  # compared rather than the file. And the base is read with `git show` rather
+  # than from the working tree: this runs in the `changes` job, which is the one
+  # job that checks out at fetch-depth 0, and on a pull_request the checkout is
+  # the merge commit rather than the head, so both sides are named explicitly.
+  #
+  # ONE SUBJECT, and the limit is stated rather than hidden: a diff that moves
+  # two subjects' pins proves the first of them in UPGRADE_SUBJECTS order. The
+  # alternative is a second matrix dimension for a case Renovate produces one
+  # image at a time, and #771's batch withholds these images from it.
+  def upgrade_subject(paths, base, head)
+    return nil unless base && head
+
+    # The MERGE BASE, not the base tip, and the two are not the same claim.
+    # changed_paths diffs `base...head`, which is the merge base against head --
+    # so the paths this is handed are the pull request's own changes. Reading the
+    # pin at `base` instead would take whatever main's tip pins, and when main
+    # has moved that pin since the branch forked, the lane would converge main's
+    # version and then the head's and red at roles/image_downgrade_guard on a
+    # pull request performing no downgrade at all. Narrow -- both sides would
+    # have edited the same `image:` line, so such a pull request conflicts and
+    # gets no CI run -- but the two halves have to agree what "base" means, and
+    # one line is cheaper than the argument.
+    merge_base, _error, status = Open3.capture3("git", "merge-base", base, head)
+    comparison = status.success? && !merge_base.strip.empty? ? merge_base.strip : base
+
+    UPGRADE_SUBJECTS.each do |service|
+      compose = "services/#{service}/compose.yml"
+      next unless paths.include?(compose)
+
+      base_image = pinned_image(comparison, compose)
+      head_image = pinned_image(head, compose)
+      next if base_image.nil? || head_image.nil? || base_image == head_image
+      # A subject whose own lane has no tags could only be converged by
+      # converging the whole site, which is the idempotence lane's cost for a
+      # one-service proof. tests/contract_upgrade_seed_test.rb requires every
+      # roster entry to be a tagged row in tests/ci/suites.conf, so this is a
+      # closed door rather than a filter that silently drops things -- but only
+      # since that check was added. Before it, dropping this line was undetected
+      # and a subject with no tags resolved nil with no diagnostic anywhere.
+      next unless SERVICE_TAGS.key?(service.tr("-", "_"))
+
+      return [service, base_image]
+    end
+    nil
+  end
+
+  # The single `image:` a service's canonical compose.yml pins, at one revision.
+  # nil for anything else -- an unreadable path, a file that pins none, a file
+  # that pins several -- because every one of those is a subject the lane cannot
+  # repin unambiguously, and guessing at one is how a lane converges the wrong
+  # version and reports success.
+  def pinned_image(revision, path)
+    content, _error, status = Open3.capture3("git", "show", "#{revision}:#{path}")
+    return nil unless status.success?
+
+    images = content.lines.filter_map do |line|
+      line[/\A\s*image:\s*(\S+)\s*\z/, 1]
+    end
+    images.length == 1 ? images.first : nil
   end
 
   def changed_paths(base, head)
@@ -449,7 +541,17 @@ module ClassifyChanges
   # for the slowest job in the run to re-prove, in one 32-minute pass, what five
   # shards prove in the time of the longest of them.
   def everything(selection, sharded:)
+    # UPGRADE_LANE is the one lane a full selection does not automatically turn
+    # on, and the condition is the SUBJECT rather than the form. `--full` and
+    # `--files` have no base revision to resolve one from, so it stays off there
+    # and a leg that would refuse for want of its inputs is never dispatched. A
+    # fall-open does have one, and a fall-open whose diff moved a subject's pin
+    # dispatches the lane: a fall-open already runs 25 legs, so one more is
+    # marginal, and forcing it off there left the lane unable to run on any pull
+    # request that also touched an unmapped path -- including the one that
+    # introduced it.
     off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES
+    off += [UPGRADE_LANE] if @upgrade_subject.nil?
     selection.to_h { |lane, _| [lane, !off.include?(lane)] }
   end
 
@@ -464,6 +566,28 @@ module ClassifyChanges
                           .uniq
            end
     io.puts "selected_tags=#{tags.join(',')}"
+    # The subject is the one output that does not come from the selection this is
+    # handed, and that is a coupling worth refusing rather than documenting:
+    # classify resolves it into @upgrade_subject, so a caller that classifies
+    # twice and then writes would emit the LAST classification's subject beside
+    # the FIRST one's lanes. Silent, and wrong in the direction that matters --
+    # a lane dispatched with no subject tags. Caught the first time this pairing
+    # was written, in tests/ci/classify_changes_test.rb.
+    unless selection.fetch(UPGRADE_LANE) == !@upgrade_subject.nil?
+      raise "upgrade selection #{selection.fetch(UPGRADE_LANE)} does not match the resolved " \
+            "subject #{@upgrade_subject.inspect}: write_github_outputs must be given the " \
+            "selection classify resolved that subject for"
+    end
+    service, base_image = @upgrade_subject
+    io.puts "upgrade_service=#{service}"
+    io.puts "upgrade_base_image=#{base_image}"
+    # The upgrade lane's tags are its SUBJECT's, never the run's. selected_tags
+    # is the union of every tagged lane the run selected, and a fall-open empties
+    # it entirely -- which would send this lane down the untagged branch and
+    # converge the whole site twice for a one-service proof. That is not a corner
+    # case: a fall-open is exactly the selection a Renovate bump lands in
+    # whenever it touches anything unmapped.
+    io.puts "upgrade_tags=#{service ? SERVICE_TAGS.fetch(service.tr('-', '_')).join(',') : ''}"
   end
 
   def suites(selection)
@@ -621,7 +745,7 @@ module ClassifyChanges
                 when :full
                   classify([], full: true)
                 when :diff
-                  classify(changed_paths(mode[1], mode[2]))
+                  classify(changed_paths(mode[1], mode[2]), base: mode[1], head: mode[2])
                 when :files
                   classify(mode[1])
                 end

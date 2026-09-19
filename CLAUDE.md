@@ -102,7 +102,7 @@ tests/integration.sh --describe-suite <lane>   # prints the pinned suite/tags/sc
 
 Lanes: `foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
 smoke beszel dozzle audiobookshelf komga jellyfin immich paperless
-nextcloud vaultwarden karakeep idempotence-check idempotence-1 idempotence-2
+nextcloud vaultwarden karakeep upgrade idempotence-check idempotence-1 idempotence-2
 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
@@ -116,6 +116,90 @@ three properties: the run converges, a second run changes nothing, and
 `--check --diff` works. Bugs that pass syntax check and lint — a fact that only
 exists on Linux, a `command` task silently skipped under `--check` — are caught
 only here.
+
+**`upgrade` is the one lane that does not start from an empty store, and it is
+the only one that can see a migration at all (#773).** Every other lane builds a
+disposable sandbox, `host_prep` creates the service directories empty and the
+service initialises fresh — so every one of them takes the fresh-install path and
+nothing anywhere opens a store a previous version wrote. That is the entire class
+#511 and #671 fell into, invisible here by construction. This lane converges the
+**base** branch's pin of one service, writes rows through that service's own HTTP
+API, repins to the head image and converges again, so the head container runs its
+own migration against a store the base container wrote, and then reads those rows
+back.
+
+Three things about it are worth knowing before changing it:
+
+- **Its subject and base pin are inputs, not tags.** `INTEGRATION_UPGRADE_SERVICE`
+  and `INTEGRATION_UPGRADE_BASE_IMAGE`, refused rather than clamped, and emitted
+  by `tests/ci/classify_changes.rb` from the same diff it routes on. The base
+  cannot be read from inside the lane: the `suites` job checks out at
+  `actions/checkout`'s default depth of 1, unlike `changes`, `static`, `mutation`
+  and `reconciliation`. **Its tags are its subject's, on an `upgrade_tags` output
+  of their own**, never the run's `selected_tags`: that is the union of every
+  tagged lane, and a fall-open empties it — which would send this lane down the
+  untagged branch and converge the whole site twice for a one-service proof. The
+  workflow refuses an empty value rather than degrading to it.
+- **A repin is two commits, not two file writes.** `deployment_bundle` keys its
+  immutable release on `platform_release_id` and refuses to mutate a release
+  `current` already points at, so rewriting `compose.yml` without moving HEAD is
+  that refusal rather than a repin.
+- **Which services it can take as a subject is derived**, from which ones carry a
+  `tests/contracts/<svc>-upgrade.rb`. Bindery and Kapowarr today, being the two
+  with actual incidents. A subject with no such program is refused, because a
+  lane that converges, migrates and asserts nothing is green while proving less
+  than the fresh-install lanes it exists to complement. Per-service seeds are
+  irreducibly bespoke — different stores behind different APIs — so there is no
+  shared seeder to build. **Adding a third subject is four edits**, and they are
+  named here because this sentence used to claim one:
+  1. `tests/contracts/<svc>-upgrade.rb`, the seed and verify program.
+  2. `EXPECTED_UPGRADE_SUBJECTS` in `tests/contract_upgrade_seed_test.rb` — the
+     stated floor under the derivation, closed both ways. It also requires each
+     basename to be all three of the names it is used as: a `services/`
+     directory, a `tests/contracts/<name>.sh` wrapper and a manifest service
+     directory. Those diverge for `paperless-ngx`, and a subject that diverged
+     would resolve nothing and never dispatch.
+  3. `tests/contracts/<svc>.sh` — the mode guard widened to `seed|verify`, the
+     static half skipped in those modes, and the dispatch arm.
+  4. `tests/<svc>_contract_test.rb` — `MODE_REFUSAL`, the refused-mode sweep
+     (`verify` becomes an accepted mode and has to leave it), and the
+     `"  static|run) ;;"` plant string, all of which the wrapper edit moves.
+
+**What switches it off is the absence of a base revision, and nothing else.**
+`--full` and a `--files` classification have none, so the nightly and
+`workflow_dispatch` do not run it. A **fall-open does** have one, and a
+fall-open whose diff moved a subject's pin dispatches the lane like any other
+selection — it already runs 25 legs, so one more is marginal, and forcing it off
+there is what made the lane undispatchable on every pull request that also
+touched an unmapped path, including the one that introduced it.
+
+**One subject per run, and a human pull request can exceed that.** The
+classifier emits the first subject whose pin moved, in `UPGRADE_SUBJECTS` order,
+so a diff moving two of them proves the first. Renovate cannot produce such a
+diff — #771's batch group excludes both of these images — but a hand-written
+pull request bumping Bindery and Kapowarr together can, and it would prove one
+of them.
+
+**#671's shutdown half is not covered.** An upgrade must stop the old container,
+so its exit code and duration ought to be observable, but Compose removes that
+container as part of the same recreate and nothing in this lane is positioned to
+read it first. The migration half is what this lane proves.
+
+**A rollback reds this lane, and that is the guard rather than a defect.** A
+revert or a Renovate rollback makes the base newer than the head, so the
+classifier selects the lane — the pins differ — the first converge runs the newer
+image, and the second meets `roles/image_downgrade_guard`, which both Bindery and
+Kapowarr call before their backup and their Compose deployment and which refuses
+a pin older than one that has already run. The lane therefore goes red on the
+pull request that is the *correct* fix for a bad migration, with a message about
+that guard and not about the store. It is left that way deliberately: comparing
+versions across arbitrary tags is exactly what that role exists to do, and a
+direction check in the classifier would be a second, worse copy of it. **What
+that costs is a ruleset bypass, not a click**: `validate` aggregates the
+`suites` result, `validate` is the required check on `main`, and the
+repository-admin bypass on that ruleset is `always` — so merging past this lane
+means an admin taking that bypass, which is the same cost as merging past any
+other red leg.
 
 ### Deploying / reviewing
 

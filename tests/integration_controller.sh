@@ -625,6 +625,128 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
       fi
     }
 
+    # THE UPGRADE LANE'S PIN SURGERY, and why it is two commits rather than two
+    # file writes.
+    #
+    # deployment_bundle assembles an immutable release keyed on
+    # platform_release_id, which is `git rev-parse HEAD` against /repo, and
+    # refuses to mutate a release `current` already points at: "Active release
+    # ... differs from the controller bundle". So rewriting compose.yml between
+    # two converges without moving HEAD is not a repin, it is that refusal. Each
+    # pin change is therefore committed, which is also what a real deployment of
+    # this pair looks like -- the base revision and the head revision of the
+    # same tree, converged in order.
+    #
+    # expected_release_id moves with the second commit for the same reason: the
+    # manifest verification below compares the deployed release against it, and
+    # what is deployed at that point is the head revision.
+    upgrade_service=${INTEGRATION_UPGRADE_SERVICE:-}
+    upgrade_base_image=${INTEGRATION_UPGRADE_BASE_IMAGE:-}
+    upgrade_compose=
+    upgrade_head_image=
+
+    # Exact-string match on the whole `image: <ref>` line, exactly one
+    # replacement required, indentation preserved. A regex substitution would
+    # treat the reference's own dots and slashes as pattern syntax, and a
+    # silent zero-replacement rewrite is the failure that would leave the lane
+    # converging one version twice and reporting success.
+    #
+    # Written as a shell read loop rather than as the obvious awk one-liner
+    # because tests/policy_test.rb refuses `$0` anywhere in this file -- it is
+    # how a program here would resolve a path from where the file sits instead
+    # of from CONTROLLER_REPO_DIR -- and awk's own whole-record variable is
+    # spelled the same way. The loop is a hundred lines of YAML once per repin.
+    rewrite_subject_image() {
+      rewrite_from=$1
+      rewrite_to=$2
+      rewrite_count=0
+      : > "$upgrade_compose.repin"
+      # The `|| [ -n "$rewrite_line" ]` keeps a final line with no trailing
+      # newline, which `read` reports as end of input while still having read it.
+      while IFS= read -r rewrite_line || [ -n "$rewrite_line" ]; do
+        rewrite_indent=${rewrite_line%%[! ]*}
+        rewrite_stripped=${rewrite_line#"$rewrite_indent"}
+        if [ "$rewrite_stripped" = "image: $rewrite_from" ]; then
+          printf '%simage: %s\n' "$rewrite_indent" "$rewrite_to" \
+            >> "$upgrade_compose.repin"
+          rewrite_count=$((rewrite_count + 1))
+        else
+          printf '%s\n' "$rewrite_line" >> "$upgrade_compose.repin"
+        fi
+      done < "$upgrade_compose"
+      [ "$rewrite_count" -eq 1 ] || return 1
+      mv "$upgrade_compose.repin" "$upgrade_compose"
+    }
+
+    commit_subject_image() {
+      git -C /repo \
+        -c user.email=integration@nas-platform.invalid \
+        -c user.name='nas-platform integration' \
+        commit -q -m "$1" -- "services/$upgrade_service/compose.yml"
+    }
+
+    if [ "$INTEGRATION_SUITE" = upgrade ]; then
+      # An explicit `if` rather than `A && B || C`, which is SC2015 and is fatal
+      # here by construction: tests/policy_test.rb requires the manifest line
+      # for this file to carry no --exclude at all, so an info-level finding
+      # reds the gate. It is a real smell and not a lint nit -- `A && B || C`
+      # runs C when A is true and B is false, which is not the branch structure
+      # it reads as. Version 0.11.0 does not emit it for this shape and the
+      # runner's does, so a local lint run is not evidence either way.
+      #
+      # A comment line here must also never BEGIN with the linter's own name:
+      # it parses that as a directive and answers SC1073, which is an error
+      # rather than an info. That is how this comment first failed.
+      if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
+        printf '%s\n' \
+          'the upgrade lane requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE' >&2
+        exit 1
+      fi
+      upgrade_compose=/repo/services/$upgrade_service/compose.yml
+      [ -f "$upgrade_compose" ] || {
+        printf 'no compose definition for the upgrade subject %s\n' \
+          "$upgrade_service" >&2
+        exit 1
+      }
+      upgrade_head_image=$(sed -n 's/^[[:space:]]*image:[[:space:]]*//p' \
+        "$upgrade_compose")
+      case $upgrade_head_image in
+        *"
+"*|'')
+          printf 'the upgrade subject %s does not pin exactly one image\n' \
+            "$upgrade_service" >&2
+          exit 1
+          ;;
+      esac
+      # A ROLLBACK REDS THIS LANE AT roles/image_downgrade_guard, not here, and
+      # that is left deliberately. A revert or a Renovate rollback makes the
+      # base newer than the head, the pins differ so the lane is selected, the
+      # first converge runs the newer image and the second meets that guard --
+      # which both callers include before their backup and their Compose
+      # deployment, and which refuses a pin older than one that has already run.
+      # So the failure names the guard rather than the store. Comparing versions
+      # across arbitrary tags is exactly what that role exists to do; a
+      # direction check here would be a second and worse copy of it.
+      #
+      # A base equal to the head converges the same version twice and asserts a
+      # migration that never ran. It is refused rather than tolerated, because
+      # the result is green and says nothing -- which is the whole failure this
+      # lane exists to stop being invisible.
+      [ "$upgrade_head_image" != "$upgrade_base_image" ] || {
+        printf 'the upgrade base and head pins of %s are identical: %s\n' \
+          "$upgrade_service" "$upgrade_head_image" >&2
+        exit 1
+      }
+      rewrite_subject_image "$upgrade_head_image" "$upgrade_base_image" || {
+        printf 'could not pin %s back to its base image %s\n' \
+          "$upgrade_service" "$upgrade_base_image" >&2
+        exit 1
+      }
+      commit_subject_image "integration: $upgrade_service at its base pin"
+      printf 'UPGRADE_BASE_PINNED: %s -> %s\n' \
+        "$upgrade_service" "$upgrade_base_image"
+    fi
+
     if lifecycle_plan=$(
       /repo/tests/integration.sh --consume-lifecycle --suite "$INTEGRATION_SUITE"
     ); then
@@ -637,6 +759,11 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     fi
 
     lifecycle_success=false
+    # Which converge this is. The lifecycle table makes the second one reachable
+    # only after a repin, so this flag reads that ordering rather than deciding
+    # it: `repinned:converge` is the one transition that arrives here with it
+    # true, and no other ordering of these events is expressible.
+    upgrade_repinned=false
     while IFS= read -r lifecycle_event; do
       case $lifecycle_event in
         converge)
@@ -659,6 +786,31 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # occurrence, so a second copy would stop that mutation from being
           # placeable at all -- the same constraint the ephemeral vault
           # invocation above records.
+          if [ "$upgrade_repinned" = true ]; then
+            # The upgrade converge. This is where the head image opens a store
+            # the base image wrote and runs its own migration against it -- the
+            # one thing no other lane in this repository does, because every
+            # other lane's store was created empty moments earlier.
+            #
+            # run_selected_play rather than perform_initial_converge, and not at
+            # that function's indentation: tests/policy_integration_test.rb
+            # locates the FIRST converge by the bare `run_play` line's exact
+            # indented text and tests/integration_controller_execution_test.sh
+            # plants "initial converge dropped" on that function's own call
+            # site as a single occurrence -- which is also why this comment does
+            # not spell that call site out. A second copy of either text would
+            # stop the mutation being placeable at all.
+            upgrade_converge_status=0
+            run_selected_play "$@" || upgrade_converge_status=$?
+            if [ $upgrade_converge_status -ne 0 ]; then
+              printf 'integration upgrade converge did not complete (status %s)\n' \
+                $upgrade_converge_status >&2
+              exit $upgrade_converge_status
+            fi
+            printf 'UPGRADE_CONVERGED: %s migrated onto %s\n' \
+              "$upgrade_service" "$upgrade_head_image"
+            continue
+          fi
           converge_status=0
           perform_initial_converge "$@" || converge_status=$?
           if [ $converge_status -ne 0 ]; then
@@ -671,6 +823,38 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
             exit $converge_status
           fi
           integration_media_adopt_existing=false
+          ;;
+        seed)
+          # Writes rows through the subject's own HTTP API while the BASE pin is
+          # serving. A lane that migrates an empty store proves only that the
+          # migration runs; what cost #511 and #671 three days and four pull
+          # requests is a migration that runs and loses what was there.
+          run_contract "$upgrade_service" seed
+          printf 'UPGRADE_SEEDED: %s at %s\n' \
+            "$upgrade_service" "$upgrade_base_image"
+          ;;
+        repin)
+          # Back to the head pin the repository actually commits, and committed
+          # so platform_release_id moves with it. See the pin surgery above for
+          # why a bare file rewrite is the "Active release ... differs from the
+          # controller bundle" refusal rather than a repin.
+          rewrite_subject_image "$upgrade_base_image" "$upgrade_head_image" || {
+            printf 'could not repin %s to its head image %s\n' \
+              "$upgrade_service" "$upgrade_head_image" >&2
+            exit 1
+          }
+          commit_subject_image "integration: $upgrade_service at its head pin"
+          expected_release_id=$(git -C /repo rev-parse HEAD)
+          upgrade_repinned=true
+          printf 'UPGRADE_REPINNED: %s -> %s\n' \
+            "$upgrade_service" "$upgrade_head_image"
+          ;;
+        verify)
+          # Reads back what seed wrote, against the head image, after that image
+          # has opened and migrated the store the base one left.
+          run_contract "$upgrade_service" verify
+          printf 'UPGRADE_VERIFIED: %s survived %s -> %s\n' \
+            "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
           ;;
         success)
           lifecycle_success=true
@@ -822,6 +1006,26 @@ EOF
     fi
 
     if [ "$INTEGRATION_SUITE" = smoke ]; then
+      cleanup_vault
+      exit 0
+    fi
+
+    # The upgrade lane's work is the lifecycle plan itself -- converge at base,
+    # seed, repin, converge, verify -- and it is finished by the time the loop
+    # ends. What it does NOT own is a second converge for idempotence or a
+    # check-mode pass: the service lane for the same service already proves both
+    # against the head pin, and re-proving them here would double the lane's cost
+    # to say a second time what a routed run already said.
+    #
+    # NOT asserted here, and stated rather than left to be assumed: the exit code
+    # and duration of the base container's stop. An upgrade must stop the old
+    # container, so the observation is available in principle, but Compose
+    # removes it as part of the same recreate and nothing in this lane is
+    # positioned to read it before that. #671's shutdown half is therefore still
+    # uncovered; the migration half is what this lane proves.
+    if [ "$INTEGRATION_SUITE" = upgrade ]; then
+      printf 'UPGRADE_LANE_COMPLETE: %s migrated from %s to %s with its seeded rows intact\n' \
+        "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
       cleanup_vault
       exit 0
     fi

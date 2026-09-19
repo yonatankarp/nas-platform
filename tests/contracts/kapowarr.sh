@@ -4,9 +4,9 @@ set +x
 
 mode=${1:-run}
 case $mode in
-  static|run) ;;
+  static|run|seed|verify) ;;
   *)
-    printf '%s\n' 'kapowarr contract accepts only static or run' >&2
+    printf '%s\n' 'kapowarr contract accepts only static, run, seed or verify' >&2
     exit 2
     ;;
 esac
@@ -22,6 +22,11 @@ contract_repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd -P)
 repo_dir=${PLATFORM_CONTRACT_REPO_DIR:-$contract_repo_dir}
 static_program=$contract_repo_dir/tests/contracts/kapowarr-static.rb
 runtime_program=$contract_repo_dir/tests/contracts/kapowarr-runtime.rb
+# The upgrade lane's seed-and-verify half (#773). Resolved from the checkout
+# this script belongs to, like the other two programs, and named here rather
+# than derived so that its absence is a "no such file" at the top of a run
+# instead of a mode that silently does nothing.
+upgrade_program=$contract_repo_dir/tests/contracts/kapowarr-upgrade.rb
 # Both programs read the INSPECTED tree through this export rather than
 # carrying their own copies -- the static half requires its flatten_tasks out
 # of tests/policy_support.rb, and the runtime half reads
@@ -33,7 +38,13 @@ runtime_program=$contract_repo_dir/tests/contracts/kapowarr-runtime.rb
 # break that.
 PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_REPO_DIR
-ruby "$static_program" "$repo_dir" </dev/null
+# The static half, which the upgrade modes skip: they assert what a deployed
+# service holds across a version change, and the tree they would inspect is
+# the one the lane is repinning underneath them.
+case $mode in
+  seed|verify) ;;
+  *) ruby "$static_program" "$repo_dir" </dev/null ;;
+esac
 
 [ "$mode" = static ] && {
   printf '%s\n' 'kapowarr static contract: authenticated comics writer ownership holds'
@@ -54,5 +65,9 @@ PLATFORM_CONTRACT_REPO_DIR=$repo_dir
 export PLATFORM_CONTRACT_VAULT_FILE PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
 export PLATFORM_DOCKER_ROOT PLATFORM_KAPOWARR_PORT PLATFORM_KAPOWARR_CONTAINER
 export PLATFORM_CONTRACT_REPO_DIR
+
+case $mode in
+  seed|verify) exec ruby "$upgrade_program" "$mode" </dev/null ;;
+esac
 
 exec ruby "$runtime_program" </dev/null

@@ -178,7 +178,7 @@ fi
 
 if [ "$tags_explicit" = true ]; then
   case "$suite" in
-    smoke|idempotence-check) ;;
+    smoke|upgrade|idempotence-check) ;;
     *)
       printf 'integration suite %s does not accept --tags\n' "$suite" >&2
       exit 2
@@ -209,6 +209,82 @@ else
   suite_tags=$fixed_tags
 fi
 
+# The two inputs the upgrade lane takes, and the only two the suite table does
+# not carry.
+#
+# INTEGRATION_UPGRADE_SERVICE is the manifest service directory the lane repins,
+# and INTEGRATION_UPGRADE_BASE_IMAGE is the image reference the BASE branch pins
+# it to -- the version the lane converges first, so that the head pin meets a
+# store a previous version wrote instead of an empty one.
+#
+# The base reference arrives as an environment input rather than being read out
+# of git, and that is forced rather than chosen: the `suites` job checks out at
+# actions/checkout's default depth of 1, so `git show origin/main:services/<svc>/
+# compose.yml` inside the controller has no base commit to read. Deepening all
+# nineteen legs to read one line was the alternative. This is also how every
+# other input here arrives (INTEGRATION_IMAGE_PULL_WIDTH, PLATFORM_BESZEL_*),
+# and it is what lets the lane be exercised without a git fixture.
+#
+# Validated by REFUSING rather than by clamping, which is where this departs
+# from bounded_integer above: there is no nearest valid image reference, and the
+# value reaches a `docker pull` argument and a literal substitution inside the
+# sandbox's compose.yml. The shape required is the one tests/policy_test.rb
+# already requires of every committed pin -- repository:tag@sha256:<64 hex> --
+# so a caller cannot pass a bare tag whose meaning moves under it.
+upgrade_service=${INTEGRATION_UPGRADE_SERVICE:-}
+upgrade_base_image=${INTEGRATION_UPGRADE_BASE_IMAGE:-}
+
+# Which services the lane can be the subject of is DERIVED from which ones have
+# a seed-and-verify program, not restated: a subject with no seeder converges,
+# migrates and asserts nothing, which is a green lane that proves less than the
+# fresh-install lanes it was built to complement. tests/ci/classify_changes.rb
+# reads the same directory for the same list, so the two cannot disagree.
+upgrade_subject_program=$repo_dir/tests/contracts/$upgrade_service-upgrade.rb
+
+if [ -n "$upgrade_base_image" ]; then
+  upgrade_base_digest=${upgrade_base_image##*@sha256:}
+  upgrade_base_name=${upgrade_base_image%@sha256:*}
+  upgrade_base_valid=true
+  case $upgrade_base_image in
+    *@sha256:*) ;;
+    *) upgrade_base_valid=false ;;
+  esac
+  [ "${#upgrade_base_digest}" -eq 64 ] || upgrade_base_valid=false
+  case $upgrade_base_digest in
+    *[!0123456789abcdef]*) upgrade_base_valid=false ;;
+  esac
+  case $upgrade_base_name in
+    *:*) ;;
+    *) upgrade_base_valid=false ;;
+  esac
+  case $upgrade_base_name in
+    *[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._/:-]*)
+      upgrade_base_valid=false
+      ;;
+  esac
+  [ "$upgrade_base_valid" = true ] || {
+    printf 'invalid integration upgrade base image: %s\n' "$upgrade_base_image" >&2
+    exit 2
+  }
+fi
+
+if [ -n "$upgrade_service" ]; then
+  case $upgrade_service in
+    ''|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+      printf 'invalid integration upgrade service: %s\n' "$upgrade_service" >&2
+      exit 2
+      ;;
+  esac
+  [ -f "$repo_dir/services/$upgrade_service/compose.yml" ] || {
+    printf 'unknown integration upgrade service: %s\n' "$upgrade_service" >&2
+    exit 2
+  }
+  [ -f "$upgrade_subject_program" ] || {
+    printf 'integration upgrade service %s has no seed-and-verify program\n' "$upgrade_service" >&2
+    exit 2
+  }
+fi
+
 if [ "$explicit_suite" = true ]; then
   case "${1:-}" in
     -*)
@@ -231,7 +307,7 @@ if [ "$explicit_suite" = true ]; then
     case "$argument" in
       --tags|--tags=*)
         case "$suite" in
-          smoke|idempotence-check)
+          smoke|upgrade|idempotence-check)
             printf 'integration suite options must precede the playbook\n' >&2
             ;;
           *)
@@ -266,7 +342,21 @@ if [ "$describe_suite" = true ] || [ "${INTEGRATION_DESCRIBE_ONLY:-0}" = 1 ]; th
   exit 0
 fi
 
+# The events this suite's run consists of, in order, for
+# tests/integration_lifecycle.sh to validate and tests/integration_controller.sh
+# to execute. An ordinary lane is one converge; the upgrade lane is the five
+# events that make a migration observable, and the table refuses every other
+# ordering of them rather than merely not emitting it.
 emit_lifecycle_plan() {
+  if [ "$suite" = upgrade ]; then
+    printf '%s\n' converge
+    printf '%s\n' seed
+    printf '%s\n' repin
+    printf '%s\n' converge
+    printf '%s\n' verify
+    printf '%s\n' success
+    return 0
+  fi
   printf '%s\n' converge
   printf '%s\n' success
 }
@@ -282,6 +372,22 @@ if [ "$consume_lifecycle" = true ]; then
   consume_integration_lifecycle_plan \
     "$0" --observe-lifecycle --suite "$suite"
   exit $?
+fi
+
+# Required only once the suite is going to RUN. --list-suites, --describe-suite
+# and both lifecycle modes are pure queries about the table and answer without
+# them; the shape check above still refuses a malformed value wherever one is
+# set.
+if [ "$suite" = upgrade ]; then
+  # An explicit `if`, not `A && B || C`: that shape is SC2015 and runs C when A
+  # is true and B is false, which is not the branch structure it reads as. This
+  # file is not on a shellcheck manifest line, but the same shape in the
+  # controller -- which is -- red CI while ShellCheck 0.11.0 stayed silent
+  # locally, so it is written the same way here rather than left to be found.
+  if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
+    printf 'the upgrade suite requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE\n' >&2
+    exit 2
+  fi
 fi
 
 # Service images the suite will need, keyed by the site.yml role tag that
@@ -585,6 +691,30 @@ pull_image() {
 }
 
 suite_pull_images() {
+  # The upgrade lane converges two versions of one service, and only the head one
+  # is written in a compose.yml the loop below can read. Without this the base
+  # pull happens inside community.docker.docker_compose_v2 on the first converge
+  # instead, which is the registry refusal this whole ladder exists to absorb.
+  #
+  # BEFORE the loop rather than after it, and that is load-bearing rather than
+  # tidy: this function's status is the pipeline's, and a trailing command would
+  # replace it. A `[ -z ... ] || printf` placed after the loop returns 0 for every
+  # non-upgrade lane, which swallows exactly the truncated-enumeration failure the
+  # comment inside the loop exists to report -- caught by
+  # tests/integration_suite_test.sh, which plants a missing compose.yml and
+  # requires the pre-pull to refuse. The caller sorts -u, so order is free.
+  #
+  # Gated on the SUITE, not merely on the value being set. The workflow puts both
+  # upgrade inputs on the step environment of every matrix leg -- there is one
+  # step -- so without this gate the beszel lane pulls the Kapowarr base image,
+  # measured with a stub docker under INTEGRATION_PREPULL_ONLY=1. That is two
+  # wasted pulls on a routed bump and twenty-five on a fall-open, against a
+  # Docker Hub allowance of 200 per six hours that a full matrix already spends
+  # about 66 of -- and a rate-limited pull REDS the leg, so it converts a cost
+  # into a possible red on lanes with nothing to do with the upgrade.
+  if [ "$suite" = upgrade ] && [ -n "$upgrade_base_image" ]; then
+    printf '%s\n' "$upgrade_base_image"
+  fi
   printf '%s\n' "$service_image_sources" | while read -r service_tag service_dir; do
     [ -n "$service_tag" ] || continue
     # An empty tag list means the whole play runs, so every implemented service
@@ -1352,6 +1482,11 @@ docker run --rm \
   -e PLATFORM_INTEGRATION_PROJECT_NAMESPACE="$integration_project_namespace" \
   -e INTEGRATION_SUITE="$suite" \
   -e INTEGRATION_TAGS="$suite_tags" \
+  `# The subject the upgrade lane repins and the base version it converges` \
+  `# first. Empty for every other lane, and the controller refuses the upgrade` \
+  `# lane without both.` \
+  -e INTEGRATION_UPGRADE_SERVICE="$upgrade_service" \
+  -e INTEGRATION_UPGRADE_BASE_IMAGE="$upgrade_base_image" \
   -e INTEGRATION_RUN_SERVICE_SCENARIOS="$run_service_scenarios" \
   -e MEDIA_CONTROL_COLLISION_IMAGE="$collision_image" \
   -e INTEGRATION_TOOLCHAIN_PREINSTALLED="$toolchain_preinstalled" \

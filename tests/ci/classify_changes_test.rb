@@ -12,10 +12,20 @@ require_relative "../policy_support"
 include TestScaffold
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
+# THE DEFAULT BRANCH IS NOT ASSUMABLE, and a fixture repository that inherits it
+# is a test that passes on the machine that wrote it. `git init` with no -b takes
+# the caller's own init.defaultBranch: `main` on a development Mac here, `master`
+# on the GitHub runner image. The merge-base case below checked out "main" by
+# name and reported `pathspec 'main' did not match any file(s) known to git` on
+# CI while every local run was green -- and `exception: true` on the first of an
+# `||` pair means the fallback never runs, so writing both names does not help.
+# Every fixture repository in this file therefore names its initial branch, and
+# tests/deployment_summary_test.rb already did this.
+FIXTURE_BRANCH = "main"
 LANES = %w[
   static docs vault reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud
-  vaultwarden karakeep idempotence_check
+  vaultwarden karakeep upgrade idempotence_check
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
 # "Every lane" is two lists rather than one, and which one applies is the whole
@@ -31,8 +41,14 @@ IDEMPOTENCE_LANE = "idempotence_check"
 IDEMPOTENCE_SHARD_LANES = %w[
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
-FULL_LANES = (LANES - IDEMPOTENCE_SHARD_LANES).freeze
-FALL_OPEN_LANES = (LANES - [IDEMPOTENCE_LANE]).freeze
+# The upgrade lane is off in BOTH forms, and it is the only lane that is. It
+# takes a BASE revision as an input and neither `--full` nor a fall-open has one
+# to give it, so turning it on there dispatches a leg that refuses for want of
+# its inputs -- a red nightly saying nothing about the tree. Restated here rather
+# than imported for the same reason as everything else in this file.
+UPGRADE_LANE = "upgrade"
+FULL_LANES = (LANES - IDEMPOTENCE_SHARD_LANES - [UPGRADE_LANE]).freeze
+FALL_OPEN_LANES = (LANES - [IDEMPOTENCE_LANE] - [UPGRADE_LANE]).freeze
 ACQUISITION_LANES = %w[arr downloaders bindery kapowarr pinchflat trailarr seerr].freeze
 # The lanes the media acquisition reconciliation contract reads, and the four
 # files it owns. Both are stated here rather than imported so that widening the
@@ -414,7 +430,11 @@ if defined?(ClassifyChanges)
   }.each do |path, expected_tags|
     service_output = StringIO.new
     ClassifyChanges.write_github_outputs(ClassifyChanges.classify([path]), service_output)
-    check(failures, service_output.string.end_with?("selected_tags=#{expected_tags}\n"),
+    check(failures,
+          service_output.string.end_with?(
+            "selected_tags=#{expected_tags}\nupgrade_service=\nupgrade_base_image=\n" \
+            "upgrade_tags=\n"
+          ),
           "#{path} emitted the wrong prerequisite tag plan: #{service_output.string.inspect}")
   end
 
@@ -446,6 +466,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -455,6 +476,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["smoke","beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,beszel,dozzle
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
   check(failures, io.string == expected_output,
         "GitHub output or prerequisite tag ordering was incorrect: #{io.string.inspect}")
@@ -485,6 +509,7 @@ if defined?(ClassifyChanges)
     nextcloud=true
     vaultwarden=true
     karakeep=true
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -494,6 +519,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-check"]
     selected_tags=
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
   check(failures, full_output.string == expected_full_output,
         "--full output must leave selected_tags empty: #{full_output.string.inspect}")
@@ -525,6 +553,7 @@ if defined?(ClassifyChanges)
     nextcloud=true
     vaultwarden=true
     karakeep=true
+    upgrade=false
     idempotence_check=false
     idempotence_1=true
     idempotence_2=true
@@ -534,6 +563,9 @@ if defined?(ClassifyChanges)
     idempotence_6=true
     suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5","idempotence-6"]
     selected_tags=
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
 
   shared_output = StringIO.new
@@ -578,6 +610,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -587,6 +620,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["smoke","paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,paperless
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Paperless-only output must retain its exact tag plan: #{paperless_output.string.inspect}")
 
@@ -624,6 +660,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -633,6 +670,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["bindery","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,arr,downloaders,audiobookshelf,bindery
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Bindery-only output must retain its exact tag plan: #{bindery_output.string.inspect}")
 
@@ -664,6 +704,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -673,6 +714,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["kapowarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,kapowarr
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Kapowarr-only output must retain its exact tag plan: #{kapowarr_output.string.inspect}")
 
@@ -704,6 +748,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -713,6 +758,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["pinchflat","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,pinchflat
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Pinchflat-only output must retain its exact tag plan: #{pinchflat_output.string.inspect}")
 
@@ -748,6 +796,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -757,6 +806,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["trailarr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,arr,trailarr
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Trailarr-only output must retain its exact tag plan: #{trailarr_output.string.inspect}")
 
@@ -792,6 +844,7 @@ if defined?(ClassifyChanges)
     nextcloud=false
     vaultwarden=false
     karakeep=false
+    upgrade=false
     idempotence_check=true
     idempotence_1=false
     idempotence_2=false
@@ -801,6 +854,9 @@ if defined?(ClassifyChanges)
     idempotence_6=false
     suites=["seerr","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,arr,jellyfin,seerr
+    upgrade_service=
+    upgrade_base_image=
+    upgrade_tags=
   OUTPUT
         "Seerr-only output must retain its exact tag plan: #{seerr_output.string.inspect}")
 
@@ -808,7 +864,10 @@ if defined?(ClassifyChanges)
   ClassifyChanges.write_github_outputs(ClassifyChanges.classify(["README.md"]), io)
   check(failures, io.string.start_with?("static=true\ndocs=true\n"),
         "the README is read by the policy set and by the link gate, so it must select both")
-  check(failures, io.string.end_with?("suites=[]\nselected_tags=\n"),
+  check(failures,
+        io.string.end_with?(
+          "suites=[]\nselected_tags=\nupgrade_service=\nupgrade_base_image=\nupgrade_tags=\n"
+        ),
         "protected operator docs must select static CI and emit empty selected_tags")
   # The CI matrix job skips on exactly this literal, so it has to stay compact.
   check(failures, io.string.include?("suites=[]\n"),
@@ -846,7 +905,7 @@ if defined?(ClassifyChanges)
         "classifier outputs must not resurrect the retired tMM project")
 
   Dir.mktmpdir("classify-changes-git-") do |root|
-    system("git", "init", "-q", root, exception: true)
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
     system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
     source = File.join(root, "roles", "paperless_ngx", "tasks", "main.yml")
@@ -874,7 +933,7 @@ if defined?(ClassifyChanges)
   end
 
   Dir.mktmpdir("classify-changes-copy-delete-") do |root|
-    system("git", "init", "-q", root, exception: true)
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
     system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
     beszel_source = File.join(root, "roles", "beszel", "tasks", "main.yml")
@@ -918,6 +977,184 @@ if defined?(ClassifyChanges)
     check(failures, selected_lanes(deleted_paths).include?("dozzle"),
           "deleting a Dozzle-owned path must retain Dozzle selection")
   end
+
+  # The upgrade lane's subject, against a real two-revision history rather than
+  # against a path list -- the resolution reads both revisions of the file with
+  # `git show`, so a --files case could not reach it at all.
+  #
+  # Three cases, and the second is the one worth having: a compose.yml can change
+  # without its pin moving -- a memory limit, a mount, a logging option -- and
+  # converging the same version twice costs a full lane to prove nothing. The
+  # third is the derivation: a service with no seed-and-verify program is not a
+  # subject, however its pin moves.
+  Dir.mktmpdir("classify-changes-upgrade-") do |root|
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
+    system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
+    system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
+    digest = ->(seed) { (seed.to_s * 64)[0, 64] }
+    pin = ->(version, seed) { "docker.io/mrcas/kapowarr:#{version}@sha256:#{digest.call(seed)}" }
+    compose = File.join(root, "services", "kapowarr", "compose.yml")
+    komga = File.join(root, "services", "komga", "compose.yml")
+    FileUtils.mkdir_p(File.dirname(compose))
+    FileUtils.mkdir_p(File.dirname(komga))
+    write_compose = lambda do |path, image, limit|
+      File.write(path, "services:\n  app:\n    image: #{image}\n    mem_limit: #{limit}\n")
+    end
+    write_compose.call(compose, pin.call("v1.3.1", 1), "1g")
+    write_compose.call(komga, pin.call("v1.0.0", 3), "1g")
+    system("git", "-C", root, "add", ".", exception: true)
+    system("git", "-C", root, "commit", "-qm", "base", exception: true)
+    upgrade_base = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+
+    write_compose.call(compose, pin.call("v1.3.2", 2), "1g")
+    system("git", "-C", root, "commit", "-qam", "bump", exception: true)
+    upgrade_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+
+    subject = Dir.chdir(root) do
+      ClassifyChanges.upgrade_subject(["services/kapowarr/compose.yml"], upgrade_base, upgrade_head)
+    end
+    check(failures, subject == ["kapowarr", pin.call("v1.3.1", 1)],
+          "a moved Kapowarr pin must resolve as the upgrade subject, got #{subject.inspect}")
+
+    write_compose.call(compose, pin.call("v1.3.2", 2), "2g")
+    system("git", "-C", root, "commit", "-qam", "limit", exception: true)
+    unmoved_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    unmoved = Dir.chdir(root) do
+      ClassifyChanges.upgrade_subject(["services/kapowarr/compose.yml"], upgrade_head, unmoved_head)
+    end
+    check(failures, unmoved.nil?,
+          "a compose change that does not move the pin must select no upgrade subject, " \
+          "got #{unmoved.inspect}")
+
+    write_compose.call(komga, pin.call("v1.1.0", 4), "1g")
+    system("git", "-C", root, "commit", "-qam", "komga", exception: true)
+    komga_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    unseeded = Dir.chdir(root) do
+      ClassifyChanges.upgrade_subject(["services/komga/compose.yml"], unmoved_head, komga_head)
+    end
+    check(failures, unseeded.nil?,
+          "a service with no seed-and-verify program must not be an upgrade subject, " \
+          "got #{unseeded.inspect}")
+
+    # A FALL-OPEN THAT MOVED A SUBJECT PIN MUST STILL DISPATCH THE LANE, and
+    # this is the case that was wrong first: the unmapped-path return fires
+    # inside the loop, before the subject was resolved, so the lane was forced
+    # off however the pins had moved. The pull request that introduced the lane
+    # touches tests/integration.sh, which is unmapped, so the lane could not
+    # have run on its own change -- and neither could a Renovate bump that
+    # happened to touch anything else.
+    write_compose.call(compose, pin.call("v1.3.3", 5), "2g")
+    File.write(File.join(root, "unexpected-new-runtime-file"), "unmapped\n")
+    system("git", "-C", root, "add", "-A", exception: true)
+    system("git", "-C", root, "commit", "-qm", "bump beside an unmapped path", exception: true)
+    fall_open_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    fall_open = Dir.chdir(root) do
+      ClassifyChanges.classify(
+        ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+        base: komga_head, head: fall_open_head
+      )
+    end
+    check(failures, fall_open.fetch("upgrade"),
+          "a fall-open whose diff moved a subject pin must still dispatch the upgrade lane")
+    check(failures, ClassifyChanges.suites(fall_open).include?("upgrade"),
+          "the fall-open selection must carry the upgrade suite, got " \
+          "#{ClassifyChanges.suites(fall_open).inspect}")
+    # ... and the shards rather than the single idempotence pass, because it is
+    # still a fall-open. The upgrade lane is additive to that, not a form of it.
+    check(failures, !fall_open.fetch(IDEMPOTENCE_LANE) &&
+                    IDEMPOTENCE_SHARD_LANES.all? { |lane| fall_open.fetch(lane) },
+          "a fall-open must keep taking the idempotence shards")
+
+    # The other half, and the reason `--full` needs no special case: it reaches
+    # the resolution with no base revision, so there is no subject and the lane
+    # stays off rather than dispatching a leg that would refuse for want of its
+    # inputs.
+    unmapped_only = Dir.chdir(root) do
+      ClassifyChanges.classify(["unexpected-new-runtime-file"],
+                               base: komga_head, head: fall_open_head)
+    end
+    check(failures, !unmapped_only.fetch("upgrade"),
+          "a fall-open that moved no subject pin must not dispatch the upgrade lane")
+
+    # And the lane's tags are its SUBJECT's, not the run's. This is the half the
+    # fall-open fix would otherwise have broken: a fall-open selects `foundation`,
+    # which empties selected_tags, so a lane reading that output would converge
+    # the whole site twice for a one-service proof -- the idempotence lane's cost,
+    # on the very selection a Renovate bump lands in whenever it touches anything
+    # unmapped.
+    # Re-classified rather than reusing `fall_open` above, because
+    # write_github_outputs reads the subject classify last resolved: the
+    # unmapped-only case between them resolved none, and pairing that with this
+    # selection is exactly what the refusal inside it now catches.
+    fall_open_output = StringIO.new
+    Dir.chdir(root) do
+      ClassifyChanges.write_github_outputs(
+        ClassifyChanges.classify(
+          ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+          base: komga_head, head: fall_open_head
+        ),
+        fall_open_output
+      )
+    end
+    check(failures, fall_open_output.string.include?("selected_tags=\n"),
+          "a fall-open must still empty selected_tags for the lanes that read it")
+    check(failures,
+          fall_open_output.string.include?(
+            "upgrade_tags=host_prep,deployment_bundle,kapowarr\n"
+          ),
+          "the upgrade lane must carry its subject's own tags through a fall-open, got " \
+          "#{fall_open_output.string[/^upgrade_tags=.*$/].inspect}")
+
+    # THE PAIRING ITSELF, which nothing exercised until now. The subject is the
+    # one output that does not come from the selection write_github_outputs is
+    # handed: classify resolves it into an instance variable, so a caller that
+    # classifies twice and then writes emits the LAST classification's subject
+    # beside the FIRST one's lanes -- silent, and wrong in the direction that
+    # matters, since a lane dispatched with no subject tags converges the whole
+    # site. The guard that refuses it was itself unproved: deleting it left this
+    # file green, because the case above re-classifies immediately before
+    # writing and so can never reach it.
+    stale = Dir.chdir(root) do
+      selection = ClassifyChanges.classify(
+        ["services/kapowarr/compose.yml", "unexpected-new-runtime-file"],
+        base: komga_head, head: fall_open_head
+      )
+      ClassifyChanges.classify(["README.md"])
+      begin
+        ClassifyChanges.write_github_outputs(selection, StringIO.new)
+        nil
+      rescue RuntimeError => e
+        e.message
+      end
+    end
+    check(failures, stale&.include?("does not match the resolved subject"),
+          "writing a selection beside a later classification's subject must be refused, got " \
+          "#{stale.inspect}")
+
+    # THE BASE IS THE MERGE BASE, not the base tip. changed_paths diffs
+    # `base...head`, so the paths handed in are the branch's own changes; reading
+    # the pin at the base TIP would take whatever that ref pins now. Constructed
+    # here: the branch forks, then the base ref moves its own pin, and the
+    # subject's base must still be what the branch forked from. Reading the tip
+    # instead reports a base the branch never had -- and on a base whose pin is
+    # NEWER, the lane converges that and then the head and reds at
+    # image_downgrade_guard on a pull request performing no downgrade.
+    system("git", "-C", root, "checkout", "-q", "-b", "fork", fall_open_head, exception: true)
+    write_compose.call(compose, pin.call("v1.4.0", 7), "2g")
+    system("git", "-C", root, "commit", "-qam", "branch bumps to v1.4.0", exception: true)
+    branch_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+    system("git", "-C", root, "checkout", "-q", FIXTURE_BRANCH, exception: true)
+    write_compose.call(compose, pin.call("v1.9.9", 9), "2g")
+    system("git", "-C", root, "commit", "-qam", "base moves on without the branch", exception: true)
+    moved_base = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
+
+    forked = Dir.chdir(root) do
+      ClassifyChanges.upgrade_subject(["services/kapowarr/compose.yml"], moved_base, branch_head)
+    end
+    check(failures, forked == ["kapowarr", pin.call("v1.3.3", 5)],
+          "the upgrade base must be the pin at the merge base, not at the base tip " \
+          "(#{pin.call('v1.9.9', 9)}), got #{forked.inspect}")
+  end
 end
 
 # Invalid mode combinations must fail with usage status before touching output.
@@ -959,7 +1196,7 @@ end
 # A repository the classifier can run inside: it needs its own script and the suite
 # table beside it, committed first so they never appear in a diff under test.
 def init_push_repository(root)
-  system("git", "init", "-q", root, exception: true)
+  system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
   system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
   system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
   FileUtils.mkdir_p(File.join(root, "tests", "ci"))

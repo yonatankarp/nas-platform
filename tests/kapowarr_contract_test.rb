@@ -63,7 +63,7 @@ STATIC_PROGRAM = File.join(ROOT, "tests", "contracts", "kapowarr-static.rb")
 RUNTIME_PROGRAM = File.join(ROOT, "tests", "contracts", "kapowarr-runtime.rb")
 
 SUCCESS_LINE = "kapowarr static contract: authenticated comics writer ownership holds"
-MODE_REFUSAL = "kapowarr contract accepts only static or run"
+MODE_REFUSAL = "kapowarr contract accepts only static, run, seed or verify"
 
 # Exactly what the static program reads: its own `required` list plus the shared
 # flatten_tasks it requires through PLATFORM_CONTRACT_REPO_DIR.
@@ -1892,7 +1892,11 @@ end
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
-    %w[verify drift notify --platform].each do |mode|
+    # `verify` was in this list until #773 made it a mode. It is replaced rather
+    # than dropped -- a refused-mode sweep that shrinks every time a mode is
+    # added stops covering the guard -- and `upgrade` is a deliberate near-miss
+    # of the lane that introduced the new arms.
+    %w[upgrade drift notify --platform].each do |mode|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
       )
@@ -1901,6 +1905,22 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         status.exitstatus == 2
       failures << "wrapper: mode #{mode} was refused without its diagnostic" unless
         (stdout + stderr).include?(MODE_REFUSAL)
+    end
+
+    # The other direction, which a refusal sweep alone cannot give: the two modes
+    # the upgrade lane dispatches must reach PAST the mode guard. They still fail
+    # here -- no vault file, no running service -- but with the environment
+    # requirement's own diagnostic rather than with the guard's exit 2.
+    %w[seed verify].each do |mode|
+      stdout, stderr, status = Open3.capture3(
+        { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, mode
+      )
+      failures << "wrapper: upgrade mode #{mode} was accepted with no environment" if
+        status.success?
+      failures << "wrapper: upgrade mode #{mode} was refused by the mode guard" if
+        (stdout + stderr).include?(MODE_REFUSAL)
+      failures << "wrapper: upgrade mode #{mode} did not reach its environment requirements" unless
+        (stdout + stderr).include?("PLATFORM_CONTRACT_VAULT_FILE is required")
     end
 
     stdout, stderr, status = Open3.capture3(
@@ -2694,8 +2714,8 @@ WRAPPER_MUTATIONS = [
   },
   {
     label: "the mode guard",
-    from: "  static|run) ;;",
-    to: "  static|run|verify|drift|notify|--platform) ;;",
+    from: "  static|run|seed|verify) ;;",
+    to: "  static|run|seed|verify|upgrade|drift|notify|--platform) ;;",
     layer: :wrapper
   },
   {

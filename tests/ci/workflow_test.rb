@@ -84,6 +84,13 @@ FULL_RUN_SUITES = %w[
   dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
   idempotence-check
 ].freeze
+# The one lane a `--full` run never dispatches because it has no BASE revision to
+# compare against, and so the one that would be invisible to an argv sweep driven
+# by FULL_RUN_SUITES alone. Named here for exactly the reason the shards below
+# are: the sweep has to cover every suite the matrix can dispatch by any route,
+# and the route that reaches this one is a routed pull request rather than
+# `--full`.
+UPGRADE_SUITES = %w[upgrade].freeze
 # The five shards that decompose the untagged idempotence lane. They are not in
 # the list above because a `--full` run does not dispatch them -- it keeps the
 # single unsharded pass -- so an argv sweep driven by that list alone would have
@@ -95,10 +102,16 @@ IDEMPOTENCE_SHARD_SUITES = %w[
 ].freeze
 # Every suite the matrix can ever dispatch, by either route. What the argv sweep
 # below has to cover.
-INTEGRATION_SUITES = (FULL_RUN_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
+INTEGRATION_SUITES = (FULL_RUN_SUITES + UPGRADE_SUITES + IDEMPOTENCE_SHARD_SUITES).freeze
+# The suites that receive the run's own selected_tags. The upgrade lane is NOT
+# one of them: its tags are its subject's, on their own output, because
+# selected_tags is the union of every tagged lane and a fall-open empties it.
 TAGGED_SUITES = %w[smoke idempotence-check].freeze
-CLASSIFIER_OUTPUTS = %w[static docs vault reconciliation suites selected_tags].freeze
+CLASSIFIER_OUTPUTS =
+  %w[static docs vault reconciliation suites selected_tags
+     upgrade_service upgrade_base_image upgrade_tags].freeze
 SAMPLE_TAGS = "host_prep,deployment_bundle,beszel"
+UPGRADE_SAMPLE_TAGS = "host_prep,deployment_bundle,kapowarr"
 STATIC_STEP_NAMES = [
   "Check out repository",
   "Validate shell syntax",
@@ -319,14 +332,14 @@ end
 # Runs the matrix step's own shell against a stub harness that echoes its
 # arguments, so the tags contract is proven by the argv a suite would receive
 # rather than by the step's source text.
-def integration_argv(script, suite, selected_tags)
+def integration_argv(script, suite, selected_tags, upgrade_tags = UPGRADE_SAMPLE_TAGS)
   Dir.mktmpdir("ci-suite-matrix-") do |root|
     harness = File.join(root, "tests", "integration.sh")
     FileUtils.mkdir_p(File.dirname(harness))
     File.write(harness, %(#!/bin/sh\nprintf '%s\\n' "$@"\n))
     File.chmod(0o755, harness)
     stdout, stderr, status = Open3.capture3(
-      { "SUITE" => suite, "SELECTED_TAGS" => selected_tags },
+      { "SUITE" => suite, "SELECTED_TAGS" => selected_tags, "UPGRADE_TAGS" => upgrade_tags },
       "sh", "-c", script, chdir: root
     )
     return [status.success? && stderr.empty?, stdout.lines(chomp: true)]
@@ -915,6 +928,20 @@ check(failures,
 check(failures, ClassifyChanges.suites(ClassifyChanges.classify(["README.md"])) == [],
       "an inert change must dispatch no suite")
 
+# The floor under UPGRADE_SUITES, for the reason FULL_RUN_SUITES and
+# IDEMPOTENCE_SHARD_SUITES have theirs: emptying this list to %w[] leaves both
+# the upgrade argv sweep and the empty-tags refusal check running over nothing
+# while this file still prints that every check passed -- green, and faster,
+# which is the shape the sharding section of CLAUDE.md is entirely about. The
+# list is also asserted to be a subset of the suite table rather than a set of
+# names this file invented.
+check(failures, UPGRADE_SUITES == %w[upgrade],
+      "UPGRADE_SUITES must name exactly the upgrade lane, found #{UPGRADE_SUITES.inspect}: an " \
+      "emptied list stops the argv sweep below covering the one suite it was added for")
+check(failures, (UPGRADE_SUITES - ClassifyChanges::SUITES.values).empty?,
+      "UPGRADE_SUITES names a suite tests/ci/suites.conf does not: " \
+      "#{(UPGRADE_SUITES - ClassifyChanges::SUITES.values).inspect}")
+
 suites_checkout = Array(suites_job["steps"]).find { |step| step["uses"]&.start_with?("actions/checkout@") }
 check(failures, suites_checkout&.fetch("uses", nil).to_s.split("@").first == CHECKOUT_ACTION_NAME,
       "suites must check out the repository with the pinned action")
@@ -1029,12 +1056,28 @@ check(failures, integration_step.dig("env", "SUITE") == "${{ matrix.suite }}",
       "the matrix suite must reach the harness through env, not through shell interpolation")
 check(failures, integration_step.dig("env", "SELECTED_TAGS") == "${{ needs.changes.outputs.selected_tags }}",
       "suites must pass selected tags through the environment")
+# The upgrade lane's subject and base pin reach the harness the same way, and
+# from the classifier rather than from this job: the `changes` job is the one
+# that checks out at fetch-depth 0, and this one takes actions/checkout's
+# default depth of 1, so a base revision is not readable from here at all. A
+# lane dispatched without them refuses rather than converging one version twice.
+{ "INTEGRATION_UPGRADE_SERVICE" => "upgrade_service",
+  "INTEGRATION_UPGRADE_BASE_IMAGE" => "upgrade_base_image",
+  "UPGRADE_TAGS" => "upgrade_tags" }.each do |name, output|
+  check(failures,
+        integration_step.dig("env", name) == "${{ needs.changes.outputs.#{output} }}",
+        "suites must pass #{name} from the classifier's #{output} output")
+end
 integration_run = integration_step["run"].to_s
 check(failures, !integration_run.match?(/\beval\b/), "suites must not use eval")
 
 # integration.sh exits 2 when --tags reaches a suite that does not accept it, so
 # the guarantee is checked as argv rather than as step text.
 INTEGRATION_SUITES.each do |suite|
+  # The upgrade lane reads neither branch below: its tags come from its own
+  # output, so it is asserted on its own terms afterwards.
+  next if UPGRADE_SUITES.include?(suite)
+
   untagged = ["--suite", suite, "site.yml"]
   tagged = TAGGED_SUITES.include?(suite) ? ["--suite", suite, "--tags", SAMPLE_TAGS, "site.yml"] : untagged
   ok, argv = integration_argv(integration_run, suite, SAMPLE_TAGS)
@@ -1043,6 +1086,27 @@ INTEGRATION_SUITES.each do |suite|
   ok, argv = integration_argv(integration_run, suite, "")
   check(failures, ok && argv == untagged,
         "#{suite} without selected tags must invoke #{untagged.inspect}, got #{argv.inspect}")
+end
+
+# The upgrade lane takes its SUBJECT's tags, whatever the run's own selection is.
+# A fall-open empties selected_tags, and a fall-open is exactly the selection a
+# Renovate bump lands in whenever its pull request touches anything unmapped --
+# so a lane reading selected_tags there would converge the whole site twice for a
+# one-service proof, which is the idempotence lane's cost and not this one's.
+UPGRADE_SUITES.each do |suite|
+  expected = ["--suite", suite, "--tags", UPGRADE_SAMPLE_TAGS, "site.yml"]
+  ["", SAMPLE_TAGS].each do |run_tags|
+    ok, argv = integration_argv(integration_run, suite, run_tags)
+    check(failures, ok && argv == expected,
+          "#{suite} must invoke #{expected.inspect} whatever the run's own tags are " \
+          "(selected_tags=#{run_tags.inspect}), got #{argv.inspect}")
+  end
+  # And it refuses rather than degrading to the untagged branch, because that
+  # failure would read as the lane being slow rather than as an empty subject.
+  ok, argv = integration_argv(integration_run, suite, SAMPLE_TAGS, "")
+  check(failures, !ok && argv.empty?,
+        "#{suite} with no subject tags must refuse rather than converge the whole site, " \
+        "got #{argv.inspect}")
 end
 
 # Counterexample: the argv harness must be able to see --tags leaking into the
