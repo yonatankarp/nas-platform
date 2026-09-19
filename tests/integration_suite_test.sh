@@ -320,6 +320,7 @@ seed
 repin
 converge
 verify
+stop
 success' ] || {
   printf 'unexpected upgrade lifecycle plan:\n%s\n' "$upgrade_plan" >&2
   exit 1

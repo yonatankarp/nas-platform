@@ -180,10 +180,30 @@ diff — #771's batch group excludes both of these images — but a hand-written
 pull request bumping Bindery and Kapowarr together can, and it would prove one
 of them.
 
-**#671's shutdown half is not covered.** An upgrade must stop the old container,
-so its exit code and duration ought to be observable, but Compose removes that
-container as part of the same recreate and nothing in this lane is positioned to
-read it first. The migration half is what this lane proves.
+**The lane ends by stopping the head container and reading its exit code
+(#781).** That is the shutdown half of #671, where a patch whose migration was
+correct shipped a handler that raised, and every stop was waited out to Docker's
+SIGKILL — 30.46s and exit 137 on the NAS, with the first report coming from
+Dozzle's `die` rule after the poller had deployed it. 137 is 128+SIGKILL and
+means exactly "the grace expired"; 0 and 143 mean exactly that it did not, so the
+exit code is the whole assertion and nothing is asserted on the clock. It is
+measured rather than read off `stop_grace_period`, because a *declared* grace is
+not evidence of stopping inside one — `alert-relay` and `nextcloud-cron` both
+declared one and were killed anyway, for the two independent reasons the
+container-memory section records.
+
+Two limits sit under that. The **base** container's stop is still unobservable:
+Compose removes it inside the same recreate, so nothing here can read it first.
+And this would have caught #671 only by luck — that raise needed a task at the
+head of the queue that had been created and never started, and
+`services/kapowarr/tasks.py` shows `_process_queue()` starts `queue[0]` inside
+every `add()`, so an unstarted head exists only in the window between a finishing
+task's `pop(0)` and its `_process_queue()`. Upstream reproduced it with 300
+concurrent submissions. What the assertion does cover deterministically is the
+regression class those two recorded containers are in: a PID 1 with no handler,
+an ignored `STOPSIGNAL`, a handler that hangs, and — the one specific to this
+lane's own subjects — a carried patch that has stopped applying to the image it
+is mounted over.
 
 **A rollback reds this lane, and that is the guard rather than a defect.** A
 revert or a Renovate rollback makes the base newer than the head, so the

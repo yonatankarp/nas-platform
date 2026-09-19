@@ -14,12 +14,19 @@
 #   * Volumes are the natural payload and they need a ComicVine key, which
 #     roles/kapowarr deliberately refuses to take on because it cannot be proved
 #     in any disposable lane.
-#   * A second root folder is refused by the role itself -- "Refuse a Kapowarr
-#     deployment still holding a superseded library root" -- so seeding one
-#     would red the upgrade converge for a reason that has nothing to do with
-#     the migration.
+#   * A second root folder reds the upgrade converge -- but NOT, as this comment
+#     claimed until #781, at "Refuse a Kapowarr deployment still holding a
+#     superseded library root". That assertion reads
+#     `present or migrations | length == 0`, and the declared root IS present by
+#     the time a seed runs, so it passes with an extra root beside it. What
+#     refuses is the role's own verification, which asserts the root list equals
+#     exactly `[kapowarr_library_root]` and runs inside the upgrade converge.
+#     Same outcome, different task, and the difference decides where a reader
+#     goes looking.
 #   * Every settings key the role declares is written back on the next converge,
-#     so a surviving value and a re-written one would be indistinguishable.
+#     so a surviving value and a re-written one would be indistinguishable. The
+#     same verification asserts the declared subset equals the declaration, so
+#     it is closed from both ends.
 #
 # What is left is the one value in this service that the application generates
 # and the platform provably does not author. docs/dossier-kapowarr.md records it:
@@ -43,6 +50,38 @@
 # WHAT IS RECORDED IS A DIGEST, NOT THE KEY. The key authorizes every route that
 # renames or deletes comics, and the record file outlives both container
 # invocations inside the sandbox. A SHA-256 compares exactly as well.
+#
+# WHY THIS SEED WAS NOT WIDENED AND BINDERY'S WAS (#781).
+#
+# #781 asks each seed to be representative of what its store actually holds.
+# Bindery's now writes two rows in two tables. Kapowarr's is still one value,
+# and the reason is a negative result rather than an omission: every other table
+# in this store is out of reach behind a constraint this platform put there on
+# purpose, and the only route left would have been a guess.
+#
+#   * volumes, issues, files -- ComicVine, refused above.
+#   * root_folders -- the exact-list verification above.
+#   * config, for every key roles/kapowarr declares -- rewritten each converge,
+#     and asserted equal to the declaration.
+#   * config, for the keys it does NOT declare -- `log_level`, `chmod_folder`,
+#     `chown_group`, `change_file_date`, `flaresolverr_base_url` and the six
+#     `proxy_*` keys. Every one of them is a guess at an accepted value:
+#     docs/dossier-kapowarr.md's own "What remains unsettled" says the accepted
+#     range was probed for `volume_padding` alone. A settings write is refused
+#     whole if any single key in it is invalid, so a wrong guess reds the lane at
+#     seed on a Renovate pull request, for a reason that is the seeder's and not
+#     the migration's.
+#   * indexer_clients -- `PUT /api/indexers/<id>` calls the client's `test()`,
+#     which fetches getcomics.org before it stores anything. That is the
+#     third-party dependency roles/kapowarr already refuses; taking it on here
+#     would make an automerge gate depend on a comics site being up.
+#   * task_history, blocklist, credentials, external_download_clients -- no
+#     probed route in the dossier at all, and this program's own rule above is
+#     that a shape has to be demonstrated rather than assumed.
+#
+# So one value it is, and it is the right one value: it is the only thing in
+# this store that the application generates, the platform provably cannot
+# author, and a rebuilt store therefore cannot reproduce.
 #
 # WHAT VERIFY PROVES, AND WHAT IT DOES NOT. It proves one row the base image
 # wrote is still readable after the head image opened the store. It does not

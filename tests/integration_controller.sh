@@ -856,6 +856,136 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           printf 'UPGRADE_VERIFIED: %s survived %s -> %s\n' \
             "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
           ;;
+        stop)
+          # THE SHUTDOWN HALF OF #671, WHICH #773 LEFT UNCOVERED (#781).
+          #
+          # That upgrade was a patch whose migration ran correctly and whose
+          # shutdown handler raised, so every stop was waited out to Docker's
+          # SIGKILL -- 30.46s and exit 137 on the NAS. A lane that ends at verify
+          # reports a green migration and says nothing about that, which is half
+          # of what automerging these images needs.
+          #
+          # THE EXIT CODE IS THE MEASUREMENT, and it is a measurement rather than
+          # a reading of stop_grace_period on purpose: CLAUDE.md records two
+          # containers here that DECLARED a grace and were killed inside it
+          # anyway -- alert-relay, Python as PID 1 with no handler, and
+          # nextcloud-cron, whose image carries php:apache's ignored
+          # STOPSIGNAL SIGWINCH over busybox crond. 137 is 128+SIGKILL and means
+          # exactly "the grace expired"; 0 and 143 mean exactly that it did not.
+          # A wall-clock threshold beside that would add a load-dependent red
+          # without adding a claim, so the elapsed seconds are reported as
+          # evidence and nothing is asserted on them.
+          #
+          # WHICH grace expired is the container's own, not a flat ten seconds,
+          # and that is worth stating because the whole claim above rests on it.
+          # Compose sets StopTimeout on the container at create time from
+          # stop_grace_period -- pkg/compose/create.go, `StopTimeout:
+          # ToSeconds(service.StopGracePeriod)` -- and `docker stop` with no -t
+          # uses that configured value, falling back to the daemon's ten seconds
+          # only when the service declared none. So a future subject declaring
+          # 30s is measured against 30s rather than red at ten. Both subjects
+          # today land on ten either way (Kapowarr declares 10s since #751,
+          # Bindery declares nothing), which is exactly why the window is
+          # REPORTED on both paths below: the day that stops being true, the
+          # evidence line says so instead of this comment having to be trusted.
+          #
+          # WHAT THIS DOES NOT CATCH, stated rather than implied: #671's own
+          # raise needed a task at the head of the queue that had been created
+          # and never started, and services/kapowarr/tasks.py shows that state is
+          # a race rather than a reachable request -- _process_queue() starts
+          # queue[0] inside every add(), so an unstarted head exists only between
+          # the pop(0) and the _process_queue() of a finishing task's finally.
+          # Upstream reproduced it with 300 concurrent submissions. This arm
+          # therefore covers the deterministic shutdown regressions -- a PID 1
+          # with no handler, an ignored STOPSIGNAL, a handler that hangs, a
+          # carried patch that has stopped applying to the image it is mounted
+          # over -- and would have caught #671 only by luck.
+          #
+          # The base container's stop is still unobservable for the reason #773
+          # gave: Compose removes it inside the same recreate.
+          #
+          # ONE RISK ON A FIRST DISPATCH, which is not a defect in this
+          # assertion. Kapowarr's clean stop is measured -- services/kapowarr/
+          # compose.yml records 0.22s and exit 0 against the pinned image, and
+          # the tasks.py trailer beside it records the mechanism rather than the
+          # numbers. Bindery's is not measured anywhere: it
+          # declares no stop_grace_period, its runtime is distroless with
+          # /bindery as PID 1, and nothing in the Bindery dossier or
+          # roles/bindery says what it does with a SIGTERM. It is one of the
+          # eleven containers CLAUDE.md names as taking Docker's default grace
+          # on an expectation rather than a measurement. So the first red here
+          # for that subject may be pre-existing behaviour rather than the bump,
+          # which is what the failure message says.
+          #
+          # AND IT IS NOT BINDERY'S ONLY ONE. tests/contracts/bindery-upgrade.rb
+          # carries a second, independent first-dispatch risk -- its settings
+          # canary writes a key no Bindery version defines, through a route the
+          # tree records answering 403 for at least one key class. Either reds
+          # the Bindery upgrade lane the first time it runs for real, for a
+          # reason that is this repository's and not the image's, so a reader
+          # meeting a red should rule out both before holding the bump.
+          upgrade_project=$integration_project_namespace-$upgrade_service
+          upgrade_running=$(docker ps \
+            --filter "label=com.docker.compose.project=$upgrade_project" \
+            --filter status=running --format '{{.Names}}')
+          # A container that had already died reads as a clean stop -- an exited
+          # container keeps whatever code it exited with, and docker stop answers
+          # 0 for it. So the running state is required BEFORE the stop rather
+          # than inferred from it, and an empty enumeration is a refusal: it is
+          # also what a subject whose Compose project is not named this way would
+          # produce, and that must not pass as a stack that stopped cleanly.
+          [ -n "$upgrade_running" ] || {
+            printf 'no running container in the upgrade subject project %s to stop\n' \
+              "$upgrade_project" >&2
+            exit 1
+          }
+          upgrade_stop_started=$(date +%s)
+          for upgrade_container in $upgrade_running; do
+            docker stop "$upgrade_container" >/dev/null || {
+              printf 'could not stop the upgraded container %s\n' \
+                "$upgrade_container" >&2
+              exit 1
+            }
+          done
+          upgrade_stop_elapsed=$(($(date +%s) - upgrade_stop_started))
+          for upgrade_container in $upgrade_running; do
+            upgrade_stop_state=$(docker inspect \
+              --format '{{.State.Status}}:{{.State.ExitCode}}' \
+              "$upgrade_container") || {
+              printf 'could not read the stopped state of %s\n' \
+                "$upgrade_container" >&2
+              exit 1
+            }
+            # The window that stop was measured against. StopTimeout is a
+            # pointer in the container config, so an undeclared grace prints
+            # <nil> rather than a number; both are reported verbatim, because
+            # naming the daemon's ten here would be this comment's guess rather
+            # than the daemon's answer.
+            upgrade_stop_grace=$(docker inspect \
+              --format '{{.Config.StopTimeout}}' "$upgrade_container" 2>/dev/null) \
+              || upgrade_stop_grace=unreadable
+            case $upgrade_stop_state in
+              exited:0|exited:143) ;;
+              *)
+                printf '%s did not stop cleanly: %s, against a configured StopTimeout of %s (<nil> means the service declared no stop_grace_period, so the daemon default of ten seconds applied). 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
+                  "$upgrade_container" "$upgrade_stop_state" \
+                  "$upgrade_stop_grace" >&2
+                exit 1
+                ;;
+            esac
+            # Per container, because the window is per container and the elapsed
+            # below is the whole loop's. A project-level line carrying one
+            # container's StopTimeout would attribute it to the others, which is
+            # wrong the first time a multi-container subject is added -- and the
+            # obvious next subjects (Nextcloud, Immich, Paperless) all are.
+            printf 'UPGRADE_STOPPED_CONTAINER: %s %s against a configured StopTimeout of %s\n' \
+              "$upgrade_container" "$upgrade_stop_state" "$upgrade_stop_grace"
+          done
+          # The total across every container in the project, said as such: it is
+          # not any one container's stop duration. Nothing is asserted on it.
+          printf 'UPGRADE_STOPPED: %s stopped cleanly, %ss for the project as a whole, on %s\n' \
+            "$upgrade_project" "$upgrade_stop_elapsed" "$upgrade_head_image"
+          ;;
         success)
           lifecycle_success=true
           ;;
@@ -1018,11 +1148,12 @@ EOF
     # to say a second time what a routed run already said.
     #
     # NOT asserted here, and stated rather than left to be assumed: the exit code
-    # and duration of the base container's stop. An upgrade must stop the old
+    # and duration of the BASE container's stop. An upgrade must stop the old
     # container, so the observation is available in principle, but Compose
     # removes it as part of the same recreate and nothing in this lane is
-    # positioned to read it before that. #671's shutdown half is therefore still
-    # uncovered; the migration half is what this lane proves.
+    # positioned to read it before that. The HEAD container's stop is asserted,
+    # in the stop event above (#781), which is where #671's shutdown half is
+    # covered as far as it can be covered deterministically.
     if [ "$INTEGRATION_SUITE" = upgrade ]; then
       printf 'UPGRADE_LANE_COMPLETE: %s migrated from %s to %s with its seeded rows intact\n' \
         "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
