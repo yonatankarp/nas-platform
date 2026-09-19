@@ -12,6 +12,12 @@
     deployment_target_require_current_release: true
     deployment_target_extra_paths:
       - "{{ downloaders_sabnzbd_config_host_path }}"
+      # SABnzbd bind-mounts the post-processing gate out of the release, so the
+      # role touches it as surely as it touches the compose files and has to say
+      # so here. A release missing it starts a SABnzbd whose categories name a
+      # script that is not there, which SABnzbd reports per job rather than at
+      # start-up.
+      - "{{ platform_current_dir }}/services/downloaders/clamav_gate.py"
 
 - name: Require INI-safe SABnzbd administrator credentials
   ansible.builtin.assert:

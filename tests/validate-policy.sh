@@ -140,6 +140,7 @@ tests/mac/media-acquisition-foundation-cleanup-test.sh
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
 ruby tests/beszel_telemetry_timeout_test.rb
 python3 -m unittest -v tests/dozzle_alert_relay_test.py
+python3 -m unittest -v tests/downloaders_clamav_gate_test.py
 ruby tests/immich_restore_lifecycle_test.rb
 tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/workflow_test.rb
