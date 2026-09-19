@@ -291,6 +291,15 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
     out, err, status = run_program("bindery", "seed", root, service.port)
     check(failures, status.success?, "bindery seed failed: #{err}#{out}")
     check(failures, out.include?("canary user"), "bindery seed reported nothing: #{out}")
+    # Every case below reads this record. A seed that refused wrote none, and
+    # letting that surface as an ENOENT backtrace would abort the file and take
+    # the Kapowarr cases with it -- measured, while planting a dropped settings
+    # write into the seeder.
+    unless File.file?(File.join(root, "upgrade-bindery.json"))
+      failures.each { |message| warn "FAIL #{message}" }
+      warn "the bindery seed wrote no record, so its remaining cases cannot run"
+      exit 1
+    end
     seeded = JSON.parse(File.read(File.join(root, "upgrade-bindery.json")))
     check(failures, store.any? { |user| user["username"] == seeded["username"] },
           "bindery seed wrote no row into the store")
