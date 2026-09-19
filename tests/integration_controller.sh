@@ -876,6 +876,19 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # without adding a claim, so the elapsed seconds are reported as
           # evidence and nothing is asserted on them.
           #
+          # WHICH grace expired is the container's own, not a flat ten seconds,
+          # and that is worth stating because the whole claim above rests on it.
+          # Compose sets StopTimeout on the container at create time from
+          # stop_grace_period -- pkg/compose/create.go, `StopTimeout:
+          # ToSeconds(service.StopGracePeriod)` -- and `docker stop` with no -t
+          # uses that configured value, falling back to the daemon's ten seconds
+          # only when the service declared none. So a future subject declaring
+          # 30s is measured against 30s rather than red at ten. Both subjects
+          # today land on ten either way (Kapowarr declares 10s since #751,
+          # Bindery declares nothing), which is exactly why the window is
+          # REPORTED on both paths below: the day that stops being true, the
+          # evidence line says so instead of this comment having to be trusted.
+          #
           # WHAT THIS DOES NOT CATCH, stated rather than implied: #671's own
           # raise needed a task at the head of the queue that had been created
           # and never started, and services/kapowarr/tasks.py shows that state is
@@ -934,18 +947,27 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
                 "$upgrade_container" >&2
               exit 1
             }
+            # The window that stop was measured against. StopTimeout is a
+            # pointer in the container config, so an undeclared grace prints
+            # <nil> rather than a number; both are reported verbatim, because
+            # naming the daemon's ten here would be this comment's guess rather
+            # than the daemon's answer.
+            upgrade_stop_grace=$(docker inspect \
+              --format '{{.Config.StopTimeout}}' "$upgrade_container" 2>/dev/null) \
+              || upgrade_stop_grace=unreadable
             case $upgrade_stop_state in
               exited:0|exited:143) ;;
               *)
-                printf '%s did not stop cleanly: %s after %ss. 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
+                printf '%s did not stop cleanly: %s after %ss, against a configured StopTimeout of %s (<nil> means the service declared no stop_grace_period, so the daemon default of ten seconds applied). 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
                   "$upgrade_container" "$upgrade_stop_state" \
-                  "$upgrade_stop_elapsed" >&2
+                  "$upgrade_stop_elapsed" "$upgrade_stop_grace" >&2
                 exit 1
                 ;;
             esac
           done
-          printf 'UPGRADE_STOPPED: %s stopped cleanly in %ss on %s\n' \
-            "$upgrade_project" "$upgrade_stop_elapsed" "$upgrade_head_image"
+          printf 'UPGRADE_STOPPED: %s stopped cleanly in %ss against a configured StopTimeout of %s on %s\n' \
+            "$upgrade_project" "$upgrade_stop_elapsed" \
+            "$upgrade_stop_grace" "$upgrade_head_image"
           ;;
         success)
           lifecycle_success=true
