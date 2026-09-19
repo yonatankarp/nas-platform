@@ -917,13 +917,13 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           # for that subject may be pre-existing behaviour rather than the bump,
           # which is what the failure message says.
           #
-          # AND IT IS NOT BINDERY'S ONLY ONE. tests/contracts/bindery-upgrade.rb
-          # carries a second, independent first-dispatch risk -- its settings
-          # canary writes a key no Bindery version defines, through a route the
-          # tree records answering 403 for at least one key class. Either reds
-          # the Bindery upgrade lane the first time it runs for real, for a
-          # reason that is this repository's and not the image's, so a reader
-          # meeting a red should rule out both before holding the bump.
+          # It was not Bindery's only first-dispatch risk, and the other one has
+          # since been settled the hard way: #785's settings canary wrote a key
+          # Bindery does not define, the route answered HTTP 400 on #779's real
+          # run, and tests/contracts/bindery-upgrade.rb now records that as the
+          # reason its seed is one row. THIS arm is the half that remains
+          # unmeasured for Bindery, so a red here is still the first thing to
+          # rule out against pre-existing behaviour rather than the bump.
           upgrade_project=$integration_project_namespace-$upgrade_service
           upgrade_running=$(docker ps \
             --filter "label=com.docker.compose.project=$upgrade_project" \
