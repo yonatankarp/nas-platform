@@ -47,8 +47,36 @@ beszel_alerts:
   # every crossing. 87 keeps the alert meaning sustained heat beyond normal load,
   # still well below the CPU's thermal limit. The Disk alert's 85 above is a
   # percentage and unrelated.
+  #
+  # Measured 2026-09-19, and what the ceiling on this number is. coretemp reports
+  # temp1..temp5_crit and _max both at 105000, so package and all four cores
+  # throttle at 105°C; nvme temp1_crit is 88850. Because the CPU idles some 35°C
+  # above the drives (86-89 against 49-54 that day), coretemp is always the max,
+  # so this alert is effectively coretemp-only and the NVMe pair can never trip it
+  # at any value -- it would have to pass its own crit first. S.M.A.R.T. (#607) is
+  # what covers the drives. 88 is therefore a coretemp threshold with 17°C still
+  # under the throttle, not a number approaching anything.
+  #
+  # 88, and the paging it was chosen against is a cause rather than a plateau.
+  # That same day loadavg was 3.29 of 4 with ADM's clamscan 14 hours into a
+  # full-volume scan, holding a whole core plus the btrfs I/O behind it, while all
+  # thirty containers together drew about 0.2 of a core: the alert at 87 was
+  # reporting a pegged host correctly. That scan is ADM's own and no play in this
+  # repository starts, stops or scopes it: turning its full-volume schedule off
+  # is an operator action on the host, of the kind CLAUDE.md's AdGuard and ntfy
+  # tidy-ups already describe, and merging anything here does not perform it.
+  # What is meant to replace it is a clamd in the downloaders stack scanning one
+  # completed Usenet job at a time under a 1.0 CPU ceiling, which is a load this
+  # threshold should never see -- but that is a separate change and this comment
+  # does not assume it has landed. 88 is for the interval in between, and buys
+  # one degree against a measured 86-89 band, so it thins the pages rather than
+  # stopping them. **Do not raise it a third time before
+  # reading /proc/loadavg**: every degree spent covering a pegged host is a degree
+  # this alert no longer reports, and the next raise is the one that makes it mean
+  # nothing. If 88 still pages once the scan is scoped, the heat has a second
+  # source and that is the thing to find.
   - name: Temperature
-    value: 87
+    value: 88
     min: 15
 
 # Shoutrrr URL. Beszel sends to the Dozzle alert relay's /beszel route, and the
