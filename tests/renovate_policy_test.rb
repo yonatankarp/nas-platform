@@ -93,7 +93,6 @@ check(failures, immich_rule && rules.index(immich_rule) > rules.index(eligible_r
 # Renovate carve-out of its own. A name that no longer appears as an `image:`
 # in the tree is a rule guarding nothing.
 SELF_MIGRATING_APPLICATION_IMAGES = {
-  "ghcr.io/vavallee/bindery" => "bindery",
   "ghcr.io/immich-app/immich-server" => "immich",
   "ghcr.io/paperless-ngx/paperless-ngx" => "paperless-ngx",
   "docker.io/library/nextcloud" => "nextcloud",
@@ -109,19 +108,36 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   "docker.io/mrcas/kapowarr" => "kapowarr"
 }.freeze
 # A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Seven is what the tree documents --
-# roles/bindery/tasks/pre_upgrade_backup.yml, services/immich/compose.yml,
-# services/paperless-ngx/compose.yml, services/nextcloud/compose.yml and
-# services/kapowarr/compose.yml each say their application migrates its own store
-# on start and refuses to go back, and services/karakeep/compose.yml says it of
-# both the application and Meilisearch.
+# every loop below and reports a pass. Six is what the tree documents --
+# services/immich/compose.yml, services/paperless-ngx/compose.yml,
+# services/nextcloud/compose.yml and services/kapowarr/compose.yml each say their
+# application migrates its own store on start and refuses to go back, and
+# services/karakeep/compose.yml says it of both the application and Meilisearch.
 #
-# Vaultwarden was a fifth from #547. It migrates its store too, but an older
-# image still starts on a newer store, so its minors and patches automerge and
-# only its majors are withheld; services/vaultwarden/compose.yml carries the
-# evidence, and the rows after the Gotenberg tripwire below pin both halves.
-check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 7,
-      "the self-migrating application set must name seven images, not " \
+# TWO IMAGES HAVE LEFT THIS SET, for reasons that are not the same one, and the
+# difference is the whole point of keeping both notes.
+#
+# Vaultwarden left in #547 because its pin became REVERSIBLE: it migrates its
+# store too, but an older image still starts on a newer one, so its minors and
+# patches automerge and only its majors are withheld.
+# services/vaultwarden/compose.yml carries the evidence.
+#
+# Bindery left in #781 with its pin still ONE-WAY -- #511 is its incident and it
+# has not been repealed. What changed is coverage, not reversibility: the
+# upgrade integration lane converges the base pin, seeds a row through Bindery's
+# own API, repins, converges again so the head image migrates a store the base
+# image wrote, reads the row back, and stops the head container asserting a clean
+# exit. #511's exact mode, run on the pull request proposing the bump.
+#
+# Kapowarr stays despite the lane being able to take it as a subject, because as
+# of #781 it never has -- every real execution has been Bindery -- and #671's
+# shutdown race is uncovered for both. A lane that has only ever passed at stub
+# level is not grounds for removing a human.
+#
+# Both departures are pinned in both directions by the rows after the Gotenberg
+# tripwire below, so neither can drift back silently.
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 6,
+      "the self-migrating application set must name six images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
 
 SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|
@@ -221,6 +237,20 @@ check(failures, open_automerge == true && !open_approval,
   check(failures, (automerge == true && !approved) == expected,
         "a #{update_type} bump of docker.io/vaultwarden/server should " \
         "#{expected ? 'automerge' : 'wait for a human'}; see services/vaultwarden/compose.yml")
+end
+
+# Bindery left the same set in #781, and its halves are the same shape for a
+# different reason: not a reversible pin, but #511's mode covered by the upgrade
+# lane before the merge. Majors still wait for a human -- the routine rule never
+# matches a major -- and minors and patches are what the lane actually gates.
+# Pinned in both directions, so restoring the hold or widening it to majors both
+# fail here rather than drifting.
+{ "major" => false, "minor" => true, "patch" => true }.each do |update_type, expected|
+  automerge, approved = automerge_verdict(config, rules, "ghcr.io/vavallee/bindery", update_type)
+  check(failures, (automerge == true && !approved) == expected,
+        "a #{update_type} bump of ghcr.io/vavallee/bindery should " \
+        "#{expected ? 'automerge' : 'wait for a human'}; the upgrade lane covers #511's mode " \
+        "on the pull request, and a major still waits for a human")
 end
 
 # #607: the Beszel Intel agent runs as root with host networking, CAP_SYS_RAWIO,
