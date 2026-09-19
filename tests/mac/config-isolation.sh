@@ -135,6 +135,7 @@ render() {
   env PLATFORM_PROJECT_NAME="$base_name" PLATFORM_MEDIA_NETWORK="$base_name-media-control" \
     PLATFORM_CONTAINER_CPUSET=0-2 NAS_UID=1000 NAS_GID=100 TZ=UTC \
     SABNZBD_CONFIG_PATH="$temporary_dir/$label-sabnzbd-config" \
+    PLATFORM_CURRENT_DIR="$repo_dir" \
     MEDIA_ACQUISITION_PATH="$temporary_dir/$label-media/Media/.acquisition" \
     BOOKS_ACQUISITION_PATH="$temporary_dir/$label-media/Books/.acquisition" \
     SABNZBD_HOST_PORT="$sabnzbd_port" SABNZBD_API_KEY=test \
