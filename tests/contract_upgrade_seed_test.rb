@@ -246,11 +246,17 @@ end
 # ways a migration can lose one: the row vanishes, or it comes back under a
 # different database-assigned id because the store was rebuilt rather than
 # migrated.
-def bindery_stub(store, next_id: [2])
+# `settings` is the second table (#781), served in the shape roles/bindery reads
+# on every converge: a list of {key, value} pairs, upserted one key at a time.
+# `upserts` is what separates a Bindery that honours the write from one that
+# answers 200 and stores nothing -- the seed is required to refuse the second.
+def bindery_stub(store, settings: [], next_id: [2], upserts: true)
   StubService.new do |method, path, body|
-    case [method, path.split("?").first]
+    route = path.split("?").first
+    case [method, route]
     when %w[GET /api/v1/health] then [200, { "status" => "ok" }]
     when %w[GET /api/v1/auth/users] then [200, store]
+    when %w[GET /api/v1/setting] then [200, settings]
     when %w[POST /api/v1/auth/users]
       submitted = JSON.parse(body)
       id = next_id[0]
@@ -258,14 +264,29 @@ def bindery_stub(store, next_id: [2])
       store << { "id" => id, "username" => submitted.fetch("username"),
                  "role" => submitted.fetch("role") }
       [201, { "id" => id }]
-    else [404, { "error" => "unexpected #{method} #{path}" }]
+    else
+      if method == "PUT" && route.start_with?("/api/v1/setting/")
+        key = route.delete_prefix("/api/v1/setting/")
+        if upserts
+          row = settings.find { |entry| entry["key"] == key }
+          if row
+            row["value"] = JSON.parse(body).fetch("value")
+          else
+            settings << { "key" => key, "value" => JSON.parse(body).fetch("value") }
+          end
+        end
+        [200, { "key" => key }]
+      else
+        [404, { "error" => "unexpected #{method} #{path}" }]
+      end
     end
   end
 end
 
 Dir.mktmpdir("upgrade-seed-bindery-") do |root|
   store = [{ "id" => 1, "username" => "platform", "role" => "admin" }]
-  service = bindery_stub(store)
+  settings = [{ "key" => "autoGrab.enabled", "value" => "false" }]
+  service = bindery_stub(store, settings: settings)
   begin
     out, err, status = run_program("bindery", "seed", root, service.port)
     check(failures, status.success?, "bindery seed failed: #{err}#{out}")
@@ -273,6 +294,9 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
     seeded = JSON.parse(File.read(File.join(root, "upgrade-bindery.json")))
     check(failures, store.any? { |user| user["username"] == seeded["username"] },
           "bindery seed wrote no row into the store")
+    canary = settings.find { |entry| entry["key"] == "platform.upgradeCanary" }
+    check(failures, canary && canary["value"] == seeded["setting_value"],
+          "bindery seed wrote no settings row into the store")
 
     _out, _err, status = run_program("bindery", "verify", root, service.port)
     check(failures, status.success?, "bindery verify refused a store that kept the row")
@@ -296,6 +320,43 @@ Dir.mktmpdir("upgrade-seed-bindery-") do |root|
           "bindery verify ACCEPTED a re-created row under a different id")
     check(failures, renumbered_error.include?("rather than"),
           "bindery verify refused a re-created row without naming the id: #{renumbered_error}")
+
+    # THE THIRD LOSS, and the one a single-table seed cannot see (#781): the
+    # users table is intact and the settings table is not. Restored to the
+    # passing state first -- the two plants above deleted the seeded row and
+    # then re-created it under another id -- so the refusal below can only be
+    # the settings row.
+    store.reject! { |user| user["username"] == seeded.fetch("username") }
+    store << { "id" => seeded.fetch("id"), "username" => seeded.fetch("username"),
+               "role" => "admin" }
+    _out, _err, status = run_program("bindery", "verify", root, service.port)
+    check(failures, status.success?,
+          "bindery verify refused a store that kept both rows")
+    settings.reject! { |entry| entry["key"] == "platform.upgradeCanary" }
+    _out, setting_error, status = run_program("bindery", "verify", root, service.port)
+    check(failures, !status.success?,
+          "bindery verify ACCEPTED a store that kept the user and lost the setting")
+    check(failures, setting_error.include?("platform.upgradeCanary did not survive"),
+          "bindery verify refused a lost setting without naming it: #{setting_error}")
+  ensure
+    service.stop
+  end
+end
+
+# The settings write's own self-validation, which is what keeps the seed from
+# recording a value it never wrote: an upsert route that answers 200 and stores
+# nothing must fail the seed rather than leave the verify with nothing to check.
+Dir.mktmpdir("upgrade-seed-bindery-inert-") do |root|
+  service = bindery_stub([{ "id" => 1, "username" => "platform", "role" => "admin" }],
+                         upserts: false)
+  begin
+    _out, inert_error, status = run_program("bindery", "seed", root, service.port)
+    check(failures, !status.success?,
+          "bindery seed ACCEPTED an upsert route that stored nothing")
+    check(failures, inert_error.include?("did not store the canary setting"),
+          "bindery seed refused an inert upsert without naming it: #{inert_error}")
+    check(failures, !File.exist?(File.join(root, "upgrade-bindery.json")),
+          "bindery seed recorded a setting it never wrote")
   ensure
     service.stop
   end
