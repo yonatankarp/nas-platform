@@ -100,6 +100,7 @@ EXPECTED_PROJECTS = {
       "sabnzbd" => service("long_running",
                            ui_port(8085, container_port: 8080, published_by: "sabnzbd")),
       "unpackerr" => service("long_running"),
+      "clamav" => service("long_running"),
       "gluetun" => service("long_running", [], compose_profile: "torrent"),
       "qbittorrent" => service("long_running", [
         { "purpose" => "web_ui", "protocol" => "tcp", "bind_address" => "0.0.0.0",

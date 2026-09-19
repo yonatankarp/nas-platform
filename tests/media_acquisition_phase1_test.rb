@@ -167,6 +167,7 @@ effective_downloaders = effective_compose("services/downloaders/compose.yml", {
   "PLATFORM_CONTAINER_CPUSET" => "0",
   "PLATFORM_MEDIA_NETWORK" => "fixture-media",
   "SABNZBD_CONFIG_PATH" => "/tmp/sabnzbd",
+  "PLATFORM_CURRENT_DIR" => "/tmp/release",
   "MEDIA_ACQUISITION_PATH" => "/tmp/media",
   "BOOKS_ACQUISITION_PATH" => "/tmp/books",
   "SABNZBD_API_KEY" => "fixture",
@@ -204,7 +205,7 @@ arr_services = arr_compose.fetch("services", {})
 downloader_services = downloaders_compose.fetch("services", {})
 check(failures, arr_services.keys.sort == %w[bazarr configarr prowlarr radarr sonarr],
       "arr canonical service set must include long-running and profiled services")
-check(failures, downloader_services.keys.sort == %w[sabnzbd unpackerr],
+check(failures, downloader_services.keys.sort == %w[clamav sabnzbd unpackerr],
       "Phase 1 downloader service set must be exact")
 check(failures,
       arr_services.select { |_name, definition| definition["profiles"] == ["jobs"] }.keys == ["configarr"],
@@ -285,9 +286,21 @@ check(failures,
       Array(downloader_services.dig("sabnzbd", "volumes")).sort == [
         "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition",
         "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition",
+        # The post-processing gate, read-only out of the immutable release. It is
+        # a file rather than a tree on purpose: `script_dir` is a directory
+        # SABnzbd will run anything from, so mounting one would make every future
+        # file under it executable by a completed download.
+        "${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:" \
+          "/scripts/clamav_gate.py:ro",
         "${SABNZBD_CONFIG_PATH:?}:/config"
       ].sort,
-      "SABnzbd mounts must be limited to config and acquisition parents")
+      "SABnzbd mounts must be limited to config, acquisition parents and the gate")
+check(failures,
+      Array(downloader_services.dig("clamav", "volumes")).sort == [
+        "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition:ro",
+        "${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition:ro"
+      ].sort,
+      "clamd must see exactly SABnzbd's acquisition parents, at the same paths, read-only")
 check(failures,
       Array(downloader_services.dig("unpackerr", "volumes")).sort == [
         "${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition",
