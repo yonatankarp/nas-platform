@@ -952,7 +952,7 @@ DRIFT_WEBHOOK =
 # alert_pin_failures holds this literal against the defaults instead.
 MANAGED_ALERTS = { "Status" => [0, 0], "CPU" => [90, 10],
                    "Memory" => [90, 10], "Disk" => [85, 10],
-                   "Temperature" => [87, 15] }.freeze
+                   "Temperature" => [88, 15] }.freeze
 
 # Compared over the union of both sides' names rather than by walking the pin.
 # If an alert is deleted from the defaults, the runtime half checks one alert
@@ -2356,7 +2356,7 @@ RUNTIME_MUTATIONS = [
   { label: "the managed alerts' read of the inspected defaults",
     from: %(YAML.safe_load_file(File.join(ENV.fetch("PLATFORM_CONTRACT_REPO_DIR"), "roles/beszel/defaults/main.yml"))\n) +
           %(                     .fetch("beszel_alerts")),
-    to: %([{ "name" => "Temperature", "value" => 87, "min" => 15 }]),
+    to: %([{ "name" => "Temperature", "value" => 88, "min" => 15 }]),
     rows: ["an alert the inspected defaults added"] },
   { label: "the decoy alert refusal",
     from: 'fail_contract("managed alerts were attached to the decoy system") unless',
@@ -2837,10 +2837,10 @@ if ARGV.include?("--self-test")
   # The two edits #608's adversarial check made to the real defaults. This file
   # accepted both with rc=0 before the pin was checked against the defaults.
   # Planted in a fixture copy, because `ROOT` is the checkout.
-  [["moving the Temperature threshold from 87 to 88",
-    "    value: 87\n    min: 15\n", "    value: 88\n    min: 15\n"],
+  [["moving the Temperature threshold from 88 to 87",
+    "    value: 88\n    min: 15\n", "    value: 87\n    min: 15\n"],
    ["deleting the Temperature alert",
-    "  - name: Temperature\n    value: 87\n    min: 15\n", ""]].each do |label, from, to|
+    "  - name: Temperature\n    value: 88\n    min: 15\n", ""]].each do |label, from, to|
     Dir.mktmpdir("nas-platform-beszel-alert-pin.") do |raw|
       root = build_fixture_repository(File.realpath(raw))
       mutate_text(root, "roles/beszel/defaults/main.yml", from, to)
