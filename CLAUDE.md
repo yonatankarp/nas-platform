@@ -620,6 +620,15 @@ three single-command checks that stood beside them went the other way, into
 `tests/validate-policy.sh`, where they run once and gain the manifest
 declaration. Which direction a check goes is the same question as always — a
 manifest line if the repository owns the program, a `lint` step if it does not.
+`renovate-config-validator` is the worked example of the second: #775 stopped
+Renovate opening pull requests repository-wide, its own dependency updates
+included, on a `renovate.json` that parsed and satisfied every hand-written
+property `tests/renovate_policy_test.rb` asserts, so only Renovate's own
+validator could have caught it — and it is npm's program resolving `extends`
+presets over the network, which is the gate's manifest ruled out. Its pin is the
+only version literal in `ci.yml` that is not an action SHA, tracked by a custom
+manager like every other pin here, and the step plants #775's exact
+`matchPackageNames` and requires the validator to still reject it.
 
 `static`, `reconciliation` and `suites` are matrices, so each contributes a leg
 per matrix entry rather than a single check — `static` one per shard of the
