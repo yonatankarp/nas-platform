@@ -43,7 +43,7 @@ services:
     # `production-apache`, which both resolved to this same digest when it was
     # pinned. A channel tag names whatever upstream has promoted today, and this
     # platform writes the version in one place a human and Renovate both read.
-    image: docker.io/library/nextcloud:34.0.4-apache@sha256:647bd583d6af516d1c013e3a1e347969def5903a3efd2073312ff97492cad4b8
+    image: docker.io/library/nextcloud:34.0.4-apache@sha256:a5ace30c695afe48c2c406e940ee7886a81e13fa382e57cd68b2416d1a66914c
     cpus: 2.0
     labels:
       dev.dozzle.group: nextcloud
@@ -251,7 +251,7 @@ services:
     # of rule: majors are withheld behind dependency dashboard approval, because
     # /entrypoint.sh migrates the shared volume itself, will not start again on
     # anything older, and this stack keeps no pre-upgrade backup to go back to.
-    image: docker.io/library/nextcloud:34.0.4-apache@sha256:647bd583d6af516d1c013e3a1e347969def5903a3efd2073312ff97492cad4b8
+    image: docker.io/library/nextcloud:34.0.4-apache@sha256:a5ace30c695afe48c2c406e940ee7886a81e13fa382e57cd68b2416d1a66914c
     cpus: 1.0
     labels:
       dev.dozzle.group: nextcloud
