@@ -379,10 +379,15 @@ fi
 # them; the shape check above still refuses a malformed value wherever one is
 # set.
 if [ "$suite" = upgrade ]; then
-  [ -n "$upgrade_service" ] && [ -n "$upgrade_base_image" ] || {
+  # An explicit `if`, not `A && B || C`: that shape is SC2015 and runs C when A
+  # is true and B is false, which is not the branch structure it reads as. This
+  # file is not on a shellcheck manifest line, but the same shape in the
+  # controller -- which is -- red CI while ShellCheck 0.11.0 stayed silent
+  # locally, so it is written the same way here rather than left to be found.
+  if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
     printf 'the upgrade suite requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE\n' >&2
     exit 2
-  }
+  fi
 fi
 
 # Service images the suite will need, keyed by the site.yml role tag that

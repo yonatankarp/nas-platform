@@ -757,6 +757,12 @@ case_komga() {
 # read a head equal to its base.
 upgrade_base_image=docker.io/mrcas/kapowarr:v0.0.1@sha256:0000000000000000000000000000000000000000000000000000000000000000
 
+# No -b and no branch name anywhere below, deliberately: this fixture is read
+# only through HEAD, HEAD~1 and `rev-list --count HEAD`, so it never depends on
+# what `git init` called the initial branch. That matters because the caller's
+# init.defaultBranch is `main` on a development Mac and `master` on the runner
+# image -- tests/ci/classify_changes_test.rb assumed one and red CI while every
+# local run was green. Verified by running this file under both.
 build_upgrade_git_fixture() {
   rm -rf "$checkout/.git"
   cp "$repo_dir/services/kapowarr/compose.yml" \

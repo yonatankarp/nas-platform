@@ -686,11 +686,22 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
     }
 
     if [ "$INTEGRATION_SUITE" = upgrade ]; then
-      [ -n "$upgrade_service" ] && [ -n "$upgrade_base_image" ] || {
+      # An explicit `if` rather than `A && B || C`, which is SC2015 and is fatal
+      # here by construction: tests/policy_test.rb requires the manifest line
+      # for this file to carry no --exclude at all, so an info-level finding
+      # reds the gate. It is a real smell and not a lint nit -- `A && B || C`
+      # runs C when A is true and B is false, which is not the branch structure
+      # it reads as. Version 0.11.0 does not emit it for this shape and the
+      # runner's does, so a local lint run is not evidence either way.
+      #
+      # A comment line here must also never BEGIN with the linter's own name:
+      # it parses that as a directive and answers SC1073, which is an error
+      # rather than an info. That is how this comment first failed.
+      if [ -z "$upgrade_service" ] || [ -z "$upgrade_base_image" ]; then
         printf '%s\n' \
           'the upgrade lane requires INTEGRATION_UPGRADE_SERVICE and INTEGRATION_UPGRADE_BASE_IMAGE' >&2
         exit 1
-      }
+      fi
       upgrade_compose=/repo/services/$upgrade_service/compose.yml
       [ -f "$upgrade_compose" ] || {
         printf 'no compose definition for the upgrade subject %s\n' \

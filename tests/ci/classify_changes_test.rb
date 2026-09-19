@@ -12,6 +12,16 @@ require_relative "../policy_support"
 include TestScaffold
 
 SCRIPT = File.expand_path("classify_changes.rb", __dir__)
+# THE DEFAULT BRANCH IS NOT ASSUMABLE, and a fixture repository that inherits it
+# is a test that passes on the machine that wrote it. `git init` with no -b takes
+# the caller's own init.defaultBranch: `main` on a development Mac here, `master`
+# on the GitHub runner image. The merge-base case below checked out "main" by
+# name and reported `pathspec 'main' did not match any file(s) known to git` on
+# CI while every local run was green -- and `exception: true` on the first of an
+# `||` pair means the fallback never runs, so writing both names does not help.
+# Every fixture repository in this file therefore names its initial branch, and
+# tests/deployment_summary_test.rb already did this.
+FIXTURE_BRANCH = "main"
 LANES = %w[
   static docs vault reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
   smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud
@@ -895,7 +905,7 @@ if defined?(ClassifyChanges)
         "classifier outputs must not resurrect the retired tMM project")
 
   Dir.mktmpdir("classify-changes-git-") do |root|
-    system("git", "init", "-q", root, exception: true)
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
     system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
     source = File.join(root, "roles", "paperless_ngx", "tasks", "main.yml")
@@ -923,7 +933,7 @@ if defined?(ClassifyChanges)
   end
 
   Dir.mktmpdir("classify-changes-copy-delete-") do |root|
-    system("git", "init", "-q", root, exception: true)
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
     system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
     beszel_source = File.join(root, "roles", "beszel", "tasks", "main.yml")
@@ -978,7 +988,7 @@ if defined?(ClassifyChanges)
   # third is the derivation: a service with no seed-and-verify program is not a
   # subject, however its pin moves.
   Dir.mktmpdir("classify-changes-upgrade-") do |root|
-    system("git", "init", "-q", root, exception: true)
+    system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
     system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
     system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
     digest = ->(seed) { (seed.to_s * 64)[0, 64] }
@@ -1133,8 +1143,7 @@ if defined?(ClassifyChanges)
     write_compose.call(compose, pin.call("v1.4.0", 7), "2g")
     system("git", "-C", root, "commit", "-qam", "branch bumps to v1.4.0", exception: true)
     branch_head = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
-    system("git", "-C", root, "checkout", "-q", "main", exception: true) ||
-      system("git", "-C", root, "checkout", "-q", "master", exception: true)
+    system("git", "-C", root, "checkout", "-q", FIXTURE_BRANCH, exception: true)
     write_compose.call(compose, pin.call("v1.9.9", 9), "2g")
     system("git", "-C", root, "commit", "-qam", "base moves on without the branch", exception: true)
     moved_base = Open3.capture2("git", "-C", root, "rev-parse", "HEAD").first.strip
@@ -1187,7 +1196,7 @@ end
 # A repository the classifier can run inside: it needs its own script and the suite
 # table beside it, committed first so they never appear in a diff under test.
 def init_push_repository(root)
-  system("git", "init", "-q", root, exception: true)
+  system("git", "init", "-q", "-b", FIXTURE_BRANCH, root, exception: true)
   system("git", "-C", root, "config", "user.email", "ci@example.invalid", exception: true)
   system("git", "-C", root, "config", "user.name", "CI Test", exception: true)
   FileUtils.mkdir_p(File.join(root, "tests", "ci"))
