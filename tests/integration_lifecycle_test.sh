@@ -61,6 +61,7 @@ seed
 repin
 converge
 verify
+stop
 success'
 
 # --- what it must refuse --------------------------------------------------
@@ -92,6 +93,37 @@ expect_rejected 'upgrade lane ending before verify' 'converge
 seed
 repin
 converge
+stop
+success'
+
+# #781. The head container is running when verify ends, and stopping it is the
+# only place its exit code can be read: a lane that ends at verify leaves the
+# shutdown half of #671 uncovered, which is what stopped bindery and kapowarr
+# automerging. So the stop is an event rather than something verify happens to
+# do, and ending before it is refused exactly as ending before verify is.
+expect_rejected 'upgrade lane ending before the stop' 'converge
+seed
+repin
+converge
+verify
+success'
+
+# A stop before the verify reads the seeded rows back out of a container that
+# is no longer running, so the verify could only ever fail -- and a lane whose
+# every run fails is removed rather than read. Unrepresentable, not unused.
+expect_rejected 'stop before verify leaves nothing to read the rows back from' 'converge
+seed
+repin
+converge
+stop
+verify
+success'
+
+# The ordinary lane has no head container of its own to stop: its one converge
+# is a fresh install, so there is no version change whose shutdown handler
+# could have regressed.
+expect_rejected 'stop on a lane that never upgraded anything' 'converge
+stop
 success'
 
 expect_rejected 'second converge without a repin is the same image twice' 'converge

@@ -294,7 +294,26 @@ printf '%s\n' 'decrypted_fixture_input: true'
 STUB
   } > "$stub_bin/ansible-vault"
 
-  for stub_name in ansible-galaxy apk pip docker sha256sum stat; do
+  # `docker` answers two reads for real, because the upgrade lane's stop event
+  # (#781) is a decision taken ON their output rather than a call whose argv is
+  # the whole property: enumerate the subject's running containers, stop each,
+  # then read back the state and exit code it stopped with. A stub that logged
+  # and printed nothing would make that event refuse on every run, and a stub
+  # that always printed `exited:0` would make its assertion unfalsifiable. So
+  # both come from the case's own environment, and the SIGKILL case below sets
+  # the second to what #671 produced.
+  {
+    stub_preamble
+    cat <<'STUB'
+log_invocation docker "$@"
+case ${1-} in
+  ps) printf '%s' "${CONTROLLER_STUB_DOCKER_RUNNING-}" ;;
+  inspect) printf '%s\n' "${CONTROLLER_STUB_DOCKER_STATE-exited:0}" ;;
+esac
+STUB
+  } > "$stub_bin/docker"
+
+  for stub_name in ansible-galaxy apk pip sha256sum stat; do
     {
       stub_preamble
       cat <<STUB
@@ -423,12 +442,19 @@ run_controller() {
     # and what the controller refuses that lane without.
     INTEGRATION_UPGRADE_SERVICE=${CASE_UPGRADE_SERVICE-}
     INTEGRATION_UPGRADE_BASE_IMAGE=${CASE_UPGRADE_BASE_IMAGE-}
+    # What the docker stub reports for the upgrade lane's stop: which containers
+    # the subject's Compose project is running, and the state each stopped in.
+    # Empty and unset everywhere else, which is what leaves every other lane's
+    # docker stub exactly the logging one it was.
+    CONTROLLER_STUB_DOCKER_RUNNING=${CASE_DOCKER_RUNNING-}
+    CONTROLLER_STUB_DOCKER_STATE=${CASE_DOCKER_STATE-exited:0}
     export PATH HOME CONTROLLER_STUB_LOG PLATFORM_INTEGRATION_SANDBOX \
       PLATFORM_INTEGRATION_PROJECT_NAMESPACE INTEGRATION_SUITE INTEGRATION_TAGS \
       INTEGRATION_RUN_SERVICE_SCENARIOS INTEGRATION_TOOLCHAIN_PREINSTALLED \
       MEDIA_CONTROL_COLLISION_IMAGE PLATFORM_PAPERLESS_FIXTURE_PRESEEDED \
       PLATFORM_KOMGA_FIXTURE_PRESEEDED PLATFORM_JELLYFIN_FIXTURE_PRESEEDED \
-      INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE
+      INTEGRATION_UPGRADE_SERVICE INTEGRATION_UPGRADE_BASE_IMAGE \
+      CONTROLLER_STUB_DOCKER_RUNNING CONTROLLER_STUB_DOCKER_STATE
     cd "$checkout" || exit 1
     exec sh "$checkout/tests/integration_controller.sh" "$@"
   ) > "$run_output" 2>&1 || run_status=$?
@@ -490,6 +516,14 @@ expect_log_order() {
 
 expect_output() {
   normalized_output | grep -qF -- "$1" || fail "controller output is missing: $1"
+}
+
+# The refusal cases need this half: a lane that refuses and still reports itself
+# complete is a lane whose verdict nobody can read.
+expect_no_output() {
+  if normalized_output | grep -qF -- "$1"; then
+    fail "controller output unexpectedly has: $1"
+  fi
 }
 
 # Nothing may deploy under a project name the disposable sandbox does not own: a
@@ -784,9 +818,10 @@ case_upgrade() {
   build_upgrade_git_fixture
   CASE_UPGRADE_SERVICE=kapowarr
   CASE_UPGRADE_BASE_IMAGE=$upgrade_base_image
-  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  CASE_DOCKER_RUNNING=$namespace-kapowarr
+  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE CASE_DOCKER_RUNNING
   run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
-  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE CASE_DOCKER_RUNNING
   expect_status 0
 
   # Two converges of the same tags, the seed between them and the verify after
@@ -800,7 +835,15 @@ case_upgrade() {
   expect_output 'UPGRADE_SEEDED'
   expect_output 'UPGRADE_CONVERGED'
   expect_output 'UPGRADE_VERIFIED'
+  expect_output 'UPGRADE_STOPPED'
   expect_output 'UPGRADE_LANE_COMPLETE'
+  # The stop is an action, not a reading: the container has to actually be
+  # stopped, after the verify has read its rows back, and its state read
+  # afterwards. Asserted on the argv rather than on UPGRADE_STOPPED, which a
+  # printf alone would satisfy.
+  expect_log 'docker argv=[stop][{ns}-kapowarr]'
+  expect_log 'docker argv=[inspect][--format][{{.State.Status}}:{{.State.ExitCode}}][{ns}-kapowarr]'
+  expect_log_order 'contract kapowarr argv=[verify]' 'docker argv=[stop][{ns}-kapowarr]'
   # The second converge is a real converge and not a rehearsal.
   expect_no_log '[site.yml][--tags][host_prep,deployment_bundle,kapowarr][--check][--diff]'
 
@@ -820,6 +863,50 @@ case_upgrade() {
   upgrade_revisions=$(git -C "$checkout" rev-list --count HEAD)
   [ "$upgrade_revisions" -eq 3 ] ||
     fail "the upgrade lane left $upgrade_revisions revision(s), expected 3"
+}
+
+# The stop the lane ends on (#781), and the two states it has to tell apart.
+#
+# 137 is 128+SIGKILL: the container was still running when its grace period ran
+# out, which is what #671 produced on every recreate and what a green upgrade
+# lane would have automerged. It is the reason this event exists, so it gets a
+# case of its own rather than a plant on the program -- the program being right
+# is exactly what is under test here.
+case_upgrade_stop_sigkill() {
+  build_upgrade_git_fixture
+  CASE_UPGRADE_SERVICE=kapowarr
+  CASE_UPGRADE_BASE_IMAGE=$upgrade_base_image
+  CASE_DOCKER_RUNNING=$namespace-kapowarr
+  CASE_DOCKER_STATE=exited:137
+  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE CASE_DOCKER_RUNNING \
+    CASE_DOCKER_STATE
+  run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
+  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE CASE_DOCKER_RUNNING \
+    CASE_DOCKER_STATE
+  expect_nonzero_status
+  expect_output 'did not stop cleanly: exited:137'
+  # The migration half still ran and still passed. A lane that reported the
+  # whole run green here is precisely the state #781 exists to end, so the
+  # refusal has to arrive after a successful verify rather than instead of one.
+  expect_output 'UPGRADE_VERIFIED'
+  expect_no_output 'UPGRADE_LANE_COMPLETE'
+}
+
+# The stack that is not running when the stop arrives. An exited container keeps
+# whatever code it exited with and `docker stop` answers 0 for it, so a crashed
+# container reads as a clean stop unless the running state is required first --
+# and an empty enumeration is also what a subject whose Compose project is not
+# named `<namespace>-<service>` would produce.
+case_upgrade_stop_nothing_running() {
+  build_upgrade_git_fixture
+  CASE_UPGRADE_SERVICE=kapowarr
+  CASE_UPGRADE_BASE_IMAGE=$upgrade_base_image
+  export CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  run_controller upgrade host_prep,deployment_bundle,kapowarr true true site.yml
+  unset CASE_UPGRADE_SERVICE CASE_UPGRADE_BASE_IMAGE
+  expect_nonzero_status
+  expect_output 'no running container in the upgrade subject project {ns}-kapowarr to stop'
+  expect_no_output 'UPGRADE_LANE_COMPLETE'
 }
 
 # The three refusals that stand in front of the lane, none of which had a case.
@@ -1026,7 +1113,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga upgrade upgrade_refusals \
+    downloaders bindery seerr jellyfin komga upgrade upgrade_stop_sigkill \
+    upgrade_stop_nothing_running upgrade_refusals \
     upgrade_missing_compose toolchain_install \
     refuses_missing_roots vault_install_path; do
   current_case=$healthy_case
@@ -1151,6 +1239,16 @@ plant 'upgrade repin never committed' upgrade program \
 plant 'upgrade converge dropped' upgrade program \
   'run_selected_play "$@" || upgrade_converge_status=$?' \
   'upgrade_converge_status=0' 1
+# The stop the lane ends on (#781). Three plants, one per decision it takes: the
+# stop itself, the state it refuses, and the running enumeration that stops a
+# container which had already died from reading as one that stopped cleanly.
+plant 'upgraded container never actually stopped' upgrade program \
+  'docker stop "$upgrade_container" >/dev/null || {' \
+  ': stop "$upgrade_container" >/dev/null || {' 1
+plant 'a SIGKILLed stop tolerated' upgrade_stop_sigkill program \
+  'exited:0|exited:143) ;;' 'exited:*) ;;' 1
+plant 'a stack that is not running tolerated' upgrade_stop_nothing_running \
+  program '[ -n "$upgrade_running" ] || {' '[ -z "" ] || {' 1
 # The three refusals that stand in front of the lane. The first is the one the
 # whole issue exists for: without it a base equal to the head converges one
 # version twice and reports success, which is the fresh-install path every other

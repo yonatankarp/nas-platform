@@ -344,9 +344,13 @@ fi
 
 # The events this suite's run consists of, in order, for
 # tests/integration_lifecycle.sh to validate and tests/integration_controller.sh
-# to execute. An ordinary lane is one converge; the upgrade lane is the five
-# events that make a migration observable, and the table refuses every other
-# ordering of them rather than merely not emitting it.
+# to execute. An ordinary lane is one converge; the upgrade lane is the six
+# events that make a version change observable, and the table refuses every other
+# ordering of them rather than merely not emitting it. The last of them is the
+# shutdown half (#781): stopping the head container is the only moment its exit
+# code exists to be read, and it is where a regression like #671's -- a stop
+# swallowed and waited out to a SIGKILL -- becomes visible to CI instead of to
+# Dozzle's die rule after the poller has deployed it.
 emit_lifecycle_plan() {
   if [ "$suite" = upgrade ]; then
     printf '%s\n' converge
@@ -354,6 +358,7 @@ emit_lifecycle_plan() {
     printf '%s\n' repin
     printf '%s\n' converge
     printf '%s\n' verify
+    printf '%s\n' stop
     printf '%s\n' success
     return 0
   fi

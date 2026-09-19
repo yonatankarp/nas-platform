@@ -856,6 +856,85 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           printf 'UPGRADE_VERIFIED: %s survived %s -> %s\n' \
             "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"
           ;;
+        stop)
+          # THE SHUTDOWN HALF OF #671, WHICH #773 LEFT UNCOVERED (#781).
+          #
+          # That upgrade was a patch whose migration ran correctly and whose
+          # shutdown handler raised, so every stop was waited out to Docker's
+          # SIGKILL -- 30.46s and exit 137 on the NAS. A lane that ends at verify
+          # reports a green migration and says nothing about that, which is half
+          # of what automerging these images needs.
+          #
+          # THE EXIT CODE IS THE MEASUREMENT, and it is a measurement rather than
+          # a reading of stop_grace_period on purpose: CLAUDE.md records two
+          # containers here that DECLARED a grace and were killed inside it
+          # anyway -- alert-relay, Python as PID 1 with no handler, and
+          # nextcloud-cron, whose image carries php:apache's ignored
+          # STOPSIGNAL SIGWINCH over busybox crond. 137 is 128+SIGKILL and means
+          # exactly "the grace expired"; 0 and 143 mean exactly that it did not.
+          # A wall-clock threshold beside that would add a load-dependent red
+          # without adding a claim, so the elapsed seconds are reported as
+          # evidence and nothing is asserted on them.
+          #
+          # WHAT THIS DOES NOT CATCH, stated rather than implied: #671's own
+          # raise needed a task at the head of the queue that had been created
+          # and never started, and services/kapowarr/tasks.py shows that state is
+          # a race rather than a reachable request -- _process_queue() starts
+          # queue[0] inside every add(), so an unstarted head exists only between
+          # the pop(0) and the _process_queue() of a finishing task's finally.
+          # Upstream reproduced it with 300 concurrent submissions. This arm
+          # therefore covers the deterministic shutdown regressions -- a PID 1
+          # with no handler, an ignored STOPSIGNAL, a handler that hangs, a
+          # carried patch that has stopped applying to the image it is mounted
+          # over -- and would have caught #671 only by luck.
+          #
+          # The base container's stop is still unobservable for the reason #773
+          # gave: Compose removes it inside the same recreate.
+          upgrade_project=$integration_project_namespace-$upgrade_service
+          upgrade_running=$(docker ps \
+            --filter "label=com.docker.compose.project=$upgrade_project" \
+            --filter status=running --format '{{.Names}}')
+          # A container that had already died reads as a clean stop -- an exited
+          # container keeps whatever code it exited with, and docker stop answers
+          # 0 for it. So the running state is required BEFORE the stop rather
+          # than inferred from it, and an empty enumeration is a refusal: it is
+          # also what a subject whose Compose project is not named this way would
+          # produce, and that must not pass as a stack that stopped cleanly.
+          [ -n "$upgrade_running" ] || {
+            printf 'no running container in the upgrade subject project %s to stop\n' \
+              "$upgrade_project" >&2
+            exit 1
+          }
+          upgrade_stop_started=$(date +%s)
+          for upgrade_container in $upgrade_running; do
+            docker stop "$upgrade_container" >/dev/null || {
+              printf 'could not stop the upgraded container %s\n' \
+                "$upgrade_container" >&2
+              exit 1
+            }
+          done
+          upgrade_stop_elapsed=$(($(date +%s) - upgrade_stop_started))
+          for upgrade_container in $upgrade_running; do
+            upgrade_stop_state=$(docker inspect \
+              --format '{{.State.Status}}:{{.State.ExitCode}}' \
+              "$upgrade_container") || {
+              printf 'could not read the stopped state of %s\n' \
+                "$upgrade_container" >&2
+              exit 1
+            }
+            case $upgrade_stop_state in
+              exited:0|exited:143) ;;
+              *)
+                printf '%s did not stop cleanly: %s after %ss. 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671).\n' \
+                  "$upgrade_container" "$upgrade_stop_state" \
+                  "$upgrade_stop_elapsed" >&2
+                exit 1
+                ;;
+            esac
+          done
+          printf 'UPGRADE_STOPPED: %s stopped cleanly in %ss on %s\n' \
+            "$upgrade_project" "$upgrade_stop_elapsed" "$upgrade_head_image"
+          ;;
         success)
           lifecycle_success=true
           ;;
@@ -1018,11 +1097,12 @@ EOF
     # to say a second time what a routed run already said.
     #
     # NOT asserted here, and stated rather than left to be assumed: the exit code
-    # and duration of the base container's stop. An upgrade must stop the old
+    # and duration of the BASE container's stop. An upgrade must stop the old
     # container, so the observation is available in principle, but Compose
     # removes it as part of the same recreate and nothing in this lane is
-    # positioned to read it before that. #671's shutdown half is therefore still
-    # uncovered; the migration half is what this lane proves.
+    # positioned to read it before that. The HEAD container's stop is asserted,
+    # in the stop event above (#781), which is where #671's shutdown half is
+    # covered as far as it can be covered deterministically.
     if [ "$INTEGRATION_SUITE" = upgrade ]; then
       printf 'UPGRADE_LANE_COMPLETE: %s migrated from %s to %s with its seeded rows intact\n' \
         "$upgrade_service" "$upgrade_base_image" "$upgrade_head_image"

@@ -32,6 +32,15 @@ consume_integration_lifecycle_plan() {
     # wrote them. Both are green runs that assert nothing, so neither is
     # expressible here rather than merely unused -- there is no state in which
     # those events are accepted.
+    #
+    # stop is the sixth, and it is the shutdown half of #671 (#781). The head
+    # container is running when verify ends, so that is the one moment its stop
+    # can be measured; the BASE container's cannot be, because Compose removes it
+    # inside the same recreate. It comes last and there is no `verified:success`
+    # any more, so an upgrade lane that ends at verify -- which is every upgrade
+    # lane before #781 -- is now as unrepresentable as one that ends at the
+    # repin. A stop before the verify is refused for the mirror reason: it reads
+    # the seeded rows back out of a container that is no longer running.
     case "$lifecycle_state:$lifecycle_event" in
       start:converge) lifecycle_state=converged ;;
       converged:success) lifecycle_state=succeeded ;;
@@ -39,7 +48,8 @@ consume_integration_lifecycle_plan() {
       seeded:repin) lifecycle_state=repinned ;;
       repinned:converge) lifecycle_state=upgraded ;;
       upgraded:verify) lifecycle_state=verified ;;
-      verified:success) lifecycle_state=succeeded ;;
+      verified:stop) lifecycle_state=stopped ;;
+      stopped:success) lifecycle_state=succeeded ;;
       *)
         printf 'invalid integration lifecycle transition: %s -> %s\n' \
           "$lifecycle_state" "$lifecycle_event" >&2
