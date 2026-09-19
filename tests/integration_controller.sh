@@ -890,6 +890,18 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
           #
           # The base container's stop is still unobservable for the reason #773
           # gave: Compose removes it inside the same recreate.
+          #
+          # ONE RISK ON A FIRST DISPATCH, which is not a defect in this
+          # assertion. Kapowarr's clean stop is measured -- services/kapowarr/
+          # tasks.py's trailer and its Compose comment record 0.22s and exit 0
+          # against the pinned image. Bindery's is not measured anywhere: it
+          # declares no stop_grace_period, its runtime is distroless with
+          # /bindery as PID 1, and nothing in docs/dossier-bindery.md or
+          # roles/bindery says what it does with a SIGTERM. It is one of the
+          # eleven containers CLAUDE.md names as taking Docker's default grace
+          # on an expectation rather than a measurement. So the first red here
+          # for that subject may be pre-existing behaviour rather than the bump,
+          # which is what the failure message says.
           upgrade_project=$integration_project_namespace-$upgrade_service
           upgrade_running=$(docker ps \
             --filter "label=com.docker.compose.project=$upgrade_project" \
@@ -925,7 +937,7 @@ controller_test_sentinel=${CONTROLLER_TEST_SENTINEL:?}
             case $upgrade_stop_state in
               exited:0|exited:143) ;;
               *)
-                printf '%s did not stop cleanly: %s after %ss. 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671).\n' \
+                printf '%s did not stop cleanly: %s after %ss. 137 is SIGKILL, which is what a stop that was swallowed and waited out to the end of its grace period reports (#671). On a FIRST dispatch for a subject, check whether that subject ever stopped cleanly before blaming the bump: CLAUDE.md records eleven containers here whose stop inside Docker default grace is an expectation rather than a measurement, and Bindery is one of them.\n' \
                   "$upgrade_container" "$upgrade_stop_state" \
                   "$upgrade_stop_elapsed" >&2
                 exit 1
