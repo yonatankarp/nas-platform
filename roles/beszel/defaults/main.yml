@@ -61,10 +61,16 @@ beszel_alerts:
   # That same day loadavg was 3.29 of 4 with ADM's clamscan 14 hours into a
   # full-volume scan, holding a whole core plus the btrfs I/O behind it, while all
   # thirty containers together drew about 0.2 of a core: the alert at 87 was
-  # reporting a pegged host correctly, and the scan is being rescoped to the two
-  # acquisition trees separately. The operator raised this to 88 for the interval
-  # in between, which buys one degree against a measured 86-89 band and so thins
-  # the pages rather than stopping them. **Do not raise it a third time before
+  # reporting a pegged host correctly. That scan is ADM's own and no play in this
+  # repository starts, stops or scopes it: turning its full-volume schedule off
+  # is an operator action on the host, of the kind CLAUDE.md's AdGuard and ntfy
+  # tidy-ups already describe, and merging anything here does not perform it.
+  # What is meant to replace it is a clamd in the downloaders stack scanning one
+  # completed Usenet job at a time under a 1.0 CPU ceiling, which is a load this
+  # threshold should never see -- but that is a separate change and this comment
+  # does not assume it has landed. 88 is for the interval in between, and buys
+  # one degree against a measured 86-89 band, so it thins the pages rather than
+  # stopping them. **Do not raise it a third time before
   # reading /proc/loadavg**: every degree spent covering a pegged host is a degree
   # this alert no longer reports, and the next raise is the one that makes it mean
   # nothing. If 88 still pages once the scan is scoped, the heat has a second
