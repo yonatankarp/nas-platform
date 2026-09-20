@@ -93,7 +93,7 @@ services:
   clamav:
     <<: *service-defaults
     container_name: clamav
-    image: docker.io/clamav/clamav:1.5.1@sha256:b32e587feae9f156d660704beeec4ee69c79fcf5af092bdc0f2f93892a29b553
+    image: docker.io/clamav/clamav:1.5.4@sha256:9cb27d7660bdf66e9878c832cb433dd8aa152cfbe16f3c2c0084c80b04ae22b4
     # One CPU, and the ceiling is the point rather than a guess at the workload.
     # A full-volume ADM clamscan holding a whole core is what kept the Beszel
     # temperature alert ringing for 22 hours; this container is the same engine
