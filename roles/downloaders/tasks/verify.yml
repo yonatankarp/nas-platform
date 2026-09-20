@@ -58,12 +58,38 @@
   tags: [platform_verify_downloaders]
   no_log: true
 
-- name: Verify each bounded SABnzbd miscellaneous setting
+# Its own task rather than a second condition on the destination assert above,
+# because the two failures are not the same failure and the operator acts on
+# them differently. A wrong destination misplaces a download; a category with no
+# script imports one that nothing looked at, and says so nowhere else -- SABnzbd
+# reports a category running no script exactly as it reports one that ran a
+# script and passed. The two settings that make the gate work beside this one,
+# script_dir and script_can_fail, are verified by the owned-misc loop below
+# because they live in downloaders_sabnzbd_owned_misc.
+- name: Verify each SABnzbd category runs the ClamAV post-processing gate
   ansible.builtin.assert:
     that:
       - >-
-        downloaders_sabnzbd_verification.json.config.misc.get(item.key) | string ==
-        item.value | string
+        downloaders_sabnzbd_verification.json.config.categories |
+        selectattr('name', 'equalto', item.key) | map(attribute='script') |
+        first | default('') | string == downloaders_sabnzbd_category_script
+    fail_msg: >-
+      A SABnzbd category runs no ClamAV gate, so its downloads reach the arr
+      import unscanned.
+  loop: "{{ downloaders_sabnzbd_categories | dict2items }}"
+  loop_control:
+    label: sabnzbd-category-script
+  tags: [platform_verify_downloaders]
+  no_log: true
+
+- name: Verify each bounded SABnzbd miscellaneous setting
+  ansible.builtin.assert:
+    that:
+      # Normalised on both sides; roles/downloaders/defaults/main.yml records why.
+      - >-
+        downloaders_sabnzbd_verification.json.config.misc.get(item.key)
+          | string | lower | replace('true', '1') | replace('false', '0') ==
+        item.value | string | lower | replace('true', '1') | replace('false', '0')
     fail_msg: A bounded SABnzbd setting differs from the declared value.
   loop: "{{ downloaders_sabnzbd_owned_misc | dict2items }}"
   loop_control:

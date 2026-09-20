@@ -45,6 +45,14 @@ services:
       - ${SABNZBD_CONFIG_PATH:?}:/config
       - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition
       - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition
+      # The post-processing gate, mounted from the immutable release rather than
+      # copied into /config, for the reason services/dozzle/alert_relay.py is
+      # mounted the same way: the release is what a deployment replaces, so the
+      # script and the compose file that references it can never be one revision
+      # apart. `misc.script_dir` points SABnzbd at this directory and
+      # `misc.script_can_fail` is what makes its exit code mean anything; both
+      # are reconciled in roles/downloaders/defaults/main.yml.
+      - ${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:/scripts/clamav_gate.py:ro
     environment:
       PUID: ${NAS_UID:?}
       PGID: ${NAS_GID:?}
@@ -65,6 +73,83 @@ services:
     # re-fetching it. Unpackerr deliberately gets no window: it holds no
     # database, and a half-finished extraction is discarded and retried.
     stop_grace_period: 1m
+
+  # The gate the SABnzbd post-processing script talks to, and the reason this is
+  # a daemon rather than a `clamscan` per job: the signature database is ~1.4GB
+  # to parse, which is minutes of CPU on this host, and a per-job scan would pay
+  # it every time. clamd parses it once at start and holds it resident. Expect
+  # roughly 1.5-2.0GB RSS from this container -- the largest single figure on the
+  # host, against the 4.9GB the other thirty held when CLAUDE.md last measured
+  # them -- and no `mem_limit`, deliberately: the resident set is a fixed
+  # database rather than a leak, and a limit under it would OOM-kill clamd in the
+  # middle of a scan, which this platform's gate reads as "scanner unavailable"
+  # and turns into a failed download.
+  #
+  # The image carrying the bundled database rather than `1.5.1_base`, which does
+  # not: `_base` cannot answer a scan until freshclam has fetched the whole set,
+  # so every job completing in that window would hit the fail-closed path and
+  # blocklist its release. freshclam still runs inside this container and
+  # refreshes from the bundled snapshot forward.
+  clamav:
+    <<: *service-defaults
+    container_name: clamav
+    image: docker.io/clamav/clamav:1.5.1@sha256:b32e587feae9f156d660704beeec4ee69c79fcf5af092bdc0f2f93892a29b553
+    # One CPU, and the ceiling is the point rather than a guess at the workload.
+    # A full-volume ADM clamscan holding a whole core is what kept the Beszel
+    # temperature alert ringing for 22 hours; this container is the same engine
+    # pointed at far less, and the ceiling is what keeps it from becoming the
+    # same thing again.
+    cpus: 1.0
+    labels:
+      dev.dozzle.group: downloaders
+      dev.dozzle.name: clamav
+    # Read-only, and the paths are identical to SABnzbd's on purpose. The gate
+    # sends clamd a path string that SABnzbd resolved in its own namespace, and
+    # clamd resolves it again in this one; if the two mounts ever diverge, clamd
+    # scans a different tree or answers ERROR. Changing one of these four lines
+    # means changing its twin above.
+    volumes:
+      - ${MEDIA_ACQUISITION_PATH:?}:/data/media/.acquisition:ro
+      - ${BOOKS_ACQUISITION_PATH:?}:/data/books/.acquisition:ro
+    environment:
+      TZ: ${TZ:?}
+    # No PUID/PGID and no `user:`, unlike every other container in this stack.
+    # The image's entrypoint runs freshclam as its own `clamav` user against
+    # /var/lib/clamav, which that user owns; a foreign uid cannot write there and
+    # the database would never refresh. The mounts above are read-only, so what
+    # this container can reach is bounded by them rather than by its uid.
+    healthcheck:
+      <<: *healthcheck-defaults
+      # A real round-trip to the daemon, not an observation that a process
+      # exists: clamd does not accept a connection at all until it has parsed
+      # the signature set, so PING/PONG is exactly the readiness the gate needs.
+      # `clamdscan` reaches clamd over whichever transport clamd.conf declares,
+      # which in this image is both the local socket and TCP 3310; the probe
+      # therefore proves the daemon is answering rather than that this one port
+      # is bound. The image's own clamdcheck.sh wraps the same call.
+      test: [CMD-SHELL, "clamdscan --ping 1"]
+      # Parsing ~1.4GB of signatures takes a minute or two on this host, and a
+      # clamd still doing it is not broken. The shared 60s start period would
+      # report it unhealthy before it had a chance to answer.
+      #
+      # 240s is deliberately *longer* than the 180s platform_compose_wait_timeout
+      # this stack deploys under, which looks backwards and is the safer of the
+      # two failures. Inside its start period a slow container reports
+      # Health=starting and Status=running, which is neither of the two things
+      # roles/container_health selects on (status=restarting, health=unhealthy),
+      # so the deployment fails on Compose's own wait and leaves clamd running
+      # and still parsing. The poller's next tick five minutes later finds it
+      # healthy and converges. Shorten this below the wait and the opposite
+      # happens: clamd is declared unhealthy while it is merely slow,
+      # container_health force-recreates it, the parse restarts from zero and the
+      # next run is no more likely to finish than the last.
+      #
+      # Whether clamd actually needs more than 180s here has not been measured --
+      # it is one core of a Celeron N5105 against a database this pin will keep
+      # growing. If the first converge after this lands reds at the downloaders
+      # role on a wait timeout, that is this paragraph and not a fault; the tick
+      # after it should be green.
+      start_period: 240s
 
   unpackerr:
     <<: *service-defaults

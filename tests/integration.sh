@@ -1201,10 +1201,12 @@ cp "$repo_dir/config/media-acquisition.yml" \
 cp "$repo_dir/config/managed-user-capabilities.yml" \
   "$manifest_controller/config/managed-user-capabilities.yml"
 cp -R "$repo_dir/roles/deployment_bundle" "$manifest_controller/roles/"
-mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/immich" \
-  "$manifest_controller/services/kapowarr"
+mkdir -p "$manifest_controller/services/dozzle" "$manifest_controller/services/downloaders" \
+  "$manifest_controller/services/immich" "$manifest_controller/services/kapowarr"
 cp "$repo_dir/services/dozzle/alert_relay.py" \
   "$manifest_controller/services/dozzle/alert_relay.py"
+cp "$repo_dir/services/downloaders/clamav_gate.py" \
+  "$manifest_controller/services/downloaders/clamav_gate.py"
 cp "$repo_dir/services/immich/classify_restore.py" \
   "$manifest_controller/services/immich/classify_restore.py"
 cp "$repo_dir/services/kapowarr/tasks.py" \

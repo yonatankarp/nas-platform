@@ -125,6 +125,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/vault_contract/tasks/main.yml
   services/manifest.yml
   services/dozzle/alert_relay.py
+  services/downloaders/clamav_gate.py
   services/immich/classify_restore.py
   services/kapowarr/tasks.py
   scripts/production_auto_deploy.py

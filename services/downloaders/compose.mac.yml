@@ -6,3 +6,5 @@ services:
       - "${SABNZBD_HOST_PORT:?}:8080"
   unpackerr:
     container_name: ${PLATFORM_PROJECT_NAME:?}-unpackerr
+  clamav:
+    container_name: ${PLATFORM_PROJECT_NAME:?}-clamav

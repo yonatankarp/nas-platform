@@ -90,6 +90,7 @@ require_image_merge = merge_mode == "require-image-merge"
 RUNTIME_FILES = {
   "arr" => ["configarr.yml"],
   "dozzle" => ["alert_relay.py"],
+  "downloaders" => ["clamav_gate.py"],
   "immich" => ["classify_restore.py"],
   "kapowarr" => ["tasks.py"]
 }.freeze

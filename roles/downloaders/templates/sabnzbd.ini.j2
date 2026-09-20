@@ -10,11 +10,16 @@ username = {{ vault_downloaders_sabnzbd_admin_username }}
 password = {{ vault_downloaders_sabnzbd_admin_password }}
 download_dir = /data/media/.acquisition/usenet/incomplete
 complete_dir = /data/media/.acquisition/usenet
-cache_limit = {{ downloaders_sabnzbd_owned_misc.cache_limit }}
-direct_unpack = {{ downloaders_sabnzbd_owned_misc.direct_unpack }}
-direct_unpack_threads = {{ downloaders_sabnzbd_owned_misc.direct_unpack_threads }}
-direct_write = {{ downloaders_sabnzbd_owned_misc.direct_write }}
-max_art_tries = {{ downloaders_sabnzbd_owned_misc.max_art_tries }}
+{# Rendered from the dict rather than key by key, because the five that used to
+   be written out here were a second list of the owned settings and nothing held
+   the two in step: a key added to downloaders_sabnzbd_owned_misc reconciled on
+   every converge but was absent from the file a fresh host is bootstrapped with,
+   so the first run after a rebuild started SABnzbd without it. That is harmless
+   for a cache size and is not for script_can_fail, which is what decides whether
+   an unscanned download is imported. One line per owned key, in one place. #}
+{% for keyword, value in downloaders_sabnzbd_owned_misc | dictsort %}
+{{ keyword }} = {{ value }}
+{% endfor %}
 
 [categories]
 {% for category, directory in downloaders_sabnzbd_categories.items() %}
@@ -23,6 +28,6 @@ name = {{ category }}
 dir = {{ directory }}
 priority = -100
 pp = {{ downloaders_sabnzbd_category_post_processing }}
-script = None
+script = {{ downloaders_sabnzbd_category_script }}
 
 {% endfor %}
