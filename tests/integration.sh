@@ -18,7 +18,7 @@ ansible_core_version=2.21.4
 # community.docker.docker_container_info imports requests on the managed host;
 # the disposable controller is that host for the local inventory.
 requests_version=2.34.2
-runner_image=docker.io/library/python:3.14-alpine@sha256:016508ba505da24f7139765bc4bb669df4e88eb2f12eeadd571bf2f88d7533df
+runner_image=docker.io/library/python:3.14-alpine@sha256:9e9fde4d32eedce0b661d9ab91e826b62dddf28e928c230ec55f1866cac66b01
 # Fuzzy `~` rather than `=`: apk's `=` requires the distro revision, so a
 # packaging-only bump from -r0 to -r1 drops the pinned version out of the index
 # and every suite fails at sandbox setup with "unable to select packages". `~`
