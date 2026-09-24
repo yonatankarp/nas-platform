@@ -37,11 +37,10 @@ which the scanner is missing. It does not cover the window that actually
 happened: on 2026-09-22, between 21:45:02 and 22:02:00, SABnzbd recorded 44 jobs
 as `Exit(-1): Cannot run script /scripts/clamav_gate.py` and failed every one --
 a script SABnzbd cannot launch never reaches any wait this file contains. 44
-releases burned, zero infections found to date -- and the second figure meant
-less than it looked, because the verdict was being read against the wrong reply
-framing and no scan could have found anything. verdict() below carries that,
-and the command that settles it against the running clamd. An unscanned import
-is the cheaper of the two failures: what it risks is executable content sitting in a
+releases burned, zero infections found to date -- and read that second figure
+with verdict() below, which records a reply-framing hazard that would make a
+detection impossible and which nothing here has been able to observe either way.
+An unscanned import is the cheaper of the two failures: what it risks is executable content sitting in a
 library directory, which nothing on this platform runs, while a burned release is
 certain and immediate.
 
@@ -150,15 +149,23 @@ def verdict(target: str) -> list[str]:
     needs to know. See the Temperature comment in roles/beszel/defaults/main.yml
     before reaching for the faster one.
 
-    clamd terminates its *replies* with whatever the command prefix asked for, so
-    a `z` command is answered `path: Sig FOUND\0` and not `...FOUND\n`. Nothing
-    in Python's splitlines() breaks on a NUL, so the two verdict tests below --
-    both anchored with endswith() -- read every reply as one unterminated line
-    and matched neither " FOUND" nor " ERROR": every scan took the Clean branch.
-    The readiness wait hid it, because `"PONG" in reply` is a substring test and
-    survives a trailing NUL. Confirm the framing from inside the SABnzbd
-    container with `printf 'zPING\0' | nc clamav 3310 | xxd`: a trailing 00 is
-    this framing, a trailing 0a is the other. The replace is correct under both.
+    **The replace is about the framing of the reply, and which framing this clamd
+    uses has not been observed here.** clamd is widely documented as terminating
+    its replies with the same character the command prefix asked for, which would
+    make a `z` command's answer `path: Sig FOUND\0` rather than `...FOUND\n`.
+    Nothing in Python's splitlines() breaks on a NUL, so under that framing the
+    two verdict tests below -- both anchored with endswith() -- would read every
+    reply as one unterminated line, match neither " FOUND" nor " ERROR", and send
+    every scan down the Clean branch. Nothing in this repository would say so:
+    the readiness wait uses `"PONG" in reply`, a substring test that survives a
+    trailing NUL either way, and no check anywhere runs this file against a real
+    clamd. The replace costs nothing and is correct under both framings, which is
+    why it is here rather than a question held open.
+
+    One command settles which framing is live, from inside the SABnzbd container:
+    `printf 'zPING\0' | nc clamav 3310 | xxd`. A trailing 00 means the replies
+    were NUL-terminated and this line is load-bearing; a trailing 0a means they
+    were not and it is a no-op.
     """
     reply = command(b"SCAN " + target.encode("utf-8"), timeout=SCAN_TIMEOUT)
     return [line for line in reply.replace("\0", "\n").splitlines() if line.strip()]

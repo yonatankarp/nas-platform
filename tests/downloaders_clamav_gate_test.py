@@ -12,13 +12,16 @@ Every case points PUSHOVER_API_URL at that fake. A case that forgot would reach
 pushover.net from the gate with whatever credentials the environment carried.
 
 Two framings and two shapes of case, and both pairs exist for a reason a green
-run did not give. clamd answers a `z`-prefixed command with NUL-terminated
-replies, and the fixture served newline-terminated ones, so the whole suite
-passed over a verdict test that could not have matched a real reply. And every
-case called main() in-process, which sees a return value rather than an exit
-code -- so a crash on the way to one, which is what a malformed Pushover URL
-was, was invisible here while the process exited 1 and told the arr the release
-was infected. The subprocess cases at the end are the ones that see that.
+run did not give. This fixture served only newline-terminated replies, while
+clamd is documented as answering a `z`-prefixed command with NUL-terminated
+ones -- so the verdict test may never have been exercised against the framing
+production actually meets. Which framing the deployed clamd uses is unobserved,
+and the gate's own verdict() says how to settle it; both are served here so that
+neither answer leaves a case missing. And every case called main() in-process,
+which sees a return value rather than an exit code -- so a crash on the way to
+one, which is what a malformed Pushover URL was, was invisible here while the
+process exited 1 and told the arr the release was infected. The subprocess cases
+at the end are the ones that see that.
 """
 
 import importlib.util
@@ -278,12 +281,13 @@ class ClamavGateTest(unittest.TestCase):
 
 
     def test_nul_terminated_replies_are_read(self):
-        """The framing a real clamd answers a `z` command with.
+        """The framing clamd is documented as answering a `z` command with.
 
         Nothing in splitlines() breaks on a NUL, so a reply terminated the way
-        the gate asked for it to be terminated used to arrive as one line
-        ending in "\x00" -- matching neither " FOUND" nor " ERROR", and taking
-        the Clean branch with a signature in it.
+        the gate asked for it to be terminated arrives as one line ending in
+        "\x00" -- matching neither " FOUND" nor " ERROR", and taking the Clean
+        branch with a signature in it. Whether the deployed clamd frames replies
+        this way is unobserved; this case is what makes the answer not matter.
         """
         infected, _, received = self.run_gate(
             [b"PONG\0", b"/scan/x.exe: Win.Test.EICAR FOUND\0"]
