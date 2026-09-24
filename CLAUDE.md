@@ -570,6 +570,19 @@ fix what it names by its own words. It enforces, among others:
   the host's RAM, which is what it did before (#447). Nothing declares a heap
   yet, so four mutations in `tests/policy_manifest_test.rb` are that half's only
   proof.
+- A container that bind-mounts a file out of `${PLATFORM_CURRENT_DIR:?}` carries
+  a label holding that file's own sha256. Docker resolves a bind-mount source
+  once, when the container starts, so a container Compose has no reason to
+  recreate keeps the inode from whichever release was current then while
+  `current` moves on — #810 found SABnzbd executing a four-day-old
+  `clamav_gate.py`, and nothing compared the two. Only a changed *definition*
+  recreates, and the content sha256 is what makes the file part of one. Keyed on
+  content rather than on the release id deliberately: the stale inode matters
+  exactly when the bytes differ, and recreating on every release would interrupt
+  an active download for a merge that changed nothing here.
+  `EXPECTED_RELEASE_MOUNT_CONTAINERS` pins which containers the rule reaches, in
+  both directions, because the subject set is derived from the volumes and an
+  ordinary refactor empties it silently.
 - Every implemented service has either a verification task — name containing
   `verify`/`verification`, tag `platform_verify_<service>`, and either a `uri`
   task naming the service with `status_code:` or an `assert` whose every
