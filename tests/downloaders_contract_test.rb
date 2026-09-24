@@ -199,6 +199,24 @@ STATIC_ROWS = [
     expects: "downloaders env must carry only declared API keys"
   },
   {
+    name: "a release gate sha256 that never reaches the environment",
+    break: lambda { |root|
+      mutate_text(root, "roles/downloaders/templates/env.j2",
+                  "SABNZBD_CLAMAV_GATE_SHA256={{ downloaders_clamav_gate_sha256 }}",
+                  "# SABNZBD_CLAMAV_GATE_SHA256={{ downloaders_clamav_gate_sha256 }}")
+    },
+    expects: "downloaders env must export the release gate's sha256 exactly once"
+  },
+  {
+    name: "a gate checksum read after the environment it feeds",
+    break: lambda { |root|
+      mutate_text(root, "roles/downloaders/tasks/main.yml",
+                  "  register: downloaders_clamav_gate\n",
+                  "  register: downloaders_clamav_gate_late\n")
+    },
+    expects: "downloaders must checksum the release's gate before rendering its environment"
+  },
+  {
     name: "a credential-bearing request that logs its payload",
     break: lambda { |root|
       path = File.join(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml")

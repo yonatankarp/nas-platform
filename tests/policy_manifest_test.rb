@@ -577,6 +577,31 @@ expect_failure(failures, "declared heap above half its memory limit",
   end
 end
 
+# The two halves of the release-mount label rule, which is what #810 was: a
+# container mounting a file out of the `current` symlink and carrying no label
+# keyed on that file's content runs an older release's copy for as long as
+# Compose has no reason to recreate it. The first row plants that state; the
+# second takes the mount away instead, which is the refactor that would empty
+# the derived subject set and leave the check green over nothing.
+expect_failure(failures, "release-mounted file with no content label",
+               "downloaders/sabnzbd: a file bind-mounted out of the release pointer must be " \
+               "labelled with its own sha256",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/downloaders/compose.yml") do |compose|
+    compose.fetch("services").fetch("sabnzbd").fetch("labels")
+           .delete("dev.nas-platform.downloaders.clamav-gate-sha256")
+  end
+end
+
+expect_failure(failures, "release mount dropped off the pinned expectation",
+               "containers bind-mounting a file out of the release pointer are",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/dozzle/compose.yml") do |compose|
+    relay = compose.fetch("services").fetch("alert-relay")
+    relay["volumes"] = relay.fetch("volumes").grep_v(%r{\A\$\{PLATFORM_CURRENT_DIR:\?\}/})
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent",
                detected_by: %i[policy]) do |root|
