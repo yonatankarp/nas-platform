@@ -10,11 +10,22 @@ things that can silently stop working are the framing and the POST.
 
 Every case points PUSHOVER_API_URL at that fake. A case that forgot would reach
 pushover.net from the gate with whatever credentials the environment carried.
+
+Two framings and two shapes of case, and both pairs exist for a reason a green
+run did not give. clamd answers a `z`-prefixed command with NUL-terminated
+replies, and the fixture served newline-terminated ones, so the whole suite
+passed over a verdict test that could not have matched a real reply. And every
+case called main() in-process, which sees a return value rather than an exit
+code -- so a crash on the way to one, which is what a malformed Pushover URL
+was, was invisible here while the process exited 1 and told the arr the release
+was infected. The subprocess cases at the end are the ones that see that.
 """
 
 import importlib.util
 import os
 import socket
+import subprocess
+import sys
 import threading
 import unittest
 from contextlib import contextmanager
@@ -166,6 +177,31 @@ class ClamavGateTest(unittest.TestCase):
         self.assertEqual(alert.get("priority"), ["1"])
         self.assertIn(name, alert.get("message", [""])[0])
 
+    def run_script(self, **env):
+        """Run the gate as SABnzbd runs it: a process, read for its exit code.
+
+        `main()` returning is not the same event as the process exiting, and the
+        difference is everything the in-process cases cannot see -- an
+        import-time failure, and any exception escaping main().
+        """
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "CLAMD_HOST": "127.0.0.1",
+            "CLAMD_PORT": str(closed_port()),
+            "CLAMD_READY_TIMEOUT": "0",
+            "CLAMD_SCAN_TIMEOUT": "5",
+            "SAB_COMPLETE_DIR": str(ROOT),
+            "SAB_FINAL_NAME": "Some.Release.2026",
+            "PUSHOVER_ALERTS_TOKEN": ALERTS_TOKEN,
+            "PUSHOVER_USER_KEY": USER_KEY,
+            "PUSHOVER_TIMEOUT": "5",
+        }
+        environment.update({k: v for k, v in env.items() if v is not None})
+        return subprocess.run(
+            [sys.executable, str(GATE)], env=environment, check=False,
+            capture_output=True, text=True, errors="replace", timeout=60,
+        )
+
     def test_clean_scan_passes_and_does_not_alert(self):
         code, served, received = self.run_gate([b"PONG\n", b"/scan: OK\n"])
         self.assertEqual(code, 0)
@@ -239,6 +275,70 @@ class ClamavGateTest(unittest.TestCase):
         code, _, received = self.run_gate([b"PONG\n", b""], PUSHOVER_ALERTS_TOKEN=None)
         self.assertEqual(code, 0)
         self.assertEqual(received, [])
+
+
+    def test_nul_terminated_replies_are_read(self):
+        """The framing a real clamd answers a `z` command with.
+
+        Nothing in splitlines() breaks on a NUL, so a reply terminated the way
+        the gate asked for it to be terminated used to arrive as one line
+        ending in "\x00" -- matching neither " FOUND" nor " ERROR", and taking
+        the Clean branch with a signature in it.
+        """
+        infected, _, received = self.run_gate(
+            [b"PONG\0", b"/scan/x.exe: Win.Test.EICAR FOUND\0"]
+        )
+        self.assertEqual(infected, 1)
+        self.assertEqual(received, [])
+
+        errored, _, received = self.run_gate([b"PONG\0", b"/scan: Can't open file ERROR\0"])
+        self.assertEqual(errored, 0)
+        self.assert_alerted(received)
+
+        clean, _, received = self.run_gate([b"PONG\0", b"/scan: OK\0"])
+        self.assertEqual(clean, 0)
+        self.assertEqual(received, [])
+
+    def test_process_exits_zero_when_it_cannot_scan(self):
+        """The exit code SABnzbd actually reads, from a real process."""
+        with fake_pushover() as (api_url, received):
+            completed = self.run_script(PUSHOVER_API_URL=api_url)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assert_alerted(received)
+
+    def test_process_exits_one_only_for_an_infection(self):
+        with fake_pushover() as (api_url, _):
+            with fake_clamd([b"PONG\0", b"/scan/x.exe: Win.Test.EICAR FOUND\0"]) as (port, _):
+                completed = self.run_script(
+                    PUSHOVER_API_URL=api_url, CLAMD_PORT=str(port),
+                    CLAMD_READY_TIMEOUT="5",
+                )
+        self.assertEqual(completed.returncode, 1, completed.stderr)
+        self.assertIn("INFECTED", completed.stdout)
+
+    def test_a_broken_alert_configuration_does_not_exit_one(self):
+        """Exit 1 is the arr's blocklist signal, so no defect may borrow it.
+
+        Each of these was measured exiting 1 before the guards widened: a URL
+        Request() refuses, a release name os.environ hands over as surrogates,
+        and a timeout float() cannot parse, which fails at import.
+        """
+        for label, override in (
+            ("no scheme", {"PUSHOVER_API_URL": "api.pushover.net/1/messages.json"}),
+            ("unsupported scheme", {"PUSHOVER_API_URL": "gopher://example.invalid/x"}),
+            ("unparseable timeout", {"PUSHOVER_TIMEOUT": "abc"}),
+        ):
+            with self.subTest(label=label):
+                completed = self.run_script(**override)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+
+    def test_a_release_name_that_is_not_utf8_does_not_exit_one(self):
+        """os.environ decodes undecodable bytes as surrogates; urlencode refuses them."""
+        completed = self.run_script(
+            PUSHOVER_API_URL="http://127.0.0.1:1/1/messages.json",
+            SAB_FINAL_NAME=b"Release.\xff\xfe.name".decode("utf-8", "surrogateescape"),
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
 
 
 if __name__ == "__main__":

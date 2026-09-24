@@ -37,8 +37,11 @@ which the scanner is missing. It does not cover the window that actually
 happened: on 2026-09-22, between 21:45:02 and 22:02:00, SABnzbd recorded 44 jobs
 as `Exit(-1): Cannot run script /scripts/clamav_gate.py` and failed every one --
 a script SABnzbd cannot launch never reaches any wait this file contains. 44
-releases burned, zero infections found to date. An unscanned import is the
-cheaper of the two failures: what it risks is executable content sitting in a
+releases burned, zero infections found to date -- and the second figure meant
+less than it looked, because the verdict was being read against the wrong reply
+framing and no scan could have found anything. verdict() below carries that,
+and the command that settles it against the running clamd. An unscanned import
+is the cheaper of the two failures: what it risks is executable content sitting in a
 library directory, which nothing on this platform runs, while a burned release is
 certain and immediate.
 
@@ -53,6 +56,13 @@ ceiling here to soften that: the answer to the noise is repairing clamd, and a
 ceiling would be a second thing that can silence this. A failed alert is printed
 and swallowed -- a Pushover outage that failed the job would be this file's old
 behaviour wearing a different hat.
+
+**Exit 1 now means exactly one thing: clamd named a signature.** That is what
+makes `script_can_fail: 1` still worth having, and it is also why every guard in
+this file is broader than the failure it was written for -- a malformed URL, a
+release name that is not UTF-8, a defect in this file. Any of them exiting 1
+would have SABnzbd report an infection and the arr blocklist a release over a
+traceback.
 
 The readiness wait below still earns its place, for a different reason than it
 used to. It no longer saves releases, because nothing here burns one any more: it
@@ -89,8 +99,11 @@ PUSHOVER_ALERTS_TOKEN = os.environ.get("PUSHOVER_ALERTS_TOKEN", "")
 PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY", "")
 # SABnzbd will not start the next job until this script returns, so the alert is
 # on the critical path of the queue. Ten seconds is long enough for a POST and
-# short enough that a black-holed endpoint is not a stalled downloader.
-ALERT_TIMEOUT = float(os.environ.get("PUSHOVER_TIMEOUT", "10"))
+# short enough that a black-holed endpoint is not a stalled downloader. It is
+# parsed inside alert() rather than here because exit 1 now means INFECTED and
+# nothing else: a float() at import would fail every job, clean ones included,
+# with the code that tells the arr to blocklist the release.
+ALERT_TIMEOUT = os.environ.get("PUSHOVER_TIMEOUT", "10")
 
 
 def command(payload: bytes, timeout: float) -> str:
@@ -128,7 +141,7 @@ def await_clamd() -> None:
 
 
 def verdict(target: str) -> list[str]:
-    """Return clamd's reply lines for a recursive scan of `target`.
+    r"""Return clamd's reply lines for a recursive scan of `target`.
 
     SCAN rather than MULTISCAN, and the choice is load and not taste: MULTISCAN
     spreads one job across every thread clamd has, which is the shape that put
@@ -136,9 +149,19 @@ def verdict(target: str) -> list[str]:
     SCAN is single-threaded and stops at the first detection, which is all a gate
     needs to know. See the Temperature comment in roles/beszel/defaults/main.yml
     before reaching for the faster one.
+
+    clamd terminates its *replies* with whatever the command prefix asked for, so
+    a `z` command is answered `path: Sig FOUND\0` and not `...FOUND\n`. Nothing
+    in Python's splitlines() breaks on a NUL, so the two verdict tests below --
+    both anchored with endswith() -- read every reply as one unterminated line
+    and matched neither " FOUND" nor " ERROR": every scan took the Clean branch.
+    The readiness wait hid it, because `"PONG" in reply` is a substring test and
+    survives a trailing NUL. Confirm the framing from inside the SABnzbd
+    container with `printf 'zPING\0' | nc clamav 3310 | xxd`: a trailing 00 is
+    this framing, a trailing 0a is the other. The replace is correct under both.
     """
     reply = command(b"SCAN " + target.encode("utf-8"), timeout=SCAN_TIMEOUT)
-    return [line for line in reply.splitlines() if line.strip()]
+    return [line for line in reply.replace("\0", "\n").splitlines() if line.strip()]
 
 
 def alert(name: str, detail: str) -> None:
@@ -153,28 +176,34 @@ def alert(name: str, detail: str) -> None:
     application token and the user key are in the request body and not in a
     header -- worth knowing wherever a request is captured, because a recorded
     body is a credential. Nothing below prints the body.
+
+    Everything after the credential check is inside the try, not only the POST.
+    A malformed PUSHOVER_API_URL raises from Request(), and a release name
+    carrying bytes that are not UTF-8 -- which os.environ hands over as
+    surrogates -- raises from urlencode(); both were measured exiting 1, which
+    is the code that tells the arr the release was infected.
     """
     if not (PUSHOVER_ALERTS_TOKEN and PUSHOVER_USER_KEY):
         print("The unscanned-import alert was not sent: no Pushover credentials in "
               "this container's environment.")
         return
-    body = urllib.parse.urlencode(
-        {
-            "token": PUSHOVER_ALERTS_TOKEN,
-            "user": PUSHOVER_USER_KEY,
-            "title": "SABnzbd imported an unscanned download",
-            "message": f"{name} was imported without a ClamAV verdict: {detail}",
-            "priority": 1,
-        }
-    ).encode("ascii")
-    request = urllib.request.Request(
-        PUSHOVER_API_URL,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
     try:
-        with urllib.request.urlopen(request, timeout=ALERT_TIMEOUT) as response:
+        body = urllib.parse.urlencode(
+            {
+                "token": PUSHOVER_ALERTS_TOKEN,
+                "user": PUSHOVER_USER_KEY,
+                "title": "SABnzbd imported an unscanned download",
+                "message": f"{name} was imported without a ClamAV verdict: {detail}",
+                "priority": 1,
+            }
+        ).encode("ascii")
+        request = urllib.request.Request(
+            PUSHOVER_API_URL,
+            data=body,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=float(ALERT_TIMEOUT)) as response:
             print(f"Unscanned-import alert sent (HTTP {response.status}).")
     except Exception as error:  # noqa: BLE001 - a failed alert must not fail the job
         print("The unscanned-import alert was not delivered "
@@ -204,8 +233,11 @@ def main() -> int:
     try:
         await_clamd()
         lines = verdict(target)
-    except (OSError, RuntimeError) as error:
-        return unavailable(name, str(error))
+    # Broad on purpose, and for the same reason the alert's guard is: the only
+    # thing exit 1 may mean is that clamd named a signature. Anything else that
+    # goes wrong between here and a verdict is an unscanned import.
+    except Exception as error:  # noqa: BLE001
+        return unavailable(name, f"{type(error).__name__}: {error}")
 
     infected = [line for line in lines if line.endswith(" FOUND")]
     if infected:
@@ -229,4 +261,14 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The last net under the same rule. main() reports its own failures, so
+    # reaching this is a defect rather than a scanner problem -- but a defect
+    # that exited 1 would be read by SABnzbd and the arr as an infection, and a
+    # release would be blocklisted over a traceback.
+    try:
+        EXIT_CODE = main()
+    except Exception as error:  # noqa: BLE001
+        print("SCANNER UNAVAILABLE: the gate itself failed "
+              f"({type(error).__name__}: {error}).")
+        EXIT_CODE = 0
+    sys.exit(EXIT_CODE)
