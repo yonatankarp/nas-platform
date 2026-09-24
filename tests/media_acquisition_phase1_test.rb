@@ -168,6 +168,7 @@ effective_downloaders = effective_compose("services/downloaders/compose.yml", {
   "PLATFORM_MEDIA_NETWORK" => "fixture-media",
   "SABNZBD_CONFIG_PATH" => "/tmp/sabnzbd",
   "PLATFORM_CURRENT_DIR" => "/tmp/release",
+  "SABNZBD_CLAMAV_GATE_SHA256" => "a" * 64,
   "MEDIA_ACQUISITION_PATH" => "/tmp/media",
   "BOOKS_ACQUISITION_PATH" => "/tmp/books",
   "SABNZBD_API_KEY" => "fixture",

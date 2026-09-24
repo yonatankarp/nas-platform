@@ -139,6 +139,7 @@ render() {
     MEDIA_ACQUISITION_PATH="$temporary_dir/$label-media/Media/.acquisition" \
     BOOKS_ACQUISITION_PATH="$temporary_dir/$label-media/Books/.acquisition" \
     SABNZBD_HOST_PORT="$sabnzbd_port" SABNZBD_API_KEY=test \
+    SABNZBD_CLAMAV_GATE_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     RADARR_API_KEY=test SONARR_API_KEY=test \
     docker compose --project-name "$base_name-downloaders" \
       -f "$repo_dir/services/downloaders/compose.yml" \

@@ -137,6 +137,7 @@ render_group_contract() {
     CONFIGARR_REPOS_PATH=/tmp/dozzle-contract/configarr-repos \
     SABNZBD_HOST_PORT=38085 SABNZBD_CONFIG_PATH=/tmp/dozzle-contract/sabnzbd-config \
     SABNZBD_API_KEY=contract \
+    SABNZBD_CLAMAV_GATE_SHA256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
     MEDIA_ACQUISITION_PATH=/tmp/dozzle-contract/media/.acquisition \
     BOOKS_ACQUISITION_PATH=/tmp/dozzle-contract/books/.acquisition \
     BINDERY_HOST_PORT=38787 BINDERY_API_KEY=contract \
