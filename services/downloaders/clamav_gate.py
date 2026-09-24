@@ -23,20 +23,49 @@ payloads -- and reading a 40GB remux would put a core back under the sustained
 load that #608's temperature alert exists to report. An operator reading
 "downloads are scanned" should read this paragraph as the scope.
 
-Fail closed. Anything that is not an explicit per-file OK from clamd -- a refused
-connection, a timeout, a short reply, an ERROR line -- fails the job, because a
-scanner that passes what it could not read is worse than no scanner at all. The
-cost of that choice is real and is the reason for the readiness wait below:
-SABnzbd reports a failed job to the arr, and the arr's failed-download handling
-blocklists the release and searches for another, so a clamd that is merely
-missing burns releases. The wait covers the window a converge's `docker compose
-up` recreation opens; beyond it, burning a release is the intended outcome.
+**Only an infection fails the job (#811).** Anything that is not a verdict at all
+-- a refused connection, a timeout, a short reply, an ERROR line, a
+SAB_COMPLETE_DIR this container cannot see -- lets the job import and pages the
+operator instead.
+
+That reverses the fail-closed posture #793 shipped, and the reason is a
+measurement rather than a preference. SABnzbd reports a failed job to the arr,
+the arr's failed-download handling blocklists the release and searches for
+another, so every job a broken scanner touches costs a release. #793 accepted
+that on the reasoning that the readiness wait below covers the only window in
+which the scanner is missing. It does not cover the window that actually
+happened: on 2026-09-22, between 21:45:02 and 22:02:00, SABnzbd recorded 44 jobs
+as `Exit(-1): Cannot run script /scripts/clamav_gate.py` and failed every one --
+a script SABnzbd cannot launch never reaches any wait this file contains. 44
+releases burned, zero infections found to date. An unscanned import is the
+cheaper of the two failures: what it risks is executable content sitting in a
+library directory, which nothing on this platform runs, while a burned release is
+certain and immediate.
+
+**The alert is what keeps that from being a silent downgrade.** An unscanned
+import is acceptable once and unacceptable as a standing state, and only a
+notification tells the two apart; the message names the release so an operator
+can distinguish an unscanned import from an infection without opening SABnzbd.
+It goes out on the Pushover Alerts application at priority 1, which is what every
+other publisher on that application uses for a problem. A clamd outage of the
+shape measured above is therefore 44 high-priority messages, and there is no
+ceiling here to soften that: the answer to the noise is repairing clamd, and a
+ceiling would be a second thing that can silence this. A failed alert is printed
+and swallowed -- a Pushover outage that failed the job would be this file's old
+behaviour wearing a different hat.
+
+The readiness wait below still earns its place, for a different reason than it
+used to. It no longer saves releases, because nothing here burns one any more: it
+keeps a converge's container recreation from paging the operator once per job
+that lands inside it.
 """
 
 import os
 import socket
 import sys
 import time
+import urllib.parse
+import urllib.request
 
 HOST = os.environ.get("CLAMD_HOST", "clamav")
 PORT = int(os.environ.get("CLAMD_PORT", "3310"))
@@ -46,6 +75,22 @@ READY_TIMEOUT = float(os.environ.get("CLAMD_READY_TIMEOUT", "300"))
 # A scan of the small files in one job is seconds. This bounds a clamd that
 # accepted the connection and then stopped answering.
 SCAN_TIMEOUT = float(os.environ.get("CLAMD_SCAN_TIMEOUT", "1800"))
+
+# The Pushover Alerts application, rendered into this container's environment by
+# roles/downloaders/templates/env.j2 the way roles/dozzle renders the same three
+# values for services/dozzle/alert_relay.py. The `.env` is the shape that fits a
+# container: the protected curl configs roles/image_prune and
+# roles/production_auto_deploy use live in the deploy account's home, which is
+# not reachable from inside one.
+PUSHOVER_API_URL = os.environ.get(
+    "PUSHOVER_API_URL", "https://api.pushover.net/1/messages.json"
+)
+PUSHOVER_ALERTS_TOKEN = os.environ.get("PUSHOVER_ALERTS_TOKEN", "")
+PUSHOVER_USER_KEY = os.environ.get("PUSHOVER_USER_KEY", "")
+# SABnzbd will not start the next job until this script returns, so the alert is
+# on the critical path of the queue. Ten seconds is long enough for a POST and
+# short enough that a black-holed endpoint is not a stalled downloader.
+ALERT_TIMEOUT = float(os.environ.get("PUSHOVER_TIMEOUT", "10"))
 
 
 def command(payload: bytes, timeout: float) -> str:
@@ -96,22 +141,71 @@ def verdict(target: str) -> list[str]:
     return [line for line in reply.splitlines() if line.strip()]
 
 
+def alert(name: str, detail: str) -> None:
+    """Page the operator that `name` imported without a verdict. Never raises.
+
+    Every failure here is printed into SABnzbd's script log and swallowed. That
+    is the whole point of the change this file records: an import that proceeds
+    only when Pushover is reachable would be the old fail-closed behaviour with
+    a third party added to it.
+
+    Pushover authenticates by form field rather than by header, so the
+    application token and the user key are in the request body and not in a
+    header -- worth knowing wherever a request is captured, because a recorded
+    body is a credential. Nothing below prints the body.
+    """
+    if not (PUSHOVER_ALERTS_TOKEN and PUSHOVER_USER_KEY):
+        print("The unscanned-import alert was not sent: no Pushover credentials in "
+              "this container's environment.")
+        return
+    body = urllib.parse.urlencode(
+        {
+            "token": PUSHOVER_ALERTS_TOKEN,
+            "user": PUSHOVER_USER_KEY,
+            "title": "SABnzbd imported an unscanned download",
+            "message": f"{name} was imported without a ClamAV verdict: {detail}",
+            "priority": 1,
+        }
+    ).encode("ascii")
+    request = urllib.request.Request(
+        PUSHOVER_API_URL,
+        data=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=ALERT_TIMEOUT) as response:
+            print(f"Unscanned-import alert sent (HTTP {response.status}).")
+    except Exception as error:  # noqa: BLE001 - a failed alert must not fail the job
+        print("The unscanned-import alert was not delivered "
+              f"({type(error).__name__}: {error}).")
+
+
+def unavailable(name: str, detail: str, lines: tuple[str, ...] = ()) -> int:
+    """Report an unscanned import, alert, and exit 0 so SABnzbd imports the job."""
+    print(f"SCANNER UNAVAILABLE: {name} was imported without being scanned: {detail}")
+    for line in lines:
+        print(line)
+    alert(name, detail)
+    return 0
+
+
 def main() -> int:
     target = os.environ.get("SAB_COMPLETE_DIR", "")
     name = os.environ.get("SAB_FINAL_NAME") or target or "(unnamed job)"
+    # Both of these run before anything has asked clamd a question, so they are
+    # the paths where `name` is whatever SABnzbd did or did not pass -- down to
+    # the "(unnamed job)" placeholder, which is still a message worth sending.
     if not target:
-        print("SCANNER UNAVAILABLE: SABnzbd passed no SAB_COMPLETE_DIR to scan.")
-        return 3
+        return unavailable(name, "SABnzbd passed no SAB_COMPLETE_DIR to scan.")
     if not os.path.isdir(target):
-        print(f"SCANNER UNAVAILABLE: {target} is not a directory this container can see.")
-        return 3
+        return unavailable(name, f"{target} is not a directory this container can see.")
 
     try:
         await_clamd()
         lines = verdict(target)
     except (OSError, RuntimeError) as error:
-        print(f"SCANNER UNAVAILABLE: {name} was not scanned: {error}")
-        return 3
+        return unavailable(name, str(error))
 
     infected = [line for line in lines if line.endswith(" FOUND")]
     if infected:
@@ -124,10 +218,11 @@ def main() -> int:
     # all, which is the failure this branch exists to keep out of the OK path.
     errored = [line for line in lines if line.endswith(" ERROR")]
     if errored or not lines:
-        print(f"SCANNER UNAVAILABLE: ClamAV could not complete the scan of {name}.")
-        for line in errored or ["clamd returned an empty reply"]:
-            print(line)
-        return 3
+        return unavailable(
+            name,
+            "ClamAV could not complete the scan.",
+            tuple(errored) or ("clamd returned an empty reply",),
+        )
 
     print(f"Clean: ClamAV scanned {name} and found nothing in {len(lines)} result line(s).")
     return 0
