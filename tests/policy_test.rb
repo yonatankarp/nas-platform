@@ -1297,6 +1297,18 @@ service_dirs.each do |dir|
     # deliberately: the stale inode matters exactly when the bytes differ, and
     # recreating on every release would interrupt an active download for a
     # merge that changed nothing here.
+    #
+    # What this cannot see is which variable the label names: it requires a
+    # sha256 reference, not the right one. A label pointed at another service's
+    # key renders here and fails at `docker compose up` and in every harness
+    # that renders this stack, so the property is held -- just not by this
+    # check. Its honest limit, stated rather than papered over.
+    #
+    # Matching on strings cannot silently skip a long-form volume entry, which
+    # would otherwise read here as "mounts nothing out of the release": the
+    # parameterized-source check further down parses every entry of every
+    # container's `volumes` and refuses a mapping outright, so a long-form
+    # declaration never reaches a green run to be skipped by.
     release_mounts = Array(spec["volumes"]).grep(%r{\A\$\{PLATFORM_CURRENT_DIR:\?\}/})
     unless release_mounts.empty?
       release_mount_containers[name] << container
@@ -1581,7 +1593,18 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   canonical = File.file?(canonical_path) ? YAML.safe_load_file(canonical_path, aliases: true) : {}
   override = YAML.safe_load_file(override_path, aliases: true)
   override.fetch("services", {}).each do |container, spec|
-    next unless spec.is_a?(Hash) && spec.key?("image")
+    next unless spec.is_a?(Hash)
+
+    # The release-mount label rule below reads compose.yml and nothing else, so
+    # a ${PLATFORM_CURRENT_DIR:?} mount introduced here would escape both the
+    # rule and the floor under it -- an override is exactly where a
+    # host-specific helper would be reached for. Refused rather than taught to
+    # the rule: the mount belongs in the canonical file, where one label covers
+    # every platform, and no override wants one today.
+    check(failures, Array(spec["volumes"]).none? { |volume| volume.to_s.include?("PLATFORM_CURRENT_DIR") },
+          "#{relative_override}/#{container}: a file mounted out of the release pointer belongs " \
+          "in the canonical compose.yml, where the content-label rule reaches it")
+    next unless spec.key?("image")
 
     check(failures, spec.fetch("image") == canonical.dig("services", container, "image"),
           "#{relative_override}/#{container}: platform image overrides differ from the canonical compose.yml image")

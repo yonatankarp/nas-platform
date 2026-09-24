@@ -602,6 +602,15 @@ expect_failure(failures, "release mount dropped off the pinned expectation",
   end
 end
 
+expect_failure(failures, "release mount hidden in a platform override",
+               "a file mounted out of the release pointer belongs in the canonical compose.yml",
+               detected_by: %i[policy]) do |root|
+  mutate_compose.call(root, "services/downloaders/compose.mac.yml") do |compose|
+    compose.fetch("services").fetch("sabnzbd")["volumes"] =
+      ["${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:/scripts/extra.py:ro"]
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent",
                detected_by: %i[policy]) do |root|

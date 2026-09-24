@@ -126,6 +126,7 @@ BASE_FIXTURE_PATHS = %w[
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/downloaders/clamav_gate.py
+  services/downloaders/compose.mac.yml
   services/immich/classify_restore.py
   services/kapowarr/tasks.py
   scripts/production_auto_deploy.py
