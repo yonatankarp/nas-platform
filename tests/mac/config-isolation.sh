@@ -140,6 +140,9 @@ render() {
     BOOKS_ACQUISITION_PATH="$temporary_dir/$label-media/Books/.acquisition" \
     SABNZBD_HOST_PORT="$sabnzbd_port" SABNZBD_API_KEY=test \
     RADARR_API_KEY=test SONARR_API_KEY=test \
+    PUSHOVER_API_URL=http://127.0.0.1:1/1/messages.json \
+    PUSHOVER_ALERTS_TOKEN=test-pushover-alerts-token \
+    PUSHOVER_USER_KEY=test-pushover-user-key \
     docker compose --project-name "$base_name-downloaders" \
       -f "$repo_dir/services/downloaders/compose.yml" \
       -f "$repo_dir/services/downloaders/compose.mac.yml" config --format json \

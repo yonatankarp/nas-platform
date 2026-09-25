@@ -6,6 +6,10 @@ downloaders_compose_project_name: >-
 downloaders_sabnzbd_port: 8085
 downloaders_sabnzbd_api: "http://127.0.0.1:{{ downloaders_sabnzbd_port }}/api"
 downloaders_sabnzbd_config_host_path: "{{ nas_docker_root }}/sabnzbd/config"
+# Where the post-processing gate sends an unscanned-import alert. Each publisher
+# on this platform carries its own copy of this endpoint, so this is the
+# downloaders' -- see roles/dozzle and roles/image_prune for the others.
+downloaders_pushover_api_url: https://api.pushover.net/1/messages.json
 downloaders_movies_host_path: "{{ nas_media_root }}/Media/Movies"
 downloaders_series_host_path: "{{ nas_media_root }}/Media/Series"
 
@@ -94,11 +98,19 @@ downloaders_sabnzbd_owned_misc:
   # a failed script fails the job, the arr sees a failed download rather than an
   # importable one, and the release is blocklisted and re-searched.
   #
-  # That last clause is the cost and it is deliberate: a clamd that is missing,
-  # not merely a clamd that found something, also burns the release. The gate
-  # waits out a container recreation before giving up (services/downloaders/
-  # clamav_gate.py), and past that window failing closed is the intended
-  # behaviour -- an unscanned import is the thing this exists to prevent.
+  # That last clause used to be the cost of a gate that failed closed on
+  # everything, a missing clamd included, and it is no longer (#811). The gate
+  # now exits 0 on every outcome but an infection and pages the operator on the
+  # Pushover Alerts application instead, so this setting reaches exactly one
+  # verdict: INFECTED. It is still what makes that verdict mean anything --
+  # without it an infection is an `Exit(1)` in history beside an imported job --
+  # which is why it stays.
+  #
+  # What bought the change is measured and is in the module docstring of
+  # services/downloaders/clamav_gate.py: a scanner SABnzbd could not launch at
+  # all burned 44 releases in 17 minutes, and the gate's readiness wait, which
+  # was #793's whole argument for failing closed, is not reached by a script
+  # that never starts.
   script_can_fail: 1
 
 # SABnzbd keys a Usenet server by its INI section name, and `set_config`
