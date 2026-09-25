@@ -69,6 +69,15 @@ services:
       UMASK: "022"
       TZ: ${TZ:?}
       SABNZBD_API_KEY: ${SABNZBD_API_KEY:?}
+      # The gate above pages the operator when it imports a job it could not
+      # scan, so the Pushover Alerts application reaches it the way it reaches
+      # services/dozzle/alert_relay.py: through this container's environment.
+      # A post-processing script has no other route -- the protected curl
+      # configs the poller and the image prune use live in the deploy account's
+      # home on the host.
+      PUSHOVER_API_URL: ${PUSHOVER_API_URL:?}
+      PUSHOVER_ALERTS_TOKEN: ${PUSHOVER_ALERTS_TOKEN:?}
+      PUSHOVER_USER_KEY: ${PUSHOVER_USER_KEY:?}
     healthcheck:
       <<: *healthcheck-defaults
       test:

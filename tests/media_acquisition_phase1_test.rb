@@ -173,7 +173,12 @@ effective_downloaders = effective_compose("services/downloaders/compose.yml", {
   "BOOKS_ACQUISITION_PATH" => "/tmp/books",
   "SABNZBD_API_KEY" => "fixture",
   "RADARR_API_KEY" => "fixture",
-  "SONARR_API_KEY" => "fixture"
+  "SONARR_API_KEY" => "fixture",
+  # The ClamAV gate's Pushover credentials, which SABnzbd's environment carries
+  # since #811 and whose `:?` refuses to interpolate without a value.
+  "PUSHOVER_API_URL" => "https://example.invalid/1/messages.json",
+  "PUSHOVER_ALERTS_TOKEN" => "fixture",
+  "PUSHOVER_USER_KEY" => "fixture"
 })
 check(failures, effective_downloaders.dig("services", "unpackerr", "user") == "2345:3456",
       "effective Unpackerr user must resolve from NAS_UID and NAS_GID")
