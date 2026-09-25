@@ -222,6 +222,39 @@ end
 # set deliberately keeps.
 MIGRATING_UPDATE_TYPES = %w[major minor patch].freeze
 
+# EVERY DEPENDENCY MUST REACH A PULL REQUEST. Withholding a merge is a decision a
+# human makes; withholding the pull request is a decision nobody ever gets to
+# make, because the dashboard row is the only place the update exists and nothing
+# ever raises it again. The two mechanisms that do that are banned here rather
+# than argued about per rule:
+#
+#   dependencyDashboardApproval  suppresses the pull request until somebody ticks
+#                                a checkbox. Carried by the database-major and
+#                                Nextcloud-major rules until this check landed;
+#                                both now use automerge false, so the pull
+#                                request opens and only the merge waits.
+#   enabled: false               suppresses the dependency entirely. No rule may
+#                                silence an update; a pin that genuinely must not
+#                                move on its own says so with automerge false and
+#                                a needs-manual-coupling label, which is visible.
+#
+# This also makes the self-migrating assertion below strictly stronger than it
+# reads: `automerge == false || approved` can no longer be satisfied by the
+# approval half, because nothing may declare it. The `approved` term is kept so
+# the resolver still reports which mechanism withheld a package if one returns.
+rules.each_with_index do |rule, index|
+  subject = Array(rule["matchPackageNames"]).join(", ")
+  subject = "<every package>" if subject.empty?
+  check(failures, !rule.key?("dependencyDashboardApproval"),
+        "packageRules[#{index}] (#{subject}) carries dependencyDashboardApproval, which suppresses " \
+        "the pull request rather than the merge. Withhold the merge with automerge false instead: " \
+        "an update nobody is shown is not deferred, it stops existing")
+  check(failures, rule["enabled"] != false,
+        "packageRules[#{index}] (#{subject}) is disabled outright, so this dependency can never be " \
+        "proposed at all. Every dependency must reach a pull request; withhold the merge with " \
+        "automerge false and label it needs-manual-coupling if it must not move on its own")
+end
+
 MIGRATING_UPDATE_TYPES.each do |update_type|
   SELF_MIGRATING_APPLICATION_IMAGES.each_key do |package|
     automerge, approved = automerge_verdict(config, rules, package, update_type)
@@ -333,8 +366,18 @@ check(failures, digest_automerge == true && !digest_approval,
 # derived from those constants rather than restated, and a floor under the
 # group's own reach so a negation list that swallowed everything cannot pass by
 # excluding the whole registry.
+# Not in IMMICH_PACKAGES, and deliberately a set of its own: that constant is
+# compared for exact equality against the manual-coupling rule's subjects, so
+# widening it to hold the database image would break the assertion it exists for.
+# This image is withheld for a different reason from the two application images
+# beside it -- it moves only when a human re-copies the line from Immich's own
+# compose, and it carries a version ceiling as well as automerge false, because
+# the registry publishes 15- and 16- tags under the identical suffix.
+COUPLED_DATABASE_IMAGES = %w[ghcr.io/immich-app/postgres].freeze
+
 GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
                          IMMICH_PACKAGES.to_a +
+                         COUPLED_DATABASE_IMAGES +
                          HOST_ROOT_EQUIVALENT_IMAGE_GROUP).to_set.freeze
 BATCHED_UPDATE_TYPES = Set.new(%w[minor patch digest pinDigest]).freeze
 
