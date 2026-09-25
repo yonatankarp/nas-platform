@@ -240,9 +240,13 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
         # https://github.com/morpheus65535/bazarr/blob/v1.6.0/bazarr/app/config.py#L641
         if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
             raise AnsibleFilterError("Bazarr provider names must use canonical lowercase values")
+        # An explicitly empty mapping declares a provider whose pinned schema
+        # takes no inputs at all -- wizdom is the only one in 1.6.1, and it is
+        # the free Hebrew source, so refusing it would have left Hebrew
+        # reachable only through a credentialed provider. The key itself stays
+        # required: a misspelled `setings:` therefore still fails here rather
+        # than enabling a credentialed provider with none of its credentials.
         settings = _mapping(provider.get("settings"), f"Bazarr provider {name!r} settings")
-        if not settings:
-            raise AnsibleFilterError(f"Bazarr provider {name!r} settings must be non-empty")
         prefix = f"settings-{name}-"
         normalized_settings = {}
         safe_body = {}
@@ -264,8 +268,15 @@ def acquisition_bazarr_declarations(languages: Any, providers: Any) -> dict[str,
                 value, f"Bazarr provider setting {key!r}", setting_name
             )
         provider_names.append(name)
+        # Always, even when empty: _bazarr_provider_projections looks every
+        # declared name up here and _mapping(None) raises, so a missing entry
+        # would crash the projection rather than report a settings-free
+        # provider. An empty body is dropped instead -- such a provider is
+        # enabled by settings-general-enabled_providers in the connection body
+        # alone, and a POST carrying no keys would submit nothing.
         provider_settings[name] = normalized_settings
-        provider_bodies[name] = safe_body
+        if safe_body:
+            provider_bodies[name] = safe_body
     if len(provider_names) != len(set(provider_names)):
         raise AnsibleFilterError("Bazarr provider names must be unique")
 
