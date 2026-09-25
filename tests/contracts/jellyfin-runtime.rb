@@ -298,8 +298,9 @@ def library_by_path(folders, definition)
 end
 
 def wait_for_complete_library(token, definition, name:, timeout:)
-  # Jellyfin 10.11 returns from a virtual-folder rename before its in-memory
-  # CollectionFolder has adopted the new directory and API identity.
+  # Measured on 10.11, which returns from a virtual-folder rename before its
+  # in-memory CollectionFolder has adopted the new directory and API identity.
+  # Unre-measured on 12.1; this poll costs one request if 12 fixed it.
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   loop do
     remaining = deadline - Process.clock_gettime(Process::CLOCK_MONOTONIC)

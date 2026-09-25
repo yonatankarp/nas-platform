@@ -36,9 +36,10 @@
   changed_when: true
   no_log: true
 
-# Jellyfin 10.11 can return from a virtual-folder rename before the replacement
-# CollectionFolder (and its path-derived ItemId) is visible. Do not carry the
-# pre-rename identity into an ItemId-scoped mutation.
+# Measured on 10.11, which can return from a virtual-folder rename before the
+# replacement CollectionFolder (and its path-derived ItemId) is visible. Do not
+# carry the pre-rename identity into an ItemId-scoped mutation. Unre-measured on
+# 12.1; the wait is a read-back poll, so it costs one request if 12 fixed it.
 - name: Wait for renamed Jellyfin managed library identities
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Library/VirtualFolders"

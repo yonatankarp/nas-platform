@@ -105,14 +105,22 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
   # #671: Kapowarr v1.3.2 migrated a v1.3.1 store from database version 45 to
   # 51 on start. It was absent from this set, so a green bump would have
   # automerged that migration; only a red lane stopped it.
-  "docker.io/mrcas/kapowarr" => "kapowarr"
+  "docker.io/mrcas/kapowarr" => "kapowarr",
+  # The 12.1 bump. Upstream says it outright rather than leaving it to be read
+  # off a changelog: 12.0 "includes database changes that prevent rolling back
+  # without a full restore". Playlists and collections became relational behind
+  # a new LinkedChildren table, OwnerId and PrimaryVersionId became real GUID
+  # foreign keys, ExtraIds was dropped, and cleanup migrations rewrite existing
+  # rows on first boot.
+  "docker.io/jellyfin/jellyfin" => "jellyfin"
 }.freeze
 # A stated count, not non-emptiness: a set that quietly became empty satisfies
-# every loop below and reports a pass. Six is what the tree documents --
+# every loop below and reports a pass. Seven is what the tree documents --
 # services/immich/compose.yml, services/paperless-ngx/compose.yml,
-# services/nextcloud/compose.yml and services/kapowarr/compose.yml each say their
-# application migrates its own store on start and refuses to go back, and
-# services/karakeep/compose.yml says it of both the application and Meilisearch.
+# services/nextcloud/compose.yml, services/kapowarr/compose.yml and
+# services/jellyfin/compose.yml each say their application migrates its own store
+# on start and refuses to go back, and services/karakeep/compose.yml says it of
+# both the application and Meilisearch.
 #
 # TWO IMAGES HAVE LEFT THIS SET, for reasons that are not the same one, and the
 # difference is the whole point of keeping both notes.
@@ -136,8 +144,16 @@ SELF_MIGRATING_APPLICATION_IMAGES = {
 #
 # Both departures are pinned in both directions by the rows after the Gotenberg
 # tripwire below, so neither can drift back silently.
-check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 6,
-      "the self-migrating application set must name six images, not " \
+#
+# Jellyfin ARRIVED rather than departed, and it reads against Bindery rather than
+# against Vaultwarden: its pin is one-way like Bindery's was, and what it lacks is
+# Bindery's coverage. The upgrade lane cannot take it -- no
+# tests/contracts/jellyfin-upgrade.rb -- so every lane that touches Jellyfin
+# creates /config empty and takes the fresh-install path, and a green run says
+# nothing about the store on the NAS. That is the whole reason it is here and not
+# automerging.
+check(failures, SELF_MIGRATING_APPLICATION_IMAGES.length == 7,
+      "the self-migrating application set must name seven images, not " \
       "#{SELF_MIGRATING_APPLICATION_IMAGES.length}")
 
 SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|

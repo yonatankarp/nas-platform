@@ -45,6 +45,14 @@ jellyfin_encoding_profiles:
     # h264_vaapi alike, each with "Selected ratecontrol mode is unsupported"
     # (VAAPI states it outright: "supported modes: CQP"). Measured 2026-09-10.
     #
+    # NOT RE-MEASURED SINCE, and the 12.1 bump is the reason to say so rather
+    # than leave it implied: 12.0 ships a new upstream FFmpeg 8.1, and both
+    # halves of the finding -- which rate-control modes the driver offers and
+    # which ones Jellyfin emits -- are properties of the binary that changed.
+    # The value below stays false because a stale false costs software encoding
+    # that already works, while a stale true costs playback that fails
+    # invisibly; re-measuring is its own job.
+    #
     # The failure is invisible from the server log and looks like a hung client:
     # ffmpeg dies before frame 1, the browser retries every 5-6 seconds, and
     # each attempt leaves an identical FFmpeg.Transcode-* log. Decode is
@@ -92,8 +100,12 @@ jellyfin_plugins:
   - Intro Skipper
   - Open Subtitles
 jellyfin_plugin_packages:
-  # Official 10.11 branch, IntroSkipper/Plugin.cs at source commit
-  # 6ccb1a6decb983449a9e3c7a942ae2b5fd0b4bc0.
+  # The repository URL is version-aware and that is why it is not a dead link:
+  # intro-skipper.org/manifest.json 302s to the GitHub org in a browser and
+  # serves a manifest only when the requester states a Jellyfin version, so it
+  # returned the 10.11 branch under the old pin and returns the 12.0 branch under
+  # this one. Upstream publishes both (12.0/v12.0.4.0 alongside 10.11/v1.10.11.24)
+  # under this same assembly GUID, so nothing here moves with the server bump.
   - Name: Intro Skipper
     AssemblyGuid: c83d86bb-a1e0-4c35-a113-e2101cf4ee6b
     RepositoryUrl: https://intro-skipper.org/manifest.json
@@ -124,8 +136,9 @@ jellyfin_libraries:
 jellyfin_library_options:
   # /media is mounted read-only, so writing NFOs beside the media would fail.
   SaveLocalMetadata: false
-  # Deprecated in this version's own LibraryOptions schema, and inert. The
-  # string occurs in exactly one assembly the pinned image ships,
+  # Deprecated and inert -- measured against 10.11.11 and NOT re-measured on 12.1,
+  # which is worth knowing before trusting the assembly counts below. The
+  # string occurred in exactly one assembly that image shipped,
   # MediaBrowser.Model.dll, which is the one that declares the property; a .NET
   # assembly names the members it calls, so nothing on the server reads it.
   # EnableRealtimeMonitor below occurs in two assemblies and SaveLocalMetadata
@@ -150,8 +163,11 @@ jellyfin_library_options:
 # Jellyfin holds every one of its twenty tasks' triggers as a compiled in-memory
 # default and writes nothing to /config for them until a trigger set is posted,
 # so a schedule this repository does not declare is one it cannot see and would
-# not notice changing under a version bump. Measured against the pinned 10.11.11
-# image on a /config that was empty seconds earlier: RefreshLibrary ships one
+# not notice changing under a version bump. Measured against 10.11.11 on a
+# /config that was empty seconds earlier, and not re-measured on 12.1 -- what a
+# stale default would cost here is a scan interval reverting to Jellyfin's, not a
+# failed converge, because the POST below replaces whatever set is there:
+# RefreshLibrary ships one
 # IntervalTrigger of 432000000000 ticks, exactly twelve hours. POST
 # /ScheduledTasks/{id}/Triggers replaces that set, persists it to
 # /config/config/ScheduledTasks/<id>.js -- a sibling of the

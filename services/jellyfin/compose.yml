@@ -27,7 +27,31 @@ services:
   jellyfin:
     <<: *service-defaults
     container_name: jellyfin
-    image: docker.io/jellyfin/jellyfin:10.11.11@sha256:aefb67e6a7ff1debdd154a78a7bbb780fd0c873d8639210a7f6a2016ad2b35db
+    # THIS IMAGE MIGRATES ITS OWN STORE. 12.0 made playlists and collections
+    # relational behind a new LinkedChildren table, turned OwnerId and
+    # PrimaryVersionId into real GUID foreign keys, dropped ExtraIds, and runs
+    # cleanup migrations over the existing rows on first boot. Upstream states it
+    # plainly: the release "includes database changes that prevent rolling back
+    # without a full restore". So a bump is one-way. renovate.json withholds its
+    # major, minor and patch updates from automerge, and roles/image_downgrade_guard
+    # refuses a pin older than one that has already run here.
+    #
+    # Unlike Bindery, nothing proves this bump before the merge: the `upgrade`
+    # integration lane is the only one that starts from a store a previous version
+    # wrote, and Jellyfin is not one of its subjects -- there is no
+    # tests/contracts/jellyfin-upgrade.rb. Every other lane creates /config empty
+    # and takes the fresh-install path, so a green run says 12.1 installs clean and
+    # says nothing about 10.11.11 -> 12.1.
+    #
+    # THE TAG IS TWO-PART ON PURPOSE, and it is the fix for a silent freeze rather
+    # than a style choice. Renovate's docker versioning matches candidate tags at
+    # the precision of the current one, so the previous three-part 10.11.11 could
+    # never be offered 12.0 or 12.1, and the pin sat unproposed from 2026-09-08
+    # while the dependency dashboard listed it as detected with no update. The
+    # date-stamped 12.1.20260915-010956 would re-freeze it the same way -- three
+    # parts plus an 010956 suffix the current value does not carry -- so the
+    # two-part tag is what keeps 12.2 and 13.0 arriving as pull requests.
+    image: docker.io/jellyfin/jellyfin:12.1@sha256:78d3ea1207d1322471fcac39a614f004f2ccf7e878f95ab2977d752f07e4dd7e
     cpus: 3.0
     labels:
       dev.dozzle.name: jellyfin
