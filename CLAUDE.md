@@ -412,13 +412,32 @@ both. `renovate.json` withholds `major`, `minor` and
 tag moves no version and stays automerged, except for Immich, which is withheld
 not by that rule but by its own manual-coupling rule, for every update type and
 so digests too — which is a wider scope than the
-database-major rule beside it and deliberately so. It withholds the *merge*, not
-the pull request, and that is the one place it departs from the two major-only
-rules beside it, which carry `dependencyDashboardApproval` and suppress the pull
-request itself. Those match majors, where a checkbox nobody ticks for a month
-costs nothing; this one reaches minor and patch on services that ship them
-continuously, and there a suppressed pull request is not a decision deferred but
-an update nobody ever sees. The pull request is the notification. And `roles/image_downgrade_guard`, included by a
+database-major rule beside it and deliberately so.
+
+**Every rule here withholds the *merge*, never the pull request, and that is now
+enforced rather than conventional.** `tests/renovate_policy_test.rb` refuses
+`dependencyDashboardApproval` and `enabled: false` anywhere in
+`renovate.json`, both proven against planted defects. The database-major and
+Nextcloud-major rules carried the first until they were converted to
+`automerge: false`, and Immich's Postgres carried the second — it was the one
+dependency in this repository no pull request could ever reach. The argument is
+the same in all three cases and it is the one this file already made for the
+self-migrating rule: withholding a merge is a decision a human makes, while
+withholding the pull request is a decision nobody gets to make, because the
+dashboard row is the only place the update exists and nothing raises it again.
+The pull request is the notification.
+
+Immich's Postgres is the instructive one, because replacing `enabled: false`
+took a **version ceiling** rather than a plain enable. That image is copied
+verbatim from Immich's own compose at the pinned release tag and its extension
+versions are coupled to the Immich schema, and the registry publishes
+`15-` and `16-` tags under the *identical* suffix — so a plain enable proposes
+PostgreSQL 14 to 16, an on-disk format change Ansible cannot migrate, offered as
+though it were routine. `allowedVersions` stops the majors while leaving the
+dependency enabled, so the digest refresh on an unchanged tag — which moves no
+version, breaks no coupling, and is the case somebody actually needs to see —
+opens a pull request where it used to be invisible. The ceiling is raised by hand
+in the same edit that re-copies those lines. And `roles/image_downgrade_guard`, included by a
 service role before its backup and its Compose deployment, reads the image
 reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions
