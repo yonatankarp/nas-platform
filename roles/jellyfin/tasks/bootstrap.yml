@@ -33,9 +33,12 @@
     - not jellyfin_wizard_completed | bool
   changed_when: true
 
-# Pinned 10.11.11 creates the default first user lazily. POST /Startup/User
-# updates that user and answers 404 when it does not exist yet, so this read is
-# a required part of the wizard rather than a diagnostic.
+# Measured on 10.11.11 and carried unchanged across the 12.1 bump rather than
+# re-measured: that image creates the default first user lazily, so POST
+# /Startup/User updates a user that may not exist yet and answers 404 when it
+# does not. This read is therefore a required part of the wizard rather than a
+# diagnostic. Cheap to recheck if the wizard ever starts failing here, and the
+# task is harmless if 12 became eager instead.
 - name: Materialize the Jellyfin first user
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Startup/User"

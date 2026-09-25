@@ -12,9 +12,12 @@
       implement. The tasks in this file are gated on jellyfin_settings_phase,
       so an unrecognised phase silently skips them.
 
-# Jellyfin 10.11.11 exposes transcoding policy as the named `encoding`
-# configuration. Reads are kept separate from mutations so every ambiguity is
-# rejected before any owned application setting changes.
+# Jellyfin exposes transcoding policy as the named `encoding` configuration.
+# Read off 10.11.11 and still the route on 12.1: 12.0 removed the GLOBAL SUBTITLE
+# configuration -- subtitle settings are per-library now -- but left the encoding
+# document where it was, and this role never declared a subtitle key in it.
+# Reads are kept separate from mutations so every ambiguity is rejected before
+# any owned application setting changes.
 - name: Read Jellyfin encoding configuration for preflight
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/System/Configuration/encoding"
@@ -593,9 +596,36 @@
   changed_when: true
   no_log: true
 
-# Omitting the version is deliberate: Jellyfin 10.11.11 selects the latest
-# compatible version after the assembly and repository identities are fixed.
-# Existing versions are never supplied, updated, downgraded, or rewritten.
+# Omitting the version is deliberate: Jellyfin selects the latest COMPATIBLE
+# version after the assembly and repository identities are fixed. Existing
+# versions are never supplied, updated, downgraded, or rewritten.
+#
+# That this role rewrites no plugin version is why the 12.1 bump needed no
+# operator step, and the sequence was measured rather than reasoned about --
+# 10.11.11 bootstrapped, both plugins installed through these very tasks and
+# restarted to Active, the store snapshotted, then 12.1 started on it:
+#
+#   t+6s   Intro Skipper 1.10.11.24 NotSupported; Open Subtitles 24.0.0.0 ACTIVE
+#   t+8s   Intro Skipper 12.0.4.0 appears, Restart
+#   t+10s  Open Subtitles 25.0.0.0 appears, Restart; 24.0.0.0 Superseded
+#   after one restart: 12.0.4.0 and 25.0.0.0 Active, the stale versions gone
+#
+# Two things in that are worth keeping. A stale plugin is NOT rejected on its
+# stated ABI -- PluginManager compares `_appVersion >= targetAbi`, and 12.1 >=
+# 10.11.8 is true -- so Open Subtitles 24.0.0.0 simply kept working, and only
+# Intro Skipper failed, at `assembly.GetTypes()`, which is what NotSupported
+# means. And Jellyfin repaired it itself: its own plugin update staged a
+# 12-compatible build from the repositories this role already declares. Upstream
+# advises removing non-built-in plugins before migrating; on this platform that
+# was unnecessary, and it is also the thing NOT to do, because removing them
+# races the five-minute poller -- an emptied plugin directory is refilled with
+# old-ABI builds on the next tick while the old pin is still deployed.
+#
+# The residual is the repositories being unreachable at that moment: the stale
+# build then stays NotSupported, no replacement is staged, and the preflight
+# refusal above stops the converge. That heals on a later tick rather than
+# needing a human, which is why it is recorded here and not as a procedure.
+
 - name: Install absent Jellyfin plugins without a version pin
   ansible.builtin.uri:
     url: >-

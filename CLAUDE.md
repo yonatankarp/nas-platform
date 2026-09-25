@@ -386,8 +386,9 @@ the key, so the simplest override is one that omits it.
 can run several isolated copies of the platform side by side.
 
 **A pin is not freely reversible where the container migrates its own store.**
-Bindery, Immich, Paperless-ngx, Nextcloud, Karakeep and Kapowarr each apply their
-own schema migrations when they start, and each documents it beside its `image:`.
+Bindery, Immich, Paperless-ngx, Nextcloud, Karakeep, Kapowarr and Jellyfin each
+apply their own schema migrations when they start, and each documents it beside
+its `image:`.
 `SELF_MIGRATING_APPLICATION_IMAGES` in `tests/renovate_policy_test.rb` is where
 that set is authored — it keys each image by the `services/` directory that pins
 it, so a name no longer appearing as an `image:` fails rather than guarding
@@ -425,8 +426,9 @@ rather than schema versions because the schema lives in a store only the
 application can open; the role names the three routes to the real version and
 why each was rejected. It has already spread past the set above: Bindery,
 Kapowarr (#671), Karakeep — twice, once for Meilisearch's index — and Vaultwarden
-call it today, and the Vaultwarden call site records a second reason for it, a
-CVE floor under the pin that this guard does not read. The role takes the
+call it today -- Jellyfin since its 12.1 bump -- and the Vaultwarden call site
+records a second reason for it, a CVE floor under the pin that this guard does
+not read. The role takes the
 manifest directory, the Compose service key and the project name as arguments, so
 the self-migrating images that have not adopted it can do so unchanged.
 
@@ -555,7 +557,23 @@ fix what it names by its own words. It enforces, among others:
 - Images pinned as `repo:1.2.3@sha256:<64 hex>` — both a readable tag (for
   humans and Renovate) and a manifest-list digest (for reproducibility). Take the
   top-level `Digest:` from `docker buildx imagetools inspect`, not a per-platform
-  entry.
+  entry. **Write the tag at the precision upstream publishes its releases at, and
+  nothing checks this.** Renovate offers a docker tag only at the precision and
+  suffix of the current value, so a pin is silently unupdatable the moment
+  upstream changes tag shape: Jellyfin's three-part `10.11.11` could never be
+  offered the two-part `12.1`, and it sat unproposed from 2026-09-08 to the 12.1
+  bump while the dependency dashboard listed it as detected with no update
+  available. That is the failure mode to recognise — not a missing entry and not
+  an `ignorePaths` match, but a dashboard row with no `→ Updates:` beside it that
+  *looks* exactly like a current pin. A sweep on 2026-09-24 found Jellyfin was the
+  only one in that state, and its method is worth knowing before trusting it
+  again: Docker Hub pins were compared tag-shape against the registry's own tag
+  list, which is the check that detects this, while the ghcr and lscr pins were
+  compared against upstream GitHub *releases* instead, which answers the weaker
+  question of whether a newer version exists at all. Pinchflat is where those two
+  diverge and is the reason to keep them distinct — three months behind upstream,
+  and not frozen by this rule nor fixable here, because its `v2025.9.26` release
+  was never pushed to ghcr, where `v2025.6.6` is still the newest tag.
 - No `build:`, no `privileged: true`, `restart: unless-stopped`, `json-file`
   logging with both `max-size` and `max-file`.
 - Volume sources are `${VARIABLE:?}` references; a literal `/volume1/...` is

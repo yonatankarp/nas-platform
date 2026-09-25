@@ -164,6 +164,28 @@
     dest: "{{ platform_runtime_dir }}/services/jellyfin/.env"
     mode: "0600"
 
+# Before Compose, because recreating the container from the older image is the
+# act being refused. Jellyfin migrates jellyfin.db when it starts and 12.0's
+# migration is one-way -- upstream's own note is that the release "includes
+# database changes that prevent rolling back without a full restore". Nothing
+# proves a Jellyfin bump before the merge the way the upgrade lane proves
+# Bindery's, so this guard on the host is the only thing standing between a
+# reverted pin and a server that will not open its own store. No backup task
+# beside it, unlike roles/bindery: Jellyfin's own MigrationBackupFast copies
+# jellyfin.db, checkpointing the WAL first, before it migrates, and the rest of
+# /config is metadata and images this role does not own and would be copying by
+# the gigabyte. The five paths this reads are the ones the containment
+# re-include at the top of this file already declared through
+# deployment_target_service, so it needs no extra_paths of its own.
+- name: Refuse a Jellyfin image older than the store on disk
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: jellyfin
+    image_downgrade_guard_compose_service: jellyfin
+    image_downgrade_guard_project_name: "{{ jellyfin_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ nas_docker_root }}/jellyfin/config"
+
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
 # terms of the container state Docker reports or re-raises it unchanged.
@@ -305,6 +327,26 @@
 # well before the application can serve its own startup API: that endpoint
 # returns 503 until the server has finished initializing. Waiting on the
 # endpoint this role actually calls is what makes the next tasks meaningful.
+#
+# 12 MADE THAT A STRONGER REASON RATHER THAN A WEAKER ONE, and the difference is
+# a trap for anyone simplifying this gate. 12.0 restyled the startup interface
+# into a server that really serves while the migration runs, and it answers
+# /health 200 AND /System/Info/Public 200 -- but with a camelCase body
+# (`startupWizardCompleted`) rather than the PascalCase one every task in this
+# role reads. Measured on a 10.11.11 store: at t+1.9s /health and
+# /System/Info/Public are both 200 off that startup server while
+# /Startup/Configuration is still 503; the listener is then torn down and the
+# real server answers /Startup/Configuration 401 at t+2.6s and
+# /System/Info/Public 200 PascalCase at t+4.2s. So this gate is what keeps
+# bootstrap.yml's `json.StartupWizardCompleted` from meeting a document that has
+# no such key -- /health and /System/Info/Public would both have let it through.
+#
+# What a long migration costs is this wait, not correctness: the startup server
+# holds /Startup/Configuration at 503 for as long as it runs, and 12.0 warns its
+# first library scan can take some time, so a converge can exhaust
+# jellyfin_startup_retries x platform_readiness_delay and fail here. That is a
+# readiness timeout with the store already safe, and the poller's next tick
+# retries into a migration that has since progressed.
 - name: Wait for the Jellyfin startup API
   ansible.builtin.uri:
     url: "{{ jellyfin_api }}/Startup/Configuration"

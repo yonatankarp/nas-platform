@@ -11,9 +11,14 @@
     - jellyfin_primary_rename_required | default(false) | bool
   changed_when: true
 
-# Pinned 10.11.11 rejects a direct case-only rename. The helper uses the
-# authenticated stable ID, a deterministic collision-checked temporary name,
+# Measured on 10.11.11, which rejects a direct case-only rename. The helper uses
+# the authenticated stable ID, a deterministic collision-checked temporary name,
 # and block/rescue read-back so an interrupted hop is safely rerunnable.
+#
+# 12.0 is the release that makes this reachable rather than obsolete: usernames
+# moved to a normalized column under a unique index, and upstream's own upgrade
+# note is that installs whose usernames differ only by case must be corrected
+# BEFORE migrating. The two-hop rename is unchanged and unre-measured on 12.1.
 - name: Reconcile Jellyfin primary administrator identity
   ansible.builtin.include_tasks: primary_identity.yml
   when: not ansible_check_mode
