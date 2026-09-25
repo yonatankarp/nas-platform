@@ -94,6 +94,53 @@
   when: downloaders_usenet_provider_declared | bool
   no_log: true
 
+# The post-processing gate is bind-mounted out of the release, and a changed
+# bind source is not a changed container: Docker resolves a bind-mount source
+# once, when the container starts, so SABnzbd keeps the inode from whichever
+# release was current then while `current` moves on underneath it (#810 -- a
+# container started four releases earlier was still executing that release's
+# copy, and a release that carried no gate at all leaves Docker's auto-created
+# empty directory mounted there instead, which SABnzbd reports per job as
+# "Cannot run script"). The gate's own sha256 reaches a container label through
+# the environment, so editing the gate is a changed definition and Compose
+# recreates SABnzbd -- and only then, rather than on every release, which is
+# what keeps a merge from interrupting an active download. services/kapowarr
+# carries its task handler patch and services/dozzle its alert relay the same way.
+- name: Inspect the SABnzbd ClamAV gate carried by the release
+  ansible.builtin.stat:
+    path: "{{ platform_current_dir }}/services/downloaders/clamav_gate.py"
+    follow: false
+    get_checksum: true
+    checksum_algorithm: sha256
+  register: downloaders_clamav_gate
+
+# Under --check the release is staged nowhere, so `current` is still the
+# previous release, and the deploy that introduces the gate finds no file there.
+# Only then is the controller's copy hashed instead: it is the byte-identical
+# source deployment_bundle copies into the release on a real run.
+- name: Require the SABnzbd ClamAV gate to be a regular file
+  ansible.builtin.assert:
+    that:
+      - >-
+        (downloaders_clamav_gate.stat.exists and
+         (downloaders_clamav_gate.stat.isreg | default(false)) and
+         not (downloaders_clamav_gate.stat.islnk | default(false))) or
+        (ansible_check_mode and not downloaders_clamav_gate.stat.exists)
+    fail_msg: The SABnzbd ClamAV gate must be a regular file in the release.
+
+- name: Resolve the SABnzbd ClamAV gate checksum
+  ansible.builtin.set_fact:
+    downloaders_clamav_gate_sha256: >-
+      {{ downloaders_clamav_gate.stat.checksum if downloaders_clamav_gate.stat.exists
+         else (lookup('ansible.builtin.file', playbook_dir ~ '/services/downloaders/clamav_gate.py', rstrip=false)
+               | hash('sha256')) }}
+
+- name: Require a sha256 for the SABnzbd ClamAV gate
+  ansible.builtin.assert:
+    that:
+      - downloaders_clamav_gate_sha256 is match('^[0-9a-f]{64}$')
+    fail_msg: The SABnzbd ClamAV gate checksum must be a sha256.
+
 - name: Render the private downloader environment
   ansible.builtin.template:
     src: env.j2

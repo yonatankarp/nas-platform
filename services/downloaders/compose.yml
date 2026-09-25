@@ -39,6 +39,13 @@ services:
     labels:
       dev.dozzle.group: downloaders
       dev.dozzle.name: sabnzbd
+      # A changed bind source is not a changed container: Docker resolves the
+      # mount below once, when this container starts, so without this label
+      # Compose leaves a container running an older release's gate while
+      # `current` moves on (#810). The gate's sha256 makes editing it a changed
+      # definition, and nothing else does -- so the recreate happens when the
+      # gate changes rather than on every release.
+      dev.nas-platform.downloaders.clamav-gate-sha256: ${SABNZBD_CLAMAV_GATE_SHA256:?}
     ports:
       - "8085:8080"
     volumes:
@@ -48,8 +55,11 @@ services:
       # The post-processing gate, mounted from the immutable release rather than
       # copied into /config, for the reason services/dozzle/alert_relay.py is
       # mounted the same way: the release is what a deployment replaces, so the
-      # script and the compose file that references it can never be one revision
-      # apart. `misc.script_dir` points SABnzbd at this directory and
+      # controller writes the script in exactly one place. That alone does not
+      # keep the script and the compose file that references it on one revision
+      # -- the mount is resolved at container start and `current` is a symlink
+      # that moves -- which is what the sha256 label above is for (#810).
+      # `misc.script_dir` points SABnzbd at this directory and
       # `misc.script_can_fail` is what makes its exit code mean anything; both
       # are reconciled in roles/downloaders/defaults/main.yml.
       - ${PLATFORM_CURRENT_DIR:?}/services/downloaders/clamav_gate.py:/scripts/clamav_gate.py:ro

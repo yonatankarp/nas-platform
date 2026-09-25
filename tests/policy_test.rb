@@ -1055,6 +1055,17 @@ MEMORY_SELF_SIZING_IMAGES = ["docker.io/apache/tika"].freeze
 # success having examined nothing.
 EXPECTED_SELF_SIZING_CONTAINERS = { "paperless-ngx" => ["tika"] }.freeze
 
+# Which containers bind-mount a file out of the rotating release pointer, and so
+# owe the content label below. Derived from the volumes, floored here in both
+# directions for the same reason as the line above: a sweep that found nothing
+# would report success having examined nothing, and this subject set is the one
+# an ordinary refactor -- moving a helper out of services/ -- silently empties.
+EXPECTED_RELEASE_MOUNT_CONTAINERS = {
+  "downloaders" => ["sabnzbd"],
+  "dozzle" => ["alert-relay"],
+  "kapowarr" => ["kapowarr"]
+}.freeze
+
 # Environment keys a JVM heap gets written in. ES_JAVA_OPTS is Elasticsearch's
 # own name for it; JAVA_TOOL_OPTIONS is the one any JVM honours however the
 # image launches it.
@@ -1195,6 +1206,10 @@ import_pairs = 0
 # emptying rather than a subject misbehaving.
 self_sizing_containers = Hash.new { |hash, key| hash[key] = [] }
 
+# Which containers were found bind-mounting a file out of ${PLATFORM_CURRENT_DIR:?}.
+# Collected during the sweep and compared against the stated expectation after it.
+release_mount_containers = Hash.new { |hash, key| hash[key] = [] }
+
 service_dirs.each do |dir|
   name = File.basename(dir)
   compose_path = File.join(dir, "compose.yml")
@@ -1270,6 +1285,42 @@ service_dirs.each do |dir|
           "#{label}: image must be digest-pinned with a version tag")
     check(failures, !spec.key?("build"),
           "#{label}: must use a published image, not build")
+
+    # ${PLATFORM_CURRENT_DIR:?} is the `current` symlink, which every release
+    # moves. Docker resolves a bind-mount source once, when the container
+    # starts, so a container Compose does not recreate keeps the inode from
+    # whichever release was current then -- it goes on running an old copy of
+    # the file while `current` points somewhere else, and nothing compares the
+    # two (#810: SABnzbd executed a four-day-old post-processing gate). Only a
+    # changed container *definition* recreates, so the mounted file's own
+    # sha256 has to reach a label. Keyed on content and not on the release id
+    # deliberately: the stale inode matters exactly when the bytes differ, and
+    # recreating on every release would interrupt an active download for a
+    # merge that changed nothing here.
+    #
+    # What this cannot see is which variable the label names: it requires a
+    # sha256 reference, not the right one. A label pointed at another service's
+    # key renders here and fails at `docker compose up` and in every harness
+    # that renders this stack, so the property is held -- just not by this
+    # check. Its honest limit, stated rather than papered over.
+    #
+    # Matching on strings cannot silently skip a long-form volume entry, which
+    # would otherwise read here as "mounts nothing out of the release": the
+    # parameterized-source check further down parses every entry of every
+    # container's `volumes` and refuses a mapping outright, so a long-form
+    # declaration never reaches a green run to be skipped by.
+    release_mounts = Array(spec["volumes"]).grep(%r{\A\$\{PLATFORM_CURRENT_DIR:\?\}/})
+    unless release_mounts.empty?
+      release_mount_containers[name] << container
+      declared = spec["labels"]
+      declared = declared.map { |entry| entry.to_s.split("=", 2) }.to_h if declared.is_a?(Array)
+      check(failures, Hash(declared).any? do |key, value|
+                        key.to_s.end_with?("-sha256") &&
+                          value.to_s.match?(/\A\$\{[A-Z0-9_]+_SHA256:\?\}\z/)
+                      end,
+            "#{label}: a file bind-mounted out of the release pointer must be labelled with " \
+            "its own sha256, or Compose leaves this container on an older release's copy")
+    end
 
     # Two obligations, and only the first has a subject in the tree today.
     #
@@ -1460,6 +1511,15 @@ check(failures,
       "#{self_sizing_containers.transform_values(&:sort).sort.to_h.inspect}, and the pinned " \
       "expectation is #{EXPECTED_SELF_SIZING_CONTAINERS.inspect}; update both together")
 
+# The same shape for the release-mounted files, and for the same reason: a
+# container that stops mounting one is a subject this check silently loses.
+check(failures,
+      release_mount_containers.transform_values(&:sort).sort.to_h ==
+        EXPECTED_RELEASE_MOUNT_CONTAINERS.transform_values(&:sort).sort.to_h,
+      "containers bind-mounting a file out of the release pointer are " \
+      "#{release_mount_containers.transform_values(&:sort).sort.to_h.inspect}, and the pinned " \
+      "expectation is #{EXPECTED_RELEASE_MOUNT_CONTAINERS.inspect}; update both together")
+
 # Service templates write their storage paths as literals, and Compose takes
 # those rendered values straight through as bind sources. That makes the
 # template path a second declaration of what nas_storage already declares, with
@@ -1533,7 +1593,18 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   canonical = File.file?(canonical_path) ? YAML.safe_load_file(canonical_path, aliases: true) : {}
   override = YAML.safe_load_file(override_path, aliases: true)
   override.fetch("services", {}).each do |container, spec|
-    next unless spec.is_a?(Hash) && spec.key?("image")
+    next unless spec.is_a?(Hash)
+
+    # The release-mount label rule below reads compose.yml and nothing else, so
+    # a ${PLATFORM_CURRENT_DIR:?} mount introduced here would escape both the
+    # rule and the floor under it -- an override is exactly where a
+    # host-specific helper would be reached for. Refused rather than taught to
+    # the rule: the mount belongs in the canonical file, where one label covers
+    # every platform, and no override wants one today.
+    check(failures, Array(spec["volumes"]).none? { |volume| volume.to_s.include?("PLATFORM_CURRENT_DIR") },
+          "#{relative_override}/#{container}: a file mounted out of the release pointer belongs " \
+          "in the canonical compose.yml, where the content-label rule reaches it")
+    next unless spec.key?("image")
 
     check(failures, spec.fetch("image") == canonical.dig("services", container, "image"),
           "#{relative_override}/#{container}: platform image overrides differ from the canonical compose.yml image")

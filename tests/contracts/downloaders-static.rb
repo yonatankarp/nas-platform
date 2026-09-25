@@ -171,6 +171,27 @@ if failures.empty?
       ["SONARR_API_KEY", "{{ vault_arr_sonarr_api_key }}"]
     ].all? { |assignment| env_assignments.include?(assignment) }
 
+  # A changed bind source does not recreate a container; a changed label does.
+  # So the ClamAV gate's own sha256, read from the release on the target,
+  # reaches a label -- and it has to be read *before* the environment that
+  # carries it is rendered, or the template resolves an undefined fact
+  # (services/kapowarr holds its carried patch the same way). policy_test.rb
+  # owns the Compose half: that the label exists at all, on every container
+  # mounting a file out of the release.
+  failures << "downloaders env must export the release gate's sha256 exactly once" unless
+    env_assignments.select { |name, _value| name == "SABNZBD_CLAMAV_GATE_SHA256" } ==
+      [["SABNZBD_CLAMAV_GATE_SHA256", "{{ downloaders_clamav_gate_sha256 }}"]]
+  gate_stat_index = main.index do |task|
+    stat = task["ansible.builtin.stat"]
+    task["register"] == "downloaders_clamav_gate" && stat.is_a?(Hash) &&
+      stat["path"] == "{{ platform_current_dir }}/services/downloaders/clamav_gate.py" &&
+      stat["follow"] == false && stat["get_checksum"] == true &&
+      stat["checksum_algorithm"] == "sha256"
+  end
+  env_render_index = main.index { |task| task.dig("ansible.builtin.template", "src") == "env.j2" }
+  failures << "downloaders must checksum the release's gate before rendering its environment" unless
+    gate_stat_index && env_render_index && gate_stat_index < env_render_index
+
   reconcile = role_tasks(root, "roles/downloaders/tasks/reconcile_sabnzbd.yml")
   # A credential-bearing task is selected from the whole request, not from its
   # URL. This selector used to read only `uri.url`, and moving the provider push
