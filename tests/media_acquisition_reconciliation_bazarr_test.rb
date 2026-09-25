@@ -454,8 +454,11 @@ end
   "provider empty name" => {
     "media_bazarr_providers" => [{ "name" => "", "settings" => {} }]
   },
-  "provider empty settings" => {
-    "media_bazarr_providers" => [{ "name" => "opensubtitlescom", "settings" => {} }]
+  # An empty settings mapping is valid since wizdom, whose pinned schema takes
+  # no inputs; an absent one is not, so a misspelled `setings:` still cannot
+  # enable a credentialed provider carrying none of its credentials.
+  "provider missing settings" => {
+    "media_bazarr_providers" => [{ "name" => "opensubtitlescom" }]
   },
   "provider wrong setting prefix" => {
     "media_bazarr_providers" => [{

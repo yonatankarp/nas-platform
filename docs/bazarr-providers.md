@@ -1,7 +1,8 @@
 # Bazarr subtitle providers
 
 `media_bazarr_providers` is validated strictly but against no list of known
-providers: any lowercase name with a non-empty settings mapping is accepted. A
+providers: any lowercase name with a settings mapping is accepted, and the
+mapping may be empty for a provider whose pinned schema takes no inputs. A
 misspelled key therefore converges successfully and fetches nothing, which is
 the worst of both outcomes.
 
@@ -49,6 +50,18 @@ media_bazarr_providers:
       settings-opensubtitlescom-use_hash: "true"
       settings-opensubtitlescom-include_ai_translated: "false"
       settings-opensubtitlescom-include_machine_translated: "false"
+```
+
+## Wizdom
+
+Hebrew, and the one provider here that needs no account: Bazarr 1.6.1 declares
+no inputs for it, so `settings` is empty on purpose rather than unfinished. The
+key is still required, because omitting it is how a misspelled setting key
+would otherwise enable a credentialed provider with no credentials.
+
+```yaml
+  - name: wizdom
+    settings: {}
 ```
 
 ## Ktuvit
@@ -102,6 +115,20 @@ media_bazarr_languages:
 
 A code Bazarr does not expose can be declared but will never converge, because
 verification compares the enabled set against the declared one.
+
+## Language profiles are not managed here
+
+Enabling a language and a provider converges, and `platform_verify_arr` passes,
+and Bazarr downloads nothing: it searches only for series and movies that carry
+a *languages profile*. A profile's identity is a database row id, so
+`serie_default_profile` and `movie_default_profile` cannot be declared without
+pinning this repository to a row somebody made by hand. Nothing here submits
+either key, so a profile made in the web interface survives every converge.
+
+Settings -> Languages -> Languages Profiles: add one profile holding the
+languages declared above, then set it as the default for series and for movies
+so newly added items are assigned it. Items Sonarr and Radarr already hold need
+one mass edit on the Series and Movies pages.
 
 ## When Bazarr is upgraded
 

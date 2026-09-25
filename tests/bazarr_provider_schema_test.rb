@@ -4,7 +4,7 @@
 # The pinned Bazarr provider schemas must be usable and current.
 #
 # media_bazarr_providers is validated against no list of known providers: any
-# lowercase name with a non-empty settings mapping passes. A misspelled key
+# lowercase name with a settings mapping passes, empty included. A misspelled key
 # therefore converges and fetches nothing, so the operator's protection is that
 # docs/bazarr-providers.md carries blocks derived from the deployed version
 # rather than remembered.
@@ -73,7 +73,22 @@ VALIDATION_PROGRAM = <<~PYTHON
 
   payload = json.load(sys.stdin)
   try:
-      module.acquisition_bazarr_declarations(payload["languages"], payload["providers"])
+      declarations = module.acquisition_bazarr_declarations(
+          payload["languages"], payload["providers"]
+      )
+      # Accepting a block is not the same as acting on it. A provider whose
+      # settings mapping is empty carries no body of its own, so the connection
+      # body is the only thing that enables it, and the projection looks every
+      # declared name up in provider_settings -- where a missing entry is a
+      # crash rather than a report.
+      body = module.acquisition_bazarr_connection_body(
+          declarations, "probe-user", "probe-password", "probe-radarr", "probe-sonarr", []
+      )
+      for name in declarations["provider_names"]:
+          if name not in declarations["provider_settings"]:
+              raise AssertionError(f"{name} has no provider_settings entry to project")
+          if name not in body["settings-general-enabled_providers"]:
+              raise AssertionError(f"{name} is not enabled by the connection body")
   except Exception as caught:
       json.dump({"error": str(caught)}, sys.stdout)
   else:
