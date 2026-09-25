@@ -447,7 +447,7 @@ jobs:
       # #775's defect is an ERROR that exits non-zero without it.
       - name: Validate the Renovate configuration
         run: |
-          renovate_pin=renovate@44.115.6
+          renovate_pin=renovate@44.115.7
           npx --yes --package "$renovate_pin" renovate-config-validator
 
           # A check that has only ever passed proves nothing, and this one is
