@@ -95,7 +95,7 @@
       {{ pre_upgrade_backup_service_name | capitalize }} is running
       {{ pre_upgrade_backup_deployed_image }} and this release pins
       {{ pre_upgrade_backup_pinned_image }}. A live run would stop the container,
-      copy {{ pre_upgrade_backup_store_file }}, any write-ahead log beside it
+      copy {{ pre_upgrade_backup_store_file }}, any journal beside it
       {{- (' and ' ~ (pre_upgrade_backup_extra_patterns | join(', ')))
           if pre_upgrade_backup_extra_patterns | length > 0 else '' }} into
       {{ pre_upgrade_backup_path }}, and only then start the new image, so that
@@ -186,7 +186,10 @@
     # bytes rather than unlinking them -- measured -- while Kapowarr's clean stop
     # left the store alone. Reading the set is what makes both right without a
     # branch: a stop that did not complete cleanly leaves a log with content in
-    # it, and a store that has never been opened has neither file. Not
+    # it, and a store that has never been opened has neither file. -journal is
+    # the same for a store in SQLite's default rollback-journal mode, which is
+    # Karakeep's: a hot journal after an unclean stop is part of the store, and a
+    # clean stop deletes it. Not
     # recursive, so an application's own dated backups beside the store are
     # not taken for it. pre_upgrade_backup_extra_patterns carries anything else
     # the store is worthless without, such as Vaultwarden's rsa_key*.
@@ -194,7 +197,8 @@
       ansible.builtin.find:
         paths: "{{ pre_upgrade_backup_store_dir }}"
         patterns: "{{ [pre_upgrade_backup_store_file, pre_upgrade_backup_store_file ~ '-wal',
-                      pre_upgrade_backup_store_file ~ '-shm'] + pre_upgrade_backup_extra_patterns }}"
+                      pre_upgrade_backup_store_file ~ '-shm', pre_upgrade_backup_store_file ~ '-journal']
+                     + pre_upgrade_backup_extra_patterns }}"
         file_type: file
       register: pre_upgrade_backup_store_files
       changed_when: false
@@ -257,7 +261,9 @@
 
     # ONE GENERATION. A log the previous copy carried and this one did not would
     # sit beside a fresh store as a directory that looks like one store and is
-    # two, so anything the copy above did not just write is removed.
+    # two, so anything the copy above did not just write is removed. A stale
+    # -journal is the worst of them: SQLite would read it as hot and roll the
+    # restored store back with another generation's pages.
     - name: Remove pre-upgrade copies this run did not write
       ansible.builtin.file:
         path: "{{ pre_upgrade_backup_path }}/{{ item }}"
@@ -265,6 +271,7 @@
       loop:
         - "{{ pre_upgrade_backup_store_file }}-wal"
         - "{{ pre_upgrade_backup_store_file }}-shm"
+        - "{{ pre_upgrade_backup_store_file }}-journal"
       when:
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
