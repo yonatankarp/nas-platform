@@ -93,8 +93,8 @@
   loop: [git, curl, docker]
   changed_when: false
   failed_when: false
-  # A read that must really happen: skipped under --check, the assertion below
-  # would consume a result that does not exist and the review would fail
+  # A read that must really happen: skipped under --check, it records rc 0
+  # with an empty stdout, so the assertion below would report a tool missing
   # instead of reporting what the install would do (#834).
   check_mode: false
 
