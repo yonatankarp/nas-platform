@@ -44,7 +44,7 @@ permissions:
 jobs:
   changes:
     timeout-minutes: 10
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       static: ${{ steps.classify.outputs.static }}
       docs: ${{ steps.classify.outputs.docs }}
@@ -153,7 +153,7 @@ jobs:
     name: static (${{ matrix.shard }})
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       # Every shard reports. Failing fast would cancel the other two, so a run
       # that broke checks in more than one shard would name only the first. The
@@ -191,7 +191,7 @@ jobs:
 
       - name: Install ShellCheck
         run: |
-          # ubuntu-latest ships ShellCheck, so this normally installs nothing.
+          # The runner image ships ShellCheck, so this normally installs nothing.
           # The policy gate lints the integration controller library with it as
           # one bare manifest line, which cannot guard itself, so recover here
           # if the runner image ever drops the binary.
@@ -219,7 +219,7 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # All three ship in the ubuntu-latest image, so this normally installs
+          # All three ship in the runner image, so this normally installs
           # nothing. Guarded because an unconditional apt-get update stalled
           # mid-download for 161 minutes on 2026-08-19; the guard still recovers
           # automatically if the image ever drops them.
@@ -308,7 +308,7 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
@@ -333,7 +333,7 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # All three ship in the ubuntu-latest image, so this normally installs
+          # All three ship in the runner image, so this normally installs
           # nothing. Guarded because an unconditional apt-get update stalled
           # mid-download for 161 minutes on 2026-08-19; the guard still recovers
           # automatically if the image ever drops them.
@@ -488,7 +488,7 @@ jobs:
     timeout-minutes: 10
     needs: changes
     if: ${{ needs.changes.outputs.docs == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
@@ -524,7 +524,7 @@ jobs:
     timeout-minutes: 15
     needs: changes
     if: ${{ needs.changes.outputs.vault == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
@@ -549,7 +549,7 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # All three ship in the ubuntu-latest image, so this normally installs
+          # All three ship in the runner image, so this normally installs
           # nothing. Guarded because an unconditional apt-get update stalled
           # mid-download for 161 minutes on 2026-08-19; the guard still recovers
           # automatically if the image ever drops them.
@@ -652,7 +652,7 @@ jobs:
     timeout-minutes: 60
     needs: changes
     if: ${{ needs.changes.outputs.static == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
@@ -679,7 +679,7 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # All three ship in the ubuntu-latest image, so this normally installs
+          # All three ship in the runner image, so this normally installs
           # nothing. Guarded because an unconditional apt-get update stalled
           # mid-download for 161 minutes on 2026-08-19; the guard still recovers
           # automatically if the image ever drops them.
@@ -767,7 +767,7 @@ jobs:
     # The classifier selects this from roles/arr/, roles/downloaders/ and the
     # contract's own test files.
     if: ${{ needs.changes.outputs.reconciliation == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -798,7 +798,7 @@ jobs:
 
       - name: Install Ansible tooling
         run: |
-          # All three ship in the ubuntu-latest image, so this normally installs
+          # All three ship in the runner image, so this normally installs
           # nothing. Guarded because an unconditional apt-get update stalled
           # mid-download for 161 minutes on 2026-08-19; the guard still recovers
           # automatically if the image ever drops them.
@@ -881,7 +881,7 @@ jobs:
     # to publish with. Skipping is the honest outcome: the fork's suites then take
     # the same local-build path a developer's machine takes.
     if: ${{ github.event.pull_request.head.repo.fork != true }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       packages: write
@@ -921,7 +921,7 @@ jobs:
     # explicit changes result term: without it a failed classification would reach
     # the matrix as an empty selection rather than as a skip.
     if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.suites != '[]' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # A job-level block REPLACES the workflow-level one instead of merging with
     # it, which is why contents: read is restated: without it actions/checkout
     # loses the scope it needs. packages: read is intent rather than a functional
@@ -1042,7 +1042,7 @@ jobs:
       - reconciliation
       - toolchain
       - suites
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
       - name: Check out repository
