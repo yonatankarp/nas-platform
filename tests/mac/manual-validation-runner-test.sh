@@ -335,12 +335,27 @@ if grep -Eq 'idempotence|drift|recreate|persistence|cleanup' "$phase_log"; then
   fail 'manual run executed a phase after verify'
 fi
 
+# A fresh lane's ports must come from below this host's ephemeral range. One
+# the kernel handed out for a port-0 bind and got back on close is free for any
+# other process's port-0 bind or outgoing connection before preflight rebinds
+# it, which is how a sibling check in the gate took 45005 and this test's
+# preflight refused it (#833).
+if [ -r /proc/sys/net/ipv4/ip_local_port_range ]; then
+  ephemeral_first=$(awk '{print $1}' /proc/sys/net/ipv4/ip_local_port_range)
+else
+  ephemeral_first=$(sysctl -n net.inet.ip.portrange.first)
+fi
+case $ephemeral_first in
+  '' | *[!0-9]*) fail "could not read this host's ephemeral port range: $ephemeral_first" ;;
+esac
 service_port_fields='audiobookshelf:audiobookshelf_port beszel:beszel_port dozzle:dozzle_port immich:immich_port jellyfin:jellyfin_port komga:komga_port paperless-ngx:paperless_port'
 for service_field in $service_port_fields; do
   service=${service_field%%:*}
   field=${service_field#*:}
   port=$(ruby -rjson -e 'print JSON.parse(File.read(ARGV.fetch(0))).fetch(ARGV.fetch(1))' \
     "$report_root/phase-input.json" "$field")
+  [ "$port" -lt "$ephemeral_first" ] ||
+    fail "fresh lane allocated $service port $port inside the ephemeral range starting at $ephemeral_first"
   grep -F "$service URL: http://127.0.0.1:$port" "$manual_output" >/dev/null ||
     fail "handoff omitted $service URL"
 done

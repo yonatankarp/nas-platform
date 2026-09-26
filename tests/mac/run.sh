@@ -320,9 +320,24 @@ ensure_immich_fixture_vars() {
 }
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
+# Candidates come from a band below both defaults' ephemeral ranges (Linux
+# 32768, macOS 49152), never from a port-0 bind: a kernel-assigned port goes
+# back to the pool on close, and any outgoing connection or sibling port-0 bind
+# can take it before preflight rebinds it (#833). Inside this band only an
+# explicit bind of the same number can collide.
+# ponytail: fixed band; derive it from the host's range if one is lowered below 32768.
 allocate_service_port() {
   while :; do
-    candidate_port=$(ruby -rsocket -e 'server = TCPServer.new("127.0.0.1", 0); print server.addr[1]; server.close')
+    candidate_port=$(ruby -rsocket -e '
+      loop do
+        port = rand(20_000..32_767)
+        TCPServer.new("127.0.0.1", port).close
+        print port
+        break
+      rescue SystemCallError
+        next
+      end
+    ')
     candidate_available=true
     for allocated_port in "$@"; do
       [ "$candidate_port" = "$allocated_port" ] && candidate_available=false
