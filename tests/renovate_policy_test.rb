@@ -539,8 +539,16 @@ harness_lines.each do |line|
         "no Renovate custom manager tracks the pin #{line.inspect}")
 end
 
-controller_requirements_path = File.join(ROOT, "controller-requirements.txt")
-controller_lines = File.readlines(controller_requirements_path, chomp: true)
+# The controller toolchain is authored in controller-requirements.in and compiled
+# into the hash-locked controller-requirements.txt (#827). Renovate owns the lock
+# through its pip-compile manager, which reads the .in named in the lock's header,
+# bumps a pin there and re-runs that header's command, so the hashes move with the
+# version. A regex manager over the lock is the route that must not come back: its
+# pattern still matches the lock's `ansible-core==X.Y.Z \` lines, and it would
+# rewrite a version without regenerating a hash, which is a lock pip refuses on
+# every host that installs it.
+controller_source_path = File.join(ROOT, "controller-requirements.in")
+controller_lines = File.file?(controller_source_path) ? File.readlines(controller_source_path, chomp: true) : []
 controller_requests_pins = controller_lines.filter_map do |line|
   line.match(/\Arequests==(?<version>\d+\.\d+\.\d+)\z/)&.[](:version)
 end
@@ -549,26 +557,35 @@ integration_requests_pins = File.read(HARNESS_PATH)
                               .flatten
 
 check(failures, controller_requests_pins.length == 1,
-      "controller-requirements.txt must contain exactly one requests pin")
+      "controller-requirements.in must contain exactly one requests pin")
 check(failures, integration_requests_pins.length == 1,
       "tests/integration.sh must contain exactly one requests_version pin")
 check(failures,
       controller_requests_pins.first == integration_requests_pins.first,
       "controller and integration requests pins must match")
 
-controller_managers = Array(config["customManagers"]).select do |manager|
-  Array(manager["managerFilePatterns"]).any? do |pattern|
-    body = pattern.sub(%r{\A/}, "").sub(%r{/\z}, "")
-    Regexp.new(body).match?("controller-requirements.txt")
-  end
+def renovate_pattern_matches?(pattern, path)
+  Regexp.new(pattern.sub(%r{\A/}, "").sub(%r{/\z}, "")).match?(path)
 end
-controller_match_strings = controller_managers
-                           .flat_map { |manager| Array(manager["matchStrings"]) }
-                           .map { |source| Regexp.new(source) }
-controller_lines.grep(/\A[A-Za-z0-9][A-Za-z0-9._-]*==\d+\.\d+\.\d+\z/).each do |line|
-  check(failures, controller_match_strings.any? { |pattern| pattern.match?(line) },
-        "no Renovate custom manager tracks the controller pin #{line.inspect}")
+
+check(failures, Array(config["enabledManagers"]).include?("pip-compile"),
+      "enabledManagers must include pip-compile, the manager that regenerates the controller lock")
+check(failures,
+      Array(config.dig("pip-compile", "managerFilePatterns")).any? do |pattern|
+        renovate_pattern_matches?(pattern, "controller-requirements.txt")
+      end,
+      "the pip-compile manager must target the lock, controller-requirements.txt, whose header " \
+      "names the source it is compiled from")
+%w[controller-requirements.txt controller-requirements.in].each do |path|
+  check(failures,
+        Array(config["customManagers"]).none? do |manager|
+          Array(manager["managerFilePatterns"]).any? { |pattern| renovate_pattern_matches?(pattern, path) }
+        end,
+        "no custom manager may track #{path}: a regex bump there rewrites a version without " \
+        "regenerating the lock's hashes")
 end
+check(failures, config.dig("lockFileMaintenance", "enabled") == true,
+      "lockFileMaintenance must be enabled, or the controller lock's transitive pins never move")
 
 # The renovate-config-validator pin in the lint job, held to the same rule as
 # the harness and controller pins above: a version this repository writes down
