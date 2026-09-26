@@ -67,8 +67,10 @@ require "yaml"
 
 require_relative "case_pool_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -2807,14 +2809,6 @@ def with_mutant(mutation)
     File.write(path, source)
     yield path
   end
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
 end
 
 if ARGV.include?("--self-test")
