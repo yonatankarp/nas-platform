@@ -1257,10 +1257,18 @@ lint_commands = run_steps(lint_job)
 # CI with no diff to point at.
 check(failures, lint_commands.match?(/renovate_pin=renovate@\d+\.\d+\.\d+/),
       "the lint job must pin the renovate-config-validator version")
-check(failures, lint_commands.include?('npx --yes --package "$renovate_pin" renovate-config-validator'),
+check(failures, lint_commands.include?('npx --yes --package "$renovate_pin" renovate-config-validator --strict'),
       "the lint job must validate renovate.json against Renovate's own validator: parsing the " \
       "file and asserting hand-written properties both passed on the config that stopped " \
       "Renovate repository-wide (#775)")
+# --strict because a deprecation is a warning, and a warning exits zero: #842's
+# schedule migration sat on the Dependency Dashboard with this step green over
+# it. Strict turns the next one into a red lint job on the pull request that
+# introduces it, or on the Renovate bump whose release deprecates something.
+check(failures,
+      lint_commands.lines.grep(/renovate-config-validator/).count { |line| line.include?("--strict") } == 1,
+      "exactly one renovate-config-validator invocation must be --strict: the real check, " \
+      "not the #775 plant, which must stay non-strict to prove the refusal is an error")
 LINT_CHECK_COMMANDS.each do |command|
   check(failures, lint_commands.include?(command),
         "the lint job must retain #{command.inspect}")

@@ -446,13 +446,16 @@ jobs:
       # The pin is the only version literal in this file that is not an action
       # SHA; a custom manager in renovate.json tracks it, and
       # tests/renovate_policy_test.rb asserts that coupling so it cannot float.
-      # No --strict: it fails on the pending "after 10pm and before 5am"
-      # schedule migration, which is a warning Renovate applies itself, and
-      # #775's defect is an ERROR that exits non-zero without it.
+      # --strict, because a deprecation is only a warning and a warning exits
+      # zero: #842's schedule migration sat on the Dependency Dashboard
+      # with this step green over it. Strict reds the pull request that
+      # introduces one, or the Renovate bump whose release deprecates something.
+      # The #775 plant below stays non-strict on purpose, so it still proves that
+      # refusal is an ERROR rather than a warning strict would also catch.
       - name: Validate the Renovate configuration
         run: |
           renovate_pin=renovate@44.115.10
-          npx --yes --package "$renovate_pin" renovate-config-validator
+          npx --yes --package "$renovate_pin" renovate-config-validator --strict
 
           # A check that has only ever passed proves nothing, and this one is
           # bumped by a bot: a Renovate release demoting that refusal to a
