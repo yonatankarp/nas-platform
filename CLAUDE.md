@@ -1019,5 +1019,7 @@ a digest and the poller would deploy it within five minutes of a merge.
 `lscr.io/linuxserver/socket-proxy` in the Beszel and Dozzle stacks (#828): it
 mounts `/var/run/docker.sock`, whose `:ro` restricts nothing at the Docker API,
 so it is root on the host by another route. The test derives every image whose
-service mounts that socket from `services/*/compose*.yml` and holds each one,
-against a stated set closed both ways, so the next one cannot automerge.
+service mounts that socket by its literal path from `services/*/compose*.yml`
+and holds each one, against a stated set closed both ways, so the next one
+cannot automerge. A variable source or a mount of a parent directory such as
+`/var/run` escapes the derivation; no Compose file here uses either.

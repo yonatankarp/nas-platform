@@ -370,6 +370,8 @@ def compose_image_repository(image)
   image.to_s.sub(/@.*\z/, "").sub(%r{:[^/:]*\z}, "")
 end
 
+# ponytail: literal paths only. A ${VAR} source or a parent-directory mount
+# (/var/run, /run) also exposes the socket and is not seen; none exists today.
 def docker_socket_source?(volume)
   source = volume.is_a?(Hash) ? volume["source"] : volume.to_s.split(":").first
   source.to_s.match?(%r{\A(/var)?/run/docker\.sock\z})
