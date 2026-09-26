@@ -1015,4 +1015,9 @@ S.M.A.R.T. on it was judged worth that. The containment is on the image rather
 than the host: `renovate.json` withholds automerge from every Beszel image for
 every update type, digest refreshes included, because a re-pushed tag arrives as
 a digest and the poller would deploy it within five minutes of a merge.
-`tests/renovate_policy_test.rb` holds that property.
+`tests/renovate_policy_test.rb` holds that property. The same hold covers
+`lscr.io/linuxserver/socket-proxy` in the Beszel and Dozzle stacks (#828): it
+mounts `/var/run/docker.sock`, whose `:ro` restricts nothing at the Docker API,
+so it is root on the host by another route. The test derives every image whose
+service mounts that socket from `services/*/compose*.yml` and holds each one,
+against a stated set closed both ways, so the next one cannot automerge.

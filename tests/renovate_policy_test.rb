@@ -352,6 +352,60 @@ check(failures, digest_automerge == true && !digest_approval,
       "the automerge resolver reports that a digest refresh of docker.io/gotenberg/gotenberg is " \
       "withheld. The routine rule automerges it, so the Beszel digest assertions above prove nothing")
 
+# #828: any container that mounts the Docker socket holds the Docker API, and
+# the `:ro` on that mount restricts nothing at the API level -- so the image is
+# root-equivalent on the host for exactly the Beszel agent's reason, and a
+# re-pushed tag arriving as a digest must not merge without a human either.
+# lscr.io/linuxserver/socket-proxy sat in both the Beszel and Dozzle stacks
+# under the routine automerge rule, digests included, until this block.
+#
+# Derived rather than listed, because a list is what let the socket proxy
+# through: every image whose service mounts the socket in any
+# services/*/compose*.yml. The stated set under it is the floor, closed both
+# ways -- a derivation that quietly matches nothing (a renamed key, a long-form
+# volume) would otherwise pass every loop below.
+DOCKER_SOCKET_IMAGES = %w[lscr.io/linuxserver/socket-proxy].to_set.freeze
+
+def compose_image_repository(image)
+  image.to_s.sub(/@.*\z/, "").sub(%r{:[^/:]*\z}, "")
+end
+
+def docker_socket_source?(volume)
+  source = volume.is_a?(Hash) ? volume["source"] : volume.to_s.split(":").first
+  source.to_s.match?(%r{\A(/var)?/run/docker\.sock\z})
+end
+
+derived_docker_socket_images = Set.new
+Dir.glob(File.join(ROOT, "services", "*", "compose.yml")).sort.each do |canonical_path|
+  canonical = YAML.safe_load_file(canonical_path, aliases: true) || {}
+  canonical_services = canonical.fetch("services", nil) || {}
+  Dir.glob(File.join(File.dirname(canonical_path), "compose*.yml")).sort.each do |path|
+    document = YAML.safe_load_file(path, aliases: true) || {}
+    (document.fetch("services", nil) || {}).each do |name, service|
+      next unless Array(service && service["volumes"]).any? { |volume| docker_socket_source?(volume) }
+
+      image = (service["image"] || canonical_services.dig(name, "image")).to_s
+      check(failures, !image.empty?,
+            "#{path.delete_prefix("#{ROOT}/")} mounts the Docker socket on #{name}, which has no image")
+      derived_docker_socket_images << compose_image_repository(image) unless image.empty?
+    end
+  end
+end
+check(failures, derived_docker_socket_images == DOCKER_SOCKET_IMAGES,
+      "the images mounting the Docker socket must be exactly the stated set. Missing: " \
+      "#{(DOCKER_SOCKET_IMAGES - derived_docker_socket_images).to_a.sort.inspect}; unexpected: " \
+      "#{(derived_docker_socket_images - DOCKER_SOCKET_IMAGES).to_a.sort.inspect}. A new " \
+      "socket-holding image must be withheld from automerge and stated here")
+EVERY_UPDATE_TYPE.each do |update_type|
+  (DOCKER_SOCKET_IMAGES | derived_docker_socket_images).each do |package|
+    automerge, approved = automerge_verdict(config, rules, package, update_type)
+    check(failures, automerge == false || approved,
+          "a #{update_type} update of #{package} would automerge. It mounts the Docker socket, " \
+          "which is root on the host, and a re-pushed tag arrives as a digest, so no update to " \
+          "it may merge without a human")
+  end
+end
+
 # The batching group, and the reason it needs an assertion of its own rather
 # than a reading of the rule. Grouping is a CI-cost measure -- the fixed gate is
 # about 37 of a run's ~50 runner-minutes and is paid once per pull request, not
@@ -378,7 +432,8 @@ COUPLED_DATABASE_IMAGES = %w[ghcr.io/immich-app/postgres].freeze
 GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
                          IMMICH_PACKAGES.to_a +
                          COUPLED_DATABASE_IMAGES +
-                         HOST_ROOT_EQUIVALENT_IMAGE_GROUP).to_set.freeze
+                         HOST_ROOT_EQUIVALENT_IMAGE_GROUP +
+                         DOCKER_SOCKET_IMAGES.to_a).to_set.freeze
 BATCHED_UPDATE_TYPES = Set.new(%w[minor patch digest pinDigest]).freeze
 
 batching_rules = rules.select { |rule| rule["groupName"] == "container images" }
