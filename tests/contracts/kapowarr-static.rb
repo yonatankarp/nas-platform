@@ -15,7 +15,7 @@ required = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
-  roles/kapowarr/tasks/pre_upgrade_backup.yml
+  roles/pre_upgrade_backup/tasks/main.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -340,14 +340,25 @@ if failures.empty?
 
   # The guard refuses going back; the pre-upgrade copy is what makes going back
   # possible at all. Neither image offers an on-demand backup, so the store is
-  # copied from a stopped container, between the guard and the deployment.
+  # copied from a stopped container, between the guard and the deployment. Since
+  # #836 the copy is roles/pre_upgrade_backup, so its call site says whose store
+  # it takes and the shared file is held to the shape below.
   backup_import = tasks.index do |task|
-    task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml"
+    task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup"
   end
   failures << "Kapowarr must copy its store aside between the downgrade guard and the deployment" unless
     backup_import && guard_index && deploy_index &&
     guard_index < backup_import && backup_import < deploy_index
-  backup_document = YAML.safe_load_file(File.join(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml"),
+  backup_vars = backup_import ? (tasks[backup_import]["vars"] || {}) : {}
+  failures << "the Kapowarr pre-upgrade copy must take Kapowarr's own store" unless
+    backup_vars["pre_upgrade_backup_service_name"] == "kapowarr" &&
+    backup_vars["pre_upgrade_backup_compose_service"] == "kapowarr" &&
+    backup_vars["pre_upgrade_backup_project_name"] == "{{ kapowarr_compose_project_name }}" &&
+    backup_vars["pre_upgrade_backup_store_dir"] == "{{ kapowarr_config_host_path }}" &&
+    backup_vars["pre_upgrade_backup_store_file"] == "Kapowarr.db" &&
+    backup_vars["pre_upgrade_backup_path"] == "{{ kapowarr_pre_upgrade_backup_path }}" &&
+    backup_vars["pre_upgrade_backup_pinned_image"].to_s.include?("image_downgrade_guard_pinned_image")
+  backup_document = YAML.safe_load_file(File.join(root, "roles/pre_upgrade_backup/tasks/main.yml"),
                                         aliases: true)
   backup_tasks = flatten_tasks(backup_document)
   # The block that stops the container and copies the store, and its rescue. The
@@ -358,10 +369,10 @@ if failures.empty?
   end
   backup_rescue = flatten_tasks(backup_unit&.fetch("rescue", nil))
   pending_fact = backup_tasks.find do |task|
-    task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending")
+    task.dig("ansible.builtin.set_fact")&.key?("pre_upgrade_backup_upgrade_pending")
   end.to_s
   failures << "the Kapowarr pre-upgrade copy must key on the image the container was created from" unless
-    pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")
+    pending_fact.include?("pre_upgrade_backup_deployed_image != pre_upgrade_backup_pinned_image")
   # A copy on every converge would never report a converged run, and --check
   # must stop and copy nothing.
   backup_mutations = (backup_tasks - backup_rescue).select do |task|
@@ -371,13 +382,13 @@ if failures.empty?
   failures << "the Kapowarr pre-upgrade copy must act only on a pending upgrade outside --check" unless
     backup_mutations.length >= 5 && backup_mutations.all? do |task|
       conditions = Array(task["when"]).join(" ")
-      conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")
+      conditions.include?("pre_upgrade_backup_upgrade_pending") && conditions.include?("not ansible_check_mode")
     end
   failures << "the Kapowarr pre-upgrade copy must be reported under --check" unless
     backup_tasks.any? do |task|
       conditions = Array(task["when"])
       task.key?("ansible.builtin.debug") && conditions.include?("ansible_check_mode") &&
-        conditions.join(" ").include?("kapowarr_upgrade_pending")
+        conditions.join(" ").include?("pre_upgrade_backup_upgrade_pending")
     end
   # Without recreate: never the stop first replaces the container with one on the
   # new pin, and a failed copy no longer reads as a pending upgrade next time.
@@ -397,7 +408,8 @@ if failures.empty?
   # without a copy.
   rescue_start = backup_rescue.find do |task|
     start = task["community.docker.docker_compose_v2"]
-    start.is_a?(Hash) && start["state"] == "present" && Array(start["services"]) == ["kapowarr"]
+    start.is_a?(Hash) && start["state"] == "present" &&
+      Array(start["services"]) == ["{{ pre_upgrade_backup_compose_service }}"]
   end
   start_index = rescue_start ? backup_rescue.index(rescue_start) : 0
   failures << "the Kapowarr pre-upgrade copy must start the old container again when it fails" unless
@@ -419,7 +431,7 @@ if failures.empty?
   failures << "the Kapowarr pre-upgrade copy must not start the old container over a missing store" unless
     rescue_start.nil? || (
       rescue_store_read && backup_rescue.index(rescue_store_read) < start_index &&
-      rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ kapowarr_config_host_path }}/Kapowarr.db" &&
+      rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ pre_upgrade_backup_store_dir }}/{{ pre_upgrade_backup_store_file }}" &&
       rescue_store_read["failed_when"] == false &&
       Array(rescue_start["when"]) == ["#{rescue_store_read['register']}.stat.isreg | default(false)"]
     )

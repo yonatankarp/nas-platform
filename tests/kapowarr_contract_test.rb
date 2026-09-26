@@ -72,7 +72,7 @@ FIXTURE_FILES = %w[
   roles/kapowarr/defaults/main.yml
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
-  roles/kapowarr/tasks/pre_upgrade_backup.yml
+  roles/pre_upgrade_backup/tasks/main.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -611,7 +611,7 @@ STATIC_ROWS = [
     name: "no pre-upgrade copy of the store a pinned upgrade migrates",
     break: lambda { |root|
       role_tasks(root) do |document|
-        document.reject! { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+        document.reject! { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
       end
     },
     expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
@@ -620,7 +620,7 @@ STATIC_ROWS = [
     name: "a pre-upgrade copy taken after the deployment",
     break: lambda { |root|
       role_tasks(root) do |document|
-        copy = document.find { |task| task["ansible.builtin.import_tasks"] == "pre_upgrade_backup.yml" }
+        copy = document.find { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
         document.delete(copy)
         document.push(copy)
       end
@@ -628,11 +628,24 @@ STATIC_ROWS = [
     expects: "Kapowarr must copy its store aside between the downgrade guard and the deployment"
   },
   {
+    # The shared copy takes whatever store its caller names; naming another
+    # service's copies nothing Kapowarr migrates.
+    name: "a pre-upgrade copy pointed at another service's store",
+    break: lambda { |root|
+      role_tasks(root) do |document|
+        copy = document.find { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
+        copy["vars"]["pre_upgrade_backup_store_file"] = "db.sqlite3"
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must take Kapowarr's own store"
+  },
+  {
     name: "an upgrade keyed on something other than the recorded image",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
-        document.find { |task| task.dig("ansible.builtin.set_fact")&.key?("kapowarr_upgrade_pending") }
-          .dig("ansible.builtin.set_fact")["kapowarr_upgrade_pending"] = "{{ kapowarr_pinned_image | length > 0 }}"
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
+        document.find { |task| task.dig("ansible.builtin.set_fact")&.key?("pre_upgrade_backup_upgrade_pending") }
+          .dig("ansible.builtin.set_fact")["pre_upgrade_backup_upgrade_pending"] =
+          "{{ pre_upgrade_backup_pinned_image | length > 0 }}"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must key on the image the container was created from"
@@ -641,7 +654,7 @@ STATIC_ROWS = [
     # A copy on every converge never reports a converged run.
     name: "a pre-upgrade copy that runs on every converge",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("ansible.builtin.copy") }["when"] = ["not ansible_check_mode"]
       end
     },
@@ -650,7 +663,7 @@ STATIC_ROWS = [
   {
     name: "a pre-upgrade copy check mode does not report",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         document.reject! { |task| task.key?("ansible.builtin.debug") }
       end
     },
@@ -661,7 +674,7 @@ STATIC_ROWS = [
     # container with one on the new pin before anything is copied.
     name: "a pre-upgrade stop that recreates the container onto the new pin",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("community.docker.docker_compose_v2") }
           .fetch("community.docker.docker_compose_v2").delete("recreate")
       end
@@ -672,7 +685,7 @@ STATIC_ROWS = [
     # The copy carries the ComicVine key the store holds.
     name: "a world-readable pre-upgrade copy",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("ansible.builtin.copy") }["ansible.builtin.copy"]["mode"] = "0644"
       end
     },
@@ -684,7 +697,7 @@ STATIC_ROWS = [
     # every later converge.
     name: "a pre-upgrade copy whose failure leaves Kapowarr stopped",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .reject! { |task| task.key?("community.docker.docker_compose_v2") }
       end
@@ -696,7 +709,7 @@ STATIC_ROWS = [
     # the new pin, which migrates the store nothing copied.
     name: "a pre-upgrade rescue that starts Kapowarr on the new pin",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }
           .fetch("community.docker.docker_compose_v2").delete("recreate")
@@ -709,7 +722,7 @@ STATIC_ROWS = [
     # deployment after it upgrades a store nothing copied.
     name: "a pre-upgrade rescue that lets the upgrade proceed",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .reject! { |task| task.key?("ansible.builtin.fail") }
       end
@@ -720,7 +733,7 @@ STATIC_ROWS = [
     # A fail ahead of the start ends the rescue before anything starts.
     name: "a pre-upgrade rescue that fails before it starts Kapowarr",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .insert(1, { "name" => "Fail early", "ansible.builtin.fail" => { "msg" => "early" } })
       end
@@ -731,7 +744,7 @@ STATIC_ROWS = [
     # A second Compose task that recreates brings the new pin up after all.
     name: "a pre-upgrade rescue with a second start that recreates onto the new pin",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         rescue_tasks = find_task(document) { |task| task.key?("rescue") }["rescue"]
         start = rescue_tasks.find { |task| task.key?("community.docker.docker_compose_v2") }
         second = Marshal.load(Marshal.dump(start))
@@ -746,7 +759,7 @@ STATIC_ROWS = [
     # over it, and the next converge upgraded over the empty store it created.
     name: "a pre-upgrade rescue that starts Kapowarr over a missing store",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }.delete("when")
       end
@@ -757,10 +770,10 @@ STATIC_ROWS = [
     # The verdict the pre-stop read gave is the one the rescue exists to re-take.
     name: "a pre-upgrade rescue start gated on the read taken before the stop",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
-          "kapowarr_store_stat.stat.isreg | default(false)"
+          "pre_upgrade_backup_store_stat.stat.isreg | default(false)"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
@@ -768,10 +781,10 @@ STATIC_ROWS = [
   {
     name: "a pre-upgrade rescue start gated on a condition that always holds",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
-          "kapowarr_pre_upgrade_store_after.stat.isreg | default(false) or true"
+          "pre_upgrade_backup_store_after.stat.isreg | default(false) or true"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
@@ -781,10 +794,10 @@ STATIC_ROWS = [
     # image started over either runs on a store it creates elsewhere.
     name: "a pre-upgrade rescue start that accepts a directory or a dangling symlink",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] =
-          "kapowarr_pre_upgrade_store_after.stat.exists | default(false)"
+          "pre_upgrade_backup_store_after.stat.exists | default(false)"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
@@ -792,10 +805,10 @@ STATIC_ROWS = [
   {
     name: "a pre-upgrade rescue store read of the write-ahead log",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("ansible.builtin.stat") }["ansible.builtin.stat"]["path"] =
-          "{{ kapowarr_config_host_path }}/Kapowarr.db-wal"
+          "{{ pre_upgrade_backup_store_dir }}/{{ pre_upgrade_backup_store_file }}-wal"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must not start the old container over a missing store"
@@ -805,7 +818,7 @@ STATIC_ROWS = [
     # before its verdict and left the service stopped behind "Permission denied".
     name: "a pre-upgrade rescue store read that aborts the rescue on a permission error",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("ansible.builtin.stat") }.delete("failed_when")
       end
@@ -815,13 +828,13 @@ STATIC_ROWS = [
   {
     name: "a second pre-upgrade start under always",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         unit = find_task(document) { |task| task.key?("rescue") }
         start = unit["rescue"].find { |task| task.key?("community.docker.docker_compose_v2") }
         second = Marshal.load(Marshal.dump(start))
         # Gated like every other task of the copy, so only the always check can
         # name it.
-        second["when"] = ["not ansible_check_mode", "kapowarr_upgrade_pending | bool"]
+        second["when"] = ["not ansible_check_mode", "pre_upgrade_backup_upgrade_pending | bool"]
         unit["always"] = [second]
       end
     },
@@ -830,7 +843,7 @@ STATIC_ROWS = [
   {
     name: "a pre-upgrade rescue start that never runs",
     break: lambda { |root|
-      edit_yaml(root, "roles/kapowarr/tasks/pre_upgrade_backup.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
         find_task(document) { |task| task.key?("rescue") }["rescue"]
           .find { |task| task.key?("community.docker.docker_compose_v2") }["when"] = false
       end
@@ -2385,16 +2398,23 @@ PROGRAM_MUTATIONS = [
     rows: ["a pre-upgrade copy taken after the deployment"]
   },
   {
+    label: "the pre-upgrade copy subject check",
+    program: :static,
+    from: 'backup_vars["pre_upgrade_backup_store_file"] == "Kapowarr.db" &&',
+    to: "true &&",
+    rows: ["a pre-upgrade copy pointed at another service's store"]
+  },
+  {
     label: "the recorded-image upgrade key check",
     program: :static,
-    from: 'pending_fact.include?("kapowarr_deployed_image != kapowarr_pinned_image")',
+    from: 'pending_fact.include?("pre_upgrade_backup_deployed_image != pre_upgrade_backup_pinned_image")',
     to: "true",
     rows: ["an upgrade keyed on something other than the recorded image"]
   },
   {
     label: "the pending-upgrade-only copy check",
     program: :static,
-    from: 'conditions.include?("kapowarr_upgrade_pending") && conditions.include?("not ansible_check_mode")',
+    from: 'conditions.include?("pre_upgrade_backup_upgrade_pending") && conditions.include?("not ansible_check_mode")',
     to: "true",
     rows: ["a pre-upgrade copy that runs on every converge"]
   },
@@ -2462,7 +2482,7 @@ PROGRAM_MUTATIONS = [
   {
     label: "the rescue store read path check",
     program: :static,
-    from: 'rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ kapowarr_config_host_path }}/Kapowarr.db" &&',
+    from: 'rescue_store_read.dig("ansible.builtin.stat", "path") == "{{ pre_upgrade_backup_store_dir }}/{{ pre_upgrade_backup_store_file }}" &&',
     to: "true &&",
     rows: ["a pre-upgrade rescue store read of the write-ahead log"]
   },
