@@ -385,9 +385,40 @@ end
 # the rest: a change to this file now dispatches three suites rather
 # than the whole matrix (#395), so a per-leg environment that varied by job would
 # be a difference the legs that do run cannot observe.
-jobs.each do |job_name, job|
-  check(failures, job["runs-on"] == "ubuntu-latest",
-        "job #{job_name} must run on ubuntu-latest, found #{job['runs-on'].inspect}")
+#
+# And that image pinned (#843). A `-latest` label moves when GitHub rolls it over,
+# so the toolchains static, lint and mutation take from the runner's system
+# packages would change under an unchanged tree and arrive as a surprise red
+# rather than a diff -- the argument this repository makes for image digests.
+# The version is not restated here: Renovate's github-runners datasource proposes
+# the next one, and a literal in this test would only make that bump fail.
+def runner_label_violations(jobs)
+  violations = []
+  jobs.each do |job_name, job|
+    label = job["runs-on"]
+    if !label.is_a?(String) || !label.match?(/\Aubuntu-\d+\.\d+\z/)
+      violations << "job #{job_name} must run on a pinned ubuntu-<version> label, found #{label.inspect}"
+    end
+  end
+  labels = jobs.values.map { |job| job["runs-on"] }.uniq
+  violations << "every job must run on the same runner label, found #{labels.inspect}" if labels.length > 1
+  violations
+end
+
+runner_label_violations(jobs).each { |violation| check(failures, false, violation) }
+RUNNER_LABEL = jobs.dig("changes", "runs-on")
+
+# Each plant trips exactly one clause, so each clause is shown to bite alone.
+{
+  "every job on a floating -latest label" =>
+    jobs.transform_values { |job| job.merge("runs-on" => "ubuntu-latest") },
+  "one job on a different pinned label" =>
+    jobs.merge("lint" => jobs.fetch("lint", {}).merge("runs-on" => "ubuntu-22.04")),
+  "a runs-on that is not a single label" =>
+    jobs.transform_values { |job| job.merge("runs-on" => [RUNNER_LABEL]) }
+}.each do |defect, planted|
+  check(failures, !runner_label_violations(planted).empty?,
+        "the runner label checker must refuse #{defect}")
 end
 
 check(failures, triggers.is_a?(Hash), "workflow triggers are missing")
@@ -450,7 +481,7 @@ check(failures, jobs.keys.sort == EXPECTED_JOBS.sort,
       "workflow jobs differ: got #{jobs.keys.sort.inspect}, expected #{EXPECTED_JOBS.sort.inspect}")
 
 changes = jobs.fetch("changes", {})
-check(failures, changes["runs-on"] == "ubuntu-latest", "changes must run on ubuntu-latest")
+check(failures, changes["runs-on"] == RUNNER_LABEL, "changes must run on the shared runner label")
 check(failures, changes.fetch("outputs", {}).keys.sort == CLASSIFIER_OUTPUTS.sort,
       "changes must expose every classifier output")
 CLASSIFIER_OUTPUTS.each do |output|
