@@ -89,8 +89,8 @@ services:
     # recovery: critical. 10s is Docker's own default, now stated rather than
     # inherited, and it is the window the upgrade lane already holds Bindery to:
     # that lane ends by stopping the head container and refuses anything but
-    # exit 0 or 143 (#781), and it has passed on every Bindery bump since. The
-    # same value and reasoning as Kapowarr's, the other SQLite upgrade subject
+    # exit 0 or 143 (#781), and it passed on the v1.37.0 bump (#791). The same
+    # value and reasoning as Kapowarr's, the other SQLite upgrade subject
     # (#696). SQLite's journal keeps the store crash-safe if a stop is ever cut
     # short, so a kill costs in-flight work rather than the database.
     stop_grace_period: 10s
