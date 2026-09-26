@@ -32,6 +32,9 @@ PUSHOVER_CREDENTIALS = {
 }.freeze
 PUBLIC_HOST = "100.64.0.1"
 CALLBACK_HOST = "10.88.0.1"
+# The second of production_auto_deploy_locale_candidates; the planted
+# ansible-playbook accepts only this one.
+LOCALE_ACCEPTED = "C.UTF-8"
 TIMEOUT_SECONDS = 300
 # Sentinels again, on a domain that never resolves: rendering them proves the
 # configuration reads the vault variables, and the installed poller the suite
@@ -523,6 +526,11 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     File.write(path, "#!/bin/sh\nexit 0\n")
     File.chmod(0o700, path)
   end
+  # Accept only the second locale candidate, so a locale probe that did not
+  # really run -- a check-mode skip reads rc=0 for every candidate -- records
+  # the first one and the --check review below predicts a change (#834).
+  File.write(File.join(tooling_bin, "ansible-playbook"),
+             "#!/bin/sh\n[ \"$LANG\" = #{LOCALE_ACCEPTED} ] || exit 1\nexit 0\n")
   # Only the password provider is planted. The role must converge without a
   # vault copy outside the checkout, because the committed vault travels with
   # the revision and a second copy would outrank it.
@@ -720,6 +728,40 @@ Dir.mktmpdir("auto-deploy-role") do |root|
     )
     check(failures, verify_result.success? && verify_output.include?("nothing has deployed"),
           "a fresh installation's --verify must skip and exit 0: #{verify_output}")
+
+    # Reviewing an installed host is what the operator guide requires before
+    # every production run, and it is where a read-only probe skipped under
+    # check mode shows up (#834). A skipped command reports rc=0 with empty
+    # output, so the tool probe's assertion fails, the locale probe records an
+    # untested candidate (a predicted change to deployer.json), and the crontab
+    # probe passes a crontab nobody read.
+    review_output, review_status = Open3.capture2e(environment, *arguments, "--check", "--diff")
+    check(failures, review_status.success?,
+          "the role must survive --check --diff on an installed host: " \
+          "#{review_output.lines.last(12).join}")
+    check(failures, review_output.match?(/changed=0\s/),
+          "reviewing an installed host must predict no change: " \
+          "#{review_output.lines.last(3).join}")
+    check(failures, config["ansible_locale"] == LOCALE_ACCEPTED,
+          "the locale probe must record the candidate that really worked, " \
+          "got #{config['ansible_locale'].inspect}")
+
+    # The crontab probe is reached only without an external scheduler. A stub
+    # crontab that refuses, first on PATH, must refuse the review too; the cron
+    # entries stay skipped by tag, and check mode would not write them anyway.
+    stub_bin = File.join(root, "stub-bin")
+    FileUtils.mkdir_p(stub_bin)
+    File.write(File.join(stub_bin, "crontab"),
+               "#!/bin/sh\necho 'crontab: must be suid to work properly' >&2\nexit 1\n")
+    File.chmod(0o700, File.join(stub_bin, "crontab"))
+    cron_output, cron_status = Open3.capture2e(
+      environment.merge("PATH" => "#{stub_bin}:#{ENV.fetch('PATH', '')}"),
+      *arguments, "-e", "production_auto_deploy_external_scheduler=false", "--check"
+    )
+    check(failures, !cron_status.success? &&
+          cron_output.include?("cannot manage its own crontab: crontab: must be suid"),
+          "a --check review must really probe the crontab and refuse one this " \
+          "account cannot manage: #{cron_output.lines.last(12).join}")
   end
 
   # And the refusal, which is what a fallback removed: with no Pushover
