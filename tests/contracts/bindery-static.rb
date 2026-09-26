@@ -116,6 +116,12 @@ if failures.empty?
       service.fetch("environment", {}).key?(name)
   end
 
+  # The upgrade lane's stop assertion is what proves Bindery stops inside this
+  # window; declaring it keeps the expectation in the Compose file rather than
+  # inherited from Docker's default, beside Kapowarr's (#845).
+  failures << "Bindery holds its SQLite store and must declare a stop grace period" unless
+    service["stop_grace_period"] == "10s"
+
   failures << "Bindery must publish the acquisition web UI port" unless
     Array(service["ports"]) == ["8787:8787"]
   mac = YAML.safe_load_file(File.join(root, "services/bindery/compose.mac.yml"))

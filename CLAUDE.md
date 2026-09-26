@@ -502,9 +502,11 @@ host-level OOM kill now pages with the container named whatever the `oom` rule
 does. The deliberate stops that exclusion was protecting stay quiet regardless:
 a stop that completes inside its grace period exits 0 or 143, both still
 excluded, and every database and cache declares a `stop_grace_period` well above
-Docker's ten-second default. Twelve containers, none of them a database or a
-cache, declare none and take that default, and one was measured and did not make
-it: `alert-relay` ran Python as PID 1 with no SIGTERM handler, and PID 1 is the
+Docker's ten-second default. Twelve long-running services in
+`services/*/compose.yml`, none of them a database or a cache, declare none and
+take that default -- both Beszel agents among them, of which a host runs one,
+and not the `configarr` job, which exits on its own -- and one was measured and
+did not make it: `alert-relay` ran Python as PID 1 with no SIGTERM handler, and PID 1 is the
 one process the kernel applies no default disposition to, so the stop was
 discarded and Docker SIGKILLed it — measured at 10.14s and exit 137, on every
 recreation, paging through the container that had just exited and so unable to

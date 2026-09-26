@@ -287,6 +287,11 @@ STATIC_ROWS = [
     expects: "Bindery must leave BINDERY_TRUSTED_PROXY unset"
   },
   {
+    name: "a stop grace period inherited rather than declared",
+    break: ->(root) { compose_service(root) { |service, _| service.delete("stop_grace_period") } },
+    expects: "Bindery holds its SQLite store and must declare a stop grace period"
+  },
+  {
     name: "a web UI port the platform does not publish",
     break: ->(root) { compose_service(root) { |service, _| service["ports"] = ["18787:8787"] } },
     expects: "Bindery must publish the acquisition web UI port"
