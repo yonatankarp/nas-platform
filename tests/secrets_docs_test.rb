@@ -411,8 +411,13 @@ check(failures,
       auto_deploy_section.include?("pip install -r controller-requirements.txt"),
       "NAS automatic deployment guide must install controller pins from " \
       "controller-requirements.txt")
-controller_pins = File.readlines(File.join(ROOT, "controller-requirements.txt"), chomp: true)
-controller_pins.each do |pin|
+# The versions are authored in controller-requirements.in (#827); the .txt beside
+# it is the hash lock compiled from it, whose hash and comment lines are not pins.
+controller_source = File.join(ROOT, "controller-requirements.in")
+controller_pins = File.file?(controller_source) ? File.readlines(controller_source, chomp: true) : []
+check(failures, controller_pins.any? { |pin| pin.start_with?("ansible-core==") },
+      "controller-requirements.in must pin ansible-core")
+controller_pins.reject { |pin| pin.strip.empty? || pin.start_with?("#") }.each do |pin|
   check(failures, !auto_deploy_section.include?(pin),
         "NAS automatic deployment guide must not restate controller pin #{pin}")
 end

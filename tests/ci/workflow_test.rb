@@ -15,6 +15,8 @@ include TestScaffold
 
 WORKFLOW_PATH = File.expand_path("../../.github/workflows/ci.yml", __dir__)
 CONTROLLER_REQUIREMENTS_PATH = File.expand_path("../../controller-requirements.txt", __dir__)
+CONTROLLER_REQUIREMENTS_SOURCE_PATH = File.expand_path("../../controller-requirements.in", __dir__)
+PYTHON_VERSION_PATH = File.expand_path("../../.python-version", __dir__)
 POLICY_PATH = File.expand_path("../validate-policy.sh", __dir__)
 ANSIBLE_LINT_PATH = File.expand_path("../../.ansible-lint", __dir__)
 CONFIGARR_APPLICATION_YAML = "roles/arr/files/configarr/config.yml"
@@ -693,8 +695,9 @@ check(failures, toolchain_installs.values.uniq.length == 1,
       "every #{INSTALL_TOOLCHAIN_STEP.inspect} step must be byte-identical, " \
       "#{toolchain_installs.keys.inspect} carry #{toolchain_installs.values.uniq.length} versions")
 toolchain_installs.each do |name, body|
-  check(failures, body.include?('"$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt'),
-        "the #{name} job must install the controller pins from controller-requirements.txt")
+  check(failures, body.include?('"$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt'),
+        "the #{name} job must install the hash-locked controller toolchain from " \
+        "controller-requirements.txt with --require-hashes")
   check(failures, !body.match?(/ansible-(?:core|lint)==/),
         "the #{name} job must not restate a pin controller-requirements.txt already authors")
 end
@@ -1186,7 +1189,7 @@ check(failures, static_commands.include?('python3 -m venv "$RUNNER_TEMP/ansible"
 # of them. That the file itself pins exactly, and that its pins agree with the
 # harness's, is proved at the end.
 check(failures,
-      static_commands.include?('"$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt'),
+      static_commands.include?('"$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt'),
       "static checks must install the controller pins in the isolated environment")
 check(failures, static_commands.include?('echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"'),
       "static checks must expose only the isolated pinned Ansible tools")
@@ -1538,42 +1541,116 @@ all_uses.group_by { |uses| uses.split("@", 2).first }.each do |name, uses|
         "#{name} must be pinned to one commit across every job: #{uses.uniq.inspect}")
 end
 
-# controller-requirements.txt is the anchor, not a mirror: it is what an operator
-# installs from, what the production poller installs from, what CLAUDE.md names as
-# the source of truth, and now what all four toolchain jobs above install from.
-# The ansible-core version is still restated where it cannot be read out of a pip
-# requirement -- the integration sandbox bakes it into a runner image tag, and the
-# Beszel telemetry test refuses to run against any other version because it asserts
-# exact ansible output. Assert those agree with the anchor. A bump that updates only
-# some of them fails immediately and by name instead of surfacing later as a
-# confusing suite failure.
+# controller-requirements.in is the anchor, not a mirror: it is the one file a
+# human edits a controller version in, and it compiles to controller-requirements.txt,
+# the hash-locked set an operator, the production poller and every toolchain job
+# above install (#827). The ansible-core version is still restated where it cannot
+# be read out of a pip requirement -- the integration sandbox bakes it into a
+# runner image tag, and the Beszel telemetry test refuses to run against any other
+# version because it asserts exact ansible output. Assert those agree with the
+# anchor. A bump that updates only some of them fails immediately and by name
+# instead of surfacing later as a confusing suite failure.
 #
 # Read the anchor, and fail loudly when it cannot be read. The previous shape
 # extracted the versions out of ci.yml's pip line and skipped this whole block when
 # the regex stopped matching, so the edit that removed those versions would have
 # retired every assertion below while leaving the test green.
-controller_requirements = File.read(CONTROLLER_REQUIREMENTS_PATH)
-expected_core = controller_requirements[/^ansible-core==(\d+\.\d+\.\d+)$/, 1]
-expected_lint = controller_requirements[/^ansible-lint==(\d+\.\d+\.\d+)$/, 1]
+controller_source = File.file?(CONTROLLER_REQUIREMENTS_SOURCE_PATH) ? File.read(CONTROLLER_REQUIREMENTS_SOURCE_PATH) : ""
+expected_core = controller_source[/^ansible-core==(\d+\.\d+\.\d+)$/, 1]
+expected_lint = controller_source[/^ansible-lint==(\d+\.\d+\.\d+)$/, 1]
 check(failures, !expected_core.nil?,
-      "controller-requirements.txt must pin ansible-core exactly, as ansible-core==X.Y.Z")
-# Nothing mirrors the lint pin, but every job installs from this file, so an
-# unpinned ansible-lint would float the gate's lint results release by release.
+      "controller-requirements.in must pin ansible-core exactly, as ansible-core==X.Y.Z")
+# Nothing mirrors the lint pin, but every job installs it, so an unpinned
+# ansible-lint would float the gate's lint results release by release.
 check(failures, !expected_lint.nil?,
-      "controller-requirements.txt must pin ansible-lint exactly, as ansible-lint==X.Y.Z")
-# The same reasoning covers the rest of the file rather than the two lines named
-# above: CI installs all of it, so a requirement without an exact pin is a version
-# CI never decided on. Counted as well as shaped, so a file that stopped listing
+      "controller-requirements.in must pin ansible-lint exactly, as ansible-lint==X.Y.Z")
+# The same reasoning covers the rest of the source file rather than the two lines
+# named above. Counted as well as shaped, so a file that stopped listing
 # requirements cannot satisfy this by having none.
-requirement_lines = controller_requirements.lines.map(&:strip)
-                                           .reject { |line| line.empty? || line.start_with?("#") }
-check(failures, requirement_lines.length >= 3,
-      "controller-requirements.txt must list the controller requirements, found " \
-      "#{requirement_lines.length}")
-requirement_lines.each do |line|
-  check(failures, line.match?(/\A[A-Za-z0-9][A-Za-z0-9._-]*==\d+(\.\d+)*\z/),
-        "controller-requirements.txt must pin every requirement exactly, four CI jobs " \
-        "install from it: #{line.inspect}")
+source_lines = controller_source.lines.map(&:strip).reject { |line| line.empty? || line.start_with?("#") }
+check(failures, source_lines.length >= 3,
+      "controller-requirements.in must list the controller requirements, found #{source_lines.length}")
+source_pins = {}
+source_lines.each do |line|
+  match = line.match(/\A(?<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?<version>\d+(\.\d+)*)\z/)
+  check(failures, !match.nil?,
+        "controller-requirements.in must pin every requirement exactly: #{line.inspect}")
+  source_pins[match[:name].downcase.tr("_.", "--")] = match[:version] if match
+end
+
+# The lock itself (#827). Before it, the file pinned only the three packages above
+# and the poller installed it with --upgrade, so every transitive dependency --
+# jinja2, PyYAML, cryptography, ansible-lint's whole tree -- moved to whatever PyPI
+# served on the next five-minute tick, as the deploy account, with no pull request
+# involved. What makes the lock a lock is three properties, each refused here:
+#   - every entry is an exact == pin, so no resolution happens on the host;
+#   - every entry carries at least one --hash, so the artifact installed is the one
+#     this pull request's CI installed. pip turns hash-checking on for the whole
+#     file when any line has a hash, so one unhashed entry does not quietly install
+#     -- it fails the install on every host, which is why it is caught here first;
+#   - every top-level pin in the .in is in the lock at the same version, so an
+#     edit to the .in that was never compiled cannot pass as applied.
+# The header's --python-version is the universal lock's floor: uv resolves for
+# every interpreter at or above it, so a floor above .python-version would drop
+# the entries only older interpreters need, and hash mode would then refuse the
+# install there. It is held equal to .python-version, the one place it is authored.
+CONTROLLER_LOCK_ENTRY = /\A(?<name>[A-Za-z0-9][A-Za-z0-9._-]*)==(?<version>[0-9][A-Za-z0-9.+!-]*)(?: *; *[^\\]+?)?(?<hashes>(?: +--hash=sha256:[0-9a-f]{64})*)\z/
+def controller_lock_violations(lock, source_pins, python_floor)
+  violations = []
+  header = lock[/^#\s+uv pip compile (.*)$/, 1]
+  violations << "the lock must carry the uv pip compile header Renovate regenerates it from" unless header
+  if header
+    violations << "the lock header must pass --generate-hashes" unless header.split.include?("--generate-hashes")
+    violations << "the lock header must pass --universal" unless header.split.include?("--universal")
+    violations << "the lock header must compile controller-requirements.in" unless header.split.include?("controller-requirements.in")
+    floor = header[/--python-version=(\S+)/, 1]
+    violations << "the lock header's --python-version=#{floor.inspect} must equal .python-version #{python_floor.inspect}" unless floor == python_floor
+  end
+  entries = lock.gsub(/\\\n/, " ").lines.map { |line| line.sub(/#.*/, "").strip }.reject(&:empty?)
+  violations << "the lock must list the resolved controller toolchain, found #{entries.length} entries" if entries.length < 20
+  locked = {}
+  entries.each do |entry|
+    match = entry.match(CONTROLLER_LOCK_ENTRY)
+    if match.nil?
+      violations << "every lock entry must be an exact == pin: #{entry[0, 80].inspect}"
+    elsif match[:hashes].strip.empty?
+      violations << "every lock entry must carry a --hash: #{match[:name]}"
+    else
+      locked[match[:name].downcase.tr("_.", "--")] = match[:version]
+    end
+  end
+  source_pins.each do |name, version|
+    next if locked[name] == version
+
+    violations << "controller-requirements.in pins #{name}==#{version} but the lock holds " \
+                  "#{locked[name].inspect}; recompile the lock"
+  end
+  violations
+end
+
+controller_lock = File.read(CONTROLLER_REQUIREMENTS_PATH)
+python_floor = File.read(PYTHON_VERSION_PATH).strip
+controller_lock_violations(controller_lock, source_pins, python_floor).each do |violation|
+  check(failures, false, "controller-requirements.txt: #{violation}")
+end
+
+# The checker is shown each defect it exists for before its silence on the real
+# lock is trusted, each plant a one-line edit of the real file.
+first_hash = controller_lock[/ \\\n\s+--hash=sha256:\h{64}/]
+core_line = controller_lock[/^ansible-core==\S+/]
+{
+  "an entry that lost its hashes" =>
+    controller_lock.sub(/^(pyyaml==\S+)(?: \\\n\s+--hash=sha256:\h{64})+/, '\\1'),
+  "an entry that is a range rather than a pin" => controller_lock.sub(/^pyyaml==/, "pyyaml>="),
+  "a top-level pin the lock was never recompiled for" =>
+    controller_lock.sub(core_line.to_s, "ansible-core==0.0.1"),
+  "a header whose floor is not .python-version" =>
+    controller_lock.sub("--python-version=#{python_floor}", "--python-version=3.99"),
+  "an unhashed entry appended by hand" => "#{controller_lock}\nsomething==1.0\n"
+}.each do |defect, planted|
+  check(failures, !first_hash.nil? && planted != controller_lock &&
+                  !controller_lock_violations(planted, source_pins, python_floor).empty?,
+        "the controller lock checker must refuse #{defect}")
 end
 
 if expected_core

@@ -992,8 +992,16 @@ class DeployTest(DeployHarness, PollerTestCase):
         self.assertEqual(calls[2][:3], ["/usr/local/bin/git", "checkout", "--detach"])
         self.assertEqual(calls[2][3], MAIN_SHA)
 
+        # The lock is fully resolved and hashed (#827): --require-hashes refuses
+        # any entry that lost its hash, and no --upgrade, because every entry is
+        # an == pin and a changed pin applies without it -- all --upgrade could
+        # add is a reason to look past the lock.
         self.assertTrue(calls[3][0].endswith("pip"))
-        self.assertIn("--requirement", calls[3])
+        self.assertEqual(
+            calls[3][1:-1],
+            ["install", "--quiet", "--require-hashes", "--requirement"],
+        )
+        self.assertNotIn("--upgrade", calls[3])
         self.assertTrue(calls[3][-1].endswith("controller-requirements.txt"))
 
         self.assertTrue(calls[4][0].endswith("ansible-galaxy"))
