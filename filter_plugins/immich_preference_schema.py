@@ -30,23 +30,17 @@ here. A non-string compared against an enum also failed, since `5 in ['asc',
 before the membership.
 """
 
-import importlib.util
+import runpy
 from pathlib import Path
+from types import SimpleNamespace
 
 from ansible.errors import AnsibleFilterError
 
 
-# Filter plugins cannot import module_utils/ by name, and putting the repository
-# root on sys.path to reach it would shadow site-packages with library/, roles/,
-# services/ and tests/ for the whole Ansible process. Loading the file by path
-# shares the guards with no global side effect. tests/policy_test.rb executes
-# every filter plugin and fails if one of them touches sys.path.
-_GUARDS_SPEC = importlib.util.spec_from_file_location(
-    "nas_platform_schema_guards",
-    Path(__file__).resolve().parents[1] / "module_utils" / "schema_guards.py",
-)
-_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
-_GUARDS_SPEC.loader.exec_module(_GUARDS)
+# module_utils/ is run by file path, never via sys.path: tests/policy_test.rb
+# says why, and fails any filter plugin that touches it.
+_MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
+_GUARDS = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "schema_guards.py")))
 
 
 BOOLEAN = "boolean"
