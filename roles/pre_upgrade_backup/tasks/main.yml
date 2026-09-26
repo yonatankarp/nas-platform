@@ -29,8 +29,13 @@
 # idempotence is a hard requirement here.
 #
 # Callers include this role between roles/image_downgrade_guard and their
-# Compose deployment. It registers pre_upgrade_backup_copy and
-# pre_upgrade_backup_restart for the caller's deployment report.
+# Compose deployment, and name pre_upgrade_backup_restart in their deployment
+# report. INCLUDE, NEVER IMPORT: an imported role brings its argument validation
+# as a task tagged `always`, which then runs in every tagged converge and in
+# verify.yml with the caller's terms undefined, and fails there -- measured on a
+# probe play. Its registers are host-wide, so a caller that skips the include
+# still sees the last caller's; roles/vaultwarden/tasks/report.yml says why the
+# copy is therefore not a report term.
 
 # Only a container this platform actually created is considered, running or not:
 # `docker container ls --all`, so a stack that is merely stopped is still read
