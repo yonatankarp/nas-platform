@@ -39,16 +39,31 @@
 # rather than skipping past it. Unlike roles/container_cpu this inspects state
 # the run did not create, so there is nothing for check mode to defer.
 
+#
+# Which release holds the pin is the one place check mode matters here, and it
+# is a choice of source, never a deferral (#851). A live run reads `current`,
+# which deployment_bundle has just pointed at this run's release -- target.yml
+# requires exactly that. A review cannot: activating the release is a command
+# check mode skips, so `current` still names the release this run replaces, and
+# judging that pin passed a downgrade under --check and refused it only live,
+# while refusing the review of the merge that heals one. The release is copied
+# file for file from the controller checkout, so that is where a review reads
+# the candidate -- through a lookup, which evaluates on the controller and so
+# holds in remote mode, where the target has no copy of it.
 - name: Read the deployed Compose definition of the guarded service
   ansible.builtin.slurp:
     path: >-
       {{ platform_current_dir }}/services/{{ image_downgrade_guard_service_name }}/compose.yml
   register: image_downgrade_guard_compose_source
+  when: not ansible_check_mode
 
 - name: Resolve the pinned image reference of the guarded container
   ansible.builtin.set_fact:
     image_downgrade_guard_pinned_image: >-
-      {{ (image_downgrade_guard_compose_source.content | b64decode | from_yaml)
+      {{ ((lookup('ansible.builtin.file', image_downgrade_guard_candidate_root
+                  ~ '/services/' ~ image_downgrade_guard_service_name ~ '/compose.yml')
+           if ansible_check_mode
+           else image_downgrade_guard_compose_source.content | b64decode) | from_yaml)
          .services[image_downgrade_guard_compose_service].image }}
 
 # --all, not the running set. The container this guard exists for is the one

@@ -1,0 +1,4 @@
+---
+# The controller checkout deployment_bundle copies the release from, read only
+# under --check, when `current` still names the release this run replaces.
+image_downgrade_guard_candidate_root: "{{ playbook_dir }}"

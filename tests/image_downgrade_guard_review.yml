@@ -1,0 +1,57 @@
+---
+# The review rows of tests/image_downgrade_guard_test.yml, which runs this with
+# --check against the fixture it has just written. A play of its own because
+# only a --check run sets ansible_check_mode, and that is what the guard reads
+# to know `current` still names the release this run replaces (#851).
+#
+# The fixture holds two releases that disagree: `current`, the release the host
+# last activated, and `candidate`, the controller checkout this run would
+# install. It exits 0 only when the guard judged the candidate's pin, reached
+# the verdict the row declares, and -- where it refused -- refused for the
+# downgrade rather than for a file it could not read.
+- name: Review the image downgrade guard
+  hosts: localhost
+  gather_facts: false
+  environment:
+    PATH: "{{ guard_root }}/bin:{{ lookup('env', 'PATH') }}"
+  tasks:
+    - name: Require this play to be a review
+      ansible.builtin.assert:
+        that: [ansible_check_mode]
+        fail_msg: This play proves --check and was run without it.
+
+    - name: Judge the candidate the way the callers do
+      block:
+        - name: Include the downgrade guard in a review
+          ansible.builtin.include_role:
+            name: image_downgrade_guard
+          vars:
+            image_downgrade_guard_service_name: bindery
+            image_downgrade_guard_compose_service: bindery
+            image_downgrade_guard_project_name: guard-test
+            image_downgrade_guard_store_description: /fixture/config
+            image_downgrade_guard_candidate_root: "{{ guard_root }}/{{ review_row }}/candidate"
+            platform_current_dir: "{{ guard_root }}/{{ review_row }}/current"
+
+        - name: Record that the review did not refuse
+          ansible.builtin.set_fact:
+            review_refused: false
+            review_message: ""
+      rescue:
+        - name: Record that the review refused
+          ansible.builtin.set_fact:
+            review_refused: true
+            review_message: "{{ ansible_failed_result.msg | default('') }}"
+
+    - name: Require the review to judge the candidate release
+      ansible.builtin.assert:
+        that:
+          - image_downgrade_guard_pinned_image | default('') | trim == review_candidate_pin
+          - review_refused == (review_expect_refused | bool)
+          - not (review_expect_refused | bool) or review_message is search('has already run 1\.34\.0')
+        fail_msg: >-
+          The review read {{ image_downgrade_guard_pinned_image | default('nothing') }}
+          where the candidate pins {{ review_candidate_pin }}, and
+          {{ 'refused: ' ~ review_message if review_refused else 'did not refuse' }}.
+          `current` still names the release this run replaces, so a guard reading
+          it under --check passes a downgrade the live run will refuse.
