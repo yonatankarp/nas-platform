@@ -23,25 +23,19 @@ honoured without the other two showing it.
 
 from __future__ import annotations
 
-import importlib.util
+import runpy
 from copy import deepcopy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, NamedTuple
 
 from ansible.errors import AnsibleFilterError
 
 
-# Filter plugins cannot import module_utils/ by name, and putting the repository
-# root on sys.path to reach it would shadow site-packages with library/, roles/,
-# services/ and tests/ for the whole Ansible process. Loading the file by path
-# shares the primitives with no global side effect. tests/policy_test.rb executes
-# every filter plugin and fails if one of them touches sys.path.
-_SCHEMA_SPEC = importlib.util.spec_from_file_location(
-    "nas_platform_acquisition_schema",
-    Path(__file__).resolve().parents[1] / "module_utils" / "acquisition_schema.py",
-)
-_SCHEMA = importlib.util.module_from_spec(_SCHEMA_SPEC)
-_SCHEMA_SPEC.loader.exec_module(_SCHEMA)
+# module_utils/ is run by file path, never via sys.path: tests/policy_test.rb
+# says why, and fails any filter plugin that touches it.
+_MODULE_UTILS = Path(__file__).resolve().parents[1] / "module_utils"
+_SCHEMA = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "acquisition_schema.py")))
 
 # The shared primitives, under the names the bodies below use. Only these are
 # shared: every rule about what a Prowlarr field, a Bazarr setting or a Configarr

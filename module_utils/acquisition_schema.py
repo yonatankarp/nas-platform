@@ -30,22 +30,19 @@ name. It imports `ansible.errors`, so it is controller-only.
 from __future__ import annotations
 
 import functools
-import importlib.util
 import re
+import runpy
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from ansible.errors import AnsibleFilterError
 
 
-# module_utils/ is not a package on the import path, so its own siblings are
-# reached the same way filter_plugins/ reaches it: by file path, with no
-# sys.path mutation.
-_GUARDS_SPEC = importlib.util.spec_from_file_location(
-    "nas_platform_schema_guards", Path(__file__).resolve().parent / "schema_guards.py"
-)
-_GUARDS = importlib.util.module_from_spec(_GUARDS_SPEC)
-_GUARDS_SPEC.loader.exec_module(_GUARDS)
+# module_utils/ is not on the import path, so a sibling is run by file path,
+# never via sys.path (tests/policy_test.rb says why).
+_MODULE_UTILS = Path(__file__).resolve().parent
+_GUARDS = SimpleNamespace(**runpy.run_path(str(_MODULE_UTILS / "schema_guards.py")))
 
 mapping = _GUARDS.mapping
 sequence = _GUARDS.sequence
