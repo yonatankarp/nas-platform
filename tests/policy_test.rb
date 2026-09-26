@@ -2010,6 +2010,7 @@ check_floor(failures, compose_exec_tasks, 12,
 # nothing.
 deployment_reports_declared = false
 shared_recovery_callers = 0
+pre_upgrade_backup_callers = 0
 # Roles holding a `state: present` Compose task and NO plain deployment, which is
 # what the narrowing below exempts from owing a deployment report. Stated in both
 # directions rather than left as a predicate, because the exemption is otherwise
@@ -2018,12 +2019,16 @@ shared_recovery_callers = 0
 # the same plain-deployment predicate. A second role arriving in that shape would
 # deploy Compose with nothing asking anything of it, which is the silence this
 # repository keeps closing.
-REPORT_FREE_COMPOSE_ROLES = %w[container_health].freeze
+#
+# roles/pre_upgrade_backup is the second (#836): its only `up` is the rescue that
+# starts a stopped container again on its old image, so it owes no report of its
+# own, and every caller must name its register instead -- the clause below.
+REPORT_FREE_COMPOSE_ROLES = %w[container_health pre_upgrade_backup].freeze
 # Stated, because the list below is NARROWED against the inspected tree before it
 # is compared, and a narrowed subject list that empties passes vacuously -- which
 # is the same class #646 hoisted a 114-line duplication to prevent one level up.
 # Emptying the constant to make a failure go away is what this refuses.
-REPORT_FREE_COMPOSE_ROLE_COUNT = 1
+REPORT_FREE_COMPOSE_ROLE_COUNT = 2
 # The only reason the narrowing is allowed to drop a role: the mutation fixture
 # copies a curated subset of the repository and omits these four deliberately,
 # each for a reason tests/policy_mutation_support.rb records beside them. A
@@ -2080,6 +2085,15 @@ Dir[File.join(ROOT, "roles", "*")].select { |p| File.directory?(p) }.each do |ro
   check(failures, registers.compact.all? { |register| gate.include?(register) },
         "role #{name}: deployment report ignores a registered Compose deployment")
 
+  # The same for the shared pre-upgrade copy: its rescue start is an `up` the
+  # caller's report has to name, as the caller's own copy of it used to.
+  if tasks.any? { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
+    pre_upgrade_backup_callers += 1
+    check(failures, gate.include?("pre_upgrade_backup_restart"),
+          "role #{name}: includes roles/pre_upgrade_backup but its deployment report ignores " \
+          "pre_upgrade_backup_restart, the register that role's rescue start writes")
+  end
+
   # The other half of the exemption above, derived from the include rather than
   # listed. A force-recreate that repaired a wedged container changed the
   # deployment as surely as the `up` did, and it is now registered in a file this
@@ -2104,6 +2118,10 @@ end
 # conversion away from it is not a failure.
 check_floor(failures, shared_recovery_callers, 4,
             "roles whose deployment report must name the shared recovery's register")
+# Kapowarr and Vaultwarden today. Held at two so the pre-upgrade rule below
+# cannot keep its one shared subject while every caller quietly stops using it.
+check_floor(failures, pre_upgrade_backup_callers, 2,
+            "roles whose deployment report must name the shared pre-upgrade copy's register")
 # Held against the roles the INSPECTED TREE actually has rather than against the
 # constant outright, which is what lets one assertion cover both trees this script
 # runs in. roles/container_health is deliberately not copied into a mutation
@@ -2143,10 +2161,14 @@ check(failures, report_free_deployers.sort == expected_report_free.sort,
 # that is still there, and must still fail the run. A stop with nothing after it
 # left the service exited on every later converge, and a start over a store lost
 # after the stop created an empty one the next converge upgraded over -- both
-# measured against roles/kapowarr and roles/vaultwarden. The Kapowarr contract
-# holds the same properties for that role; this is what holds every other.
+# measured against roles/kapowarr and roles/vaultwarden. Since #836 both copies
+# are one, roles/pre_upgrade_backup, and a service-local pre_upgrade_backup.yml
+# that stops a container is still read here. The Kapowarr contract holds the
+# same properties through its call site; this is what holds every other caller.
 pre_upgrade_stops = 0
-Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort.each do |path|
+pre_upgrade_paths = [File.join(ROOT, "roles", "pre_upgrade_backup", "tasks", "main.yml")].select { |p| File.file?(p) } +
+                    Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort
+pre_upgrade_paths.each do |path|
   name = File.basename(File.dirname(path, 2))
   document = YAML.safe_load_file(path, aliases: true)
   stops = ->(task) { task.dig("community.docker.docker_compose_v2", "state") == "stopped" }
@@ -2182,7 +2204,9 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort.each 
   check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
         "role #{name}: a failed pre-upgrade copy must still fail the run")
 end
-check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
+# One since #836: the shared role. The callers that reach it are floored at two
+# by the deployment-report clause above.
+check_floor(failures, pre_upgrade_stops, 1, "pre-upgrade copies that stop a container")
 
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
