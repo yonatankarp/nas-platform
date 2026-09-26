@@ -287,6 +287,62 @@ class ConfigTest(PollerTestCase):
                           config.healthchecks_verify_ping_url),
                          (one, "https://hc-ping.com/two"))
 
+    def test_load_config_refusals_name_their_cause_exactly(self):
+        # The wording is pinned, not merely the exception type: load_config is
+        # split into helpers (#837) and a refusal must read the same afterwards.
+        cases = (
+            ({"external_scheduler": "true"}, "external_scheduler must be a boolean"),
+            ({"external_scheduler": 1}, "external_scheduler must be a boolean"),
+            ({"log_retention_days": 0}, "log_retention_days must be a positive integer"),
+            ({"log_retention_days": True}, "log_retention_days must be a positive integer"),
+            ({"branch": ""}, "branch must be a non-empty string"),
+            ({"branch": 7}, "branch must be a non-empty string"),
+            ({"state_root": "relative/path"}, "state_root must be absolute"),
+            ({"repository_url": "http://github.com/x/y.git"}, "repository_url must be https"),
+            ({"github_api_base": "http://api.github.com"}, "github_api_base must be https"),
+        )
+        for override, message in cases:
+            self.config_path.write_text(json.dumps(self.config_payload(**override)),
+                                        encoding="utf-8")
+            with self.subTest(override=override):
+                with self.assertRaises(production_auto_deploy.ConfigurationError) as raised:
+                    production_auto_deploy.load_config(self.config_path)
+                self.assertEqual(str(raised.exception), message)
+        payload = self.config_payload()
+        payload.pop("branch")
+        for text, message in ((json.dumps(payload), "configuration is missing branch"),
+                              ("[]", "configuration is not an object"),
+                              ("not json", "configuration is unreadable")):
+            self.config_path.write_text(text, encoding="utf-8")
+            with self.subTest(text=text):
+                with self.assertRaises(production_auto_deploy.ConfigurationError) as raised:
+                    production_auto_deploy.load_config(self.config_path)
+                self.assertEqual(str(raised.exception), message)
+
+    def test_the_unpublishable_warning_is_one_exact_line_after_every_refusal(self):
+        payload = self.config_payload()
+        payload.pop("pushover_alerts_curl_config")
+        payload.pop("pushover_deployments_curl_config")
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            production_auto_deploy.load_config(self.config_path)
+        self.assertEqual(
+            stderr.getvalue(),
+            "production auto-deploy: nothing can be published to Pushover through "
+            "pushover_alerts_curl_config, pushover_deployments_curl_config, "
+            "which the configuration does not name\n",
+        )
+        # A refused configuration says nothing about Pushover: the warning is
+        # printed only once every refusal has had its chance.
+        payload["repository_url"] = "http://github.com/x/y.git"
+        self.config_path.write_text(json.dumps(payload), encoding="utf-8")
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr), \
+                self.assertRaises(production_auto_deploy.ConfigurationError):
+            production_auto_deploy.load_config(self.config_path)
+        self.assertEqual(stderr.getvalue(), "")
+
     def test_load_config_rejects_unreadable_or_non_object_payloads(self):
         for payload in ("[]", "null", "not json", '"text"'):
             self.config_path.write_text(payload, encoding="utf-8")
@@ -2911,6 +2967,20 @@ class PollTest(PollHarness, PollerTestCase):
         with self.assertRaises(production_auto_deploy.EligibilityError):
             production_auto_deploy.poll(config, retry_sha="nope")
 
+    def test_a_poll_under_a_held_lock_attempts_nothing(self):
+        config = self.loaded_config()
+        with production_auto_deploy.deployment_lock(config, holder="verify") as acquired:
+            self.assertTrue(acquired)
+            with self.eligible(MAIN_SHA), mock.patch.object(
+                production_auto_deploy, "deploy"
+            ) as deploy, mock.patch.object(
+                production_auto_deploy, "resolve_main_sha"
+            ) as resolve:
+                self.assertIsNone(production_auto_deploy.poll(config))
+        deploy.assert_not_called()
+        resolve.assert_not_called()
+        self.assertEqual(production_auto_deploy.attempted_shas(config), set())
+
     def test_a_failed_notification_is_recorded_rather_than_swallowed(self):
         config = self.loaded_config()
         with mock.patch.object(
@@ -2929,8 +2999,12 @@ class PollTest(PollHarness, PollerTestCase):
                 self.assertFalse(production_auto_deploy.poll(config))
 
         self.assertIn("notification failed", buffer.getvalue())
+        self.assertEqual(buffer.getvalue(),
+                         "production auto-deploy: outcome notification failed\n")
         latest = (config.log_root / "latest").resolve()
         self.assertIn("notification failed", latest.read_text(encoding="ascii"))
+        self.assertIn("production auto-deploy: outcome notification failed",
+                      latest.read_text(encoding="ascii").splitlines())
         # A lost notification must not cast doubt on the recorded state.
         self.assertIsNone(production_auto_deploy.read_state(config)["last_successful"])
 
@@ -3405,6 +3479,8 @@ class PollTransientFailureTest(PollHarness, PollerTestCase):
         latest = (config.log_root / "latest").resolve().read_text(encoding="ascii")
         self.assertIn("transient failure", latest)
         self.assertIn("git fetch failed", latest)
+        self.assertIn("production auto-deploy: transient failure: git fetch failed",
+                      latest.splitlines())
 
     def test_a_failure_that_is_not_transient_still_quarantines_the_revision(self):
         """The guard on the classification itself. TransientDeploymentError is a
@@ -4681,9 +4757,43 @@ class CliTest(PollerTestCase):
             ["--verify"],
             ["--config", str(self.config_path), "--verify", "extra"],
             ["--config", str(self.config_path), "--verify", "--poll"],
+            ["--config"],
+            ["--config", str(self.config_path), "--config", str(self.config_path), "--poll"],
+            ["--config", str(self.config_path), "--converge", "--"],
+            ["--config", str(self.config_path), "--bogus"],
+            ["--config", str(self.config_path), "--poll", "--retry-failed", MAIN_SHA],
+            ["--config", str(self.config_path), "--retry-failed", MAIN_SHA, "--poll"],
+            ["--config", str(self.config_path), "--status", "--converge", "site.yml"],
+            ["--config", str(self.config_path), "--status", "--verify"],
         ):
             with self.subTest(argv=argv):
-                self.assertEqual(production_auto_deploy.main(argv), 2)
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    self.assertEqual(production_auto_deploy.main(argv), 2)
+                self.assertEqual(stderr.getvalue(),
+                                 "production auto-deploy: invalid arguments\n")
+
+    def test_valid_arguments_parse_to_config_mode_sha_and_playbook_arguments(self):
+        parse = production_auto_deploy._parse_arguments
+        for argv, expected in (
+            (["--config", "c", "--poll"], ("c", "poll", None, [])),
+            (["--status", "--config", "c"], ("c", "status", None, [])),
+            (["--config", "c", "--verify"], ("c", "verify", None, [])),
+            (["--config", "c", "--retry-failed", MAIN_SHA], ("c", "retry", MAIN_SHA, [])),
+            (["--config", "c", "--converge", "--", "-i", "x", "--config", "d"],
+             ("c", "converge", None, ["-i", "x", "--config", "d"])),
+            (["--config", "c", "--converge", "--", "--", "site.yml"],
+             ("c", "converge", None, ["--", "site.yml"])),
+        ):
+            with self.subTest(argv=argv):
+                self.assertEqual(parse(argv), expected)
+
+    def test_main_reads_sys_argv_when_given_no_arguments(self):
+        with mock.patch.object(sys, "argv",
+                               ["deploy", "--config", str(self.config_path), "--status"]), \
+                mock.patch.object(production_auto_deploy, "print_status") as status:
+            self.assertEqual(production_auto_deploy.main(), 0)
+        status.assert_called_once()
 
     def test_a_failed_attempt_exits_one_and_a_no_op_exits_zero(self):
         with mock.patch.object(production_auto_deploy, "poll", return_value=False):
@@ -4899,6 +5009,53 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
                 with mock.patch.object(production_auto_deploy, "verify", return_value=outcome):
                     self.assertEqual(self.main("--verify")[0], code)
                 self.assertEqual(self.pinged(), pinged)
+
+    def test_every_main_sentence_is_exact(self):
+        # main() is split into helpers (#837); cron keeps only the latest
+        # output, so each sentence is pinned whole rather than by a fragment.
+        for target, effect, argv, code, sentence in (
+            ("poll", {"return_value": False}, ("--poll",), 1,
+             "production auto-deploy: attempt failed"),
+            ("poll", {"side_effect": production_auto_deploy.EligibilityError("x")},
+             ("--poll",), 0, "production auto-deploy: could not determine a candidate"),
+            ("poll", {"side_effect": OSError(2, "gone", "/state/deployment.lock")},
+             ("--poll",), 1, "production auto-deploy: /state/deployment.lock is unusable"),
+            ("poll", {"side_effect": OSError("no filename")}, ("--poll",), 1,
+             "production auto-deploy: a managed path is unusable"),
+            ("verify", {"return_value": False}, ("--verify",), 1,
+             "production auto-deploy: verification failed"),
+            ("verify", {"side_effect": OSError("no ansible-playbook")}, ("--verify",), 1,
+             "production auto-deploy: could not verify: no ansible-playbook"),
+        ):
+            with self.subTest(target=target, effect=effect):
+                with mock.patch.object(production_auto_deploy, target, **effect):
+                    actual, output = self.main(*argv)
+                self.assertEqual((actual, output), (code, sentence + "\n"))
+        self.configure(branch=None)
+        self.assertEqual(self.main("--poll"),
+                         (1, "production auto-deploy: unusable configuration\n"))
+
+    def test_a_retry_that_raises_pings_nothing(self):
+        for effect, code in ((production_auto_deploy.EligibilityError("x"), 0),
+                             (OSError("no filename"), 1)):
+            with self.subTest(effect=effect):
+                with mock.patch.object(production_auto_deploy, "poll", side_effect=effect):
+                    self.assertEqual(self.main("--retry-failed", MAIN_SHA)[0], code)
+                self.assertEqual(self.pings(), [])
+        error = RuntimeError("boom")
+        with mock.patch.object(production_auto_deploy, "poll", side_effect=error), \
+                self.assertRaises(RuntimeError):
+            self.main("--retry-failed", MAIN_SHA)
+        self.assertEqual(self.pings(), [])
+
+    def test_a_verify_that_raises_unexpectedly_pings_fail_and_propagates(self):
+        error = RuntimeError("boom")
+        with mock.patch.object(production_auto_deploy, "verify", side_effect=error):
+            with self.assertRaises(RuntimeError) as raised:
+                self.main("--verify")
+
+        self.assertIs(raised.exception, error)
+        self.assertEqual(self.pinged(), [self.VERIFY_URL + "/fail"])
 
     def test_verify_that_could_not_run_pings_fail(self):
         with mock.patch.object(production_auto_deploy, "verify",
