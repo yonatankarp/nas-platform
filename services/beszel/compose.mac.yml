@@ -10,6 +10,7 @@ services:
     container_name: ${PLATFORM_PROJECT_NAME:?}-beszel-agent-intel
   socket-proxy:
     container_name: ${PLATFORM_PROJECT_NAME:?}-beszel-socket-proxy
-    # Docker Desktop services share the Compose network. The socket proxy stays
-    # private to that network instead of publishing a host loopback port.
+    # The Mac runs agent-portable, which reaches the proxy by name over the
+    # internal docker-api network, so the loopback port kept for the NAS's
+    # host-network agent-intel is not published here.
     ports: !reset []

@@ -900,6 +900,47 @@ expect_failure(failures, "release mount hidden in a platform override",
   end
 end
 
+# Who can reach a Docker socket proxy (#829). Each row plants one way a proxy
+# that serves every container's environment gains a reader or loses its stated
+# one: the hub or the relay moved onto the proxy's network, a proxy that dropped
+# its networks key and so fell back onto default, a consumer dropped (the map is
+# closed both ways), a shared network no longer internal, a port added or
+# widened, an override rewiring membership, and a proxy the map no longer finds.
+{
+  "hub joined to the Beszel socket proxy network" =>
+    ["services/beszel/compose.yml", "beszel/socket-proxy: shares a network with",
+     ->(compose) { compose.fetch("services").fetch("hub")["networks"] << "docker-api" }],
+  "alert relay joined to the Dozzle socket proxy network" =>
+    ["services/dozzle/compose.yml", "dozzle/socket-proxy: shares a network with",
+     ->(compose) { compose.fetch("services").fetch("alert-relay")["networks"] << "docker-api" }],
+  "Dozzle socket proxy fallen back onto default" =>
+    ["services/dozzle/compose.yml", "dozzle/socket-proxy: shares a network with",
+     ->(compose) { compose.fetch("services").fetch("socket-proxy").delete("networks") }],
+  "stated Beszel consumer dropped off the proxy network" =>
+    ["services/beszel/compose.yml", "beszel/socket-proxy: shares a network with []",
+     ->(compose) { compose.fetch("services").fetch("agent-portable")["networks"] = ["default"] }],
+  "Beszel socket proxy network no longer internal" =>
+    ["services/beszel/compose.yml", "beszel/socket-proxy: network docker-api must be internal",
+     ->(compose) { compose.fetch("networks").fetch("docker-api").delete("internal") }],
+  "Dozzle socket proxy published on loopback" =>
+    ["services/dozzle/compose.yml", "dozzle/socket-proxy: publishes",
+     ->(compose) { compose.fetch("services").fetch("socket-proxy")["ports"] = ["127.0.0.1:2376:2375"] }],
+  "Beszel socket proxy published on the wildcard" =>
+    ["services/beszel/compose.yml", "beszel/socket-proxy: publishes",
+     ->(compose) { compose.fetch("services").fetch("socket-proxy")["ports"] = ["2375:2375"] }],
+  "socket proxy membership rewired in a platform override" =>
+    ["services/dozzle/compose.integration.yml",
+     "services/dozzle/compose.integration.yml/alert-relay: an override may not change who reaches",
+     ->(compose) { compose.fetch("services").fetch("alert-relay")["networks"] = ["docker-api"] }],
+  "socket proxy the consumer map no longer finds" =>
+    ["services/dozzle/compose.yml", "services mounting the Docker socket are",
+     ->(compose) { compose.fetch("services").fetch("socket-proxy")["volumes"] = [] }]
+}.each do |label, (relative_path, message, mutation)|
+  expect_failure(failures, label, message, detected_by: %i[policy]) do |root|
+    mutate_compose.call(root, relative_path, &mutation)
+  end
+end
+
 expect_failure(failures, "recreated retired role",
                "retired role directory must be absent",
                detected_by: %i[policy]) do |root|

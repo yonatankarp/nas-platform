@@ -1612,6 +1612,91 @@ Dir[File.join(ROOT, "services", "*", "compose.{mac,integration}.yml")].sort.each
   end
 end
 
+# Who can reach a Docker socket proxy (#829). Both proxies allow CONTAINERS,
+# which serves /containers/{id}/json and with it every container's environment --
+# every rendered .env value on the platform -- so the proxy is only as private as
+# the set of containers that can open a connection to it. That set is stated
+# here, per proxy, and compared exactly with the one Compose produces: a service
+# with no networks key is on default, network_mode takes it off every Compose
+# network, and any service sharing a network with the proxy can reach it. Closed
+# both ways, so a hub moved onto the proxy's network and a consumer dropped off
+# it both fail. The subjects are derived from the literal socket mount, the same
+# rule tests/renovate_policy_test.rb holds the images with, and floored by the
+# keys of this map. A network the proxy joins must be internal unless it is the
+# proxy's alone, and never external, where another project could join it.
+SOCKET_PROXY_CONSUMERS = {
+  "beszel/socket-proxy" => ["agent-portable"],
+  "dozzle/socket-proxy" => ["dozzle"]
+}.freeze
+
+# The one publication allowed, and why it is not closed: Beszel's agent-intel runs
+# with host networking (#607), cannot join a Compose network, and the proxy image
+# listens on TCP only. Any local process can read container environments through
+# it, a ceiling services/beszel/compose.yml states beside the port.
+SOCKET_PROXY_PORTS = {
+  "beszel/socket-proxy" => ["127.0.0.1:2375:2375"],
+  "dozzle/socket-proxy" => []
+}.freeze
+
+socket_proxy_subjects = []
+service_dirs.sort.each do |dir|
+  compose_path = File.join(dir, "compose.yml")
+  next unless File.file?(compose_path)
+
+  stack = File.basename(dir)
+  compose = YAML.safe_load_file(compose_path, aliases: true)
+  services = compose.fetch("services", {})
+  memberships = services.transform_values do |spec|
+    next [] if spec.key?("network_mode")
+
+    spec.key?("networks") ? Array(spec["networks"]).map(&:to_s) : ["default"]
+  end
+  services.each do |container, spec|
+    next unless Array(spec["volumes"]).any? { |volume| volume.to_s.start_with?("/var/run/docker.sock:") }
+
+    subject = "#{stack}/#{container}"
+    socket_proxy_subjects << subject
+    proxy_networks = memberships.fetch(container)
+    reachers = memberships.filter_map do |other, networks|
+      other if other != container && !(networks & proxy_networks).empty?
+    end
+    check(failures, reachers.sort == SOCKET_PROXY_CONSUMERS.fetch(subject, []).sort,
+          "#{subject}: shares a network with #{reachers.sort.inspect}, and the stated consumers are " \
+          "#{SOCKET_PROXY_CONSUMERS.fetch(subject, []).inspect}; a socket proxy serves every " \
+          "container's environment to whatever can reach it")
+    proxy_networks.each do |network|
+      definition = compose.dig("networks", network) || {}
+      shared = memberships.any? { |other, networks| other != container && networks.include?(network) }
+      check(failures, definition["external"] != true && (definition["internal"] == true || !shared),
+            "#{subject}: network #{network} must be internal, or joined by the proxy alone, and never external")
+    end
+    check(failures, Array(spec["ports"]).map(&:to_s) == SOCKET_PROXY_PORTS.fetch(subject, []),
+          "#{subject}: publishes #{Array(spec["ports"]).inspect}, and the stated exception is " \
+          "#{SOCKET_PROXY_PORTS.fetch(subject, []).inspect}")
+  end
+  # An override is read by nothing above, so it may narrow a proxy's ports and
+  # nothing more: networks and network_mode are refused on every service of a
+  # stack carrying a proxy, and ports on the proxy only when empty.
+  next unless services.any? { |container, _spec| socket_proxy_subjects.include?("#{stack}/#{container}") }
+
+  Dir[File.join(dir, "compose.{mac,integration}.yml")].sort.each do |override_path|
+    relative_override = override_path.delete_prefix("#{ROOT}/")
+    YAML.safe_load_file(override_path, aliases: true).fetch("services", {}).each do |container, spec|
+      next unless spec.is_a?(Hash)
+
+      proxy = socket_proxy_subjects.include?("#{stack}/#{container}")
+      check(failures, !spec.key?("networks") && !spec.key?("network_mode") &&
+                      (!proxy || Array(spec["ports"]).empty?),
+            "#{relative_override}/#{container}: an override may not change who reaches this stack's " \
+            "socket proxy; state it in compose.yml, where the consumer map reads it")
+    end
+  end
+end
+check(failures, socket_proxy_subjects.sort == SOCKET_PROXY_CONSUMERS.keys.sort &&
+                SOCKET_PROXY_PORTS.keys.sort == SOCKET_PROXY_CONSUMERS.keys.sort,
+      "services mounting the Docker socket are #{socket_proxy_subjects.sort.inspect}, and the stated " \
+      "consumer map covers #{SOCKET_PROXY_CONSUMERS.keys.sort.inspect}; update both together")
+
 # The Compose floor the disposable lanes actually need, which is not the one
 # inventory declares.
 #

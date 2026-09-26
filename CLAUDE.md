@@ -1016,8 +1016,14 @@ line: this is the only service anyone logs in to that is published on
 `127.0.0.1` rather than the wildcard, so Tailscale Serve is the only route to
 the door. One other container is bound there — Beszel's `socket-proxy` sidecar,
 on 2375 — and it is not a counter-example but the same decision: it publishes no
-door, only a read-only Docker socket that must never leave the host, and the
-Beszel hub beside it takes the wildcard like every other service. It shipped
+door but a Docker socket proxy that must never leave the host. That proxy refuses
+writes and still serves every container's environment, so every rendered `.env`
+value, to any process on the NAS (#829). It is published at all only because
+`beszel_agent` has host networking and cannot join the internal network the
+proxy shares with the portable agent alone, and the Beszel hub beside it takes
+the wildcard like every other service and has no route to the proxy.
+`SOCKET_PROXY_CONSUMERS` in `tests/policy_test.rb` states who may reach each
+socket proxy, Dozzle's included, and refuses anything else. Vaultwarden shipped
 as a wildcard and an uninvited registration from a LAN address succeeded, which
 is why the binding is stated wherever the perimeter is.
 `inventory/group_vars/all/service_vaultwarden.yml` carries that argument and its

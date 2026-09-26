@@ -74,6 +74,11 @@ services:
         condition: service_healthy
       socket-proxy:
         condition: service_healthy
+    # docker-api is the internal network only this agent shares with the proxy
+    # (#829); default still has to be named, or the agent loses hub:8090.
+    networks:
+      - default
+      - docker-api
     volumes:
       - ${NAS_DOCKER_ROOT:?}/beszel/agent:/var/lib/beszel-agent
       - ${NAS_DOCKER_ROOT:?}/beszel/volume1:/extra-filesystems/volume1:ro
@@ -171,13 +176,28 @@ services:
   socket-proxy:
     <<: *service-defaults
     container_name: beszel_socket_proxy
-    # The only Docker socket reader. Read-only access with mutation refused, and
-    # never published beyond loopback.
+    # The only Docker socket reader here. POST is refused, but CONTAINERS serves
+    # /containers/{id}/json, and with it every container's environment -- every
+    # rendered .env value on the platform (#829). So who can reach it is the
+    # control, and it is kept off default: the hub listens on the wildcard and
+    # has no route here.
     image: lscr.io/linuxserver/socket-proxy:3.4.5@sha256:ca6c0301a652232d02cb0ff9f1c5d20d9b339f391e1c1dffaae6ef3bfc59d009
     cpus: 0.5
     labels:
       dev.dozzle.group: beszel
       dev.dozzle.name: socket-proxy
+    # docker-api is internal and shared with agent-portable alone.
+    # docker-api-publish carries nothing but the loopback port below: Docker
+    # does not publish a port for a container attached only to internal networks,
+    # so the proxy needs one non-internal network, and it joins it alone.
+    networks:
+      - docker-api
+      - docker-api-publish
+    # The NAS runs agent-intel, which has host networking (#607) and so cannot
+    # join a Compose network: this loopback port is its only route, because the
+    # image listens on TCP and nothing else. Its ceiling: any process on the NAS
+    # can still read every container's environment through it. Closing that
+    # needs a unix socket the proxy image does not offer (#829).
     ports:
       - "127.0.0.1:2375:2375"
     volumes:
@@ -206,3 +226,6 @@ networks:
   alert-bridge:
     external: true
     name: ${PLATFORM_ALERT_RELAY_NETWORK:?}
+  docker-api:
+    internal: true
+  docker-api-publish: {}
