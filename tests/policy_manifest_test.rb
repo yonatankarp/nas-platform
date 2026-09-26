@@ -509,6 +509,22 @@ expect_failure(failures, "Vaultwarden deployment report that ignores the shared 
   File.write(path, planted)
 end
 
+# The shared copy starts the stack its caller names, so the caller's own target
+# include is what contains it; a caller naming a service it never declared is
+# the uncontained start tests/policy_deployment_test.rb resolves through the
+# include (#836).
+expect_failure(failures, "shared pre-upgrade copy naming a service its caller never contained",
+               "role vaultwarden starts komga out of the installed release",
+               detected_by: %i[deployment]) do |root|
+  path = File.join(root, "roles/vaultwarden/tasks/deploy.yml")
+  body = File.read(path)
+  planted = body.sub("    pre_upgrade_backup_service_name: vaultwarden\n",
+                     "    pre_upgrade_backup_service_name: komga\n")
+  raise "caller service plant matched nothing" if planted == body
+
+  File.write(path, planted)
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.

@@ -719,6 +719,7 @@ end
 # starts a stack from {{ platform_current_dir }} is a role that touches the five
 # paths target.yml derives, whether or not it ever said so.
 release_deploying_services = Hash.new { |roles, role| roles[role] = Set.new }
+parametric_release_deployers = Hash.new { |roles, role| roles[role] = Set.new }
 Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")
   owning_role = relative_path[%r{\Aroles/([^/]+)/tasks/}, 1]
@@ -736,7 +737,29 @@ Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
     next unless compose.is_a?(Hash)
 
     deployed = compose["project_src"].to_s[%r{\A\{\{ platform_current_dir \}\}/services/(.+)\z}, 1]
-    release_deploying_services[owning_role] << deployed if deployed
+    next unless deployed
+
+    # A shared role names the service through its own parameter, so the stack it
+    # starts is its caller's, and the caller's include is what has to contain it
+    # (#836, roles/pre_upgrade_backup). Resolved below from each caller's vars.
+    parameter = deployed[/\A\{\{ ([a-z0-9_]+) \}\}\z/, 1]
+    if parameter
+      parametric_release_deployers[owning_role] << parameter
+    else
+      release_deploying_services[owning_role] << deployed
+    end
+  end
+end
+Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.each do |path|
+  caller_role = path.delete_prefix("#{ROOT}/")[%r{\Aroles/([^/]+)/tasks/}, 1]
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
+    shared = task.dig("ansible.builtin.include_role", "name")
+    next unless parametric_release_deployers.key?(shared)
+
+    parametric_release_deployers[shared].each do |parameter|
+      service = (task["vars"] || {})[parameter]
+      release_deploying_services[caller_role] << (service.is_a?(String) ? service : "{{ #{parameter} }}")
+    end
   end
 end
 # Anchored on the two call sites no service role owns rather than on a count:
