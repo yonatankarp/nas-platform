@@ -36,8 +36,10 @@ require "yaml"
 
 require_relative "case_pool_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -375,45 +377,18 @@ end
 # wrapper. The copy is laid into a fixture repository so it is also a valid tree
 # to inspect, which is what the unset-variable row needs.
 
-def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-arr-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    wrapper_path = File.join(contracts, "arr.sh")
-    File.write(wrapper_path, wrapper)
-    File.chmod(0o755, wrapper_path)
-    File.write(File.join(contracts, "arr-static.rb"), static)
-    yield wrapper_path, root
-  end
+def with_contract_copy(static: File.read(STATIC_PROGRAM), wrapper: File.read(CONTRACT), &block)
+  with_contract_sandbox("arr", wrapper, { "static" => static }, &block)
 end
 
 # Reports what the program saw on stdin and what the caller still has, which is
 # the only way the redirect is observable: the real program never reads stdin,
 # so the redirect is what keeps that true rather than something that changes an
 # outcome today.
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 def stdin_failures(wrapper_source: File.read(CONTRACT))
-  failures = []
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
-      "/bin/sh", "-c", "#{contract.shellescape} static; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the probing shell itself failed: #{output.strip}" unless status.success?
-    failures << "stdin: the program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
-    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless
-      output.include?("left:caller-payload")
+    stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT })
   end
-  failures
 end
 
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
@@ -727,25 +702,6 @@ WRAPPER_MUTATIONS = [
   }
 ].freeze
 
-def plant(source, mutation, occurrences: 1)
-  from = mutation.fetch(:from)
-  found = source.scan(from).length
-  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
-       "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
-
-  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
-  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
-  planted
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
-end
-
 if ARGV.include?("--self-test")
   mismatches = []
   planted = 0
@@ -758,7 +714,7 @@ if ARGV.include?("--self-test")
   # the ordering is the fix rather than a rescue.
   program_cases = PROGRAM_MUTATIONS.map do |mutation|
     [mutation,
-     plant(File.read(STATIC_PROGRAM), mutation, occurrences: mutation.fetch(:occurrences, 1)),
+     plant(File.read(STATIC_PROGRAM), mutation),
      rows_named(STATIC_ROWS, mutation.fetch(:rows))]
   end
   wrapper_cases = WRAPPER_MUTATIONS.map { |mutation| [mutation, plant(File.read(CONTRACT), mutation)] }
