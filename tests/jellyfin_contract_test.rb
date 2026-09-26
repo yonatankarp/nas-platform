@@ -49,6 +49,9 @@ require "shellwords"
 require "tmpdir"
 require "yaml"
 require_relative "case_pool_support"
+require_relative "contract_test_support"
+
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 CONTRACT = File.join(ROOT, "tests", "contracts", "jellyfin.sh")
@@ -958,22 +961,8 @@ end
 # real wrapper.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
-                       wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-jellyfin-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    {
-      "jellyfin.sh" => wrapper,
-      "jellyfin-static.rb" => static,
-      "jellyfin-runtime.rb" => runtime
-    }.each do |name, content|
-      destination = File.join(contracts, name)
-      File.write(destination, content)
-      File.chmod(name.end_with?(".sh") ? 0o755 : 0o644, destination)
-    end
-    yield File.join(contracts, "jellyfin.sh"), root
-  end
+                       wrapper: File.read(CONTRACT), &block)
+  with_contract_sandbox("jellyfin", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
 def broken_fixture_repository
@@ -1233,26 +1222,12 @@ end
 # the only way the redirect is observable: neither real program reads stdin, so
 # the redirect is what keeps that true rather than something that changes an
 # outcome today.
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   # The static invocation, which runs for every mode.
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
-      "/bin/sh", "-c", "#{contract.shellescape} static; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the probing shell itself failed: #{output.strip}" unless status.success?
-    failures << "stdin: the static program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
-    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless
-      output.include?("left:caller-payload")
+    failures.concat(stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
+                                         subject: "the static program"))
   end
 
   # The runtime invocation, which is `exec`ed and so is the last thing the script
@@ -1599,15 +1574,6 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-def plant(source, mutation)
-  from = mutation.fetch(:from)
-  occurrences = source.scan(from).length
-  abort "self-test: #{mutation.fetch(:label)} matched #{occurrences} times, expected 1" unless
-    occurrences == 1
-
-  source.sub(from, mutation.fetch(:to))
-end
-
 def with_mutant(mutation)
   canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
   Dir.mktmpdir("nas-platform-jellyfin-mutant.") do |directory|
@@ -1615,14 +1581,6 @@ def with_mutant(mutation)
     File.write(path, plant(File.read(canonical), mutation))
     yield path
   end
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
 end
 
 ALL_STATIC_ROWS = (STATIC_ROWS + SELF_READ_ROWS).freeze

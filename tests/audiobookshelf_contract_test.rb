@@ -46,8 +46,10 @@ require "yaml"
 
 require_relative "case_pool_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -678,22 +680,8 @@ end
 # real wrapper.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
-                       wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-audiobookshelf-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    {
-      "audiobookshelf.sh" => wrapper,
-      "audiobookshelf-static.rb" => static,
-      "audiobookshelf-runtime.rb" => runtime
-    }.each do |name, content|
-      destination = File.join(contracts, name)
-      File.write(destination, content)
-      File.chmod(name.end_with?(".sh") ? 0o755 : 0o644, destination)
-    end
-    yield File.join(contracts, "audiobookshelf.sh"), root
-  end
+                       wrapper: File.read(CONTRACT), &block)
+  with_contract_sandbox("audiobookshelf", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
 def broken_fixture_repository
@@ -899,26 +887,12 @@ end
 # the only way the redirect is observable: neither real program reads stdin, so
 # the redirect is what keeps that true rather than something that changes an
 # outcome today.
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   # The static invocation, which runs for every mode.
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
-      "/bin/sh", "-c", "#{contract.shellescape} static; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the probing shell itself failed: #{output.strip}" unless status.success?
-    failures << "stdin: the static program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
-    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless
-      output.include?("left:caller-payload")
+    failures.concat(stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
+                                         subject: "the static program"))
   end
 
   # The runtime invocation, which is `exec`ed and so is the last thing the script
@@ -1177,18 +1151,6 @@ PROGRAM_MUTATIONS = [
   }
 ].freeze
 
-def plant(source, mutation)
-  from = mutation.fetch(:from)
-  occurrences = mutation.fetch(:occurrences, 1)
-  found = source.scan(from).length
-  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
-       "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
-
-  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
-  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
-  planted
-end
-
 def with_mutant(mutation)
   canonical = mutation.fetch(:program) == :static ? STATIC_PROGRAM : RUNTIME_PROGRAM
   Dir.mktmpdir("nas-platform-audiobookshelf-mutant.") do |directory|
@@ -1196,14 +1158,6 @@ def with_mutant(mutation)
     File.write(path, plant(File.read(canonical), mutation))
     yield path
   end
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
 end
 
 if ARGV.include?("--self-test")
