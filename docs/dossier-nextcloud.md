@@ -324,6 +324,9 @@ any version increase, unattended, at container start. That migration is one-way;
 the same entrypoint refuses to start once the volume's `version.php` is newer
 than the image's. So there is nothing to go back to: reverting the merge does not
 restore the service, it keeps the stack down until the pin goes forward again.
+Since #826, `roles/image_downgrade_guard` refuses that revert before Compose
+touches the stack, so the converge fails naming the version the store has
+already run, rather than recreating a container that exits on every start.
 
 [`renovate.json`](../renovate.json) holds Nextcloud **majors** behind
 `dependencyDashboardApproval` for that reason — the pull request is withheld
