@@ -55,7 +55,7 @@ ansible-playbook --version
 
 Stop if any command fails. Docker must be running, and `ansible-playbook` must
 report the ansible-core version pinned in
-[`controller-requirements.txt`](../controller-requirements.txt).
+[`controller-requirements.in`](../controller-requirements.in).
 
 ## 2. Prepare the external vault
 

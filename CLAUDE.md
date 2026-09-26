@@ -22,11 +22,18 @@ NAS. Without it, `platform_hosts` matches nothing and the run ends on an empty
 
 ## Commands
 
-Ansible tooling is pinned in `controller-requirements.txt`, which every CI job
-that needs the toolchain installs from as well; collections in `requirements.yml`.
-The versions live there and nowhere else — a version restated in prose is a copy
-nothing bumps, which is what `tests/docs_links_test.rb` refuses here and
-`tests/policy_test.rb` refuses in the beginner guides.
+Ansible tooling is authored in `controller-requirements.in` and installed from
+`controller-requirements.txt`, the universal lock `uv pip compile` produces from
+it with a hash on every entry — by operators, by every CI job that needs the
+toolchain, and by the production poller, the last two with `--require-hashes`;
+collections in `requirements.yml`. The versions live in the `.in` and nowhere
+else — a version restated in prose is a copy nothing bumps, which is what
+`tests/docs_links_test.rb` refuses here and `tests/policy_test.rb` refuses in the
+beginner guides. Never edit the lock by hand: change the `.in` and re-run the
+command in the lock's own header, which is also what Renovate's `pip-compile`
+manager runs. `tests/ci/workflow_test.rb` refuses an unhashed or unpinned entry,
+and a `.in` pin the lock was not recompiled for (#827). The lock keeps the `.txt`
+path because the poller that runs is the previously installed one (#327).
 
 ```sh
 pip install -r controller-requirements.txt
