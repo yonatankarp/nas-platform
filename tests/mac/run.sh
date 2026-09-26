@@ -320,24 +320,39 @@ ensure_immich_fixture_vars() {
 }
 git_revision=$(git -C "$mac_repo_dir" rev-parse HEAD)
 vault_checksum=$(shasum -a 256 "$vault_file" | awk '{print $1}')
+# One probe for the allocator and for preflight. TCPServer sets SO_REUSEADDR,
+# and on macOS that lets a bind on 127.0.0.1 succeed beside a listener on the
+# wildcard address, so the probe binds both: the loopback bind meets a listener
+# on 127.0.0.1, the wildcard bind one on 0.0.0.0. Only EADDRINUSE means taken;
+# any other bind error propagates, because another candidate will not clear it.
+# ponytail: IPv4 only; add "::" if a proof ever publishes on IPv6 alone.
+mac_port_probe='
+  require "socket"
+  def mac_port_free?(port)
+    ["127.0.0.1", "0.0.0.0"].each { |host| TCPServer.new(host, port).close }
+    true
+  rescue Errno::EADDRINUSE
+    false
+  end
+'
 # Candidates come from a band below both defaults' ephemeral ranges (Linux
 # 32768, macOS 49152), never from a port-0 bind: a kernel-assigned port goes
 # back to the pool on close, and any outgoing connection or sibling port-0 bind
 # can take it before preflight rebinds it (#833). Inside this band only an
-# explicit bind of the same number can collide.
+# explicit bind of the same number can collide. A hundred taken candidates in
+# a band of 12768 ports is not bad luck, so the allocator stops there.
 # ponytail: fixed band; derive it from the host's range if one is lowered below 32768.
 allocate_service_port() {
   while :; do
-    candidate_port=$(ruby -rsocket -e '
-      loop do
+    candidate_port=$(ruby -e "$mac_port_probe"'
+      100.times do
         port = rand(20_000..32_767)
-        TCPServer.new("127.0.0.1", port).close
+        next unless mac_port_free?(port)
         print port
-        break
-      rescue SystemCallError
-        next
+        exit
       end
-    ')
+      abort "no free port in 20000..32767 after 100 attempts"
+    ') || return 1
     candidate_available=true
     for allocated_port in "$@"; do
       [ "$candidate_port" = "$allocated_port" ] && candidate_available=false
@@ -424,7 +439,8 @@ if [ ! -f "$state_input" ]; then
     mac_allocated_ports=
     for mac_roster_service in $MAC_SERVICE_PORT_ORDER; do
       # shellcheck disable=SC2086
-      mac_next_port=$(allocate_service_port $mac_allocated_ports)
+      mac_next_port=$(allocate_service_port $mac_allocated_ports) ||
+        mac_die "could not allocate a host port for $mac_roster_service"
       eval "${mac_roster_service}_port=\$mac_next_port"
       mac_allocated_ports="$mac_allocated_ports $mac_next_port"
     done
@@ -661,11 +677,9 @@ execute_phase() {
         }
       done
       # shellcheck disable=SC2086
-      ruby -rsocket -e '
+      ruby -e "$mac_port_probe"'
         ARGV.each do |value|
-          server = TCPServer.new("127.0.0.1", Integer(value, 10))
-          server.close
-        rescue SystemCallError
+          next if mac_port_free?(Integer(value, 10))
           warn "reserved host port is already in use: #{value}"
           exit 1
         end
