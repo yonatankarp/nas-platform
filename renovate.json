@@ -152,6 +152,16 @@
       "automerge": false
     },
     {
+      "description": "The socket proxy is pinned in both the Beszel and the Dozzle stacks and mounts /var/run/docker.sock. The :ro on that mount restricts nothing at the Docker API level, so the image holds the Docker API and is root-equivalent on the host for the Beszel agent's reason (#828). It sat under the routine rule until then, digests included, so a tag re-pushed upstream would have been automerged and deployed by the poller within five minutes with no human in the path. So no update type automerges here, digest refreshes included, and automerge false rather than dependencyDashboardApproval for the Beszel rule's reason: the pull request opens and is the notification; only the merge waits. tests/renovate_policy_test.rb derives the set of images whose service mounts the Docker socket from services/*/compose*.yml and requires every one of them to be withheld here, so the next image to take the socket cannot automerge either.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "lscr.io/linuxserver/socket-proxy"
+      ],
+      "automerge": false
+    },
+    {
       "description": "The yt-dlp build Pinchflat runs is pinned by version and sha256 together, and a bot cannot compute the checksum. A version bump whose checksum was not updated by hand fails the converge at get_url, so these never automerge: the pull request is a prompt to copy the new SHA2-256SUMS entry, not a finished change.",
       "matchDatasources": [
         "github-releases"
@@ -194,6 +204,7 @@
         "!ghcr.io/henrygd/beszel/beszel",
         "!ghcr.io/henrygd/beszel/beszel-agent",
         "!ghcr.io/henrygd/beszel/beszel-agent-intel",
+        "!lscr.io/linuxserver/socket-proxy",
         "!ghcr.io/paperless-ngx/paperless-ngx",
         "!docker.io/library/nextcloud",
         "!ghcr.io/karakeep-app/karakeep",
