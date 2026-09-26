@@ -407,9 +407,8 @@ assert_output \
   --describe-suite seerr
 # The acquisition catalog is fully implemented, so the shared foundation's own
 # runtime proof lives in the last project's lane rather than in a lane of its
-# own. That dispatch -- the static foundation contract, the reader prerequisites
-# converge and the foundation verification, in that order, falling through to
-# the project's own arm rather than exiting -- is executed by
+# own. That dispatch -- the reader prerequisites converge and the foundation
+# verification, in that order, falling through to the project's own arm rather than exiting -- is executed by
 # tests/integration_controller_execution_test.sh (case_seerr), with a plant per
 # step. The guard below stays where it is: what it reads is
 # tests/integration_controller_lib.sh, and it carries its own planted-defect

@@ -524,7 +524,90 @@ def real_workflow_jobs(root)
   jobs unless jobs.empty?
 end
 
+# A repository path written in backticks is a reference exactly as a link is, but
+# nothing read it until #841: docs/adding-a-service.md went on citing a contract
+# #712 deleted, and docs/dossier-trailarr.md a role #558 removed. Only a span that
+# is wholly a path under one of these top-level directories is read; a span
+# carrying a placeholder, a glob or a line suffix is not a path to test.
+#
+# docs/superpowers/ is left out, as tests/policy_test.rb leaves it out of its
+# retired-declaration sweep: those are dated plans and specs recording the tree
+# they were written against, and about seventy of their citations name files
+# retired since, correctly for when they were written.
+BACKTICKED_PATH_ROOTS = %w[
+  .github config docs filter_plugins inventory library module_utils roles scripts services tests
+].freeze
+BACKTICKED_PATH_SOURCES = SOURCES.reject { |source| source.to_s.start_with?(ROOT.join("docs/superpowers").to_s + "/") }
+                                 .freeze
+# Paths a document names deliberately although they are not in this repository.
+# Closed both ways: an entry that starts existing, or that no document cites any
+# longer, fails, so this cannot become a list of excuses nobody re-reads.
+ABSENT_PATH_CITATIONS = {
+  "config/config.xml" => "the *arr applications' own file inside their containers",
+  "config/runtime.exs" => "Pinchflat's own file inside its image",
+  "scripts/start.sh" => "Trailarr's own script inside its image",
+  "inventory/group_vars/all/vault.yml" => "the retired single-file vault a guide warns against",
+  "roles/navidrome/defaults/main.yml" => "the hypothetical service docs/adding-a-service.md walks",
+  "roles/navidrome/meta/argument_specs.yml" => "the hypothetical service docs/adding-a-service.md walks",
+  "roles/navidrome/tasks/main.yml" => "the hypothetical service docs/adding-a-service.md walks",
+  "roles/navidrome/templates/env.j2" => "the hypothetical service docs/adding-a-service.md walks",
+  "services/navidrome/compose.yml" => "the hypothetical service docs/adding-a-service.md walks",
+  "tests/expected/navidrome.yml" => "the hypothetical service docs/adding-a-service.md walks",
+  "roles/seafile/" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "roles/seafile/defaults/main.yml" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "roles/seafile/tasks/deploy.yml" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "roles/seafile/tasks/verify.yml" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "roles/seafile/templates/env.j2" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "services/seafile/" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "services/seafile/compose.yml" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "tests/contracts/seafile-runtime.rb" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "tests/contracts/seafile-static.rb" => "retired by #501; docs/dossier-seafile.md says so at its head",
+  "tests/contracts/seafile.sh" => "retired by #501; docs/dossier-seafile.md says so at its head"
+}.freeze
+
+# Returns the failures and how many distinct paths were read, so the caller can
+# hold a floor under the second: a span pattern that stops matching would
+# otherwise read nothing and pass.
+def backticked_path_failures(root, sources, absent)
+  roots = BACKTICKED_PATH_ROOTS.map { |name| Regexp.escape(name) }.join("|")
+  pattern = %r{\A(?:#{roots})/[\w./-]*\z}
+  cited = Hash.new { |hash, path| hash[path] = [] }
+  sources.each do |source|
+    source.read.scan(/`([^`\s]+)`/).flatten.each do |span|
+      cited[span] << source.relative_path_from(root).to_s if span.match?(pattern)
+    end
+  end
+  failures = []
+  cited.each do |path, names|
+    next if absent.key?(path) || root.join(path).exist?
+
+    failures << "#{names.uniq.join(', ')}: cites `#{path}`, which does not exist"
+  end
+  absent.each_key do |path|
+    failures << "ABSENT_PATH_CITATIONS lists `#{path}`, which exists now" if root.join(path).exist?
+    failures << "ABSENT_PATH_CITATIONS lists `#{path}`, which no document cites" unless cited.key?(path)
+  end
+  [failures, cited.length]
+end
+
 def self_test
+  Dir.mktmpdir("docs-backticks-test") do |directory|
+    root = Pathname.new(directory)
+    root.join("roles/real").mkpath
+    source = root.join("guide.md")
+    source.write("`roles/real` `roles/gone/tasks/main.yml` `roles/<name>/x` `roles/kept` `notes/x`\n")
+    failures, count = backticked_path_failures(root, [source], { "roles/kept" => "", "roles/real" => "",
+                                                                 "roles/uncited" => "" })
+    expected = [
+      "guide.md: cites `roles/gone/tasks/main.yml`, which does not exist",
+      "ABSENT_PATH_CITATIONS lists `roles/real`, which exists now",
+      "ABSENT_PATH_CITATIONS lists `roles/uncited`, which no document cites"
+    ]
+    unless failures == expected && count == 3
+      warn "docs links backticked-path self-test failed: #{failures.inspect} #{count}"
+      exit 1
+    end
+  end
   unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
     warn "docs links hostile-unmatched self-test failed"
     exit 1
@@ -885,6 +968,11 @@ else
   # retiring a page.
   TestScaffold.check_floor(failures, DOCS_SOURCES.length, 40,
                            "the documentation link sweep found too few documents under docs/")
+  path_failures, cited_paths = backticked_path_failures(ROOT, BACKTICKED_PATH_SOURCES, ABSENT_PATH_CITATIONS)
+  failures.concat(path_failures)
+  # 150 against the 191 distinct paths read when this landed.
+  TestScaffold.check_floor(failures, cited_paths, 150,
+                           "the backticked-path sweep read too few repository paths")
   documentation_contracts = {
     "README.md" => {
       /manifest.*seventeen implemented service projects.*no planned (?:media-)?acquisition projects/im =>

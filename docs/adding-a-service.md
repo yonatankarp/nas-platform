@@ -502,22 +502,19 @@ already has:
 - a placeholder CI lane in `tests/ci/classify_changes.rb`, `tests/integration.sh`
   and `tests/integration_suite_test.sh`, whose tags you repoint from the shared
   inert foundation to your own role
-- `tests/contracts/<name>-foundation.sh`, which **stays**
 
-That last point is worth stating plainly, because the instinct is to delete it.
-The foundation contract proves the project is *inert* — that no container by that
-name is running and nothing has been provisioned. It is a different claim from the
-runtime contract and it does not stop being true or useful once the service is
-implemented. Both `arr` and `downloaders` kept theirs through Phase 1, and
-`tests/contracts/pinchflat-foundation.sh` survives the Pinchflat promotion
-alongside the new `tests/contracts/pinchflat.sh`. What changes is the dispatch:
-the promoted project leaves the shared foundation dispatch in
-`tests/integration.sh` for whichever project is still planned, and
-`tests/integration_suite_test.sh` pins both that arm and the new lane. With the
-acquisition catalog fully implemented there is no planned project left, so that
-arm now sits in the last promoted project's own lane: it runs the shared
-foundation's runtime proof and then falls through to the lane's service proof
-rather than exiting there.
+There used to be a `tests/contracts/<name>-foundation.sh` to keep as well, and
+there is not any more: #712 deleted all seven. They were byte-identical, only
+Seerr's was reachable, and what it ran is the check the gate already runs bare.
+The shared inert foundation is now proved in two halves, and neither is
+per-project. The static half is `ruby tests/media_acquisition_foundation_test.rb`,
+which the gate runs and which refuses any argument. The runtime half is the
+`seerr)` arm in `tests/integration_controller.sh`: it converges the reader
+prerequisites, runs the foundation verification, and then falls through to the
+lane's own service proof rather than exiting there. It sits in Seerr's lane only
+because Seerr was the last project promoted, so with no planned project left
+nothing moves it. `tests/integration_suite_test.sh` pins that arm, and
+`tests/integration_controller_execution_test.sh` executes it with a plant per step.
 
 Promotion also removes the service from the registers that asserted its absence:
 the catalog loop in `tests/mac/hooks/verify/15-media-acquisition-foundation.sh`

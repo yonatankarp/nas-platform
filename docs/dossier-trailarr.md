@@ -158,9 +158,10 @@ and getting them backwards produces a container that starts healthy and refuses
 every login:
 
 - The **Compose `.env`** is interpolated, so every `$` must be doubled —
-  `{{ vault_trailarr_admin_password_hash | replace('$', '$$') }}`, as `roles/ntfy`
-  already documents. Confirmed that a raw hash is silently **truncated**, not
-  rejected: `$zJH9U4CaxWYYi6Yt8IFDf` expanded to the empty string.
+  `{{ vault_trailarr_admin_password_hash | replace('$', '$$') }}`, as
+  `roles/trailarr/templates/env.j2` now does, with both directions in its
+  header. Confirmed that a raw hash is silently **truncated**, not rejected:
+  `$zJH9U4CaxWYYi6Yt8IFDf` expanded to the empty string.
 - **`/config/.env`** is sourced by bash, so the same hash must be single-quoted
   and **not** doubled.
 
