@@ -105,6 +105,10 @@ assert first_install == [
 assert not hasattr(plugin, "deployment_report_headline")
 assert "deployment_report_headline" not in plugin.FilterModule().filters()
 
+# The change-line renderer is a helper of the summary document, and no role or
+# playbook ever called it as a filter (#844).
+assert "deployment_change_lines" not in plugin.FilterModule().filters()
+
 # A digest-only pin is still a released change, and an untagged image is named.
 untagged = changes_of(
     manifest({"beszel": {"beszel": "docker.io/henrygd/beszel" + DIGEST_A}}),
