@@ -16,9 +16,11 @@ fail() {
 temporary_input=$(mktemp -d "${TMPDIR:-/tmp}/nas-platform-manual-validation.XXXXXX")
 temporary_parent=$(CDPATH= cd -- "$temporary_input" && pwd -P)
 
+wildcard_listener_pid=
 cleanup_fixture() {
   fixture_status=$?
   trap - EXIT HUP INT TERM
+  [ -z "$wildcard_listener_pid" ] || kill "$wildcard_listener_pid" 2>/dev/null || :
   if [ -d "$temporary_parent" ] && [ ! -L "$temporary_parent" ]; then
     find "$temporary_parent" -depth -mindepth 1 -delete
     rmdir -- "$temporary_parent"
@@ -281,8 +283,52 @@ case ${1-}:${2-} in
   *) exit 0 ;;
 esac
 STUB
+# ruby passes through unless a port plant is named, when it preloads the plant
+# into every Ruby the runner starts. run.sh refuses RUBYOPT, so this is the one
+# route into the allocator's own process.
+real_ruby=$(command -v ruby)
+port_plant=$temporary_parent/port-plant.rb
+cat > "$fixture_bin/ruby" <<STUB
+#!/bin/sh
+[ -z "\${PLATFORM_TEST_PORT_PLANT:-}" ] || set -- -r"$port_plant" "\$@"
+exec '$real_ruby' "\$@"
+STUB
+cat > "$port_plant" <<'RUBY'
+# Inert where the runner scrubs the environment before starting Ruby.
+require "socket"
+MARKER = ENV["PLATFORM_TEST_PORT_PLANT_MARKER"].to_s
+case ENV["PLATFORM_TEST_PORT_PLANT"].to_s
+when ""
+  nil
+when "wildcard"
+  # The first ranged rand across the whole run offers the listener's port.
+  module WildcardPlant
+    def rand(*arguments)
+      return super unless arguments.first.is_a?(Range) && !File.exist?(MARKER)
+      File.write(MARKER, "")
+      Integer(ENV.fetch("PLATFORM_TEST_PORT_PLANT_PORT"), 10)
+    end
+  end
+  Object.prepend(WildcardPlant)
+when "eacces"
+  # Every bind is refused with a non-EADDRINUSE error; a thousand attempts
+  # means the allocator is spinning on an error it will never outlive.
+  module EaccesPlant
+    def new(*)
+      count = File.exist?(MARKER) ? Integer(File.read(MARKER), 10) : 0
+      File.write(MARKER, (count + 1).to_s)
+      exit 97 if count >= 1000
+      raise Errno::EACCES, "planted bind refusal"
+    end
+  end
+  TCPServer.singleton_class.prepend(EaccesPlant)
+else
+  abort "unknown port plant"
+end
+RUBY
 chmod 0755 "$fixture_bin/uname" "$fixture_bin/stat" "$fixture_bin/git" \
-  "$fixture_bin/ansible-vault" "$fixture_bin/ansible-playbook" "$fixture_bin/docker"
+  "$fixture_bin/ansible-vault" "$fixture_bin/ansible-playbook" "$fixture_bin/docker" \
+  "$fixture_bin/ruby"
 
 hostile_input="$temporary_parent/operator inputs' [safe]"
 mkdir "$hostile_input"
@@ -301,6 +347,9 @@ runner_env() {
     PLATFORM_TEST_DEPLOYED_MANIFEST="$deployed_manifest" \
     PLATFORM_TEST_UNSAFE_DEPLOYED_MANIFEST="${PLATFORM_TEST_UNSAFE_DEPLOYED_MANIFEST:-none}" \
     PLATFORM_TEST_VAULT_VIEW_FAILURE="${PLATFORM_TEST_VAULT_VIEW_FAILURE:-false}" \
+    PLATFORM_TEST_PORT_PLANT="${PLATFORM_TEST_PORT_PLANT:-}" \
+    PLATFORM_TEST_PORT_PLANT_PORT="${PLATFORM_TEST_PORT_PLANT_PORT:-}" \
+    PLATFORM_TEST_PORT_PLANT_MARKER="${PLATFORM_TEST_PORT_PLANT_MARKER:-}" \
     PATH="$fixture_bin:$PATH" "$@"
 }
 
@@ -546,5 +595,73 @@ RUBY
 # therefore recorded in its phase log by the resume validator before cleanup.
 grep -F "protected-inodes:$vault_inode:$password_inode:$fixture_inode" "$phase_log" >/dev/null ||
   fail 'resume did not byte-validate and reuse protected inputs'
+
+# A listener on the wildcard address holds its port against every address, but
+# a SO_REUSEADDR bind on 127.0.0.1 succeeds beside it on macOS -- which is what
+# TCPServer sets -- so a loopback-only probe hands that port out (#833).
+wildcard_port_file=$temporary_parent/wildcard-port
+ruby -rsocket -e '
+  server = loop do
+    begin
+      break TCPServer.new("0.0.0.0", rand(20_000..32_767))
+    rescue Errno::EADDRINUSE
+      next
+    end
+  end
+  File.write(ARGV.fetch(0) + ".tmp", server.addr[1].to_s)
+  File.rename(ARGV.fetch(0) + ".tmp", ARGV.fetch(0))
+  sleep
+' "$wildcard_port_file" &
+wildcard_listener_pid=$!
+until [ -s "$wildcard_port_file" ]; do
+  kill -0 "$wildcard_listener_pid" 2>/dev/null || fail 'wildcard listener exited before binding'
+  sleep 1
+done
+wildcard_port=$(cat "$wildcard_port_file")
+wildcard_marker=$temporary_parent/wildcard-offered
+wildcard_output=$temporary_parent/wildcard-output
+# A prefix assignment on a function call outlives the call under sh's POSIX
+# mode, so the unsafe-manifest loop above would still be in force here.
+PLATFORM_TEST_UNSAFE_DEPLOYED_MANIFEST=none \
+  PLATFORM_TEST_PORT_PLANT=wildcard PLATFORM_TEST_PORT_PLANT_PORT=$wildcard_port \
+  PLATFORM_TEST_PORT_PLANT_MARKER=$wildcard_marker \
+  runner_env "$fixture_mac/run.sh" --lane fresh --manual-validation \
+  --vault-file "$hostile_vault" --vault-password-file "$hostile_password" \
+  > "$wildcard_output" 2>&1 || {
+    sed -n '1,120p' "$wildcard_output" >&2
+    fail 'manual validation failed beside a wildcard listener'
+  }
+[ -e "$wildcard_marker" ] || fail 'the allocator was never offered the wildcard-held port'
+wildcard_report_root=$(sed -n 's/^Report root: //p' "$wildcard_output")
+ruby -rjson -e '
+  state = JSON.parse(File.read(ARGV.fetch(0)))
+  held = Integer(ARGV.fetch(1), 10)
+  taken = state.select { |key, value| key.end_with?("_port") && value == held }.keys
+  abort "fresh lane allocated wildcard-held port #{held} to #{taken.join(", ")}" unless taken.empty?
+' "$wildcard_report_root/phase-input.json" "$wildcard_port" ||
+  fail 'the allocator handed out a port a wildcard listener holds'
+kill "$wildcard_listener_pid" 2>/dev/null || :
+wildcard_listener_pid=
+
+# A bind error that is not EADDRINUSE will not clear on another candidate, so
+# the allocator has to stop on it rather than retry it (#833).
+eacces_marker=$temporary_parent/eacces-attempts
+eacces_output=$temporary_parent/eacces-output
+if PLATFORM_TEST_UNSAFE_DEPLOYED_MANIFEST=none \
+    PLATFORM_TEST_PORT_PLANT=eacces PLATFORM_TEST_PORT_PLANT_MARKER=$eacces_marker \
+    runner_env "$fixture_mac/run.sh" --lane fresh --manual-validation \
+    --vault-file "$hostile_vault" --vault-password-file "$hostile_password" \
+    > "$eacces_output" 2>&1; then
+  fail 'manual validation succeeded although every bind was refused'
+fi
+eacces_attempts=$(cat "$eacces_marker" 2>/dev/null || printf 0)
+[ "$eacces_attempts" -eq 1 ] || {
+  sed -n '1,40p' "$eacces_output" >&2
+  fail "the allocator retried a non-EADDRINUSE bind error: $eacces_attempts attempts"
+}
+grep -F 'planted bind refusal' "$eacces_output" >/dev/null || {
+  sed -n '1,40p' "$eacces_output" >&2
+  fail 'the allocator did not report the bind error that stopped it'
+}
 
 printf '%s\n' 'Mac manual validation runner: handoff, retention, resume, and cleanup verified'
