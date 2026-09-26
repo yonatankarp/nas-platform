@@ -2208,6 +2208,43 @@ end
 # by the deployment-report clause above.
 check_floor(failures, pre_upgrade_stops, 1, "pre-upgrade copies that stop a container")
 
+# Vaultwarden's call site, argument by argument. The shared role copies whatever
+# its caller names, so this is where the platform's one credential-bearing copy
+# is decided: dropping rsa_key* restores a store every client is logged out of,
+# another project's name stops another stack, and an unmanaged owner leaves the
+# copy of a signing key to whoever wrote it. Kapowarr's call site is held the
+# same way by tests/contracts/kapowarr-static.rb; Vaultwarden has no static
+# contract, so it is held here.
+VAULTWARDEN_PRE_UPGRADE_ARGUMENTS = {
+  "pre_upgrade_backup_service_name" => "vaultwarden",
+  "pre_upgrade_backup_compose_service" => "vaultwarden",
+  "pre_upgrade_backup_project_name" => "{{ vaultwarden_compose_project_name }}",
+  "pre_upgrade_backup_store_dir" => "{{ vaultwarden_data_host_path }}",
+  "pre_upgrade_backup_store_file" => "db.sqlite3",
+  "pre_upgrade_backup_path" => "{{ vaultwarden_pre_upgrade_backup_path }}",
+  "pre_upgrade_backup_manage_ownership" => true
+}.freeze
+vaultwarden_deploy_path = File.join(ROOT, "roles", "vaultwarden", "tasks", "deploy.yml")
+check(failures, File.file?(vaultwarden_deploy_path),
+      "role vaultwarden: tasks/deploy.yml is missing, so its pre-upgrade copy arguments cannot be read")
+if File.file?(vaultwarden_deploy_path)
+  vaultwarden_copies = flatten_tasks(YAML.safe_load_file(vaultwarden_deploy_path, aliases: true)).select do |task|
+    task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup"
+  end
+  check(failures, vaultwarden_copies.length == 1,
+        "role vaultwarden: roles/vaultwarden/tasks/deploy.yml includes roles/pre_upgrade_backup " \
+        "#{vaultwarden_copies.length} times, not once, so its store is not copied before a pinned upgrade")
+  copy_vars = vaultwarden_copies.first&.fetch("vars", nil) || {}
+  VAULTWARDEN_PRE_UPGRADE_ARGUMENTS.each do |argument, expected|
+    check(failures, copy_vars[argument] == expected,
+          "role vaultwarden: the pre-upgrade copy must be given #{argument}: #{expected.inspect}, " \
+          "not #{copy_vars[argument].inspect}")
+  end
+  check(failures, Array(copy_vars["pre_upgrade_backup_extra_patterns"]).include?("rsa_key*"),
+        "role vaultwarden: the pre-upgrade copy must carry rsa_key*, the key every session it issued " \
+        "is signed with, not #{copy_vars['pre_upgrade_backup_extra_patterns'].inspect}")
+end
+
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it
 # only outside --check, and the delivery itself must be a redacted, changeless
