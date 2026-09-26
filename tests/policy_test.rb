@@ -2311,6 +2311,10 @@ if File.file?(karakeep_deploy_path)
                   Array(app_guard["when"]) == Array(copy_task&.fetch("when", nil)),
         "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard with no " \
         "other guard between, under the same when, because it reads that guard's pinned image")
+  karakeep_deploy_index = karakeep_tasks.index { |task| task["register"] == "karakeep_deploy" }
+  check(failures, karakeep_copies.first && karakeep_deploy_index && karakeep_copies.first < karakeep_deploy_index,
+        "role karakeep: the pre-upgrade copy must run before the Compose deployment that registers " \
+        "karakeep_deploy, or the migration it exists to undo has already run")
 end
 
 # The report itself must stay a report. The per-service report delivers through

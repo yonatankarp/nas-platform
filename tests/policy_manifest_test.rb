@@ -608,6 +608,18 @@ expect_failure(failures, "Karakeep pre-upgrade copy after the Meilisearch guard"
   end
 end
 
+expect_failure(failures, "Karakeep pre-upgrade copy after its deployment",
+               "role karakeep: the pre-upgrade copy must run before the Compose deployment",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/karakeep/tasks/deploy.yml") do |tasks|
+    copy = tasks.index { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
+    deploy = tasks.index { |task| Array(task["block"]).any? { |inner| inner["register"] == "karakeep_deploy" } }
+    raise "deployment order plant found no copy or deployment" unless copy && deploy && copy < deploy
+
+    tasks.insert(deploy, tasks.delete_at(copy))
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.
