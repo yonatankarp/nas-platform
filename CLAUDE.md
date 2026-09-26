@@ -1023,7 +1023,9 @@ value, to any process on the NAS (#829). It is published at all only because
 proxy shares with the portable agent alone, and the Beszel hub beside it takes
 the wildcard like every other service and has no route to the proxy.
 `SOCKET_PROXY_CONSUMERS` in `tests/policy_test.rb` states who may reach each
-socket proxy, Dozzle's included, and refuses anything else. Vaultwarden shipped
+socket proxy, Dozzle's included, and refuses any other service sharing a
+network with it in `compose.yml`, and any platform override of that stack that
+declares networks. Vaultwarden shipped
 as a wildcard and an uninvited registration from a LAN address succeeded, which
 is why the binding is stated wherever the perimeter is.
 `inventory/group_vars/all/service_vaultwarden.yml` carries that argument and its

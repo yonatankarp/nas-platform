@@ -932,6 +932,14 @@ end
     ["services/dozzle/compose.integration.yml",
      "services/dozzle/compose.integration.yml/alert-relay: an override may not change who reaches",
      ->(compose) { compose.fetch("services").fetch("alert-relay")["networks"] = ["docker-api"] }],
+  "Beszel proxy network redefined in the Mac override" =>
+    ["services/beszel/compose.mac.yml",
+     "services/beszel/compose.mac.yml: an override may not declare networks",
+     ->(compose) { compose["networks"] = { "docker-api" => { "internal" => false } } }],
+  "Dozzle proxy network redefined in the integration override" =>
+    ["services/dozzle/compose.integration.yml",
+     "services/dozzle/compose.integration.yml: an override may not declare networks",
+     ->(compose) { compose["networks"] = { "docker-api" => { "internal" => false } } }],
   "socket proxy the consumer map no longer finds" =>
     ["services/dozzle/compose.yml", "services mounting the Docker socket are",
      ->(compose) { compose.fetch("services").fetch("socket-proxy")["volumes"] = [] }]
