@@ -530,7 +530,7 @@ divided across four cores is the new floor, and no runner has measured it yet.
 
 **2026-09-26 (#831).** `renovate.json` had carried `rebaseWhen:
 behind-base-branch` since e56d9728, so every merge to `main` rebased every open
-Renovate branch and each rebase re-ran CI. Over 40 `ci.yml` runs from
+Renovate branch and each rebase re-ran CI. Over a sample of 40 `ci.yml` runs from
 2026-09-25 19:20 to 2026-09-26 07:34 UTC, Renovate accounted for 22 runs and
 1272 of 3395 runner-minutes (37%). Those 22 runs came from 5 branches, so about
 17 were re-runs. The churn fell on the held branches (Nextcloud, Meilisearch,
