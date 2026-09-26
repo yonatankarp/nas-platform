@@ -1,5 +1,5 @@
 ---
-# Behaviour of roles/pre_upgrade_backup, the copy Kapowarr and Vaultwarden take
+# Behaviour of roles/pre_upgrade_backup, the copy Kapowarr, Vaultwarden and Karakeep take
 # of their SQLite store before a pinned upgrade (#836). No integration lane can
 # reach it: every lane starts from an empty store, where no upgrade is pending,
 # and the upgrade lane converges neither Vaultwarden nor a failing copy. So its

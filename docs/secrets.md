@@ -1171,7 +1171,13 @@ repository vault remains encrypted:
   were measured against the pinned image and a live database. The archived
   pages, assets and screenshots beside it, and the Meilisearch index in its own
   root, are user data rather than credentials; a page archived from behind a
-  login can still show whatever that page showed.
+  login can still show whatever that page showed. Before each pinned upgrade
+  `roles/pre_upgrade_backup`, as Karakeep includes it, stops the application
+  container and copies `db.db`, any journal beside it and `queue.db` into
+  `pre-upgrade-backup/` under the same data root at mode 0600 inside a 0700
+  directory (#826). That copy carries the same hashes and is secret-bearing
+  wherever it is copied to next; it is a rollback path for a one-way migration
+  on the same disk, not a backup.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See
