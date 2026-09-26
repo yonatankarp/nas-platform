@@ -2209,34 +2209,35 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   end
   with_contract_copy(programs: probes, wrapper: wrapper_source) do |contract, root, stub_env|
     environment = stub_env.merge("PLATFORM_CONTRACT_REPO_DIR" => root)
-    stdout, stderr, status = Open3.capture3(
-      environment, contract, "static", stdin_data: "caller-payload\n"
-    )
+    stdout, stderr, status, survived = run_with_caller_stdin(environment, contract, %w[static])
     failures << "stdin: a program was handed the caller's input: #{(stdout + stderr).strip.inspect}" unless
       status.success?
+    failures << "stdin: the caller's input did not survive the contract: #{(stdout + stderr).strip.inspect}" unless
+      survived
 
     transcript = File.join(root, "ansible-output.txt")
     File.write(transcript, marker_transcript(0))
-    stdout, stderr, status = Open3.capture3(
-      environment, contract, "assert-check-mixed-output", transcript, stdin_data: "caller-payload\n"
-    )
+    stdout, stderr, status, survived = run_with_caller_stdin(environment, contract,
+                                                             ["assert-check-mixed-output", transcript])
     unless status.success? && stdout.include?("planned-output probe reached with an empty stdin")
       failures << "stdin: the planned-output program was handed the caller's input: " \
                   "#{(stdout + stderr).strip.inspect}"
     end
+    failures << "stdin: the caller's input did not survive the contract: #{(stdout + stderr).strip.inspect}" unless
+      survived
 
     runtime_environment = environment.merge(
       "PLATFORM_CONTRACT_VAULT_FILE" => File.join(root, "absent-vault.yml"),
       "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(root, "absent-password"),
       "PLATFORM_REPORT_ROOT" => root
     )
-    stdout, stderr, status = Open3.capture3(
-      runtime_environment, contract, "verify", stdin_data: "caller-payload\n"
-    )
+    stdout, stderr, status, survived = run_with_caller_stdin(runtime_environment, contract, %w[verify])
     unless status.success? && stdout.include?("runtime probe reached with an empty stdin")
       failures << "stdin: the runtime program was handed the caller's input: " \
                   "#{(stdout + stderr).strip.inspect}"
     end
+    failures << "stdin: the caller's input did not survive the contract: #{(stdout + stderr).strip.inspect}" unless
+      survived
   end
   failures
 end
@@ -2859,7 +2860,11 @@ if ARGV.include?("--self-test")
     ["exec ruby \"$planned_output_program\" \"$mode\" \"$@\" </dev/null\n",
      "exec ruby \"$planned_output_program\" \"$mode\" \"$@\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
-     "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"]
+     "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"],
+    # Not a dropped redirect but a drained stdin ahead of an exec, which only the
+    # check that the caller's input survived can see.
+    ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
+     "cat >/dev/null\nexec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n"]
   ].each do |from, to|
     unredirected = substitute(File.read(CONTRACT), from, to)
     leaked = stdin_failures(wrapper_source: unredirected)

@@ -109,4 +109,15 @@ module ContractTestSupport
     failures.concat(Array(yield(output))) if block_given?
     failures
   end
+
+  # For probes that keep the real program below them rather than replacing it:
+  # runs `<contract> <args>` with a payload on stdin and returns
+  # [stdout, stderr, status, survived], where status is the contract's own and
+  # survived says whether the payload was still there for the caller afterwards.
+  def run_with_caller_stdin(env, contract, args)
+    command = "#{contract.shellescape} #{args.map(&:shellescape).join(' ')}; " \
+              "rc=$?; printf 'left:'; cat; exit $rc"
+    stdout, stderr, status = Open3.capture3(env, "/bin/sh", "-c", command, stdin_data: "caller-payload\n")
+    [stdout, stderr, status, stdout.include?("left:caller-payload")]
+  end
 end
