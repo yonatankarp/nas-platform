@@ -1245,13 +1245,23 @@ def sync_tooling(config: Config, log=None) -> None:
     # transient (#415). It keeps TOOLING_TIMEOUT_SECONDS unchanged: the budget
     # is a total the attempts and their backoffs share, so the ladder can never
     # hold the deployment lock longer than the single attempt it replaces.
+    #
+    # The file is a fully resolved lock with a hash on every entry, compiled from
+    # controller-requirements.in (#827). --require-hashes refuses an entry that
+    # lost its hash rather than installing it; there is no --upgrade, because
+    # every entry is an == pin and a changed pin applies without one. Before the
+    # lock, --upgrade over three top-level pins moved every transitive dependency
+    # to whatever PyPI served on the tick, with no pull request involved. The
+    # path stays controller-requirements.txt because the poller that runs is the
+    # previously installed one (#327): it still reads this path, with --upgrade,
+    # and pip hash-checks the whole file on its own once any line has a hash.
     requirements = config.checkout / "controller-requirements.txt"
     _run_network_command(
         [
             _tooling_bin(config) / "pip",
             "install",
             "--quiet",
-            "--upgrade",
+            "--require-hashes",
             "--requirement",
             str(requirements),
         ],

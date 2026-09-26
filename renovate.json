@@ -20,8 +20,19 @@
     "docker-compose",
     "github-actions",
     "ansible-galaxy",
-    "custom.regex"
+    "custom.regex",
+    "pip-compile"
   ],
+  "pip-compile": {
+    "description": "The controller toolchain lock (#827). Versions are authored in controller-requirements.in; controller-requirements.txt is the fully resolved lock compiled from it, a hash on every entry, which CI and the production poller install with --require-hashes. This manager reads the source and the command out of the lock's header, bumps a pin in the .in and re-runs that command, so the hashes move with the version. It targets the lock, not the .in, because that is how the manager finds its header. A regex manager must never track either file again: its pattern still matches the lock's pin lines, and it would move a version without regenerating a hash.",
+    "managerFilePatterns": [
+      "/^controller-requirements\\.txt$/"
+    ]
+  },
+  "lockFileMaintenance": {
+    "description": "Moves the controller lock's transitive pins, which no direct bump touches. Before #827 they floated to whatever PyPI served on each five-minute deploy with no pull request; now they move here, weekly, through CI, and automerge under the routine rule that opens packageRules.",
+    "enabled": true
+  },
   "packageRules": [
     {
       "description": "Automerge routine non-major updates after required checks pass.",
@@ -250,17 +261,6 @@
       ],
       "datasourceTemplate": "github-tags",
       "depNameTemplate": "tesseract-ocr/tessdata_fast"
-    },
-    {
-      "description": "Python tooling pinned in controller-requirements.txt, which the operator guide and production poller install from.",
-      "customType": "regex",
-      "managerFilePatterns": [
-        "/^controller-requirements\\.txt$/"
-      ],
-      "matchStrings": [
-        "(?<depName>ansible-core|ansible-lint|requests)==(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"
-      ],
-      "datasourceTemplate": "pypi"
     },
     {
       "description": "ansible-core pinned by the integration harness.",

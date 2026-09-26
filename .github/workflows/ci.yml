@@ -229,9 +229,11 @@ jobs:
           fi
           #
           # Never name a version here: five jobs carry this block byte-identically,
-          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          # and the pins are authored in controller-requirements.in alone (CLAUDE.md).
+          # controller-requirements.txt is the lock compiled from it, a hash on every
+          # entry, and --require-hashes refuses one that lost it (#827).
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          "$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           # --no-cache because the Galaxy API cache is written in two steps: a
           # blank entry with a 24-hour expiry first, its `results` filled in when
@@ -341,9 +343,11 @@ jobs:
           fi
           #
           # Never name a version here: five jobs carry this block byte-identically,
-          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          # and the pins are authored in controller-requirements.in alone (CLAUDE.md).
+          # controller-requirements.txt is the lock compiled from it, a hash on every
+          # entry, and --require-hashes refuses one that lost it (#827).
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          "$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           # --no-cache because the Galaxy API cache is written in two steps: a
           # blank entry with a 24-hour expiry first, its `results` filled in when
@@ -552,9 +556,11 @@ jobs:
           fi
           #
           # Never name a version here: five jobs carry this block byte-identically,
-          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          # and the pins are authored in controller-requirements.in alone (CLAUDE.md).
+          # controller-requirements.txt is the lock compiled from it, a hash on every
+          # entry, and --require-hashes refuses one that lost it (#827).
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          "$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           # --no-cache because the Galaxy API cache is written in two steps: a
           # blank entry with a 24-hour expiry first, its `results` filled in when
@@ -680,9 +686,11 @@ jobs:
           fi
           #
           # Never name a version here: five jobs carry this block byte-identically,
-          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          # and the pins are authored in controller-requirements.in alone (CLAUDE.md).
+          # controller-requirements.txt is the lock compiled from it, a hash on every
+          # entry, and --require-hashes refuses one that lost it (#827).
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          "$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           # --no-cache because the Galaxy API cache is written in two steps: a
           # blank entry with a 24-hour expiry first, its `results` filled in when
@@ -797,9 +805,11 @@ jobs:
           fi
           #
           # Never name a version here: five jobs carry this block byte-identically,
-          # and the pins live in controller-requirements.txt alone (CLAUDE.md).
+          # and the pins are authored in controller-requirements.in alone (CLAUDE.md).
+          # controller-requirements.txt is the lock compiled from it, a hash on every
+          # entry, and --require-hashes refuses one that lost it (#827).
           python3 -m venv "$RUNNER_TEMP/ansible"
-          "$RUNNER_TEMP/ansible/bin/pip" install -r controller-requirements.txt
+          "$RUNNER_TEMP/ansible/bin/pip" install --require-hashes -r controller-requirements.txt
           echo "$RUNNER_TEMP/ansible/bin" >> "$GITHUB_PATH"
           # --no-cache because the Galaxy API cache is written in two steps: a
           # blank entry with a 24-hour expiry first, its `results` filled in when
