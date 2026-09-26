@@ -885,16 +885,11 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   # The runtime invocation, which is `exec`ed and so is the last thing the script
   # does -- its redirect needs its own row because the static one cannot cover it.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
-    stdout, stderr, _status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
-        "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_DOCKER_ROOT" => copy_root,
-        "PLATFORM_REPORT_ROOT" => copy_root },
-      "/bin/sh", "-c", "#{contract.shellescape} --platform nas run; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the runtime program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
+    environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
+                    "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_DOCKER_ROOT" => copy_root,
+                    "PLATFORM_REPORT_ROOT" => copy_root }
+    failures.concat(stdin_probe_failures(contract, %w[--platform nas run], environment,
+                                         subject: "the runtime program", status: false))
   end
   failures
 end
@@ -1180,7 +1175,8 @@ if ARGV.include?("--self-test")
   # The redirects' own regression, one per invocation. Neither real program reads
   # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
   # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing.
+  # the contract passing. The third drains the caller's stdin before the runtime
+  # exec, which only the check that the caller's input survived can see.
   planted_redirects = 0
   [
     ['ruby -ryaml "$contract_repo_dir/tests/contracts/immich-static.rb" \\
@@ -1188,7 +1184,8 @@ if ARGV.include?("--self-test")
      'ruby -ryaml "$contract_repo_dir/tests/contracts/immich-static.rb" \\
   "$repo_dir" "$platform"'],
     ['exec ruby "$contract_repo_dir/tests/contracts/immich-runtime.rb" "$mode" "$@" </dev/null',
-     'exec ruby "$contract_repo_dir/tests/contracts/immich-runtime.rb" "$mode" "$@"']
+     'exec ruby "$contract_repo_dir/tests/contracts/immich-runtime.rb" "$mode" "$@"'],
+    ["\nexec ruby ", "\ncat >/dev/null\nexec ruby "]
   ].each do |from, to|
     unredirected = File.read(CONTRACT).sub(from, to)
     abort "self-test could not plant a dropped stdin redirect: #{from.inspect}" if
