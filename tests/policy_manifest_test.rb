@@ -525,6 +525,33 @@ expect_failure(failures, "shared pre-upgrade copy naming a service its caller ne
   File.write(path, planted)
 end
 
+# Vaultwarden's call site is the platform's one credential-bearing copy, and the
+# shared role takes whatever it is given, so each argument policy_test.rb holds
+# there is planted once (#836).
+[
+  ["    pre_upgrade_backup_extra_patterns: [rsa_key*]\n", "    pre_upgrade_backup_extra_patterns: []\n",
+   "role vaultwarden: the pre-upgrade copy must carry rsa_key*"],
+  ["    pre_upgrade_backup_project_name: \"{{ vaultwarden_compose_project_name }}\"\n",
+   "    pre_upgrade_backup_project_name: \"{{ kapowarr_compose_project_name }}\"\n",
+   "role vaultwarden: the pre-upgrade copy must be given pre_upgrade_backup_project_name"],
+  ["    pre_upgrade_backup_store_file: db.sqlite3\n", "    pre_upgrade_backup_store_file: Kapowarr.db\n",
+   "role vaultwarden: the pre-upgrade copy must be given pre_upgrade_backup_store_file"],
+  ["    pre_upgrade_backup_path: \"{{ vaultwarden_pre_upgrade_backup_path }}\"\n",
+   "    pre_upgrade_backup_path: \"{{ vaultwarden_data_host_path }}/backup\"\n",
+   "role vaultwarden: the pre-upgrade copy must be given pre_upgrade_backup_path"],
+  ["    pre_upgrade_backup_manage_ownership: true\n", "    pre_upgrade_backup_manage_ownership: false\n",
+   "role vaultwarden: the pre-upgrade copy must be given pre_upgrade_backup_manage_ownership"]
+].each do |from, to, message|
+  expect_failure(failures, "Vaultwarden pre-upgrade call site with #{to.strip}", message,
+                 detected_by: %i[policy]) do |root|
+    path = File.join(root, "roles/vaultwarden/tasks/deploy.yml")
+    body = File.read(path)
+    raise "Vaultwarden call-site plant matched #{body.scan(from).length} times" unless body.scan(from).length == 1
+
+    File.write(path, body.sub(from, to))
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.
