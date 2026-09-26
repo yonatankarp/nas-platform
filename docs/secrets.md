@@ -741,7 +741,7 @@ session and token the server issues, so it is the one file in that tree to treat
 as secret-bearing in the ordinary sense; `CLAUDE.md`'s security boundary carries
 the full nuance, including why the encrypted blobs beside it are not.
 
-`roles/vaultwarden/tasks/pre_upgrade_backup.yml` adds a second copy of that tree
+`roles/pre_upgrade_backup`, as `roles/vaultwarden` includes it, adds a second copy of that tree
 and **does not change the sentence above**. Before a pinned upgrade it stops the
 container, copies `db.sqlite3`, the write-ahead log beside it and `rsa_key*` into
 `pre-upgrade-backup/` under the same data root, and refuses the upgrade if the
@@ -1138,7 +1138,7 @@ repository vault remains encrypted:
 - Kapowarr's configuration root, for the same reason as Bindery's: its SQLite
   database stores the ComicVine API key in clear, beside the administrator
   identity hashed with a per-install salt and the application's own API key.
-  Before each pinned upgrade `roles/kapowarr/tasks/pre_upgrade_backup.yml` stops
+  Before each pinned upgrade `roles/pre_upgrade_backup`, as Kapowarr includes it, stops
   the container and copies that database into `pre-upgrade-backup/` under the
   same root at mode 0600 inside a 0700 directory (#671). That copy carries the
   same credentials and is secret-bearing wherever it is copied to next; it is a

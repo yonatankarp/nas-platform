@@ -183,7 +183,7 @@ knows the new schema, so `services/kapowarr/compose.yml` says so beside the pin,
 `roles/image_downgrade_guard` refuses a pin older than one that has already run.
 The migration took no backup of its own — the database directory held only
 `Kapowarr.db` and its WAL pair afterwards. Confirmed. So
-`roles/kapowarr/tasks/pre_upgrade_backup.yml` takes one: when the pin differs
+`roles/pre_upgrade_backup`, included by `roles/kapowarr`, takes one: when the pin differs
 from the image the container was created from, it stops the container and copies
 `Kapowarr.db` and any `-wal`/`-shm` beside it into `pre-upgrade-backup/` at 0600,
 the `roles/vaultwarden` shape. A file copy of a stopped store, because v1.3.1 has
