@@ -168,6 +168,10 @@ if defined?(ClassifyChanges)
     ["config/media-acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/host_prep/tasks/verify_media_acquisition.yml"] => %w[static reconciliation arr downloaders bindery kapowarr pinchflat trailarr seerr idempotence_check],
     ["roles/deployment_bundle/tasks/main.yml"] => FALL_OPEN_LANES,
+    # A shared role no lane map claims, like roles/image_downgrade_guard: it runs
+    # inside kapowarr and vaultwarden, so it falls open to every lane rather than
+    # being routed to a hand-kept list of its callers (#836).
+    ["roles/pre_upgrade_backup/tasks/main.yml"] => FALL_OPEN_LANES,
     ["tests/policy_test.rb"] => %w[static],
     ["tests/validate-policy.sh"] => %w[static],
     ["tests/ci/workflow_test.rb"] => %w[static],

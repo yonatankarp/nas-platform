@@ -56,7 +56,7 @@ kapowarr_comics_host_path: "{{ nas_media_root }}/Books/Comics"
 # external download client added later needs no remote path mapping.
 kapowarr_library_root: /data/books/Comics
 kapowarr_staging_root: /data/books/.acquisition/usenet/comics
-# Where tasks/pre_upgrade_backup.yml copies the store before a pinned upgrade:
+# Where roles/pre_upgrade_backup copies the store before a pinned upgrade:
 # inside the config bind mount, as roles/vaultwarden and roles/bindery place
 # theirs, because that directory is already declared in nas_storage as
 # recovery: critical, created by host_prep and named by this role's containment

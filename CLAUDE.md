@@ -965,7 +965,7 @@ every client out and voids every API key, and *disclosing* it lets anyone mint
 those tokens — so it is secret-bearing in the ordinary sense, which is why
 `nas_storage` gives that directory 0700 rather than the 0755 every other service
 takes. **The pre-upgrade copy inherits that exactly**, the way Bindery's does in
-the list above: `roles/vaultwarden/tasks/pre_upgrade_backup.yml` copies the store
+the list above: `roles/pre_upgrade_backup`, which `roles/vaultwarden` includes, copies the store
 and `rsa_key*` into `pre-upgrade-backup/` under the same data root before a
 pinned upgrade, so that directory holds a second copy of the one file in this
 service that is a credential — at mode 0600 inside a 0700 parent, and treated as

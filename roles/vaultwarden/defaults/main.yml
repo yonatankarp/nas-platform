@@ -131,7 +131,7 @@ vaultwarden_data_host_path: "{{ nas_docker_root }}/vaultwarden/data"
 # message that explains it read the same value.
 vaultwarden_config_json_path: "{{ vaultwarden_data_host_path }}/config.json"
 
-# WHERE tasks/pre_upgrade_backup.yml PUTS THE COPY IT TAKES, and it is inside
+# WHERE roles/pre_upgrade_backup PUTS THE COPY IT TAKES, and it is inside
 # DATA_FOLDER rather than beside it. Bindery's backups land on its own config
 # bind mount for the same reason: the directory is already declared in
 # nas_storage, already created by host_prep at 0700 under the platform identity,
