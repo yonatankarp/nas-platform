@@ -189,6 +189,5 @@ class FilterModule:
     def filters(self):
         return {
             "deployment_image_changes": deployment_image_changes,
-            "deployment_change_lines": deployment_change_lines,
             "deployment_summary_document": deployment_summary_document,
         }
