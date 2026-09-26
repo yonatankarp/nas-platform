@@ -1675,7 +1675,7 @@ if expected_core
     mirrored = File.read(File.expand_path("../../#{relative}", __dir__))[pattern, 1]
     check(failures, mirrored == expected_core,
           "#{relative} must pin ansible-core #{expected_core} to match " \
-          "controller-requirements.txt, got #{mirrored.inspect}")
+          "controller-requirements.in, got #{mirrored.inspect}")
   end
 end
 

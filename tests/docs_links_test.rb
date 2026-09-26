@@ -998,9 +998,10 @@ else
     failures << "CLAUDE.md must not list CI jobs " \
                 ".github/workflows/ci.yml does not declare: #{extra_jobs.join(', ')}" if extra_jobs.any?
   end
-  # The controller pins are authored once, in controller-requirements.txt: three
-  # CI jobs install from it, the production poller installs from it, and Renovate
-  # bumps it. A version restated in prose is a copy nothing bumps, and
+  # The controller pins are authored once, in controller-requirements.in, and
+  # compiled into the hash-locked controller-requirements.txt that CI and the
+  # production poller install (#827); Renovate bumps the .in and recompiles the
+  # lock. A version restated in prose is a copy nothing bumps, and
   # tests/policy_test.rb already refuses one in the beginner guides for the
   # reason a reader following it builds a controller CI never validated against.
   # CLAUDE.md carried the pair anyway until #360, in the same sentence that calls
