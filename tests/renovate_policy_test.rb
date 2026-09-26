@@ -428,6 +428,10 @@ end
 # keep-updated label (refused below, since it lives in this file), the main
 # ruleset requiring up-to-date branches (strict_required_status_checks_policy
 # is false), and a merge queue (none). Those two are repository settings.
+# Also not modelled: Renovate's built-in `pin` object sets rebaseWhen
+# behind-base-branch, so a pin update of a held package would rebase behind
+# the base. Every dependency here is already exact- or digest-pinned, so no pin
+# update is reachable.
 check(failures, !config.key?("keepUpdatedLabel") && rules.none? { |rule| rule.key?("keepUpdatedLabel") },
       "keepUpdatedLabel makes Renovate rebase a labelled held branch behind the base, which " \
       "undoes #831's rebaseWhen split for it")
