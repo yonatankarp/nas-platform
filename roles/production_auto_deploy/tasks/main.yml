@@ -93,6 +93,10 @@
   loop: [git, curl, docker]
   changed_when: false
   failed_when: false
+  # A read that must really happen: skipped under --check, the assertion below
+  # would consume a result that does not exist and the review would fail
+  # instead of reporting what the install would do (#834).
+  check_mode: false
 
 - name: Require every tool the poller depends on
   ansible.builtin.assert:
@@ -136,6 +140,9 @@
   loop: "{{ production_auto_deploy_locale_candidates }}"
   changed_when: false
   failed_when: false
+  # Skipped under --check, the result reads rc=0 for every candidate, so the
+  # review would record the first one untested (#834).
+  check_mode: false
 
 - name: Record the first locale that worked
   ansible.builtin.set_fact:
@@ -164,6 +171,9 @@
   register: production_auto_deploy_crontab_probe
   failed_when: false
   changed_when: false
+  # Skipped under --check, the result reads rc=0 and the assertion below would
+  # pass a crontab nobody probed (#834).
+  check_mode: false
   when: not production_auto_deploy_external_scheduler | bool
 
 - name: Require a usable crontab or an acknowledged external scheduler
