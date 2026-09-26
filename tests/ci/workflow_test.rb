@@ -1630,6 +1630,20 @@ end
 
 controller_lock = File.read(CONTROLLER_REQUIREMENTS_PATH)
 python_floor = File.read(PYTHON_VERSION_PATH).strip
+# The host the lock matters most on has its own floor: the poller role refuses an
+# interpreter below it. A lock floor above that would drop the entries only the
+# NAS's interpreter needs -- typing-extensions is one today -- and the poller
+# would then refuse the install on every tick, so a .python-version bump for CI
+# alone must fail here rather than on the host.
+nas_floor = File.read(File.expand_path("../../roles/production_auto_deploy/tasks/main.yml", __dir__))[
+  /python_version is version\('(\d+\.\d+)', '>='\)/, 1
+]
+check(failures, !nas_floor.nil?,
+      "roles/production_auto_deploy/tasks/main.yml must assert the NAS's minimum Python version")
+lock_floor = controller_lock[/--python-version=(\d+\.\d+)/, 1]
+check(failures, nas_floor && lock_floor && Gem::Version.new(lock_floor) <= Gem::Version.new(nas_floor),
+      "controller-requirements.txt is compiled for Python #{lock_floor.inspect} and up, above the " \
+      "#{nas_floor.inspect} the NAS poller accepts; a host on that floor would refuse the lock")
 controller_lock_violations(controller_lock, source_pins, python_floor).each do |violation|
   check(failures, false, "controller-requirements.txt: #{violation}")
 end
