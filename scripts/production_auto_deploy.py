@@ -286,8 +286,8 @@ _PUSHOVER_FIELDS = frozenset(
 )
 
 
-def load_config(path: str | os.PathLike[str]) -> Config:
-    """Read the non-secret poller configuration written by the installer role."""
+def _read_config_payload(path: str | os.PathLike[str]) -> dict:
+    """The configuration file's JSON object, or a refusal naming why not."""
 
     try:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -295,31 +295,69 @@ def load_config(path: str | os.PathLike[str]) -> Config:
         raise ConfigurationError("configuration is unreadable") from error
     if not isinstance(payload, dict):
         raise ConfigurationError("configuration is not an object")
+    return payload
+
+
+def _pushover_config_path(raw) -> Path | None:
+    """One Pushover curl config path, or None when it cannot be published to."""
+
+    # Never a refusal (#327). The install play copies this script before
+    # it renders the file, so the first tick after the move to Pushover
+    # reads a configuration the pre-Pushover template wrote, which names no
+    # Pushover config at all. Refusing it would stop every deployment
+    # with nothing able to heal the host; reading it as "cannot publish"
+    # costs one tick's notifications and one stderr line.
+    usable = type(raw) is str and Path(raw).is_absolute()
+    return Path(raw) if usable else None
+
+
+def _ping_url(raw) -> str:
+    """One healthchecks.io ping URL, or "" when there is none to ping."""
+
+    # Never a refusal, in either direction. Absent is every configuration
+    # written before #606 and the one this poller meets when the install
+    # play copies it and then fails to render (#327). Unusable is a
+    # monitoring value that must not stop deployments. Both read as "no
+    # ping", and the external check alerts on exactly that silence.
+    usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.match(raw)
+    return raw if usable else ""
+
+
+def _required_config_value(name: str, raw):
+    """One present, required field's value, typed, or a refusal."""
+
+    if name == "external_scheduler":
+        if type(raw) is not bool:
+            raise ConfigurationError("external_scheduler must be a boolean")
+        return raw
+    if name == "log_retention_days":
+        if type(raw) is not int or raw < 1:
+            raise ConfigurationError(
+                "log_retention_days must be a positive integer"
+            )
+        return raw
+    if type(raw) is not str or not raw:
+        raise ConfigurationError(f"{name} must be a non-empty string")
+    if name in _PATH_FIELDS:
+        candidate = Path(raw)
+        if not candidate.is_absolute():
+            raise ConfigurationError(f"{name} must be absolute")
+        return candidate
+    return raw
+
+
+def _config_values(payload: dict, unpublishable: list) -> dict[str, object]:
+    """Every Config field's value, naming each unusable Pushover field."""
+
     values: dict[str, object] = {}
-    unpublishable = []
     for field in fields(Config):
         if field.name in _PUSHOVER_FIELDS:
-            # Never a refusal (#327). The install play copies this script before
-            # it renders the file, so the first tick after the move to Pushover
-            # reads a configuration the pre-Pushover template wrote, which names no
-            # Pushover config at all. Refusing it would stop every deployment
-            # with nothing able to heal the host; reading it as "cannot publish"
-            # costs one tick's notifications and one stderr line.
-            raw = payload.get(field.name)
-            usable = type(raw) is str and Path(raw).is_absolute()
-            values[field.name] = Path(raw) if usable else None
-            if not usable:
+            values[field.name] = _pushover_config_path(payload.get(field.name))
+            if values[field.name] is None:
                 unpublishable.append(field.name)
             continue
         if field.name in _PING_URL_FIELDS:
-            # Never a refusal, in either direction. Absent is every configuration
-            # written before #606 and the one this poller meets when the install
-            # play copies it and then fails to render (#327). Unusable is a
-            # monitoring value that must not stop deployments. Both read as "no
-            # ping", and the external check alerts on exactly that silence.
-            raw = payload.get(field.name, "")
-            usable = type(raw) is str and HEALTHCHECKS_URL_PATTERN.match(raw)
-            values[field.name] = raw if usable else ""
+            values[field.name] = _ping_url(payload.get(field.name, ""))
             continue
         if field.name not in payload:
             # The install play copies this script before it renders the file, so
@@ -333,26 +371,16 @@ def load_config(path: str | os.PathLike[str]) -> Config:
                 values[field.name] = ""
                 continue
             raise ConfigurationError(f"configuration is missing {field.name}")
-        raw = payload[field.name]
-        if field.name == "external_scheduler":
-            if type(raw) is not bool:
-                raise ConfigurationError("external_scheduler must be a boolean")
-            values[field.name] = raw
-        elif field.name == "log_retention_days":
-            if type(raw) is not int or raw < 1:
-                raise ConfigurationError(
-                    "log_retention_days must be a positive integer"
-                )
-            values[field.name] = raw
-        elif type(raw) is not str or not raw:
-            raise ConfigurationError(f"{field.name} must be a non-empty string")
-        elif field.name in _PATH_FIELDS:
-            candidate = Path(raw)
-            if not candidate.is_absolute():
-                raise ConfigurationError(f"{field.name} must be absolute")
-            values[field.name] = candidate
-        else:
-            values[field.name] = raw
+        values[field.name] = _required_config_value(field.name, payload[field.name])
+    return values
+
+
+def load_config(path: str | os.PathLike[str]) -> Config:
+    """Read the non-secret poller configuration written by the installer role."""
+
+    payload = _read_config_payload(path)
+    unpublishable = []
+    values = _config_values(payload, unpublishable)
     # Two URLs for one check is what the vault contract refuses, compared by the
     # same function. A configuration that still carries them pings neither, so
     # both checks go silent and alert, rather than every tick vouching for a
@@ -2328,6 +2356,88 @@ def _eligible_revision(
     return selection
 
 
+def _poll_selection(config: Config, retry_sha: str | None) -> Selection:
+    """Decide what this poll may deploy, recording whether it could see."""
+
+    # Eligibility is the part that reaches the network. Failing it leaves
+    # the poller unable to deploy anything at all, and a poll that decides
+    # nothing looks exactly like a poll with nothing to do, so the outcome
+    # is tracked rather than only printed to a cron mailbox nobody reads.
+    try:
+        head = resolve_main_sha(config)
+        selection = _eligible_revision(config, head, retry_sha)
+    except EligibilityError as error:
+        note_blind_poll(config, str(error))
+        raise
+    note_seeing_poll(config)
+    if selection.verdict is not None:
+        note_ci_refusal(config, selection.judged, *selection.verdict)
+    return selection
+
+
+def _deploy_once(config: Config, candidate: str, log) -> tuple[bool, str]:
+    """Deploy one candidate: whether it succeeded, and how a failure is named."""
+
+    failure = "failed"
+    try:
+        succeeded = deploy(config, candidate, log)
+    except TransientDeploymentError as error:
+        # Nothing reached the target: every step that raises this runs
+        # before the first play. So the attempted record can be undone,
+        # and the next tick retries the revision rather than an operator
+        # -- #351, on a host whose premise is that nobody touches it.
+        # Bounded, and only ever undone here, where the record was made.
+        succeeded = False
+        note = f"production auto-deploy: transient failure: {error}"
+        log.write(note.encode("ascii", "replace") + b"\n")
+        if may_retry_after_transient_failure(config, candidate):
+            forget_attempt(config, candidate)
+            failure = "retrying"
+        else:
+            failure = "quarantined"
+    return succeeded, failure
+
+
+def _attempt(config: Config, selection: Selection) -> bool:
+    """Attempt the selected candidate once, under the held lock, and report it."""
+
+    candidate = selection.candidate
+    # Recorded before the attempt: a crash mid-deploy must not become a
+    # retry loop on the next five-minute tick.
+    record_attempt(config, candidate)
+    started = _timestamp()
+    with run_log(config, candidate) as log:
+        log_path = Path(log.name)
+        succeeded, failure = _deploy_once(config, candidate, log)
+        finished = _timestamp()
+        if succeeded:
+            record_success(config, candidate, finished)
+            # After the record, so nothing about the message can change
+            # it. What shipped was written by site.yml, which read the
+            # manifests and the Git history; succeeded means verify.yml
+            # passed too, so this is the one message a release gets.
+            announce_release(config, candidate, started, finished)
+        # A failure is announced here, best effort but never silent: a
+        # misconfigured publisher would otherwise lose every failure with
+        # nothing to show for it.
+        #
+        # The link is to the run that released the revision, which is what
+        # a human opens first to see what changed and whether it was green.
+        if not succeeded and not notify(
+            config,
+            candidate,
+            started,
+            finished,
+            log_path,
+            selection.verdict[2] if selection.verdict else "",
+            failure=failure,
+        ):
+            warning = "production auto-deploy: outcome notification failed"
+            log.write(warning.encode("ascii") + b"\n")
+            print(warning, file=sys.stderr)
+        return succeeded
+
+
 def poll(config: Config, retry_sha: str | None = None) -> bool | None:
     """Attempt at most one eligible revision. None means nothing was attempted."""
 
@@ -2339,21 +2449,8 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
         now = datetime.now(timezone.utc)
         rotate_logs(config, now)
         prune_attempts(config, now)
-        # Eligibility is the part that reaches the network. Failing it leaves
-        # the poller unable to deploy anything at all, and a poll that decides
-        # nothing looks exactly like a poll with nothing to do, so the outcome
-        # is tracked rather than only printed to a cron mailbox nobody reads.
-        try:
-            head = resolve_main_sha(config)
-            selection = _eligible_revision(config, head, retry_sha)
-        except EligibilityError as error:
-            note_blind_poll(config, str(error))
-            raise
-        note_seeing_poll(config)
-        if selection.verdict is not None:
-            note_ci_refusal(config, selection.judged, *selection.verdict)
-        candidate = selection.candidate
-        if candidate is None:
+        selection = _poll_selection(config, retry_sha)
+        if selection.candidate is None:
             return None
         if retry_sha is not None:
             forget_attempt(config, retry_sha)
@@ -2361,57 +2458,7 @@ def poll(config: Config, retry_sha: str | None = None) -> bool | None:
             # too. Inheriting a spent one would quarantine the revision again on
             # the first blip after the very intervention meant to clear it.
             clear_transient_failures(config)
-
-        # Recorded before the attempt: a crash mid-deploy must not become a
-        # retry loop on the next five-minute tick.
-        record_attempt(config, candidate)
-        started = _timestamp()
-        failure = "failed"
-        with run_log(config, candidate) as log:
-            log_path = Path(log.name)
-            try:
-                succeeded = deploy(config, candidate, log)
-            except TransientDeploymentError as error:
-                # Nothing reached the target: every step that raises this runs
-                # before the first play. So the attempted record can be undone,
-                # and the next tick retries the revision rather than an operator
-                # -- #351, on a host whose premise is that nobody touches it.
-                # Bounded, and only ever undone here, where the record was made.
-                succeeded = False
-                note = f"production auto-deploy: transient failure: {error}"
-                log.write(note.encode("ascii", "replace") + b"\n")
-                if may_retry_after_transient_failure(config, candidate):
-                    forget_attempt(config, candidate)
-                    failure = "retrying"
-                else:
-                    failure = "quarantined"
-            finished = _timestamp()
-            if succeeded:
-                record_success(config, candidate, finished)
-                # After the record, so nothing about the message can change
-                # it. What shipped was written by site.yml, which read the
-                # manifests and the Git history; succeeded means verify.yml
-                # passed too, so this is the one message a release gets.
-                announce_release(config, candidate, started, finished)
-            # A failure is announced here, best effort but never silent: a
-            # misconfigured publisher would otherwise lose every failure with
-            # nothing to show for it.
-            #
-            # The link is to the run that released the revision, which is what
-            # a human opens first to see what changed and whether it was green.
-            if not succeeded and not notify(
-                config,
-                candidate,
-                started,
-                finished,
-                log_path,
-                selection.verdict[2] if selection.verdict else "",
-                failure=failure,
-            ):
-                warning = "production auto-deploy: outcome notification failed"
-                log.write(warning.encode("ascii") + b"\n")
-                print(warning, file=sys.stderr)
-        return succeeded
+        return _attempt(config, selection)
 
 
 def _holder_description(holder: dict | None) -> str:
@@ -2786,6 +2833,29 @@ def print_status(config: Config) -> None:
     print(f"next poll: {verdict}")
 
 
+def _playbook_arguments(remaining: list[str]) -> list[str]:
+    """What --converge hands ansible-playbook, less one leading separator."""
+
+    playbook_arguments = list(remaining)
+    if playbook_arguments and playbook_arguments[0] == "--":
+        playbook_arguments = playbook_arguments[1:]
+    return playbook_arguments
+
+
+def _complete_arguments(config_path, mode, retry_sha, playbook_arguments):
+    """The parsed invocation, or None when it names too little to run."""
+
+    if config_path is None or mode is None:
+        return None
+    if mode == "retry" and (
+        retry_sha is None or SHA_PATTERN.fullmatch(retry_sha) is None
+    ):
+        return None
+    if mode == "converge" and not playbook_arguments:
+        return None
+    return config_path, mode, retry_sha, playbook_arguments
+
+
 def _parse_arguments(argv):
     config_path = None
     mode = None
@@ -2812,21 +2882,100 @@ def _parse_arguments(argv):
             # with nothing here only because parsing stops at this point. The
             # launcher supplies --config first, so it is always already seen.
             mode = "converge"
-            playbook_arguments = list(remaining)
+            playbook_arguments = _playbook_arguments(remaining)
             remaining = []
-            if playbook_arguments and playbook_arguments[0] == "--":
-                playbook_arguments = playbook_arguments[1:]
         else:
             return None
-    if config_path is None or mode is None:
-        return None
-    if mode == "retry" and (
-        retry_sha is None or SHA_PATTERN.fullmatch(retry_sha) is None
-    ):
-        return None
-    if mode == "converge" and not playbook_arguments:
-        return None
-    return config_path, mode, retry_sha, playbook_arguments
+    return _complete_arguments(config_path, mode, retry_sha, playbook_arguments)
+
+
+def _verify_mode(config: Config) -> int:
+    """Run --verify and ping its check with the verdict."""
+
+    # The verify check's ping (#610), keyed only on what verify() hands
+    # back, so it survives any change to how verify() reaches its
+    # verdict. True pings plain and False pings /fail, every run,
+    # whatever note_verify_verdict decided to page: the check needs the
+    # heartbeat, not the change. A run that could not verify at all -- any
+    # raise, OSError included, which leaves `passed` False -- pings /fail
+    # as well, because off the box a verification that could not run is
+    # a failure. None is a skip -- lock held, nothing deployed, the
+    # checkout not at the deployed revision -- and pings nothing, so a
+    # verify that keeps skipping goes silent and alerts after the grace
+    # period, which is the state that must not hide. ping_healthchecks
+    # never raises, so this `finally` changes no exception, return value
+    # or message.
+    passed = False
+    try:
+        passed = verify(config)
+    except OSError as error:
+        # Nothing was verified, so no verdict is recorded and Pushover hears
+        # nothing; the external verify check still hears /fail from the
+        # `finally` below.
+        print(f"production auto-deploy: could not verify: {error}",
+              file=sys.stderr)
+        return 1
+    finally:
+        if passed is not None:
+            ping_healthchecks(config, config.healthchecks_verify_ping_url,
+                              passed is False)
+    if passed is False:
+        print("production auto-deploy: verification failed", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _poll_mode(config: Config, mode: str, retry_sha: str | None) -> int:
+    """Run --poll or --retry-failed, pinging the tick check for --poll only."""
+
+    # The tick heartbeat (#606), sent after poll() has released the lock.
+    # None is healthy: nothing to deploy, a quarantined revision waiting for
+    # an operator, or the lock held by a deployment or a verify. True is a
+    # deployment. False is a failed deployment and pings /fail, but only for
+    # the tick that failed: the revision is quarantined after one attempt,
+    # so the ticks after a #327- or #559-shaped failure have nothing to do
+    # and ping plain again -- /fail, then plain, then plain. A transient
+    # failure is retried for up to TRANSIENT_FORGIVENESS_LIMIT ticks and
+    # pings /fail on each. That is the intent rather than a gap: a failure
+    # that persists on the box is paged there, through Pushover, and --status
+    # names the revision; these external checks exist to hear the NAS or
+    # the poller being gone, which nothing on the box can report. A raise
+    # that is not caught below leaves `outcome` False: a tick that did not
+    # finish. An OSError is caught, and leaves it False as well (#658): a
+    # state or log directory the installer owns is missing or unwritable,
+    # so nothing was deployed and the tick pings /fail -- only the report
+    # changes, from a traceback to the sentence below. An EligibilityError
+    # pings plain: GitHub could not be read, but the poller is alive and
+    # deciding, and sustained blindness already pages on-box after
+    # BLIND_POLL_THRESHOLD polls, where a /fail here would page off-box on a
+    # single GitHub blip. A manual --retry-failed pings nothing, so it
+    # cannot vouch for a dead cron. ping_healthchecks never raises, so this
+    # `finally` changes no exception, exit code or message.
+    outcome = False
+    try:
+        outcome = poll(config, retry_sha=retry_sha)
+    except EligibilityError:
+        outcome = None
+        raise
+    except OSError as error:
+        # A private directory the installer owns is missing or unwritable.
+        # Cron keeps only the most recent output, so this has to read as a
+        # sentence rather than as a traceback a week after the fact. The
+        # --verify branch above and scripts/image_prune.py report the same
+        # class the same way; this was the branch that ran every five
+        # minutes and did not (#658). `outcome` stays False, so the
+        # `finally` still pings /fail for the tick.
+        print(f"production auto-deploy: {error.filename or 'a managed path'} is unusable",
+              file=sys.stderr)
+        return 1
+    finally:
+        if mode == "poll":
+            ping_healthchecks(config, config.healthchecks_poller_ping_url,
+                              outcome is False)
+    if outcome is False:
+        print("production auto-deploy: attempt failed", file=sys.stderr)
+        return 1
+    return 0
 
 
 def main(argv=None) -> int:
@@ -2845,81 +2994,8 @@ def main(argv=None) -> int:
         if mode == "converge":
             return converge(config, playbook_arguments)
         if mode == "verify":
-            # The verify check's ping (#610), keyed only on what verify() hands
-            # back, so it survives any change to how verify() reaches its
-            # verdict. True pings plain and False pings /fail, every run,
-            # whatever note_verify_verdict decided to page: the check needs the
-            # heartbeat, not the change. A run that could not verify at all -- any
-            # raise, OSError included, which leaves `passed` False -- pings /fail
-            # as well, because off the box a verification that could not run is
-            # a failure. None is a skip -- lock held, nothing deployed, the
-            # checkout not at the deployed revision -- and pings nothing, so a
-            # verify that keeps skipping goes silent and alerts after the grace
-            # period, which is the state that must not hide. ping_healthchecks
-            # never raises, so this `finally` changes no exception, return value
-            # or message.
-            passed = False
-            try:
-                passed = verify(config)
-            except OSError as error:
-                # Nothing was verified, so no verdict is recorded and Pushover hears
-                # nothing; the external verify check still hears /fail from the
-                # `finally` below.
-                print(f"production auto-deploy: could not verify: {error}",
-                      file=sys.stderr)
-                return 1
-            finally:
-                if passed is not None:
-                    ping_healthchecks(config, config.healthchecks_verify_ping_url,
-                                      passed is False)
-            if passed is False:
-                print("production auto-deploy: verification failed", file=sys.stderr)
-                return 1
-            return 0
-        # The tick heartbeat (#606), sent after poll() has released the lock.
-        # None is healthy: nothing to deploy, a quarantined revision waiting for
-        # an operator, or the lock held by a deployment or a verify. True is a
-        # deployment. False is a failed deployment and pings /fail, but only for
-        # the tick that failed: the revision is quarantined after one attempt,
-        # so the ticks after a #327- or #559-shaped failure have nothing to do
-        # and ping plain again -- /fail, then plain, then plain. A transient
-        # failure is retried for up to TRANSIENT_FORGIVENESS_LIMIT ticks and
-        # pings /fail on each. That is the intent rather than a gap: a failure
-        # that persists on the box is paged there, through Pushover, and --status
-        # names the revision; these external checks exist to hear the NAS or
-        # the poller being gone, which nothing on the box can report. A raise
-        # that is not caught below leaves `outcome` False: a tick that did not
-        # finish. An OSError is caught, and leaves it False as well (#658): a
-        # state or log directory the installer owns is missing or unwritable,
-        # so nothing was deployed and the tick pings /fail -- only the report
-        # changes, from a traceback to the sentence below. An EligibilityError
-        # pings plain: GitHub could not be read, but the poller is alive and
-        # deciding, and sustained blindness already pages on-box after
-        # BLIND_POLL_THRESHOLD polls, where a /fail here would page off-box on a
-        # single GitHub blip. A manual --retry-failed pings nothing, so it
-        # cannot vouch for a dead cron. ping_healthchecks never raises, so this
-        # `finally` changes no exception, exit code or message.
-        outcome = False
-        try:
-            outcome = poll(config, retry_sha=retry_sha)
-        except EligibilityError:
-            outcome = None
-            raise
-        except OSError as error:
-            # A private directory the installer owns is missing or unwritable.
-            # Cron keeps only the most recent output, so this has to read as a
-            # sentence rather than as a traceback a week after the fact. The
-            # --verify branch above and scripts/image_prune.py report the same
-            # class the same way; this was the branch that ran every five
-            # minutes and did not (#658). `outcome` stays False, so the
-            # `finally` still pings /fail for the tick.
-            print(f"production auto-deploy: {error.filename or 'a managed path'} is unusable",
-                  file=sys.stderr)
-            return 1
-        finally:
-            if mode == "poll":
-                ping_healthchecks(config, config.healthchecks_poller_ping_url,
-                                  outcome is False)
+            return _verify_mode(config)
+        return _poll_mode(config, mode, retry_sha)
     except ConfigurationError:
         # No ping: the URL is in the file that could not be trusted. The tick
         # check hears silence and alerts once its grace period runs out.
@@ -2931,10 +3007,6 @@ def main(argv=None) -> int:
         print("production auto-deploy: could not determine a candidate",
               file=sys.stderr)
         return 0
-    if outcome is False:
-        print("production auto-deploy: attempt failed", file=sys.stderr)
-        return 1
-    return 0
 
 
 if __name__ == "__main__":
