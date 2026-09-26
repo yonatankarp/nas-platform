@@ -12,8 +12,15 @@
 # already absent is silent, and the run that first tears the project down
 # reports that it did.
 #
-# Every term carries a default, because each of the six tasks behind them is
+# Every term carries a default, because each of the tasks behind them is
 # conditional and a reader of an undefined name is an error rather than a false.
+#
+# The pre-upgrade copy is not a term (#836). roles/pre_upgrade_backup registers
+# it host-wide, and when this role skips its include nothing overwrites the one
+# Kapowarr's include left, so naming it would report Kapowarr's copy as a
+# Vaultwarden deployment. Nothing is lost: a copy runs only on a pending upgrade,
+# so a run that reaches here after one has changed vaultwarden_deploy too. The
+# restart is safe to name because only a rescue that fails the host writes it.
 - name: Report the Vaultwarden deployment
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -24,6 +31,5 @@
       {{ ((vaultwarden_deploy | default({})) is changed) or
          ((vaultwarden_teardown | default({})) is changed) or
          ((vaultwarden_wedged_recreate | default({})) is changed) or
-         ((pre_upgrade_backup_copy | default({})) is changed) or
          ((pre_upgrade_backup_restart | default({})) is changed) or
          ((vaultwarden_serve_placed | default({})) is changed) }}
