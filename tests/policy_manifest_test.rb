@@ -598,7 +598,7 @@ expect_failure(failures, "Karakeep pre-upgrade copy after the Meilisearch guard"
                detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "roles/karakeep/tasks/deploy.yml") do |tasks|
     guard_for = lambda do |service|
-      tasks.index { |task| task.dig("ansible.builtin.include_role", "vars", "image_downgrade_guard_compose_service") == service }
+      tasks.index { |task| task.dig("vars", "image_downgrade_guard_compose_service") == service }
     end
     meili = guard_for.call("meilisearch")
     app = guard_for.call("karakeep")
