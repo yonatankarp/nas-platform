@@ -1,0 +1,3 @@
+---
+# Nothing beyond the store and its write-ahead log unless the caller names it.
+pre_upgrade_backup_extra_patterns: []

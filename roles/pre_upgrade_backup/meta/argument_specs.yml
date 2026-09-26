@@ -1,0 +1,88 @@
+---
+argument_specs:
+  main:
+    short_description: >-
+      Copy a self-migrating service's SQLite store aside before a pinned upgrade
+    description:
+      - >-
+        For a service that migrates its own store when it starts, a pin is not
+        freely reversible. When the image the service's container was created
+        from differs from the one the release pins, this role stops that
+        container, copies the store and its write-ahead log into a private
+        directory beside it, and lets the caller's deployment start the new
+        image. A failed copy starts the old container again, over a store that
+        is still there, and fails the run. The copy is on the same disk and is
+        not a backup.
+      - >-
+        Include it with ansible.builtin.include_role after
+        roles/image_downgrade_guard and before the Compose deployment, and name
+        pre_upgrade_backup_restart in the caller's deployment report.
+    options:
+      pre_upgrade_backup_service_name:
+        type: str
+        required: true
+        description: >-
+          The manifest service directory under services/, whose deployed Compose
+          files and rendered .env the stop and the restart use. Hyphenated, as
+          the directory is -- paperless-ngx, not paperless_ngx.
+      pre_upgrade_backup_compose_service:
+        type: str
+        required: true
+        description: >-
+          The Compose service key whose container holds the store. It alone is
+          stopped and started again.
+      pre_upgrade_backup_project_name:
+        type: str
+        required: true
+        description: >-
+          The Compose project the containers carry as a label, so a sandbox
+          running its own copy of the platform judges its own containers.
+      pre_upgrade_backup_pinned_image:
+        type: str
+        required: true
+        description: >-
+          The image reference the release pins for that Compose service. An
+          empty value is no pin, and never an upgrade.
+      pre_upgrade_backup_store_dir:
+        type: path
+        required: true
+        description: The host directory holding the store.
+      pre_upgrade_backup_store_file:
+        type: str
+        required: true
+        description: >-
+          The SQLite store's file name inside that directory. Its -wal and -shm
+          are copied with it whenever they exist.
+      pre_upgrade_backup_extra_patterns:
+        type: list
+        elements: str
+        required: false
+        default: []
+        description: >-
+          Further find patterns in the store directory the copy must carry,
+          such as a signing key the store is worthless without.
+      pre_upgrade_backup_path:
+        type: path
+        required: true
+        description: >-
+          The directory the copy is written to, at 0700 with each file at 0600.
+          One generation: files of the store's write-ahead log this run did not
+          copy are removed.
+      pre_upgrade_backup_manage_ownership:
+        type: bool
+        required: true
+        description: >-
+          Whether the directory and files are chowned to nas_uid and nas_gid.
+          False where the controller cannot chown, such as Docker Desktop.
+      platform_current_dir:
+        type: path
+        required: true
+      platform_runtime_dir:
+        type: path
+        required: true
+      platform_service_compose_files:
+        type: dict
+        required: true
+      platform_compose_wait_timeout:
+        type: int
+        required: true

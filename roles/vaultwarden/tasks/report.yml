@@ -24,6 +24,6 @@
       {{ ((vaultwarden_deploy | default({})) is changed) or
          ((vaultwarden_teardown | default({})) is changed) or
          ((vaultwarden_wedged_recreate | default({})) is changed) or
-         ((vaultwarden_pre_upgrade_copy | default({})) is changed) or
-         ((vaultwarden_pre_upgrade_restart | default({})) is changed) or
+         ((pre_upgrade_backup_copy | default({})) is changed) or
+         ((pre_upgrade_backup_restart | default({})) is changed) or
          ((vaultwarden_serve_placed | default({})) is changed) }}
