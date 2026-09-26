@@ -169,11 +169,19 @@ proxy = compose.fetch("services").fetch("socket-proxy")
 # The hub alone joins the external bridge host_prep creates for the Dozzle alert
 # relay, and names default beside it: a service with a networks key joins only
 # what it lists, so dropping default cuts the portable agent off from hub:8090.
+# The socket proxy shares only the internal docker-api network, and only with
+# agent-portable (#829); docker-api-publish is its own, and carries the
+# loopback port agent-intel reaches it on. Every service's membership is pinned,
+# so a hub moved onto the proxy's network is a refusal.
 refuse("hub must join default and the external alert-relay bridge, and nothing else may") unless
   compose.fetch("services").fetch("hub")["networks"] == %w[default alert-bridge] &&
     compose["networks"] == { "default" => {},
-                             "alert-bridge" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" } } &&
-    compose.fetch("services").none? { |name, service| name != "hub" && service.key?("networks") }
+                             "alert-bridge" => { "external" => true, "name" => "${PLATFORM_ALERT_RELAY_NETWORK:?}" },
+                             "docker-api" => { "internal" => true },
+                             "docker-api-publish" => {} } &&
+    compose.fetch("services").transform_values { |service| service["networks"] } ==
+      { "hub" => %w[default alert-bridge], "agent-portable" => %w[default docker-api],
+        "agent-intel" => nil, "socket-proxy" => %w[docker-api docker-api-publish] }
 refuse("NAS Intel agent image differs") unless
   intel.fetch("image").start_with?("ghcr.io/henrygd/beszel/beszel-agent-intel:")
 refuse("NAS Intel render device differs") unless

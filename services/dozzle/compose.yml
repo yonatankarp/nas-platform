@@ -90,6 +90,13 @@ services:
       DOZZLE_NO_ANALYTICS: "true"
       DOZZLE_REMOTE_HOST: tcp://socket-proxy:2375
       TZ: ${TZ:?}
+    # Dozzle is the proxy's only consumer, so the proxy cannot be isolated from
+    # it; the internal docker-api network keeps everything else, the relay
+    # included, off it (#829). default carries the published port and
+    # alert-relay:8081.
+    networks:
+      - default
+      - docker-api
     depends_on:
       socket-proxy:
         condition: service_healthy
@@ -115,6 +122,10 @@ services:
     labels:
       dev.dozzle.group: dozzle
       dev.dozzle.name: socket-proxy
+    # CONTAINERS serves every container's environment (#829), so it joins the
+    # internal network Dozzle alone shares, and publishes nothing.
+    networks:
+      - docker-api
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     environment:
@@ -147,3 +158,5 @@ networks:
   alert-bridge:
     external: true
     name: ${PLATFORM_ALERT_RELAY_NETWORK:?}
+  docker-api:
+    internal: true
