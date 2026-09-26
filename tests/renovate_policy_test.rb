@@ -782,4 +782,87 @@ restated_pin_files.each_value do |paths|
   end
 end
 
+# #826: withholding the merge is the half that runs before a pin reaches the
+# host; roles/image_downgrade_guard is the half that runs on it, refusing a pin
+# older than one that has already migrated the store. Every image in
+# SELF_MIGRATING_APPLICATION_IMAGES therefore needs a guard call on the Compose
+# service that runs it, and #784 and #797 moved two of them with none. Derived
+# from the call sites rather than listed, and closed both ways: an image in the
+# set with no call is the gap #826 found, and a call guarding an image outside
+# the set is either a set that went stale or an exception nobody wrote down.
+#
+# Two call sites are outside the set on purpose, for different reasons, and
+# roles/image_downgrade_guard is the same control either way:
+DOWNGRADE_GUARD_EXCEPTIONS = {
+  # Left in #781 with its pin still one-way; the upgrade lane now proves its
+  # bumps before the merge, and the guard still refuses a rollback after it.
+  "ghcr.io/vavallee/bindery" => "bindery",
+  # Left in #547 because an older image still opens a newer store, but its call
+  # site carries a second reason: a CVE floor under the pin.
+  "docker.io/vaultwarden/server" => "vaultwarden"
+}.freeze
+# The stated floor, so a walk that quietly matched nothing -- a renamed module,
+# a role that moved its tasks -- fails here instead of passing every loop.
+EXPECTED_DOWNGRADE_GUARD_CALLS = [
+  %w[bindery bindery], %w[immich immich-server], %w[jellyfin jellyfin],
+  %w[kapowarr kapowarr], %w[karakeep karakeep], %w[karakeep meilisearch],
+  %w[nextcloud nextcloud], %w[paperless-ngx webserver], %w[vaultwarden vaultwarden]
+].freeze
+
+def downgrade_guard_calls(node, found = [])
+  case node
+  when Array then node.each { |child| downgrade_guard_calls(child, found) }
+  when Hash
+    include_role = node.find do |key, _|
+      %w[include_role import_role ansible.builtin.include_role
+         ansible.builtin.import_role].include?(key)
+    end&.last
+    if include_role.is_a?(Hash) && include_role["name"] == "image_downgrade_guard"
+      found << node.fetch("vars", {})
+    end
+    %w[block rescue always].each { |key| downgrade_guard_calls(node[key], found) }
+  end
+  found
+end
+
+guard_calls = Dir.glob(File.join(ROOT, "roles", "*", "tasks", "*.yml")).sort.flat_map do |path|
+  next [] if path.include?("/roles/image_downgrade_guard/")
+
+  downgrade_guard_calls(YAML.safe_load_file(path, aliases: true)).map do |vars|
+    [vars["image_downgrade_guard_service_name"].to_s,
+     vars["image_downgrade_guard_compose_service"].to_s,
+     path.delete_prefix("#{ROOT}/")]
+  end
+end
+check(failures, guard_calls.map { |call| call.first(2) }.sort == EXPECTED_DOWNGRADE_GUARD_CALLS.sort,
+      "the image_downgrade_guard call sites must be #{EXPECTED_DOWNGRADE_GUARD_CALLS.inspect}, " \
+      "found #{guard_calls.map { |call| call.first(2) }.sort.inspect}")
+
+guarded_images = guard_calls.to_h do |directory, service, relative|
+  compose_path = File.join(ROOT, "services", directory, "compose.yml")
+  compose = File.file?(compose_path) ? YAML.safe_load_file(compose_path, aliases: true) : {}
+  image = compose.dig("services", service, "image")
+  check(failures, !image.nil? && !directory.include?("{{") && !service.include?("{{"),
+        "#{relative} guards #{directory}/#{service}, which names no image in " \
+        "services/#{directory}/compose.yml; a guard on a service with no pin guards nothing")
+  [compose_image_repository(image), directory]
+end
+
+SELF_MIGRATING_APPLICATION_IMAGES.each do |package, directory|
+  check(failures, guarded_images[package] == directory,
+        "#{package} migrates its own store on start but no role calls " \
+        "roles/image_downgrade_guard on the Compose service in services/#{directory} " \
+        "that runs it, so a reverted pin reaches the host unrefused (#511, #826)")
+end
+guarded_images.each do |package, directory|
+  expected = SELF_MIGRATING_APPLICATION_IMAGES.merge(DOWNGRADE_GUARD_EXCEPTIONS)[package]
+  check(failures, expected == directory,
+        "roles/image_downgrade_guard guards #{package} in services/#{directory}, which is " \
+        "neither in SELF_MIGRATING_APPLICATION_IMAGES nor a stated DOWNGRADE_GUARD_EXCEPTIONS entry")
+end
+DOWNGRADE_GUARD_EXCEPTIONS.each_key do |package|
+  check(failures, !SELF_MIGRATING_APPLICATION_IMAGES.key?(package),
+        "#{package} is both self-migrating and a downgrade guard exception; drop the exception")
+end
+
 report(failures, "renovate policy: all checks passed", "Renovate policy regression(s)")
