@@ -903,7 +903,10 @@ are stored as a key ID beside a SHA-256 hash of their secret, and sessions are
 encrypted JWTs keyed from the `NEXTAUTH_SECRET` in its `.env` with no session
 row written, so a copy of the database mints no API access and no login by
 itself -- all three measured against the pin; the archived pages, assets and
-screenshots beside it are user data rather than credentials), and application
+screenshots beside it are user data rather than credentials; since #826
+`pre-upgrade-backup/` beside it holds a 0600 copy of `db.db` and `queue.db`
+taken before each pinned upgrade, which carries the same hashes and is exactly
+as secret-bearing), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 

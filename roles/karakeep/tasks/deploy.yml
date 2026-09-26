@@ -125,9 +125,10 @@
 # and stop Karakeep every five minutes. It also means both refusals land before
 # anything is stopped. tests/policy_test.rb holds the order.
 #
-# WHAT IS COPIED. db.db, in SQLite's default rollback-journal mode: the image
-# leaves DB_WAL_MODE at its default of false and this stack does not set it, so a
-# hot db.db-journal is what an unclean stop leaves, and the role carries it.
+# WHAT IS COPIED. db.db, which the application opens in rollback-journal mode:
+# upstream's DB_WAL_MODE defaults to false at this pin and this stack does not set
+# it, so a hot db.db-journal is what an unclean stop leaves. The role reads -wal,
+# -shm and -journal alike, so the copy is right in either mode.
 # queue.db beside it is the job queue, and liteque migrates it on start too, so a
 # rollback that restored db.db alone would hand the older image a queue schema it
 # may not know. ponytail: queue.db's own journal is not carried -- the role prunes
