@@ -8,7 +8,7 @@ argument_specs:
         For a service that migrates its own store when it starts, a pin is not
         freely reversible. When the image the service's container was created
         from differs from the one the release pins, this role stops that
-        container, copies the store and its write-ahead log into a private
+        container, copies the store and its journal files into a private
         directory beside it, and lets the caller's deployment start the new
         image. A failed copy starts the old container again, over a store that
         is still there, and fails the run. The copy is on the same disk and is
@@ -51,8 +51,8 @@ argument_specs:
         type: str
         required: true
         description: >-
-          The SQLite store's file name inside that directory. Its -wal and -shm
-          are copied with it whenever they exist.
+          The SQLite store's file name inside that directory. Its -wal, -shm and
+          -journal are copied with it whenever they exist.
       pre_upgrade_backup_extra_patterns:
         type: list
         elements: str
@@ -66,7 +66,7 @@ argument_specs:
         required: true
         description: >-
           The directory the copy is written to, at 0700 with each file at 0600.
-          One generation: files of the store's write-ahead log this run did not
+          One generation: journal files of the store this run did not
           copy are removed.
       pre_upgrade_backup_manage_ownership:
         type: bool

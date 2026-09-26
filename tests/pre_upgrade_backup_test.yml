@@ -54,19 +54,26 @@
     # rescue's start adds an `up` and the same read after it.
     backup_stop_calls: ["up --no-start --no-recreate", "ps", "stop", "ps"]
     backup_cases:
-      - name: a pending upgrade copies the store, its log and the signing key privately after the stop
+      # A -journal beside a -wal is not a state SQLite leaves, but the copy reads
+      # the set rather than the journal mode, so one case carries all three:
+      # Karakeep's store runs the rollback journal, and a hot one after an
+      # unclean stop is part of the store.
+      - name: a pending upgrade copies the store, its journals and the signing key privately after the stop
         deployed: "{{ backup_old }}"
         pinned: "{{ backup_new }}"
-        store: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, rsa_key.pem, rsa_key.pub.pem, attachments.txt]
+        store: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, db.sqlite3-journal, rsa_key.pem, rsa_key.pub.pem,
+                attachments.txt]
         manage_ownership: true
         expect_calls: "{{ backup_stop_calls }}"
         expect_state: exited
-        expect_copy: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, rsa_key.pem, rsa_key.pub.pem]
+        expect_copy: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, db.sqlite3-journal, rsa_key.pem, rsa_key.pub.pem]
       - name: a later upgrade keeps one generation, and ownership is left alone when not managed
         deployed: "{{ backup_old }}"
         pinned: "{{ backup_new }}"
         store: [db.sqlite3, rsa_key.pem]
-        stale_backup: [db.sqlite3-wal, db.sqlite3-shm]
+        # A stale -journal is the dangerous one: SQLite would treat it as hot
+        # and roll the restored store back with another generation's pages.
+        stale_backup: [db.sqlite3-wal, db.sqlite3-shm, db.sqlite3-journal]
         manage_ownership: false
         expect_calls: "{{ backup_stop_calls }}"
         expect_state: exited
