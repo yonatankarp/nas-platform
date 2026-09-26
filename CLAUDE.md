@@ -451,13 +451,17 @@ reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions
 rather than schema versions because the schema lives in a store only the
 application can open; the role names the three routes to the real version and
-why each was rejected. It has already spread past the set above: Bindery,
-Kapowarr (#671), Karakeep — twice, once for Meilisearch's index — and Vaultwarden
-call it today -- Jellyfin since its 12.1 bump -- and the Vaultwarden call site
-records a second reason for it, a CVE floor under the pin that this guard does
-not read. The role takes the
-manifest directory, the Compose service key and the project name as arguments, so
-the self-migrating images that have not adopted it can do so unchanged.
+why each was rejected. **Every self-migrating image is guarded, and that is
+enforced rather than conventional (#826)**: `tests/renovate_policy_test.rb`
+derives the call sites from `roles/*/tasks`, requires one on the Compose
+service running each image in `SELF_MIGRATING_APPLICATION_IMAGES`, and refuses
+a call guarding anything else unless `DOWNGRADE_GUARD_EXCEPTIONS` names it --
+Bindery, whose pin is still one-way though the set no longer withholds it, and
+Vaultwarden, whose call site records a second reason, a CVE floor under the pin
+that this guard does not read. `EXPECTED_DOWNGRADE_GUARD_CALLS` beside them is
+the stated floor, and it is what to read instead of a list here. Immich,
+Paperless-ngx and Nextcloud adopted it only there, after #784 and #797 had
+already moved two of those pins with nothing refusing a way back.
 
 **Container CPU policy.** Production containers are pinned to logical CPUs `0-2`
 of four, each with a workload-specific 0.5–3.0 CPU ceiling. Ansible derives and
