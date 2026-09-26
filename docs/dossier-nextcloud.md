@@ -328,19 +328,26 @@ Since #826, `roles/image_downgrade_guard` refuses that revert before Compose
 touches the stack, so the converge fails naming the version the store has
 already run, rather than recreating a container that exits on every start.
 
-[`renovate.json`](../renovate.json) holds Nextcloud **majors** behind
-`dependencyDashboardApproval` for that reason — the pull request is withheld
-until a human ticks the box, rather than merely labelled. Note what is *not* the
+[`renovate.json`](../renovate.json) withholds Nextcloud **majors** from
+automerge for that reason, with `automerge: false`: the pull request opens and
+the merge waits for a human. It withholds the merge and never the pull request,
+because a withheld pull request is an update nobody sees;
+`tests/renovate_policy_test.rb` refuses `dependencyDashboardApproval` anywhere
+in that file. Note what is *not* the
 reason: the entrypoint's refusal to skip a major is nested under
 `installed_version != 0.0.0.0`, so a volume with no `version.php` — which is what
 a gated-off stack has — takes the fresh-install path and installs cleanly at
 whatever major is pinned. That refusal binds an installed volume only.
 
-**And the open consequence, which this dossier names rather than resolves.**
-Minors and patches still automerge, and `version_greater` sends *every* version
-increase through that same unattended one-way `occ upgrade`; the production
-poller converges the newest released `main` within five minutes. Dropping the
-backup made minors irreversible too, not only majors. That matches how Seafile is
+**And the consequence, which this dossier names rather than resolves.**
+`version_greater` sends *every* version increase through that same unattended
+one-way `occ upgrade`, not only a major, and the production poller converges
+the newest released `main` within five minutes. So Nextcloud is also in the
+self-migrating rule in `renovate.json`, which withholds its minors and patches
+from automerge too. A human merges every version bump; a digest refresh on an
+unchanged tag moves no version and is not withheld. What the merge still does
+not have is a backup: dropping it made minors irreversible too, not only
+majors. That matches how Seafile is
 treated and it was inherited rather than chosen, which is precisely why it
 deserves a deliberate decision the day this stack holds files somebody would
 miss. Unverified: whether any minor has ever needed a rollback here.
