@@ -43,8 +43,10 @@ require "yaml"
 require_relative "case_pool_support"
 require_relative "http_fixture_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -729,76 +731,42 @@ end
 # wrapper.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
-                       wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-seerr-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    wrapper_path = File.join(contracts, "seerr.sh")
-    File.write(wrapper_path, wrapper)
-    File.chmod(0o755, wrapper_path)
-    File.write(File.join(contracts, "seerr-static.rb"), static)
-    File.write(File.join(contracts, "seerr-runtime.rb"), runtime)
-    yield wrapper_path, root
-  end
+                       wrapper: File.read(CONTRACT), &block)
+  with_contract_sandbox("seerr", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
 # Reports what each program saw on stdin and what the caller still has, which is
 # the only way the redirect is observable: neither real program reads stdin, so
 # the redirect is what keeps that true rather than something that changes an
 # outcome today.
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 def stdin_failures(wrapper_source: File.read(CONTRACT))
-  failures = []
   with_contract_copy(static: STDIN_PROBE, wrapper: wrapper_source) do |contract|
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
-      "/bin/sh", "-c", "#{contract.shellescape} static; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the probing shell itself failed: #{output.strip}" unless status.success?
-    failures << "stdin: the static program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
-    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless
-      output.include?("left:caller-payload")
+    stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
+                         subject: "the static program")
   end
-  failures
 end
 
 # The runtime half is reached by `exec`, so its redirect needs its own probe:
 # the static half must succeed first for the exec to happen at all.
 def runtime_stdin_failures(wrapper_source: File.read(CONTRACT))
-  failures = []
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
-    stdout, stderr, status = Open3.capture3(
-      {
-        "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
-        "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
-        "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
-        "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker")
-      },
-      "/bin/sh", "-c", "#{contract.shellescape} run; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
+    environment = {
+      "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
+      "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
+      "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
+      "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker")
+    }
     # The probing shell's own status is `cat`'s, not the probe's, so it says
     # nothing here. The probe's marker appearing IS the proof that the exec was
     # reached; and run mode must not have printed the static success line, which
     # is what exiting at the mode gate would look like.
-    failures << "runtime stdin: the runtime program was handed the caller's input: " \
-                "#{output.strip.inspect}" unless output.include?('probe read ""')
-    failures << "runtime stdin: the caller's input did not survive the contract: " \
-                "#{output.strip.inspect}" unless output.include?("left:caller-payload")
-    failures << "runtime stdin: run mode exited at the static gate instead of exec'ing: " \
-                "#{output.strip.inspect}" if output.include?(SUCCESS_LINE)
+    stdin_probe_failures(contract, %w[run], environment, prefix: "runtime stdin",
+                         subject: "the runtime program", status: false) do |output|
+      if output.include?(SUCCESS_LINE)
+        "runtime stdin: run mode exited at the static gate instead of exec'ing: #{output.strip.inspect}"
+      end
+    end
   end
-  failures
 end
 
 # The run-mode environment contract. Each name is refused with the WRAPPER'S OWN
@@ -1269,25 +1237,6 @@ WRAPPER_MUTATIONS = [
     layer: :run_env
   }
 ].freeze
-
-def plant(source, mutation, occurrences: 1)
-  from = mutation.fetch(:from)
-  found = source.scan(from).length
-  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
-       "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
-
-  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
-  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
-  planted
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
-end
 
 if ARGV.include?("--self-test")
   mismatches = []
