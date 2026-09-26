@@ -102,6 +102,7 @@
       a migration that goes wrong can be undone by restoring those files and
       pinning the older image. The copy is on this same disk and is not a
       backup.
+  register: pre_upgrade_backup_plan
   when:
     - ansible_check_mode
     - pre_upgrade_backup_upgrade_pending | bool

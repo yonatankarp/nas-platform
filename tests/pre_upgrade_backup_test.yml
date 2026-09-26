@@ -1,0 +1,303 @@
+---
+# Behaviour of roles/pre_upgrade_backup, the copy Kapowarr and Vaultwarden take
+# of their SQLite store before a pinned upgrade (#836). No integration lane can
+# reach it: every lane starts from an empty store, where no upgrade is pending,
+# and the upgrade lane converges neither Vaultwarden nor a failing copy. So its
+# stop, its copy and its rescue would otherwise first run on the NAS, against
+# the one store on the platform nothing can rebuild.
+#
+# This runs the shipped role through include_role, the way its callers do. The
+# release tree, the store and the Docker daemon are fixtures, and the daemon is a
+# `docker` stub on PATH that answers what the role and
+# community.docker.docker_compose_v2 actually ask of the CLI:
+#
+#   version --format {{ json . }}       the module's client probe, at start-up
+#   compose version --format json       the module's Compose version probe
+#   compose ... images --format json     the module's image listing around an `up`
+#   compose ... up --no-start ...        `state: stopped` creates before it stops
+#   compose ... ps --format json --all   ...and stops only what is not stopped
+#   compose ... stop -- <service>        the stop
+#   compose ... up ... --wait ...        the rescue's start
+#   container ls / container inspect     the role's own reads
+#
+# The stub reports Compose 2.20.0, which keeps the module on its plain-text
+# progress path and its single-document `ps` read; the JSON-event path Compose
+# 2.29 enables changes how output is parsed, not which commands are run, and
+# nothing here asserts on output. What makes it faithful where it matters: an
+# `up` without --no-recreate recreates the container onto the pinned image,
+# which is what Compose does and the failure `recreate: never` exists to
+# prevent; a stop checkpoints the store, so a copy taken before it lacks the
+# line the stop writes; and the stop and start flip a state the role's own
+# `container ls --filter status=running` reads back.
+- name: Prove the pre-upgrade copy
+  hosts: localhost
+  gather_facts: false
+  # Play level, because `environment` is not a task attribute of an include and
+  # the stub has to be on PATH for the modules the role runs inside it.
+  environment:
+    PATH: "{{ backup_root }}/bin:{{ lookup('env', 'PATH') }}"
+  vars:
+    # Per worktree, for the reason tests/image_downgrade_guard_test.yml gives:
+    # the environment above is templated before any task runs, and several
+    # worktrees of this repository run the gate at once.
+    backup_root: "{{ lookup('env', 'TMPDIR') | default('/tmp', true) }}/nas-platform-pre-upgrade-backup-{{ backup_worktree_id }}"
+    backup_worktree_id: "{{ (playbook_dir | hash('sha1'))[:12] }}"
+    backup_store_file: db.sqlite3
+    platform_current_dir: "{{ backup_root }}/current"
+    platform_runtime_dir: "{{ backup_root }}/runtime"
+    platform_service_compose_files: {fixture: [compose.yml]}
+    platform_compose_wait_timeout: 5
+    backup_old: registry.example/fixture:v1.0.0@sha256:aaaa
+    backup_new: registry.example/fixture:v1.1.0@sha256:bbbb
+    # What `state: stopped` asks: create without starting, read the state, stop
+    # what is not stopped, and read the state again for its result. The
+    # rescue's start adds an `up` and the same read after it.
+    backup_stop_calls: ["up --no-start --no-recreate", "ps", "stop", "ps"]
+    backup_cases:
+      - name: a pending upgrade copies the store, its log and the signing key privately after the stop
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, rsa_key.pem, rsa_key.pub.pem, attachments.txt]
+        manage_ownership: true
+        expect_calls: "{{ backup_stop_calls }}"
+        expect_state: exited
+        expect_copy: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm, rsa_key.pem, rsa_key.pub.pem]
+      - name: a later upgrade keeps one generation, and ownership is left alone when not managed
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, rsa_key.pem]
+        stale_backup: [db.sqlite3-wal, db.sqlite3-shm]
+        manage_ownership: false
+        expect_calls: "{{ backup_stop_calls }}"
+        expect_state: exited
+        expect_copy: [db.sqlite3, rsa_key.pem]
+      - name: a converged host stops and copies nothing
+        deployed: "{{ backup_new }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal]
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a converged host stops and copies nothing on the second run either
+        deployed: "{{ backup_new }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal]
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a host that never ran the service has nothing to protect
+        pinned: "{{ backup_new }}"
+        store: []
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a review reports the copy and stops and writes nothing
+        check_mode: true
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal, rsa_key.pem]
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a pending upgrade with no store is refused before anything stops
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3-wal]
+        expect_message: No regular file db.sqlite3 was found
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a copy that cannot create its directory starts the old container again and fails
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal]
+        plant_file_at_backup: true
+        expect_message: >-
+          failed at "Create the pre-upgrade copy directory".*was not performed.*is running on its old image
+        expect_calls: "{{ backup_stop_calls + ['up --no-recreate', 'ps'] }}"
+        expect_state: running
+      - name: a copy that fails partway starts the old container again and fails
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3, db.sqlite3-wal, db.sqlite3-shm]
+        block_copy_of: db.sqlite3-wal
+        expect_message: >-
+          failed at "Copy the store aside before the pinned upgrade".*was not performed.*is running on its old image
+        expect_calls: "{{ backup_stop_calls + ['up --no-recreate', 'ps'] }}"
+        expect_state: running
+      - name: a store lost as the container stopped is not started over
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3]
+        faults: [stop-removes-store]
+        expect_message: FIXTURE IS STOPPED, and was deliberately not started again
+        expect_calls: "{{ backup_stop_calls }}"
+        expect_state: exited
+      - name: an old container that does not come back says it is not serving
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3]
+        plant_file_at_backup: true
+        faults: [up-fails]
+        expect_message: FIXTURE IS NOT SERVING
+        expect_calls: "{{ backup_stop_calls + ['up --no-recreate', 'ps'] }}"
+        expect_state: exited
+
+  tasks:
+    # At the start as well as the end, so a run that failed cannot leave a tree
+    # the next one reads; safe only because the path is per worktree.
+    - name: Remove a fixture tree an interrupted earlier run left behind
+      ansible.builtin.file:
+        path: "{{ backup_root }}"
+        state: absent
+
+    - name: Build the fixture release and runtime trees
+      ansible.builtin.file:
+        path: "{{ backup_root }}/{{ item }}"
+        state: directory
+        mode: "0755"
+      loop: [bin, current/services/fixture, runtime/services/fixture]
+
+    # The module checks that each named Compose file exists; the stub never
+    # reads it.
+    - name: Write the fixture release and its rendered environment
+      ansible.builtin.copy:
+        dest: "{{ backup_root }}/{{ item }}"
+        content: "---\n"
+        mode: "0600"
+      loop: [current/services/fixture/compose.yml, runtime/services/fixture/.env]
+
+    - name: Install the Docker stub the role and the Compose module read the daemon through
+      ansible.builtin.copy:
+        dest: "{{ backup_root }}/bin/docker"
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          daemon="{{ backup_root }}/daemon"
+          while [ "$1" = --host ] || [ "$1" = --context ]; do shift 2; done
+          case "$1" in
+            version)
+              echo '{"Client":{"Version":"27.0.0"},"Server":{"Version":"27.0.0","ApiVersion":"1.46"}}'
+              exit 0 ;;
+            container)
+              case "$2" in
+                ls)
+                  [ -f "$daemon/container-id" ] || exit 0
+                  case "$*" in
+                    *status=running*) [ "$(cat "$daemon/state")" = running ] || exit 0 ;;
+                  esac
+                  cat "$daemon/container-id"
+                  exit 0 ;;
+                inspect)
+                  printf '[{"Config":{"Image":"%s"}}]\n' "$(cat "$daemon/image")"
+                  exit 0 ;;
+              esac
+              exit 64 ;;
+            compose) shift ;;
+            *) exit 64 ;;
+          esac
+          # Every global option the module passes takes a value.
+          while [ $# -gt 0 ]; do
+            case "$1" in --*) shift 2 ;; *) break ;; esac
+          done
+          verb=$1
+          shift
+          case "$verb" in
+            version) echo '{"version":"v2.20.0"}' ;;
+            # The module lists the project's images around an `up`, to tell a
+            # pull from a start; there are none to report.
+            images) echo '[]' ;;
+            ps)
+              echo ps >>"$daemon/calls"
+              printf '[{"Name":"fixture-1","Service":"fixture","State":"%s","Labels":""}]\n' \
+                "$(cat "$daemon/state")" ;;
+            up)
+              line=up
+              case " $* " in *" --no-start "*) line="$line --no-start" ;; esac
+              case " $* " in
+                *" --no-recreate "*) line="$line --no-recreate" ;;
+                # What Compose does to a container whose definition moved on.
+                *) cp "$daemon/pinned" "$daemon/image" ;;
+              esac
+              echo "$line" >>"$daemon/calls"
+              case " $* " in *" --no-start "*) exit 0 ;; esac
+              if [ -f "$daemon/up-fails" ]; then
+                echo "container fixture-1 is unhealthy" >&2
+                exit 1
+              fi
+              echo running >"$daemon/state" ;;
+            stop)
+              echo stop >>"$daemon/calls"
+              echo exited >"$daemon/state"
+              store=$(cat "$daemon/store")
+              if [ -f "$daemon/stop-removes-store" ]; then
+                rm -f "$store"
+              elif [ -f "$store" ]; then
+                # A clean stop checkpoints the log into the store.
+                echo "checkpointed by stop" >>"$store"
+              fi ;;
+            *) exit 64 ;;
+          esac
+
+    - name: Read the account the fixture runs as
+      ansible.builtin.command:
+        argv: [id, -u]
+      register: backup_uid
+      changed_when: false
+      check_mode: false
+
+    - name: Read the groups the fixture account holds
+      ansible.builtin.command:
+        argv: [id, -G]
+      register: backup_groups
+      changed_when: false
+      check_mode: false
+
+    # A managed copy is chowned to nas_uid and nas_gid, so the proof needs a
+    # group that differs from the one a file takes by default and that this
+    # account may still hand a file to: any supplementary group. With none, the
+    # primary group stands in and the managed case proves the chown ran without
+    # proving it changed anything. The unmanaged case is proved the other way
+    # round: it is handed an owner no account can chown to, so a copy that
+    # chowned regardless fails. Which group an unmanaged file then takes differs
+    # between Linux and macOS, so it is not asserted.
+    - name: Resolve the owner a managed copy is handed to
+      ansible.builtin.set_fact:
+        backup_owner_uid: "{{ backup_uid.stdout | int }}"
+        backup_owner_gid: >-
+          {{ ((backup_groups.stdout.split()[1:] | map('int') | list) + [backup_groups.stdout.split()[0] | int])
+             | first }}
+        backup_results: []
+
+    - name: Run every case
+      ansible.builtin.include_tasks: pre_upgrade_backup_case.yml
+      loop: "{{ backup_cases }}"
+      loop_control:
+        label: "{{ item.name }}"
+
+    # A case list that shrank reaches no per-case assertion, so the list itself
+    # is held: every case ran, and both verdicts were reached often enough that
+    # the rescue's three outcomes and the refusal before the stop are all here.
+    - name: Require the case list to have run whole
+      ansible.builtin.assert:
+        that:
+          - backup_results | length == backup_cases | length
+          - backup_results | length >= 11
+          - backup_results | selectattr('failed') | list | length >= 5
+          - backup_results | rejectattr('failed') | list | length >= 6
+        fail_msg: >-
+          The pre-upgrade copy ran {{ backup_results | length }} of
+          {{ backup_cases | length }} cases, failing
+          {{ backup_results | selectattr('failed') | list | length }} of them.
+
+    - name: Remove the fixture tree
+      ansible.builtin.file:
+        path: "{{ backup_root }}"
+        state: absent
+
+    - name: Report what was proved
+      ansible.builtin.debug:
+        msg: >-
+          pre-upgrade copy: {{ backup_results | length }} cases hold --
+          {{ backup_results | rejectattr('failed') | list | length }} converged or copied and
+          {{ backup_results | selectattr('failed') | list | length }} refused.

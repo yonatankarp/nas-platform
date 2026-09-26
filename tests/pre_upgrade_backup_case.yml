@@ -1,0 +1,246 @@
+---
+# One case of tests/pre_upgrade_backup_test.yml. Separate because a block
+# cannot be looped and a refusal has to be caught: the case runs the shipped
+# role through include_role, as roles/kapowarr and roles/vaultwarden do, and
+# records whether it failed and with what.
+#
+# Every fixture file is rewritten first, so no case is judged on what the
+# previous one left behind.
+- name: Clear the store, the copy and the daemon the previous case left
+  ansible.builtin.file:
+    path: "{{ backup_root }}/{{ fixture_path }}"
+    state: absent
+  loop: [store, daemon]
+  loop_control:
+    loop_var: fixture_path
+
+- name: Recreate the store and daemon directories
+  ansible.builtin.file:
+    path: "{{ backup_root }}/{{ fixture_path }}"
+    state: directory
+    mode: "0755"
+  loop: [store, daemon]
+  loop_control:
+    loop_var: fixture_path
+
+# Each store file holds its own name, so a copy can be traced to its source.
+- name: Write the store files this case holds
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/store/{{ store_file }}"
+    content: "{{ store_file }}\n"
+    mode: "0644"
+  loop: "{{ item.store | default([]) }}"
+  loop_control:
+    loop_var: store_file
+
+# 0755, looser than the role's 0700, so a case that finds it must also prove
+# the role tightens a directory it did not create.
+- name: Leave the copy directory an earlier upgrade made
+  ansible.builtin.file:
+    path: "{{ backup_root }}/store/pre-upgrade-backup"
+    state: directory
+    mode: "0755"
+  when: item.stale_backup is defined
+
+- name: Write what an earlier upgrade left in the copy directory
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/store/pre-upgrade-backup/{{ stale_file }}"
+    content: "stale\n"
+    mode: "0600"
+  loop: "{{ item.stale_backup | default([]) }}"
+  loop_control:
+    loop_var: stale_file
+
+# A plain file where the copy directory belongs: the failure measured on
+# Kapowarr before the rescue existed, which left the service stopped.
+- name: Plant a file where the copy directory belongs
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/store/pre-upgrade-backup"
+    content: "not a directory\n"
+    mode: "0644"
+  when: item.plant_file_at_backup | default(false)
+
+# A directory standing where one store file's copy has to land, so the copy
+# fails partway: the files ahead of it are written, that one is not.
+- name: Plant a directory where one copied file has to land
+  ansible.builtin.file:
+    path: "{{ backup_root }}/store/pre-upgrade-backup/{{ item.block_copy_of }}/{{ item.block_copy_of }}"
+    state: directory
+    mode: "0700"
+  when: item.block_copy_of is defined
+
+- name: Write the daemon this case's container lives in
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/daemon/{{ daemon_file.name }}"
+    content: "{{ daemon_file.content }}"
+    mode: "0644"
+  loop:
+    - {name: image, content: "{{ item.deployed | default('') }}"}
+    - {name: pinned, content: "{{ item.pinned }}"}
+    - {name: state, content: "{{ item.state | default('running') }}"}
+    - {name: calls, content: ""}
+    - {name: store, content: "{{ backup_root }}/store/{{ backup_store_file }}"}
+  loop_control:
+    loop_var: daemon_file
+    label: "{{ daemon_file.name }}"
+
+# Absence is how a host that never ran the service is said.
+- name: Give the case a container when it has one
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/daemon/container-id"
+    content: "cafe0001\n"
+    mode: "0644"
+  when: item.deployed is defined
+
+- name: Arm the daemon faults this case declares
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/daemon/{{ fault }}"
+    content: "armed\n"
+    mode: "0644"
+  loop: "{{ item.faults | default([]) }}"
+  loop_control:
+    loop_var: fault
+
+# Resolved into facts before the include rather than passed as templates over
+# `item`: the role loops, its own loops rebind `item` to a found file, and a
+# parameter templated over the case's `item` would then read that file instead
+# -- measured, the managed-ownership case copied with ownership left alone.
+- name: Start the case unrefused, with its parameters resolved
+  ansible.builtin.set_fact:
+    backup_case_failed: false
+    backup_case_message: ""
+    backup_case_pinned: "{{ item.pinned }}"
+    backup_case_manage: "{{ item.manage_ownership | default(false) }}"
+    backup_case_check: "{{ item.check_mode | default(false) }}"
+
+- name: Run the pre-upgrade copy against this case
+  when: not backup_case_check | bool
+  block:
+    - name: Include the pre-upgrade copy the way its callers do
+      ansible.builtin.include_role:
+        name: pre_upgrade_backup
+      vars:
+        pre_upgrade_backup_service_name: fixture
+        pre_upgrade_backup_compose_service: fixture
+        pre_upgrade_backup_project_name: backup-test
+        pre_upgrade_backup_pinned_image: "{{ backup_case_pinned }}"
+        pre_upgrade_backup_store_dir: "{{ backup_root }}/store"
+        pre_upgrade_backup_store_file: "{{ backup_store_file }}"
+        pre_upgrade_backup_extra_patterns: [rsa_key*]
+        pre_upgrade_backup_path: "{{ backup_root }}/store/pre-upgrade-backup"
+        pre_upgrade_backup_manage_ownership: "{{ backup_case_manage }}"
+        # An owner this account cannot hand a file to, so a copy that chowned
+        # when it was told not to fails rather than passing unnoticed.
+        nas_uid: "{{ backup_owner_uid if backup_case_manage | bool else 4242424 }}"
+        nas_gid: "{{ backup_owner_gid if backup_case_manage | bool else 4242424 }}"
+  rescue:
+    - name: Record that the pre-upgrade copy failed this case
+      ansible.builtin.set_fact:
+        backup_case_failed: true
+        backup_case_message: "{{ ansible_failed_result.msg | default('') }}"
+
+# A review is a real `--check` run of its own. A block-level check_mode would put
+# the modules in check mode while leaving ansible_check_mode false -- and it is
+# ansible_check_mode the role gates every write on, so that block ran the stop
+# and the copy for real under a review's name (measured). The variable cannot be
+# overridden from here either: the magic variable wins.
+- name: Review the pre-upgrade copy in a check-mode run of its own
+  ansible.builtin.command:
+    argv:
+      - ansible-playbook
+      - -i
+      - localhost,
+      - -c
+      - local
+      - --check
+      - tests/pre_upgrade_backup_review.yml
+      - -e
+      - "{{ {'backup_root': backup_root, 'backup_store_file': backup_store_file,
+             'backup_pinned': backup_case_pinned} | to_json }}"
+    chdir: "{{ playbook_dir }}/.."
+  register: backup_case_review
+  changed_when: false
+  failed_when: false
+  when: backup_case_check | bool
+
+- name: Read the daemon's record of this case
+  ansible.builtin.set_fact:
+    backup_case_calls: "{{ lookup('file', backup_root ~ '/daemon/calls').splitlines() }}"
+    backup_case_state: "{{ lookup('file', backup_root ~ '/daemon/state') | trim }}"
+    backup_case_image: "{{ lookup('file', backup_root ~ '/daemon/image') | trim }}"
+
+- name: Read the copy directory
+  ansible.builtin.stat:
+    path: "{{ backup_root }}/store/pre-upgrade-backup"
+  register: backup_case_directory
+
+- name: Read the copied files
+  ansible.builtin.find:
+    paths: "{{ backup_root }}/store/pre-upgrade-backup"
+    file_type: file
+  register: backup_case_files
+  when: backup_case_directory.stat.isdir | default(false)
+
+- name: Read the copied store
+  ansible.builtin.slurp:
+    path: "{{ backup_root }}/store/pre-upgrade-backup/{{ backup_store_file }}"
+  register: backup_case_store_copy
+  # A missing copy is the assertion's to report, with the whole case beside it.
+  failed_when: false
+  when: item.expect_copy is defined
+
+- name: Require this case to reach the outcome it declares
+  ansible.builtin.assert:
+    that:
+      - backup_case_failed == (item.expect_message is defined)
+      # Only a review reports the copy it would take: the review play asserts
+      # its own plan message and that it ran under --check, and exits 0 only if
+      # both held.
+      - not backup_case_check | bool or backup_case_review.rc == 0
+      - backup_case_check | bool
+        or not ((pre_upgrade_backup_plan.msg | default('')) is search('A live run would stop the container'))
+      - item.expect_message is not defined or backup_case_message is search(item.expect_message)
+      - backup_case_calls == item.expect_calls
+      - backup_case_state == item.expect_state
+      # A container never changes its image, so an unchanged record is the old
+      # container: nothing recreated it onto the new pin.
+      - backup_case_image == (item.deployed | default(''))
+      - item.expect_copy is defined or item.expect_copy_absent is not defined
+        or not (backup_case_directory.stat.exists | default(false))
+      - item.expect_copy is not defined or (
+          backup_case_directory.stat.mode == '0700'
+          and backup_case_files.files | map(attribute='path') | map('basename') | sort
+              == item.expect_copy | sort
+          and backup_case_files.files | map(attribute='mode') | unique | list == ['0600']
+          and backup_case_files.files | map(attribute='uid') | unique | list == [backup_owner_uid | int]
+          and (not backup_case_manage | bool or (
+            backup_case_files.files | map(attribute='gid') | unique | list == [backup_owner_gid | int]
+            and backup_case_directory.stat.gid == backup_owner_gid | int)))
+      # The store the stop checkpointed, not the one before it: the stub's stop
+      # appends to it, so the copy holding that line was taken after the stop.
+      - item.expect_copy is not defined
+        or (backup_case_store_copy.content | default('') | b64decode) is search('checkpointed by stop')
+    fail_msg: >-
+      The case "{{ item.name }}" declares
+      {{ ('a refusal matching ' ~ item.expect_message) if item.expect_message is defined else 'success' }},
+      the daemon calls {{ item.expect_calls }}, a container left {{ item.expect_state }}
+      ({{ ('owned ' ~ backup_owner_uid ~ ':' ~ backup_owner_gid) if backup_case_manage | bool
+          else 'ownership left alone' }})
+      on {{ item.deployed | default('no image') }}, and a copy of
+      {{ item.expect_copy | default('nothing') }}. It
+      {{ ('failed with: ' ~ backup_case_message) if backup_case_failed else 'succeeded' }}
+      {{- (', and its review exited ' ~ backup_case_review.rc ~ ': ' ~ (backup_case_review.stdout | default('')
+           | regex_findall('msg.*') | join(' '))) if backup_case_check | bool else '' }},
+      the daemon saw {{ backup_case_calls }}, the container is {{ backup_case_state }} on
+      {{ backup_case_image }}, and the copy directory
+      {{ ('holds ' ~ (backup_case_files.files | default([]) | map(attribute='path') | map('basename') | list)
+          ~ ' at modes ' ~ (backup_case_files.files | default([]) | map(attribute='mode') | list)
+          ~ ' owned ' ~ (backup_case_files.files | default([]) | map(attribute='uid') | unique | list)
+          ~ ':' ~ (backup_case_files.files | default([]) | map(attribute='gid') | unique | list)
+          ~ ' in a ' ~ backup_case_directory.stat.mode ~ ' directory owned '
+          ~ backup_case_directory.stat.uid ~ ':' ~ backup_case_directory.stat.gid)
+         if backup_case_directory.stat.isdir | default(false) else 'is not a directory' }}.
+
+- name: Accumulate the outcome of this case
+  ansible.builtin.set_fact:
+    backup_results: "{{ backup_results + [{'name': item.name, 'failed': backup_case_failed}] }}"

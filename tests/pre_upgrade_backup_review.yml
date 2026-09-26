@@ -1,0 +1,46 @@
+---
+# The review case of tests/pre_upgrade_backup_test.yml, which runs this with
+# --check against the fixture it has just written. A play of its own because
+# the role gates every write on ansible_check_mode, which only a --check run
+# sets. It exits 0 only when it really ran as a review and the role reported the
+# copy it would take; the caller then reads the daemon and the store to prove
+# nothing was stopped or written.
+- name: Review the pre-upgrade copy
+  hosts: localhost
+  gather_facts: false
+  environment:
+    PATH: "{{ backup_root }}/bin:{{ lookup('env', 'PATH') }}"
+  vars:
+    platform_current_dir: "{{ backup_root }}/current"
+    platform_runtime_dir: "{{ backup_root }}/runtime"
+    platform_service_compose_files: {fixture: [compose.yml]}
+    platform_compose_wait_timeout: 5
+  tasks:
+    - name: Require this play to be a review
+      ansible.builtin.assert:
+        that: [ansible_check_mode]
+        fail_msg: This play proves --check and was run without it.
+
+    - name: Include the pre-upgrade copy the way its callers do
+      ansible.builtin.include_role:
+        name: pre_upgrade_backup
+      vars:
+        pre_upgrade_backup_service_name: fixture
+        pre_upgrade_backup_compose_service: fixture
+        pre_upgrade_backup_project_name: backup-test
+        pre_upgrade_backup_pinned_image: "{{ backup_pinned }}"
+        pre_upgrade_backup_store_dir: "{{ backup_root }}/store"
+        pre_upgrade_backup_store_file: "{{ backup_store_file }}"
+        pre_upgrade_backup_extra_patterns: [rsa_key*]
+        pre_upgrade_backup_path: "{{ backup_root }}/store/pre-upgrade-backup"
+        pre_upgrade_backup_manage_ownership: false
+
+    - name: Require the review to report the copy a live run would take
+      ansible.builtin.assert:
+        that:
+          - pre_upgrade_backup_upgrade_pending | bool
+          - pre_upgrade_backup_plan.msg is search('A live run would stop the container')
+          - pre_upgrade_backup_plan.msg is search('rsa_key')
+        fail_msg: >-
+          The review saw an upgrade pending: {{ pre_upgrade_backup_upgrade_pending }},
+          and reported {{ pre_upgrade_backup_plan.msg | default('nothing') }}.
