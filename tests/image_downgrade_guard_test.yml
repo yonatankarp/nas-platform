@@ -127,6 +127,18 @@
         refused: false
         newer: []
 
+    # The --check review rows (#851): the release `current` still names, the
+    # candidate this run would install, and whether the review must refuse.
+    guard_review_rows:
+      - row: review-downgrade
+        current: ghcr.io/vavallee/bindery:v1.34.0@sha256:bbbb
+        candidate: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        refused: true
+      - row: review-heal
+        current: ghcr.io/vavallee/bindery:v1.33.3@sha256:aaaa
+        candidate: ghcr.io/vavallee/bindery:v1.35.0@sha256:cccc
+        refused: false
+
   tasks:
     # At the start as well as at the end, because the end is not reached by a
     # run that failed, and this play's failure sustains itself: the tripwire
@@ -167,6 +179,10 @@
       loop:
         - bin
         - services/bindery
+        - review-downgrade/current/services/bindery
+        - review-downgrade/candidate/services/bindery
+        - review-heal/current/services/bindery
+        - review-heal/candidate/services/bindery
 
     # The stub records its own argv, which is the only way to prove the guard
     # asks for stopped containers. A guard that dropped --all would still pass
@@ -271,8 +287,7 @@
             | selectattr('changed_when', 'equalto', false) | list | length == 2
           - guard_reads | selectattr('check_mode', 'defined')
             | selectattr('check_mode', 'equalto', false) | list | length == 2
-          - guard_role_tasks | map('string') | select('search', 'ansible_check_mode')
-            | list | length == 0
+          - guard_check_mode_tasks | sort == guard_pin_source_tasks | sort
         fail_msg: >-
           roles/image_downgrade_guard/tasks/main.yml holds
           {{ guard_reads | length }} command reads, of which
@@ -283,6 +298,20 @@
              | selectattr('changed_when', 'equalto', false) | list | length }}
           report no change. The guard inspects state the run did not create, so
           it has to judge in check mode rather than defer.
+          The tasks naming ansible_check_mode are {{ guard_check_mode_tasks }}.
+      vars:
+        # ansible_check_mode may choose which release the pin is read from
+        # (#851) and nothing else: on a read of the daemon or on the refusal it
+        # would be the deferral this assertion exists to keep out. Paired with
+        # each task's rendering because `search` needs a string.
+        guard_check_mode_tasks: >-
+          {{ guard_role_tasks | map(attribute='name')
+             | zip(guard_role_tasks | map('string'))
+             | selectattr('1', 'search', 'ansible_check_mode')
+             | map('first') | list }}
+        guard_pin_source_tasks:
+          - Read the deployed Compose definition of the guarded service
+          - Resolve the pinned image reference of the guarded container
 
     # The refusal has to fire under --check, because a plan that reads clean and
     # then crash-loops on apply is the #511 failure with an extra step. The
@@ -374,6 +403,60 @@
              ~ ('refused' if guard_check_mode_refused | bool else 'did not refuse')
              ~ '. A plan that reads clean and then crash-loops on apply is #511
                 with an extra step.' }}
+
+    # #851. Under a real --check the release is not activated, so `current`
+    # still names the one this run replaces, and a guard reading it judges the
+    # wrong pin: a downgrade under review passes and is refused only live, and
+    # the review of the merge that heals one is refused for a pin it no longer
+    # carries. The block above cannot show either -- block-level check_mode
+    # leaves ansible_check_mode false -- so these rows are --check runs of their
+    # own, against a daemon that recorded v1.34.0 (written above).
+    - name: Write the two releases each review row holds
+      ansible.builtin.copy:
+        dest: "{{ guard_root }}/{{ item.0.row }}/{{ item.1 }}/services/bindery/compose.yml"
+        content: |
+          ---
+          services:
+            bindery:
+              image: {{ item.0[item.1] }}
+        mode: "0644"
+      loop: "{{ guard_review_rows | product(['current', 'candidate']) | list }}"
+      loop_control:
+        label: "{{ item.0.row }}/{{ item.1 }}"
+
+    - name: Review each row in a check-mode run of its own
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - -i
+          - localhost,
+          - -c
+          - local
+          - --check
+          - tests/image_downgrade_guard_review.yml
+          - -e
+          - "{{ {'guard_root': guard_root, 'review_row': item.row,
+                 'review_candidate_pin': item.candidate,
+                 'review_expect_refused': item.refused} | to_json }}"
+        chdir: "{{ playbook_dir }}/.."
+      register: guard_reviews
+      changed_when: false
+      failed_when: false
+      loop: "{{ guard_review_rows }}"
+      loop_control:
+        label: "{{ item.row }}"
+
+    - name: Require every review to judge the release it would install
+      ansible.builtin.assert:
+        that:
+          - guard_reviews.results | length == 2
+          - guard_reviews.results | map(attribute='rc') | unique | list == [0]
+        fail_msg: >-
+          {{ guard_reviews.results | rejectattr('rc', 'equalto', 0)
+             | map(attribute='item.row') | list }} failed their review:
+          {{ guard_reviews.results | rejectattr('rc', 'equalto', 0)
+             | map(attribute='stdout_lines') | flatten
+             | select('search', 'msg|fatal|ERROR') | list }}
 
     - name: Remove the fixture tree
       ansible.builtin.file:

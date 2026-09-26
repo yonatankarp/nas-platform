@@ -38,6 +38,16 @@ argument_specs:
         description: >-
           Where the store lives, named in the refusal. An operator reading the
           failure needs to know which data the one-way migration was applied to.
+      image_downgrade_guard_candidate_root:
+        type: path
+        required: false
+        description: >-
+          The controller checkout the release is assembled from, whose
+          services/<name>/compose.yml a --check run reads instead of the one
+          under platform_current_dir: activation is skipped in check mode, so
+          `current` still names the release this run replaces. Read through a
+          lookup on the controller. Defaults to playbook_dir, which is what
+          roles/deployment_bundle copies from; only a test names another.
       platform_current_dir:
         type: path
         required: true
