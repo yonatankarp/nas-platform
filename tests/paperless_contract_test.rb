@@ -937,19 +937,19 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   )
   with_contract_copy(render: render, static: static, runtime: runtime,
                      wrapper: wrapper_source) do |contract, copy_root, stub_env|
-    stdout, stderr, status = Open3.capture3(stub_env, contract, "static", stdin_data: "caller-payload\n")
+    stdout, stderr, status, survived = run_with_caller_stdin(stub_env, contract, %w[static])
     output = stdout + stderr
     unless status.success?
       failures << "stdin: a program was handed the caller's input: #{output.strip.inspect}"
     end
+    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless survived
     sandbox = runtime_sandbox(copy_root)
-    stdout, stderr, status = Open3.capture3(
-      stub_env.merge(sandbox), contract, "run", stdin_data: "caller-payload\n"
-    )
+    stdout, stderr, status, survived = run_with_caller_stdin(stub_env.merge(sandbox), contract, %w[run])
     output = stdout + stderr
     unless status.success? && stdout.include?("runtime probe reached with an empty stdin")
       failures << "stdin: the runtime program was handed the caller's input: #{output.strip.inspect}"
     end
+    failures << "stdin: the caller's input did not survive the contract: #{output.strip.inspect}" unless survived
   end
   failures
 end
@@ -1242,7 +1242,11 @@ if ARGV.include?("--self-test")
     ["\"$generator\" \"$environment_template\" \"$snapshot\" \"$snapshot_program\" </dev/null\n",
      "\"$generator\" \"$environment_template\" \"$snapshot\" \"$snapshot_program\"\n"],
     ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
-     "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"]
+     "exec ruby \"$runtime_program\" \"$mode\" \"$@\"\n"],
+    # Not a dropped redirect but a drained stdin ahead of the exec, which only
+    # the check that the caller's input survived can see.
+    ["exec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n",
+     "cat >/dev/null\nexec ruby \"$runtime_program\" \"$mode\" \"$@\" </dev/null\n"]
   ].each do |from, to|
     unredirected = substitute(File.read(CONTRACT), from, to)
     leaked = stdin_failures(wrapper_source: unredirected)
