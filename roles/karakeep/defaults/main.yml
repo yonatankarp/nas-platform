@@ -30,6 +30,12 @@ karakeep_publish_address: 0.0.0.0
 
 karakeep_data_host_path: "{{ nas_docker_root }}/karakeep/data"
 karakeep_meilisearch_host_path: "{{ nas_docker_root }}/karakeep/meilisearch"
+# Where roles/pre_upgrade_backup copies db.db before a pinned upgrade: inside the
+# data root, as roles/kapowarr and roles/vaultwarden place theirs, because that
+# directory is already declared in nas_storage as recovery: critical, created by
+# host_prep and named by this role's containment check, so the copy needs no
+# declaration of its own. One generation, never rotated.
+karakeep_pre_upgrade_backup_path: "{{ karakeep_data_host_path }}/pre-upgrade-backup"
 
 karakeep_compose_project_name: >-
   {{ (platform_project_name ~ '-karakeep')

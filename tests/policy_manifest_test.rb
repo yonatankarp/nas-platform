@@ -552,6 +552,62 @@ end
   end
 end
 
+expect_failure(failures, "Karakeep deployment report that ignores the shared pre-upgrade restart",
+               "role karakeep: includes roles/pre_upgrade_backup but its deployment report ignores " \
+               "pre_upgrade_backup_restart",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "roles/karakeep/tasks/report.yml")
+  body = File.read(path)
+  planted = body.sub("((pre_upgrade_backup_restart | default({})) is changed) or", "")
+  raise "report gate plant matched nothing" if planted == body
+
+  File.write(path, planted)
+end
+
+# Karakeep's call site, held in policy_test.rb argument by argument (#826), and
+# its position: after the Meilisearch guard, whose pin it would otherwise read.
+[
+  ["    pre_upgrade_backup_compose_service: karakeep\n", "    pre_upgrade_backup_compose_service: web\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_compose_service"],
+  ["    pre_upgrade_backup_project_name: \"{{ karakeep_compose_project_name }}\"\n",
+   "    pre_upgrade_backup_project_name: \"{{ kapowarr_compose_project_name }}\"\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_project_name"],
+  ["    pre_upgrade_backup_store_file: db.db\n", "    pre_upgrade_backup_store_file: queue.db\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_store_file"],
+  ["    pre_upgrade_backup_extra_patterns: [queue.db]\n", "    pre_upgrade_backup_extra_patterns: [\"*\"]\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_extra_patterns"],
+  ["    pre_upgrade_backup_path: \"{{ karakeep_pre_upgrade_backup_path }}\"\n",
+   "    pre_upgrade_backup_path: \"{{ karakeep_meilisearch_host_path }}/backup\"\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_path"],
+  ["    pre_upgrade_backup_manage_ownership: \"{{ platform_kind == 'nas' or (platform_manage_linux_ownership | bool) }}\"\n",
+   "    pre_upgrade_backup_manage_ownership: false\n",
+   "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_manage_ownership"]
+].each do |from, to, message|
+  expect_failure(failures, "Karakeep pre-upgrade call site with #{to.strip}", message,
+                 detected_by: %i[policy]) do |root|
+    path = File.join(root, "roles/karakeep/tasks/deploy.yml")
+    body = File.read(path)
+    raise "Karakeep call-site plant matched #{body.scan(from).length} times" unless body.scan(from).length == 1
+
+    File.write(path, body.sub(from, to))
+  end
+end
+
+expect_failure(failures, "Karakeep pre-upgrade copy after the Meilisearch guard",
+               "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/karakeep/tasks/deploy.yml") do |tasks|
+    guard_for = lambda do |service|
+      tasks.index { |task| task.dig("ansible.builtin.include_role", "vars", "image_downgrade_guard_compose_service") == service }
+    end
+    meili = guard_for.call("meilisearch")
+    app = guard_for.call("karakeep")
+    raise "guard order plant found no guards" unless meili && app && meili < app
+
+    tasks[meili], tasks[app] = tasks[app], tasks[meili]
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.

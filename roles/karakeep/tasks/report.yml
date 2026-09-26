@@ -1,7 +1,9 @@
 ---
 # After the bootstrap, so a converge whose only change was registering the
 # administrator -- two recreates of the application -- is announced. Every term
-# carries a default because each task behind it is conditional.
+# carries a default because each task behind it is conditional. The pre-upgrade
+# copy's rescue start is named for completeness: that path fails the run before
+# this report, so it never decides the verdict here.
 - name: Report the Karakeep deployment
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -12,5 +14,6 @@
       {{ ((karakeep_deploy | default({})) is changed) or
          ((karakeep_teardown | default({})) is changed) or
          ((karakeep_wedged_recreate | default({})) is changed) or
+         ((pre_upgrade_backup_restart | default({})) is changed) or
          ((karakeep_bootstrap_open_deploy | default({})) is changed) or
          ((karakeep_bootstrap_close | default({})) is changed) }}

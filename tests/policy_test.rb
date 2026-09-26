@@ -2118,9 +2118,10 @@ end
 # conversion away from it is not a failure.
 check_floor(failures, shared_recovery_callers, 4,
             "roles whose deployment report must name the shared recovery's register")
-# Kapowarr and Vaultwarden today. Held at two so the pre-upgrade rule below
-# cannot keep its one shared subject while every caller quietly stops using it.
-check_floor(failures, pre_upgrade_backup_callers, 2,
+# Kapowarr, Vaultwarden and Karakeep today. Held at three so the pre-upgrade
+# rule below cannot keep its one shared subject while every caller quietly stops
+# using it.
+check_floor(failures, pre_upgrade_backup_callers, 3,
             "roles whose deployment report must name the shared pre-upgrade copy's register")
 # Held against the roles the INSPECTED TREE actually has rather than against the
 # constant outright, which is what lets one assertion cover both trees this script
@@ -2204,7 +2205,7 @@ pre_upgrade_paths.each do |path|
   check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
         "role #{name}: a failed pre-upgrade copy must still fail the run")
 end
-# One since #836: the shared role. The callers that reach it are floored at two
+# One since #836: the shared role. The callers that reach it are floored at three
 # by the deployment-report clause above.
 check_floor(failures, pre_upgrade_stops, 1, "pre-upgrade copies that stop a container")
 
@@ -2243,6 +2244,50 @@ if File.file?(vaultwarden_deploy_path)
   check(failures, Array(copy_vars["pre_upgrade_backup_extra_patterns"]).include?("rsa_key*"),
         "role vaultwarden: the pre-upgrade copy must carry rsa_key*, the key every session it issued " \
         "is signed with, not #{copy_vars['pre_upgrade_backup_extra_patterns'].inspect}")
+end
+
+# Karakeep's call site, the same way (#826). db.db holds every account's bcrypt
+# hash, so the copy is secret-bearing like Vaultwarden's. Two things are its own.
+# queue.db migrates on start too (liteque), so a rollback needs it beside db.db.
+# And the pin is read off roles/image_downgrade_guard's host-scoped fact, which
+# the Meilisearch guard rebinds: the copy must follow the application's guard
+# with no other guard between, or it compares the application container with
+# Meilisearch's pin, finds an upgrade on every converge and stops Karakeep every
+# five minutes.
+KARAKEEP_PRE_UPGRADE_ARGUMENTS = {
+  "pre_upgrade_backup_service_name" => "karakeep",
+  "pre_upgrade_backup_compose_service" => "karakeep",
+  "pre_upgrade_backup_project_name" => "{{ karakeep_compose_project_name }}",
+  "pre_upgrade_backup_pinned_image" => "{{ image_downgrade_guard_pinned_image | default('', true) }}",
+  "pre_upgrade_backup_store_dir" => "{{ karakeep_data_host_path }}",
+  "pre_upgrade_backup_store_file" => "db.db",
+  "pre_upgrade_backup_extra_patterns" => ["queue.db"],
+  "pre_upgrade_backup_path" => "{{ karakeep_pre_upgrade_backup_path }}",
+  "pre_upgrade_backup_manage_ownership" => "{{ platform_kind == 'nas' or (platform_manage_linux_ownership | bool) }}"
+}.freeze
+karakeep_deploy_path = File.join(ROOT, "roles", "karakeep", "tasks", "deploy.yml")
+check(failures, File.file?(karakeep_deploy_path),
+      "role karakeep: tasks/deploy.yml is missing, so its pre-upgrade copy arguments cannot be read")
+if File.file?(karakeep_deploy_path)
+  karakeep_tasks = flatten_tasks(YAML.safe_load_file(karakeep_deploy_path, aliases: true))
+  includes_of = ->(role) { karakeep_tasks.each_index.select { |i| karakeep_tasks[i].dig("ansible.builtin.include_role", "name") == role } }
+  karakeep_copies = includes_of.call("pre_upgrade_backup")
+  check(failures, karakeep_copies.length == 1,
+        "role karakeep: roles/karakeep/tasks/deploy.yml includes roles/pre_upgrade_backup " \
+        "#{karakeep_copies.length} times, not once, so its store is not copied before a pinned upgrade")
+  copy_task = karakeep_copies.first && karakeep_tasks[karakeep_copies.first]
+  copy_vars = copy_task&.fetch("vars", nil) || {}
+  KARAKEEP_PRE_UPGRADE_ARGUMENTS.each do |argument, expected|
+    check(failures, copy_vars[argument] == expected,
+          "role karakeep: the pre-upgrade copy must be given #{argument}: #{expected.inspect}, " \
+          "not #{copy_vars[argument].inspect}")
+  end
+  guards_before = includes_of.call("image_downgrade_guard").select { |i| karakeep_copies.first && i < karakeep_copies.first }
+  app_guard = guards_before.last && karakeep_tasks[guards_before.last]
+  check(failures, app_guard&.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" &&
+                  Array(app_guard["when"]) == Array(copy_task&.fetch("when", nil)),
+        "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard with no " \
+        "other guard between, under the same when, because it reads that guard's pinned image")
 end
 
 # The report itself must stay a report. The per-service report delivers through
