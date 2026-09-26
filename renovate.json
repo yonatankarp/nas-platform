@@ -226,7 +226,8 @@
       ],
       "groupName": "container images",
       "schedule": [
-        "after 10pm and before 5am"
+        "after 10pm",
+        "before 5am"
       ]
     }
   ],
