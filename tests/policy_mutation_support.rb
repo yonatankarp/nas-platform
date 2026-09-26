@@ -123,6 +123,9 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/tasks/pushover_publish.yml
   roles/vault_contract/meta/argument_specs.yml
   roles/vault_contract/tasks/main.yml
+  roles/pre_upgrade_backup/defaults/main.yml
+  roles/pre_upgrade_backup/meta/argument_specs.yml
+  roles/pre_upgrade_backup/tasks/main.yml
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/downloaders/clamav_gate.py
@@ -256,6 +259,12 @@ EXPECTED_FIXTURE_ROLES = {
 # not an entry here. tests/bindery_contract_test.rb is the one harness that
 # reads roles/image_downgrade_guard from a sandbox of its own, and it already
 # carries the path in its own FIXTURE_FILES.
+#
+# roles/pre_upgrade_backup is the shared role that BASE_FIXTURE_PATHS does name,
+# and for the opposite reason (#836): it is not a glob's incidental subject but
+# the only subject of policy_test.rb's pre-upgrade rule, which is floored at one,
+# and the rows that plant a broken rescue plant it there. Without it every
+# sandbox fails that floor at once.
 
 # The task files a role reaches through static import_tasks, main.yml included.
 # This follows exactly what PolicySupport.static_role_tasks follows, because that
