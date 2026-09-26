@@ -36,6 +36,26 @@
     mode: "0600"
   no_log: true
 
+# Before the restore classification and every Compose operation below it --
+# the check-mode end_role, the application stop, the data services and the
+# deployment -- because recreating the server from an older image is the act
+# being refused. immich-server runs its database migrations when it starts and
+# they are one-way, so a pin older than one that has already run here would
+# crash-loop inside the container rather than fail in a play (#511, #826).
+# immich-server and not the database: the PostgreSQL major is capped by its own
+# Renovate ceiling and a major change there is a restore, not a migration this
+# guard could judge; machine-learning holds no store. The five paths this reads
+# are the ones the containment re-include at the top of this file already
+# declared through deployment_target_service, so it needs no extra_paths.
+- name: Refuse an Immich image older than the database this host has migrated
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: immich
+    image_downgrade_guard_compose_service: immich-server
+    image_downgrade_guard_project_name: "{{ immich_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ nas_docker_root }}/immich/postgres"
+
 # Immich writes its own version and its PostgreSQL version into the name of every
 # database dump it produces, so the versions the restore preflight must expect
 # are the versions of the images about to start. Reading them from the pinned

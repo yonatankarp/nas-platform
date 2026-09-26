@@ -103,6 +103,28 @@
       poller brings the stack up on its next five-minute tick.
   when: not nextcloud_deployment_enabled | bool
 
+# Before any Compose operation, because recreating the application from an
+# older image is the act being refused. The entrypoint runs `occ upgrade`
+# against the database and the data directory before Apache starts, and
+# Nextcloud refuses to run against a store a newer version wrote, so a reverted
+# pin is a container that exits on every restart rather than a failure a play
+# reports (#511, #826). The nextcloud service and not cron: cron shares its pin
+# but only the application's entrypoint migrates. Gated like the deployment,
+# because a disabled project is torn down and has nothing left to protect. The
+# five paths this reads are the ones the containment re-include at the top of
+# this file already declared through deployment_target_service, so it needs no
+# extra_paths.
+- name: Refuse a Nextcloud image older than the store this host has migrated
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: nextcloud
+    image_downgrade_guard_compose_service: nextcloud
+    image_downgrade_guard_project_name: "{{ nextcloud_compose_project_name }}"
+    image_downgrade_guard_store_description: >-
+      {{ nextcloud_data_host_path }} and {{ nextcloud_postgres_host_path }}
+  when: nextcloud_deployment_enabled | bool
+
 # Two phases, because the application's installer runs against a database that
 # has to be accepting connections before its container starts. Postgres and the
 # cache both reach their health checks quickly and neither performs an in-place

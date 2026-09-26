@@ -85,7 +85,7 @@
 # play for two reasons: `item` holds the declaration and the facts hold the
 # outcome, so both sides are local and nothing has to be re-derived by zipping
 # two lists by index -- the accumulated rows carry the outcome only; and a
-# mismatch fails at the case that caused it rather than after all twelve have
+# mismatch fails at the case that caused it rather than after all of them have
 # run. The aggregate floors in the play stay, because a case list that shrank
 # reaches no per-case assertion at all.
 #

@@ -78,6 +78,29 @@
         deployed: [docker.io/library/nextcloud:34.0.4-apache@sha256:y]
         refused: true
         newer: ["34.0.4"]
+      # #826: the tag shapes of the three roles that adopted the guard there,
+      # each on a real pin pair from this repository's history, so a change
+      # to the arithmetic that mishandles one of them fails here.
+      - name: a Nextcloud major reverted, across the suffixed tag
+        pinned: docker.io/library/nextcloud:34.0.4-apache@sha256:aaaa
+        deployed: [docker.io/library/nextcloud:35.0.1-apache@sha256:y]
+        refused: true
+        newer: ["35.0.1"]
+      - name: a Nextcloud major taken, which must not be refused
+        pinned: docker.io/library/nextcloud:35.0.1-apache@sha256:aaaa
+        deployed: [docker.io/library/nextcloud:34.0.4-apache@sha256:y]
+        refused: false
+        newer: []
+      - name: a bare numeric tag, as Paperless pins one
+        pinned: ghcr.io/paperless-ngx/paperless-ngx:3.2.0@sha256:aaaa
+        deployed: [ghcr.io/paperless-ngx/paperless-ngx:3.2.1@sha256:y]
+        refused: true
+        newer: ["3.2.1"]
+      - name: an Immich patch reverted
+        pinned: ghcr.io/immich-app/immich-server:v3.2.1@sha256:aaaa
+        deployed: [ghcr.io/immich-app/immich-server:v3.2.2@sha256:y]
+        refused: true
+        newer: ["3.2.2"]
       - name: a registry host carrying a port
         pinned: registry.example:5000/vavallee/bindery:v1.33.3@sha256:aaaa
         deployed: [registry.example:5000/vavallee/bindery:v1.34.0@sha256:y]
@@ -117,7 +140,7 @@
     # the block-level check_mode is what stops it, so an interrupt or a peer
     # session's kill leaves only a tree that the next run overwrites: a stale
     # tree holding a bogus docker stub, stale argv and a v0.0.1 compose, with
-    # no probe, passes all twelve cases even before this task existed. The
+    # no probe, passes all twelve cases it then held even before this task existed. The
     # probe comes only from a run in which check mode did not reach that task
     # -- a defect this tripwire caught, or an uncommitted edit being iterated
     # on -- and it then outlives its cause.
@@ -186,18 +209,18 @@
     # image_downgrade_guard_case.yml -- so a flipped verdict is caught there
     # and no longer has to be inferred from a total. What a per-case assertion
     # cannot catch is a case list that silently became one row: every row it
-    # still holds would pass, and the run would prove nothing. Twelve is what
+    # still holds would pass, and the run would prove nothing. Sixteen is what
     # the list holds; both fail-open rows and both no-comparison rows are
     # load-bearing, so a shrink is a deliberate act with a diff. The two
-    # verdict counts stay for the same reason -- a list that shrank to twelve
+    # verdict counts stay for the same reason -- a list that shrank to sixteen
     # copies of one row satisfies the length floors and reaches one verdict.
     - name: Require the case list to have run whole
       ansible.builtin.assert:
         that:
           - guard_results | length == guard_cases | length
-          - guard_results | length >= 12
-          - guard_results | selectattr('refused') | list | length >= 5
-          - guard_results | rejectattr('refused') | list | length >= 6
+          - guard_results | length >= 16
+          - guard_results | selectattr('refused') | list | length >= 8
+          - guard_results | rejectattr('refused') | list | length >= 8
         fail_msg: >-
           The guard ran {{ guard_results | length }} of {{ guard_cases | length }}
           cases, refusing {{ guard_results | selectattr('refused') | list | length }}

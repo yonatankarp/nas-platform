@@ -59,6 +59,23 @@
     mode: "0600"
   no_log: true
 
+# Before any Compose operation, because recreating the webserver from an older
+# image is the act being refused. The webserver runs Django's migrations against
+# the database on start and they are one-way, so a pin older than one that has
+# already run here would crash-loop inside the container rather than fail in a
+# play (#511, #826). The webserver and not db: the PostgreSQL major is a
+# different hazard, withheld by its own Renovate rule. The five paths this reads
+# are the ones the containment re-include at the top of this file already
+# declared through deployment_target_service, so it needs no extra_paths.
+- name: Refuse a Paperless image older than the database this host has migrated
+  ansible.builtin.include_role:
+    name: image_downgrade_guard
+  vars:
+    image_downgrade_guard_service_name: paperless-ngx
+    image_downgrade_guard_compose_service: webserver
+    image_downgrade_guard_project_name: "{{ paperless_compose_project_name }}"
+    image_downgrade_guard_store_description: "{{ paperless_effective_state_host_path }}/postgres"
+
 - name: Deploy the Paperless data services
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
