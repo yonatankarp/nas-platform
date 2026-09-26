@@ -45,9 +45,11 @@ require "yaml"
 require_relative "case_pool_support"
 require_relative "http_fixture_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include HttpFixtureSupport
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -857,19 +859,8 @@ end
 # wrapper.
 
 def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUNTIME_PROGRAM),
-                       wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-komga-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    path = File.join(contracts, "komga.sh")
-    File.write(path, wrapper)
-    File.chmod(0o755, path)
-    File.write(File.join(contracts, "komga-static.rb"), static)
-    File.write(File.join(contracts, "komga-runtime.rb"), runtime)
-    yield path, root
-  end
+                       wrapper: File.read(CONTRACT), &block)
+  with_contract_sandbox("komga", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
@@ -1045,11 +1036,6 @@ end
 # today. Both invocations get their own probe, because the runtime one is
 # reached through `exec` and the static row cannot cover it.
 
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 # The runtime probe must satisfy the wrapper's three live self-read greps, or
 # the wrapper refuses before it reaches the program at all.
 RUNTIME_STDIN_PROBE = <<~'PROBE'
@@ -1064,19 +1050,9 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   [[:static, "static", { static: STDIN_PROBE }],
    [:runtime, "run", { runtime: RUNTIME_STDIN_PROBE }]].each do |layer, mode, replacement|
     with_contract_copy(wrapper: wrapper_source, **replacement) do |contract, copy_root|
-      stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
-          "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_REPORT_ROOT" => copy_root },
-        "/bin/sh", "-c", "#{contract.shellescape} #{mode}; printf 'left:'; cat",
-        stdin_data: "caller-payload\n"
-      )
-      output = stdout + stderr
-      failures << "stdin (#{layer}): the probing shell itself failed: #{output.strip}" unless
-        status.success?
-      failures << "stdin (#{layer}): the program was handed the caller's input: " \
-                  "#{output.strip.inspect}" unless output.include?('probe read ""')
-      failures << "stdin (#{layer}): the caller's input did not survive the contract: " \
-                  "#{output.strip.inspect}" unless output.include?("left:caller-payload")
+      environment = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
+                      "PLATFORM_MEDIA_ROOT" => copy_root, "PLATFORM_REPORT_ROOT" => copy_root }
+      failures.concat(stdin_probe_failures(contract, [mode], environment, prefix: "stdin (#{layer})"))
     end
   end
   failures
@@ -1578,25 +1554,6 @@ WRAPPER_MUTATIONS = [
   }
 ].freeze
 
-def plant(source, mutation, occurrences: 1)
-  from = mutation.fetch(:from)
-  found = source.scan(from).length
-  abort "self-test could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
-        "match(es) of #{from.inspect}, found #{found}" unless found == occurrences
-
-  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to)) : source.gsub(from, mutation.fetch(:to))
-  abort "self-test planted nothing for #{mutation.fetch(:label)}" if planted == source
-  planted
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
-end
-
 def report_mutation(collected, mutation, caught, rows)
   detects = mutation.fetch(:detects, "accepted what it must refuse")
   if caught.empty?
@@ -1618,12 +1575,12 @@ if ARGV.include?("--self-test")
   # KeyError instead of that sentence.
   static_cases = STATIC_MUTATIONS.map do |mutation|
     [mutation,
-     plant(File.read(STATIC_PROGRAM), mutation, occurrences: mutation.fetch(:occurrences, 1)),
+     plant(File.read(STATIC_PROGRAM), mutation),
      rows_named(STATIC_ROWS, mutation.fetch(:rows))]
   end
   runtime_cases = RUNTIME_MUTATIONS.map do |mutation|
     [mutation,
-     plant(File.read(RUNTIME_PROGRAM), mutation, occurrences: mutation.fetch(:occurrences, 1)),
+     plant(File.read(RUNTIME_PROGRAM), mutation),
      rows_named(RUNTIME_ROWS, mutation.fetch(:rows))]
   end
   wrapper_cases = WRAPPER_MUTATIONS.map { |mutation| [mutation, plant(File.read(CONTRACT), mutation)] }

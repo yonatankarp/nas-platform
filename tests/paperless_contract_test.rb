@@ -52,8 +52,10 @@ require "yaml"
 
 require_relative "case_pool_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -685,21 +687,8 @@ STUB
 
 def with_contract_copy(render: File.read(RENDER_PROGRAM), static: File.read(STATIC_PROGRAM),
                        runtime: File.read(RUNTIME_PROGRAM), wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-paperless-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    {
-      "paperless.sh" => wrapper,
-      "paperless-render.rb" => render,
-      "paperless-static.rb" => static,
-      "paperless-runtime.rb" => runtime
-    }.each do |name, content|
-      destination = File.join(contracts, name)
-      File.write(destination, content)
-      File.chmod(name.end_with?(".sh") ? 0o755 : 0o644, destination)
-    end
+  programs = { "render" => render, "static" => static, "runtime" => runtime }
+  with_contract_sandbox("paperless", wrapper, programs) do |contract, root|
     renders = File.join(root, "renders")
     FileUtils.mkdir_p(renders)
     %w[nas mac integration].each do |variant|
@@ -709,7 +698,7 @@ def with_contract_copy(render: File.read(RENDER_PROGRAM), static: File.read(STAT
     FileUtils.mkdir_p(stub_dir)
     File.write(File.join(stub_dir, "docker"), DOCKER_STUB)
     File.chmod(0o755, File.join(stub_dir, "docker"))
-    yield File.join(contracts, "paperless.sh"), root, {
+    yield contract, root, {
       "PATH" => "#{stub_dir}:#{ENV.fetch('PATH')}",
       "PAPERLESS_STUB_RENDERS" => renders
     }
@@ -1225,14 +1214,6 @@ def ocr_fixture_failures(runtime_source: File.read(RUNTIME_PROGRAM, encoding: "U
     "ocr fixture: the runtime requires #{missing.inspect} in the OCR text, and the source " \
       "tests/fixtures/paperless-ocr.svg the image was rendered from does not contain it"
   end
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  abort "self-test names a row that does not exist: #{names.inspect}" unless
-    selected.length == names.length
-
-  selected
 end
 
 if ARGV.include?("--self-test")

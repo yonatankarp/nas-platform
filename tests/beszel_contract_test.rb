@@ -69,9 +69,11 @@ require "yaml"
 require_relative "case_pool_support"
 require_relative "http_fixture_support"
 require_relative "policy_support"
+require_relative "contract_test_support"
 
 include HttpFixtureSupport
 include TestScaffold
+include ContractTestSupport
 
 ROOT = File.expand_path("..", __dir__)
 # The prefix every refusal this file judges has to carry. Matching the
@@ -1676,20 +1678,9 @@ end
 def with_contract_copy(static: File.read(STATIC_PROGRAM),
                        fixtures: File.read(FIXTURES_PROGRAM),
                        runtime: File.read(RUNTIME_PROGRAM),
-                       wrapper: File.read(CONTRACT))
-  Dir.mktmpdir("nas-platform-beszel-wrapper.") do |raw|
-    root = File.realpath(raw)
-    build_fixture_repository(root)
-    contracts = File.join(root, "tests", "contracts")
-    FileUtils.mkdir_p(contracts)
-    path = File.join(contracts, "beszel.sh")
-    File.write(path, wrapper)
-    File.chmod(0o755, path)
-    File.write(File.join(contracts, "beszel-static.rb"), static)
-    File.write(File.join(contracts, "beszel-telemetry-fixtures.rb"), fixtures)
-    File.write(File.join(contracts, "beszel-runtime.rb"), runtime)
-    yield path, root
-  end
+                       wrapper: File.read(CONTRACT), &block)
+  programs = { "static" => static, "telemetry-fixtures" => fixtures, "runtime" => runtime }
+  with_contract_sandbox("beszel", wrapper, programs, &block)
 end
 
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
@@ -1925,11 +1916,6 @@ end
 # today. Three probes, because two of the three invocations are reached through
 # `exec` and no single row can cover them.
 
-STDIN_PROBE = <<~'PROBE'
-  warn "probe read #{$stdin.read.inspect}"
-  exit 1
-PROBE
-
 # The static probe must satisfy the wrapper's one self-read grep, or the
 # substituted program never runs -- except that the grep lives in the program
 # itself here, so a probe that replaces the program removes the grep with it.
@@ -1941,22 +1927,11 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
     { fixtures: STDIN_PROBE }],
    [:runtime, %w[verify], { runtime: STDIN_PROBE }]].each do |layer, argv, replacement|
     with_contract_copy(wrapper: wrapper_source, **replacement) do |contract, copy_root|
-      command = "#{contract.shellescape} #{argv.map(&:shellescape).join(' ')}; " \
-                "printf 'left:'; cat"
-      stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
-          "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
-          "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "password"),
-          "PLATFORM_REPORT_ROOT" => copy_root },
-        "/bin/sh", "-c", command, stdin_data: "caller-payload\n"
-      )
-      output = stdout + stderr
-      failures << "stdin (#{layer}): the probing shell itself failed: #{output.strip}" unless
-        status.success?
-      failures << "stdin (#{layer}): the program was handed the caller's input: " \
-                  "#{output.strip.inspect}" unless output.include?('probe read ""')
-      failures << "stdin (#{layer}): the caller's input did not survive the contract: " \
-                  "#{output.strip.inspect}" unless output.include?("left:caller-payload")
+      environment = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root,
+                      "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
+                      "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "password"),
+                      "PLATFORM_REPORT_ROOT" => copy_root }
+      failures.concat(stdin_probe_failures(contract, argv, environment, prefix: "stdin (#{layer})"))
     end
   end
   failures
@@ -2658,38 +2633,6 @@ WRAPPER_MUTATIONS = [
     layer: :wrapper }
 ].freeze
 
-# Returns [planted_source, error]. It accumulates rather than aborting, and that
-# is not a style choice: every count assertion here is a claim about a literal in
-# a file this PR moved, and learning them one interpreter run at a time is the
-# expensive habit this whole file exists to break. One run of --self-test now
-# reports every wrong count at once. Two were wrong on the first attempt, both
-# because the literal occurs twice.
-def plant(source, mutation)
-  occurrences = mutation.fetch(:occurrences, 1)
-  from = mutation.fetch(:from)
-  found = source.scan(from).length
-  unless found == occurrences
-    return [nil, "could not plant #{mutation.fetch(:label)}: expected #{occurrences} " \
-                 "match(es) of #{from.inspect}, found #{found}"]
-  end
-
-  planted = occurrences == 1 ? source.sub(from, mutation.fetch(:to))
-                             : source.gsub(from, mutation.fetch(:to))
-  return [nil, "planted nothing for #{mutation.fetch(:label)}"] if planted == source
-
-  [planted, nil]
-end
-
-def rows_named(rows, names)
-  selected = rows.select { |row| names.include?(row.fetch(:name)) }
-  unless selected.length == names.length
-    missing = names - selected.map { |row| row.fetch(:name) }
-    return [nil, "names a row that does not exist: #{missing.inspect}"]
-  end
-
-  [selected, nil]
-end
-
 # The budget layer's own reporter. It cannot use report_mutation because a
 # correct catch there is every failure carrying one substring, and two of the
 # six budget plants are caught by two different sentences at once. Required
@@ -2723,16 +2666,17 @@ if ARGV.include?("--self-test")
   planted = 0
   skipped = []
 
-  # Every plant is prepared on the main thread, before the pool. `plant` and
-  # `rows_named` abort with a sentence naming what they could not find, and an
-  # abort inside a worker raises SystemExit there: the thread dies without
-  # recording its result and the pool's own `collected.fetch` then reports a
-  # KeyError instead of that sentence.
+  # Every plant is prepared on the main thread, before the pool, and through
+  # plant_or_error and rows_named_or_error rather than the aborting forms: every
+  # count assertion here is a claim about a literal in a file, and one run of
+  # --self-test reports every wrong count at once rather than the first. An abort
+  # inside a worker would be worse still -- it raises SystemExit there, the thread
+  # dies without recording its result, and the pool reports a KeyError instead.
   preparation_errors = []
   prepare = lambda do |mutations, source_path, rows|
     mutations.reject { |mutation| mutation[:skip] }.filter_map do |mutation|
-      source, plant_error = plant(File.read(source_path), mutation)
-      selected, rows_error = rows_named(rows, mutation.fetch(:rows))
+      source, plant_error = plant_or_error(File.read(source_path), mutation)
+      selected, rows_error = rows_named_or_error(rows, mutation.fetch(:rows))
       [plant_error, rows_error].compact.each { |error| preparation_errors << error }
       next if plant_error || rows_error
 
@@ -2752,12 +2696,12 @@ if ARGV.include?("--self-test")
   runtime_cases = prepare.call(RUNTIME_MUTATIONS, RUNTIME_PROGRAM, RUNTIME_ROWS)
   # Two shapes in one list, so prepare cannot be reused: a text plant carries
   # `from:`, a row plant carries a `rows:` transform. Both are proved to have
-  # changed something, for the reason `plant` proves it -- a transform that
+  # changed something, for the reason `plant_or_error` proves it -- a transform that
   # returned the rows unchanged plants nothing and the case reports the layer as
   # accepting what it must refuse.
   budget_cases = BUDGET_MUTATIONS.reject { |mutation| mutation[:skip] }.filter_map do |mutation|
     if mutation.key?(:from)
-      source, error = plant(File.read(RUNTIME_PROGRAM), mutation)
+      source, error = plant_or_error(File.read(RUNTIME_PROGRAM), mutation)
       preparation_errors << error if error
       next if error
 
@@ -2773,7 +2717,7 @@ if ARGV.include?("--self-test")
   end
   wrapper_cases = WRAPPER_MUTATIONS.reject { |mutation| mutation[:skip] }
                                    .filter_map do |mutation|
-    source, error = plant(File.read(CONTRACT), mutation)
+    source, error = plant_or_error(File.read(CONTRACT), mutation)
     preparation_errors << error if error
     next if error
 
