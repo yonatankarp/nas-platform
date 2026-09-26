@@ -497,17 +497,59 @@
 # that a pin NEWER than it is reversible at all. Both have to happen while there
 # is still a healthy stack to protect.
 #
-# import rather than include, so the file is expanded by --list-tasks, reached by
-# a role-level tag, and inside the fixture set tests/policy_mutation_support.rb
-# derives from this role's statically imported files. tasks/main.yml carries that
-# argument in full.
+# roles/pre_upgrade_backup carries the argument for the stop, the copy and the
+# rescue. INCLUDED RATHER THAN IMPORTED, the way roles/image_downgrade_guard is,
+# and --list-tasks no longer expanding it is the price. An imported role brings
+# its argument validation along as a task tagged `always`, so it runs in every
+# tagged converge and in verify.yml, where the terms below are undefined and
+# failed the run on them -- measured on a probe play. The include is reached by
+# the role-level tags as its tasks are, and validates only when it runs.
 #
-# vaultwarden_release_carries_service is a term here rather than inside the file
-# because the imported tasks read the parse deploy.yml made above, which is
-# itself conditional on it -- a review whose installed release predates this
-# service has nothing to read and nothing deployed to protect.
+# WHY A FILE COPY AND NOT THE APPLICATION'S OWN BACKUP. Bindery's equivalent
+# POSTs /backup to the application and takes a `VACUUM INTO` the application
+# performs on its own live database. Vaultwarden's equivalent lives behind the
+# admin panel, which this platform deliberately does not open, and the image
+# ships no sqlite3 -- measured: `command -v sqlite3` finds nothing in the pinned
+# image, which carries cp and tar and no more. ADM has none either. So there is
+# no route to an application-consistent copy of a RUNNING store here, and the
+# container is stopped first. services/vaultwarden/compose.yml declares
+# stop_grace_period: 30s for exactly this: the log is committed and the database
+# closed rather than a -wal being left for the next start to recover.
+#
+# rsa_key* is a glob because the pinned image writes rsa_key.pem and older and
+# newer ones have written a .pub beside it; it is the key every session token
+# this server ever issued is signed with, so a store restored without it logs
+# every client out and is the difference between a rollback and a re-enrolment.
+# It is why the copy is 0600 inside a 0700 directory and treated as
+# secret-bearing wherever it is copied to next.
+#
+# The pinned image is READ FROM THE PARSE this file already made rather than from
+# the release again. That parse is guarded by a stat -- the shape
+# tests/release_path_read_test.rb exists to keep -- so reusing it adds no second
+# reader of platform_current_dir to guard, and cannot drift from the document the
+# admin-panel sweep judged. vaultwarden_release_carries_service is a term here
+# because that parse is itself conditional on it -- a review whose installed
+# release predates this service has nothing to read and nothing deployed to
+# protect.
 - name: Guard the Vaultwarden store before a pinned upgrade
-  ansible.builtin.import_tasks: pre_upgrade_backup.yml
+  ansible.builtin.include_role:
+    name: pre_upgrade_backup
+  vars:
+    pre_upgrade_backup_service_name: vaultwarden
+    pre_upgrade_backup_compose_service: vaultwarden
+    pre_upgrade_backup_project_name: "{{ vaultwarden_compose_project_name }}"
+    pre_upgrade_backup_pinned_image: >-
+      {{ ((vaultwarden_compose_documents
+           | selectattr('services', 'defined') | map(attribute='services')
+           | select('mapping') | map('dict2items') | flatten
+           | selectattr('key', 'equalto', 'vaultwarden')
+           | map(attribute='value') | selectattr('image', 'defined')
+           | map(attribute='image') | list) + ['']) | first }}
+    pre_upgrade_backup_store_dir: "{{ vaultwarden_data_host_path }}"
+    pre_upgrade_backup_store_file: db.sqlite3
+    pre_upgrade_backup_extra_patterns: [rsa_key*]
+    pre_upgrade_backup_path: "{{ vaultwarden_pre_upgrade_backup_path }}"
+    pre_upgrade_backup_manage_ownership: true
   when:
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists

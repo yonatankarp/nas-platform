@@ -105,10 +105,44 @@
 # After the downgrade guard and before the deployment, the only window in which
 # either control is worth anything: the guard refuses a pin older than the store,
 # and this copies the store aside so a pin newer than it is reversible at all.
-# Imported rather than included, so --list-tasks expands it and the policy
-# fixture set derived from this role's static imports carries the file.
+# roles/pre_upgrade_backup carries the argument for the stop, the copy and the
+# rescue, and roles/vaultwarden/tasks/deploy.yml says why it is included rather
+# than imported.
+#
+# WHY A FILE COPY OF A STOPPED CONTAINER. Bindery's application takes a
+# `VACUUM INTO` of its own live store through an API. Kapowarr v1.3.1 has no
+# backup route at all, v1.3.2's own backup runs on a weekly schedule rather than
+# on demand, and neither image ships a sqlite3 binary -- measured. Measured
+# against v1.3.1, a clean stop leaves Kapowarr.db alone with no -wal beside it.
+# Unpatched, v1.3.2 did not: with an unstarted task at the head of its queue its
+# shutdown handler raised, and on the NAS Docker SIGKILLed it at the grace
+# deadline (#696). The carried patch that services/kapowarr/compose.yml mounts
+# lets that stop finish and exit 0, and the deploy that lands the patch
+# recreates Kapowarr with it mounted, so the container this stops has the patch.
+# The one exception is an image bump landing in the same deploy as the patch:
+# this runs before that deploy's Compose, so it would stop the unpatched
+# container. The copy reads the store's -wal and -shm rather than Kapowarr.db
+# alone for that case, and because a stop cut short for any other reason leaves
+# them too. v1.3.2's own dated backups beside the store
+# (Kapowarr_YYYY_MM_DD_HH_MM.db) are not the store and are not copied.
+#
+# The pin is read from the parse roles/image_downgrade_guard made moments ago
+# rather than from the release again, so this adds no second reader of
+# platform_current_dir for tests/release_path_read_test.rb to guard and cannot
+# disagree with the document the guard judged. Ownership follows the host_prep
+# and roles/dozzle form: set on the NAS or where Linux ownership is managed.
 - name: Guard the Kapowarr store before a pinned upgrade
-  ansible.builtin.import_tasks: pre_upgrade_backup.yml
+  ansible.builtin.include_role:
+    name: pre_upgrade_backup
+  vars:
+    pre_upgrade_backup_service_name: kapowarr
+    pre_upgrade_backup_compose_service: kapowarr
+    pre_upgrade_backup_project_name: "{{ kapowarr_compose_project_name }}"
+    pre_upgrade_backup_pinned_image: "{{ image_downgrade_guard_pinned_image | default('', true) }}"
+    pre_upgrade_backup_store_dir: "{{ kapowarr_config_host_path }}"
+    pre_upgrade_backup_store_file: Kapowarr.db
+    pre_upgrade_backup_path: "{{ kapowarr_pre_upgrade_backup_path }}"
+    pre_upgrade_backup_manage_ownership: "{{ platform_kind == 'nas' or (platform_manage_linux_ownership | bool) }}"
 
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in
@@ -177,7 +211,7 @@
     deployment_report_changed: >-
       {{ (kapowarr_deploy is changed)
          or ((container_health_wedged_recreate | default({})) is changed)
-         or ((kapowarr_pre_upgrade_restart | default({})) is changed) }}
+         or ((pre_upgrade_backup_restart | default({})) is changed) }}
 
 - name: Verify Kapowarr effective container CPU policy
   ansible.builtin.include_role:
