@@ -1675,13 +1675,19 @@ service_dirs.sort.each do |dir|
           "#{SOCKET_PROXY_PORTS.fetch(subject, []).inspect}")
   end
   # An override is read by nothing above, so it may narrow a proxy's ports and
-  # nothing more: networks and network_mode are refused on every service of a
-  # stack carrying a proxy, and ports on the proxy only when empty.
+  # nothing more: a top-level networks key (which could redefine a proxy network
+  # as non-internal or external) is refused outright, networks and network_mode
+  # on every service of a stack carrying a proxy, and ports on the proxy unless
+  # empty.
   next unless services.any? { |container, _spec| socket_proxy_subjects.include?("#{stack}/#{container}") }
 
   Dir[File.join(dir, "compose.{mac,integration}.yml")].sort.each do |override_path|
     relative_override = override_path.delete_prefix("#{ROOT}/")
-    YAML.safe_load_file(override_path, aliases: true).fetch("services", {}).each do |container, spec|
+    override = YAML.safe_load_file(override_path, aliases: true)
+    check(failures, !override.key?("networks"),
+          "#{relative_override}: an override may not declare networks in a stack carrying a " \
+          "socket proxy; state them in compose.yml, where the consumer map reads them")
+    override.fetch("services", {}).each do |container, spec|
       next unless spec.is_a?(Hash)
 
       proxy = socket_proxy_subjects.include?("#{stack}/#{container}")
