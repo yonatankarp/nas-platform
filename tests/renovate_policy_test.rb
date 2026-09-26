@@ -35,8 +35,16 @@ check(failures, config["platformAutomerge"] == true,
       "Renovate must use GitHub-native automerge")
 check(failures, config["automergeStrategy"] == "rebase",
       "Renovate automerge must use the rebase strategy")
-check(failures, config["rebaseWhen"] == "behind-base-branch",
-      "Renovate must rebase branches that fall behind the protected base")
+# auto, and not behind-base-branch, which this file required from e56d9728
+# until #831. behind-base-branch rebased every open branch after every merge,
+# and each rebase re-ran CI: 22 of 40 runs and 37% of runner-minutes, most of
+# them held pull requests that sit open longest. Renovate resolves auto per
+# branch from that branch's own automerge verdict, so the split #831 decided --
+# automerged branches stay current, held ones rebase only on a conflict -- needs
+# no second copy of the held set. The resolution is asserted per package below.
+check(failures, config["rebaseWhen"] == "auto",
+      "Renovate's rebaseWhen must be auto, which rebases an automerged branch that falls " \
+      "behind the base and a held one only when it conflicts (#831)")
 
 eligible_rules = rules.select do |rule|
   rule["description"] == "Automerge routine non-major updates after required checks pass."
@@ -185,7 +193,7 @@ check(failures, rules.none? do |rule|
 end, "a Renovate rule narrows by file name without naming its packages; the " \
      "automerge resolver in this test would over-apply it")
 
-def rule_reaches?(rule, package, update_type)
+def rule_reaches?(rule, package, update_type, datasource = "docker")
   names = Array(rule["matchPackageNames"])
   return false unless names.empty? || names.include?(package)
 
@@ -193,10 +201,10 @@ def rule_reaches?(rule, package, update_type)
   return false unless types.empty? || types.include?(update_type)
 
   datasources = Array(rule["matchDatasources"])
-  return false unless datasources.empty? || datasources.include?("docker")
+  return false unless datasources.empty? || datasources.include?(datasource)
 
   categories = Array(rule["matchCategories"])
-  categories.empty? || categories.include?("docker")
+  categories.empty? || (datasource == "docker" && categories.include?("docker"))
 end
 
 # Later rules win, which is Renovate's own resolution order.
@@ -210,8 +218,8 @@ def last_declared(rules, key)
   rules.select { |rule| rule.key?(key) }.map { |rule| rule[key] }.last
 end
 
-def automerge_verdict(config, rules, package, update_type)
-  reaching = rules.select { |rule| rule_reaches?(rule, package, update_type) }
+def automerge_verdict(config, rules, package, update_type, datasource = "docker")
+  reaching = rules.select { |rule| rule_reaches?(rule, package, update_type, datasource) }
   automerge = last_declared(reaching, "automerge")
   automerge = config["automerge"] if automerge.nil?
   [automerge, last_declared(reaching, "dependencyDashboardApproval") == true]
@@ -406,6 +414,78 @@ EVERY_UPDATE_TYPE.each do |update_type|
           "which is root on the host, and a re-pushed tag arrives as a digest, so no update to " \
           "it may merge without a human")
   end
+end
+
+# #831: the rebase each branch actually gets, closed both ways against the
+# automerge verdict above rather than against a list of held images. An
+# automerged branch must stay behind-base-branch, so nothing automerges
+# untested against the current main; a held one must be conflicted, so it stops
+# re-running CI after every merge while it waits for a human.
+#
+# auto is resolved the way Renovate 44's determineRebaseWhenValue resolves it,
+# less three inputs this file cannot see, each of which would move a held
+# branch back to behind-base-branch or an automerged one to conflicted: a
+# keep-updated label (refused below, since it lives in this file), the main
+# ruleset requiring up-to-date branches (strict_required_status_checks_policy
+# is false), and a merge queue (none). Those two are repository settings.
+check(failures, !config.key?("keepUpdatedLabel") && rules.none? { |rule| rule.key?("keepUpdatedLabel") },
+      "keepUpdatedLabel makes Renovate rebase a labelled held branch behind the base, which " \
+      "undoes #831's rebaseWhen split for it")
+
+def rebase_verdict(config, rules, package, update_type, datasource)
+  reaching = rules.select { |rule| rule_reaches?(rule, package, update_type, datasource) }
+  rebase = last_declared(reaching, "rebaseWhen") || config["rebaseWhen"] || "auto"
+  return rebase unless rebase == "auto"
+
+  automerge, = automerge_verdict(config, rules, package, update_type, datasource)
+  automerge == true ? "behind-base-branch" : "conflicted"
+end
+
+rebase_subjects = Set.new
+rules.each do |rule|
+  datasource = Array(rule["matchDatasources"]).first || "docker"
+  Array(rule["matchPackageNames"]).each do |name|
+    rebase_subjects << [name.delete_prefix("!"), datasource]
+  end
+end
+Dir.glob(File.join(ROOT, "services", "*", "compose*.yml")).sort.each do |path|
+  document = YAML.safe_load_file(path, aliases: true) || {}
+  (document.fetch("services", nil) || {}).each_value do |service|
+    image = service && service["image"]
+    rebase_subjects << [compose_image_repository(image), "docker"] if image
+  end
+end
+
+rebase_verdicts = Hash.new(0)
+rebase_subjects.each do |package, datasource|
+  (ELIGIBLE_UPDATE_TYPES.to_a + ["major"]).each do |update_type|
+    automerge, approved = automerge_verdict(config, rules, package, update_type, datasource)
+    automerged = automerge == true && !approved
+    expected = automerged ? "behind-base-branch" : "conflicted"
+    actual = rebase_verdict(config, rules, package, update_type, datasource)
+    rebase_verdicts[expected] += 1
+    check(failures, actual == expected,
+          "a #{update_type} update of #{package} (#{datasource}) is " \
+          "#{automerged ? 'automerged' : 'held for a human'} but rebases #{actual}; " \
+          "#{automerged ? 'an automerged branch must stay behind-base-branch so it never merges ' \
+                          'untested against the current main' \
+                        : 'a held branch must be conflicted so it stops re-running CI after ' \
+                          'every merge (#831)'}")
+  end
+end
+# Floors both ways, and a named subject on each side: a universe that read
+# nothing, or a resolver that reached no withholding rule, passes every check in
+# the loop above.
+check_floor(failures, rebase_verdicts["conflicted"], 1, "the rebase check found no held update")
+check_floor(failures, rebase_verdicts["behind-base-branch"], 1,
+            "the rebase check found no automerged update")
+[["ghcr.io/paperless-ngx/paperless-ngx", "docker", "minor", "conflicted"],
+ ["yt-dlp/yt-dlp", "github-releases", "patch", "conflicted"],
+ ["docker.io/gotenberg/gotenberg", "docker", "minor", "behind-base-branch"]].each do |package, datasource, type, want|
+  check(failures, rebase_subjects.include?([package, datasource]) &&
+                  rebase_verdict(config, rules, package, type, datasource) == want,
+        "a #{type} update of #{package} must rebase #{want}; the rebase check's subjects or " \
+        "resolver have stopped meaning what its assertions read them as")
 end
 
 # The batching group, and the reason it needs an assertion of its own rather
