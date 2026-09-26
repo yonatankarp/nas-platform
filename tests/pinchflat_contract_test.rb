@@ -526,6 +526,17 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
     failures.concat(stdin_probe_failures(contract, %w[static], { "PLATFORM_CONTRACT_REPO_DIR" => ROOT },
                                          subject: "the static program"))
   end
+
+  # The runtime invocation, which is `exec`ed and so is the last thing the script
+  # does -- its redirect needs its own row because the static one cannot cover it.
+  with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
+    environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
+                    "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
+                    "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
+                    "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker") }
+    failures.concat(stdin_probe_failures(contract, %w[run], environment,
+                                         subject: "the runtime program", status: false))
+  end
   failures
 end
 
@@ -724,19 +735,30 @@ if ARGV.include?("--self-test")
     end
   end
 
-  # The redirect's own regression. Neither real program reads stdin, so dropping
-  # `</dev/null` changes no outcome today -- which is exactly why it needs a
-  # program that does read, and why the rule cannot be proven by the contract
-  # passing.
-  unredirected = File.read(CONTRACT).sub(
-    'ruby "$contract_repo_dir/tests/contracts/pinchflat-static.rb" "$repo_dir" </dev/null',
-    'ruby "$contract_repo_dir/tests/contracts/pinchflat-static.rb" "$repo_dir"'
-  )
-  abort "self-test could not plant a dropped stdin redirect" if unredirected == File.read(CONTRACT)
-  leaked = stdin_failures(wrapper_source: unredirected)
-  abort "self-test failed: a dropped stdin redirect was accepted" if leaked.empty?
+  # The redirects' own regression, one per invocation. Neither real program reads
+  # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
+  # why it needs a program that does read, and why the rule cannot be proven by
+  # the contract passing. The third drains the caller's stdin before the runtime
+  # exec, which only the check that the caller's input survived can see.
+  planted_redirects = 0
+  [
+    ['ruby "$contract_repo_dir/tests/contracts/pinchflat-static.rb" "$repo_dir" </dev/null',
+     'ruby "$contract_repo_dir/tests/contracts/pinchflat-static.rb" "$repo_dir"'],
+    ['exec ruby "$contract_repo_dir/tests/contracts/pinchflat-runtime.rb" </dev/null',
+     'exec ruby "$contract_repo_dir/tests/contracts/pinchflat-runtime.rb"'],
+    ["\nexec ruby ", "\ncat >/dev/null\nexec ruby "]
+  ].each do |from, to|
+    pristine = File.read(CONTRACT)
+    abort "self-test could not plant a stdin regression: #{from.inspect}" unless
+      pristine.scan(from).length == 1
 
-  puts "pinchflat contract: self-test detects #{PROGRAM_MUTATIONS.length + 1} planted regressions"
+    leaked = stdin_failures(wrapper_source: pristine.sub(from, to))
+    abort "self-test failed: a stdin regression was accepted: #{to.inspect}" if leaked.empty?
+    planted_redirects += 1
+  end
+
+  puts "pinchflat contract: self-test detects #{PROGRAM_MUTATIONS.length + planted_redirects} " \
+       "planted regressions"
   exit
 end
 

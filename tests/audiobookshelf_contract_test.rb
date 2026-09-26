@@ -899,15 +899,10 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   # does -- its redirect needs its own row because the static one cannot cover it.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract, copy_root|
     media, reports = runtime_sandbox(copy_root)
-    stdout, stderr, _status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
-        "PLATFORM_MEDIA_ROOT" => media, "PLATFORM_REPORT_ROOT" => reports },
-      "/bin/sh", "-c", "#{contract.shellescape} audio-self-test; printf 'left:'; cat",
-      stdin_data: "caller-payload\n"
-    )
-    output = stdout + stderr
-    failures << "stdin: the runtime program was handed the caller's input: #{output.strip.inspect}" unless
-      output.include?('probe read ""')
+    environment = { "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
+                    "PLATFORM_MEDIA_ROOT" => media, "PLATFORM_REPORT_ROOT" => reports }
+    failures.concat(stdin_probe_failures(contract, %w[audio-self-test], environment,
+                                         subject: "the runtime program", status: false))
   end
   failures
 end
@@ -1181,11 +1176,13 @@ if ARGV.include?("--self-test")
   # The redirects' own regression, one per invocation. Neither real program reads
   # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
   # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing.
+  # the contract passing. The third drains the caller's stdin before the runtime
+  # exec, which only the check that the caller's input survived can see.
   planted_redirects = 0
   [
     ["  \"$runtime_source\" \"$mode\" </dev/null\n", "  \"$runtime_source\" \"$mode\"\n"],
-    ["  \"$mode\" \"$@\" </dev/null\n", "  \"$mode\" \"$@\"\n"]
+    ["  \"$mode\" \"$@\" </dev/null\n", "  \"$mode\" \"$@\"\n"],
+    ["\nexec ruby ", "\ncat >/dev/null\nexec ruby "]
   ].each do |from, to|
     unredirected = File.read(CONTRACT).sub(from, to)
     abort "self-test could not plant a dropped stdin redirect: #{from.inspect}" if

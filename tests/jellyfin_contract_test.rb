@@ -1234,14 +1234,9 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   # does -- its redirect needs its own row because the static one cannot cover it.
   with_contract_copy(runtime: STDIN_PROBE, wrapper: wrapper_source) do |contract|
     with_runtime_sandbox do |_root, environment, _media|
-      stdout, stderr, _status = Open3.capture3(
-        environment.merge("PLATFORM_CONTRACT_REPO_DIR" => ROOT),
-        "/bin/sh", "-c", "#{contract.shellescape} seed-fixture-only; printf 'left:'; cat",
-        stdin_data: "caller-payload\n"
-      )
-      output = stdout + stderr
-      failures << "stdin: the runtime program was handed the caller's input: #{output.strip.inspect}" unless
-        output.include?('probe read ""')
+      failures.concat(stdin_probe_failures(contract, %w[seed-fixture-only],
+                                           environment.merge("PLATFORM_CONTRACT_REPO_DIR" => ROOT),
+                                           subject: "the runtime program", status: false))
     end
   end
   failures
@@ -1615,11 +1610,13 @@ if ARGV.include?("--self-test")
   # The redirects' own regression, one per invocation. Neither real program reads
   # stdin, so dropping `</dev/null` changes no outcome today -- which is exactly
   # why it needs a program that does read, and why the rule cannot be proven by
-  # the contract passing.
+  # the contract passing. The third drains the caller's stdin before the runtime
+  # exec, which only the check that the caller's input survived can see.
   planted_redirects = 0
   [
     ["  \"$repo_dir\" \"$platform\" </dev/null\n", "  \"$repo_dir\" \"$platform\"\n"],
-    ["  \"$mode\" \"$@\" </dev/null\n", "  \"$mode\" \"$@\"\n"]
+    ["  \"$mode\" \"$@\" </dev/null\n", "  \"$mode\" \"$@\"\n"],
+    ["\nexec ruby ", "\ncat >/dev/null\nexec ruby "]
   ].each do |from, to|
     pristine = File.read(CONTRACT)
     abort "self-test could not plant a dropped stdin redirect: #{from.inspect}" unless
