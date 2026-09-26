@@ -525,3 +525,23 @@ Both audits reported identical verdicts. A drifted `detected_by` planted
 under the pool was still reported by line and exited 1. The CPU barely moved,
 so the pool removed waiting rather than adding work. On a runner, that work
 divided across four cores is the new floor, and no runner has measured it yet.
+
+## Held Renovate branches stopped rebasing on every merge
+
+**2026-09-26 (#831).** `renovate.json` had carried `rebaseWhen:
+behind-base-branch` since e56d9728, so every merge to `main` rebased every open
+Renovate branch and each rebase re-ran CI. Over 40 `ci.yml` runs from
+2026-09-25 19:20 to 2026-09-26 07:34 UTC, Renovate accounted for 22 runs and
+1272 of 3395 runner-minutes (37%). Those 22 runs came from 5 branches, so about
+17 were re-runs. The churn fell on the held branches (Nextcloud, Meilisearch,
+Paperless ran six times each in about ten hours), because they sit open
+longest. The re-runs arrived in waves after merges, when queues reached 17–32
+minutes against 10–12 on idle runners.
+
+The value is now `auto`. Renovate resolves it per branch: `behind-base-branch`
+when the branch automerges, `conflicted` otherwise, as long as the `main`
+ruleset does not require up-to-date branches, and it does not. So an automerged
+branch is still tested against the current `main` before it merges, and a held
+one re-runs CI only when it conflicts or a human asks.
+`tests/renovate_policy_test.rb` checks that resolution against the automerge
+verdict for every package it can name.

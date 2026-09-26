@@ -14,7 +14,7 @@
   "automergeType": "pr",
   "platformAutomerge": true,
   "automergeStrategy": "rebase",
-  "rebaseWhen": "behind-base-branch",
+  "rebaseWhen": "auto",
   "prConcurrentLimit": 10,
   "enabledManagers": [
     "docker-compose",
