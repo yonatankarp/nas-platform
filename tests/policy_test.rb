@@ -2320,7 +2320,8 @@ end
 
 # No caller hands roles/pre_upgrade_backup a pin (#858). The role reads its
 # Compose service's own image from the release, and an include parameter
-# outranks the fact it sets, so a pin passed in would silently take over again --
+# outranks the fact it sets (measured: an include_role `vars:` value survived the
+# role's own set_fact of the same name), so a pin passed in would silently take over again --
 # which is how callers used to hand it roles/image_downgrade_guard's host-scoped
 # fact, the pin of whichever guard ran last. Floored at the three callers, so a
 # sweep that stopped finding the includes cannot pass by finding none.
