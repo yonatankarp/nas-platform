@@ -3640,45 +3640,90 @@ class ConvergeTest(PollerTestCase):
     A hand-run ansible-playbook took no lock, so a manual converge outliving the
     five-minute poll interval overlapped a poll and died 1463 tasks in on a
     containment guard. --converge is that same command under the poller's own
-    lock: everything but the lock stays the operator's.
+    lock, run with the poller's tooling from the poller's checkout (#902): the
+    arguments stay the operator's.
     """
 
-    def fake_playbook(self, exit_code=0):
-        """An ansible-playbook that reports what it was given and what it sees."""
+    # Written once for the class and linked into each test's root, the way
+    # VerifyTest's stubs are (#891, after #888): the first exec of a newly
+    # written executable waits in a host-wide macOS queue. Each finds its test's
+    # files through the path it was invoked by. "ansible-playbook" is linked at
+    # <root>/.local/share/nas-platform/controller/.venv/bin; "decoy" at
+    # <root>/bin/ansible-playbook, first on PATH, is what a bare name would run.
+    RECORD = (
+        "import fcntl, json, os, sys\n"
+        "lock = os.path.join(root, '.local/share/nas-platform/state/deployment.lock')\n"
+        "descriptor = os.open(lock, os.O_RDONLY)\n"
+        "try:\n"
+        "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    held = False\n"
+        "    fcntl.flock(descriptor, fcntl.LOCK_UN)\n"
+        "except OSError:\n"
+        "    held = True\n"
+        "with open(os.path.join(root, record_name), 'w') as sink:\n"
+        "    sink.write(json.dumps({\n"
+        "        'executable': sys.argv[0],\n"
+        "        'argv': sys.argv[1:],\n"
+        "        'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
+        "        'summary': os.environ.get('PLATFORM_DEPLOYMENT_SUMMARY_PATH'),\n"
+        "        'held': held,\n"
+        "        'cwd': os.getcwd(),\n"
+        "        'lock_record': open(lock).read(),\n"
+        "    }))\n"
+        "exit_path = os.path.join(root, 'playbook-exit')\n"
+        "sys.exit(int(open(exit_path).read()) if os.path.exists(exit_path) else 0)\n"
+    )
+    STUBS = {
+        "ansible-playbook": (
+            "import os, sys\n"
+            "root = sys.argv[0]\n"
+            "for _ in range(7):\n"
+            "    root = os.path.dirname(root)\n"
+            "record_name = 'playbook-invocation.json'\n"
+        ),
+        "decoy": (
+            "import os, sys\n"
+            "root = os.path.dirname(os.path.dirname(sys.argv[0]))\n"
+            "record_name = 'decoy-invocation.json'\n"
+        ),
+    }
 
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        scratch = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, scratch)
+        cls.stubs = scratch / "bin"
+        cls.stubs.mkdir()
+        for name, body in cls.STUBS.items():
+            stub = cls.stubs / name
+            stub.write_text(f"#!{sys.executable}\n{body}{cls.RECORD}", encoding="utf-8")
+            stub.chmod(0o700)
+            # Paid here, untimed; it fails for want of fixtures, and only the
+            # exec itself is the point.
+            subprocess.run([str(stub)], input=b"", capture_output=True, check=False)
+
+    def setUp(self):
+        super().setUp()
+        self.checkout = self.root / ".local/share/nas-platform/controller"
+        self.venv_playbook = self.checkout / ".venv/bin/ansible-playbook"
+        self.decoy_record = self.root / "decoy-invocation.json"
         binary = self.root / "bin"
-        binary.mkdir(exist_ok=True)
-        record = self.root / "playbook-invocation.json"
-        fake = binary / "ansible-playbook"
-        fake.write_text(
-            "#!/usr/bin/env python3\n"
-            "import fcntl, json, os, sys\n"
-            f"lock = {str(self.root / '.local/share/nas-platform/state/deployment.lock')!r}\n"
-            "descriptor = os.open(lock, os.O_RDONLY)\n"
-            "try:\n"
-            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "    held = False\n"
-            "    fcntl.flock(descriptor, fcntl.LOCK_UN)\n"
-            "except OSError:\n"
-            "    held = True\n"
-            "record = {\n"
-            "    'argv': sys.argv[1:],\n"
-            "    'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
-            "    'summary': os.environ.get('PLATFORM_DEPLOYMENT_SUMMARY_PATH'),\n"
-            "    'held': held,\n"
-            "    'cwd': os.getcwd(),\n"
-            "    'lock_record': open(lock).read(),\n"
-            "}\n"
-            f"open({str(record)!r}, 'w').write(json.dumps(record))\n"
-            f"sys.exit({exit_code})\n",
-            encoding="utf-8",
-        )
-        fake.chmod(0o700)
+        binary.mkdir()
+        (binary / "ansible-playbook").symlink_to(self.stubs / "decoy")
         path = f"{binary}{os.pathsep}{os.environ.get('PATH', '')}"
         patched = mock.patch.dict(os.environ, {"PATH": path})
         patched.start()
         self.addCleanup(patched.stop)
-        return record
+
+    def fake_playbook(self, exit_code=0):
+        """Link the checkout virtualenv's ansible-playbook; return its record."""
+
+        self.venv_playbook.parent.mkdir(parents=True, exist_ok=True)
+        self.venv_playbook.symlink_to(self.stubs / "ansible-playbook")
+        if exit_code:
+            (self.root / "playbook-exit").write_text(str(exit_code), encoding="ascii")
+        return self.root / "playbook-invocation.json"
 
     def test_an_operator_converge_never_hands_site_yml_a_summary_path(self):
         """The handshake's operator row: nothing announces after an operator's
@@ -3725,7 +3770,15 @@ class ConvergeTest(PollerTestCase):
         # The plays refuse a converge somebody else is running, so the converge
         # that took the lock has to say the holder is its own.
         self.assertEqual(invocation["owner"], str(os.getpid()))
-        self.assertEqual(invocation["cwd"], os.getcwd())
+        # #902: the checkout's own tooling, from the checkout, so the relative
+        # inventory and playbook the docs show resolve -- and never whatever a
+        # bare name finds on the operator's PATH.
+        self.assertEqual(invocation["executable"], str(self.venv_playbook))
+        self.assertEqual(Path(invocation["cwd"]).resolve(), self.checkout.resolve())
+        self.assertFalse(
+            self.decoy_record.exists(),
+            "converge ran the ansible-playbook on PATH, not the checkout virtualenv's",
+        )
         # Read from inside the child, while the lock is still held: the record is
         # cleared on release precisely so nothing reads it afterwards.
         record = json.loads(invocation["lock_record"])
@@ -3775,14 +3828,51 @@ class ConvergeTest(PollerTestCase):
         self.assertIn("invalid arguments", buffer.getvalue())
 
     def test_converge_reports_a_missing_ansible_playbook(self):
+        """No virtualenv in the checkout is refused, even with one on PATH."""
+
         buffer = io.StringIO()
-        with mock.patch.dict(os.environ, {"PATH": str(self.root / "empty")}), \
-                contextlib.redirect_stderr(buffer):
+        with contextlib.redirect_stderr(buffer):
             code = production_auto_deploy.main(
                 ["--config", str(self.config_path), "--converge", "site.yml"]
             )
         self.assertEqual(code, 1)
         self.assertIn("could not run ansible-playbook", buffer.getvalue())
+        self.assertFalse(self.decoy_record.exists())
+
+    def test_converge_prints_the_checkout_head_before_running(self):
+        """The checkout is wherever the poller last left it, so say which."""
+
+        git = shutil.which("git")
+        if git is None:
+            self.skipTest("git is required")
+        environment = {
+            "PATH": os.environ.get("PATH", ""),
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_SYSTEM": os.devnull,
+        }
+        subprocess.run([git, "init", "--quiet"], cwd=self.checkout, env=environment,
+                       check=True)
+        subprocess.run(
+            [git, "-c", "user.name=t", "-c", "user.email=t@t", "commit",
+             "--allow-empty", "--quiet", "-m", "fix(bindery): the revision to converge"],
+            cwd=self.checkout, env=environment, check=True,
+        )
+        short = subprocess.run(
+            [git, "rev-parse", "--short", "HEAD"], cwd=self.checkout, env=environment,
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.fake_playbook()
+        self.loaded_config(git_path=git)
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            code = production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge", "site.yml"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(
+            f"{short} fix(bindery): the revision to converge", buffer.getvalue(),
+            "converge must name the checkout's HEAD before it runs the playbook",
+        )
 
 
 class VerifyTest(PollerTestCase):

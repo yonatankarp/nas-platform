@@ -141,13 +141,17 @@ again and reads them back ([why](docs/incident-history.md#the-upgrade-lane)).
 converges the newest CI-released `main` **every five minutes** under an flock. A
 hand-run `ansible-playbook` takes no lock and races it (#326), so on the NAS
 converge through the launcher, which takes the poller's lock and passes
-everything after `--` to `ansible-playbook`:
+everything after `--` to `ansible-playbook`. It runs the controller checkout's
+own `.venv` `ansible-playbook` from inside that checkout (#902), so relative
+paths resolve there, and it prints the checkout's HEAD first: that is the
+revision the poller last left it at, so read it before trusting the run. The
+launcher is not on the login PATH; use its full path:
 
 ```sh
-nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass
-nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
-nas-platform-deploy --status                 # what the poller last did, and what it would do next
-nas-platform-deploy --verify                 # verify.yml against the deployed revision; cron runs it hourly
+$HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass
+$HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
+$HOME/.local/bin/nas-platform-deploy --status   # what the poller last did, and what it would do next
+$HOME/.local/bin/nas-platform-deploy --verify   # verify.yml against the deployed revision; cron runs it hourly
 ```
 
 From a workstation the plays still run over SSH, and these two cannot hold a lock

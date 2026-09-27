@@ -8,11 +8,12 @@
 # arguments after it. Issue #326: a hand-run ansible-playbook took no lock, so a
 # manual converge running longer than the five-minute poll interval overlapped a
 # poll, and the loser died 1463 tasks in on a containment guard reporting an
-# unsafe deployment target. Everything except the lock stays the operator's
-# choice -- inventory, tags, vault password provider, working directory -- because
-# the poller's checkout sits at whatever revision it last deployed.
+# unsafe deployment target. Inventory, tags and vault password provider stay the
+# operator's choice; the ansible-playbook is the controller checkout's .venv one,
+# run from inside that checkout (#902), and the checkout's HEAD is printed first,
+# because it sits at whatever revision the poller last left it.
 #
-#   nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
+#   $HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
 set -eu
 exec "{{ production_auto_deploy_poller_path }}" \
   --config "{{ production_auto_deploy_config_path }}" "$@"

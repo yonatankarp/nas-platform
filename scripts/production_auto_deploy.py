@@ -2474,6 +2474,22 @@ def _holder_description(holder: dict | None) -> str:
     return f"{what}{pid_note}"
 
 
+def _checkout_head_line(config: Config) -> str | None:
+    """`<short sha> <subject>` of the checkout's HEAD, or None if git cannot say."""
+
+    try:
+        result = _run(
+            [config.git_path, "log", "-1", "--format=%h %s"],
+            timeout=GIT_LOCAL_TIMEOUT_SECONDS,
+            cwd=config.checkout,
+            env={"PATH": config.tool_path, "LC_ALL": "C", "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    line = result.stdout.decode("utf-8", "replace").strip()
+    return line if result.returncode == 0 and line else None
+
+
 def converge(config: Config, arguments: list[str]) -> int:
     """Run one operator ansible-playbook invocation under the deployment lock.
 
@@ -2485,14 +2501,20 @@ def converge(config: Config, arguments: list[str]) -> int:
     poller had repointed `current` underneath a run that was still converging
     services against the release it had activated itself.
 
-    What this mode adds is the lock and nothing else. The arguments, the
-    inventory, the vault password provider, the tags and the working directory
-    stay the operator's, because the poller's checkout is at whatever revision
-    update_checkout last reset it to: imposing it here would silently converge a
-    different tree than the operator is reading. So this is deliberately not a
-    second deploy path -- it is `flock` around the operator's own command, using
-    the poller's own lock rather than a second scheme, and writing the holder
-    record that plain flock(1) cannot.
+    What this mode adds is the lock, the tooling and the tree. The arguments,
+    the inventory, the vault password provider and the tags stay the
+    operator's. The ansible-playbook and the working directory are the
+    poller's: the controller checkout's virtualenv and the checkout itself,
+    because issue #902 found the launcher unusable as documented -- the login
+    PATH holds no ansible-playbook and the operator's cwd no site.yml, so the
+    documented command died on ENOENT unless the operator first recreated the
+    poller's own setup by hand. Relative paths in the arguments therefore
+    resolve against the checkout. That checkout is at whatever revision
+    update_checkout last reset it to, which need not be the one the operator
+    means, so its HEAD is printed before anything runs and is read under the
+    lock, after the last poll that could move it. It is still `flock` around
+    one ansible-playbook invocation, using the poller's own lock rather than a
+    second scheme, and writing the holder record that plain flock(1) cannot.
 
     The child is run with the inherited terminal: --ask-vault-pass has to be able
     to prompt, and the operator has to see the recap as it happens, so the output
@@ -2517,9 +2539,17 @@ def converge(config: Config, arguments: list[str]) -> int:
         # Never inherited: announce_release does not run after an operator's
         # command, so a converge that wrote the summary would announce nothing.
         environment.pop(SUMMARY_PATH_ENVIRONMENT, None)
+        print(
+            f"production auto-deploy: converging {config.checkout} at "
+            f"{_checkout_head_line(config) or 'an unreadable HEAD'}",
+            file=sys.stderr,
+        )
         try:
             completed = subprocess.run(
-                ["ansible-playbook", *arguments], env=environment, check=False
+                [str(_tooling_bin(config) / "ansible-playbook"), *arguments],
+                cwd=config.checkout,
+                env=environment,
+                check=False,
             )
         except OSError as error:
             print(

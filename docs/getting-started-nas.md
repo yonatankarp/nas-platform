@@ -541,11 +541,16 @@ are serialised by an flock on the poller's state directory, and a bare
 `ansible-playbook` does not take it. Run converges through the launcher instead:
 it acquires that same lock, so the poll that arrives in the middle does nothing
 and tries again five minutes later, and passes everything after `--` to
-`ansible-playbook` unchanged — inventory, tags, vault password provider and
-working directory all stay yours.
+`ansible-playbook` unchanged — inventory, tags and vault password provider stay
+yours. The `ansible-playbook` it runs is the controller checkout's own, from
+its `.venv`, and it runs inside that checkout, so relative paths such as
+`inventory/local.yml` resolve there wherever you run the launcher from. That
+checkout sits at whatever revision the poller last left it, so the launcher
+prints its HEAD (short sha and subject) before anything runs; read it before
+trusting what converges. The launcher is not on the login PATH, so call it by
+its full path:
 
 ```sh
-cd /path/to/your/checkout
 $HOME/.local/bin/nas-platform-deploy --converge -- \
   -i inventory/local.yml site.yml --check --diff --ask-vault-pass
 $HOME/.local/bin/nas-platform-deploy --converge -- \
