@@ -459,6 +459,20 @@ STATIC_ROWS = [
     expects: "the Bindery pre-upgrade backup must be gated on an actual image change"
   },
   {
+    # #858: under --check `current` is the release the run replaces, so a review
+    # that read the pin there reported no backup for a bump the live run backs up.
+    name: "a pre-upgrade backup that reads current's pin under --check",
+    break: lambda { |root|
+      role_tasks(root, "roles/bindery/tasks/pre_upgrade_backup.yml") do |document|
+        find_task(document) { |candidate| candidate.key?("ansible.builtin.slurp") }.delete("when")
+        fact = find_task(document) { |candidate| candidate.dig("ansible.builtin.set_fact")&.key?("bindery_pinned_image") }
+        fact["ansible.builtin.set_fact"]["bindery_pinned_image"] =
+          "{{ (bindery_compose_source.content | b64decode | from_yaml).services.bindery.image }}"
+      end
+    },
+    expects: "the Bindery pre-upgrade backup must read the candidate's pin under --check"
+  },
+  {
     # Nothing in Bindery is create-if-absent: a duplicate user is a 500.
     name: "an administrator write that is not read-then-decide",
     break: lambda { |root|
@@ -1989,6 +2003,13 @@ end
 # --- planted regressions ---------------------------------------------------
 
 PROGRAM_MUTATIONS = [
+  {
+    label: "the candidate-pin review check",
+    program: :static,
+    from: "must read the candidate's pin under --check\" unless",
+    to: "must read the candidate's pin under --check\" if false &&",
+    rows: ["a pre-upgrade backup that reads current's pin under --check"]
+  },
   {
     label: "a declared file no longer having to exist",
     program: :static,

@@ -383,6 +383,17 @@ if failures.empty?
   failures << "the Bindery pre-upgrade backup must be gated on an actual image change" unless
     backup_conditions.include?("bindery_upgrade_pending") &&
     backup_conditions.include?("ansible_check_mode")
+  # #858: a review cannot read the pin from `current`, which under --check still
+  # names the release the run replaces, so it reads the controller checkout the
+  # release is copied from; a live run reads `current`. Otherwise a review of a
+  # bump reports no backup the live run then takes.
+  pin_read = backup_tasks.find { |task| task.key?("ansible.builtin.slurp") }
+  pin_fact = backup_tasks.find { |task| task.dig("ansible.builtin.set_fact")&.key?("bindery_pinned_image") }
+                         &.dig("ansible.builtin.set_fact", "bindery_pinned_image").to_s
+  failures << "the Bindery pre-upgrade backup must read the candidate's pin under --check" unless
+    pin_read && Array(pin_read["when"]) == ["not ansible_check_mode"] &&
+    pin_fact.include?("lookup('ansible.builtin.file', playbook_dir ~ '/services/bindery/compose.yml')") &&
+    pin_fact.include?("if ansible_check_mode")
 
   # Nothing in Bindery is create-if-absent: a duplicate user or root folder is a
   # 500, and a duplicate Prowlarr instance or download client is a silent second
