@@ -212,8 +212,24 @@ failures = []
 # informed by a fresh measurement rather than by a stale assertion. Move lines
 # between the shard blocks here and in tests/validate-policy.sh together; every
 # assertion below exists to fail when only one of the two moves.
+#
+# ORDER IS PART OF THE BALANCE, and the per-shard comparison below is ordered for
+# that reason. The gate dispatches each heredoc top to bottom, so every block
+# lists its heaviest checks first and a check that lands in the slowest-checks
+# report goes near the top, never at the end. #843 measured what the other order
+# costs: docs/ci-performance-history.md has it.
 
 SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
+  ruby tests/contract_structure_mutation_test.rb
+  ruby tests/deployment_summary_test.rb
+  ruby tests/database_managed_users_test.rb
+  tests/mac/media-acquisition-foundation-cleanup-test.sh
+  ruby tests/vaultwarden_serve_test.rb
+  python3 -m unittest -v tests/dozzle_alert_relay_test.py
+  ruby tests/managed_users_vault_test.rb
+  ruby tests/vaultwarden_serve_test.rb --self-test
+  ruby tests/komga_library_reconciliation_test.rb --self-test
+  tests/mac/beszel-telemetry-hook-test.sh
   ruby tests/policy_test.rb
   ruby tests/policy_beszel_test.rb
   shellcheck --shell=sh -x tests/integration_controller.sh
@@ -222,24 +238,17 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/host_prep_integration_writer_test.rb
   ruby tests/media_acquisition_phase1_test.rb
   ruby tests/media_acquisition_adoption_test.rb
-  tests/mac/media-acquisition-foundation-cleanup-test.sh
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
   ruby tests/beszel_telemetry_timeout_test.rb
-  python3 -m unittest -v tests/dozzle_alert_relay_test.py
   python3 -m unittest -v tests/downloaders_clamav_gate_test.py
   ruby tests/immich_restore_lifecycle_test.rb
-  tests/mac/beszel-telemetry-hook-test.sh
   ruby tests/ci/workflow_test.rb
   ruby tests/docs_links_test.rb --self-test
   tests/mac/snapshot-paperless-context-test.sh
   python3 tests/deployment_target_validator_test.py
   python3 tests/deployment_release_compare_test.py
-  ruby tests/managed_users_vault_test.rb
   ruby tests/config_managed_users_test.rb --self-test
-  ruby tests/komga_library_reconciliation_test.rb --self-test
   ruby tests/audiobookshelf_initial_scan_test.rb
-  ruby tests/database_managed_users_test.rb
-  ruby tests/deployment_summary_test.rb
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
   ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
@@ -258,7 +267,6 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/trailarr_contract_test.rb
   ruby tests/bindery_contract_test.rb --self-test
   ruby tests/beszel_contract_test.rb --self-test
-  ruby tests/contract_structure_mutation_test.rb
   ruby tests/container_health_wiring_test.rb
   ruby tests/container_health_wiring_test.rb --self-test
   tests/integration_lock_test.sh
@@ -268,14 +276,23 @@ SHARD_1 = <<~'CHECKS'.lines(chomp: true).freeze
   tests/mac/cleanup.sh --self-test
   ruby tests/mac/sanitize-logs.rb --self-test
   ruby tests/mac/read-integration-ports-test.rb
-  ruby tests/vaultwarden_serve_test.rb
-  ruby tests/vaultwarden_serve_test.rb --self-test
   ruby tests/role_forward_reference_test.rb
   ruby tests/release_path_read_test.rb
   tests/integration_cleanup_test.sh
 CHECKS
 
 SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
+  ruby tests/immich_release_helper_test.rb
+  ansible-playbook -i localhost, -c local tests/pre_upgrade_backup_test.yml
+  ruby tests/dozzle_quality_test.rb
+  ruby tests/immich_configured_password_test.rb
+  ruby tests/audiobookshelf_initial_scan_behavior_test.rb
+  ansible-playbook -i localhost, -c local tests/image_downgrade_guard_test.yml
+  ruby tests/database_managed_users_test.rb --self-test
+  ruby tests/seerr_contract_test.rb
+  ansible-playbook -i localhost, -c local tests/host_prep_mdraid_verify_test.yml
+  ruby tests/beszel_password_preservation_test.rb --self-test
+  tests/integration_suite_test.sh
   ruby tests/policy_platform_test.rb
   ruby tests/policy_integration_test.rb
   ruby tests/policy_deployment_test.rb
@@ -291,7 +308,6 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/image_prune_role_test.rb
   ruby tests/beszel_telemetry_ansible_test.rb
   python3 -m unittest -v tests/immich_restore_classifier_test.py
-  ruby tests/immich_release_helper_test.rb
   ruby tests/immich_selective_helper_integrity_test.rb
   ruby tests/ci/classify_changes_test.rb
   ruby tests/secrets_docs_test.rb
@@ -299,14 +315,10 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   tests/mac/snapshot-paperless-recovery-test.sh
   python3 tests/deployment_lock_probe_test.py
   python3 tests/deployment_controller_input_test.py
-  ruby tests/beszel_password_preservation_test.rb --self-test
   ruby tests/komga_contract_test.rb
   ruby tests/rendered_file_ownership_test.rb
   ruby tests/rendered_file_ownership_test.rb --self-test
-  ruby tests/audiobookshelf_initial_scan_behavior_test.rb
   ruby tests/audiobookshelf_contract_test.rb
-  ruby tests/immich_configured_password_test.rb
-  ruby tests/database_managed_users_test.rb --self-test
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
   ruby tests/bazarr_provider_schema_test.rb
@@ -316,18 +328,12 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
   ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
-  ansible-playbook -i localhost, -c local tests/image_downgrade_guard_test.yml
-  ansible-playbook -i localhost, -c local tests/pre_upgrade_backup_test.yml
-  ansible-playbook -i localhost, -c local tests/host_prep_mdraid_verify_test.yml
-  ruby tests/dozzle_quality_test.rb
   ruby tests/jellyfin_contract_test.rb
   ruby tests/pinchflat_contract_test.rb --self-test
   ruby tests/paperless_contract_test.rb
   ruby tests/arr_contract_test.rb --self-test
-  ruby tests/seerr_contract_test.rb
   ruby tests/trailarr_contract_test.rb --self-test
   ruby tests/kapowarr_contract_test.rb
-  tests/integration_suite_test.sh
   tests/mac/run-phase-status-test.sh
   tests/mac/reserved-environment-test.sh
   tests/mac/reserved-environment-test.sh --self-test
@@ -340,6 +346,18 @@ SHARD_2 = <<~'CHECKS'.lines(chomp: true).freeze
 CHECKS
 
 SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
+  tests/sandbox_cleanup_acquisition_ownership_test.sh
+  ruby tests/media_managed_users_test.rb
+  ruby tests/dozzle_contract_test.rb --self-test
+  ruby tests/komga_library_reconciliation_test.rb
+  ruby tests/paperless_mail_reconciliation_test.rb
+  ruby tests/docs_links_test.rb
+  ruby tests/beszel_pushover_validation_test.rb
+  ruby tests/paperless_contract_test.rb --self-test
+  ruby tests/dozzle_contract_test.rb
+  ruby tests/production_auto_deploy_role_test.rb
+  tests/mac/manual-validation-runner-test.sh
+  tests/integration_controller_execution_test.sh
   ruby tests/policy_ci_test.rb
   ruby tests/idempotence_shard_partition_test.rb
   ruby tests/idempotence_shard_partition_test.rb --self-test
@@ -354,19 +372,16 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/dozzle_exit_code_exclusion_identity_test.rb --self-test
   ruby tests/mac/media-acquisition-foundation-report-test.rb
   tests/policy_runner_test.sh
-  ruby tests/production_auto_deploy_role_test.rb
   ruby tests/beszel_telemetry_probe_test.rb
   python3 tests/beszel_telemetry_module_test.py
   ruby tests/immich_restore_quality_test.rb
   tests/dozzle_alert_state_symlink_test.sh
   ruby tests/ci/validate_results_test.rb
-  ruby tests/docs_links_test.rb
   tests/mac/integration-context-test.sh
   tests/mac/snapshot-paperless-drill-throttle-test.sh
   tests/deployment_lock_refusal_test.sh
   ruby tests/managed_user_capabilities_test.rb --self-test
   ruby tests/media_managed_users_test.rb --self-test
-  ruby tests/komga_library_reconciliation_test.rb
   ruby tests/komga_contract_test.rb --self-test
   ruby tests/audiobookshelf_contract_test.rb --self-test
   ruby tests/immich_smart_search_retry_test.rb
@@ -380,32 +395,23 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
   PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
   ruby tests/run_contracts_test.rb
-  ruby tests/dozzle_contract_test.rb
-  ruby tests/dozzle_contract_test.rb --self-test
   ruby tests/jellyfin_contract_test.rb --self-test
   ruby tests/immich_contract_test.rb
-  ruby tests/paperless_contract_test.rb --self-test
   ruby tests/nextcloud_contract_test.rb --self-test
   ruby tests/downloaders_contract_test.rb
   ruby tests/seerr_contract_test.rb --self-test
   ruby tests/bindery_contract_test.rb
   ruby tests/kapowarr_contract_test.rb --self-test
   ruby tests/beszel_contract_test.rb
-  ruby tests/beszel_pushover_validation_test.rb
-  tests/integration_controller_execution_test.sh
   tests/integration_lifecycle_test.sh
   ruby tests/contract_upgrade_seed_test.rb
-  tests/mac/manual-validation-runner-test.sh
   tests/mac/immich-drift-hook-test.sh
   ruby tests/mac/report.rb --self-test
   tests/mac/snapshot-paperless.sh --self-test
   ruby tests/mac/pin-protected-input-test.rb --self-test
   ruby tests/case_pool_locals_test.rb --self-test
   ruby tests/case_pool_behavior_test.rb --self-test
-  ruby tests/paperless_mail_reconciliation_test.rb
   ruby tests/immich_user_onboarding_test.rb
-  ruby tests/media_managed_users_test.rb
-  tests/sandbox_cleanup_acquisition_ownership_test.sh
   tests/generate-secrets-redaction-test.sh
 CHECKS
 
