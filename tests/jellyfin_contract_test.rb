@@ -974,100 +974,103 @@ def broken_fixture_repository
   end
 end
 
-def wrapper_failures(wrapper_source: File.read(CONTRACT))
-  failures = []
-  with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
+def wrapper_static_mode_failures(contract, failures)
+  stdout, stderr, status = Open3.capture3(
+    { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", "nas", "static"
+  )
+  failures << "wrapper: static mode failed: #{(stdout + stderr).strip}" unless status.success?
+  failures << "wrapper: static mode did not report the property it proved" unless
+    stdout.include?("Jellyfin static contract passed (nas)")
+
+  # The platform argument has to reach the static program, because that
+  # program judges a different capability contract for each value.
+  %w[mac integration].each do |platform|
     stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", "nas", "static"
+      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", platform, "static"
     )
-    failures << "wrapper: static mode failed: #{(stdout + stderr).strip}" unless status.success?
-    failures << "wrapper: static mode did not report the property it proved" unless
-      stdout.include?("Jellyfin static contract passed (nas)")
+    failures << "wrapper: --platform #{platform} failed: #{(stdout + stderr).strip}" unless
+      status.success?
+    failures << "wrapper: --platform #{platform} did not reach the static program" unless
+      stdout.include?("Jellyfin static contract passed (#{platform})")
+  end
+  # ... and PLATFORM_KIND is the same argument off the environment, which is
+  # how the integration lane passes it.
+  stdout, _stderr, _status = Open3.capture3(
+    { "PLATFORM_CONTRACT_REPO_DIR" => ROOT, "PLATFORM_KIND" => "integration" },
+    contract, "static"
+  )
+  failures << "wrapper: PLATFORM_KIND did not reach the static program" unless
+    stdout.include?("Jellyfin static contract passed (integration)")
+end
 
-    # The platform argument has to reach the static program, because that
-    # program judges a different capability contract for each value.
-    %w[mac integration].each do |platform|
+def wrapper_refusal_failures(contract, failures)
+  # Each of the four files the wrapper checks before it runs anything.
+  {
+    "roles/jellyfin/tasks/main.yml" => "roles/jellyfin/tasks/main.yml is absent",
+    "roles/jellyfin/defaults/main.yml" => "roles/jellyfin/defaults/main.yml is absent",
+    "services/jellyfin/compose.yml" => "services/jellyfin/compose.yml is absent",
+    "roles/jellyfin/files/yonatan-avatar.jpeg" => "approved administrator avatar is absent"
+  }.each do |relative, diagnostic|
+    Dir.mktmpdir("nas-platform-jellyfin-preflight.") do |raw|
+      incomplete = File.realpath(raw)
+      build_fixture_repository(incomplete)
+      FileUtils.rm(File.join(incomplete, relative))
       stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", platform, "static"
+        { "PLATFORM_CONTRACT_REPO_DIR" => incomplete }, contract, "static"
       )
-      failures << "wrapper: --platform #{platform} failed: #{(stdout + stderr).strip}" unless
-        status.success?
-      failures << "wrapper: --platform #{platform} did not reach the static program" unless
-        stdout.include?("Jellyfin static contract passed (#{platform})")
+      failures << "wrapper: a repository without #{relative} was accepted" if status.success?
+      failures << "wrapper: a repository without #{relative} was refused without its diagnostic: " \
+                  "#{(stdout + stderr).strip.inspect}" unless
+        (stdout + stderr).include?("Jellyfin contract failed: #{diagnostic}")
     end
-    # ... and PLATFORM_KIND is the same argument off the environment, which is
-    # how the integration lane passes it.
-    stdout, _stderr, _status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT, "PLATFORM_KIND" => "integration" },
-      contract, "static"
-    )
-    failures << "wrapper: PLATFORM_KIND did not reach the static program" unless
-      stdout.include?("Jellyfin static contract passed (integration)")
-
-    # Each of the four files the wrapper checks before it runs anything.
-    {
-      "roles/jellyfin/tasks/main.yml" => "roles/jellyfin/tasks/main.yml is absent",
-      "roles/jellyfin/defaults/main.yml" => "roles/jellyfin/defaults/main.yml is absent",
-      "services/jellyfin/compose.yml" => "services/jellyfin/compose.yml is absent",
-      "roles/jellyfin/files/yonatan-avatar.jpeg" => "approved administrator avatar is absent"
-    }.each do |relative, diagnostic|
-      Dir.mktmpdir("nas-platform-jellyfin-preflight.") do |raw|
-        incomplete = File.realpath(raw)
-        build_fixture_repository(incomplete)
-        FileUtils.rm(File.join(incomplete, relative))
-        stdout, stderr, status = Open3.capture3(
-          { "PLATFORM_CONTRACT_REPO_DIR" => incomplete }, contract, "static"
-        )
-        failures << "wrapper: a repository without #{relative} was accepted" if status.success?
-        failures << "wrapper: a repository without #{relative} was refused without its diagnostic: " \
-                    "#{(stdout + stderr).strip.inspect}" unless
-          (stdout + stderr).include?("Jellyfin contract failed: #{diagnostic}")
-      end
-    end
-
-    # The argument parser's own three refusals.
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", "solaris", "static"
-    )
-    failures << "wrapper: an unknown platform was accepted" if status.success?
-    failures << "wrapper: an unknown platform was refused without its diagnostic" unless
-      (stdout + stderr).include?("Jellyfin contract failed: unknown platform: solaris")
-    [["--platform"], ["-x"]].each do |argv|
-      stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, *argv
-      )
-      failures << "wrapper: #{argv.inspect} was accepted" if status.success?
-      failures << "wrapper: #{argv.inspect} did not print usage" unless
-        (stdout + stderr).include?("usage: jellyfin.sh [--platform mac|nas|integration] [MODE]")
-      failures << "wrapper: #{argv.inspect} did not exit 2" unless status.exitstatus == 2
-    end
-
-    # The row that proves the wrapper still runs the static program at all: the
-    # tree under inspection is broken, the wrapper's own checkout is not.
-    broken_fixture_repository do |broken|
-      stdout, stderr, status = Open3.capture3(
-        { "PLATFORM_CONTRACT_REPO_DIR" => broken }, contract, "static"
-      )
-      failures << "wrapper: static mode passed against a broken repository" if status.success?
-      failures << "wrapper: static mode did not report the broken repository" unless
-        (stdout + stderr).include?("restart policy differs")
-    end
-
-    # ... and that it is the *inspected* tree that is read, not the checkout the
-    # programs came from. Breaking the copy's own compose.yml while pointing the
-    # variable at this repository must change nothing.
-    compose_service(copy_root) { |spec| spec["restart"] = "always" }
-    stdout, stderr, status = Open3.capture3(
-      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
-    )
-    failures << "wrapper: a broken checkout was read instead of the named tree: " \
-                "#{(stdout + stderr).strip}" unless status.success?
   end
 
-  # The branch every deployment actually takes. Neither tests/integration.sh nor
-  # run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
-  # the only path in production -- and it is the one where resolving the programs
-  # from the script's own checkout is load-bearing rather than shadowed.
+  # The argument parser's own three refusals.
+  stdout, stderr, status = Open3.capture3(
+    { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "--platform", "solaris", "static"
+  )
+  failures << "wrapper: an unknown platform was accepted" if status.success?
+  failures << "wrapper: an unknown platform was refused without its diagnostic" unless
+    (stdout + stderr).include?("Jellyfin contract failed: unknown platform: solaris")
+  [["--platform"], ["-x"]].each do |argv|
+    stdout, stderr, status = Open3.capture3(
+      { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, *argv
+    )
+    failures << "wrapper: #{argv.inspect} was accepted" if status.success?
+    failures << "wrapper: #{argv.inspect} did not print usage" unless
+      (stdout + stderr).include?("usage: jellyfin.sh [--platform mac|nas|integration] [MODE]")
+    failures << "wrapper: #{argv.inspect} did not exit 2" unless status.exitstatus == 2
+  end
+end
+
+def wrapper_inspected_tree_failures(contract, copy_root, failures)
+  # The row that proves the wrapper still runs the static program at all: the
+  # tree under inspection is broken, the wrapper's own checkout is not.
+  broken_fixture_repository do |broken|
+    stdout, stderr, status = Open3.capture3(
+      { "PLATFORM_CONTRACT_REPO_DIR" => broken }, contract, "static"
+    )
+    failures << "wrapper: static mode passed against a broken repository" if status.success?
+    failures << "wrapper: static mode did not report the broken repository" unless
+      (stdout + stderr).include?("restart policy differs")
+  end
+
+  # ... and that it is the *inspected* tree that is read, not the checkout the
+  # programs came from. Breaking the copy's own compose.yml while pointing the
+  # variable at this repository must change nothing.
+  compose_service(copy_root) { |spec| spec["restart"] = "always" }
+  stdout, stderr, status = Open3.capture3(
+    { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
+  )
+  failures << "wrapper: a broken checkout was read instead of the named tree: " \
+              "#{(stdout + stderr).strip}" unless status.success?
+end
+
+# The branch every deployment actually takes. Neither tests/integration.sh nor
+# run_contracts.rb --execute sets PLATFORM_CONTRACT_REPO_DIR, so the default is
+# the only path in production -- and it is the one where resolving the programs
+# from the script's own checkout is load-bearing rather than shadowed.
+def wrapper_default_repository_failures(failures)
   with_contract_copy do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => nil }, contract, "static"
@@ -1086,10 +1089,12 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
     failures << "wrapper: with no repository named, static mode did not report the broken tree" unless
       (stdout + stderr).include?("restart policy differs")
   end
+end
 
-  # The runtime half is reached, and reached with the mode. seed-fixture-only is
-  # the mode that answers without Docker; every other mode reaches the vault
-  # read, which is the second row below.
+# The runtime half is reached, and reached with the mode. seed-fixture-only is
+# the mode that answers without Docker; every other mode reaches the vault
+# read, which is the second row below.
+def wrapper_runtime_mode_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     with_runtime_sandbox do |_root, environment, media|
       sandbox = environment.reject { |name, _| name == "PLATFORM_JELLYFIN_PLATFORM" }
@@ -1119,17 +1124,19 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         (stdout + stderr).include?("Jellyfin contract failed: encrypted vault could not be read")
     end
   end
+end
 
-  # The three `:?` environment refusals the wrapper makes before it execs the
-  # runtime half. Each names itself, and static mode must reach none of them.
-  #
-  # `<NAME>: parameter` is the portable part of a POSIX `:?` diagnostic and the
-  # only part this row may assert. The rest of the sentence belongs to the
-  # SHELL, not to the contract: bash writes "parameter null or not set" and dash
-  # writes "parameter not set or null", the same words in a different order. An
-  # earlier version of this row pinned bash's order, passed on a macOS box whose
-  # /bin/sh is bash, and failed CI's Ubuntu runner where /bin/sh is dash --
-  # asserting which shell the machine had rather than what the contract did.
+# The three `:?` environment refusals the wrapper makes before it execs the
+# runtime half. Each names itself, and static mode must reach none of them.
+#
+# `<NAME>: parameter` is the portable part of a POSIX `:?` diagnostic and the
+# only part this row may assert. The rest of the sentence belongs to the
+# SHELL, not to the contract: bash writes "parameter null or not set" and dash
+# writes "parameter not set or null", the same words in a different order. An
+# earlier version of this row pinned bash's order, passed on a macOS box whose
+# /bin/sh is bash, and failed CI's Ubuntu runner where /bin/sh is dash --
+# asserting which shell the machine had rather than what the contract did.
+def wrapper_environment_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     with_runtime_sandbox do |_root, environment, _media|
       %w[PLATFORM_MEDIA_ROOT PLATFORM_DOCKER_ROOT PLATFORM_REPORT_ROOT].each do |name|
@@ -1160,11 +1167,13 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
                   "#{(stdout + stderr).strip.inspect}" unless status.success?
     end
   end
+end
 
-  # The programs themselves, in the direction absence cannot prove. A tree that
-  # is pointed at holds a *different* program at each sibling path; running
-  # either of them is the defect, and it is visible as a sentinel rather than as
-  # a missing file, so it stays visible however the fixture is assembled.
+# The programs themselves, in the direction absence cannot prove. A tree that
+# is pointed at holds a *different* program at each sibling path; running
+# either of them is the defect, and it is visible as a sentinel rather than as
+# a missing file, so it stays visible however the fixture is assembled.
+def wrapper_sentinel_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-jellyfin-sentinel.") do |raw|
       inspected = File.realpath(raw)
@@ -1194,11 +1203,13 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       end
     end
   end
+end
 
-  # PLATFORM_CONTRACT_REPO_DIR is what the static program requires
-  # tests/policy_support from, and it too must name the inspected tree. An
-  # inspected tree without that file has to be a LoadError naming *its* path, not
-  # a silent fallback to the checkout's copy.
+# PLATFORM_CONTRACT_REPO_DIR is what the static program requires
+# tests/policy_support from, and it too must name the inspected tree. An
+# inspected tree without that file has to be a LoadError naming *its* path, not
+# a silent fallback to the checkout's copy.
+def wrapper_policy_support_failures(wrapper_source, failures)
   with_contract_copy(wrapper: wrapper_source) do |contract|
     Dir.mktmpdir("nas-platform-jellyfin-nosupport.") do |raw|
       inspected = File.realpath(raw)
@@ -1215,6 +1226,20 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
         output.include?(File.join(inspected, "tests", "policy_support"))
     end
   end
+end
+
+def wrapper_failures(wrapper_source: File.read(CONTRACT))
+  failures = []
+  with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
+    wrapper_static_mode_failures(contract, failures)
+    wrapper_refusal_failures(contract, failures)
+    wrapper_inspected_tree_failures(contract, copy_root, failures)
+  end
+  wrapper_default_repository_failures(failures)
+  wrapper_runtime_mode_failures(wrapper_source, failures)
+  wrapper_environment_failures(wrapper_source, failures)
+  wrapper_sentinel_failures(wrapper_source, failures)
+  wrapper_policy_support_failures(wrapper_source, failures)
   failures
 end
 
