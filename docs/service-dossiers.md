@@ -133,7 +133,7 @@ for humans and Renovate, and the top-level manifest-list digest for
 reproducibility. When Renovate moves one of these, the findings are suspect
 until re-derived, in the same way
 [the Bazarr provider schemas](bazarr-providers.md) are re-derived when that pin
-moves.
+moves to a new minor release.
 
 ```
 ghcr.io/vavallee/bindery:v1.33.2@sha256:3778b97d8651cf51da57910ce4e4a5b175b42f9bbba55c5c9b07b16309144013

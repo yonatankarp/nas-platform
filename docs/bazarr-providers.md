@@ -11,9 +11,12 @@ declared from a reviewed schema rather than from a session in its web
 interface. It is the same treatment `roles/arr/files/configarr/` gives the
 pinned TRaSH documents, for the same reason.
 
-Derived from Bazarr **1.6.1**, the version `services/arr/compose.yml` pins.
-`tests/bazarr_provider_schema_test.rb` fails if that pin moves without this
-file being re-derived, because provider settings are upstream's to rename.
+Derived from Bazarr **1.6**, the minor release `services/arr/compose.yml` pins.
+`tests/bazarr_provider_schema_test.rb` fails if that pin moves to another minor
+without this file being re-derived, because provider settings are upstream's to
+rename. A patch bump passes unchecked, which is a trade: Bazarr patches have
+added provider keys, and a patch that renamed one would go unflagged until the
+next minor.
 
 ## What the operator supplies
 
@@ -132,7 +135,8 @@ one mass edit on the Series and Movies pages.
 
 ## When Bazarr is upgraded
 
-Renovate bumps the pinned image. `tests/bazarr_provider_schema_test.rb` then
-fails until the version recorded here matches, which is the prompt to re-derive
+Renovate bumps the pinned image. On a new minor release,
+`tests/bazarr_provider_schema_test.rb` then fails until the minor recorded here
+matches, which is the prompt to re-derive
 the keys above from that release's `bazarr/app/config.py` rather than assume
 they carried over.
