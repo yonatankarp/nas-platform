@@ -2085,6 +2085,23 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       failures << "wrapper: static mode failed against the fixture tree: #{(stdout + stderr).strip}"
     end
 
+    # The mode guard, which prints nothing. It is recognised by that silence
+    # rather than by its exit 2 alone: without it an unknown mode runs on to a
+    # bare ${VAR:?} refusal, which dash also exits 2 on. No vault is named, so a
+    # mode past the guard stops there instead of reaching a program. Each mode
+    # is a near miss of one the guard dispatches.
+    %w[bogus --help static-x drift_verify beszel_notify].each do |mode|
+      stdout, stderr, status = Open3.capture3(
+        { "PLATFORM_CONTRACT_REPO_DIR" => root }, contract, mode
+      )
+      output = stdout + stderr
+      failures << "wrapper: the mode guard accepted #{mode.inspect}" if status.success?
+      failures << "wrapper: the mode guard refused #{mode.inspect} with exit " \
+                  "#{status.exitstatus}, wanted 2" unless status.exitstatus == 2
+      failures << "wrapper: the mode guard let #{mode.inspect} reach past it: " \
+                  "#{output.strip.inspect}" unless output.strip.empty?
+    end
+
     # A break in the inspected tree must be judged by the programs in the
     # checkout, and named.
     broken = File.join(root, "roles/dozzle/templates/env.j2")
@@ -2899,8 +2916,19 @@ if ARGV.include?("--self-test")
     planted_roots += 1
   end
 
+  # The mode guard, deleted. Its rows must be what catches it, which is checked
+  # by name: wrapper_failures holds dozens of rows, and any one of them failing
+  # for another reason would satisfy a bare non-empty check.
+  unguarded = substitute(File.read(CONTRACT), "  *) exit 2 ;;\n", "  *) ;;\n")
+  caught = wrapper_failures(wrapper_source: unguarded)
+  abort "self-test failed: a deleted mode guard was accepted" if caught.empty?
+  abort "self-test failed: a deleted mode guard was caught by the wrong assertion: " \
+        "#{caught.join(' | ')}" unless caught.all? { |failure| failure.include?("the mode guard") }
+  planted_guards = 1
+
   puts "dozzle contract: self-test detects " \
-       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_roots} planted regressions"
+       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_roots + planted_guards} " \
+       "planted regressions"
   exit
 end
 
