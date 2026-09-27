@@ -515,7 +515,7 @@ end
 # include (#836).
 expect_failure(failures, "shared pre-upgrade copy naming a service its caller never contained",
                "role vaultwarden starts komga out of the installed release",
-               detected_by: %i[deployment]) do |root|
+               detected_by: %i[deployment policy]) do |root|
   path = File.join(root, "roles/vaultwarden/tasks/deploy.yml")
   body = File.read(path)
   planted = body.sub("    pre_upgrade_backup_service_name: vaultwarden\n",
