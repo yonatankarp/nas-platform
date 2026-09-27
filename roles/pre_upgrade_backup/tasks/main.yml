@@ -89,6 +89,61 @@
          and pre_upgrade_backup_pinned_image | length > 0
          and pre_upgrade_backup_deployed_image != pre_upgrade_backup_pinned_image }}
 
+# THE PIN MUST NAME THE SAME IMAGE REPOSITORY AS THE CONTAINER. Callers read it
+# off roles/image_downgrade_guard's pinned-image fact, which is host-scoped, so a
+# caller whose own guard was skipped -- a tag on that include alone, or a guard
+# reached another way -- hands this the last guard's pin: another service's
+# image, an "upgrade" on every converge, and the container stopped every
+# five-minute tick. Refused here, before the stop and under --check too.
+# Digest, then tag, then Docker Hub's implied prefixes are stripped, so the
+# comparison is of repositories and a registry spelled two ways is one.
+- name: Require the pin to name the image repository the container runs
+  ansible.builtin.assert:
+    that:
+      - pre_upgrade_backup_deployed_repository == pre_upgrade_backup_pinned_repository
+    fail_msg: >-
+      {{ pre_upgrade_backup_service_name | capitalize }}'s
+      {{ pre_upgrade_backup_compose_service }} container runs
+      {{ pre_upgrade_backup_deployed_image }}, and the pin this copy was handed,
+      {{ pre_upgrade_backup_pinned_image }}, pins a different image repository.
+      That is a pin read from the wrong guard: pre_upgrade_backup_pinned_image
+      comes from roles/image_downgrade_guard's host-scoped fact, so the guard for
+      this Compose service did not run immediately before this include and
+      another guard's pin was left behind. Nothing was stopped or copied. Make
+      the caller run the guard for {{ pre_upgrade_backup_compose_service }}
+      under the same conditions and tags as this include, and directly before
+      it.
+    quiet: true
+  vars:
+    pre_upgrade_backup_deployed_repository: >-
+      {{ pre_upgrade_backup_deployed_image | regex_replace('@.*$', '') | regex_replace(':[^:/]*$', '')
+         | regex_replace('^(docker\.io|index\.docker\.io)/', '') | regex_replace('^library/', '') }}
+    pre_upgrade_backup_pinned_repository: >-
+      {{ pre_upgrade_backup_pinned_image | regex_replace('@.*$', '') | regex_replace(':[^:/]*$', '')
+         | regex_replace('^(docker\.io|index\.docker\.io)/', '') | regex_replace('^library/', '') }}
+  when: pre_upgrade_backup_upgrade_pending | bool
+
+# The copy directory is pruned and chmodded 0700, so a caller that pointed it at
+# the store directory, or above it, would have this role remove the store's own
+# journal and lock the container out of its data root. Refused on every run, not
+# only an upgrading one: it is a misconfiguration whether or not it fires today.
+- name: Require the copy directory to sit below the store rather than on or above it
+  ansible.builtin.assert:
+    that:
+      - not (pre_upgrade_backup_copy_dir == pre_upgrade_backup_live_dir
+             or (pre_upgrade_backup_live_dir ~ '/') is match((pre_upgrade_backup_copy_dir ~ '/') | regex_escape))
+    fail_msg: >-
+      pre_upgrade_backup_path {{ pre_upgrade_backup_path }} is the store directory
+      or one above it, {{ pre_upgrade_backup_store_dir }}. The copy directory is
+      pruned and set to 0700, so this would delete the store's own journal and
+      lock the container out of its data. Nothing was stopped or copied. Give
+      {{ pre_upgrade_backup_service_name }} a pre-upgrade-backup/ directory
+      inside the store directory, as every caller declares in its defaults.
+    quiet: true
+  vars:
+    pre_upgrade_backup_copy_dir: "{{ pre_upgrade_backup_path | regex_replace('/+$', '') }}"
+    pre_upgrade_backup_live_dir: "{{ pre_upgrade_backup_store_dir | regex_replace('/+$', '') }}"
+
 - name: Report the planned pre-upgrade copy
   ansible.builtin.debug:
     msg: >-
