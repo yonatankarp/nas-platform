@@ -817,6 +817,9 @@ class DozzleAlertRelayTest(unittest.TestCase):
         )
         unlinked = message_shape(self.relay_module.render_notification(self.envelope(), None)["message"])
         self.assertEqual(unlinked["closing"], "", "no link, so no line pointing at Dozzle")
+        # Only the Unhealthy closing points at Dozzle, so only it goes with the link.
+        oom = message_shape(self.relay_module.render_notification(self.envelope("OOM"), None)["message"])
+        self.assertIn("until acknowledged", oom["closing"])
 
     def test_ten_thousand_characters_of_hostile_input_render_a_message_pushover_takes(self):
         """The renderers, not only the envelope, bound what they are handed."""
@@ -962,6 +965,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             # Credentials travel in the form body; a URL carrying its own is a
             # hand-edited endpoint rather than a configured one.
             ("userinfo", "https://user:pass@api.pushover.net/1/messages.json"),
+            ("user only", "https://user@api.pushover.net/1/messages.json"),
             ("query", "https://api.pushover.net/1/messages.json?token=leak"),
             ("fragment", "https://api.pushover.net/1/messages.json#x"),
             # A bare root was the earlier shape, and POSTing a Pushover form at it
@@ -1178,6 +1182,37 @@ class DozzleAlertRelayTest(unittest.TestCase):
                         mutated[name] = value
                 with self.assertRaises(self.relay_module.ConfigurationError):
                     self.relay_module.Config.from_mapping(mutated)
+
+    def test_config_requires_an_absolute_state_file_path(self):
+        for label, value in (
+            ("relative", "state/alerts.json"),
+            ("root", "/"),
+            ("dot dot", "/state/.."),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    self.relay_module.ConfigurationError,
+                    r"\AALERT_STATE_PATH must be an absolute file path\Z",
+                ):
+                    self.relay_module.Config.from_mapping(self.environment(ALERT_STATE_PATH=value))
+
+    def test_unusable_optional_beszel_settings_degrade_rather_than_refuse(self):
+        for label, value in (("missing", None), ("empty", ""), ("control", "tok\nen")):
+            with self.subTest(alerts_token=label):
+                config = self.relay_module.Config.from_mapping(
+                    self.environment(PUSHOVER_ALERTS_TOKEN=value)
+                )
+                self.assertIsNone(config.pushover_alerts_token)
+        for label, value in (("missing", None), ("empty", "")):
+            with self.subTest(beszel_link_base=label):
+                config = self.relay_module.Config.from_mapping(
+                    self.environment(BESZEL_LINK_BASE=value)
+                )
+                self.assertIsNone(config.beszel_link_base)
+                self.assertEqual(
+                    config.beszel_link_problem,
+                    "BESZEL_LINK_BASE is not set; Beszel alerts will carry no link",
+                )
 
     def test_config_requires_a_usable_listener_port(self):
         base = self.environment()
