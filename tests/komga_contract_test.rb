@@ -863,6 +863,11 @@ def with_contract_copy(static: File.read(STATIC_PROGRAM), runtime: File.read(RUN
   with_contract_sandbox("komga", wrapper, { "static" => static, "runtime" => runtime }, &block)
 end
 
+REQUIRED_RUN_ENV = %w[
+  PLATFORM_MEDIA_ROOT
+  PLATFORM_REPORT_ROOT
+].freeze
+
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
   with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
@@ -890,10 +895,9 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
 
     # `run` is the default mode, not `static`, so a bare invocation must reach
     # the runtime half's environment requirements rather than the static
-    # success line. The wording of a ${VAR:?} refusal belongs to the shell --
-    # bash and dash order the same words differently -- so only the portable
-    # prefix is asserted, and the substantive property is stated separately
-    # below.
+    # success line. The wrapper names the unset root in its own words, so its
+    # message is asserted rather than the shell's, and the substantive property
+    # is stated separately below.
     [[], %w[run], %w[totally-unknown]].each do |argv|
       stdout, stderr, status = Open3.capture3(
         { "PLATFORM_CONTRACT_REPO_DIR" => copy_root, "PLATFORM_MEDIA_ROOT" => nil,
@@ -903,7 +907,7 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       failures << "wrapper: #{argv.inspect} was accepted with no runtime environment" if
         status.success?
       failures << "wrapper: #{argv.inspect} did not name the unset root: #{output.strip.inspect}" unless
-        output.include?("PLATFORM_MEDIA_ROOT: parameter")
+        output.include?("PLATFORM_MEDIA_ROOT is required")
       failures << "wrapper: #{argv.inspect} reached the runtime program with no media root" if
         output.include?("Komga comic fixture prepared") || output.include?(RUN_SUCCESS)
       failures << "wrapper: #{argv.inspect} printed the static success line in run mode" if
@@ -932,6 +936,23 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       failures << "wrapper: #{name} was accepted" if status.success?
       failures << "wrapper: #{name} was refused without its diagnostic: " \
                   "#{(stdout + stderr).strip.inspect}" unless (stdout + stderr).include?(expects)
+    end
+
+    # The run-mode environment contract, as tests/pinchflat_contract_test.rb
+    # holds it. The argv rows above clear both roots, so the media guard always
+    # fires first and shadows the report guard; here each name is set to "" on
+    # its own with the other valid. "" rather than deleted, because ${VAR:?}
+    # refuses null as well as unset. The port is unparseable so a guard planted
+    # as `:=` fails fast in the runtime program rather than polling a port
+    # nothing listens on; chdir keeps the "" it expands to off this checkout.
+    full = { "PLATFORM_CONTRACT_REPO_DIR" => copy_root, "PLATFORM_KOMGA_PORT" => "not-a-number" }
+           .merge(roots)
+    REQUIRED_RUN_ENV.each do |name|
+      stdout, stderr, status = Open3.capture3(full.merge(name => ""), contract, "run", chdir: copy_root)
+      output = stdout + stderr
+      failures << "run env: #{name} unset was accepted" if status.success?
+      failures << "run env: #{name} unset was not refused with the wrapper's own message: " \
+                  "#{output.strip.inspect}" unless output.include?("#{name} is required")
     end
   end
 
@@ -1514,8 +1535,14 @@ WRAPPER_MUTATIONS = [
   },
   {
     label: "the media root requirement",
-    from: %(: "${PLATFORM_MEDIA_ROOT:?}"),
+    from: %(: "${PLATFORM_MEDIA_ROOT:?PLATFORM_MEDIA_ROOT is required}"),
     to: %(: "${PLATFORM_MEDIA_ROOT:=}"),
+    layer: :wrapper
+  },
+  {
+    label: "the report root requirement",
+    from: %(: "${PLATFORM_REPORT_ROOT:?PLATFORM_REPORT_ROOT is required}"),
+    to: %(: "${PLATFORM_REPORT_ROOT:=}"),
     layer: :wrapper
   },
   {
