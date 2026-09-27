@@ -167,4 +167,39 @@ preflight_phase_status=$(ruby -rjson -e '
   exit 1
 }
 
-printf '%s\n' 'Mac phase status: Ansible and preflight failures propagate'
+# A ruby older than the lane's Ruby programs must be refused by name before any
+# of them runs (#854): macOS's /usr/bin/ruby lacks YAML.safe_load_file and
+# Enumerable#filter_map, and used to surface as a NoMethodError swallowed by
+# generate_immich_fixture_vars and then an ENOENT on the file it never wrote.
+# The stub stands for any ruby lacking them; /usr/bin/ruby is the real one when
+# this Mac still ships an old one. Each gets its own PATH prefix so everything
+# else in this test keeps the real ruby.
+old_ruby_bin=$temporary_parent/old-ruby
+mkdir -m 0700 "$old_ruby_bin"
+printf '%s\n' '#!/bin/sh' 'exit 1' > "$old_ruby_bin/ruby"
+chmod 0755 "$old_ruby_bin/ruby"
+assert_ruby_refused() {
+  refused_status=0
+  refused_output=$(PLATFORM_MAC_TMPDIR="$temporary_parent" \
+    PATH="$1:$fake_bin:$PATH" "$mac_test_dir/run.sh" --lane fresh \
+      --vault-file "$vault_file" --vault-password-file "$password_file" \
+      --phase preflight 2>&1) || refused_status=$?
+  [ "$refused_status" -ne 0 ] &&
+    printf '%s\n' "$refused_output" | grep -q "ruby at $1/ruby is too old" || {
+    printf 'Mac runner did not refuse %s by name:\n%s\n' "$2" "$refused_output" >&2
+    exit 1
+  }
+}
+assert_ruby_refused "$old_ruby_bin" 'a ruby lacking the APIs the lane uses'
+if [ -x /usr/bin/ruby ] && ! /usr/bin/ruby -ryaml -e \
+    'exit(YAML.respond_to?(:safe_load_file) && Enumerable.method_defined?(:filter_map))' \
+    >/dev/null 2>&1; then
+  system_ruby_bin=$temporary_parent/system-ruby
+  mkdir -m 0700 "$system_ruby_bin"
+  ln -s /usr/bin/ruby "$system_ruby_bin/ruby"
+  assert_ruby_refused "$system_ruby_bin" '/usr/bin/ruby'
+else
+  printf '%s\n' 'Mac phase status: no old /usr/bin/ruby here, stub refusal only'
+fi
+
+printf '%s\n' 'Mac phase status: Ansible and preflight failures propagate, old ruby refused'
