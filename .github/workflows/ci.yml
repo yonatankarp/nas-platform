@@ -454,7 +454,7 @@ jobs:
       # refusal is an ERROR rather than a warning strict would also catch.
       - name: Validate the Renovate configuration
         run: |
-          renovate_pin=renovate@44.115.10
+          renovate_pin=renovate@44.115.12
           npx --yes --package "$renovate_pin" renovate-config-validator --strict
 
           # A check that has only ever passed proves nothing, and this one is
