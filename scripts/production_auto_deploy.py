@@ -2536,6 +2536,11 @@ def converge(config: Config, arguments: list[str]) -> int:
             return 1
         environment = dict(os.environ)
         environment[LOCK_OWNER_ENVIRONMENT] = str(os.getpid())
+        # The collections the poller's plays load (#902): without them the
+        # virtualenv's ansible-playbook fails on the first community.* module.
+        # HOME is deliberately not pinned, so --ask-vault-pass and the
+        # operator's own config keep working, and an operator's own export wins.
+        environment.setdefault("ANSIBLE_COLLECTIONS_PATH", str(_collections_path(config)))
         # Never inherited: announce_release does not run after an operator's
         # command, so a converge that wrote the summary would announce nothing.
         environment.pop(SUMMARY_PATH_ENVIRONMENT, None)
