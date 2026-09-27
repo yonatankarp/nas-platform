@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -65,7 +66,57 @@ Total reclaimed space: 512.0kB
 """.format(c="c" * 64)
 
 
+def setUpModule():
+    global STUB_SCRATCH
+    STUB_SCRATCH = Path(tempfile.mkdtemp())
+    # A bin/ of its own, so what a warming run records lands in scratch.
+    PruneTestCase.stubs = STUB_SCRATCH / "bin"
+    PruneTestCase.stubs.mkdir()
+    for name, source in PruneTestCase.STUBS.items():
+        stub = PruneTestCase.stubs / name
+        stub.write_text(source, encoding="utf-8")
+        stub.chmod(0o700)
+        # Paid here, with no deadline; only the exec itself is the point.
+        subprocess.run([str(stub)], capture_output=True, check=False)
+
+
+def tearDownModule():
+    shutil.rmtree(STUB_SCRATCH)
+
+
 class PruneTestCase(unittest.TestCase):
+    # The stubs, written once per process and linked into each test's bin/
+    # (#891, after #888). On macOS the first exec of a newly written executable
+    # waits in a host-wide queue that the full local gate keeps long, and the
+    # prune sends each notification under NOTIFICATION_TIMEOUT_SECONDS, ten
+    # seconds. An executable that has run once -- through a symlink too --
+    # skips that queue, so each file is exec'd once here, untimed, and finds its
+    # test's files through the path it was invoked by.
+    STUBS = {
+        # Records each send's argv as one JSON line -- a message spans lines, so
+        # the shell stub's one-line record cannot hold it -- and answers as
+        # Pushover does when it takes a message, unless curl-answer says otherwise.
+        "curl": (
+            f"#!{sys.executable}\n"
+            "import json, os, sys\n"
+            "root = os.path.dirname(os.path.dirname(sys.argv[0]))\n"
+            "with open(os.path.join(root, 'curl.jsonl'), 'a') as sink:\n"
+            "    sink.write(json.dumps(sys.argv[1:]) + '\\n')\n"
+            "answer = os.path.join(root, 'curl-answer')\n"
+            "sys.stdout.write(open(answer).read() if os.path.exists(answer)\n"
+            "                 else '{\"status\":1,\"request\":\"r\"}\\n200')\n"
+        ),
+        # A recording stand-in for any tool the prune shells out to: its name
+        # is the link's, and what it does is the body stub() wrote beside it.
+        "tool": (
+            "#!/bin/sh\n"
+            'bin=$(dirname "$0")\n'
+            'name=$(basename "$0")\n'
+            'printf "%s\\n" "$*" >> "$(dirname "$bin")/$name.argv"\n'
+            '. "$bin/.$name.body"\n'
+        ),
+    }
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -93,17 +144,7 @@ class PruneTestCase(unittest.TestCase):
         self.curl_calls = self.root / "curl.jsonl"
         self.curl_answer = self.root / "curl-answer"
         self.curl = self.root / "bin" / "curl"
-        self.curl.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, sys\n"
-            f"with open({str(self.curl_calls)!r}, 'a') as sink:\n"
-            "    sink.write(json.dumps(sys.argv[1:]) + '\\n')\n"
-            f"answer = {str(self.curl_answer)!r}\n"
-            "sys.stdout.write(open(answer).read() if os.path.exists(answer)\n"
-            "                 else '{\"status\":1,\"request\":\"r\"}\\n200')\n",
-            encoding="utf-8",
-        )
-        self.curl.chmod(0o700)
+        self.curl.symlink_to(self.stubs / "curl")
         self.config_path = self.root / ".config/nas-platform/image-prune.json"
         self.config_path.write_text(json.dumps(self.config_payload()), encoding="utf-8")
 
@@ -111,14 +152,11 @@ class PruneTestCase(unittest.TestCase):
         """Install a recording stand-in for one tool the prune shells out to."""
 
         path = self.root / "bin" / name
-        record = self.root / f"{name}.argv"
-        path.write_text(
-            "#!/bin/sh\n"
-            f'printf "%s\\n" "$*" >> {record}\n'
-            f"{body}\n",
-            encoding="utf-8",
-        )
-        path.chmod(0o700)
+        # The body is sourced by the shared stub rather than exec'd, so a
+        # test's own behaviour never becomes a newly written executable.
+        (self.root / "bin" / f".{name}.body").write_text(f"{body}\n", encoding="utf-8")
+        if not path.is_symlink():
+            path.symlink_to(self.stubs / "tool")
         return path
 
     def published(self):

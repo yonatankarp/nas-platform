@@ -3794,6 +3794,110 @@ class VerifyTest(PollerTestCase):
     production produces rather than ones a mock agreed with.
     """
 
+    # The stubs, written once for the class and linked into each test's root
+    # (#891, after #888). On macOS the first exec of a newly written executable
+    # waits in a host-wide queue that the full local gate keeps long, and the
+    # verify ping's curl runs under ping_healthchecks' 20-second ceiling. An
+    # executable that has run once -- through a symlink too -- skips that queue,
+    # so each file is exec'd once here, untimed, and finds its test's files
+    # through the path it was invoked by, never through paths written into it.
+    ROOT_OF_BIN = "root = os.path.dirname(os.path.dirname(sys.argv[0]))\n"
+    STUBS = {
+        # Records the form fields and the config each Pushover send names, and
+        # answers the way Pushover does when it takes a message -- unless told
+        # to exit non-zero, which is curl failing to reach it.
+        "curl": (
+            "import json, os, sys\n"
+            + ROOT_OF_BIN
+            + "argv = sys.argv[1:]\n"
+            "page = {argv[i + 1].split('=', 1)[0]: argv[i + 1].split('=', 1)[1]\n"
+            "        for i, a in enumerate(argv) if a == '--form-string'}\n"
+            "page['config'] = argv[argv.index('--config') + 1]\n"
+            "with open(os.path.join(root, 'published.jsonl'), 'a') as sink:\n"
+            "    sink.write(json.dumps(page) + '\\n')\n"
+            "exit_path = os.path.join(root, 'curl-exit')\n"
+            "code = int(open(exit_path).read()) if os.path.exists(exit_path) else 0\n"
+            "if code == 0:\n"
+            "    sys.stdout.write('{\"status\":1,\"request\":\"r\"}\\n200')\n"
+            "sys.exit(code)\n"
+        ),
+        # Linked at <root>/.local/share/nas-platform/controller/.venv/bin.
+        "ansible-playbook": (
+            "import fcntl, json, os, sys\n"
+            "root = sys.argv[0]\n"
+            "for _ in range(7):\n"
+            "    root = os.path.dirname(root)\n"
+            "lock = os.path.join(root, '.local/share/nas-platform/state/deployment.lock')\n"
+            "descriptor = os.open(lock, os.O_RDONLY)\n"
+            "try:\n"
+            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    held = False\n"
+            "except OSError:\n"
+            "    held = True\n"
+            "print('PLAY RECAP')\n"
+            "with open(os.path.join(root, 'playbook-invocations.jsonl'), 'a') as sink:\n"
+            "    sink.write(json.dumps({\n"
+            "        'argv': sys.argv[1:], 'cwd': os.getcwd(), 'held': held,\n"
+            "        'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
+            "        'lock_record': open(lock).read(),\n"
+            "    }) + '\\n')\n"
+            "def code(name):\n"
+            "    try:\n"
+            "        return int(open(os.path.join(root, name)).read())\n"
+            "    except FileNotFoundError:\n"
+            "        return 0\n"
+            "tags = sys.argv[-1].split(',')\n"
+            "if 'platform_verify_mdraid' in tags:\n"
+            "    print(open(os.path.join(root, 'mdraid-output')).read())\n"
+            "codes = [code('mdraid-exit')] if 'platform_verify_mdraid' in tags else []\n"
+            "if any(tag != 'platform_verify_mdraid' for tag in tags):\n"
+            "    codes.append(code('playbook-exit'))\n"
+            "sys.exit(max(codes))\n"
+        ),
+        "curl-refused": (
+            "import sys\n"
+            "sys.stdout.write('{\"status\":0,\"errors\":[\"user key is invalid\"]}\\n400')\n"
+        ),
+        # enable_verify_ping's curl: records the healthchecks ping and whether
+        # the deployment lock was free, and hands every other call to the
+        # Pushover stub linked beside it as bin/curl-pushover.
+        "curl-ping": (
+            "import fcntl, json, os, sys\n"
+            + ROOT_OF_BIN
+            + "argv = sys.argv[1:]\n"
+            "if '--config' in argv and argv[argv.index('--config') + 1] == '-':\n"
+            "    lock = os.path.join(root, '.local/share/nas-platform/state/deployment.lock')\n"
+            "    descriptor = os.open(lock, os.O_RDONLY)\n"
+            "    try:\n"
+            "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "        held = False\n"
+            "    except OSError:\n"
+            "        held = True\n"
+            "    with open(os.path.join(root, 'verify-pings.jsonl'), 'a') as sink:\n"
+            "        sink.write(json.dumps({'url': sys.stdin.read().split('\"')[1],\n"
+            "                               'held': held}) + '\\n')\n"
+            "    sys.exit(0)\n"
+            "pushover = os.path.join(root, 'bin/curl-pushover')\n"
+            "os.execv(pushover, [pushover, *argv])\n"
+        ),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        scratch = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, scratch)
+        # A bin/ of its own, so what a warming run records lands in scratch.
+        cls.stubs = scratch / "bin"
+        cls.stubs.mkdir()
+        for name, body in cls.STUBS.items():
+            stub = cls.stubs / name
+            stub.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
+            stub.chmod(0o700)
+            # Paid here, with no deadline. None has its fixtures beside this
+            # directory, so most fail, and only the exec itself is the point.
+            subprocess.run([str(stub)], input=b"", capture_output=True, check=False)
+
     def setUp(self):
         super().setUp()
         git = shutil.which("git")
@@ -3834,22 +3938,7 @@ class VerifyTest(PollerTestCase):
         # Records the form fields and the config each Pushover send names, and
         # answers the way Pushover does when it takes a message -- unless told to
         # exit non-zero, which is curl failing to reach it.
-        self.curl.write_text(
-            f"#!{sys.executable}\n"
-            "import json, os, sys\n"
-            "argv = sys.argv[1:]\n"
-            "page = {argv[i + 1].split('=', 1)[0]: argv[i + 1].split('=', 1)[1]\n"
-            "        for i, a in enumerate(argv) if a == '--form-string'}\n"
-            "page['config'] = argv[argv.index('--config') + 1]\n"
-            f"with open({str(self.published_path)!r}, 'a') as sink:\n"
-            "    sink.write(json.dumps(page) + '\\n')\n"
-            f"code = int(open({str(self.curl_exit)!r}).read()) if os.path.exists({str(self.curl_exit)!r}) else 0\n"
-            "if code == 0:\n"
-            "    sys.stdout.write('{\"status\":1,\"request\":\"r\"}\\n200')\n"
-            "sys.exit(code)\n",
-            encoding="utf-8",
-        )
-        self.curl.chmod(0o700)
+        self.curl.symlink_to(self.stubs / "curl")
         # The verify-failed page asks GitHub for the releasing run. A unit test
         # must not reach api.github.com (the seeing_poll comment above records
         # what that cost once), so GitHub is unreachable unless a test says so.
@@ -3868,40 +3957,7 @@ class VerifyTest(PollerTestCase):
         # and what its log says: the mismatch marker, or a setup failure.
         self.mdraid_exit = self.root / "mdraid-exit"
         self.mdraid_output = self.root / "mdraid-output"
-        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
-        playbook = venv / "ansible-playbook"
-        playbook.write_text(
-            f"#!{sys.executable}\n"
-            "import fcntl, json, os, sys\n"
-            f"lock = {str(lock)!r}\n"
-            "descriptor = os.open(lock, os.O_RDONLY)\n"
-            "try:\n"
-            "    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "    held = False\n"
-            "except OSError:\n"
-            "    held = True\n"
-            "print('PLAY RECAP')\n"
-            f"with open({str(self.invocations)!r}, 'a') as sink:\n"
-            "    sink.write(json.dumps({\n"
-            "        'argv': sys.argv[1:], 'cwd': os.getcwd(), 'held': held,\n"
-            "        'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
-            "        'lock_record': open(lock).read(),\n"
-            "    }) + '\\n')\n"
-            "def code(path):\n"
-            "    try:\n"
-            "        return int(open(path).read())\n"
-            "    except FileNotFoundError:\n"
-            "        return 0\n"
-            "tags = sys.argv[-1].split(',')\n"
-            "if 'platform_verify_mdraid' in tags:\n"
-            f"    print(open({str(self.mdraid_output)!r}).read())\n"
-            f"codes = [code({str(self.mdraid_exit)!r})] if 'platform_verify_mdraid' in tags else []\n"
-            "if any(tag != 'platform_verify_mdraid' for tag in tags):\n"
-            f"    codes.append(code({str(self.playbook_exit)!r}))\n"
-            "sys.exit(max(codes))\n",
-            encoding="utf-8",
-        )
-        playbook.chmod(0o700)
+        (venv / "ansible-playbook").symlink_to(self.stubs / "ansible-playbook")
         self.config = self.loaded_config(git_path=git, curl_path=str(self.curl))
 
     def mark_deployed(self, sha=None):
@@ -4374,13 +4430,7 @@ class VerifyTest(PollerTestCase):
     def test_a_refused_page_moves_no_record_and_changes_no_exit_code(self):
         self.mark_deployed()
         refused = self.root / "bin/curl-refused"
-        refused.write_text(
-            f"#!{sys.executable}\n"
-            "import sys\n"
-            "sys.stdout.write('{\"status\":0,\"errors\":[\"user key is invalid\"]}\\n400')\n",
-            encoding="utf-8",
-        )
-        refused.chmod(0o700)
+        refused.symlink_to(self.stubs / "curl-refused")
         self.config = self.loaded_config(git_path=self.git, curl_path=str(refused))
 
         code, output = self.run_verify(playbook_exit=2)
@@ -4499,28 +4549,9 @@ class VerifyTest(PollerTestCase):
         """
 
         self.verify_pings_path = self.root / "verify-pings.jsonl"
-        pushover = self.root / "bin/curl-pushover"
-        pushover.write_text(self.curl.read_text(encoding="utf-8"), encoding="utf-8")
-        pushover.chmod(0o700)
-        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
-        self.curl.write_text(
-            f"#!{sys.executable}\n"
-            "import fcntl, json, os, sys\n"
-            "argv = sys.argv[1:]\n"
-            "if '--config' in argv and argv[argv.index('--config') + 1] == '-':\n"
-            f"    descriptor = os.open({str(lock)!r}, os.O_RDONLY)\n"
-            "    try:\n"
-            "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "        held = False\n"
-            "    except OSError:\n"
-            "        held = True\n"
-            f"    with open({str(self.verify_pings_path)!r}, 'a') as sink:\n"
-            "        sink.write(json.dumps({'url': sys.stdin.read().split('\"')[1],\n"
-            "                               'held': held}) + '\\n')\n"
-            "    sys.exit(0)\n"
-            f"os.execv({str(pushover)!r}, [{str(pushover)!r}, *argv])\n",
-            encoding="utf-8",
-        )
+        (self.root / "bin/curl-pushover").symlink_to(self.stubs / "curl")
+        self.curl.unlink()
+        self.curl.symlink_to(self.stubs / "curl-ping")
         self.config = self.loaded_config(
             git_path=self.git, curl_path=str(self.curl),
             healthchecks_verify_ping_url=self.VERIFY_PING_URL,
