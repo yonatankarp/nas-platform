@@ -12,8 +12,15 @@
 # Two ways that protection rots, and both are checked here. The blocks stop
 # matching what the role accepts, which this catches by running them through
 # the real filter. Or Bazarr is upgraded and upstream renames a setting, which
-# this catches by pinning the version the file was derived from to the version
+# this catches by pinning the minor release the file was derived from to the one
 # the compose file deploys.
+#
+# Minor, not patch, and that is a trade rather than an oversight. Bazarr is not
+# semver: 1.6.1 and 1.6.2 both changed provider settings, though only by adding
+# keys. Compared at patch level, every Bazarr bump red the Renovate batch it rode
+# in and held back unrelated images for a one-line stamp edit. What that gives
+# up is a patch that renames a documented key, which goes unflagged here until
+# the next minor.
 #
 # Run with --self-test to prove the check detects its own regression.
 
@@ -111,10 +118,10 @@ end
 def collect_failures(doc_text, compose_text)
   failures = []
 
-  deployed = compose_text[%r{image:\s*lscr\.io/linuxserver/bazarr:([0-9][^@\s]*)}, 1]
+  deployed = compose_text[%r{image:\s*lscr\.io/linuxserver/bazarr:(\d+\.\d+)[^@\s]*}, 1]
   failures << "the compose file does not pin a readable Bazarr version" unless deployed
-  documented = doc_text[/Derived from Bazarr \*\*([^*]+)\*\*/, 1]
-  failures << "the provider reference does not record the version it was derived from" unless documented
+  documented = doc_text[/Derived from Bazarr \*\*(\d+\.\d+)\*\*/, 1]
+  failures << "the provider reference does not record the minor release it was derived from" unless documented
   if deployed && documented && deployed != documented
     failures << "the provider reference was derived from Bazarr #{documented} but " \
                 "#{deployed} is deployed; re-derive the settings keys from that release"
@@ -154,11 +161,21 @@ if ARGV.include?("--self-test")
   unless collect_failures(planted, compose_text).any? { |failure| failure.include?("ktuvit") }
     abort "self-test failed: a hyphenated setting suffix was accepted"
   end
-  stale = doc_text.sub(/Derived from Bazarr \*\*[^*]+\*\*/, "Derived from Bazarr **0.0.0**")
+  stale = doc_text.sub(/Derived from Bazarr \*\*[^*]+\*\*/, "Derived from Bazarr **0.0**")
   unless collect_failures(stale, compose_text).any? { |failure| failure.include?("re-derive") }
     abort "self-test failed: a stale derivation version was accepted"
   end
-  puts "bazarr provider schemas: self-test detects a bad key and a stale version"
+  minor = compose_text[%r{bazarr:(\d+\.\d+)}, 1]
+  patched = compose_text.sub(%r{(bazarr:\d+\.\d+)[^@\s]*}, "\\1.999")
+  abort "self-test could not plant a patch bump" if patched == compose_text
+  unless collect_failures(doc_text, patched).empty?
+    abort "self-test failed: a patch bump within #{minor} was refused"
+  end
+  bumped = compose_text.sub(%r{bazarr:\d+\.\d+[^@\s]*}, "bazarr:#{minor.split('.').first}.999.0")
+  unless collect_failures(doc_text, bumped).any? { |failure| failure.include?("re-derive") }
+    abort "self-test failed: a minor bump was accepted"
+  end
+  puts "bazarr provider schemas: self-test detects a bad key and a stale minor, and admits a patch"
   exit
 end
 
