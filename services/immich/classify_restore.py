@@ -248,6 +248,68 @@ def originals_present(originals_root):
         os.close(immich_fd)
 
 
+# ponytail: a household library is tens of thousands of entries, so a million
+# is never reached in practice; past it the dump is accepted unproven, and
+# source-file verification after the restore is what still refuses it. Emit a
+# warning, the way postgres-version-unverified does, if a library ever nears it.
+STALE_SCAN_ENTRY_CAP = 1_000_000
+
+
+def originals_changed_since(originals_root, dump_mtime):
+    """Report whether any originals directory changed after the dump.
+
+    Directory mtimes, not file mtimes: rename(2) keeps a moved file's own
+    mtime, so a storage-template move shows only in the directories it left
+    and entered, and every create or unlink shows in its parent. A file
+    rewritten in place changes no path a restored row could name. Symlinks
+    are never followed, and the walk stops at the first newer directory.
+    ponytail: the dump's mtime is when it finished, while pg_dump's snapshot
+    is from when it began, so a move inside that window passes here; the
+    source-file verification after the restore still refuses it.
+    """
+    immich_fd = open_directory(originals_root, category="unsafe-originals")
+    pending = []
+
+    def changed(descriptor):
+        pending.append(descriptor)
+        try:
+            return os.fstat(descriptor).st_mtime > dump_mtime
+        except OSError:
+            raise Refusal("unsafe-originals") from None
+
+    try:
+        for tree in ("upload", "library"):
+            tree_fd = open_child_directory(
+                immich_fd, tree, missing_ok=True, category="unsafe-originals"
+            )
+            if tree_fd is not None and changed(tree_fd):
+                return True
+        scanned = 0
+        while pending:
+            descriptor = pending.pop()
+            try:
+                with os.scandir(descriptor) as entries:
+                    for entry in entries:
+                        scanned += 1
+                        if scanned > STALE_SCAN_ENTRY_CAP:
+                            return False
+                        if entry.is_dir(follow_symlinks=False) and changed(
+                            open_child_directory(
+                                descriptor, entry.name, category="unsafe-originals"
+                            )
+                        ):
+                            return True
+            except OSError:
+                raise Refusal("unsafe-originals") from None
+            finally:
+                os.close(descriptor)
+        return False
+    finally:
+        for descriptor in pending:
+            os.close(descriptor)
+        os.close(immich_fd)
+
+
 def parse_backup_metadata(name):
     match = BACKUP_NAME.fullmatch(name)
     if match is None:
@@ -291,6 +353,7 @@ def validate_backup(descriptor, name, expected_uid, expected_gid):
                     decompressed_size += len(chunk)
         if decompressed_size == 0:
             raise Refusal("unsafe-newest-backup")
+        return after.st_mtime
     except (EOFError, OSError, gzip.BadGzipFile):
         raise Refusal("unsafe-newest-backup") from None
     finally:
@@ -332,13 +395,13 @@ def select_backup(
             or postgres_major > expected_postgres_major
         ):
             raise Refusal("incompatible-newest-backup")
-        validate_backup(descriptor, name, expected_uid, expected_gid)
-        return name
+        return name, validate_backup(descriptor, name, expected_uid, expected_gid)
     finally:
         os.close(descriptor)
 
 
-def verify_asset_path(immich_fd, original_path):
+def asset_source_readable(immich_fd, original_path):
+    """Refuse an unsafe path shape; report whether its source is readable."""
     path = PurePosixPath(original_path)
     parts = path.parts
     if (
@@ -351,23 +414,21 @@ def verify_asset_path(immich_fd, original_path):
     descriptor = os.dup(immich_fd)
     try:
         for part in parts[2:-1]:
-            child = open_child_directory(
-                descriptor, part, category="unsafe-restored-assets"
+            child = os.open(
+                part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor
             )
             os.close(descriptor)
             descriptor = child
-        try:
-            source_fd = os.open(
-                parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
-            )
-        except OSError:
-            raise Refusal("unsafe-restored-assets") from None
+        source_fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor)
         try:
             if not stat.S_ISREG(os.fstat(source_fd).st_mode):
-                raise Refusal("unsafe-restored-assets")
+                return False
             os.read(source_fd, 1)
         finally:
             os.close(source_fd)
+        return True
+    except OSError:
+        return False
     finally:
         os.close(descriptor)
 
@@ -383,6 +444,7 @@ def verify_assets(originals_root, source):
         raise Refusal("unsafe-restored-assets")
 
     immich_fd = open_directory(originals_root, category="unsafe-restored-assets")
+    verified = 0
     try:
         for asset in assets:
             if (
@@ -393,10 +455,11 @@ def verify_assets(originals_root, source):
                 or not isinstance(asset["originalPath"], str)
             ):
                 raise Refusal("unsafe-restored-assets")
-            verify_asset_path(immich_fd, asset["originalPath"])
+            verified += asset_source_readable(immich_fd, asset["originalPath"])
     finally:
         os.close(immich_fd)
-    return {"verified": len(assets)}
+    # Counts only: the role refuses any missing source, and no path is printed.
+    return {"verified": verified, "missing": len(assets) - verified}
 
 
 def classify(args, warnings):
@@ -409,13 +472,17 @@ def classify(args, warnings):
     restore_required = database == "fresh" and present
     backup = None
     if restore_required:
-        backup = select_backup(
+        backup, dump_mtime = select_backup(
             args.backup_dir,
             args.expected_uid,
             args.expected_gid,
             args.expected_immich_version,
             args.expected_postgres_major,
         )
+        # A dump older than the originals holds rows naming paths that have
+        # since moved, so it is refused here, before any container stops (#900).
+        if originals_changed_since(args.originals_root, dump_mtime):
+            raise Refusal("stale-newest-backup")
     return dict(zip(OUTPUT_KEYS, (database, present, restore_required, backup)))
 
 

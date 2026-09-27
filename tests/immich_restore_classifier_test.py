@@ -127,6 +127,19 @@ class ClassifierFixture:
             check=False,
         )
 
+    def age_originals(self, mtime):
+        """Date every real directory and file under the originals root.
+
+        os.walk does not descend into a symlinked directory, and only the
+        directories it yields are touched, so no link target is re-dated.
+        """
+        for directory, _dirs, files in os.walk(self.originals_root):
+            for name in files:
+                path = Path(directory) / name
+                if not path.is_symlink():
+                    os.utime(path, (mtime, mtime))
+            os.utime(directory, (mtime, mtime))
+
     def classify(self, *, warning="", **kwargs):
         result = self.run(**kwargs)
         if result.returncode != 0:
@@ -389,6 +402,118 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         os.mkfifo(self.fixture.postgres / "PG_VERSION")
         self.assert_refused("unreadable-postgres-version")
 
+    # A storage-template move renames originals into new folders. rename(2)
+    # keeps the file's own mtime, so only the directories it touched show that
+    # the originals changed after the dump was written (#900).
+    def stale_fixture(self):
+        self.fixture.add_original("00-first.jpg")
+        self.fixture.add_original("library/admin/asset.jpg")
+        backup = self.fixture.add_backup()
+        now = backup.stat().st_mtime
+        self.fixture.age_originals(now - 7200)
+        os.utime(backup, (now - 3600, now - 3600))
+        return backup
+
+    def test_originals_moved_after_the_dump_refuse_it_as_stale(self):
+        self.stale_fixture()
+        moved = self.fixture.originals_root / "library" / "admin" / "Album"
+        moved.mkdir(parents=True)
+        (self.fixture.originals / "library" / "admin" / "asset.jpg").rename(
+            moved / "asset.jpg"
+        )
+        self.assertLess(
+            (moved / "asset.jpg").stat().st_mtime,
+            (self.fixture.backups / VALID_NAME).stat().st_mtime,
+        )
+        self.assert_refused("stale-newest-backup")
+
+    def test_originals_all_older_than_the_dump_restore_it(self):
+        self.stale_fixture()
+        classification = self.fixture.classify()
+        self.assertTrue(classification["restoreRequired"])
+        self.assertEqual(classification["backupFilename"], VALID_NAME)
+
+    def test_touching_the_dump_accepts_it(self):
+        backup = self.stale_fixture()
+        (self.fixture.originals / "late.jpg").write_bytes(b"late")
+        self.assert_refused("stale-newest-backup")
+        os.utime(backup)
+        self.assertTrue(self.fixture.classify()["restoreRequired"])
+
+    # Only directory mtimes are read: Immich rewrites its .immich mount-check
+    # file in place on every start, which moves no path a row could name.
+    def test_an_original_rewritten_in_place_is_not_a_stale_dump(self):
+        self.stale_fixture()
+        os.utime(self.fixture.originals / "00-first.jpg")
+        self.assertTrue(self.fixture.classify()["restoreRequired"])
+
+    def test_existing_database_never_reads_dump_age(self):
+        (self.fixture.postgres / "PG_VERSION").write_text("14\n")
+        self.stale_fixture()
+        (self.fixture.originals / "late.jpg").write_bytes(b"late")
+        self.assertEqual(self.fixture.classify()["database"], "existing")
+
+    def test_symlinked_directory_under_originals_is_not_followed(self):
+        backup = self.stale_fixture()
+        outside = self.fixture.root / "outside-directory"
+        outside.mkdir()
+        (self.fixture.originals_root / "library").mkdir()
+        (self.fixture.originals_root / "library" / "linked").symlink_to(
+            outside, target_is_directory=True
+        )
+        self.fixture.age_originals(backup.stat().st_mtime - 3600)
+        (outside / "new.jpg").write_bytes(b"new")
+        self.assertGreater(outside.stat().st_mtime, backup.stat().st_mtime)
+        self.assertTrue(self.fixture.classify()["restoreRequired"])
+
+    def test_scan_cap_reached_without_a_newer_directory_proceeds(self):
+        backup = self.stale_fixture()
+        for name in ("upload", "library"):
+            path = self.fixture.originals_root / name
+            for child in sorted(path.rglob("*"), reverse=True):
+                child.rmdir() if child.is_dir() else child.unlink()
+        self.fixture.add_original("00-first.jpg")
+        deep = self.fixture.originals_root / "library" / "deep"
+        (deep / "newer").mkdir(parents=True)
+        dated = backup.stat().st_mtime
+        self.fixture.age_originals(dated - 3600)
+        os.utime(deep / "newer")
+        self.assert_refused("stale-newest-backup")
+        with mock.patch.object(CLASSIFIER_MODULE, "STALE_SCAN_ENTRY_CAP", 1):
+            self.assertFalse(
+                CLASSIFIER_MODULE.originals_changed_since(
+                    str(self.fixture.originals_root), dated
+                )
+            )
+        with mock.patch.object(CLASSIFIER_MODULE, "STALE_SCAN_ENTRY_CAP", 2):
+            self.assertTrue(
+                CLASSIFIER_MODULE.originals_changed_since(
+                    str(self.fixture.originals_root), dated
+                )
+            )
+
+    def test_stale_scan_stops_at_the_first_newer_directory(self):
+        self.stale_fixture()
+        scans = []
+        real_scandir = os.scandir
+
+        def counting_scandir(descriptor):
+            scans.append(descriptor)
+            return real_scandir(descriptor)
+
+        os.utime(self.fixture.originals)
+        for index in range(50):
+            (self.fixture.originals_root / "library" / f"d{index}").mkdir(parents=True)
+        self.fixture.age_originals(0)
+        os.utime(self.fixture.originals)
+        with mock.patch.object(CLASSIFIER_MODULE.os, "scandir", counting_scandir):
+            self.assertTrue(
+                CLASSIFIER_MODULE.originals_changed_since(
+                    str(self.fixture.originals_root), 1
+                )
+            )
+        self.assertEqual(scans, [])
+
     def test_symlink_backup_is_refused(self):
         self.fixture.add_original()
         target = self.fixture.root / "outside.sql.gz"
@@ -513,7 +638,7 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
             [{"id": "safe-id", "originalPath": "/data/upload/library/admin/asset.jpg"}]
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(result.stdout), {"verified": 1})
+        self.assertEqual(json.loads(result.stdout), {"verified": 1, "missing": 0})
 
     def test_restored_asset_sample_rejects_escape_and_noninternal_paths(self):
         for path in (
@@ -531,18 +656,30 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
                 self.assertEqual(result.stdout, "")
                 self.assertEqual(result.stderr.strip(), "unsafe-restored-assets")
 
-    def test_restored_asset_sample_rejects_symlink_or_missing_source(self):
-        self.fixture.originals.mkdir(parents=True)
+    # A missing source is counted rather than refused on the first, so the role
+    # can say how many of the sample failed; it still refuses on any (#900).
+    # The count is all that is reported: no path leaves the helper.
+    def test_restored_asset_sample_counts_symlink_or_missing_sources(self):
+        self.fixture.add_original("present.jpg")
         outside = self.fixture.root / "outside.jpg"
         outside.write_bytes(b"outside")
         (self.fixture.originals / "linked.jpg").symlink_to(outside)
-        for path in ("/data/upload/linked.jpg", "/data/upload/missing.jpg"):
-            with self.subTest(path=path):
-                result = self.fixture.verify_assets(
-                    [{"id": "unsafe-id", "originalPath": path}]
-                )
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(result.stderr.strip(), "unsafe-restored-assets")
+        (self.fixture.originals / "album").symlink_to(
+            self.fixture.originals, target_is_directory=True
+        )
+        result = self.fixture.verify_assets(
+            [
+                {"id": "a", "originalPath": "/data/upload/present.jpg"},
+                {"id": "b", "originalPath": "/data/upload/linked.jpg"},
+                {"id": "c", "originalPath": "/data/upload/missing.jpg"},
+                {"id": "d", "originalPath": "/data/upload/album/present.jpg"},
+                {"id": "e", "originalPath": "/data/library/gone/x.jpg"},
+            ]
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(json.loads(result.stdout), {"verified": 1, "missing": 4})
+        self.assertNotIn("present", result.stdout)
 
     def test_restored_asset_sample_requires_exact_bounded_json_shape(self):
         for payload in (

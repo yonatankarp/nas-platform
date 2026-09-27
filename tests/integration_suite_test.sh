@@ -742,7 +742,7 @@ fi
 # named after it -- is executed by tests/integration_controller_execution_test.sh
 # (case_komga, case_jellyfin), which also plants a suite_is that matches only
 # the full lane. Immich's arm stays a text assertion: reaching it means
-# emulating a Redis round trip, six negative restore fixtures and container
+# emulating a Redis round trip, seven negative restore fixtures and container
 # identity across `docker inspect`, which is a Docker daemon rather than a stub,
 # and the immich integration lane is what proves that arm for real.
 grep -qF 'suite_is immich' "$controller_program" || {

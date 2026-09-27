@@ -470,10 +470,10 @@ run_immich_restore_negative_matrix() {
   immich_server_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-server")
   immich_database_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-postgres")
 
-  # One root, and one bundle render for all six scenarios. Each scenario
+  # One root, and one bundle render for all seven scenarios. Each scenario
   # already asserts its own storage sha is unchanged across its play, which is
   # the proof that no scenario mutates the tree, so a pristine root each time
-  # only bought six more renders of the same bundle at 66s apiece.
+  # only bought seven more renders of the same bundle at 66s apiece.
   scenario_root="$sandbox/reports/immich-negative"
   test ! -e "$scenario_root"
   mkdir -m 0755 "$scenario_root"
@@ -490,7 +490,7 @@ run_immich_restore_negative_matrix() {
   backup_root="$scenario_root/media/Immich-backups/database"
   marker="$scenario_root/docker/immich/.restore-failed"
 
-  for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker postgres-major-mismatch; do
+  for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker postgres-major-mismatch stale-backup; do
     # The fixtures are the only state that would carry between scenarios, and
     # each expected failure is derived from exactly them: a backup left behind
     # would make unsafe-permissions report ambiguous-newest-backup, and would
@@ -535,6 +535,16 @@ run_immich_restore_negative_matrix() {
         # any Compose operation, so the running containers keep their StartedAt.
         printf '13\n' > "$postgres_root/PG_VERSION"
         expected_failure=postgres-major-mismatch
+        ;;
+      stale-backup)
+        # A sound dump written before the originals last changed: refused
+        # before any Compose operation, where a restore would have loaded rows
+        # naming paths no longer on disk (#900).
+        printf 'SELECT 1;\n' | gzip -c > \
+          "$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
+        touch -t 200001010000 \
+          "$backup_root/immich-db-backup-20260815T010000-v3.1.0-pg14.19.sql.gz"
+        expected_failure=stale-newest-backup
         ;;
     esac
 
