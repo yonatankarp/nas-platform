@@ -84,7 +84,7 @@ class ClassifierFixture:
             stream.write(content)
         return path
 
-    def run(self, *, expected_uid=None, expected_gid=None):
+    def run(self, *, expected_uid=None, expected_gid=None, expected_postgres_major=14):
         command = [
             "python3",
             str(CLASSIFIER),
@@ -103,7 +103,7 @@ class ClassifierFixture:
             "--expected-immich-version",
             "3.1.0",
             "--expected-postgres-major",
-            "14",
+            str(expected_postgres_major),
         ]
         return subprocess.run(command, text=True, capture_output=True, check=False)
 
@@ -321,6 +321,58 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
             "immich-db-backup-20260815T010000-v3.1.0-pg15.1.sql.gz"
         )
         self.assert_refused("incompatible-newest-backup")
+
+    # A plain-SQL dump loads forward into a newer major and not backward, so a
+    # repin of the database image restores the dump the older major just wrote.
+    def test_older_postgres_major_backup_restores_into_newer_pin(self):
+        self.fixture.add_original()
+        self.fixture.add_backup(VALID_NAME)
+        classification = self.fixture.classify(expected_postgres_major=17)
+        self.assertTrue(classification["restoreRequired"])
+        self.assertEqual(classification["backupFilename"], VALID_NAME)
+
+    def test_newer_postgres_major_backup_is_refused(self):
+        self.fixture.add_original()
+        self.fixture.add_backup(
+            "immich-db-backup-20260815T010000-v3.1.0-pg18.4.sql.gz"
+        )
+        self.assert_refused("incompatible-newest-backup", expected_postgres_major=17)
+
+    def test_existing_database_of_another_postgres_major_is_refused(self):
+        for data_major in ("13", "15"):
+            with self.subTest(data_major=data_major):
+                (self.fixture.postgres / "PG_VERSION").write_text(data_major + "\n")
+                self.assert_refused("postgres-major-mismatch")
+
+    def test_existing_database_major_is_checked_before_originals(self):
+        (self.fixture.postgres / "PG_VERSION").write_text("14\n")
+        self.fixture.add_original()
+        self.assert_refused("postgres-major-mismatch", expected_postgres_major=17)
+
+    def test_existing_database_without_readable_postgres_version_is_refused(self):
+        version = self.fixture.postgres / "PG_VERSION"
+        (self.fixture.postgres / "base").mkdir()
+        self.assert_refused("unreadable-postgres-version")
+        version.write_text("fourteen\n")
+        self.assert_refused("unreadable-postgres-version")
+        version.unlink()
+        version.mkdir()
+        self.assert_refused("unreadable-postgres-version")
+        version.rmdir()
+        outside = self.fixture.root / "outside-version"
+        outside.write_text("14\n")
+        version.symlink_to(outside)
+        self.assert_refused("unreadable-postgres-version")
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a mode-0 file")
+    def test_permission_denied_postgres_version_is_refused(self):
+        version = self.fixture.postgres / "PG_VERSION"
+        version.write_text("14\n")
+        version.chmod(0)
+        try:
+            self.assert_refused("unreadable-postgres-version")
+        finally:
+            version.chmod(0o600)
 
     def test_symlink_backup_is_refused(self):
         self.fixture.add_original()

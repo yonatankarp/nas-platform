@@ -33,6 +33,13 @@
 
     # Redacted through the evidence read below: both run psql with
     # PGPASSWORD/POSTGRES_USER, and a connection failure echoes them.
+    #
+    # The sed stage is Immich's own, copied from both restore recipes in
+    # docs/docs/administration/backup-and-restore.md upstream: pg_dump opens
+    # every dump with an empty search_path, and the rewrite restores
+    # `public, pg_catalog` for the transaction so the extension-backed columns
+    # and indexes the dump creates resolve their types. A dump without that
+    # line passes through unchanged.
     - name: Restore the selected Immich database backup
       community.docker.docker_compose_v2_exec:
         project_src: "{{ platform_current_dir }}/services/immich"
@@ -47,6 +54,7 @@
           - -ec
           - >-
             gzip -dc -- "$2/$1" |
+            sed "s/SELECT pg_catalog.set_config('search_path', '', false);/SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g" |
             env PGPASSWORD="$POSTGRES_PASSWORD"
             psql --host=database --username="$POSTGRES_USER"
             --dbname="$POSTGRES_DB" --single-transaction

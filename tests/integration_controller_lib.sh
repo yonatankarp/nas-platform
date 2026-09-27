@@ -470,10 +470,10 @@ run_immich_restore_negative_matrix() {
   immich_server_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-server")
   immich_database_before=$(docker inspect --format '{{.Id}}:{{.State.StartedAt}}' "$integration_project_namespace-immich-postgres")
 
-  # One root, and one bundle render for all five scenarios. Each scenario
+  # One root, and one bundle render for all six scenarios. Each scenario
   # already asserts its own storage sha is unchanged across its play, which is
   # the proof that no scenario mutates the tree, so a pristine root each time
-  # only bought five more renders of the same bundle at 66s apiece.
+  # only bought six more renders of the same bundle at 66s apiece.
   scenario_root="$sandbox/reports/immich-negative"
   test ! -e "$scenario_root"
   mkdir -m 0755 "$scenario_root"
@@ -490,12 +490,12 @@ run_immich_restore_negative_matrix() {
   backup_root="$scenario_root/media/Immich-backups/database"
   marker="$scenario_root/docker/immich/.restore-failed"
 
-  for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker; do
+  for scenario in no-backup corrupt-newest ambiguous-newest unsafe-permissions prior-marker postgres-major-mismatch; do
     # The fixtures are the only state that would carry between scenarios, and
     # each expected failure is derived from exactly them: a backup left behind
     # would make unsafe-permissions report ambiguous-newest-backup, and would
     # stop no-backup from ever seeing an empty directory.
-    rm -rf "$backup_root" "$marker"
+    rm -rf "$backup_root" "$marker" "$postgres_root/PG_VERSION"
     mkdir -p "$postgres_root" "$originals_root" "$backup_root"
     printf 'negative-matrix-original\n' > "$originals_root/asset.jpg"
     expected_failure=
@@ -529,6 +529,12 @@ run_immich_restore_negative_matrix() {
         printf '{"version":1,"stage":"database-restore"}\n' > "$marker"
         chmod 0600 "$marker"
         expected_failure=previous-failed-restore
+        ;;
+      postgres-major-mismatch)
+        # A cluster initialized by another major than the pin: refused before
+        # any Compose operation, so the running containers keep their StartedAt.
+        printf '13\n' > "$postgres_root/PG_VERSION"
+        expected_failure=postgres-major-mismatch
         ;;
     esac
 

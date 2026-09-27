@@ -131,15 +131,49 @@ def marker_present(path):
         os.close(descriptor)
 
 
-def classify_database(path):
+def read_postgres_major(descriptor):
+    """Read the cluster major initdb recorded, failing closed on any doubt.
+
+    A cluster whose major cannot be read is never treated as fresh: that would
+    let the pinned image initialize over, or crash-loop on, a store it cannot
+    open. The file is 0600 and owned by the account that owns this 0700
+    directory, so whoever could list the directory can read it.
+    """
+    try:
+        version_fd = os.open(
+            "PG_VERSION", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+        )
+    except OSError:
+        raise Refusal("unreadable-postgres-version") from None
+    try:
+        if not stat.S_ISREG(os.fstat(version_fd).st_mode):
+            raise Refusal("unreadable-postgres-version")
+        content = os.read(version_fd, 64)
+    except OSError:
+        raise Refusal("unreadable-postgres-version") from None
+    finally:
+        os.close(version_fd)
+    if re.fullmatch(rb"[0-9]+\n?", content) is None:
+        raise Refusal("unreadable-postgres-version")
+    return int(content)
+
+
+def classify_database(path, expected_postgres_major):
     descriptor = open_directory(path, missing_ok=True, category="unsafe-storage")
     if descriptor is None:
         return "fresh"
     try:
         try:
-            return "existing" if os.listdir(descriptor) else "fresh"
+            if not os.listdir(descriptor):
+                return "fresh"
         except OSError:
             raise Refusal("unsafe-storage") from None
+        # The pinned image cannot open a cluster of another major: a newer one
+        # refuses an older data directory, and an older one a newer. Refusing
+        # here, before any Compose operation, leaves the running containers up.
+        if read_postgres_major(descriptor) != expected_postgres_major:
+            raise Refusal("postgres-major-mismatch")
+        return "existing"
     finally:
         os.close(descriptor)
 
@@ -276,9 +310,11 @@ def select_backup(
         metadata, name = newest[0]
         _, immich_version, postgres_version = metadata
         postgres_major = int(postgres_version.split(".", 1)[0])
+        # A plain-SQL dump loads into a newer major but not an older one, so a
+        # database repin restores the dump the previous major wrote.
         if (
             immich_version != expected_immich_version
-            or postgres_major != expected_postgres_major
+            or postgres_major > expected_postgres_major
         ):
             raise Refusal("incompatible-newest-backup")
         validate_backup(descriptor, name, expected_uid, expected_gid)
@@ -351,7 +387,7 @@ def verify_assets(originals_root, source):
 def classify(args):
     if marker_present(args.failure_marker):
         raise Refusal("previous-failed-restore")
-    database = classify_database(args.postgres_dir)
+    database = classify_database(args.postgres_dir, args.expected_postgres_major)
     present = originals_present(args.originals_root)
     restore_required = database == "fresh" and present
     backup = None
