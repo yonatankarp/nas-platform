@@ -981,6 +981,14 @@ check_rejected(
 )
 
 check_rejected(
+  :immich_restore, "the unverified PostgreSQL major warning keyed on another status",
+  [[IMMICH_ROLE,
+    "    'postgres-version-unverified'\n",
+    "    'unreadable-postgres-version'\n"]],
+  "unverified PostgreSQL major is not reported"
+)
+
+check_rejected(
   :immich_restore, "a real DELETE folded across two lines",
   [[IMMICH_RESTORE,
     "            SELECT json_build_object(\n",

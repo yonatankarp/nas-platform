@@ -3,6 +3,7 @@
 
 import argparse
 from datetime import datetime
+import errno
 import gzip
 import json
 import os
@@ -131,19 +132,30 @@ def marker_present(path):
         os.close(descriptor)
 
 
-def read_postgres_major(descriptor):
-    """Read the cluster major initdb recorded, failing closed on any doubt.
+UNVERIFIED_POSTGRES_VERSION = "postgres-version-unverified"
 
-    A cluster whose major cannot be read is never treated as fresh: that would
-    let the pinned image initialize over, or crash-loop on, a store it cannot
-    open. The file is 0600 and owned by the account that owns this 0700
-    directory, so whoever could list the directory can read it.
+
+def read_postgres_major(descriptor):
+    """Read the cluster major initdb recorded, or None when access is denied.
+
+    A cluster whose version is missing, is not a regular file or does not parse
+    is never treated as fresh: that would let the pinned image initialize over,
+    or crash-loop on, a store it cannot open. Permission denied is the one
+    exception. The file is 0600 and owned by the postgres account, the deploy
+    account's right to read it has not been measured on the NAS, and a refusal
+    there would stall every deployment on a check the platform never had; the
+    caller proceeds as it did before and reports the major as unverified.
+    O_NONBLOCK keeps a FIFO from holding the open before the S_ISREG check.
     """
     try:
         version_fd = os.open(
-            "PG_VERSION", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=descriptor
+            "PG_VERSION",
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+            dir_fd=descriptor,
         )
-    except OSError:
+    except OSError as error:
+        if error.errno in (errno.EACCES, errno.EPERM):
+            return None
         raise Refusal("unreadable-postgres-version") from None
     try:
         if not stat.S_ISREG(os.fstat(version_fd).st_mode):
@@ -158,7 +170,7 @@ def read_postgres_major(descriptor):
     return int(content)
 
 
-def classify_database(path, expected_postgres_major):
+def classify_database(path, expected_postgres_major, warnings):
     descriptor = open_directory(path, missing_ok=True, category="unsafe-storage")
     if descriptor is None:
         return "fresh"
@@ -171,7 +183,10 @@ def classify_database(path, expected_postgres_major):
         # The pinned image cannot open a cluster of another major: a newer one
         # refuses an older data directory, and an older one a newer. Refusing
         # here, before any Compose operation, leaves the running containers up.
-        if read_postgres_major(descriptor) != expected_postgres_major:
+        major = read_postgres_major(descriptor)
+        if major is None:
+            warnings.append(UNVERIFIED_POSTGRES_VERSION)
+        elif major != expected_postgres_major:
             raise Refusal("postgres-major-mismatch")
         return "existing"
     finally:
@@ -384,10 +399,12 @@ def verify_assets(originals_root, source):
     return {"verified": len(assets)}
 
 
-def classify(args):
+def classify(args, warnings):
     if marker_present(args.failure_marker):
         raise Refusal("previous-failed-restore")
-    database = classify_database(args.postgres_dir, args.expected_postgres_major)
+    database = classify_database(
+        args.postgres_dir, args.expected_postgres_major, warnings
+    )
     present = originals_present(args.originals_root)
     restore_required = database == "fresh" and present
     backup = None
@@ -403,18 +420,22 @@ def classify(args):
 
 
 def main():
+    warnings = []
     try:
         args = parse_args()
         if args.verify_assets_json is not None:
             document = verify_assets(args.originals_root, args.verify_assets_json)
         else:
-            document = classify(args)
+            document = classify(args, warnings)
     except Refusal as error:
         print(str(error), file=sys.stderr)
         return 1
     except Exception:
         print("unsafe-storage", file=sys.stderr)
         return 1
+    # A success may carry one sanitized warning on stderr; the role reports it.
+    for warning in warnings:
+        print(warning, file=sys.stderr)
     print(json.dumps(document, separators=(",", ":")))
     return 0
 

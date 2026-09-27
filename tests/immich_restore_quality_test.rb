@@ -452,6 +452,13 @@ sanitized_status = task(main_tasks, "Resolve sanitized Immich storage classifica
 refuse("incompatible newest backup diagnostic is not sanitized") unless
   sanitized_status.include?("in [#{SANITIZED_REFUSALS.map { |code| "'#{code}'" }.join(', ')}]")
 
+# A denied PG_VERSION proceeds with a stderr warning rather than a refusal, so
+# the role is the only place that warning reaches the operator.
+unverified_warning = task(main_tasks, "Warn that the Immich PostgreSQL major could not be verified")
+refuse("unverified PostgreSQL major is not reported") unless
+  unverified_warning&.dig("ansible.builtin.debug", "msg").to_s.include?("could not be verified") &&
+  unverified_warning["when"].to_s.include?("'postgres-version-unverified'") &&
+  unverified_warning["when"].to_s.include?("immich_restore_classification_command.stderr")
 refuse("classification failure is ignored or reversed") unless
   classifier_failure_guarded?(main_tasks)
 schema_guard = task(main_tasks, "Require exact Immich storage classification")

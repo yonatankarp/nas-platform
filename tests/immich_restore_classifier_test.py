@@ -105,7 +105,11 @@ class ClassifierFixture:
             "--expected-postgres-major",
             str(expected_postgres_major),
         ]
-        return subprocess.run(command, text=True, capture_output=True, check=False)
+        # Bounded so a classifier blocked on an open reports as a failure
+        # rather than hanging the suite.
+        return subprocess.run(
+            command, text=True, capture_output=True, check=False, timeout=30
+        )
 
     def verify_assets(self, assets):
         return subprocess.run(
@@ -123,18 +127,18 @@ class ClassifierFixture:
             check=False,
         )
 
-    def classify(self, **kwargs):
+    def classify(self, *, warning="", **kwargs):
         result = self.run(**kwargs)
         if result.returncode != 0:
             raise AssertionError(
                 f"classifier failed rc={result.returncode}: {result.stderr!r}"
             )
-        self._assert_strict_output(result)
+        self._assert_strict_output(result, warning)
         return json.loads(result.stdout)
 
     @staticmethod
-    def _assert_strict_output(result):
-        if result.stderr:
+    def _assert_strict_output(result, warning=""):
+        if result.stderr.strip() != warning:
             raise AssertionError(f"successful classifier wrote stderr: {result.stderr!r}")
         document = json.loads(result.stdout)
         expected_keys = {
@@ -364,15 +368,26 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
         version.symlink_to(outside)
         self.assert_refused("unreadable-postgres-version")
 
+    # A deploy account that can list the cluster but not read its version is
+    # no worse off than before the major was checked at all, so it proceeds and
+    # says so rather than stalling every deployment on an unmeasured permission.
     @unittest.skipIf(os.geteuid() == 0, "root reads a mode-0 file")
-    def test_permission_denied_postgres_version_is_refused(self):
+    def test_permission_denied_postgres_version_proceeds_unverified(self):
         version = self.fixture.postgres / "PG_VERSION"
-        version.write_text("14\n")
+        version.write_text("13\n")
         version.chmod(0)
         try:
-            self.assert_refused("unreadable-postgres-version")
+            classification = self.fixture.classify(
+                warning="postgres-version-unverified"
+            )
         finally:
             version.chmod(0o600)
+        self.assertEqual(classification["database"], "existing")
+        self.assertFalse(classification["restoreRequired"])
+
+    def test_fifo_postgres_version_is_refused_without_blocking(self):
+        os.mkfifo(self.fixture.postgres / "PG_VERSION")
+        self.assert_refused("unreadable-postgres-version")
 
     def test_symlink_backup_is_refused(self):
         self.fixture.add_original()
