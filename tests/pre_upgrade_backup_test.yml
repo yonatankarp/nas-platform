@@ -140,6 +140,43 @@
         expect_message: FIXTURE IS STOPPED, and was deliberately not started again
         expect_calls: "{{ backup_stop_calls }}"
         expect_state: exited
+      # The pin is the caller's, read off roles/image_downgrade_guard's
+      # host-scoped fact; a caller whose own guard was skipped hands over the
+      # last guard's pin, which is another service's image and an "upgrade" on
+      # every converge. Refused before anything stops.
+      - name: a pin for another image repository is refused before anything stops
+        deployed: "{{ backup_old }}"
+        pinned: registry.example/other:v1.1.0@sha256:cccc
+        store: [db.sqlite3]
+        expect_message: pins a different image repository
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a pin spelling Docker Hub's implied prefixes out is the same repository
+        deployed: docker.io/library/fixture:v1.0.0@sha256:aaaa
+        pinned: fixture:v1.1.0@sha256:bbbb
+        store: [db.sqlite3]
+        expect_calls: "{{ backup_stop_calls }}"
+        expect_state: exited
+        expect_copy: [db.sqlite3]
+      - name: a copy directory that is the store directory is refused before anything stops
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3]
+        backup_path: store/
+        expect_message: is the store directory or one above it
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a copy directory above the store directory is refused before anything stops
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        store: [db.sqlite3]
+        backup_path: ""
+        expect_message: is the store directory or one above it
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
       - name: an old container that does not come back says it is not serving
         deployed: "{{ backup_old }}"
         pinned: "{{ backup_new }}"
@@ -289,9 +326,9 @@
       ansible.builtin.assert:
         that:
           - backup_results | length == backup_cases | length
-          - backup_results | length >= 11
-          - backup_results | selectattr('failed') | list | length >= 5
-          - backup_results | rejectattr('failed') | list | length >= 6
+          - backup_results | length >= 15
+          - backup_results | selectattr('failed') | list | length >= 8
+          - backup_results | rejectattr('failed') | list | length >= 7
         fail_msg: >-
           The pre-upgrade copy ran {{ backup_results | length }} of
           {{ backup_cases | length }} cases, failing

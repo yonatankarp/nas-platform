@@ -112,6 +112,7 @@
     backup_case_pinned: "{{ item.pinned }}"
     backup_case_manage: "{{ item.manage_ownership | default(false) }}"
     backup_case_check: "{{ item.check_mode | default(false) }}"
+    backup_case_path: "{{ backup_root ~ '/' ~ (item.backup_path if item.backup_path is defined else 'store/pre-upgrade-backup') }}"
 
 - name: Run the pre-upgrade copy against this case
   when: not backup_case_check | bool
@@ -127,7 +128,7 @@
         pre_upgrade_backup_store_dir: "{{ backup_root }}/store"
         pre_upgrade_backup_store_file: "{{ backup_store_file }}"
         pre_upgrade_backup_extra_patterns: [rsa_key*]
-        pre_upgrade_backup_path: "{{ backup_root }}/store/pre-upgrade-backup"
+        pre_upgrade_backup_path: "{{ backup_case_path }}"
         pre_upgrade_backup_manage_ownership: "{{ backup_case_manage }}"
         # An owner this account cannot hand a file to, so a copy that chowned
         # when it was told not to fails rather than passing unnoticed.
