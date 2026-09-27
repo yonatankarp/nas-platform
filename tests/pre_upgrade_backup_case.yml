@@ -10,7 +10,7 @@
   ansible.builtin.file:
     path: "{{ backup_root }}/{{ fixture_path }}"
     state: absent
-  loop: [store, daemon, postgres]
+  loop: [store, daemon, postgres, code]
   loop_control:
     loop_var: fixture_path
 
@@ -38,6 +38,32 @@
     content: "stale\n"
     mode: "0644"
   when: item.stale_dump | default(false)
+
+# Nextcloud's /var/www/html for the pg_dump entry's code archive (#884): the
+# code, version.php, config/ and custom_apps/ it must hold, and the two things
+# it must not -- the user's data/ and the entrypoint's lock. apps/x/data/y is a
+# directory named data below the top level, which only an anchored exclusion
+# keeps.
+- name: Create the code tree's directories
+  ansible.builtin.file:
+    path: "{{ backup_root }}/code/{{ code_dir }}"
+    state: directory
+    mode: "0755"
+  loop: [config, apps/x/data, custom_apps/a, data/u]
+  loop_control:
+    loop_var: code_dir
+  when: item.code | default(false)
+
+- name: Write the code tree this case holds
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/code/{{ code_file }}"
+    content: "{{ code_file }}\n"
+    mode: "0644"
+  loop: [version.php, config/config.php, apps/x/data/y, custom_apps/a/info.xml, data/u/f,
+         nextcloud-init-sync.lock]
+  loop_control:
+    loop_var: code_file
+  when: item.code | default(false)
 
 # Each store file holds its own name, so a copy can be traced to its source.
 - name: Write the store files this case holds
@@ -160,6 +186,10 @@
     backup_case_method: "{{ item.method | default('main') }}"
     backup_case_stop_services: "{{ item.stop_services | default(['fixture']) }}"
     backup_case_path: "{{ backup_root ~ '/' ~ (item.backup_path if item.backup_path is defined else 'store/pre-upgrade-backup') }}"
+    backup_case_code_root: "{{ (backup_root ~ '/code') if item.code | default(false) else '' }}"
+    backup_case_code_archive_dir: >-
+      {{ backup_root ~ '/' ~ (item.code_archive_dir if item.code_archive_dir is defined
+                              else 'postgres/pre-upgrade-backup') }}
 
 - name: Run the pre-upgrade copy against this case
   when: not backup_case_check | bool
@@ -181,6 +211,8 @@
         pre_upgrade_backup_extra_patterns: [rsa_key*]
         pre_upgrade_backup_path: "{{ backup_case_path }}"
         pre_upgrade_backup_manage_ownership: "{{ backup_case_manage }}"
+        pre_upgrade_backup_code_root: "{{ backup_case_code_root }}"
+        pre_upgrade_backup_code_archive_dir: "{{ backup_case_code_archive_dir }}"
         # An owner this account cannot hand a file to, so a copy that chowned
         # when it was told not to fails rather than passing unnoticed.
         nas_uid: "{{ backup_owner_uid if backup_case_manage | bool else 4242424 }}"
@@ -209,7 +241,8 @@
       - -e
       - "{{ {'backup_root': backup_root, 'backup_store_file': backup_store_file,
              'backup_expect_pending': backup_case_expect_pending | bool,
-             'backup_method': backup_case_method} | to_json }}"
+             'backup_method': backup_case_method,
+             'backup_code_root': backup_case_code_root} | to_json }}"
     chdir: "{{ playbook_dir }}/.."
   register: backup_case_review
   changed_when: false
@@ -267,6 +300,17 @@
   check_mode: false
   when: item.expect_dump | default(false)
 
+# GNU tar and bsdtar both list members as they were named, so the listing is
+# the archive's own record of what it holds.
+- name: List the code archive
+  ansible.builtin.command:
+    argv: [tar, -tzf, "{{ backup_root }}/postgres/pre-upgrade-backup/code.tar.gz"]
+  register: backup_case_code
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: item.expect_code | default(false)
+
 - name: Require this case to reach the outcome it declares
   ansible.builtin.assert:
     that:
@@ -311,10 +355,23 @@
       # fake pg_dump writes the state the application container was in.
       - not item.expect_dump | default(false) or (
           backup_case_dump_directory.stat.mode == '0700'
-          and backup_case_dumps.files | map(attribute='path') | map('basename') | list == ['database.sql.gz']
-          and backup_case_dumps.files | map(attribute='mode') | list == ['0600']
+          and backup_case_dumps.files | map(attribute='path') | map('basename') | sort
+              == (['code.tar.gz'] if item.expect_code | default(false) else []) + ['database.sql.gz']
+          and backup_case_dumps.files | map(attribute='mode') | unique | list == ['0600']
           and backup_case_dump.rc == 0
           and backup_case_dump.stdout == '-- dumped while the application was exited')
+      # The code archive holds what the older image needs to start again and
+      # nothing of the user's: data/ at the top only, and not the lock.
+      - not item.expect_code | default(false) or (
+          backup_case_code.rc == 0
+          and ['version.php', 'config/config.php', 'apps/x/data/y', 'custom_apps/a/info.xml']
+              | difference(backup_case_code.stdout_lines | map('regex_replace', '^\\./', '') | list) == []
+          and backup_case_code.stdout_lines | map('regex_replace', '^\\./', '')
+              | select('match', '^(data(/|$)|nextcloud-init-sync\\.lock$)') | list == [])
+      # A failed or skipped archive leaves nothing under the name a restore reads.
+      - item.expect_code | default(false)
+        or not (backup_case_dumps.files | default([]) | map(attribute='path') | map('basename')
+                | select('eq', 'code.tar.gz') | list)
     fail_msg: >-
       The case "{{ item.name }}" declares
       {{ ('a refusal matching ' ~ item.expect_message) if item.expect_message is defined else 'success' }},

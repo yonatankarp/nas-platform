@@ -152,14 +152,16 @@
 #
 # THE DUMP IS NOT A ROLLBACK ON ITS OWN. The entrypoint refuses to start when
 # the data root's version.php is newer than the image, and the upgrade rsyncs
-# the new code over /var/www/html and rewrites config.php's version. Going back
-# therefore takes this dump AND the data root's code, version.php and
-# config/config.php as they stood, which nothing here copies; a snapshot of
-# {{ nextcloud_data_host_path }} minus data/ is the other half.
+# the new code over /var/www/html and rewrites config.php's version. So the
+# same window also archives the data root minus data/ -- code, version.php,
+# config/, custom_apps/ -- as code.tar.gz beside the dump (#884).
+# docs/dossier-nextcloud.md carries the restore order.
 #
 # The dump holds every account's password hash and the application's secrets
-# tables, so it is secret-bearing; it is written 0600 in a 0700 directory, as
-# {{ nextcloud_postgres_host_path }}/pre-upgrade-backup on the host.
+# tables, and the archive holds config.php, so both are secret-bearing; they
+# are written 0600 in a 0700 directory, as
+# {{ nextcloud_postgres_host_path }}/pre-upgrade-backup on the host -- outside
+# the data root, which the next upgrade's rsync --delete would empty of them.
 - name: Dump the Nextcloud database before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -170,6 +172,8 @@
     pre_upgrade_backup_stop_services: [nextcloud, cron]
     pre_upgrade_backup_database_service: db
     pre_upgrade_backup_project_name: "{{ nextcloud_compose_project_name }}"
+    pre_upgrade_backup_code_root: "{{ nextcloud_data_host_path }}"
+    pre_upgrade_backup_code_archive_dir: "{{ nextcloud_postgres_host_path }}/pre-upgrade-backup"
   when: nextcloud_deployment_enabled | bool
 
 # The application and its cron sidecar. No rescue here, and that is a deliberate

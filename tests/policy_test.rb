@@ -2343,6 +2343,17 @@ pre_upgrade_paths.each do |path|
                    stop.dig("community.docker.docker_compose_v2", "services"),
         "role #{name}: tasks/pg_dump.yml must dump the database after stopping the application, fail on " \
         "any exit code, and start again every service it stopped when the dump fails")
+  # The code archive (#884) is the other half of Nextcloud's rollback, so it is
+  # held to the dump's terms: inside the block the rescue covers, after the dump
+  # -- in the same stopped window -- and run from the image the application ran,
+  # never the pin.
+  archive = block_tasks.find { |task| Array(task.dig("ansible.builtin.command", "argv"))[0, 2] == %w[docker run] }
+  check(failures,
+        archive && dump && block_tasks.index(dump) < block_tasks.index(archive) &&
+          Array(archive.dig("ansible.builtin.command", "argv")).include?("{{ pre_upgrade_backup_deployed_image_id }}") &&
+          !archive.key?("ignore_errors") && !archive.key?("failed_when"),
+        "role #{name}: tasks/pg_dump.yml must archive the code tree after the dump, inside the block its " \
+        "rescue covers, from the image the application ran, and fail when the archive does")
 end
 # Two since #826: the shared role's copy and its dump. The callers that reach it
 # are floored at five by the deployment-report clause above.
@@ -2464,7 +2475,11 @@ check_floor(failures, pre_upgrade_includes.length, 5, "includes of roles/pre_upg
 POSTGRES_PRE_UPGRADE_CALLERS = {
   "nextcloud" => {
     "service" => "nextcloud", "stop" => %w[nextcloud cron], "project" => "{{ nextcloud_compose_project_name }}",
-    "data_deploy" => "nextcloud_data_deploy", "deploy" => "nextcloud_deploy"
+    "data_deploy" => "nextcloud_data_deploy", "deploy" => "nextcloud_deploy",
+    # #884: the data root is also the code, so it is archived beside the dump,
+    # and outside that root, which the next upgrade's rsync --delete empties.
+    "code_root" => "{{ nextcloud_data_host_path }}",
+    "code_archive_dir" => "{{ nextcloud_postgres_host_path }}/pre-upgrade-backup"
   },
   "paperless_ngx" => {
     "service" => "webserver", "stop" => %w[webserver], "project" => "{{ paperless_compose_project_name }}",
@@ -2491,7 +2506,10 @@ POSTGRES_PRE_UPGRADE_CALLERS.each do |role, expected|
     "pre_upgrade_backup_compose_service" => [expected["service"], dump_vars["pre_upgrade_backup_compose_service"]],
     "pre_upgrade_backup_stop_services" => [expected["stop"], dump_vars["pre_upgrade_backup_stop_services"]],
     "pre_upgrade_backup_database_service" => ["db", dump_vars["pre_upgrade_backup_database_service"]],
-    "pre_upgrade_backup_project_name" => [expected["project"], dump_vars["pre_upgrade_backup_project_name"]]
+    "pre_upgrade_backup_project_name" => [expected["project"], dump_vars["pre_upgrade_backup_project_name"]],
+    "pre_upgrade_backup_code_root" => [expected["code_root"], dump_vars["pre_upgrade_backup_code_root"]],
+    "pre_upgrade_backup_code_archive_dir" => [expected["code_archive_dir"],
+                                              dump_vars["pre_upgrade_backup_code_archive_dir"]]
   }.each do |argument, (want, got)|
     check(failures, want == got,
           "role #{role}: the pre-upgrade dump must be given #{argument}: #{want.inspect}, not #{got.inspect}")
