@@ -126,11 +126,9 @@
 # them too. v1.3.2's own dated backups beside the store
 # (Kapowarr_YYYY_MM_DD_HH_MM.db) are not the store and are not copied.
 #
-# The pin is read from the parse roles/image_downgrade_guard made moments ago
-# rather than from the release again, so this adds no second reader of
-# platform_current_dir for tests/release_path_read_test.rb to guard and cannot
-# disagree with the document the guard judged. Ownership follows the host_prep
-# and roles/dozzle form: set on the NAS or where Linux ownership is managed.
+# The role reads Kapowarr's pin from Kapowarr's own compose.yml itself (#858).
+# Ownership follows the host_prep and roles/dozzle form: set on the NAS or where
+# Linux ownership is managed.
 - name: Guard the Kapowarr store before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -138,7 +136,6 @@
     pre_upgrade_backup_service_name: kapowarr
     pre_upgrade_backup_compose_service: kapowarr
     pre_upgrade_backup_project_name: "{{ kapowarr_compose_project_name }}"
-    pre_upgrade_backup_pinned_image: "{{ image_downgrade_guard_pinned_image | default('', true) }}"
     pre_upgrade_backup_store_dir: "{{ kapowarr_config_host_path }}"
     pre_upgrade_backup_store_file: Kapowarr.db
     pre_upgrade_backup_path: "{{ kapowarr_pre_upgrade_backup_path }}"

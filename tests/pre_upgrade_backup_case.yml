@@ -1,7 +1,7 @@
 ---
 # One case of tests/pre_upgrade_backup_test.yml. Separate because a block
 # cannot be looped and a refusal has to be caught: the case runs the shipped
-# role through include_role, as roles/kapowarr and roles/vaultwarden do, and
+# role through include_role, as its callers do, and
 # records whether it failed and with what.
 #
 # Every fixture file is rewritten first, so no case is judged on what the
@@ -69,6 +69,23 @@
     mode: "0700"
   when: item.block_copy_of is defined
 
+# `current` pins `pinned`, which a live run reads; the candidate pins
+# `candidate`, which a review reads. The stack's other service comes first.
+- name: Write the release and candidate Compose files this case pins
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/{{ release }}/services/fixture/compose.yml"
+    content: |
+      ---
+      services:
+        other:
+          image: {{ backup_other }}
+        fixture:
+          image: {{ item.pinned if release == 'current' else item.candidate | default(backup_decoy) }}
+    mode: "0600"
+  loop: [current, candidate]
+  loop_control:
+    loop_var: release
+
 - name: Write the daemon this case's container lives in
   ansible.builtin.copy:
     dest: "{{ backup_root }}/daemon/{{ daemon_file.name }}"
@@ -109,7 +126,9 @@
   ansible.builtin.set_fact:
     backup_case_failed: false
     backup_case_message: ""
-    backup_case_pinned: "{{ item.pinned }}"
+    backup_case_expect_pending: "{{ item.expect_review_pending | default(false) }}"
+    # What a caller's guard left behind, which the role must not read.
+    image_downgrade_guard_pinned_image: "{{ item.guard_pin | default('') }}"
     backup_case_manage: "{{ item.manage_ownership | default(false) }}"
     backup_case_check: "{{ item.check_mode | default(false) }}"
     backup_case_path: "{{ backup_root ~ '/' ~ (item.backup_path if item.backup_path is defined else 'store/pre-upgrade-backup') }}"
@@ -124,7 +143,7 @@
         pre_upgrade_backup_service_name: fixture
         pre_upgrade_backup_compose_service: fixture
         pre_upgrade_backup_project_name: backup-test
-        pre_upgrade_backup_pinned_image: "{{ backup_case_pinned }}"
+        pre_upgrade_backup_candidate_root: "{{ backup_root }}/candidate"
         pre_upgrade_backup_store_dir: "{{ backup_root }}/store"
         pre_upgrade_backup_store_file: "{{ backup_store_file }}"
         pre_upgrade_backup_extra_patterns: [rsa_key*]
@@ -157,7 +176,7 @@
       - tests/pre_upgrade_backup_review.yml
       - -e
       - "{{ {'backup_root': backup_root, 'backup_store_file': backup_store_file,
-             'backup_pinned': backup_case_pinned} | to_json }}"
+             'backup_expect_pending': backup_case_expect_pending | bool} | to_json }}"
     chdir: "{{ playbook_dir }}/.."
   register: backup_case_review
   changed_when: false

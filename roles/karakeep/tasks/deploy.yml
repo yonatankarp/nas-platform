@@ -117,13 +117,12 @@
 # carries the argument for the stop, the copy and the rescue, and
 # roles/vaultwarden/tasks/deploy.yml says why it is included rather than imported.
 #
-# THE MEILISEARCH GUARD RUNS FIRST, AND THAT ORDER IS LOAD-BEARING. The pin is
-# read from image_downgrade_guard_pinned_image, the host-scoped fact the guard
-# just set, which adds no second reader of platform_current_dir; a guard for
-# another Compose service run in between rebinds it, and this would compare the
-# application container with Meilisearch's pin, find an upgrade on every converge
-# and stop Karakeep every five minutes. It also means both refusals land before
-# anything is stopped. tests/policy_test.rb holds the order.
+# BOTH GUARDS RUN FIRST, under the same conditions and tags as this copy, so a
+# downgrade is refused before anything is stopped: a copy ahead of the
+# application's guard would stop Karakeep for a pin the guard then refuses, and
+# leave it stopped. tests/policy_test.rb holds the order. The role reads the
+# karakeep service's pin from this stack's compose.yml itself (#858), so
+# Meilisearch's pin beside it is never compared with the application container.
 #
 # WHAT IS COPIED. db.db, which the application opens in rollback-journal mode:
 # upstream's DB_WAL_MODE defaults to false at this pin and this stack does not set
@@ -153,7 +152,6 @@
     pre_upgrade_backup_service_name: karakeep
     pre_upgrade_backup_compose_service: karakeep
     pre_upgrade_backup_project_name: "{{ karakeep_compose_project_name }}"
-    pre_upgrade_backup_pinned_image: "{{ image_downgrade_guard_pinned_image | default('', true) }}"
     pre_upgrade_backup_store_dir: "{{ karakeep_data_host_path }}"
     pre_upgrade_backup_store_file: db.db
     pre_upgrade_backup_extra_patterns: [queue.db]

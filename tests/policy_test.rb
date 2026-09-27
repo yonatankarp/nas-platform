@@ -2272,16 +2272,14 @@ end
 # Karakeep's call site, the same way (#826). db.db holds every account's bcrypt
 # hash, so the copy is secret-bearing like Vaultwarden's. Two things are its own.
 # queue.db migrates on start too (liteque), so a rollback needs it beside db.db.
-# And the pin is read off roles/image_downgrade_guard's host-scoped fact, which
-# the Meilisearch guard rebinds: the copy must follow the application's guard
-# with no other guard between, or it compares the application container with
-# Meilisearch's pin, finds an upgrade on every converge and stops Karakeep every
-# five minutes.
+# And the application's guard must come first, under the same when and tags: a
+# copy that ran without it, or ahead of it, would stop Karakeep for a downgraded
+# pin the guard then refuses, and leave it stopped. Since #858 the copy reads its
+# own pin, so which guard ran last no longer matters to it.
 KARAKEEP_PRE_UPGRADE_ARGUMENTS = {
   "pre_upgrade_backup_service_name" => "karakeep",
   "pre_upgrade_backup_compose_service" => "karakeep",
   "pre_upgrade_backup_project_name" => "{{ karakeep_compose_project_name }}",
-  "pre_upgrade_backup_pinned_image" => "{{ image_downgrade_guard_pinned_image | default('', true) }}",
   "pre_upgrade_backup_store_dir" => "{{ karakeep_data_host_path }}",
   "pre_upgrade_backup_store_file" => "db.db",
   "pre_upgrade_backup_extra_patterns" => ["queue.db"],
@@ -2305,18 +2303,38 @@ if File.file?(karakeep_deploy_path)
           "role karakeep: the pre-upgrade copy must be given #{argument}: #{expected.inspect}, " \
           "not #{copy_vars[argument].inspect}")
   end
-  guards_before = includes_of.call("image_downgrade_guard").select { |i| karakeep_copies.first && i < karakeep_copies.first }
-  app_guard = guards_before.last && karakeep_tasks[guards_before.last]
-  check(failures, app_guard&.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" &&
+  app_guard = includes_of.call("image_downgrade_guard")
+                         .select { |i| karakeep_copies.first && i < karakeep_copies.first }
+                         .map { |i| karakeep_tasks[i] }
+                         .find { |task| task.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" }
+  check(failures, app_guard &&
                   Array(app_guard["when"]) == Array(copy_task&.fetch("when", nil)) &&
                   Array(app_guard["tags"]) == Array(copy_task&.fetch("tags", nil)),
-        "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard with no " \
-        "other guard between, under the same when and tags, because it reads that guard's pinned image")
+        "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard, under " \
+        "the same when and tags, so a downgraded pin is refused before the copy stops anything")
   karakeep_deploy_index = karakeep_tasks.index { |task| task["register"] == "karakeep_deploy" }
   check(failures, karakeep_copies.first && karakeep_deploy_index && karakeep_copies.first < karakeep_deploy_index,
         "role karakeep: the pre-upgrade copy must run before the Compose deployment that registers " \
         "karakeep_deploy, or the migration it exists to undo has already run")
 end
+
+# No caller hands roles/pre_upgrade_backup a pin (#858). The role reads its
+# Compose service's own image from the release, and an include parameter
+# outranks the fact it sets, so a pin passed in would silently take over again --
+# which is how callers used to hand it roles/image_downgrade_guard's host-scoped
+# fact, the pin of whichever guard ran last. Floored at the three callers, so a
+# sweep that stopped finding the includes cannot pass by finding none.
+pre_upgrade_includes = Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.flat_map do |path|
+  flatten_tasks(YAML.safe_load_file(path, aliases: true)).select do |task|
+    task.is_a?(Hash) && task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup"
+  end.map { |task| [path.delete_prefix("#{ROOT}/"), task] }
+end
+pre_upgrade_includes.each do |relative, task|
+  check(failures, !(task["vars"] || {}).key?("pre_upgrade_backup_pinned_image"),
+        "#{relative}: \"#{task['name']}\" hands roles/pre_upgrade_backup a pre_upgrade_backup_pinned_image, " \
+        "which outranks the pin the role reads from the service's own Compose file")
+end
+check_floor(failures, pre_upgrade_includes.length, 3, "includes of roles/pre_upgrade_backup")
 
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it

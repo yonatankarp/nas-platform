@@ -21,15 +21,15 @@
 # THE WINDOW IS NARROW AND REAL. It opens when a new service's release is merged
 # and closes at that release's first live converge -- once per service, on the
 # one review an operator is told to run before applying anything. That is also
-# why the four readers in UNGUARDED_RELEASE_READS below have never triggered it:
-# every release currently on the NAS already carries arr, bindery and the two
+# why the five readers in UNGUARDED_RELEASE_READS below have never triggered it:
+# every release currently on the NAS already carries arr, bindery and the three
 # shared roles' subjects, so their reads always find something.
 #
-# WHY A LEDGER RATHER THAN A RULE. Requiring every one of those four to be
-# guarded would fail the gate on four roles this change does not touch, for a
+# WHY A LEDGER RATHER THAN A RULE. Requiring every one of those five to be
+# guarded would fail the gate on five roles this change does not touch, for a
 # latent defect none of them has yet hit. A check that cries wolf gets deleted,
 # which is worse than no check. So the unguarded set is pinned exactly, in both
-# directions: a fifth appearing fails, and one of these being fixed without
+# directions: a sixth appearing fails, and one of these being fixed without
 # updating the list fails too. It is a ledger of known latent readers rather
 # than a clean bill of health, and it is what a future change that decides to
 # fix them will edit.
@@ -66,7 +66,10 @@ UNGUARDED_RELEASE_READS = [
   "roles/arr/tasks/configarr.yml",
   "roles/bindery/tasks/pre_upgrade_backup.yml",
   "roles/container_cpu/tasks/inspect.yml",
-  "roles/image_downgrade_guard/tasks/main.yml"
+  "roles/image_downgrade_guard/tasks/main.yml",
+  # Live-only since it was added (#858): under --check it reads the candidate
+  # through a lookup, the way the guard above does since #851.
+  "roles/pre_upgrade_backup/tasks/main.yml"
 ].freeze
 
 # The reads that must STAY guarded. Stated rather than derived, because "no

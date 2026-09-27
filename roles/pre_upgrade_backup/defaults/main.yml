@@ -1,3 +1,7 @@
 ---
 # Nothing beyond the store and its write-ahead log unless the caller names it.
 pre_upgrade_backup_extra_patterns: []
+
+# The controller checkout deployment_bundle copies the release from, read only
+# under --check, when `current` still names the release this run replaces.
+pre_upgrade_backup_candidate_root: "{{ playbook_dir }}"
