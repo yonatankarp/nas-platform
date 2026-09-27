@@ -443,7 +443,8 @@ refuse("classifier can bypass effective roots") if classifier_argv.include?("--m
 # main.yml said neither, and was satisfied by a comment.
 SANITIZED_REFUSALS = %w[
   unsafe-storage unsafe-originals missing-safe-backup ambiguous-newest-backup
-  unsafe-newest-backup incompatible-newest-backup previous-failed-restore
+  unsafe-newest-backup incompatible-newest-backup postgres-major-mismatch
+  unreadable-postgres-version previous-failed-restore
 ].freeze
 sanitized_status = task(main_tasks, "Resolve sanitized Immich storage classification status")
                    &.dig("ansible.builtin.set_fact", "immich_restore_classification_status")
@@ -625,6 +626,13 @@ argv = restore&.dig("community.docker.docker_compose_v2_exec", "argv")
 refuse("restore must use a redacted argv execution") unless argv.is_a?(Array) && restore["no_log"] == true
 shell_source = argv.find { |value| value.to_s.include?("gzip -dc") }.to_s
 refuse("restore does not enable pipeline failure detection") unless argv.include?("pipefail")
+# Immich's documented restore rewrites the dump's empty search_path before psql
+# sees it; the stage has to sit between the decompression and the load.
+SEARCH_PATH_REWRITE =
+  %q{gzip -dc -- "$2/$1" | sed "s/SELECT pg_catalog.set_config('search_path', '', false);/} +
+  %q{SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g" | env PGPASSWORD=}
+refuse("restore does not apply Immich's search_path rewrite before psql") unless
+  shell_source.include?(SEARCH_PATH_REWRITE)
 refuse("restore is not transactional and fail-fast") unless
   shell_source.include?("--single-transaction") && shell_source.include?("ON_ERROR_STOP=on")
 refuse("restore filename is interpolated into shell source") unless

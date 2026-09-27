@@ -44,7 +44,8 @@
 # crash-loop inside the container rather than fail in a play (#511, #826).
 # immich-server and not the database: the PostgreSQL major is capped by its own
 # Renovate ceiling and a major change there is a restore, not a migration this
-# guard could judge; machine-learning holds no store. The five paths this reads
+# guard could judge -- classify_restore.py refuses a data directory of another
+# major instead; machine-learning holds no store. The five paths this reads
 # are the ones the containment re-include at the top of this file already
 # declared through deployment_target_service, so it needs no extra_paths.
 - name: Refuse an Immich image older than the database this host has migrated
@@ -151,6 +152,7 @@
              ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',
              'ambiguous-newest-backup', 'unsafe-newest-backup',
              'incompatible-newest-backup',
+             'postgres-major-mismatch', 'unreadable-postgres-version',
              'previous-failed-restore']
          else 'classification-failed'
          if immich_restore_classification_command.rc | default(1) | int != 0
@@ -160,10 +162,23 @@
   ansible.builtin.assert:
     that:
       - immich_restore_classification_command.rc | default(1) | int == 0
+    # A major mismatch is the one refusal an operator causes on purpose, by
+    # repinning the database image, so it is the one that says what to do. It
+    # names no path: the negative restore matrix refuses output carrying one.
     fail_msg: >-
       Immich restore preflight refused deployment
       ({{ immich_restore_classification_status }}). The application server was
-      not started; repair the protected storage or backup condition and rerun.
+      not started; {{
+      'the Immich PostgreSQL data directory was initialized by a different
+      major than the pinned image (' ~ immich_restore_expected_postgres_major ~
+      '), and no container was touched. A pin ahead of the data: take a fresh
+      Immich database backup, stop the Immich stack, move the postgres data
+      directory aside (keep it: it is the rollback), create it again
+      empty at mode 0700 and rerun, which restores that backup into the pinned
+      major. A reverted pin: stop the stack and move the data directory that
+      major wrote back into place, then rerun.'
+      if immich_restore_classification_status == 'postgres-major-mismatch'
+      else 'repair the protected storage or backup condition and rerun.' }}
 
 - name: Parse the Immich storage classification
   ansible.builtin.set_fact:

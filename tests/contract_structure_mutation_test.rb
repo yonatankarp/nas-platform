@@ -953,6 +953,34 @@ check_rejected(
 )
 
 check_rejected(
+  :immich_restore, "the PostgreSQL major refusals dropped from the sanitized list",
+  [[IMMICH_ROLE,
+    "             'postgres-major-mismatch', 'unreadable-postgres-version',\n",
+    ""]],
+  "incompatible newest backup diagnostic is not sanitized"
+)
+
+# Immich's documented restore rewrites the dump's empty search_path; a pipe that
+# goes straight from gzip to psql loads a dump the upstream recipe would not.
+check_rejected(
+  :immich_restore, "the search_path rewrite dropped from the restore pipe",
+  [[IMMICH_RESTORE,
+    "            sed \"s/SELECT pg_catalog.set_config('search_path', '', false);/" \
+    "SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g\" |\n",
+    ""]],
+  "restore does not apply Immich's search_path rewrite before psql"
+)
+
+check_rejected(
+  :immich_restore, "the search_path rewrite kept only in a comment",
+  [[IMMICH_RESTORE,
+    "            sed \"s/SELECT pg_catalog.set_config('search_path', '', false);/" \
+    "SELECT pg_catalog.set_config('search_path', 'public, pg_catalog', true);/g\" |\n",
+    "            # sed search_path rewrite\n"]],
+  "restore does not apply Immich's search_path rewrite before psql"
+)
+
+check_rejected(
   :immich_restore, "a real DELETE folded across two lines",
   [[IMMICH_RESTORE,
     "            SELECT json_build_object(\n",
