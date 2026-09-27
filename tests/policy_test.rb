@@ -2308,9 +2308,10 @@ if File.file?(karakeep_deploy_path)
   guards_before = includes_of.call("image_downgrade_guard").select { |i| karakeep_copies.first && i < karakeep_copies.first }
   app_guard = guards_before.last && karakeep_tasks[guards_before.last]
   check(failures, app_guard&.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" &&
-                  Array(app_guard["when"]) == Array(copy_task&.fetch("when", nil)),
+                  Array(app_guard["when"]) == Array(copy_task&.fetch("when", nil)) &&
+                  Array(app_guard["tags"]) == Array(copy_task&.fetch("tags", nil)),
         "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard with no " \
-        "other guard between, under the same when, because it reads that guard's pinned image")
+        "other guard between, under the same when and tags, because it reads that guard's pinned image")
   karakeep_deploy_index = karakeep_tasks.index { |task| task["register"] == "karakeep_deploy" }
   check(failures, karakeep_copies.first && karakeep_deploy_index && karakeep_copies.first < karakeep_deploy_index,
         "role karakeep: the pre-upgrade copy must run before the Compose deployment that registers " \
