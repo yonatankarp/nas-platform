@@ -115,8 +115,10 @@ idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
 `tests/integration.sh --list-suites` prints. `smoke` and `full` are local suites
-CI never dispatches: smoke is a strict prefix of `idempotence-check`, which
-every selection that carried it also ran (#832). Every service and acquisition lane
+CI never dispatches: smoke is a strict prefix of `idempotence-check`. Every
+selection that carried smoke also ran that lane or, on a fall-open, the
+`idempotence-<n>` shards; a single-play whole-site converge now runs only in
+the nightly `--full` (#832). Every service and acquisition lane
 converges `host_prep` and `deployment_bundle` as well; neither is a lane of its
 own. The deployment report every service role sends lives in
 `roles/deployment_bundle`, whose changes fall open to every lane. The harness runs Ansible
