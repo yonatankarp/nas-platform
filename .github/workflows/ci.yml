@@ -873,8 +873,8 @@ jobs:
     timeout-minutes: 20
     # No `needs`, so this starts with `changes` rather than behind it -- every
     # lane's start is this job's finish, and it was ordering a registry probe
-    # behind a classification it barely reads. CLAUDE.md's "`toolchain` no longer
-    # waits for `changes`" carries the measurement and what dropping the
+    # behind a classification it barely reads. docs/ci-performance-history.md's
+    # "`toolchain` no longer waits for `changes`" carries the measurement and what dropping the
     # `suites != '[]'` term costs.
     #
     # A fork's GITHUB_TOKEN is read-only, so no packages: write scope exists for it
