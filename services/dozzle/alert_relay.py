@@ -334,6 +334,40 @@ class Config:
 
     @classmethod
     def from_mapping(cls, values):
+        # The order is the order a misconfiguration is reported in: the first
+        # refusal wins, so reordering these calls changes what start-up says.
+        resolved = cls._required_settings(values)
+        relay_port = cls._relay_port(resolved["ALERT_RELAY_PORT"])
+        api_url = cls._pushover_api_url(resolved["PUSHOVER_API_URL"])
+        link_base, link_problem = cls._dozzle_link(values)
+        alerts_token, beszel_link_base, beszel_link_problem = cls._beszel_settings(values)
+        container_ceiling, oom_container_ceiling, global_ceiling = cls._daily_ceilings(resolved)
+        state_path = cls._validated_state_path(resolved["ALERT_STATE_PATH"])
+
+        return cls(
+            resolved["ALERT_RELAY_TOKEN"],
+            relay_port,
+            api_url,
+            resolved["PUSHOVER_TOKEN"],
+            resolved["PUSHOVER_USER_KEY"],
+            state_path,
+            container_ceiling,
+            oom_container_ceiling,
+            global_ceiling,
+            link_base,
+            link_problem,
+            alerts_token,
+            beszel_link_base,
+            beszel_link_problem,
+        )
+
+    @staticmethod
+    def _required_settings(values):
+        # Deliberately no shape rule on either Pushover credential. Both are
+        # issued by pushover.net and this platform cannot vouch for their form;
+        # the same argument filter_plugins/vault_credential_schema.py records for
+        # the vault rules applies here, and a guessed pattern would refuse a real
+        # credential with the fix locked inside an encrypted file.
         names = (
             "ALERT_RELAY_TOKEN",
             "ALERT_RELAY_PORT",
@@ -351,24 +385,28 @@ class Config:
             if not isinstance(value, str) or not value or contains_control(value):
                 raise ConfigurationError(f"{name} is required")
             resolved[name] = value
+        return resolved
 
+    @staticmethod
+    def _relay_port(port):
         # Deliberately without a fallback: the listener port has exactly one home,
         # dozzle_alert_relay_port in inventory/group_vars/all/service_dozzle.yml, and it reaches
         # this process through ALERT_RELAY_PORT in the rendered environment file.
         # A default here would be a second copy that could silently disagree with
         # the Compose healthcheck and the dispatcher URL built from the same home.
-        port = resolved["ALERT_RELAY_PORT"]
         if not PORT_PATTERN.fullmatch(port) or int(port) > 65535:
             raise ConfigurationError("ALERT_RELAY_PORT must be a TCP port number")
-        relay_port = int(port)
+        return int(port)
 
+    @staticmethod
+    def _pushover_api_url(value):
         # Unlike the publisher this replaced, the endpoint carries a path:
         # Pushover's message API is /1/messages.json, and the whole URL is a
         # variable rather than a host so a lane can redirect it at a recorder
         # without reaching the household's real devices. A query or a fragment
         # is refused because the credentials travel in the form body and a URL
         # carrying its own parameters is a sign of a hand-edited endpoint.
-        parsed = urllib.parse.urlsplit(resolved["PUSHOVER_API_URL"])
+        parsed = urllib.parse.urlsplit(value)
         if (
             parsed.scheme not in {"http", "https"}
             or not parsed.hostname
@@ -380,10 +418,13 @@ class Config:
             or parsed.fragment
         ):
             raise ConfigurationError("PUSHOVER_API_URL must be an HTTP(S) endpoint URL")
-        api_url = urllib.parse.urlunsplit(
+        return urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, parsed.path, "", "")
         )
 
+    @staticmethod
+    def _dozzle_link(values):
+        """(link_base, link_problem): exactly one of the two is None."""
         # The tap-through link is the one setting here the relay does WITHOUT
         # rather than refusing to start over. The relay script reaches the
         # container through the `current` release symlink, which
@@ -398,19 +439,17 @@ class Config:
         # alerts imperfectly. So an absent or invalid base costs the link only,
         # said once on stderr at start-up; the gate still refuses a role default
         # the validator would not accept (tests/dozzle_alert_relay_test.py).
-        link_base = None
-        link_problem = None
         raw_link_base = values.get("ALERT_RELAY_LINK_BASE")
         if not isinstance(raw_link_base, str) or not raw_link_base:
-            link_problem = (
-                "ALERT_RELAY_LINK_BASE is not set; alerts will carry no Dozzle link"
-            )
-        else:
-            try:
-                link_base = validated_link_base(raw_link_base)
-            except ConfigurationError as error:
-                link_problem = f"{error}; alerts will carry no Dozzle link"
+            return None, "ALERT_RELAY_LINK_BASE is not set; alerts will carry no Dozzle link"
+        try:
+            return validated_link_base(raw_link_base), None
+        except ConfigurationError as error:
+            return None, f"{error}; alerts will carry no Dozzle link"
 
+    @staticmethod
+    def _beszel_settings(values):
+        """(alerts_token, beszel_link_base, beszel_link_problem), never refused."""
         # Beszel's two settings are optional for the same reason, and for one
         # more: until a converge reaches roles/dozzle the running environment is
         # the one rendered before they existed. Without the Alerts token /beszel
@@ -420,27 +459,22 @@ class Config:
         alerts_token = values.get("PUSHOVER_ALERTS_TOKEN")
         if not isinstance(alerts_token, str) or not alerts_token or contains_control(alerts_token):
             alerts_token = None
-        beszel_link_base = None
-        beszel_link_problem = None
         raw_beszel_link_base = values.get("BESZEL_LINK_BASE")
         if not isinstance(raw_beszel_link_base, str) or not raw_beszel_link_base:
-            beszel_link_problem = (
+            return alerts_token, None, (
                 "BESZEL_LINK_BASE is not set; Beszel alerts will carry no link"
             )
-        else:
-            try:
-                beszel_link_base = validated_link_base(raw_beszel_link_base)
-            except ConfigurationError:
-                beszel_link_problem = (
-                    "BESZEL_LINK_BASE must be an HTTP(S) origin; "
-                    "Beszel alerts will carry no link"
-                )
+        try:
+            return alerts_token, validated_link_base(raw_beszel_link_base), None
+        except ConfigurationError:
+            return alerts_token, None, (
+                "BESZEL_LINK_BASE must be an HTTP(S) origin; "
+                "Beszel alerts will carry no link"
+            )
 
-        # Deliberately no shape rule on either credential. Both are issued by
-        # pushover.net and this platform cannot vouch for their form; the same
-        # argument filter_plugins/vault_credential_schema.py records for the
-        # vault rules applies here, and a guessed pattern would refuse a real
-        # credential with the fix locked inside an encrypted file.
+    @staticmethod
+    def _daily_ceilings(resolved):
+        """(container, oom_container, global) daily alert ceilings, in that order."""
         ceilings = []
         for name in (
             "ALERT_DAILY_CONTAINER_CEILING",
@@ -465,28 +499,14 @@ class Config:
                 "ALERT_DAILY_GLOBAL_CEILING must not be below "
                 "ALERT_DAILY_OOM_CONTAINER_CEILING"
             )
+        return container_ceiling, oom_container_ceiling, global_ceiling
 
-        state_path = Path(resolved["ALERT_STATE_PATH"])
+    @staticmethod
+    def _validated_state_path(value):
+        state_path = Path(value)
         if not state_path.is_absolute() or state_path.name in {"", ".", ".."}:
             raise ConfigurationError("ALERT_STATE_PATH must be an absolute file path")
-
-        return cls(
-            resolved["ALERT_RELAY_TOKEN"],
-            relay_port,
-            api_url,
-            resolved["PUSHOVER_TOKEN"],
-            resolved["PUSHOVER_USER_KEY"],
-            state_path,
-            container_ceiling,
-            oom_container_ceiling,
-            global_ceiling,
-            link_base,
-            link_problem,
-            alerts_token,
-            beszel_link_base,
-            beszel_link_problem,
-        )
-
+        return state_path
 
 def validated_link_base(value):
     """Dozzle's origin as the link base, or ConfigurationError saying why not.
@@ -777,17 +797,52 @@ def render_notification(event, link_base):
     refuse.
     """
     rule = event["rule"]
-    host = html_escape(event["host"])
     container = html_escape(event["container"])
-    name = event["container"][:MAX_TITLE_CONTAINER_CHARACTERS]
-    exit_code = event["exitCode"]
-    # The title carries the whole meaning, because a lock screen shows the title
-    # and no HTML; the lead line says it again with the state coloured. No OOM
-    # line names an exit code: the envelope pins exitCode to "" for that rule
-    # (RELATIONSHIPS), so there is none to show. The OOM closing is what
-    # emergency_fields sends, and no rule claims a restart: that is each
-    # container's own Compose policy, which this relay never sees.
-    title, state, closing = {
+    title, state, closing = notification_wording(
+        rule, event["container"][:MAX_TITLE_CONTAINER_CHARACTERS], event["exitCode"]
+    )
+    # No closing promises a recovery: state is keyed on host and container id,
+    # so a container recreated under the same name -- every image bump -- never
+    # closes the entry its predecessor opened, and neither does one the ceiling
+    # suppressed or the store evicted. Pointing at Dozzle is true only with a link.
+    if link_base is None and rule == "Unhealthy":
+        closing = ""
+    priority = {
+        "OOM": EMERGENCY_PRIORITY,
+        "Unexpected exit": 1,
+        "Unhealthy": 1,
+        "Recovery": -1,
+    }[rule]
+    fields = {
+        "title": title,
+        "message": compose_message(
+            f"<b>{container}</b> {state}",
+            notification_details(event, container, link_base),
+            closing,
+        ),
+        "html": "1",
+        "priority": priority,
+    }
+    if link_base is not None:
+        fields["url"] = f"{link_base}{CONTAINER_ROUTE}{event['containerId']}"
+        fields["url_title"] = URL_TITLE
+    unix_seconds = parse_timestamp(event["timestamp"]) // 1_000_000_000 - UNIX_EPOCH_SECONDS
+    if unix_seconds >= 0:
+        fields["timestamp"] = unix_seconds
+    return emergency_fields(fields)
+
+
+def notification_wording(rule, name, exit_code):
+    """(title, state, closing) for one rule; `name` is the raw, title-bounded name.
+
+    The title carries the whole meaning, because a lock screen shows the title
+    and no HTML; the lead line says it again with the state coloured. No OOM
+    line names an exit code: the envelope pins exitCode to "" for that rule
+    (RELATIONSHIPS), so there is none to show. The OOM closing is what
+    emergency_fields sends, and no rule claims a restart: that is each
+    container's own Compose policy, which this relay never sees.
+    """
+    return {
         "OOM": (
             f"\U0001f4a5 Out of memory · {name}",
             f'was <font color="{COLOR_RED}">killed</font> by the kernel for running out of memory',
@@ -810,12 +865,10 @@ def render_notification(event, link_base):
             "",
         ),
     }[rule]
-    # No closing promises a recovery: state is keyed on host and container id,
-    # so a container recreated under the same name -- every image bump -- never
-    # closes the entry its predecessor opened, and neither does one the ceiling
-    # suppressed or the store evicted. Pointing at Dozzle is true only with a link.
-    if link_base is None and rule == "Unhealthy":
-        closing = ""
+
+
+def notification_details(event, container, link_base):
+    """The detail lines of a container alert; `container` is already escaped."""
     shown = container
     if link_base is not None:
         # Validated in Config and hex after it, so escaping changes nothing
@@ -826,32 +879,16 @@ def render_notification(event, link_base):
             6 * MAX_URL_CHARACTERS,
         )
         shown = f'<a href="{href}">{container}</a>'
-    details = [f"\U0001f5a5️ <b>Host</b> {host}", f"\U0001f4e6 <b>Container</b> {shown}"]
-    if rule == "Unexpected exit":
+    details = [
+        f"\U0001f5a5️ <b>Host</b> {html_escape(event['host'])}",
+        f"\U0001f4e6 <b>Container</b> {shown}",
+    ]
+    if event["rule"] == "Unexpected exit":
         details.append(
-            f'\U0001f522 <b>Exit code</b> <font color="{COLOR_RED}">{html_escape(exit_code)}</font>'
+            f'\U0001f522 <b>Exit code</b> <font color="{COLOR_RED}">{html_escape(event["exitCode"])}</font>'
         )
     details.append(f"\U0001f552 <b>When</b> {human_time(parse_timestamp(event['timestamp']))}")
-    priority = {
-        "OOM": EMERGENCY_PRIORITY,
-        "Unexpected exit": 1,
-        "Unhealthy": 1,
-        "Recovery": -1,
-    }[rule]
-    fields = {
-        "title": title,
-        "message": compose_message(f"<b>{container}</b> {state}", details, closing),
-        "html": "1",
-        "priority": priority,
-    }
-    if link_base is not None:
-        fields["url"] = f"{link_base}{CONTAINER_ROUTE}{event['containerId']}"
-        fields["url_title"] = URL_TITLE
-    unix_seconds = parse_timestamp(event["timestamp"]) // 1_000_000_000 - UNIX_EPOCH_SECONDS
-    if unix_seconds >= 0:
-        fields["timestamp"] = unix_seconds
-    return emergency_fields(fields)
-
+    return details
 
 def validate_beszel_envelope(payload):
     """Beszel's alert exactly as its generic webhook sends it, or SchemaError.
@@ -1915,43 +1952,9 @@ def process_event(config, event, floor):
         publication_required = event["rule"] in {"OOM", "Unexpected exit"}
 
         if event["rule"] in {"Unhealthy", "Recovery"}:
-            incoming_state = (
-                "unhealthy" if event["rule"] == "Unhealthy" else "healthy"
-            )
-            incoming_order = parse_timestamp(event["timestamp"])
-            existing = entries.get(identity)
-            if existing is not None:
-                existing_order = parse_timestamp(existing["timestamp"])
-                if incoming_order < existing_order:
-                    return
-                if incoming_order == existing_order:
-                    if existing["state"] == "healthy":
-                        return
-                    if incoming_state == "unhealthy":
-                        publication_required = True
-                    else:
-                        publication_required = True
-                        proposed[identity] = {
-                            "identity": identity,
-                            "state": "healthy",
-                            "timestamp": event["timestamp"],
-                        }
-                else:
-                    publication_required = incoming_state == "unhealthy" or existing[
-                        "state"
-                    ] == "unhealthy"
-                    proposed[identity] = {
-                        "identity": identity,
-                        "state": incoming_state,
-                        "timestamp": event["timestamp"],
-                    }
-            else:
-                publication_required = incoming_state == "unhealthy"
-                proposed[identity] = {
-                    "identity": identity,
-                    "state": incoming_state,
-                    "timestamp": event["timestamp"],
-                }
+            publication_required = health_transition(event, identity, entries, proposed)
+            if publication_required is None:
+                return
 
         # The ceiling is charged only once the transition logic above has said
         # this event is worth publishing at all, so a suppressed duplicate does
@@ -1961,14 +1964,7 @@ def process_event(config, event, floor):
         if publication_required:
             decision = charge_budget(budget, identity, event["rule"], config)
             charged = decision[1]
-            if decision[0] == "publish":
-                notification = render_notification(
-                    event, config.alert_relay_link_base
-                )
-            elif decision[0] == "notice":
-                notification = render_ceiling_notice(
-                    event, decision[2], decision[3], charged["day"], decision[4]
-                )
+            notification = decision_notification(config, event, decision)
 
         proposed, charged, document = bounded_state(proposed, charged, now)
         replacement_required = (
@@ -2018,6 +2014,57 @@ def process_event(config, event, floor):
         if replacement_required:
             state_file.replace(proposed, charged, document)
 
+
+def health_transition(event, identity, entries, proposed):
+    """Whether an Unhealthy or Recovery event publishes; None drops it unrecorded.
+
+    `proposed` is the working copy of `entries` and receives the entry this
+    event leaves behind. None means the event is older than what is stored, or a
+    duplicate of an entry that is already healthy: process_event then returns
+    without charging, publishing or persisting anything.
+    """
+    incoming_state = (
+        "unhealthy" if event["rule"] == "Unhealthy" else "healthy"
+    )
+    incoming_order = parse_timestamp(event["timestamp"])
+    existing = entries.get(identity)
+    if existing is None:
+        publication_required = incoming_state == "unhealthy"
+    else:
+        existing_order = parse_timestamp(existing["timestamp"])
+        if incoming_order < existing_order:
+            return None
+        if incoming_order == existing_order:
+            if existing["state"] == "healthy":
+                return None
+            if incoming_state == "unhealthy":
+                return True
+            proposed[identity] = {
+                "identity": identity,
+                "state": "healthy",
+                "timestamp": event["timestamp"],
+            }
+            return True
+        publication_required = incoming_state == "unhealthy" or existing[
+            "state"
+        ] == "unhealthy"
+    proposed[identity] = {
+        "identity": identity,
+        "state": incoming_state,
+        "timestamp": event["timestamp"],
+    }
+    return publication_required
+
+
+def decision_notification(config, event, decision):
+    """The Pushover fields a charge_budget decision authorises, or None if silent."""
+    if decision[0] == "publish":
+        return render_notification(event, config.alert_relay_link_base)
+    if decision[0] == "notice":
+        return render_ceiling_notice(
+            event, decision[2], decision[3], decision[1]["day"], decision[4]
+        )
+    return None
 
 def process_beszel(config, alert, floor):
     """Charge one Beszel alert against the global ceiling, publish it, persist.
