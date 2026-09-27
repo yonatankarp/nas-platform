@@ -96,12 +96,17 @@ cleanup_sandbox_project_services() {
 # The Compose network keys each project may create, stated beside the services
 # and for the same reason: a network is owned only under a key declared here.
 # Karakeep is the first stack with named networks, and keeps them because they
-# are the isolation -- chrome reaches web but never Meilisearch. A key added to a
-# compose.yml and not here makes cleanup refuse, which is the failure to want.
+# are the isolation -- chrome reaches web but never Meilisearch. Beszel and
+# Dozzle keep their Docker socket proxies on docker-api for the same reason
+# (#829), and Beszel's proxy carries its loopback port on docker-api-publish. A
+# key added to a compose.yml and not here makes cleanup refuse, which is the
+# failure to want.
 cleanup_sandbox_project_networks() {
   case $1 in
     karakeep) cleanup_project_networks='default browser search' ;;
-    beszel | dozzle | audiobookshelf | komga | jellyfin | immich | paperless | \
+    beszel) cleanup_project_networks='default docker-api docker-api-publish' ;;
+    dozzle) cleanup_project_networks='default docker-api' ;;
+    audiobookshelf | komga | jellyfin | immich | paperless | \
       arr | downloaders | bindery | kapowarr | pinchflat | trailarr | seerr | \
       nextcloud | vaultwarden)
       cleanup_project_networks=default
