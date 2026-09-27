@@ -608,6 +608,19 @@ expect_failure(failures, "Karakeep pre-upgrade copy after the Meilisearch guard"
   end
 end
 
+# A tag on the application's guard alone skips it in a converge the copy still
+# runs in, and the copy then reads the Meilisearch guard's pin (#826).
+expect_failure(failures, "Karakeep application guard tagged apart from the pre-upgrade copy",
+               "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/karakeep/tasks/deploy.yml") do |tasks|
+    app = tasks.find { |task| task.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" }
+    raise "guard tag plant found no application guard" unless app
+
+    app["tags"] = ["karakeep_guard"]
+  end
+end
+
 expect_failure(failures, "Karakeep pre-upgrade copy after its deployment",
                "role karakeep: the pre-upgrade copy must run before the Compose deployment",
                detected_by: %i[policy]) do |root|
