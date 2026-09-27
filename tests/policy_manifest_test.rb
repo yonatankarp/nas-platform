@@ -565,7 +565,8 @@ expect_failure(failures, "Karakeep deployment report that ignores the shared pre
 end
 
 # Karakeep's call site, held in policy_test.rb argument by argument (#826), and
-# its position: after the Meilisearch guard, whose pin it would otherwise read.
+# its position: after the application's guard, so a downgrade is refused before
+# the copy stops anything.
 [
   ["    pre_upgrade_backup_compose_service: karakeep\n", "    pre_upgrade_backup_compose_service: web\n",
    "role karakeep: the pre-upgrade copy must be given pre_upgrade_backup_compose_service"],
@@ -593,23 +594,24 @@ end
   end
 end
 
-expect_failure(failures, "Karakeep pre-upgrade copy after the Meilisearch guard",
+# Replaces #826's row that swapped the two guards: since #858 the copy reads its
+# own pin, so which guard runs last is no longer a property, while the copy
+# running ahead of the application's guard still is -- it would stop Karakeep
+# for a downgraded pin the guard then refuses.
+expect_failure(failures, "Karakeep pre-upgrade copy ahead of the application guard",
                "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
                detected_by: %i[policy]) do |root|
   mutate_yaml_file(root, "roles/karakeep/tasks/deploy.yml") do |tasks|
-    guard_for = lambda do |service|
-      tasks.index { |task| task.dig("vars", "image_downgrade_guard_compose_service") == service }
-    end
-    meili = guard_for.call("meilisearch")
-    app = guard_for.call("karakeep")
-    raise "guard order plant found no guards" unless meili && app && meili < app
+    copy = tasks.index { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
+    app = tasks.index { |task| task.dig("vars", "image_downgrade_guard_compose_service") == "karakeep" }
+    raise "guard order plant found no guard or copy" unless copy && app && app < copy
 
-    tasks[meili], tasks[app] = tasks[app], tasks[meili]
+    tasks.insert(app, tasks.delete_at(copy))
   end
 end
 
 # A tag on the application's guard alone skips it in a converge the copy still
-# runs in, and the copy then reads the Meilisearch guard's pin (#826).
+# runs in, so a downgraded pin is copied for and stopped before anything refuses.
 expect_failure(failures, "Karakeep application guard tagged apart from the pre-upgrade copy",
                "role karakeep: the pre-upgrade copy must follow the application's image_downgrade_guard",
                detected_by: %i[policy]) do |root|
@@ -619,6 +621,19 @@ expect_failure(failures, "Karakeep application guard tagged apart from the pre-u
 
     app["tags"] = ["karakeep_guard"]
   end
+end
+
+# A caller handing the shared copy a pin again (#858): the include parameter
+# outranks the pin the role reads from the service's own Compose file.
+expect_failure(failures, "shared pre-upgrade copy handed a pin by its caller",
+               "hands roles/pre_upgrade_backup a pre_upgrade_backup_pinned_image",
+               detected_by: %i[policy]) do |root|
+  path = File.join(root, "roles/vaultwarden/tasks/deploy.yml")
+  body = File.read(path)
+  from = "    pre_upgrade_backup_project_name: \"{{ vaultwarden_compose_project_name }}\"\n"
+  raise "pin plant matched #{body.scan(from).length} times" unless body.scan(from).length == 1
+
+  File.write(path, body.sub(from, from + "    pre_upgrade_backup_pinned_image: \"{{ image_downgrade_guard_pinned_image }}\"\n"))
 end
 
 expect_failure(failures, "Karakeep pre-upgrade copy after its deployment",

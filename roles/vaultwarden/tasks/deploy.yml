@@ -523,14 +523,10 @@
 # It is why the copy is 0600 inside a 0700 directory and treated as
 # secret-bearing wherever it is copied to next.
 #
-# The pinned image is READ FROM THE PARSE this file already made rather than from
-# the release again. That parse is guarded by a stat -- the shape
-# tests/release_path_read_test.rb exists to keep -- so reusing it adds no second
-# reader of platform_current_dir to guard, and cannot drift from the document the
-# admin-panel sweep judged. vaultwarden_release_carries_service is a term here
-# because that parse is itself conditional on it -- a review whose installed
-# release predates this service has nothing to read and nothing deployed to
-# protect.
+# The role reads Vaultwarden's pin from Vaultwarden's own compose.yml itself --
+# the candidate release under --check, `current` live (#858). It used to reuse
+# this file's parse of `current`, so a review of a bump planned no copy while the
+# live run took one.
 - name: Guard the Vaultwarden store before a pinned upgrade
   ansible.builtin.include_role:
     name: pre_upgrade_backup
@@ -538,13 +534,6 @@
     pre_upgrade_backup_service_name: vaultwarden
     pre_upgrade_backup_compose_service: vaultwarden
     pre_upgrade_backup_project_name: "{{ vaultwarden_compose_project_name }}"
-    pre_upgrade_backup_pinned_image: >-
-      {{ ((vaultwarden_compose_documents
-           | selectattr('services', 'defined') | map(attribute='services')
-           | select('mapping') | map('dict2items') | flatten
-           | selectattr('key', 'equalto', 'vaultwarden')
-           | map(attribute='value') | selectattr('image', 'defined')
-           | map(attribute='image') | list) + ['']) | first }}
     pre_upgrade_backup_store_dir: "{{ vaultwarden_data_host_path }}"
     pre_upgrade_backup_store_file: db.sqlite3
     pre_upgrade_backup_extra_patterns: [rsa_key*]
@@ -553,7 +542,6 @@
   when:
     - vaultwarden_deployment_enabled | bool
     - vaultwarden_runtime_env.stat.exists
-    - vaultwarden_release_carries_service
 
 # The block exists for one thing the rescue does with the failure: it hands the
 # deployment's own message to roles/container_health, which either explains it in

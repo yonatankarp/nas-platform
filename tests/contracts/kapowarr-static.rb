@@ -357,7 +357,9 @@ if failures.empty?
     backup_vars["pre_upgrade_backup_store_dir"] == "{{ kapowarr_config_host_path }}" &&
     backup_vars["pre_upgrade_backup_store_file"] == "Kapowarr.db" &&
     backup_vars["pre_upgrade_backup_path"] == "{{ kapowarr_pre_upgrade_backup_path }}" &&
-    backup_vars["pre_upgrade_backup_pinned_image"].to_s.include?("image_downgrade_guard_pinned_image")
+    # The role reads Kapowarr's pin itself (#858); a pin handed in would outrank
+    # it and bring back the guard's host-scoped fact.
+    !backup_vars.key?("pre_upgrade_backup_pinned_image")
   backup_document = YAML.safe_load_file(File.join(root, "roles/pre_upgrade_backup/tasks/main.yml"),
                                         aliases: true)
   backup_tasks = flatten_tasks(backup_document)

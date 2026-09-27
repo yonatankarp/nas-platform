@@ -29,13 +29,44 @@
 # idempotence is a hard requirement here.
 #
 # Callers include this role between roles/image_downgrade_guard and their
-# Compose deployment, and name pre_upgrade_backup_restart in their deployment
-# report. INCLUDE, NEVER IMPORT: an imported role brings its argument validation
-# as a task tagged `always`, which then runs in every tagged converge and in
-# verify.yml with the caller's terms undefined, and fails there -- measured on a
+# Compose deployment, so a downgrade is refused before anything is stopped, and
+# name pre_upgrade_backup_restart in their deployment report. INCLUDE, NEVER
+# IMPORT: an imported role brings its argument validation as a task tagged
+# `always`, which then runs in every tagged converge and in verify.yml with the caller's terms undefined, and fails there -- measured on a
 # probe play. Its registers are host-wide, so a caller that skips the include
 # still sees the last caller's; roles/vaultwarden/tasks/report.yml says why the
 # copy is therefore not a report term.
+
+# THE PIN IS READ HERE, FROM THE SERVICE'S OWN COMPOSE FILE, AND NEVER HANDED IN
+# (#858). Callers used to pass roles/image_downgrade_guard's pinned-image fact,
+# which is host-scoped: a caller whose own guard was skipped, or whose stack runs
+# a second guard in between, handed over another Compose service's pin, found an
+# "upgrade" on every converge and stopped its container every five-minute tick.
+# Reading pre_upgrade_backup_compose_service out of
+# services/pre_upgrade_backup_service_name/compose.yml is what makes that
+# impossible rather than refused.
+#
+# Which release holds the pin is chosen the way the guard chooses it (#851). A
+# live run reads `current`, which deployment_bundle has just pointed at this
+# run's release. A review cannot: activation is a command check mode skips, so
+# `current` still names the release this run replaces, and a bump under review
+# reported no copy while the live run took one. So --check reads the candidate
+# from the controller checkout the release is copied from, through a lookup,
+# which holds in remote mode where the target has no copy of it.
+- name: Read the deployed Compose definition of the service whose store is copied
+  ansible.builtin.slurp:
+    path: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}/compose.yml"
+  register: pre_upgrade_backup_compose_source
+  when: not ansible_check_mode
+
+- name: Resolve the image the release pins for the service whose store is copied
+  ansible.builtin.set_fact:
+    pre_upgrade_backup_pinned_image: >-
+      {{ ((lookup('ansible.builtin.file', pre_upgrade_backup_candidate_root
+                  ~ '/services/' ~ pre_upgrade_backup_service_name ~ '/compose.yml')
+           if ansible_check_mode
+           else pre_upgrade_backup_compose_source.content | b64decode) | from_yaml)
+         .services[pre_upgrade_backup_compose_service].image }}
 
 # Only a container this platform actually created is considered, running or not:
 # `docker container ls --all`, so a stack that is merely stopped is still read
@@ -88,40 +119,6 @@
       {{ pre_upgrade_backup_deployed_image | length > 0
          and pre_upgrade_backup_pinned_image | length > 0
          and pre_upgrade_backup_deployed_image != pre_upgrade_backup_pinned_image }}
-
-# THE PIN MUST NAME THE SAME IMAGE REPOSITORY AS THE CONTAINER. Callers read it
-# off roles/image_downgrade_guard's pinned-image fact, which is host-scoped, so a
-# caller whose own guard was skipped -- a tag on that include alone, or a guard
-# reached another way -- hands this the last guard's pin: another service's
-# image, an "upgrade" on every converge, and the container stopped every
-# five-minute tick. Refused here, before the stop and under --check too.
-# Digest, then tag, then Docker Hub's implied prefixes are stripped, so the
-# comparison is of repositories and a registry spelled two ways is one.
-- name: Require the pin to name the image repository the container runs
-  ansible.builtin.assert:
-    that:
-      - pre_upgrade_backup_deployed_repository == pre_upgrade_backup_pinned_repository
-    fail_msg: >-
-      {{ pre_upgrade_backup_service_name | capitalize }}'s
-      {{ pre_upgrade_backup_compose_service }} container runs
-      {{ pre_upgrade_backup_deployed_image }}, and the pin this copy was handed,
-      {{ pre_upgrade_backup_pinned_image }}, pins a different image repository.
-      That is a pin read from the wrong guard: pre_upgrade_backup_pinned_image
-      comes from roles/image_downgrade_guard's host-scoped fact, so the guard for
-      this Compose service did not run immediately before this include and
-      another guard's pin was left behind. Nothing was stopped or copied. Make
-      the caller run the guard for {{ pre_upgrade_backup_compose_service }}
-      under the same conditions and tags as this include, and directly before
-      it.
-    quiet: true
-  vars:
-    pre_upgrade_backup_deployed_repository: >-
-      {{ pre_upgrade_backup_deployed_image | regex_replace('@.*$', '') | regex_replace(':[^:/]*$', '')
-         | regex_replace('^(docker\.io|index\.docker\.io)/', '') | regex_replace('^library/', '') }}
-    pre_upgrade_backup_pinned_repository: >-
-      {{ pre_upgrade_backup_pinned_image | regex_replace('@.*$', '') | regex_replace(':[^:/]*$', '')
-         | regex_replace('^(docker\.io|index\.docker\.io)/', '') | regex_replace('^library/', '') }}
-  when: pre_upgrade_backup_upgrade_pending | bool
 
 # The copy directory is pruned and chmodded 0700, so a caller that pointed it at
 # the store directory, or above it, would have this role remove the store's own

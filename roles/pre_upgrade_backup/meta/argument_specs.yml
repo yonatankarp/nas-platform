@@ -14,6 +14,8 @@ argument_specs:
         is still there, and fails the run. The copy is on the same disk and is
         not a backup.
       - >-
+        The pin is read from the service's own compose.yml -- the candidate
+        release under --check, `current` otherwise -- and never passed in.
         Include it with ansible.builtin.include_role after
         roles/image_downgrade_guard and before the Compose deployment, and name
         pre_upgrade_backup_restart in the caller's deployment report.
@@ -22,27 +24,33 @@ argument_specs:
         type: str
         required: true
         description: >-
-          The manifest service directory under services/, whose deployed Compose
-          files and rendered .env the stop and the restart use. Hyphenated, as
+          The manifest service directory under services/, whose compose.yml the
+          pin is read from and whose deployed Compose files and rendered .env
+          the stop and the restart use. Hyphenated, as
           the directory is -- paperless-ngx, not paperless_ngx.
       pre_upgrade_backup_compose_service:
         type: str
         required: true
         description: >-
-          The Compose service key whose container holds the store. It alone is
-          stopped and started again.
+          The Compose service key whose container holds the store, and whose
+          image in that compose.yml is the pin compared with the container. It
+          alone is stopped and started again.
       pre_upgrade_backup_project_name:
         type: str
         required: true
         description: >-
           The Compose project the containers carry as a label, so a sandbox
           running its own copy of the platform judges its own containers.
-      pre_upgrade_backup_pinned_image:
-        type: str
-        required: true
+      pre_upgrade_backup_candidate_root:
+        type: path
+        required: false
         description: >-
-          The image reference the release pins for that Compose service. An
-          empty value is no pin, and never an upgrade.
+          The controller checkout the release is assembled from, whose
+          services/<name>/compose.yml a --check run reads the pin from instead
+          of the one under platform_current_dir: activation is skipped in check
+          mode, so `current` still names the release this run replaces. Read
+          through a lookup on the controller. Defaults to playbook_dir, which is
+          what roles/deployment_bundle copies from; only a test names another.
       pre_upgrade_backup_store_dir:
         type: path
         required: true

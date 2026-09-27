@@ -49,6 +49,13 @@
     platform_compose_wait_timeout: 5
     backup_old: registry.example/fixture:v1.0.0@sha256:aaaa
     backup_new: registry.example/fixture:v1.1.0@sha256:bbbb
+    # What the candidate checkout pins in every live case: an image no case runs,
+    # so a live run that read the candidate instead of `current` finds an
+    # upgrade on the converged cases and stops a container they declare running.
+    backup_decoy: registry.example/fixture:v9.9.9@sha256:ffff
+    # Another Compose service in the same stack, listed ahead of the fixture's,
+    # so a pin read off anything but the key the role is given reads this.
+    backup_other: registry.example/other:v1.1.0@sha256:cccc
     # What `state: stopped` asks: create without starting, read the state, stop
     # what is not stopped, and read the state again for its result. The
     # rescue's start adds an `up` and the same read after it.
@@ -98,11 +105,26 @@
         expect_calls: []
         expect_state: running
         expect_copy_absent: true
-      - name: a review reports the copy and stops and writes nothing
+      # A review reads the candidate, because `current` still names the release
+      # the run replaces (#858): here `current` pins what is running and the
+      # candidate is the bump, which is what a review of a bump looks like.
+      - name: a review of a bump reports the copy against the candidate's pin and stops and writes nothing
         check_mode: true
         deployed: "{{ backup_old }}"
-        pinned: "{{ backup_new }}"
+        pinned: "{{ backup_old }}"
+        candidate: "{{ backup_new }}"
+        expect_review_pending: true
         store: [db.sqlite3, db.sqlite3-wal, rsa_key.pem]
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a review whose candidate pins the running image reports no copy, whatever current pins
+        check_mode: true
+        deployed: "{{ backup_new }}"
+        pinned: "{{ backup_old }}"
+        candidate: "{{ backup_new }}"
+        expect_review_pending: false
+        store: [db.sqlite3]
         expect_calls: []
         expect_state: running
         expect_copy_absent: true
@@ -140,25 +162,19 @@
         expect_message: FIXTURE IS STOPPED, and was deliberately not started again
         expect_calls: "{{ backup_stop_calls }}"
         expect_state: exited
-      # The pin is the caller's, read off roles/image_downgrade_guard's
-      # host-scoped fact; a caller whose own guard was skipped hands over the
-      # last guard's pin, which is another service's image and an "upgrade" on
-      # every converge. Refused before anything stops.
-      - name: a pin for another image repository is refused before anything stops
-        deployed: "{{ backup_old }}"
-        pinned: registry.example/other:v1.1.0@sha256:cccc
+      # The pin is read from the Compose service key the role is given (#858).
+      # Callers used to hand in roles/image_downgrade_guard's host-scoped fact,
+      # and a stale one named another service's image: an "upgrade" on every
+      # converge. Here the stack's other service and that stale fact both name
+      # another image, and a converged host must still stop nothing.
+      - name: a pin is read from the given Compose service, never another service or a stale guard fact
+        deployed: "{{ backup_new }}"
+        pinned: "{{ backup_new }}"
+        guard_pin: "{{ backup_other }}"
         store: [db.sqlite3]
-        expect_message: pins a different image repository
         expect_calls: []
         expect_state: running
         expect_copy_absent: true
-      - name: a pin spelling Docker Hub's implied prefixes out is the same repository
-        deployed: docker.io/library/fixture:v1.0.0@sha256:aaaa
-        pinned: fixture:v1.1.0@sha256:bbbb
-        store: [db.sqlite3]
-        expect_calls: "{{ backup_stop_calls }}"
-        expect_state: exited
-        expect_copy: [db.sqlite3]
       - name: a copy directory that is the store directory is refused before anything stops
         deployed: "{{ backup_old }}"
         pinned: "{{ backup_new }}"
@@ -200,16 +216,15 @@
         path: "{{ backup_root }}/{{ item }}"
         state: directory
         mode: "0755"
-      loop: [bin, current/services/fixture, runtime/services/fixture]
+      loop: [bin, current/services/fixture, candidate/services/fixture, runtime/services/fixture]
 
-    # The module checks that each named Compose file exists; the stub never
-    # reads it.
-    - name: Write the fixture release and its rendered environment
+    # Each case writes the two Compose files, `current` and the candidate, with
+    # its own pins; the stub never reads them.
+    - name: Write the fixture's rendered environment
       ansible.builtin.copy:
-        dest: "{{ backup_root }}/{{ item }}"
+        dest: "{{ backup_root }}/runtime/services/fixture/.env"
         content: "---\n"
         mode: "0600"
-      loop: [current/services/fixture/compose.yml, runtime/services/fixture/.env]
 
     - name: Install the Docker stub the role and the Compose module read the daemon through
       ansible.builtin.copy:
@@ -327,8 +342,8 @@
         that:
           - backup_results | length == backup_cases | length
           - backup_results | length >= 15
-          - backup_results | selectattr('failed') | list | length >= 8
-          - backup_results | rejectattr('failed') | list | length >= 7
+          - backup_results | selectattr('failed') | list | length >= 7
+          - backup_results | rejectattr('failed') | list | length >= 8
         fail_msg: >-
           The pre-upgrade copy ran {{ backup_results | length }} of
           {{ backup_cases | length }} cases, failing
