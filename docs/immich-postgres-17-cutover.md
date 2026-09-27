@@ -127,10 +127,18 @@ and step 2 are not in the dump, so keep that gap short.
    docker stop immich_server immich_machine_learning
    ```
 
-3. Confirm the newest file is the one step 1 wrote:
+3. Confirm the newest file is the one step 1 wrote, and that nothing under the
+   originals changed after it was written. The second command is the
+   classifier's own `stale-newest-backup` rule (#900). It must print nothing;
+   if it prints a directory, start Immich again, take the dump again, and
+   repeat from step 2. A restore of a stale dump is what failed the first
+   attempt at this cutover: the storage template had moved originals after
+   the nightly dump.
 
    ```sh
    ls -lt /volume2/Immich-backups/database | head -3
+   newest="/volume2/Immich-backups/database/$(ls -t /volume2/Immich-backups/database | head -1)"
+   find /volume2/Immich/library /volume2/Immich/upload -type d -newer "$newest"
    ```
 
 4. Stop the database and move its directory aside:
@@ -149,11 +157,15 @@ and step 2 are not in the dump, so keep that gap short.
 
 6. Merge the pull request, then converge the merge commit. Either wait for the
    poller, which runs it once CI has released that commit
-   (`nas-platform-deploy --status` shows progress), or converge it yourself
-   now, from a checkout of `main` at the merge commit, under the poller's lock:
+   (`$HOME/.local/bin/nas-platform-deploy --status` shows progress), or
+   converge it yourself now, under the poller's lock. The launcher runs from
+   the controller checkout and its own `.venv` (#902), and prints that
+   checkout's HEAD before it runs anything. Run it with `--check --diff` first,
+   and go on only if that line names the merge commit:
 
    ```sh
-   nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
+   $HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --check --diff --ask-vault-pass
+   $HOME/.local/bin/nas-platform-deploy --converge -- -i inventory/local.yml site.yml --ask-vault-pass
    ```
 
    The classifier sees an empty data directory and existing originals. The
