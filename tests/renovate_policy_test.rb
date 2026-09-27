@@ -510,9 +510,10 @@ end
 # compared for exact equality against the manual-coupling rule's subjects, so
 # widening it to hold the database image would break the assertion it exists for.
 # This image is withheld for a different reason from the two application images
-# beside it -- it moves only when a human re-copies the line from Immich's own
-# compose, and it carries a version ceiling as well as automerge false, because
-# the registry publishes 15- and 16- tags under the identical suffix.
+# beside it -- its major moves only by a hand-run dump and restore
+# (docs/immich-postgres-17-cutover.md), so it carries a version ceiling as well
+# as automerge false: the registry publishes higher majors under the identical
+# suffix, and a plain enable would offer one as though it were routine.
 COUPLED_DATABASE_IMAGES = %w[ghcr.io/immich-app/postgres].freeze
 
 GROUP_EXCLUDED_IMAGES = (SELF_MIGRATING_APPLICATION_IMAGES.keys +
