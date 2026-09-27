@@ -572,6 +572,37 @@ expect_failure(failures, "divergent health-check timing fragment",
   end
 end
 
+# The timing policy in inventory/group_vars/all/main.yml has one owner only while
+# a task cannot type its own number. Each row plants one way of doing that on
+# Komga's claim wait; the quoted and templated rows are the ones an integer test
+# let through until #844.
+[
+  ['retries: "{{ komga_claim_retries }}"', "retries: 20", "retries: 20 as a literal"],
+  ['retries: "{{ komga_claim_retries }}"', 'retries: "20"', 'retries: "20" as a literal'],
+  ['retries: "{{ komga_claim_retries }}"', 'retries: "{{ 20 }}"', 'retries: "{{ 20 }}" as a literal'],
+  ['retries: "{{ komga_claim_retries }}"', 'retries: "{{ komga_undeclared_retries }}"',
+   'retries: "{{ komga_undeclared_retries }}", reading undeclared komga_undeclared_retries'],
+  ['until: komga_claim_status.status | default(0) == 200
+  retries: "{{ komga_claim_retries }}"
+  delay: "{{ platform_readiness_delay }}"',
+   'until: komga_claim_status.status | default(0) == 200
+  retries: "{{ komga_claim_retries }}"
+  delay: 3', "delay: 3 as a literal"]
+].each do |from, to, message|
+  expect_failure(failures, "Komga claim wait with #{to.lines.last.strip}",
+                 "roles/komga/tasks/main.yml: \"Read Komga claim status\" writes #{message}",
+                 detected_by: %i[policy]) do |root|
+    mutate_text(root, "roles/komga/tasks/main.yml", from, to)
+  end
+end
+
+expect_failure(failures, "literal Compose wait_timeout",
+               "writes wait_timeout as a literal",
+               detected_by: %i[policy]) do |root|
+  mutate_text(root, "roles/komga/tasks/main.yml",
+              'wait_timeout: "{{ platform_compose_wait_timeout }}"', "wait_timeout: 180")
+end
+
 expect_failure(failures, "service defaults fragment disagreeing with platform policy",
                "komga: x-service-defaults must carry the platform cpuset, " \
                "security_opt, restart and logging",
