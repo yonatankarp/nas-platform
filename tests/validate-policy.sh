@@ -418,8 +418,8 @@ dir=$(dirname "$spec")
 index=${spec##*/cmd.}
 started=$(date +%s)
 command=$(cat "$spec")
-# The checks read this repository's own files, and 135 characters of CLAUDE.md
-# alone are non-ASCII. Ruby takes its default external encoding from the locale,
+# The checks read this repository's own files, and CLAUDE.md and most documents
+# under docs/ are not pure ASCII. Ruby takes its default external encoding from the locale,
 # so on a machine whose locale is not UTF-8 -- an unset LANG, or one naming a
 # locale the image never generated -- File.read hands back US-ASCII and the
 # first regex over it raises `invalid byte sequence in US-ASCII`. Measured
