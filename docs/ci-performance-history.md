@@ -601,3 +601,58 @@ can cost, so expect the measured legs somewhat above the prediction. After the
 reorder, balancing across shards would recover about 20s, which is under the
 noise, so nothing moved between shards. Confirmation is two or three post-merge
 slow-class runs in which the worst leg fell.
+
+## A local-gate wait that was macOS's first-exec queue, not load
+
+**2026-09-27 (#888).** Two checks failed only under the full local gate on the
+12-core Mac, and both passed alone. `tests/nextcloud_contract_test.rb` refused
+its runtime rows with "the application container inspection did not finish
+within 30s". `tests.production_auto_deploy_test` printed an unexpected
+"healthchecks ping failed" in `test_an_unusable_state_directory_...`. Both
+checks bound a stub that answers at once: the Nextcloud rows' `docker` stub
+under the 30s `PLATFORM_NEXTCLOUD_DOCKER_TIMEOUT_SECONDS`, and the poller's
+curl stub under `ping_healthchecks`' 20s ceiling.
+
+The wait is the first exec of a newly written executable. On macOS it queues
+host-wide and is served about one file at a time. A probe wrote a fresh
+`#!` script per exec and timed it:
+
+| load | per-exec latency | CPU of the probing process |
+|---|---|---|
+| idle | 0.25s median, 0.66s max | -- |
+| 32 threads of fresh execs | 16.2s median | 0.74s user+sys in 55s wall |
+| 64 threads of fresh execs | 33.1s median | -- |
+
+The controls held under the same 32-thread load. Running the interpreter with
+the script as an argument cost 0.01s over 20,285 runs. Re-exec'ing a file that
+had already run once took 0.01s. Exec'ing it through a fresh symlink or
+hardlink took 0.00s, and `$0` stayed the link path. So the low CPU-to-wall
+ratio is a wait, as the rules predict. It is not a cost of width, and no
+ceiling bounds it: the queue is as long as whatever else on the host is writing
+and running new files. Under the gate, that is every check that writes a stub
+per case.
+
+The 64-thread probe reproduced both reds deterministically. The ping test
+failed 3 of 3 at exactly 20.0s, and the Nextcloud test failed 28 rows. The fix
+takes the queue out of the timed interval instead of raising the ceiling. Each
+stub is written once per process (the Nextcloud runtime stubs) or once per
+class (the poller's curl stub) and exec'd once, untimed, before anything is
+bounded. Each row or test symlinks it into its own `bin/`, and the stub finds
+that case's fixtures through the path it was invoked by. After the fix, both
+passed 5 of 5 under the same probe. The Nextcloud check fell from 39s to 8s
+idle.
+
+This is macOS-only. CI runs on Linux runners, which have no such queue, so the
+effect is confined to the local gate.
+
+Known remaining exposure: the stub writers that still write an executable per
+case or per test. Nothing has failed from them yet.
+
+- `tests/production_auto_deploy_test.py`: five, at lines 1368, 3676, 3852,
+  4383 and 4504 when measured. The one at 3852 is a second curl stub, bounded
+  by the notification timeout.
+- About 20 Ruby files, among them most `tests/*_contract_test.rb`,
+  `tests/contract_test_support.rb`, `tests/policy_mutation_support.rb` and
+  `tests/policy_manifest_test.rb`.
+- The Nextcloud check's own static and wrapper layers still take about 270s
+  under the 64-thread probe. They are slow, but they no longer fail.
