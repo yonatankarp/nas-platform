@@ -160,6 +160,12 @@ module ClassifyChanges
   # The derivation names it too, because tests/case_pool_support.rb -- which every
   # pooled check loads -- and a few other checks cite it by path for the
   # measurements behind them.
+  #
+  # docs/incident-history.md and docs/host-cleanup.md are the same move made for
+  # the rest of CLAUDE.md by #838, and keep the route for the same reason: the
+  # retired-declaration sweep in tests/policy_test.rb reads them under docs/ as it
+  # read the text in CLAUDE.md. tests/deployment_gate_coverage_test.rb cites the
+  # first by path for the dated memory measurement.
   STATIC_ONLY_PATHS = %w[
     .gitignore
     CLAUDE.md
@@ -172,6 +178,8 @@ module ClassifyChanges
     docs/getting-started-mac.md
     docs/getting-started-nas.md
     docs/getting-started.md
+    docs/host-cleanup.md
+    docs/incident-history.md
     docs/media-acquisition-phase1.md
     docs/superpowers/plans/2026-08-05-mac-platform-proof.md
     generate-secrets.yml

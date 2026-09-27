@@ -145,6 +145,9 @@ if defined?(ClassifyChanges)
     # README.md does; before the fix it matched no lane map and was classified
     # inert, and a change to the lane roster it documents selected nothing at all.
     ["CLAUDE.md"] => %w[static docs],
+    # The evidence #838 moved out of CLAUDE.md keeps the route that text had there.
+    ["docs/incident-history.md"] => %w[static docs],
+    ["docs/host-cleanup.md"] => %w[static docs],
     ["docs/getting-started-nas.md"] => %w[static docs],
     # Only tests/secrets_docs_test.rb reads it, and the docs job runs that, so the
     # secrets guide no longer pays for the whole policy gate.
