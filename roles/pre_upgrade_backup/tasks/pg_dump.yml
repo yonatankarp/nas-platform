@@ -38,6 +38,33 @@
 - name: Resolve whether an upgrade is pending for the application whose database is dumped
   ansible.builtin.include_tasks: pending.yml
 
+# The image ID as well as the reference: the code archive below runs the image
+# this container was created from, and an ID names exactly that image with no
+# tag to resolve and nothing to pull.
+- name: Resolve the image ID the application's container was created from
+  ansible.builtin.set_fact:
+    pre_upgrade_backup_deployed_image_id: >-
+      {{ (pre_upgrade_backup_inspection.stdout | default('[]', true) | from_json
+          | map(attribute='Image') | list | first | default('', true)) }}
+
+# Inside the tree, the archive would archive itself, and the next upgrade's
+# `rsync --delete` would remove it: only upgrade.exclude's names survive that.
+- name: Refuse a code archive directory inside the code tree
+  ansible.builtin.assert:
+    that:
+      - pre_upgrade_backup_code_archive_dir | length > 0
+      - not ((pre_upgrade_backup_code_archive_dir | regex_replace('/+$', '')) ~ '/')
+            .startswith((pre_upgrade_backup_code_root | regex_replace('/+$', '')) ~ '/')
+    fail_msg: >-
+      The code archive directory, {{ pre_upgrade_backup_code_archive_dir | default('', true) or 'empty' }},
+      is inside the code tree {{ pre_upgrade_backup_code_root }} or is not named at all, so
+      nothing was stopped or archived. Name a directory outside it -- the dump's,
+      beside the database cluster.
+    quiet: true
+  when:
+    - pre_upgrade_backup_upgrade_pending | bool
+    - pre_upgrade_backup_code_root | length > 0
+
 - name: Report the planned pre-upgrade dump
   ansible.builtin.debug:
     msg: >-
@@ -47,7 +74,10 @@
       {{ pre_upgrade_backup_stop_services | join(' and ') }}, pg_dump the database
       in {{ pre_upgrade_backup_database_service }} into
       {{ pre_upgrade_backup_dump_dir }}/{{ pre_upgrade_backup_dump_file }} inside
-      that container, and only then start the new image, so that a migration
+      that container,{{ (' archive ' ~ pre_upgrade_backup_code_root ~ ' without data/ into '
+                        ~ pre_upgrade_backup_code_archive_dir ~ '/code.tar.gz from the image it ran,')
+                       if pre_upgrade_backup_code_root | length > 0 else '' }}
+      and only then start the new image, so that a migration
       that goes wrong can be undone by restoring the dump and pinning the older
       image. The dump is on this same disk and is not a backup.
   register: pre_upgrade_backup_plan
@@ -122,9 +152,70 @@
       when:
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
+
+    # THE CODE ARCHIVE (#884), for a caller whose data root is also its code:
+    # Nextcloud. Its entrypoint refuses to start when the volume's version.php
+    # is newer than the image's, and rsyncs its code over the volume only when
+    # the image is newer, so an older image restarted over a restored
+    # version.php runs whatever code the volume holds. The dump alone therefore
+    # brings back neither. docs/dossier-nextcloud.md cites the entrypoint and
+    # carries the restore.
+    #
+    # Everything but data/ -- the user's files -- and the entrypoint's lock.
+    # config/, custom_apps/ and themes/ go in although upgrade.exclude keeps them
+    # across the rsync: config.php is what the old image starts with, and
+    # `occ upgrade` updates app-store apps in custom_apps/. Named at the top
+    # level rather than with a tar exclusion, whose anchoring differs between
+    # tars.
+    #
+    # A one-shot container of the image the application ran, by ID, because
+    # config.php is 0640 www-data and the deploy account cannot read it, and
+    # because `docker compose run` would run the new pin. Nothing is pulled: the
+    # stopped container holds that image. The tree is mounted read-only, and
+    # the archive goes beside the dump, whose directory the dump has just made
+    # 0700. `--mount` rather than `-v`, which would create a missing source.
+    - name: Archive the code tree the old image runs, beside the dump
+      ansible.builtin.command:
+        argv:
+          - docker
+          - run
+          - --rm
+          - --network
+          - none
+          - --mount
+          - "type=bind,source={{ pre_upgrade_backup_code_root }},target=/var/www/html,readonly"
+          - --mount
+          - "type=bind,source={{ pre_upgrade_backup_code_archive_dir }},target=/pre-upgrade-backup"
+          - --entrypoint
+          - sh
+          - "{{ pre_upgrade_backup_deployed_image_id }}"
+          - -c
+          - >-
+            set -eu; umask 077; cd "$1"; archive=$2; name=$3; set --;
+            for entry in * .[!.]* ..?*; do
+            [ -e "$entry" ] || [ -L "$entry" ] || continue;
+            case "$entry" in data|nextcloud-init-sync.lock) continue ;; esac;
+            set -- "$@" "$entry"; done;
+            rm -f "$archive/.code.partial";
+            tar --numeric-owner -czf "$archive/.code.partial" -- "$@";
+            chmod 0600 "$archive/.code.partial";
+            mv -f "$archive/.code.partial" "$archive/$name"
+          - pre-upgrade-code
+          - /var/www/html
+          - /pre-upgrade-backup
+          - code.tar.gz
+      register: pre_upgrade_backup_code_archive
+      changed_when: true
+      when:
+        - not ansible_check_mode
+        - pre_upgrade_backup_upgrade_pending | bool
+        - pre_upgrade_backup_code_root | length > 0
   rescue:
     # Never the dump's stderr: it names the database user and database (#889).
-    # The stop's output names only Compose services, so it is kept.
+    # The stop's output names only Compose services, so it is kept. The code
+    # archive's is kept too, and said to be tar's: tar names the files it could
+    # not read or write and the errno -- no space, no permission -- and never
+    # prints what a file holds, and the argv carrying the paths is not echoed.
     - name: Record where the pre-upgrade dump failed
       ansible.builtin.set_fact:
         pre_upgrade_backup_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
@@ -135,6 +226,11 @@
               ~ ' because it names the database and its user, and the ' ~ pre_upgrade_backup_database_service
               ~ ' container log carries the cause')
              if ansible_failed_task.name | default('') == 'Dump the database before the pinned upgrade'
+             else ('the code archive exited ' ~ (ansible_failed_result.rc | default('without an exit code', true) | string)
+                   ~ ' writing ' ~ pre_upgrade_backup_code_archive_dir ~ '/code.tar.gz from '
+                   ~ pre_upgrade_backup_code_root ~ ': '
+                   ~ (ansible_failed_result.stderr | default('no output', true) | trim))
+             if ansible_failed_task.name | default('') == 'Archive the code tree the old image runs, beside the dump'
              else ((ansible_failed_result.msg | default('', true) ~ ' ' ~ ansible_failed_result.stderr | default('', true))
                    | trim | regex_replace('[. ]+$', '')) }}
 
@@ -202,7 +298,8 @@
           {{ pre_upgrade_backup_down | length == 0 and not (pre_upgrade_backup_restart is failed) }}
         pre_upgrade_backup_outcome: >-
           {{ (pre_upgrade_backup_label ~ ' is running on its old image, ' ~ pre_upgrade_backup_deployed_image
-               ~ '. Read the ' ~ pre_upgrade_backup_database_service ~ ' container log and converge again;'
+               ~ '. Read the error above and the ' ~ pre_upgrade_backup_database_service
+               ~ ' container log, and converge again;'
                ~ ' the next run takes the dump and then performs the upgrade.')
              if (pre_upgrade_backup_running_again | bool)
              else ((pre_upgrade_backup_label | upper) ~ ' IS NOT SERVING: '

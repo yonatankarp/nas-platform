@@ -21,6 +21,7 @@
 #   compose ... up ... --wait ...        the rescue's start
 #   compose ... exec -- <service> argv   the dump, run here with a fake pg_dump
 #   container ls / container inspect     the role's own reads
+#   run ... <image> -c <script> <args>    the code archive, run here
 #
 # The stub reports Compose 2.20.0, which keeps the module on its plain-text
 # progress path and its single-document `ps` read; the JSON-event path Compose
@@ -221,6 +222,7 @@
       # own read, as main's is (#858).
       - name: a converged host dumps nothing, whatever a guard left behind
         method: pg_dump
+        code: true
         deployed: "{{ backup_new }}"
         pinned: "{{ backup_new }}"
         guard_pin: "{{ backup_other }}"
@@ -246,6 +248,55 @@
           failed at "Dump the database before the pinned upgrade".*was not performed.*is running on its old image
         expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
         expect_state: running
+      # The code archive Nextcloud takes beside its dump (#884), from a one-shot
+      # container of the image the application ran, so the older image can be
+      # started again over the code, version.php and config it wrote.
+      - name: a pending upgrade archives the code tree beside the dump, without the user's data
+        method: pg_dump
+        code: true
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        expect_calls: "{{ backup_stop_calls + ['exec', 'run id:' ~ backup_old] }}"
+        expect_state: exited
+        expect_dump: true
+        expect_code: true
+      - name: an archive that fails starts the application again and fails
+        method: pg_dump
+        code: true
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        faults: [archive-fails]
+        # The dump ahead of it completed, and stays: it is still the database
+        # as it stood before the upgrade that did not happen.
+        expect_dump: true
+        expect_message: >-
+          failed at "Archive the code tree the old image runs, beside the dump": the code archive exited 2 writing
+          .*/postgres/pre-upgrade-backup/code.tar.gz from .*/code: tar: config/config.php: Cannot open: Permission denied.*was not
+          performed.*is running on its old image
+        expect_calls: "{{ backup_stop_calls + ['exec', 'run id:' ~ backup_old, 'up --no-recreate', 'ps'] }}"
+        expect_state: running
+      - name: a review reports the archive and stops and writes nothing
+        method: pg_dump
+        code: true
+        check_mode: true
+        expect_review_pending: true
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      # Inside the tree, the archive would be deleted by the next upgrade's
+      # rsync --delete and would archive itself.
+      - name: an archive directory inside the code tree is refused before anything stops
+        method: pg_dump
+        code: true
+        code_archive_dir: code/pre-upgrade-backup
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        expect_message: is inside the code tree
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
       - name: an application that does not come back after a failed dump says it is not serving
         method: pg_dump
         deployed: "{{ backup_old }}"
@@ -352,10 +403,44 @@
                   echo "$id"
                   exit 0 ;;
                 inspect)
-                  printf '[{"Config":{"Image":"%s"}}]\n' "$(cat "$daemon/image")"
+                  printf '[{"Image":"id:%s","Config":{"Image":"%s"}}]\n' "$(cat "$daemon/image")" "$(cat "$daemon/image")"
                   exit 0 ;;
               esac
               exit 64 ;;
+            # The pg_dump entry's code archive (#884): a one-shot container of
+            # the image the application was created from. Options up to the
+            # image, each bind mount's target mapped back onto its source in
+            # the argv, and the entrypoint -- sh -- run here.
+            run)
+              shift
+              map=""
+              while [ $# -gt 0 ]; do
+                case "$1" in
+                  --rm) shift ;;
+                  --mount)
+                    source=$(printf '%s' "$2" | sed -n 's/.*source=\([^,]*\).*/\1/p')
+                    target=$(printf '%s' "$2" | sed -n 's/.*target=\([^,]*\).*/\1/p')
+                    [ -d "$source" ] || { echo "invalid mount config: bind source path does not exist: $source" >&2; exit 125; }
+                    map="$map$target=$source
+          "
+                    shift 2 ;;
+                  --entrypoint) entrypoint=$2; shift 2 ;;
+                  --*) shift 2 ;;
+                  *) break ;;
+                esac
+              done
+              echo "run $1" >>"$daemon/calls"
+              shift
+              if [ -f "$daemon/archive-fails" ]; then
+                echo 'tar: config/config.php: Cannot open: Permission denied' >&2
+                exit 2
+              fi
+              for arg; do
+                shift
+                mapped=$(printf '%s' "$map" | sed -n "s#^ *$arg=##p")
+                set -- "$@" "${mapped:-$arg}"
+              done
+              exec "$entrypoint" "$@" ;;
             compose) shift ;;
             *) exit 64 ;;
           esac
@@ -470,10 +555,10 @@
       ansible.builtin.assert:
         that:
           - backup_results | length == backup_cases | length
-          - backup_results | length >= 22
-          - backup_results | selectattr('failed') | list | length >= 11
-          - backup_results | rejectattr('failed') | list | length >= 11
-          - backup_results | selectattr('method', 'eq', 'pg_dump') | list | length >= 7
+          - backup_results | length >= 26
+          - backup_results | selectattr('failed') | list | length >= 13
+          - backup_results | rejectattr('failed') | list | length >= 13
+          - backup_results | selectattr('method', 'eq', 'pg_dump') | list | length >= 11
         fail_msg: >-
           The pre-upgrade copy ran {{ backup_results | length }} of
           {{ backup_cases | length }} cases, failing

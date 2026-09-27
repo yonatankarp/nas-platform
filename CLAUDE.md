@@ -914,7 +914,8 @@ as secret-bearing), the `pre-upgrade-backup/database.sql.gz` that Nextcloud and
 Paperless-ngx write beside their PostgreSQL clusters before each pinned upgrade
 (#826: a whole-database dump holding every account's password hash, and for
 Paperless its mail account passwords in clear too, root-owned 0600 in a 0700
-directory), and application
+directory), Nextcloud's `pre-upgrade-backup/code.tar.gz` beside that dump
+(#884: its data root minus `data/`, so `config.php` in clear, same modes), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 

@@ -684,6 +684,40 @@ expect_failure(failures, "pre-upgrade dump rescue that lets the upgrade proceed"
   end
 end
 
+# The code archive's own shape (#884).
+PG_CODE_ARCHIVE = "role pre_upgrade_backup: tasks/pg_dump.yml must archive the code tree after the dump"
+code_archive = ->(task) { Array(task.dig("ansible.builtin.command", "argv"))[0, 2] == %w[docker run] }
+expect_failure(failures, "pre-upgrade code archive outside the block its rescue covers", PG_CODE_ARCHIVE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    unit = tasks.find { |task| task.key?("rescue") }
+    tasks.insert(tasks.index(unit) + 1, unit["block"].delete(unit["block"].find(&code_archive)))
+  end
+end
+
+expect_failure(failures, "pre-upgrade code archive taken before the dump", PG_CODE_ARCHIVE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    block = tasks.find { |task| task.key?("rescue") }["block"]
+    block.insert(0, block.delete(block.find(&code_archive)))
+  end
+end
+
+expect_failure(failures, "pre-upgrade code archive run from the pinned image", PG_CODE_ARCHIVE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    argv = tasks.find { |task| task.key?("rescue") }["block"].find(&code_archive)["ansible.builtin.command"]["argv"]
+    argv[argv.index("{{ pre_upgrade_backup_deployed_image_id }}")] = "{{ pre_upgrade_backup_pinned_image }}"
+  end
+end
+
+expect_failure(failures, "pre-upgrade code archive whose failure is ignored", PG_CODE_ARCHIVE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["block"].find(&code_archive)["ignore_errors"] = true
+  end
+end
+
 expect_failure(failures, "pre-upgrade dump entry removed",
                "pre-upgrade copies that stop a container: 1 found, expected at least 2",
                detected_by: %i[policy]) do |root|
@@ -699,7 +733,15 @@ end
   ["paperless_ngx", "    pre_upgrade_backup_compose_service: webserver\n",
    "    pre_upgrade_backup_compose_service: db\n", "pre_upgrade_backup_compose_service"],
   ["paperless_ngx", "    pre_upgrade_backup_project_name: \"{{ paperless_compose_project_name }}\"\n",
-   "    pre_upgrade_backup_project_name: \"{{ nextcloud_compose_project_name }}\"\n", "pre_upgrade_backup_project_name"]
+   "    pre_upgrade_backup_project_name: \"{{ nextcloud_compose_project_name }}\"\n", "pre_upgrade_backup_project_name"],
+  # #884: the code archive's two arguments -- one dropped is a rollback with
+  # the dump and no code, one moved inside the data root is an archive the next
+  # upgrade's rsync --delete removes.
+  ["nextcloud", "    pre_upgrade_backup_code_root: \"{{ nextcloud_data_host_path }}\"\n", "",
+   "pre_upgrade_backup_code_root"],
+  ["nextcloud", "    pre_upgrade_backup_code_archive_dir: \"{{ nextcloud_postgres_host_path }}/pre-upgrade-backup\"\n",
+   "    pre_upgrade_backup_code_archive_dir: \"{{ nextcloud_data_host_path }}/pre-upgrade-backup\"\n",
+   "pre_upgrade_backup_code_archive_dir"]
 ].each do |role, from, to, argument|
   expect_failure(failures, "#{role} pre-upgrade dump call site without #{from.strip}",
                  "role #{role}: the pre-upgrade dump must be given #{argument}",

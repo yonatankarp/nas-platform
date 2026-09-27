@@ -10,3 +10,9 @@ pre_upgrade_backup_candidate_root: "{{ playbook_dir }}"
 # cluster, in the /var/lib/postgresql mount both PostgreSQL stacks declare.
 pre_upgrade_backup_dump_dir: /var/lib/postgresql/pre-upgrade-backup
 pre_upgrade_backup_dump_file: database.sql.gz
+
+# The pg_dump entry's code archive (#884): the host path of a data root that is
+# also the application's code, and the host path of the dump's directory to
+# archive it into. Empty is no archive.
+pre_upgrade_backup_code_root: ""
+pre_upgrade_backup_code_archive_dir: ""

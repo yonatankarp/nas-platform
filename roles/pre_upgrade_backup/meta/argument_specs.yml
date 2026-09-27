@@ -167,6 +167,24 @@ argument_specs:
         description: >-
           The dump's file name. One generation: each dump replaces the last,
           and only once it has completed.
+      pre_upgrade_backup_code_root:
+        type: str
+        required: false
+        default: ""
+        description: >-
+          The host path of a data root that also holds the application's code --
+          Nextcloud's /var/www/html. When named, everything in it but data/ is
+          archived as code.tar.gz in the same stopped window as the dump, from a
+          one-shot container of the image the application ran, so the older
+          image can start again. Empty archives nothing.
+      pre_upgrade_backup_code_archive_dir:
+        type: str
+        required: false
+        default: ""
+        description: >-
+          The host path of the dump's directory, where code.tar.gz lands at 0600,
+          one generation. Required with pre_upgrade_backup_code_root, and never
+          inside it.
       platform_current_dir:
         type: path
         required: true

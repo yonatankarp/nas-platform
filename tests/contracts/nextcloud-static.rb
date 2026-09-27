@@ -15,14 +15,10 @@
 # assertion for "this must not name oc_admin" fails against the correct role.
 #
 # WHAT THIS FILE DOES NOT COVER, stated because the absence is a decision.
-# roles/nextcloud has no pre-upgrade backup and no wedged-boot recovery, so
-# roughly a third of what the Seafile contract covered before #501 removed it has
-# no counterpart here.
-# The backup is not a later phase: #500 dropped it, because the server holds no
-# data yet and there is nothing to copy -- which is also why renovate.json
-# withholds Nextcloud majors behind dashboard approval rather than labelling
-# them, an upgrade being one-way with nothing to go back to. The recovery is a
-# considered absence:
+# roles/nextcloud has no wedged-boot recovery. Its pre-upgrade dump and code
+# archive (#826, #884) are shared-role code, which tests/pre_upgrade_backup_test.yml
+# proves and tests/policy_test.rb holds at the call site, so neither is here.
+# The recovery is a considered absence:
 # Seafile needs one because enterpoint.sh launches start.py and then idles, so a
 # failed setup leaves a container running for ever, while Nextcloud's entrypoint
 # runs install and upgrade in the foreground and then execs apache -- a failure

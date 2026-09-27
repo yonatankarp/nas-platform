@@ -1190,6 +1190,13 @@ repository vault remains encrypted:
   wherever it is copied to next. The dump connects with the `POSTGRES_*` values
   the database container already holds, so it adds no vault key. Like the copies
   above it is a rollback path on the same disk, not a backup.
+- Nextcloud's `pre-upgrade-backup/code.tar.gz` beside that dump (#884):
+  everything in its data root except `data/`, taken in the same stopped window
+  so the older image can start again. That includes `config.php`, and
+  with it the database password, the instance `secret`, `passwordsalt` and the
+  cache password in clear. The archive is root-owned 0600 in the same 0700
+  directory, one generation, and is exactly as secret-bearing as `config.php`
+  wherever it is copied to next.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See

@@ -22,9 +22,10 @@ that must not start until that evaluation has happened.
 
 It records six slices — the service gated off, the CI lane and contract, the Mac
 lifecycle proof, the app policy, the Renovate rule, and this file — and what
-they found. One slice #500 asked for is **absent by decision**: there is no
-pre-upgrade backup and no rehearsed restore. That is not an omission and the
-section below states what it costs.
+they found. One slice #500 asked for was **absent by decision**: there was no
+pre-upgrade backup and no rehearsed restore. #826 and #884 have since added a
+pre-upgrade dump and code archive, and the section below writes the restore
+down; it is still not rehearsed.
 
 ## Calibrate the evidence first, because it is stronger here than Seafile's
 
@@ -312,12 +313,91 @@ states a decided `failed_when`, and `tests/policy_test.rb` refuses one that does
 not. The trap survives as a **module** property rather than as a live defect —
 the next exec written here inherits it and has to say what it requires.
 
-## There is no pre-upgrade backup, and what that costs
+## The pre-upgrade copy, and what it costs to go back
 
-#500 dropped it deliberately: the server holds no user files, so a rebuild costs
-minutes and a backup would protect nothing. Recorded here rather than left as an
-unticked box, because the absence is a decision and reads as an oversight
-otherwise.
+#500 dropped a pre-upgrade backup deliberately, when the server held no user
+files. #826 and #884 put one back. Before a pending upgrade,
+`roles/pre_upgrade_backup`'s pg_dump entry stops `nextcloud` and `cron`. It then
+writes two files into `pre-upgrade-backup/` under
+`{{ nextcloud_postgres_host_path }}`, each root-owned 0600 in a 0700 directory,
+one generation each:
+
+- `database.sql.gz`, the database, dumped from inside the database container.
+- `code.tar.gz`, everything in the data root the older image needs to start again.
+
+The archive holds everything in `/var/www/html` except `data/` and the
+entrypoint's `nextcloud-init-sync.lock`. That means the code tree, `version.php`,
+`config/` (`config.php` holds the database password, `secret` and
+`passwordsalt` in clear), `custom_apps/` and `themes/`. `custom_apps/` goes in
+too, although upstream's
+[`upgrade.exclude`](https://github.com/nextcloud/docker/blob/6edd06e23466ed44d48e3d467b09e0c5fc0ffc17/35/apache/upgrade.exclude)
+keeps it across the rsync, because `occ upgrade` updates app-store apps, and old
+database rows under new app code are not a rollback. It is about 275 MB. The
+largest layer of the pinned amd64 image, the one that holds
+`/usr/src/nextcloud`, is that size compressed. It is taken from a one-shot
+container of the image the application was running, with the data root mounted
+read-only, because `config.php` is 0640 `www-data`, which the deploy account
+cannot read. A failed dump or archive starts both containers again on the old
+image and fails the run. Both files are on the same disk, so they are not a
+backup.
+
+Both files are needed, because of how
+[`/entrypoint.sh`](https://github.com/nextcloud/docker/blob/6edd06e23466ed44d48e3d467b09e0c5fc0ffc17/35/apache/entrypoint.sh)
+at the pinned build behaves. It refuses to start when the volume's `version.php`
+is newer than the image's. It rsyncs `/usr/src/nextcloud` over the volume only
+when the image is newer. So an older image started over a restored `version.php`
+does not rsync, and runs whatever code the volume holds. The database dump alone
+brings back neither.
+
+### Going back
+
+Not rehearsed. The poller would otherwise race these steps, so keep the order:
+
+1. **Merge the pin's revert.** The poller's converge of it fails at
+   `roles/image_downgrade_guard`, because the newer containers still exist. A
+   failed revision is not retried, so the poller leaves the stack alone from
+   then on. A later merge to `main` fails the same way for as long as those
+   containers exist.
+2. **Stop, but do not remove,** the application and cron:
+   `docker stop nextcloud nextcloud-cron`. A removed container would let the next
+   tick past the guard onto a half-restored tree.
+3. **Restore the database** into the still-running database container, into a
+   recreated, empty database. `--clean` drops only the objects the dump holds, so
+   replaying it over the migrated database would leave behind the tables the
+   newer version's migrations created, and the next upgrade would meet them
+   again:
+
+   ```sh
+   docker exec nextcloud-db sh -ec 'export PGPASSWORD="$POSTGRES_PASSWORD"
+     psql -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname=postgres \
+       -c "DROP DATABASE \"$POSTGRES_DB\"" -c "CREATE DATABASE \"$POSTGRES_DB\" OWNER \"$POSTGRES_USER\""
+     gzip -dc /var/lib/postgresql/pre-upgrade-backup/database.sql.gz |
+       psql -v ON_ERROR_STOP=1 --username="$POSTGRES_USER" --dbname="$POSTGRES_DB" --quiet'
+   ```
+4. **Restore the code and config** with the image being returned to, the pin in
+   the reverted `services/nextcloud/compose.yml`. `docker pull` it first if the
+   prune has removed it. Extract to a staging directory, then rsync with
+   `--delete`, the way the entrypoint does. Extracting over the newer tree would
+   leave behind files that exist only in the newer version:
+
+   ```sh
+   docker run --rm --network none --entrypoint sh \
+     -v /volume1/Docker/nextcloud/data:/var/www/html \
+     -v /volume1/Docker/nextcloud/postgres/pre-upgrade-backup:/backup:ro \
+     <older pin> -ec 'mkdir /tmp/r && tar --numeric-owner -xzpf /backup/code.tar.gz -C /tmp/r &&
+       rsync -a --delete --exclude=/data/ --exclude=/nextcloud-init-sync.lock /tmp/r/ /var/www/html/'
+   ```
+
+5. **Remove the stopped containers and converge:** `docker rm nextcloud
+   nextcloud-cron`, then `nas-platform-deploy --retry-failed <full revert SHA>`. With
+   no container left, the guard passes and no dump is taken. Compose then creates
+   both containers on the older pin, and the entrypoint finds equal versions and
+   starts.
+
+Step 5 removes the one record the guard reads, so do not take it before steps 3
+and 4 have succeeded.
+
+### Why a version bump still waits for a human
 
 What it costs, stated plainly. `/entrypoint.sh` runs `occ upgrade` **itself** on
 any version increase, unattended, at container start. That migration is one-way;
@@ -345,12 +425,9 @@ one-way `occ upgrade`, not only a major, and the production poller converges
 the newest released `main` within five minutes. So Nextcloud is also in the
 self-migrating rule in `renovate.json`, which withholds its minors and patches
 from automerge too. A human merges every version bump; a digest refresh on an
-unchanged tag moves no version and is not withheld. What the merge still does
-not have is a backup: dropping it made minors irreversible too, not only
-majors. That matches how Seafile is
-treated and it was inherited rather than chosen, which is precisely why it
-deserves a deliberate decision the day this stack holds files somebody would
-miss. Unverified: whether any minor has ever needed a rollback here.
+unchanged tag moves no version and is not withheld. Since #884, a bump can be
+undone by the restore above, which is written down but not rehearsed.
+Unverified: whether any minor has ever needed a rollback here.
 
 ## Seafile compared, honestly
 
