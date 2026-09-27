@@ -114,6 +114,16 @@ policy_shard=${1:-}
 # rebalance is chasing is around 110s, so read two or three runs and ask whether
 # the WORST leg fell.
 #
+# ORDER WITHIN A SHARD IS DISPATCH ORDER, and it matters as much as which shard a
+# line is in. The pool hands lines out top to bottom, so a heavy check pasted at
+# the bottom of a heredoc starts once most of the shard has finished and runs on
+# alone past it. Each heredoc therefore lists its heaviest checks first, longest
+# at the top, going by the slowest-checks report; the rest follow in no
+# particular order. A new check that lands in that report goes near the top, not
+# at the end. #843 found shard 3's three heaviest checks among its last lines --
+# docs/ci-performance-history.md has the measurement -- and reordering them was
+# worth more than any move between shards.
+#
 # One line of shard 1 is DELIBERATELY DUPLICATED in CI, and this is the half of
 # that note the manifest can carry -- a comment between the heredoc markers would
 # be dispatched as a check. `ruby tests/ci/workflow_test.rb` runs here and again
@@ -128,6 +138,16 @@ policy_shard=${1:-}
 
 policy_shard_1() {
   cat <<'POLICY_CHECKS_1'
+ruby tests/contract_structure_mutation_test.rb
+ruby tests/deployment_summary_test.rb
+ruby tests/database_managed_users_test.rb
+tests/mac/media-acquisition-foundation-cleanup-test.sh
+ruby tests/vaultwarden_serve_test.rb
+python3 -m unittest -v tests/dozzle_alert_relay_test.py
+ruby tests/managed_users_vault_test.rb
+ruby tests/vaultwarden_serve_test.rb --self-test
+ruby tests/komga_library_reconciliation_test.rb --self-test
+tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/policy_test.rb
 ruby tests/policy_beszel_test.rb
 shellcheck --shell=sh -x tests/integration_controller.sh
@@ -136,24 +156,17 @@ ruby tests/policy_vault_test.rb
 ruby tests/host_prep_integration_writer_test.rb
 ruby tests/media_acquisition_phase1_test.rb
 ruby tests/media_acquisition_adoption_test.rb
-tests/mac/media-acquisition-foundation-cleanup-test.sh
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.image_prune_test
 ruby tests/beszel_telemetry_timeout_test.rb
-python3 -m unittest -v tests/dozzle_alert_relay_test.py
 python3 -m unittest -v tests/downloaders_clamav_gate_test.py
 ruby tests/immich_restore_lifecycle_test.rb
-tests/mac/beszel-telemetry-hook-test.sh
 ruby tests/ci/workflow_test.rb
 ruby tests/docs_links_test.rb --self-test
 tests/mac/snapshot-paperless-context-test.sh
 python3 tests/deployment_target_validator_test.py
 python3 tests/deployment_release_compare_test.py
-ruby tests/managed_users_vault_test.rb
 ruby tests/config_managed_users_test.rb --self-test
-ruby tests/komga_library_reconciliation_test.rb --self-test
 ruby tests/audiobookshelf_initial_scan_test.rb
-ruby tests/database_managed_users_test.rb
-ruby tests/deployment_summary_test.rb
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py
 ruby tests/acquisition_configarr_field_coverage_test.rb --self-test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_owned_field_coverage_test.py
@@ -172,7 +185,6 @@ ruby tests/downloaders_contract_test.rb --self-test
 ruby tests/trailarr_contract_test.rb
 ruby tests/bindery_contract_test.rb --self-test
 ruby tests/beszel_contract_test.rb --self-test
-ruby tests/contract_structure_mutation_test.rb
 ruby tests/container_health_wiring_test.rb
 ruby tests/container_health_wiring_test.rb --self-test
 tests/integration_lock_test.sh
@@ -182,8 +194,6 @@ tests/mac/hook-coverage-test.sh
 tests/mac/cleanup.sh --self-test
 ruby tests/mac/sanitize-logs.rb --self-test
 ruby tests/mac/read-integration-ports-test.rb
-ruby tests/vaultwarden_serve_test.rb
-ruby tests/vaultwarden_serve_test.rb --self-test
 ruby tests/role_forward_reference_test.rb
 ruby tests/release_path_read_test.rb
 tests/integration_cleanup_test.sh
@@ -192,6 +202,17 @@ POLICY_CHECKS_1
 
 policy_shard_2() {
   cat <<'POLICY_CHECKS_2'
+ruby tests/immich_release_helper_test.rb
+ansible-playbook -i localhost, -c local tests/pre_upgrade_backup_test.yml
+ruby tests/dozzle_quality_test.rb
+ruby tests/immich_configured_password_test.rb
+ruby tests/audiobookshelf_initial_scan_behavior_test.rb
+ansible-playbook -i localhost, -c local tests/image_downgrade_guard_test.yml
+ruby tests/database_managed_users_test.rb --self-test
+ruby tests/seerr_contract_test.rb
+ansible-playbook -i localhost, -c local tests/host_prep_mdraid_verify_test.yml
+ruby tests/beszel_password_preservation_test.rb --self-test
+tests/integration_suite_test.sh
 ruby tests/policy_platform_test.rb
 ruby tests/policy_integration_test.rb
 ruby tests/policy_deployment_test.rb
@@ -207,7 +228,6 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" -m unittest -v tests.production_auto
 ruby tests/image_prune_role_test.rb
 ruby tests/beszel_telemetry_ansible_test.rb
 python3 -m unittest -v tests/immich_restore_classifier_test.py
-ruby tests/immich_release_helper_test.rb
 ruby tests/immich_selective_helper_integrity_test.rb
 ruby tests/ci/classify_changes_test.rb
 ruby tests/secrets_docs_test.rb
@@ -215,14 +235,10 @@ ruby tests/assert_no_vault_secrets_test.rb
 tests/mac/snapshot-paperless-recovery-test.sh
 python3 tests/deployment_lock_probe_test.py
 python3 tests/deployment_controller_input_test.py
-ruby tests/beszel_password_preservation_test.rb --self-test
 ruby tests/komga_contract_test.rb
 ruby tests/rendered_file_ownership_test.rb
 ruby tests/rendered_file_ownership_test.rb --self-test
-ruby tests/audiobookshelf_initial_scan_behavior_test.rb
 ruby tests/audiobookshelf_contract_test.rb
-ruby tests/immich_configured_password_test.rb
-ruby tests/database_managed_users_test.rb --self-test
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/managed_user_state_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/acquisition_filter_native_arguments_test.py --self-test
 ruby tests/bazarr_provider_schema_test.rb
@@ -232,18 +248,12 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_preference_schema_test.
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/container_cpu_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/jellyfin_encoding_schema_test.py
 ansible-playbook -i localhost, -c local tests/compose_metadata_filter_test.yml
-ansible-playbook -i localhost, -c local tests/image_downgrade_guard_test.yml
-ansible-playbook -i localhost, -c local tests/pre_upgrade_backup_test.yml
-ansible-playbook -i localhost, -c local tests/host_prep_mdraid_verify_test.yml
-ruby tests/dozzle_quality_test.rb
 ruby tests/jellyfin_contract_test.rb
 ruby tests/pinchflat_contract_test.rb --self-test
 ruby tests/paperless_contract_test.rb
 ruby tests/arr_contract_test.rb --self-test
-ruby tests/seerr_contract_test.rb
 ruby tests/trailarr_contract_test.rb --self-test
 ruby tests/kapowarr_contract_test.rb
-tests/integration_suite_test.sh
 tests/mac/run-phase-status-test.sh
 tests/mac/reserved-environment-test.sh
 tests/mac/reserved-environment-test.sh --self-test
@@ -258,6 +268,18 @@ POLICY_CHECKS_2
 
 policy_shard_3() {
   cat <<'POLICY_CHECKS_3'
+tests/sandbox_cleanup_acquisition_ownership_test.sh
+ruby tests/media_managed_users_test.rb
+ruby tests/dozzle_contract_test.rb --self-test
+ruby tests/komga_library_reconciliation_test.rb
+ruby tests/paperless_mail_reconciliation_test.rb
+ruby tests/docs_links_test.rb
+ruby tests/beszel_pushover_validation_test.rb
+ruby tests/paperless_contract_test.rb --self-test
+ruby tests/dozzle_contract_test.rb
+ruby tests/production_auto_deploy_role_test.rb
+tests/mac/manual-validation-runner-test.sh
+tests/integration_controller_execution_test.sh
 ruby tests/policy_ci_test.rb
 ruby tests/idempotence_shard_partition_test.rb
 ruby tests/idempotence_shard_partition_test.rb --self-test
@@ -272,19 +294,16 @@ ruby tests/dozzle_exit_code_exclusion_identity_test.rb
 ruby tests/dozzle_exit_code_exclusion_identity_test.rb --self-test
 ruby tests/mac/media-acquisition-foundation-report-test.rb
 tests/policy_runner_test.sh
-ruby tests/production_auto_deploy_role_test.rb
 ruby tests/beszel_telemetry_probe_test.rb
 python3 tests/beszel_telemetry_module_test.py
 ruby tests/immich_restore_quality_test.rb
 tests/dozzle_alert_state_symlink_test.sh
 ruby tests/ci/validate_results_test.rb
-ruby tests/docs_links_test.rb
 tests/mac/integration-context-test.sh
 tests/mac/snapshot-paperless-drill-throttle-test.sh
 tests/deployment_lock_refusal_test.sh
 ruby tests/managed_user_capabilities_test.rb --self-test
 ruby tests/media_managed_users_test.rb --self-test
-ruby tests/komga_library_reconciliation_test.rb
 ruby tests/komga_contract_test.rb --self-test
 ruby tests/audiobookshelf_contract_test.rb --self-test
 ruby tests/immich_smart_search_retry_test.rb
@@ -298,32 +317,23 @@ PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/immich_response_schema_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/deployment_summary_filter_test.py
 PYTHONDONTWRITEBYTECODE=1 "$ansible_python" tests/filter_input_argument_spec_test.py
 ruby tests/run_contracts_test.rb
-ruby tests/dozzle_contract_test.rb
-ruby tests/dozzle_contract_test.rb --self-test
 ruby tests/jellyfin_contract_test.rb --self-test
 ruby tests/immich_contract_test.rb
-ruby tests/paperless_contract_test.rb --self-test
 ruby tests/nextcloud_contract_test.rb --self-test
 ruby tests/downloaders_contract_test.rb
 ruby tests/seerr_contract_test.rb --self-test
 ruby tests/bindery_contract_test.rb
 ruby tests/kapowarr_contract_test.rb --self-test
 ruby tests/beszel_contract_test.rb
-ruby tests/beszel_pushover_validation_test.rb
-tests/integration_controller_execution_test.sh
 tests/integration_lifecycle_test.sh
 ruby tests/contract_upgrade_seed_test.rb
-tests/mac/manual-validation-runner-test.sh
 tests/mac/immich-drift-hook-test.sh
 ruby tests/mac/report.rb --self-test
 tests/mac/snapshot-paperless.sh --self-test
 ruby tests/mac/pin-protected-input-test.rb --self-test
 ruby tests/case_pool_locals_test.rb --self-test
 ruby tests/case_pool_behavior_test.rb --self-test
-ruby tests/paperless_mail_reconciliation_test.rb
 ruby tests/immich_user_onboarding_test.rb
-ruby tests/media_managed_users_test.rb
-tests/sandbox_cleanup_acquisition_ownership_test.sh
 tests/generate-secrets-redaction-test.sh
 POLICY_CHECKS_3
 }

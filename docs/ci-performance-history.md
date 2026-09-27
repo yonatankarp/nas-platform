@@ -556,3 +556,48 @@ branch is still tested against the current `main` before it merges, and a held
 one re-runs CI only when it conflicts or a human asks.
 `tests/renovate_policy_test.rb` checks that resolution against the automerge
 verdict for every package it can name.
+
+## Shard 3 was slow because of line order, not partition
+
+**2026-09-27 (#843).** The issue measured shard 3 about 2.6 minutes slower than
+shard 2 and asked for a rebalance. The gate's own reports from 90 `static` legs
+on `main`, 2026-09-24 to 2026-09-27, show the partition was already close to
+even. What was wrong was the order inside it.
+
+The legs fall into two runner classes. In about a third of them every check
+takes roughly 0.6x as long. That, more than noise, is the "30% variance", and it
+means medians have to be taken per class. Mixing the classes makes a shard look
+slow or fast depending on which runners it happened to draw. Figures below are
+for the slower, more common class (each leg's checks within 10% of their usual
+seconds). Shard 2 counts only legs after #836 added `pre_upgrade_backup_test.yml`
+to it; the other two heredocs had not changed since 2026-09-23.
+
+| shard | legs | wall | check time | slowest check | simulated, file order | simulated, longest first |
+|---|---|---|---|---|---|---|
+| 1 | 21 | 451s | 1513s | 233s | 454s | 380s |
+| 2 | 4 | 406s | 1547s | 259s | 407s | 389s |
+| 3 | 16 | 532s | 1660s | 267s | 526s | 417s |
+
+Shard 3's check time is 7% above shard 2's, but its wall is 31% above. The cause
+is dispatch order. `xargs -P 4` hands out heredoc lines top to bottom, and
+shard 3's three heaviest checks (the sandbox cleanup test, which is a wait,
+`media_managed_users_test.rb` and the Dozzle contract self-test) were among its
+last lines. They started once the pool had nearly drained and ran on almost
+alone.
+
+The simulation replays each shard's list through four slots at those medians.
+Checks outside a report's ten slowest are spread evenly over the unreported
+remainder. File order reproduces the observed walls to within 6s. Longest-first
+lands on each shard's check time divided by four, which is the floor. The same
+replay for the fast class gives 317/268/376s in file order and 264/262/281s
+longest first.
+
+Each heredoc now lists its heaviest checks first; no line changed shard. The
+predicted worst leg falls from about 530s to about 420s on the slower class and
+from about 375s to about 280s on the faster. Treat those as floors. The heavy
+checks now start together, under full four-way contention for their whole
+length, where before they finished nearly alone. #484 is what that inflation
+can cost, so expect the measured legs somewhat above the prediction. After the
+reorder, balancing across shards would recover about 20s, which is under the
+noise, so nothing moved between shards. Confirmation is two or three post-merge
+slow-class runs in which the worst leg fell.
