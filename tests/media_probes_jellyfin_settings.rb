@@ -329,7 +329,7 @@ def exercise_jellyfin_policy_preflight(failures)
   end
 end
 
-def exercise_jellyfin_plugin_versions(failures)
+def jellyfin_plugin_versions_fixture
   desired_encoding = {
     "HardwareAccelerationType" => "none", "QsvDevice" => "",
     "HardwareDecodingCodecs" => [], "EnableDecodingColorDepth10Hevc" => false,
@@ -355,7 +355,11 @@ def exercise_jellyfin_plugin_versions(failures)
     "vault_jellyfin_opensubtitles_username" => "subtitle-user",
     "vault_jellyfin_opensubtitles_password" => "subtitle-secret"
   }
-  cases = {
+  [desired_encoding, desired_repositories, variables]
+end
+
+def jellyfin_plugin_versions_cases
+  {
     "active plus disabled old" => [
       { "Name" => "Intro Skipper", "Id" => JELLYFIN_INTRO_SKIPPER_ID, "Version" => "2.0.0.0", "Status" => "Active" },
       { "Name" => "Intro Skipper", "Id" => JELLYFIN_INTRO_SKIPPER_ID, "Version" => "1.0.0.0", "Status" => "Disabled" },
@@ -381,6 +385,11 @@ def exercise_jellyfin_plugin_versions(failures)
         "Version" => "24.0.0.0", "Status" => "Active" }
     ]
   }
+end
+
+def exercise_jellyfin_plugin_version_selection(failures, fixture)
+  desired_encoding, desired_repositories, variables = fixture
+  cases = jellyfin_plugin_versions_cases
   cases.each do |label, plugins|
     requests_after_preflight = []
     responder = lambda do |request|
@@ -436,7 +445,10 @@ def exercise_jellyfin_plugin_versions(failures)
       end
     end
   end
+end
 
+def exercise_jellyfin_single_disabled_plugin(failures, fixture)
+  desired_encoding, desired_repositories, variables = fixture
   plugins = [
     { "Name" => "Intro Skipper", "Id" => JELLYFIN_INTRO_SKIPPER_ID, "Version" => "1.0.0.0",
       "Status" => "Disabled" },
@@ -481,7 +493,10 @@ def exercise_jellyfin_plugin_versions(failures)
       enables.map { |request| request["target"] } ==
         ["/Plugins/#{JELLYFIN_INTRO_SKIPPER_ID}/1.0.0.0/Enable"]
   end
+end
 
+def exercise_jellyfin_absent_plugin_install(failures, fixture)
+  desired_encoding, desired_repositories, variables = fixture
   plugins = [
     { "Name" => "Open Subtitles", "Id" => "4b9ed42f-5185-48b5-9803-6ff2989014c4",
       "Version" => "24.0.0.0", "Status" => "Active" }
@@ -546,7 +561,10 @@ def exercise_jellyfin_plugin_versions(failures)
     failures << "Jellyfin absent plugin catalog was read before required repositories were ready" unless
       repository_write && catalog_read && repository_write < catalog_read
   end
+end
 
+def exercise_jellyfin_colliding_plugin_catalog(failures, fixture)
+  desired_encoding, desired_repositories, variables = fixture
   plugins = [
     { "Name" => "Open Subtitles", "Id" => JELLYFIN_OPENSUBTITLES_ID,
       "Version" => "24.0.0.0", "Status" => "Active" }
@@ -585,6 +603,14 @@ def exercise_jellyfin_plugin_versions(failures)
     failures << "Jellyfin colliding package catalog reached installation" if
       requests.any? { |request| request["target"].start_with?("/Packages/Installed/") }
   end
+end
+
+def exercise_jellyfin_plugin_versions(failures)
+  fixture = jellyfin_plugin_versions_fixture
+  exercise_jellyfin_plugin_version_selection(failures, fixture)
+  exercise_jellyfin_single_disabled_plugin(failures, fixture)
+  exercise_jellyfin_absent_plugin_install(failures, fixture)
+  exercise_jellyfin_colliding_plugin_catalog(failures, fixture)
 end
 
 def exercise_jellyfin_restart_decision(failures)
