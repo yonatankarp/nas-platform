@@ -23,7 +23,7 @@ module ClassifyChanges
   JOB_LANES = %w[static docs vault reconciliation].freeze
   # `harness` rows are suites no CI lane dispatches: `full`, the runner's own
   # default, and `smoke`, a strict prefix of idempotence-check that every
-  # selection carrying it already paid for (#832). A lane is its suite with hyphens written as
+  # selection carrying it already paid for, through that lane or the shards (#832). A lane is its suite with hyphens written as
   # underscores, because a lane is also a GitHub Actions output key.
   CI_SUITE_ROWS = SUITE_TABLE.reject { |_suite, kind, _tags| kind == "harness" }.freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
