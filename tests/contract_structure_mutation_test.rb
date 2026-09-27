@@ -1434,11 +1434,9 @@ check_accepted(
 check_rejected(
   :policy_vault, "the redaction test demoted from a dispatched line to its name",
   [[POLICY_GATE,
-    "tests/sandbox_cleanup_acquisition_ownership_test.sh\n" \
     "tests/generate-secrets-redaction-test.sh\n" \
     "POLICY_CHECKS_3\n" \
     "}\n",
-    "tests/sandbox_cleanup_acquisition_ownership_test.sh\n" \
     "POLICY_CHECKS_3\n" \
     "}\n" \
     "\n" \
