@@ -180,6 +180,23 @@
       if immich_restore_classification_status == 'postgres-major-mismatch'
       else 'repair the protected storage or backup condition and rerun.' }}
 
+# The classifier proceeds, as it did before it checked the major at all, when
+# the deploy account may list the cluster but is denied its PG_VERSION: refusing
+# there would stall every deployment on a permission nobody has measured. It
+# says so on stderr, and this is where the operator sees it.
+- name: Warn that the Immich PostgreSQL major could not be verified
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: the Immich PostgreSQL major could not be verified, because this
+      account was denied PG_VERSION in the Immich postgres data directory.
+      Deployment proceeded unguarded against a data directory of another major.
+      Make that file readable to the deploy account before the database image
+      moves to a new PostgreSQL major (the #839 cutover), or the pinned image
+      may meet a cluster it cannot open.
+  when: >-
+    immich_restore_classification_command.stderr | default('') | trim ==
+    'postgres-version-unverified'
+
 - name: Parse the Immich storage classification
   ansible.builtin.set_fact:
     immich_restore_classification: >-
