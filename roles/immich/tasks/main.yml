@@ -152,6 +152,7 @@
              ['unsafe-storage', 'unsafe-originals', 'missing-safe-backup',
              'ambiguous-newest-backup', 'unsafe-newest-backup',
              'incompatible-newest-backup',
+             'stale-newest-backup',
              'postgres-major-mismatch', 'unreadable-postgres-version',
              'previous-failed-restore']
          else 'classification-failed'
@@ -178,6 +179,16 @@
       major. A reverted pin: stop the stack and move the data directory that
       major wrote back into place, then rerun.'
       if immich_restore_classification_status == 'postgres-major-mismatch'
+      else 'the newest Immich database backup is older than the last change
+      to the Immich originals, so its rows would name files that have since
+      moved, and no container was touched. Take a fresh backup from the
+      database Immich last ran on: put that postgres data directory back in
+      place (under the database pin that wrote it, if the pin has moved since),
+      rerun so Immich starts, run the database backup job in the Immich web
+      UI, then stop the stack, move the data directory aside again and rerun.
+      Only when that database is lost, touch the newest backup file to accept
+      losing every change made after it, and rerun.'
+      if immich_restore_classification_status == 'stale-newest-backup'
       else 'repair the protected storage or backup condition and rerun.' }}
 
 # The classifier proceeds, as it did before it checked the major at all, when

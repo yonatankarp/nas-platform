@@ -173,9 +173,19 @@
       ansible.builtin.assert:
         that:
           - immich_restored_source_verification.rc | default(1) | int == 0
-          - (immich_restored_source_verification.stdout | from_json).keys() | list == ['verified']
+          - (immich_restored_source_verification.stdout | from_json).keys() | list | sort == ['missing', 'verified']
+          - (immich_restored_source_verification.stdout | from_json).missing | int == 0
           - (immich_restored_source_verification.stdout | from_json).verified | int == immich_restored_database_evidence.assets | length
-        fail_msg: Restored Immich database verification failed (source-files).
+        # The count, never a path: which files are missing is read on the host.
+        fail_msg: >-
+          Restored Immich database verification failed (source-files): {{
+          ((immich_restored_source_verification.stdout | from_json).missing | string)
+          ~ ' of ' ~ (immich_restored_database_evidence.assets | length | string)
+          ~ ' sampled assets have no readable original under the Immich
+          originals root, so the restored rows name paths no longer on disk --
+          what a backup older than a move of the originals looks like.'
+          if immich_restored_source_verification.rc | default(1) | int == 0
+          else 'the sampled asset paths were refused as unsafe.' }}
 
   rescue:
     - name: Record sanitized Immich restore failure stage

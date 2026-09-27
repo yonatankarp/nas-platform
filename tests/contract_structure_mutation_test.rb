@@ -953,6 +953,36 @@ check_rejected(
 )
 
 check_rejected(
+  :immich_restore, "the stale backup refusal dropped from the sanitized list",
+  [[IMMICH_ROLE, "             'stale-newest-backup',\n", ""]],
+  "incompatible newest backup diagnostic is not sanitized"
+)
+
+check_rejected(
+  :immich_restore, "the stale backup refusal left on the generic message",
+  [[IMMICH_ROLE,
+    "      if immich_restore_classification_status == 'stale-newest-backup'\n",
+    "      if false\n"]],
+  "stale backup refusal does not say how to take a fresh backup"
+)
+
+check_rejected(
+  :immich_restore, "a missing restored source file counted but not refused",
+  [[IMMICH_RESTORE,
+    "          - (immich_restored_source_verification.stdout | from_json).missing | int == 0\n",
+    ""]],
+  "a missing restored source file does not refuse startup"
+)
+
+check_rejected(
+  :immich_restore, "the missing source-file count dropped from the failure",
+  [[IMMICH_RESTORE,
+    "          ((immich_restored_source_verification.stdout | from_json).missing | string)\n",
+    "          ('some' | string)\n"]],
+  "source-file failure does not report how many assets were missing"
+)
+
+check_rejected(
   :immich_restore, "the PostgreSQL major refusals dropped from the sanitized list",
   [[IMMICH_ROLE,
     "             'postgres-major-mismatch', 'unreadable-postgres-version',\n",

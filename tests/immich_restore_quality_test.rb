@@ -443,7 +443,8 @@ refuse("classifier can bypass effective roots") if classifier_argv.include?("--m
 # main.yml said neither, and was satisfied by a comment.
 SANITIZED_REFUSALS = %w[
   unsafe-storage unsafe-originals missing-safe-backup ambiguous-newest-backup
-  unsafe-newest-backup incompatible-newest-backup postgres-major-mismatch
+  unsafe-newest-backup incompatible-newest-backup stale-newest-backup
+  postgres-major-mismatch
   unreadable-postgres-version previous-failed-restore
 ].freeze
 sanitized_status = task(main_tasks, "Resolve sanitized Immich storage classification status")
@@ -459,6 +460,14 @@ refuse("unverified PostgreSQL major is not reported") unless
   unverified_warning&.dig("ansible.builtin.debug", "msg").to_s.include?("could not be verified") &&
   unverified_warning["when"].to_s.include?("'postgres-version-unverified'") &&
   unverified_warning["when"].to_s.include?("immich_restore_classification_command.stderr")
+# A stale dump is refused before any container stops, and that refusal is only
+# worth its downtime if it tells the operator how to get a fresh one (#900).
+stale_message = task(main_tasks, "Require successful Immich storage classification")
+                &.dig("ansible.builtin.assert", "fail_msg").to_s.split.join(" ")
+refuse("stale backup refusal does not say how to take a fresh backup") unless
+  stale_message.include?("if immich_restore_classification_status == 'stale-newest-backup'") &&
+  stale_message.include?("run the database backup job in the Immich web UI") &&
+  stale_message.include?("touch the newest backup file")
 refuse("classification failure is ignored or reversed") unless
   classifier_failure_guarded?(main_tasks)
 schema_guard = task(main_tasks, "Require exact Immich storage classification")
@@ -504,6 +513,15 @@ refuse("restored path can create a new administrator") unless
   initialized_guard&.dig("ansible.builtin.assert", "that").to_s.include?("immich_initialized")
 
 restore_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(restore_path, aliases: true))
+# The source-file check reports how many sampled assets it could not read, and
+# still refuses on any one of them.
+source_guard = task(restore_tasks, "Require verified restored Immich source files")
+source_conditions = Array(source_guard&.dig("ansible.builtin.assert", "that"))
+refuse("a missing restored source file does not refuse startup") unless
+  source_conditions.include?("(immich_restored_source_verification.stdout | from_json).missing | int == 0")
+refuse("source-file failure does not report how many assets were missing") unless
+  source_guard&.dig("ansible.builtin.assert", "fail_msg").to_s
+    .include?("(immich_restored_source_verification.stdout | from_json).missing")
 integrity_tasks = PolicySupport.flatten_tasks(YAML.safe_load_file(integrity_path, aliases: true))
 refuse("classifier is not executed from the immutable release") unless
   classifier_uses_deployed_helper?(main_tasks, restore_tasks)
