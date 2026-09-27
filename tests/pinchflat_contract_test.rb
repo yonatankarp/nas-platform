@@ -540,9 +540,15 @@ def stdin_failures(wrapper_source: File.read(CONTRACT))
   failures
 end
 
+REQUIRED_RUN_ENV = %w[
+  PLATFORM_CONTRACT_VAULT_FILE
+  PLATFORM_CONTRACT_VAULT_PASSWORD_FILE
+  PLATFORM_DOCKER_ROOT
+].freeze
+
 def wrapper_failures(wrapper_source: File.read(CONTRACT))
   failures = []
-  with_contract_copy(wrapper: wrapper_source) do |contract|
+  with_contract_copy(wrapper: wrapper_source) do |contract, copy_root|
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "seed-fixture-only"
     )
@@ -551,6 +557,30 @@ def wrapper_failures(wrapper_source: File.read(CONTRACT))
       status.exitstatus == 2
     failures << "wrapper: an unknown mode was refused without its diagnostic" unless
       (stdout + stderr).include?("pinchflat contract accepts only static or run")
+
+    # The run-mode environment contract, as tests/bindery_contract_test.rb holds
+    # it. Each name is set to "" rather than deleted, because ${VAR:?} refuses
+    # null as well as unset and a deleted key would pass for a developer who
+    # exports it; the Mac names are cleared so their `:=` fallback cannot stand
+    # in. The wrapper's own message is asserted, never the shell's wording. The
+    # port is unparseable so a guard planted as `:=` fails fast in the runtime
+    # program rather than polling a port nothing listens on.
+    full = {
+      "PLATFORM_CONTRACT_REPO_DIR" => ROOT,
+      "PLATFORM_CONTRACT_VAULT_FILE" => File.join(copy_root, "vault.yml"),
+      "PLATFORM_CONTRACT_VAULT_PASSWORD_FILE" => File.join(copy_root, "vault-password"),
+      "PLATFORM_DOCKER_ROOT" => File.join(copy_root, "docker"),
+      "PLATFORM_MAC_VAULT_FILE" => nil,
+      "PLATFORM_MAC_VAULT_PASSWORD_FILE" => nil,
+      "PLATFORM_PINCHFLAT_PORT" => "not-a-number"
+    }
+    REQUIRED_RUN_ENV.each do |name|
+      stdout, stderr, status = Open3.capture3(full.merge(name => ""), contract, "run")
+      output = stdout + stderr
+      failures << "run env: #{name} unset was accepted" if status.success?
+      failures << "run env: #{name} unset was not refused with the wrapper's own message: " \
+                  "#{output.strip.inspect}" unless output.include?("#{name} is required")
+    end
 
     stdout, stderr, status = Open3.capture3(
       { "PLATFORM_CONTRACT_REPO_DIR" => ROOT }, contract, "static"
@@ -757,8 +787,23 @@ if ARGV.include?("--self-test")
     planted_redirects += 1
   end
 
-  puts "pinchflat contract: self-test detects #{PROGRAM_MUTATIONS.length + planted_redirects} " \
-       "planted regressions"
+  # Each run-mode requirement weakened to a default, and caught by its own row:
+  # every row names its variable, so any other failure is the wrong assertion.
+  planted_requirements = 0
+  REQUIRED_RUN_ENV.each do |name|
+    from = %(: "${#{name}:?#{name} is required}")
+    pristine = File.read(CONTRACT)
+    abort "self-test could not plant a weakened #{name}" unless pristine.scan(from).length == 1
+
+    caught = wrapper_failures(wrapper_source: pristine.sub(from, %(: "${#{name}:=}")))
+    abort "self-test failed: a weakened #{name} requirement was accepted" if caught.empty?
+    abort "self-test failed: a weakened #{name} requirement was caught by the wrong " \
+          "assertion: #{caught.join(' | ')}" unless caught.all? { |failure| failure.include?(name) }
+    planted_requirements += 1
+  end
+
+  puts "pinchflat contract: self-test detects " \
+       "#{PROGRAM_MUTATIONS.length + planted_redirects + planted_requirements} planted regressions"
   exit
 end
 
