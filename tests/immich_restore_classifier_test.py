@@ -7,6 +7,7 @@ import itertools
 import json
 import os
 from pathlib import Path
+import resource
 import stat
 import subprocess
 import tempfile
@@ -84,7 +85,14 @@ class ClassifierFixture:
             stream.write(content)
         return path
 
-    def run(self, *, expected_uid=None, expected_gid=None, expected_postgres_major=14):
+    def run(
+        self,
+        *,
+        expected_uid=None,
+        expected_gid=None,
+        expected_postgres_major=14,
+        descriptor_limit=None,
+    ):
         command = [
             "python3",
             str(CLASSIFIER),
@@ -107,8 +115,19 @@ class ClassifierFixture:
         ]
         # Bounded so a classifier blocked on an open reports as a failure
         # rather than hanging the suite.
+        def limit_descriptors():
+            if descriptor_limit is not None:
+                resource.setrlimit(
+                    resource.RLIMIT_NOFILE, (descriptor_limit, descriptor_limit)
+                )
+
         return subprocess.run(
-            command, text=True, capture_output=True, check=False, timeout=30
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=30,
+            preexec_fn=limit_descriptors,
         )
 
     def verify_assets(self, assets):
@@ -485,12 +504,24 @@ class ImmichRestoreClassifierTest(unittest.TestCase):
                     str(self.fixture.originals_root), dated
                 )
             )
-        with mock.patch.object(CLASSIFIER_MODULE, "STALE_SCAN_ENTRY_CAP", 2):
+        with mock.patch.object(CLASSIFIER_MODULE, "STALE_SCAN_ENTRY_CAP", 3):
             self.assertTrue(
                 CLASSIFIER_MODULE.originals_changed_since(
                     str(self.fixture.originals_root), dated
                 )
             )
+
+    # Only the ancestor chain is held open, so a wide library does not run the
+    # walk out of descriptors and misreport that as unsafe originals.
+    def test_wide_originals_tree_scans_within_a_small_descriptor_limit(self):
+        backup = self.stale_fixture()
+        for index in range(300):
+            (self.fixture.originals_root / "library" / "admin" / f"a{index}").mkdir(
+                parents=True
+            )
+        self.fixture.age_originals(backup.stat().st_mtime - 3600)
+        classification = self.fixture.classify(descriptor_limit=64)
+        self.assertTrue(classification["restoreRequired"])
 
     def test_stale_scan_stops_at_the_first_newer_directory(self):
         self.stale_fixture()
