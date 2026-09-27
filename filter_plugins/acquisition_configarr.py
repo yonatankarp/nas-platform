@@ -526,9 +526,22 @@ def acquisition_configarr_owned_projection(results: Any) -> dict[str, Any]:
 
 
 
-def _configarr_quality_definition_source(
+_QUALITY_DEFINITION_SOURCE_IDENTITIES = {
+    "radarr": {
+        "trash_id": "aed34b9f60ee115dfa7918b742336277",
+        "type": "movie",
+    },
+    "sonarr": {
+        "trash_id": "bef99584217af744e404ed44a33af589",
+        "type": "series",
+    },
+}
+
+
+def _configarr_quality_definition_document(
     source: Any, service: str
-) -> dict[str, dict[str, Any]]:
+) -> dict[str, Any]:
+    """Parse one TRaSH quality-definition file and check it is the expected one."""
     if not isinstance(source, str) or not source:
         raise AnsibleFilterError(
             f"Configarr {service} quality-definition source must be a non-empty string"
@@ -558,19 +571,9 @@ def _configarr_quality_definition_source(
             f"Configarr {service} quality-definition source cannot be parsed"
         ) from error
 
-    expected_metadata = {
-        "radarr": {
-            "trash_id": "aed34b9f60ee115dfa7918b742336277",
-            "type": "movie",
-        },
-        "sonarr": {
-            "trash_id": "bef99584217af744e404ed44a33af589",
-            "type": "series",
-        },
-    }
-    if service not in expected_metadata:
+    if service not in _QUALITY_DEFINITION_SOURCE_IDENTITIES:
         raise AnsibleFilterError("Configarr quality-definition service is invalid")
-    expected = expected_metadata[service]
+    expected = _QUALITY_DEFINITION_SOURCE_IDENTITIES[service]
     if document.get("trash_id") != expected["trash_id"]:
         raise AnsibleFilterError(
             f"Configarr {service} quality-definition source identity differs"
@@ -579,41 +582,54 @@ def _configarr_quality_definition_source(
         raise AnsibleFilterError(
             f"Configarr {service} quality-definition source type differs"
         )
+    return document
 
+
+def _configarr_quality_definition_source_entry(
+    entry: Any, service: str, seen: dict[str, Any]
+) -> dict[str, Any]:
+    entry = _mapping(
+        entry, f"Configarr {service} quality-definition source entry"
+    )
+    name = _required_string(
+        entry.get("quality"),
+        f"Configarr {service} source quality identity",
+    )
+    if name in seen:
+        raise AnsibleFilterError(
+            f"Configarr {service} quality-definition source identities are ambiguous"
+        )
+    value = {
+        "quality": name,
+        "minSize": _number(
+            entry.get("min"), f"Configarr {service} source {name!r} min"
+        ),
+        "preferredSize": _number(
+            entry.get("preferred"),
+            f"Configarr {service} source {name!r} preferred",
+        ),
+        "maxSize": _number(
+            entry.get("max"), f"Configarr {service} source {name!r} max"
+        ),
+    }
+    if "title" in entry:
+        value["title"] = _required_string(
+            entry.get("title"), f"Configarr {service} source {name!r} title"
+        )
+    return value
+
+
+def _configarr_quality_definition_source(
+    source: Any, service: str
+) -> dict[str, dict[str, Any]]:
+    document = _configarr_quality_definition_document(source, service)
     normalized = {}
     for entry in _sequence(
         document.get("qualities"),
         f"Configarr {service} quality-definition source qualities",
     ):
-        entry = _mapping(
-            entry, f"Configarr {service} quality-definition source entry"
-        )
-        name = _required_string(
-            entry.get("quality"),
-            f"Configarr {service} source quality identity",
-        )
-        if name in normalized:
-            raise AnsibleFilterError(
-                f"Configarr {service} quality-definition source identities are ambiguous"
-            )
-        value = {
-            "quality": name,
-            "minSize": _number(
-                entry.get("min"), f"Configarr {service} source {name!r} min"
-            ),
-            "preferredSize": _number(
-                entry.get("preferred"),
-                f"Configarr {service} source {name!r} preferred",
-            ),
-            "maxSize": _number(
-                entry.get("max"), f"Configarr {service} source {name!r} max"
-            ),
-        }
-        if "title" in entry:
-            value["title"] = _required_string(
-                entry.get("title"), f"Configarr {service} source {name!r} title"
-            )
-        normalized[name] = value
+        value = _configarr_quality_definition_source_entry(entry, service, normalized)
+        normalized[value["quality"]] = value
     if not normalized:
         raise AnsibleFilterError(
             f"Configarr {service} quality-definition source is empty"
@@ -805,6 +821,113 @@ def acquisition_configarr_quality_definition_invariants(
     }
 
 
+def _configarr_projected_item_order(
+    items: list[Any], service: str
+) -> tuple[list[Any], list[Any], str]:
+    """Split projected items into enabled and disabled blocks and name the order.
+
+    Enabled items are copied because the declared projection returns them; the
+    disabled ones only feed the quality-name lists.
+    """
+    disabled_items = []
+    enabled_items = []
+    enabled_started = False
+    top_order = True
+    disabled_started = False
+    bottom_order = True
+    for item in items:
+        item = _mapping(item, f"Configarr {service} projected item")
+        if _strict_boolean(item.get("allowed"), "Configarr projected item allowed"):
+            if disabled_started:
+                bottom_order = False
+            enabled_started = True
+            enabled_items.append(deepcopy(item))
+        else:
+            if enabled_started:
+                top_order = False
+            disabled_started = True
+            disabled_items.append(item)
+    if top_order:
+        materialized_quality_sort = "top"
+    elif bottom_order:
+        materialized_quality_sort = "bottom"
+    else:
+        materialized_quality_sort = "nonconforming"
+    return enabled_items, disabled_items, materialized_quality_sort
+
+
+def _configarr_projected_format_assignment(
+    profile: dict[str, Any], service: str
+) -> tuple[list[Any], dict[str, Any] | None, bool]:
+    """Return the owned format assignments, the single one, and the reset flag."""
+    assignments = _sequence(
+        profile.get("format_assignments"),
+        f"Configarr {service} projected format assignments",
+    )
+    assignment_matches = [
+        item
+        for item in assignments
+        if _mapping(item, "Configarr projected format assignment").get("name")
+        == OWNED_FORMAT_NAME
+    ]
+    assignment = (
+        {
+            "format": assignment_matches[0]["format"],
+            "name": assignment_matches[0]["name"],
+            "score": assignment_matches[0]["score"],
+        }
+        if len(assignment_matches) == 1
+        else None
+    )
+    unmatched_scores_reset = all(
+        item.get("name") == OWNED_FORMAT_NAME
+        or _strict_integer(
+            item.get("score"), "Configarr unmatched format score"
+        ) == 0
+        for item in assignments
+    )
+    return assignment_matches, assignment, unmatched_scores_reset
+
+
+def _configarr_declared_profile_projection(profile: Any, service: str) -> dict[str, Any]:
+    profile = _mapping(profile, f"Configarr {service} quality-profile projection")
+    items = _sequence(profile.get("items"), f"Configarr {service} projected items")
+    enabled_items, disabled_items, materialized_quality_sort = (
+        _configarr_projected_item_order(items, service)
+    )
+    all_quality_names = sorted(
+        name for item in items for name in _projected_quality_names(item)
+    )
+    disabled_quality_names = sorted(
+        name
+        for item in disabled_items
+        for name in _projected_quality_names(item)
+    )
+    assignment_matches, assignment, unmatched_scores_reset = (
+        _configarr_projected_format_assignment(profile, service)
+    )
+    return {
+        "name": profile["name"],
+        "upgradeAllowed": profile["upgradeAllowed"],
+        "cutoff": profile["cutoff"],
+        "minFormatScore": profile["minFormatScore"],
+        "cutoffFormatScore": profile["cutoffFormatScore"],
+        "minUpgradeFormatScore": profile["minUpgradeFormatScore"],
+        "resetUnmatchedScores": unmatched_scores_reset,
+        "qualitySort": materialized_quality_sort,
+        "items": {
+            "quality_names": all_quality_names,
+            "disabled_quality_names": disabled_quality_names,
+            "enabled": enabled_items,
+        },
+        "item_identities": deepcopy(profile.get("item_identities")),
+        "format_assignment": {
+            "identity_count": len(assignment_matches),
+            "value": assignment,
+        },
+    }
+
+
 def acquisition_configarr_declared_projection(projection: Any) -> dict[str, Any]:
     projection = _mapping(projection, "Configarr owned projection")
     declared = {}
@@ -813,86 +936,7 @@ def acquisition_configarr_declared_projection(projection: Any) -> dict[str, Any]
         profile = state.get("quality_profile")
         profile_projection = None
         if profile is not None:
-            profile = _mapping(profile, f"Configarr {service} quality-profile projection")
-            items = _sequence(profile.get("items"), f"Configarr {service} projected items")
-            disabled_items = []
-            enabled_items = []
-            enabled_started = False
-            top_order = True
-            disabled_started = False
-            bottom_order = True
-            for item in items:
-                item = _mapping(item, f"Configarr {service} projected item")
-                if _strict_boolean(item.get("allowed"), "Configarr projected item allowed"):
-                    if disabled_started:
-                        bottom_order = False
-                    enabled_started = True
-                    enabled_items.append(deepcopy(item))
-                else:
-                    if enabled_started:
-                        top_order = False
-                    disabled_started = True
-                    disabled_items.append(item)
-            all_quality_names = sorted(
-                name for item in items for name in _projected_quality_names(item)
-            )
-            disabled_quality_names = sorted(
-                name
-                for item in disabled_items
-                for name in _projected_quality_names(item)
-            )
-            assignments = _sequence(
-                profile.get("format_assignments"),
-                f"Configarr {service} projected format assignments",
-            )
-            assignment_matches = [
-                item
-                for item in assignments
-                if _mapping(item, "Configarr projected format assignment").get("name")
-                == OWNED_FORMAT_NAME
-            ]
-            assignment = (
-                {
-                    "format": assignment_matches[0]["format"],
-                    "name": assignment_matches[0]["name"],
-                    "score": assignment_matches[0]["score"],
-                }
-                if len(assignment_matches) == 1
-                else None
-            )
-            unmatched_scores_reset = all(
-                item.get("name") == OWNED_FORMAT_NAME
-                or _strict_integer(
-                    item.get("score"), "Configarr unmatched format score"
-                ) == 0
-                for item in assignments
-            )
-            if top_order:
-                materialized_quality_sort = "top"
-            elif bottom_order:
-                materialized_quality_sort = "bottom"
-            else:
-                materialized_quality_sort = "nonconforming"
-            profile_projection = {
-                "name": profile["name"],
-                "upgradeAllowed": profile["upgradeAllowed"],
-                "cutoff": profile["cutoff"],
-                "minFormatScore": profile["minFormatScore"],
-                "cutoffFormatScore": profile["cutoffFormatScore"],
-                "minUpgradeFormatScore": profile["minUpgradeFormatScore"],
-                "resetUnmatchedScores": unmatched_scores_reset,
-                "qualitySort": materialized_quality_sort,
-                "items": {
-                    "quality_names": all_quality_names,
-                    "disabled_quality_names": disabled_quality_names,
-                    "enabled": enabled_items,
-                },
-                "item_identities": deepcopy(profile.get("item_identities")),
-                "format_assignment": {
-                    "identity_count": len(assignment_matches),
-                    "value": assignment,
-                },
-            }
+            profile_projection = _configarr_declared_profile_projection(profile, service)
         declared[service] = {
             "quality_profile_identity_count": state["quality_profile_identity_count"],
             "quality_profile": profile_projection,
@@ -1115,6 +1159,138 @@ def _configarr_desired_naming(policy: dict[str, Any], service: str) -> dict[str,
     }
 
 
+def _configarr_desired_quality_profile(
+    profile: dict[str, Any],
+    service: str,
+    definition_names: list[str],
+    disabled_quality_names: list[str],
+    enabled_quality_items: list[Any],
+    materialized_tree: dict[str, Any],
+    current_service: dict[str, Any],
+    format_score: int,
+) -> dict[str, Any]:
+    """Shape one service's declared profile the way its readback projects."""
+    return {
+        "name": OWNED_PROFILE_NAME,
+        "upgradeAllowed": _strict_boolean(
+            _mapping(profile.get("upgrade"), "Configarr profile upgrade").get("allowed"),
+            "Configarr profile upgrade flag",
+        ),
+        "cutoff": _required_string(
+            _mapping(
+                _sequence(
+                    profile.get("qualities"),
+                    f"Configarr {service} declared qualities",
+                )[0],
+                "Configarr first declared quality",
+            ).get("name"),
+            "Configarr disabled-upgrade cutoff quality",
+        ),
+        "minFormatScore": _strict_integer(
+            profile.get("min_format_score"), "Configarr minimum format score"
+        ),
+        "cutoffFormatScore": 1,
+        "minUpgradeFormatScore": 1,
+        "resetUnmatchedScores": _strict_boolean(
+            _mapping(
+                profile.get("reset_unmatched_scores"),
+                "Configarr reset unmatched scores",
+            ).get("enabled"),
+            "Configarr reset unmatched scores flag",
+        ),
+        "qualitySort": _required_string(
+            profile.get("quality_sort"), "Configarr quality sort"
+        ),
+        "items": {
+            "quality_names": sorted(definition_names),
+            "disabled_quality_names": disabled_quality_names,
+            "enabled": enabled_quality_items,
+        },
+        "item_identities": materialized_tree["item_identities"],
+        "format_assignment": {
+            "identity_count": 1,
+            "value": {
+                "format": current_service.get("custom_format_id"),
+                "name": OWNED_FORMAT_NAME,
+                "score": format_score,
+            },
+        },
+    }
+
+
+def _configarr_desired_service(
+    config: dict[str, Any],
+    current_service: Any,
+    service: str,
+    format_definition: dict[str, Any],
+    trash_id: str,
+    specifications: Any,
+) -> dict[str, Any]:
+    """Materialize one service's declaration against its current definitions."""
+    current_service = _mapping(
+        current_service, f"Configarr {service} current projection"
+    )
+    definition_names = [
+        _required_string(
+            _mapping(
+                item.get("quality"), "Configarr quality-definition identity"
+            ).get("name"),
+            "Configarr quality-definition name",
+        )
+        for item in _sequence(
+            current_service.get("quality_definitions"),
+            f"Configarr {service} current quality definitions",
+        )
+    ]
+    policy = _configarr_service_policy(config, service)
+    materialized_items = _configarr_materialized_profile_items(
+        policy,
+        _sequence(
+            current_service.get("quality_definitions"),
+            f"Configarr {service} current quality definitions",
+        ),
+        service,
+    )
+    materialized_tree = _configarr_profile_tree(
+        materialized_items,
+        f"Configarr {service} materialized quality items",
+    )
+    profile = _configarr_declared_profile(policy, service)
+    configured_quality_items, configured_quality_names = (
+        _configarr_declared_quality_items(profile, service)
+    )
+    disabled_quality_names = sorted(
+        set(definition_names).difference(configured_quality_names)
+    )
+    enabled_quality_items = list(reversed(configured_quality_items))
+    format_score = _configarr_declared_format_score(policy, trash_id, service)
+    desired_naming = _configarr_desired_naming(policy, service)
+
+    return {
+        "quality_profile_identity_count": 1,
+        "quality_profile": _configarr_desired_quality_profile(
+            profile,
+            service,
+            definition_names,
+            disabled_quality_names,
+            enabled_quality_items,
+            materialized_tree,
+            current_service,
+            format_score,
+        ),
+        "custom_format_identity_count": 1,
+        "custom_format": {
+            "name": OWNED_FORMAT_NAME,
+            "includeCustomFormatWhenRenaming": _strict_boolean(
+                format_definition.get("includeCustomFormatWhenRenaming"),
+                "Configarr include custom format when renaming",
+            ),
+            "specifications": specifications,
+        },
+        "naming": desired_naming,
+    }
+
+
 def acquisition_configarr_desired_projection(
     config_source: Any, current_projection: Any
 ) -> dict[str, Any]:
@@ -1137,104 +1313,14 @@ def acquisition_configarr_desired_projection(
 
     desired = {}
     for service in ["radarr", "sonarr"]:
-        current_service = _mapping(
-            current_projection.get(service), f"Configarr {service} current projection"
-        )
-        definition_names = [
-            _required_string(
-                _mapping(
-                    item.get("quality"), "Configarr quality-definition identity"
-                ).get("name"),
-                "Configarr quality-definition name",
-            )
-            for item in _sequence(
-                current_service.get("quality_definitions"),
-                f"Configarr {service} current quality definitions",
-            )
-        ]
-        policy = _configarr_service_policy(config, service)
-        materialized_items = _configarr_materialized_profile_items(
-            policy,
-            _sequence(
-                current_service.get("quality_definitions"),
-                f"Configarr {service} current quality definitions",
-            ),
+        desired[service] = _configarr_desired_service(
+            config,
+            current_projection.get(service),
             service,
+            format_definition,
+            trash_id,
+            specifications,
         )
-        materialized_tree = _configarr_profile_tree(
-            materialized_items,
-            f"Configarr {service} materialized quality items",
-        )
-        profile = _configarr_declared_profile(policy, service)
-        configured_quality_items, configured_quality_names = (
-            _configarr_declared_quality_items(profile, service)
-        )
-        disabled_quality_names = sorted(
-            set(definition_names).difference(configured_quality_names)
-        )
-        enabled_quality_items = list(reversed(configured_quality_items))
-        format_score = _configarr_declared_format_score(policy, trash_id, service)
-        desired_naming = _configarr_desired_naming(policy, service)
-
-        desired[service] = {
-            "quality_profile_identity_count": 1,
-            "quality_profile": {
-                "name": OWNED_PROFILE_NAME,
-                "upgradeAllowed": _strict_boolean(
-                    _mapping(profile.get("upgrade"), "Configarr profile upgrade").get("allowed"),
-                    "Configarr profile upgrade flag",
-                ),
-                "cutoff": _required_string(
-                    _mapping(
-                        _sequence(
-                            profile.get("qualities"),
-                            f"Configarr {service} declared qualities",
-                        )[0],
-                        "Configarr first declared quality",
-                    ).get("name"),
-                    "Configarr disabled-upgrade cutoff quality",
-                ),
-                "minFormatScore": _strict_integer(
-                    profile.get("min_format_score"), "Configarr minimum format score"
-                ),
-                "cutoffFormatScore": 1,
-                "minUpgradeFormatScore": 1,
-                "resetUnmatchedScores": _strict_boolean(
-                    _mapping(
-                        profile.get("reset_unmatched_scores"),
-                        "Configarr reset unmatched scores",
-                    ).get("enabled"),
-                    "Configarr reset unmatched scores flag",
-                ),
-                "qualitySort": _required_string(
-                    profile.get("quality_sort"), "Configarr quality sort"
-                ),
-                "items": {
-                    "quality_names": sorted(definition_names),
-                    "disabled_quality_names": disabled_quality_names,
-                    "enabled": enabled_quality_items,
-                },
-                "item_identities": materialized_tree["item_identities"],
-                "format_assignment": {
-                    "identity_count": 1,
-                    "value": {
-                        "format": current_service.get("custom_format_id"),
-                        "name": OWNED_FORMAT_NAME,
-                        "score": format_score,
-                    },
-                },
-            },
-            "custom_format_identity_count": 1,
-            "custom_format": {
-                "name": OWNED_FORMAT_NAME,
-                "includeCustomFormatWhenRenaming": _strict_boolean(
-                    format_definition.get("includeCustomFormatWhenRenaming"),
-                    "Configarr include custom format when renaming",
-                ),
-                "specifications": specifications,
-            },
-            "naming": desired_naming,
-        }
     return desired
 
 
@@ -1475,6 +1561,130 @@ def _configarr_profile_item_ids(items: Any, label: str) -> dict[str, int]:
     return _configarr_profile_tree(items, label)["ids_by_name"]
 
 
+def _configarr_repair_custom_formats(
+    resources: dict[str, Any], service: str
+) -> list[dict[str, Any]]:
+    """Return the service's custom formats, refusing a repeated numeric id."""
+    formats = _unique_named(
+        resources["customformat"], f"Configarr {service} custom formats"
+    )
+    format_ids = []
+    for custom_format in formats:
+        identifier = _strict_integer(
+            custom_format.get("id"), f"Configarr {service} custom-format id"
+        )
+        if identifier in format_ids:
+            raise AnsibleFilterError(
+                f"Configarr {service} custom-format numeric identities are ambiguous"
+            )
+        format_ids.append(identifier)
+    return formats
+
+
+def _configarr_repair_profiles(
+    declared: dict[str, Any], desired: dict[str, Any], service: str
+) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Return the service's current and desired profile projections."""
+    declared_service = _mapping(
+        declared.get(service), f"Configarr {service} declared state"
+    )
+    current_profile = declared_service.get("quality_profile")
+    if current_profile is not None:
+        current_profile = _mapping(
+            current_profile, f"Configarr {service} declared quality profile"
+        )
+    desired_profile = _mapping(
+        _mapping(desired.get(service), f"Configarr {service} desired state").get(
+            "quality_profile"
+        ),
+        f"Configarr {service} desired quality profile",
+    )
+    return current_profile, desired_profile
+
+
+def _configarr_owned_profile_body(
+    resources: dict[str, Any], service: str
+) -> tuple[dict[str, Any], int]:
+    """Copy the single owned profile as read back, and return its numeric id."""
+    profiles = _unique_named(
+        resources["qualityprofile"], f"Configarr {service} profiles"
+    )
+    profile_matches = [
+        item for item in profiles if item["name"] == OWNED_PROFILE_NAME
+    ]
+    if len(profile_matches) != 1:
+        raise AnsibleFilterError(
+            f"Configarr {service} owned profile identity is ambiguous"
+        )
+    body = deepcopy(profile_matches[0])
+    profile_id = _strict_integer(
+        body.get("id"), f"Configarr {service} quality-profile id"
+    )
+    return body, profile_id
+
+
+def _configarr_repair_items(
+    config_source: Any,
+    resources: dict[str, Any],
+    desired_profile: dict[str, Any],
+    service: str,
+) -> tuple[list[dict[str, Any]], int]:
+    """Materialize the profile items and resolve the desired cutoff's id."""
+    definitions = _sequence(
+        resources["qualitydefinition"],
+        f"Configarr {service} quality definitions",
+    )
+    items = _configarr_materialized_profile_items(
+        _configarr_source_policy(config_source, service), definitions, service
+    )
+    item_ids = _configarr_profile_item_ids(
+        items, f"Configarr {service} materialized quality items"
+    )
+    cutoff_name = _required_string(
+        desired_profile.get("cutoff"), f"Configarr {service} desired cutoff"
+    )
+    if cutoff_name not in item_ids:
+        raise AnsibleFilterError(
+            f"Configarr {service} desired cutoff identity is unavailable"
+        )
+    return items, item_ids[cutoff_name]
+
+
+def _configarr_repair_format_items(
+    formats: list[dict[str, Any]], desired_profile: dict[str, Any], service: str
+) -> list[dict[str, Any]]:
+    """Score the owned format as desired and every other format zero."""
+    format_items = []
+    desired_assignment = _mapping(
+        _mapping(
+            desired_profile.get("format_assignment"),
+            f"Configarr {service} desired format assignment",
+        ).get("value"),
+        f"Configarr {service} desired format assignment value",
+    )
+    target_score = _strict_integer(
+        desired_assignment.get("score"),
+        f"Configarr {service} desired format score",
+    )
+    for custom_format in formats:
+        identifier = _strict_integer(
+            custom_format.get("id"), f"Configarr {service} custom-format id"
+        )
+        name = custom_format["name"]
+        format_items.append(
+            {
+                "format": identifier,
+                "name": name,
+                "score": target_score if name == OWNED_FORMAT_NAME else 0,
+            }
+        )
+    if not any(item["name"] == OWNED_FORMAT_NAME for item in format_items):
+        raise AnsibleFilterError(
+            f"Configarr {service} owned custom format is unavailable after creation"
+        )
+    return format_items
+
+
 def acquisition_configarr_profile_repair_bodies(
     config_source: Any, results: Any
 ) -> dict[str, dict[str, Any]]:
@@ -1486,101 +1696,22 @@ def acquisition_configarr_profile_repair_bodies(
     repairs = {}
     for service in ["radarr", "sonarr"]:
         resources = resources_by_service[service]
-        formats = _unique_named(
-            resources["customformat"], f"Configarr {service} custom formats"
-        )
-        format_ids = []
-        for custom_format in formats:
-            identifier = _strict_integer(
-                custom_format.get("id"), f"Configarr {service} custom-format id"
-            )
-            if identifier in format_ids:
-                raise AnsibleFilterError(
-                    f"Configarr {service} custom-format numeric identities are ambiguous"
-                )
-            format_ids.append(identifier)
-        declared_service = _mapping(
-            declared.get(service), f"Configarr {service} declared state"
-        )
-        current_profile = declared_service.get("quality_profile")
-        if current_profile is not None:
-            current_profile = _mapping(
-                current_profile, f"Configarr {service} declared quality profile"
-            )
-        desired_profile = _mapping(
-            _mapping(desired.get(service), f"Configarr {service} desired state").get(
-                "quality_profile"
-            ),
-            f"Configarr {service} desired quality profile",
+        formats = _configarr_repair_custom_formats(resources, service)
+        current_profile, desired_profile = _configarr_repair_profiles(
+            declared, desired, service
         )
         if current_profile is None or current_profile == desired_profile:
             continue
 
-        profiles = _unique_named(
-            resources["qualityprofile"], f"Configarr {service} profiles"
+        body, profile_id = _configarr_owned_profile_body(resources, service)
+        items, cutoff_id = _configarr_repair_items(
+            config_source, resources, desired_profile, service
         )
-        profile_matches = [
-            item for item in profiles if item["name"] == OWNED_PROFILE_NAME
-        ]
-        if len(profile_matches) != 1:
-            raise AnsibleFilterError(
-                f"Configarr {service} owned profile identity is ambiguous"
-            )
-        body = deepcopy(profile_matches[0])
-        profile_id = _strict_integer(
-            body.get("id"), f"Configarr {service} quality-profile id"
-        )
-        definitions = _sequence(
-            resources["qualitydefinition"],
-            f"Configarr {service} quality definitions",
-        )
-        items = _configarr_materialized_profile_items(
-            _configarr_source_policy(config_source, service), definitions, service
-        )
-        item_ids = _configarr_profile_item_ids(
-            items, f"Configarr {service} materialized quality items"
-        )
-        cutoff_name = _required_string(
-            desired_profile.get("cutoff"), f"Configarr {service} desired cutoff"
-        )
-        if cutoff_name not in item_ids:
-            raise AnsibleFilterError(
-                f"Configarr {service} desired cutoff identity is unavailable"
-            )
-
-        format_items = []
-        desired_assignment = _mapping(
-            _mapping(
-                desired_profile.get("format_assignment"),
-                f"Configarr {service} desired format assignment",
-            ).get("value"),
-            f"Configarr {service} desired format assignment value",
-        )
-        target_score = _strict_integer(
-            desired_assignment.get("score"),
-            f"Configarr {service} desired format score",
-        )
-        for custom_format in formats:
-            identifier = _strict_integer(
-                custom_format.get("id"), f"Configarr {service} custom-format id"
-            )
-            name = custom_format["name"]
-            format_items.append(
-                {
-                    "format": identifier,
-                    "name": name,
-                    "score": target_score if name == OWNED_FORMAT_NAME else 0,
-                }
-            )
-        if not any(item["name"] == OWNED_FORMAT_NAME for item in format_items):
-            raise AnsibleFilterError(
-                f"Configarr {service} owned custom format is unavailable after creation"
-            )
-
+        format_items = _configarr_repair_format_items(formats, desired_profile, service)
         body.update(
             {
                 "upgradeAllowed": desired_profile["upgradeAllowed"],
-                "cutoff": item_ids[cutoff_name],
+                "cutoff": cutoff_id,
                 "minFormatScore": desired_profile["minFormatScore"],
                 "cutoffFormatScore": desired_profile["cutoffFormatScore"],
                 "minUpgradeFormatScore": desired_profile["minUpgradeFormatScore"],
