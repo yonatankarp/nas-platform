@@ -263,16 +263,22 @@ withholding the pull request is a decision nobody gets to make, because nothing
 raises the dashboard row again. The pull request is the notification.
 
 Immich's Postgres is the instructive one, because replacing `enabled: false`
-took a **version ceiling** rather than a plain enable. That image is copied
-verbatim from Immich's own compose at the pinned release tag and its extension
-versions are coupled to the Immich schema, and the registry publishes
-`15-` and `16-` tags under the *identical* suffix — so a plain enable proposes
-PostgreSQL 14 to 16, an on-disk format change Ansible cannot migrate, offered as
-though it were routine. `allowedVersions` stops the majors while leaving the
-dependency enabled, so the digest refresh on an unchanged tag — which moves no
-version, breaks no coupling, and is the case somebody actually needs to see —
-opens a pull request where it used to be invisible. The ceiling is raised by hand
-in the same edit that re-copies those lines. And `roles/image_downgrade_guard`, included by a
+took a **version ceiling** rather than a plain enable. Its extension versions
+are coupled to the Immich schema, and the registry publishes higher majors under
+the *identical* suffix — so a plain enable proposes a major, an on-disk format
+change Ansible cannot migrate, offered as though it were routine.
+`allowedVersions` admits only the pinned major while leaving the dependency
+enabled, so the digest refresh on an unchanged tag — which moves no version,
+breaks no coupling, and is how that tag's Postgres minors arrive — opens a pull
+request where it used to be invisible. The pin no longer copies Immich's own
+compose (#839): upstream still ships a pgvecto.rs tag whose builds stopped, so
+its digest froze, and this one is a maintained build bounded by the ranges the
+pinned server enforces at startup. The ceiling is raised by hand in the pull
+request that performs the next major's dump and restore, whose procedure is
+[docs/immich-postgres-17-cutover.md](docs/immich-postgres-17-cutover.md); nothing
+tests the ceiling's value. Renovate never proposes a newer VectorChord or
+pgvector for it either, because that is a suffix change — the tag-shape trap
+described under the policy conventions below. And `roles/image_downgrade_guard`, included by a
 service role before its backup and its Compose deployment, reads the image
 reference Docker recorded for that service's own containers, running or not, and
 refuses a pin older than one that has already run. It compares image versions
