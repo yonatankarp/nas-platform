@@ -120,11 +120,18 @@ def collect_failures(doc_text, compose_text)
 
   deployed = compose_text[%r{image:\s*lscr\.io/linuxserver/bazarr:(\d+\.\d+)[^@\s]*}, 1]
   failures << "the compose file does not pin a readable Bazarr version" unless deployed
-  documented = doc_text[/Derived from Bazarr \*\*(\d+\.\d+)\*\*/, 1]
-  failures << "the provider reference does not record the minor release it was derived from" unless documented
+  stamp = doc_text[/Derived from Bazarr \*\*([^*]+)\*\*/, 1]
+  documented = stamp[/\A\d+\.\d+\z/] if stamp
+  if stamp.nil?
+    failures << "docs/bazarr-providers.md has no `Derived from Bazarr **<major>.<minor>**` line"
+  elsif documented.nil?
+    failures << "docs/bazarr-providers.md records Bazarr #{stamp.inspect}, which is not a major.minor " \
+                "release; write it as `Derived from Bazarr **#{stamp[/\A\d+\.\d+/] || '<major>.<minor>'}**`"
+  end
   if deployed && documented && deployed != documented
-    failures << "the provider reference was derived from Bazarr #{documented} but " \
-                "#{deployed} is deployed; re-derive the settings keys from that release"
+    failures << "docs/bazarr-providers.md was derived from Bazarr #{documented} but services/arr/compose.yml " \
+                "deploys #{deployed}; re-derive the provider settings keys from #{deployed}'s " \
+                "bazarr/app/config.py, then change the stamp to `Derived from Bazarr **#{deployed}**`"
   end
 
   providers = documented_providers(doc_text)
@@ -164,6 +171,10 @@ if ARGV.include?("--self-test")
   stale = doc_text.sub(/Derived from Bazarr \*\*[^*]+\*\*/, "Derived from Bazarr **0.0**")
   unless collect_failures(stale, compose_text).any? { |failure| failure.include?("re-derive") }
     abort "self-test failed: a stale derivation version was accepted"
+  end
+  patch_stamp = doc_text.sub(/Derived from Bazarr \*\*([^*]+)\*\*/, "Derived from Bazarr **\\1.1**")
+  unless collect_failures(patch_stamp, compose_text).any? { |failure| failure.include?("not a major.minor") }
+    abort "self-test failed: a patch-level stamp was not named as the wrong shape"
   end
   minor = compose_text[%r{bazarr:(\d+\.\d+)}, 1]
   patched = compose_text.sub(%r{(bazarr:\d+\.\d+)[^@\s]*}, "\\1.999")
