@@ -738,8 +738,9 @@ personal credential is recorded — never here.
 `{{ nas_docker_root }}/vaultwarden/data` is `recovery: critical`, and with backup
 parked that means one copy exists by choice. `rsa_key.pem` beside it signs every
 session and token the server issues, so it is the one file in that tree to treat
-as secret-bearing in the ordinary sense; `CLAUDE.md`'s security boundary carries
-the full nuance, including why the encrypted blobs beside it are not.
+as secret-bearing in the ordinary sense; `CLAUDE.md`'s security boundary states
+the rule, and [incident-history.md](incident-history.md#vaultwarden-socket-proxies-and-beszel_agent)
+carries the full nuance, including why the encrypted blobs beside it are not.
 
 `roles/pre_upgrade_backup`, as `roles/vaultwarden` includes it, adds a second copy of that tree
 and **does not change the sentence above**. Before a pinned upgrade it stops the

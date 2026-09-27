@@ -291,7 +291,8 @@ each with a 0.5–3.0 CPU ceiling, validated before deployment and checked again
 Docker after each stack starts. Change the budget only in
 `inventory/group_vars/nas_hosts/main.yml`.
 
-**Container memory has no policy, by decision.** Only a runtime that sizes its
+**Container memory has no policy, by decision, and headroom is the only reason
+that has been safe.** Only a runtime that sizes its
 own memory gets `mem_limit` (#447); nothing declares `memswap_limit` or
 `deploy.resources`, because a limit would cap page cache rather than a leak.
 Dozzle's `die` rule pages on exit 137 (#493), so a host-level OOM kill is
@@ -361,7 +362,8 @@ fix what it names by its own words. It enforces, among others:
   `mem_limit`, and a container declaring a JVM heap declares a limit at least
   twice it. `MEMORY_SELF_SIZING_IMAGES` is the stated list and
   `EXPECTED_SELF_SIZING_CONTAINERS` pins its reach both ways; Tika is the only
-  member (#447).
+  member (#447). Nothing declares a heap yet, so four mutations in
+  `tests/policy_manifest_test.rb` are that half's only proof.
 - A container that bind-mounts a file out of `${PLATFORM_CURRENT_DIR:?}` carries
   a label holding that file's own sha256, keyed on content rather than release
   id, so a changed file recreates the container instead of leaving it on a stale
@@ -407,17 +409,19 @@ Jobs: `changes static lint docs vault mutation reconciliation toolchain suites v
 Which job a check lands in is a routing decision
 ([why](docs/incident-history.md#ci-jobs-and-routing)):
 
-- `mutation` and `reconciliation` are extractions the gate no longer runs
-  (`tests/policy_ci_test.rb`, `tests/ci/workflow_test.rb`); `docs` is a cheaper
-  second route to checks the gate still runs.
+- `mutation` and `reconciliation` are extractions: the gate no longer runs them
+  and CI must, which `tests/policy_ci_test.rb` and `tests/ci/workflow_test.rb`
+  assert. `docs` is a cheaper second route to checks the gate still runs.
 - `vault` decrypts the vault with the `ANSIBLE_VAULT_PASSWORD` secret and runs
-  `validate-vault.yml` (#559). A fork's pull request reds it deliberately — no
+  `validate-vault.yml` (#559); no manifest line corresponds to it and none
+  should. A fork's pull request reds it deliberately — no
   skip-with-notice — and the workflow stays on `pull_request`, never
   `pull_request_target`.
 - `lint` runs once what cannot vary by shard (#653); `tests/ci/workflow_test.rb`
   refuses an `if:` on any `static` step, which would silently run a third as often.
 - A check goes in the manifest if the repository owns the program, and in a
-  `lint` step if it does not (`renovate-config-validator`, #775).
+  `lint` step if it does not. `renovate-config-validator` is the example (#775):
+  its step plants #775's `matchPackageNames` and requires it still rejected.
 
 `static`, `reconciliation` and `suites` are matrices; `validate` names each once
 because `needs.<job>.result` aggregates its legs. A pull request classifies its
@@ -545,21 +549,26 @@ so retired data stays on the NAS until an operator removes it
 token**, so its directory is 0700 and the `pre-upgrade-backup/` copy is
 secret-bearing. Keep `/admin` off by setting neither `ADMIN_TOKEN` nor
 `DISABLE_ADMIN_TOKEN` (the second serves it unauthenticated); `roles/vaultwarden`
-asserts `config.json` absent. Credentials flow the other way here: master
+asserts `config.json` absent — one that appears is a credential and a
+configuration outranking the rendered `.env`. Credentials flow the other way here: master
 passwords are user-owned, so `roles/vault_contract` must never grow a key for one
 and `tests/expected/vaultwarden.yml` carries `vault_keys: []`
 (`CREDENTIAL_FREE_SERVICES`, both ways). **`SIGNUPS_ALLOWED` is `true`**, so the
 tailnet is the whole control: it is the only login service published on
-`127.0.0.1`, asserted both ways on every converge. `docs/secrets.md` has the full
+`127.0.0.1`, so Tailscale Serve is the only route to it, and that binding is
+asserted both ways on every converge and stated wherever the perimeter is. `docs/secrets.md` has the full
 argument; its one copy (`recovery: critical`, backup parked) is irreplaceable.
 
 **A Docker socket proxy must never leave the host**: it serves every container's
-environment (#829). `SOCKET_PROXY_CONSUMERS` in `tests/policy_test.rb` states who
+environment (#829). Beszel's is on `127.0.0.1` only because host-networked
+`beszel_agent` cannot join its internal network; the hub has no route to it. `SOCKET_PROXY_CONSUMERS` in `tests/policy_test.rb` states who
 may share its network in `compose.yml`, and refuses an override of that stack
 declaring networks.
 
-**`beszel_agent` is effectively root on the host, by choice (#607).** The
-containment is on the image: `renovate.json` withholds automerge, digests
+**`beszel_agent` is effectively root on the host, by choice (#607)**: `:r` on its
+devices refuses a write-open and contains nothing else, and `:ro` on
+`docker.sock` restricts nothing at the Docker API. The containment is on the
+image: `renovate.json` withholds automerge, digests
 included, from every Beszel image and every image mounting
 `/var/run/docker.sock` (#828), a set `tests/renovate_policy_test.rb` derives and
 holds both ways — so mount the socket by its literal path. Detail:
