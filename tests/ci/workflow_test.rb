@@ -82,7 +82,7 @@ RECONCILIATION_EXTRA_INPUTS = %w[
 ].freeze
 # The suites the matrix dispatches, in the order a full run enumerates them.
 FULL_RUN_SUITES = %w[
-  foundation arr downloaders bindery kapowarr pinchflat trailarr seerr smoke beszel
+  foundation arr downloaders bindery kapowarr pinchflat trailarr seerr beszel
   dozzle audiobookshelf komga jellyfin immich paperless nextcloud vaultwarden karakeep
   idempotence-check
 ].freeze
@@ -108,7 +108,7 @@ INTEGRATION_SUITES = (FULL_RUN_SUITES + UPGRADE_SUITES + IDEMPOTENCE_SHARD_SUITE
 # The suites that receive the run's own selected_tags. The upgrade lane is NOT
 # one of them: its tags are its subject's, on their own output, because
 # selected_tags is the union of every tagged lane and a fall-open empties it.
-TAGGED_SUITES = %w[smoke idempotence-check].freeze
+TAGGED_SUITES = %w[idempotence-check].freeze
 CLASSIFIER_OUTPUTS =
   %w[static docs vault reconciliation suites selected_tags
      upgrade_service upgrade_base_image upgrade_tags].freeze
@@ -1146,8 +1146,8 @@ end
 
 # Counterexample: the argv harness must be able to see --tags leaking into the
 # empty-tags path, otherwise the loop above proves nothing.
-_, leaked_argv = integration_argv(integration_run.sub('[ -n "$SELECTED_TAGS" ]', "true"), "smoke", "")
-check(failures, leaked_argv == ["--suite", "smoke", "--tags", "", "site.yml"],
+_, leaked_argv = integration_argv(integration_run.sub('[ -n "$SELECTED_TAGS" ]', "true"), "idempotence-check", "")
+check(failures, leaked_argv == ["--suite", "idempotence-check", "--tags", "", "site.yml"],
       "argv harness must observe --tags reaching the untagged path: #{leaked_argv.inspect}")
 
 static = jobs.fetch("static", {})

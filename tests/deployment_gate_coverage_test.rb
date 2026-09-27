@@ -750,8 +750,8 @@ gate_names.each do |name|
         "inventory turns #{name} ON and the integration controller still assigns " \
         "`#{assignment}...`, which reaches ansible-playbook as `-e` and outranks it. Whichever " \
         "value it holds, CI then converges something other than what the NAS runs: `false` " \
-        "keeps the stack out of every lane but the service's own -- smoke and " \
-        "idempotence-check included, the only lanes that converge the whole site -- and `true` " \
+        "keeps the stack out of every lane but the service's own -- idempotence-check " \
+        "included, the only lane that converges the whole site -- and `true` " \
         "keeps converging it the day the switch is turned back off. Delete the assignment and " \
         "give the service `run_play --tags <tag> -e #{name}=false` in its own lane instead: " \
         "that converges the disabled path without taking the enabled path away from every " \

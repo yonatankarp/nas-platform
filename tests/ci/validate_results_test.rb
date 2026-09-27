@@ -25,7 +25,7 @@ check(failures,
 {
   "paperless=failure" => %w[paperless failure],
   "immich=cancelled" => %w[immich cancelled],
-  "smoke=pending" => %w[smoke pending],
+  "karakeep=pending" => %w[karakeep pending],
   "foundation=unknown" => %w[foundation unknown],
   "static=" => ["static", ""],
 }.each do |argument, (job, result)|

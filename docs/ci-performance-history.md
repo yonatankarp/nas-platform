@@ -417,6 +417,17 @@ move, and it costs edits to `suites.conf`, `classify_changes.rb`,
 `tests/ci/workflow_test.rb`, `tests/policy_ci_test.rb` and the lane roster in
 `CLAUDE.md`.
 
+**2026-09-27, reclaimed (#832).** No selection dispatched smoke without an
+idempotence lane: a tagged one always carries `idempotence_check`, `--full` keeps
+it, and a fall-open takes the shards. Across 40 recent runs smoke ran alongside
+one of those every one of the 37 times it was dispatched, which was 246
+runner-minutes. It finished last on both fall-open runs measured, at 26.2 and
+23.6 minutes against about 14 for the next-slowest leg. It is now a `harness`
+row in `suites.conf`, still runnable locally and never dispatched by CI. A
+fall-open now converges the whole site only through the shards, so it relies on
+`tests/idempotence_shard_partition_test.rb`. That holds because every role and
+task in `site.yml` carries a tag or `always`.
+
 **Measured on run `34514486089`, the first that dispatched them, when the split
 was five shards rather than today's.** Read the figures below as that run and
 not as the partition in the tree, which `tests/ci/suites.conf` holds and

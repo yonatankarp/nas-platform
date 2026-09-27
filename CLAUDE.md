@@ -114,7 +114,9 @@ nextcloud vaultwarden karakeep upgrade idempotence-check idempotence-1 idempoten
 idempotence-3 idempotence-4 idempotence-5 idempotence-6 full` — the roster
 is `tests/ci/suites.conf`, and
 `tests/docs_links_test.rb` fails if this list disagrees with what
-`tests/integration.sh --list-suites` prints. Every service and acquisition lane
+`tests/integration.sh --list-suites` prints. `smoke` and `full` are local suites
+CI never dispatches: smoke is a strict prefix of `idempotence-check`, which
+every selection that carried it also ran (#832). Every service and acquisition lane
 converges `host_prep` and `deployment_bundle` as well; neither is a lane of its
 own. The deployment report every service role sends lives in
 `roles/deployment_bundle`, whose changes fall open to every lane. The harness runs Ansible
@@ -177,7 +179,7 @@ Three things about it are worth knowing before changing it:
 `--full` and a `--files` classification have none, so the nightly and
 `workflow_dispatch` do not run it. A **fall-open does** have one, and a
 fall-open whose diff moved a subject's pin dispatches the lane like any other
-selection — it already runs 25 legs, so one more is marginal, and forcing it off
+selection — it already runs every suite leg, so one more is marginal, and forcing it off
 there is what made the lane undispatchable on every pull request that also
 touched an unmapped path, including the one that introduced it.
 
@@ -751,7 +753,7 @@ synthetic histories.
 The workflow file itself is the one routed path no check reads — it *defines*
 the jobs everything else is routed to — so it is routed for **job coverage**,
 one leg of every job, rather than for the readers every other entry is routed
-for: `static`, `docs`, `vault`, `reconciliation` and three suite legs instead of
+for: `static`, `docs`, `vault`, `reconciliation` and two suite legs instead of
 the whole matrix (#395). Read the size of that matrix off
 `tests/ci/classify_changes.rb --full`, whose `suites` array is it, rather than
 from any prose: this sentence carried a literal through sixteen, then seventeen,
