@@ -656,3 +656,64 @@ case or per test. Nothing has failed from them yet.
   `tests/policy_manifest_test.rb`.
 - The Nextcloud check's own static and wrapper layers still take about 270s
   under the 64-thread probe. They are slow, but they no longer fail.
+
+## The rules as `CLAUDE.md` stated them before #838
+
+#838 shortened the rule list in `CLAUDE.md`, which remains authoritative. This is
+its previous wording, kept verbatim for the explanations the short form drops.
+
+These are the rules the `static` job's budget and the `suites` matrix were
+learned at. The evidence for each -- dated occurrences, run IDs, per-check
+seconds and the measurements that separated one cause from another -- is in
+[docs/ci-performance-history.md](ci-performance-history.md); read it before
+arguing with a rule here, and add to it rather than to this file.
+
+- **A check that spawns a subprocess per case, serially, becomes the floor for
+  the whole job.** `static` is expected to finish in 10–15 minutes; its pool has
+  `nproc` workers, four on a runner, and cannot finish faster than its longest
+  item. Run such cases through `in_parallel_cases` in `tests/case_pool_support.rb`,
+  the one copy, whose comment says why workers never exceed cores.
+- **The gate prints its own slowest checks** -- wall time, total check time and
+  the ten slowest, pass or fail. Read that first. The seconds it records are wall
+  time under contention, so totals cannot tell total work from one check waiting.
+- **`time`'s user+sys column separates a wait from work in one pair of runs.**
+  A low CPU-to-elapsed ratio is a wait whatever the load; a high one proves work.
+  To confirm, vary the width -- `POLICY_JOBS` for the gate's pool,
+  `CASE_POOL_WORKERS` for a check's -- and a cost that does not move is a wait.
+  A wait is never parallelised: find the timeout and make it an input the harness
+  shortens. `POLICY_JOBS=1` serialises both pools when bisecting a load failure.
+- **Extraction fixes a floor; sharding fixes a work-bound pool; which applies is a
+  measurement.** Uniform slowdown across unrelated checks with a pool near full
+  efficiency is work-bound, and extracting one check buys nothing. Extraction
+  costs four files kept in agreement: the manifest in `tests/validate-policy.sh`,
+  `tests/policy_ci_test.rb` (that the gate no longer runs it *and* CI still does),
+  `tests/ci/workflow_test.rb`, and the `validate` job's `needs` and
+  `validate_results.rb` arguments.
+- **The `static` shards are three literal heredocs in `tests/validate-policy.sh`**,
+  restated in `tests/gate_manifest_coverage_test.rb`, which asserts their union
+  is the manifest both ways, no check claimed twice and a stated floor per shard.
+  Adding a check means one shard in both places. No shard beats its own slowest
+  check, which is why a fourth shard buys nothing; read the floor and the counts
+  off the gate's report and that test's summary line, never from prose.
+- **Spread the waits across shards**: a waiting check holds a worker slot without
+  using CPU, so two long waits in one shard halve its pool. One run cannot confirm
+  a rebalance -- runner variance is about 30% -- so ask whether the worst leg fell.
+- **Budget against the gate's own printed wall**, not the job's; the difference
+  tracks the toolchain install and is read off the run.
+- **Pooled cases declare their block-locals** (`do |item, failures; status|`). A
+  case assigning a name the script already carries shares one binding across
+  threads, and a sibling's failure then reads as this case's detection.
+- **Show an AST checker a real defect before trusting it**, and claim in a
+  self-test only what a planted defect demonstrated. A checker that passes its own
+  plants proves nothing until the plants are shown to bite.
+- **The `suites` matrix has no budget** beyond `timeout-minutes: 90`, and a lane's
+  clock is mostly queue: quote queue and run separately. The nightly is the only
+  unconditional sweep, and its `cron` is a lower bound on when it lands.
+- **`--full` keeps the single unsharded `idempotence-check`**, the only proof the
+  site is idempotent as a whole; a fall-open selection runs the
+  `idempotence-<n>` shards instead. `tests/idempotence_shard_partition_test.rb`
+  derives the tag universe from `site.yml` and fails on any tag no shard
+  converges, so that guard is derived, not a list to keep in step.
+- **A guard's green is only as good as what it ran over.** An unquoted
+  `[ -n $VAR ]` is true on an empty value (SC2070); read the task counts a phase
+  reports, not only its verdict line.

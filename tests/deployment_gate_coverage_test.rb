@@ -315,7 +315,7 @@ end
 # be resolved from, whatever the reason. What that breadth costs is a permitted
 # class list, because Psych::DisallowedClass is a Psych::Exception too -- an
 # unquoted `2026-09-08` is valid YAML, valid Ansible and forbidden nowhere in
-# this repository, and CLAUDE.md's own dated memory measurement points at
+# this repository, and docs/incident-history.md's dated memory measurement points at
 # inventory/group_vars/nas_hosts/main.yml as where such a value would land. Left
 # out, it turned a legitimate edit into a gate failure blaming the wrong thing:
 # measured on this tree, `arr_measured_on: 2026-09-08` in a role default refused
