@@ -664,6 +664,17 @@ def self_test_second_rename_failure(input, json, markdown, valid_input, original
   raise "second publication failure replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
 end
 
+# #881: each case is the only one that fails if its guard is removed.
+def self_test_sole_guards(valid_input)
+  raise "hash-only key was not redacted" unless sanitize({ "apiHash" => "value-hash" })["apiHash"] == REDACTION
+  begin
+    validate_input(valid_input.merge("unexpected" => true))
+    raise "unknown root field was accepted"
+  rescue RuntimeError => error
+    raise unless error.message == "input contains unknown or missing root fields"
+  end
+end
+
 def self_test
   Dir.mktmpdir("nas-platform-report.") do |directory|
     input = File.join(directory, "input.json")
@@ -672,6 +683,7 @@ def self_test
     manifest = File.join(directory, "manifest.yml")
     self_test_redaction
     valid_input = self_test_valid_input
+    self_test_sole_guards(valid_input)
     self_test_report_round_trip(directory, input, json, markdown, manifest, valid_input)
     self_test_malformed_evidence(directory, valid_input)
     original_json = "ORIGINAL JSON\n"
