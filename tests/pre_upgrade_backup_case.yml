@@ -125,6 +125,16 @@
     mode: "0644"
   when: item.deployed is defined
 
+# Every stopped service but the fixture, which is `state` above.
+- name: Give the case's other stopped services a running container
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/daemon/state.{{ other_service }}"
+    content: running
+    mode: "0644"
+  loop: "{{ item.stop_services | default([]) | reject('eq', 'fixture') | list }}"
+  loop_control:
+    loop_var: other_service
+
 - name: Arm the daemon faults this case declares
   ansible.builtin.copy:
     dest: "{{ backup_root }}/daemon/{{ fault }}"
@@ -148,6 +158,7 @@
     backup_case_manage: "{{ item.manage_ownership | default(false) }}"
     backup_case_check: "{{ item.check_mode | default(false) }}"
     backup_case_method: "{{ item.method | default('main') }}"
+    backup_case_stop_services: "{{ item.stop_services | default(['fixture']) }}"
     backup_case_path: "{{ backup_root ~ '/' ~ (item.backup_path if item.backup_path is defined else 'store/pre-upgrade-backup') }}"
 
 - name: Run the pre-upgrade copy against this case
@@ -159,7 +170,7 @@
         tasks_from: "{{ backup_case_method }}"
       # Both entries' arguments: each validates its own and ignores the rest.
       vars:
-        pre_upgrade_backup_stop_services: [fixture]
+        pre_upgrade_backup_stop_services: "{{ backup_case_stop_services }}"
         pre_upgrade_backup_database_service: db
         pre_upgrade_backup_service_name: fixture
         pre_upgrade_backup_compose_service: fixture
@@ -210,6 +221,9 @@
     backup_case_calls: "{{ lookup('file', backup_root ~ '/daemon/calls').splitlines() }}"
     backup_case_state: "{{ lookup('file', backup_root ~ '/daemon/state') | trim }}"
     backup_case_image: "{{ lookup('file', backup_root ~ '/daemon/image') | trim }}"
+    backup_case_other_states: >-
+      {{ query('ansible.builtin.file', *query('ansible.builtin.fileglob', backup_root ~ '/daemon/state.*'))
+         | map('trim') | unique }}
 
 - name: Read the copy directory
   ansible.builtin.stat:
@@ -266,6 +280,9 @@
       - item.expect_message is not defined or backup_case_message is search(item.expect_message)
       - backup_case_calls == item.expect_calls
       - backup_case_state == item.expect_state
+      - backup_case_other_states == ([item.expect_other_state] if item.expect_other_state is defined else [])
+      # pg_dump's refusal names them; the message must not (#889).
+      - backup_case_message is not search('fx_dbuser|fx_dbname|fx_dbpass')
       # A container never changes its image, so an unchanged record is the old
       # container: nothing recreated it onto the new pin.
       - backup_case_image == (item.deployed | default(''))

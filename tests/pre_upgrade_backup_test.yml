@@ -254,6 +254,32 @@
         expect_message: FIXTURE IS NOT SERVING
         expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
         expect_state: exited
+      # Nextcloud stops its application and its cron (#889). The start reports
+      # success and cron exits again: the rescue reads every service it
+      # stopped, so the one that did not come back is named.
+      - name: a failed dump that leaves one stopped service down names it
+        method: pg_dump
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        stop_services: [fixture, cron]
+        faults: [dump-fails, stays-down.cron]
+        expect_message: FIXTURE IS NOT SERVING.*cron
+        expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
+        expect_state: running
+        expect_other_state: exited
+      # pg_dump's refusal names the database user and database (#889): the
+      # message says what failed without them.
+      - name: a failed dump says where and how it failed without naming the database or its user
+        method: pg_dump
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        stop_services: [fixture, cron]
+        faults: [dump-fails]
+        expect_message: >-
+          failed at "Dump the database before the pinned upgrade": pg_dump exited 1 .*pre-upgrade-backup/database.sql.gz
+        expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
+        expect_state: running
+        expect_other_state: running
 
   tasks:
     # At the start as well as the end, so a run that failed cannot leave a tree
@@ -280,8 +306,9 @@
         content: |
           #!/bin/sh
           daemon="{{ backup_root }}/daemon"
+          # What a real refusal prints: the database user and database by name.
           if [ -f "$daemon/dump-fails" ]; then
-            echo 'pg_dump: error: connection to server failed' >&2
+            echo "pg_dump: error: connection to server failed: FATAL:  password authentication failed for user \"$POSTGRES_USER\" to database \"$POSTGRES_DB\"" >&2
             exit 1
           fi
           echo "-- dumped while the application was $(cat "$daemon/state")"
@@ -308,12 +335,20 @@
               exit 0 ;;
             container)
               case "$2" in
+                # The fixture's container is `state` and `container-id`; any
+                # other service a case declares is `state.<service>`.
                 ls)
                   [ -f "$daemon/container-id" ] || exit 0
+                  svc=$(printf '%s\n' "$@" | sed -n 's/^label=com.docker.compose.service=//p')
+                  state="$daemon/state" id=$(cat "$daemon/container-id")
+                  if [ "$svc" != fixture ]; then
+                    state="$daemon/state.$svc" id="$svc-0001"
+                    [ -f "$state" ] || exit 0
+                  fi
                   case "$*" in
-                    *status=running*) [ "$(cat "$daemon/state")" = running ] || exit 0 ;;
+                    *status=running*) [ "$(cat "$state")" = running ] || exit 0 ;;
                   esac
-                  cat "$daemon/container-id"
+                  echo "$id"
                   exit 0 ;;
                 inspect)
                   printf '[{"Config":{"Image":"%s"}}]\n' "$(cat "$daemon/image")"
@@ -329,6 +364,9 @@
           done
           verb=$1
           shift
+          # The services an `up` or a `stop` names, after its `--`.
+          services=$(printf '%s\n' "$@" | awk 'seen; /^--$/ {seen = 1}')
+          state_of() { if [ "$1" = fixture ]; then echo "$daemon/state"; else echo "$daemon/state.$1"; fi; }
           case "$verb" in
             version) echo '{"version":"v2.20.0"}' ;;
             # The module lists the project's images around an `up`, to tell a
@@ -345,11 +383,17 @@
                 set -- "$@" "$(printf '%s' "$arg" | sed "s#^/var/lib/postgresql#{{ backup_root }}/postgres#")"
               done
               # What the database container was created with.
-              POSTGRES_USER=fixture POSTGRES_PASSWORD=fixture POSTGRES_DB=fixture exec "$@" ;;
+              # Names that appear nowhere else, so a message carrying them leaked them.
+              POSTGRES_USER=fx_dbuser POSTGRES_PASSWORD=fx_dbpass POSTGRES_DB=fx_dbname exec "$@" ;;
             ps)
               echo ps >>"$daemon/calls"
-              printf '[{"Name":"fixture-1","Service":"fixture","State":"%s","Labels":""}]\n' \
-                "$(cat "$daemon/state")" ;;
+              printf '[{"Name":"fixture-1","Service":"fixture","State":"%s","Labels":""}' "$(cat "$daemon/state")"
+              for other in "$daemon"/state.*; do
+                [ -f "$other" ] || continue
+                printf ',{"Name":"%s-1","Service":"%s","State":"%s","Labels":""}' \
+                  "${other##*.}" "${other##*.}" "$(cat "$other")"
+              done
+              echo ']' ;;
             up)
               line=up
               case " $* " in *" --no-start "*) line="$line --no-start" ;; esac
@@ -364,10 +408,14 @@
                 echo "container fixture-1 is unhealthy" >&2
                 exit 1
               fi
-              echo running >"$daemon/state" ;;
+              # A service can come up and exit again with `up` still reporting
+              # success: one with no healthcheck, which --wait does not hold.
+              for svc in $services; do
+                [ -f "$daemon/stays-down.$svc" ] || echo running >"$(state_of "$svc")"
+              done ;;
             stop)
               echo stop >>"$daemon/calls"
-              echo exited >"$daemon/state"
+              for svc in $services; do echo exited >"$(state_of "$svc")"; done
               store=$(cat "$daemon/store")
               if [ -f "$daemon/stop-removes-store" ]; then
                 rm -f "$store"
@@ -421,10 +469,10 @@
       ansible.builtin.assert:
         that:
           - backup_results | length == backup_cases | length
-          - backup_results | length >= 20
-          - backup_results | selectattr('failed') | list | length >= 9
+          - backup_results | length >= 22
+          - backup_results | selectattr('failed') | list | length >= 11
           - backup_results | rejectattr('failed') | list | length >= 11
-          - backup_results | selectattr('method', 'eq', 'pg_dump') | list | length >= 5
+          - backup_results | selectattr('method', 'eq', 'pg_dump') | list | length >= 7
         fail_msg: >-
           The pre-upgrade copy ran {{ backup_results | length }} of
           {{ backup_cases | length }} cases, failing
