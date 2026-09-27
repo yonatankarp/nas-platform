@@ -5,3 +5,8 @@ pre_upgrade_backup_extra_patterns: []
 # The controller checkout deployment_bundle copies the release from, read only
 # under --check, when `current` still names the release this run replaces.
 pre_upgrade_backup_candidate_root: "{{ playbook_dir }}"
+
+# The pg_dump entry's destination inside the database container: beside the
+# cluster, in the /var/lib/postgresql mount both PostgreSQL stacks declare.
+pre_upgrade_backup_dump_dir: /var/lib/postgresql/pre-upgrade-backup
+pre_upgrade_backup_dump_file: database.sql.gz

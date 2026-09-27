@@ -75,6 +75,7 @@ FIXTURE_FILES = %w[
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
   roles/pre_upgrade_backup/tasks/main.yml
+  roles/pre_upgrade_backup/tasks/pending.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -644,13 +645,24 @@ STATIC_ROWS = [
   {
     name: "an upgrade keyed on something other than the recorded image",
     break: lambda { |root|
-      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/pending.yml") do |document|
         document.find { |task| task.dig("ansible.builtin.set_fact")&.key?("pre_upgrade_backup_upgrade_pending") }
           .dig("ansible.builtin.set_fact")["pre_upgrade_backup_upgrade_pending"] =
           "{{ pre_upgrade_backup_pinned_image | length > 0 }}"
       end
     },
     expects: "the Kapowarr pre-upgrade copy must key on the image the container was created from"
+  },
+  {
+    # The verdict moved to tasks/pending.yml (#826); a main.yml that stopped
+    # including it would read no verdict at all.
+    name: "a pre-upgrade copy that no longer includes its pending-upgrade verdict",
+    break: lambda { |root|
+      edit_yaml(root, "roles/pre_upgrade_backup/tasks/main.yml") do |document|
+        document.reject! { |task| task["ansible.builtin.include_tasks"] == "pending.yml" }
+      end
+    },
+    expects: "the Kapowarr pre-upgrade copy must decide its upgrade in tasks/pending.yml"
   },
   {
     # A copy on every converge never reports a converged run.

@@ -16,6 +16,7 @@ required = %w[
   roles/kapowarr/meta/argument_specs.yml
   roles/kapowarr/tasks/main.yml
   roles/pre_upgrade_backup/tasks/main.yml
+  roles/pre_upgrade_backup/tasks/pending.yml
   roles/kapowarr/templates/env.j2
   services/kapowarr/compose.yml
   services/kapowarr/compose.mac.yml
@@ -370,7 +371,12 @@ if failures.empty?
     task.is_a?(Hash) && Array(task["block"]).any? { |inner| inner.is_a?(Hash) && inner.key?("ansible.builtin.copy") }
   end
   backup_rescue = flatten_tasks(backup_unit&.fetch("rescue", nil))
-  pending_fact = backup_tasks.find do |task|
+  # Decided in tasks/pending.yml, which main.yml includes (#826).
+  pending_include = backup_tasks.any? { |task| task["ansible.builtin.include_tasks"] == "pending.yml" }
+  pending_tasks = flatten_tasks(YAML.safe_load_file(File.join(root, "roles/pre_upgrade_backup/tasks/pending.yml"),
+                                                    aliases: true))
+  failures << "the Kapowarr pre-upgrade copy must decide its upgrade in tasks/pending.yml" unless pending_include
+  pending_fact = pending_tasks.find do |task|
     task.dig("ansible.builtin.set_fact")&.key?("pre_upgrade_backup_upgrade_pending")
   end.to_s
   failures << "the Kapowarr pre-upgrade copy must key on the image the container was created from" unless

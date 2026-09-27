@@ -94,3 +94,88 @@ argument_specs:
       platform_compose_wait_timeout:
         type: int
         required: true
+  pg_dump:
+    short_description: >-
+      Dump a self-migrating service's PostgreSQL database before a pinned upgrade
+    description:
+      - >-
+        The same gate as main, read by the same tasks/pending.yml -- the
+        application's container was created from an image other than the one
+        its own compose.yml pins -- for a service whose
+        store is PostgreSQL in a container of its own. The application is
+        stopped, the database container, left running, dumps itself with
+        pg_dump into a private directory beside the cluster, and the caller's
+        deployment starts the new image. A failed dump starts the application
+        again on its old image and fails the run. The dump is on the same disk
+        and is not a backup.
+      - >-
+        Include it with ansible.builtin.include_role and tasks_from pg_dump,
+        after roles/image_downgrade_guard and the caller's data-service
+        deployment and before the application's, and name
+        pre_upgrade_backup_restart in the caller's deployment report.
+    options:
+      pre_upgrade_backup_service_name:
+        type: str
+        required: true
+        description: >-
+          The manifest service directory under services/, hyphenated as the
+          directory is.
+      pre_upgrade_backup_compose_service:
+        type: str
+        required: true
+        description: >-
+          The Compose service key of the application that migrates the
+          database. Its container's image decides whether an upgrade is pending.
+      pre_upgrade_backup_stop_services:
+        type: list
+        elements: str
+        required: true
+        description: >-
+          Every Compose service that writes to the database, stopped before the
+          dump and started again if it fails. Never the database itself.
+      pre_upgrade_backup_database_service:
+        type: str
+        required: true
+        description: >-
+          The Compose service key of the PostgreSQL container the dump runs in.
+          Its POSTGRES_USER, POSTGRES_PASSWORD and POSTGRES_DB are what the dump
+          connects with.
+      pre_upgrade_backup_project_name:
+        type: str
+        required: true
+        description: The Compose project the containers carry as a label.
+      pre_upgrade_backup_candidate_root:
+        type: path
+        required: false
+        description: >-
+          As for main: the controller checkout a --check run reads the
+          application's pin from. Never a pin itself -- the pin is read from
+          services/<name>/compose.yml, as main reads it.
+      pre_upgrade_backup_dump_dir:
+        type: str
+        required: false
+        default: /var/lib/postgresql/pre-upgrade-backup
+        description: >-
+          The directory inside the database container the dump is written to,
+          at 0700 with the dump at 0600. The default sits beside the cluster in
+          the data mount both stacks declare, so it lands on the host as
+          pre-upgrade-backup/ in the database's data root.
+      pre_upgrade_backup_dump_file:
+        type: str
+        required: false
+        default: database.sql.gz
+        description: >-
+          The dump's file name. One generation: each dump replaces the last,
+          and only once it has completed.
+      platform_current_dir:
+        type: path
+        required: true
+      platform_runtime_dir:
+        type: path
+        required: true
+      platform_service_compose_files:
+        type: dict
+        required: true
+      platform_compose_wait_timeout:
+        type: int
+        required: true

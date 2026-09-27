@@ -1,6 +1,7 @@
 ---
 # Behaviour of roles/pre_upgrade_backup, the copy Kapowarr, Vaultwarden and Karakeep take
-# of their SQLite store before a pinned upgrade (#836). No integration lane can
+# of their SQLite store before a pinned upgrade (#836), and the database dump
+# Nextcloud and Paperless-ngx take through its pg_dump entry (#826). No integration lane can
 # reach it: every lane starts from an empty store, where no upgrade is pending,
 # and the upgrade lane converges neither Vaultwarden nor a failing copy. So its
 # stop, its copy and its rescue would otherwise first run on the NAS, against
@@ -18,6 +19,7 @@
 #   compose ... ps --format json --all   ...and stops only what is not stopped
 #   compose ... stop -- <service>        the stop
 #   compose ... up ... --wait ...        the rescue's start
+#   compose ... exec -- <service> argv   the dump, run here with a fake pg_dump
 #   container ls / container inspect     the role's own reads
 #
 # The stub reports Compose 2.20.0, which keeps the module on its plain-text
@@ -202,6 +204,56 @@
         expect_message: FIXTURE IS NOT SERVING
         expect_calls: "{{ backup_stop_calls + ['up --no-recreate', 'ps'] }}"
         expect_state: exited
+      # tasks_from: pg_dump, the entry Nextcloud and Paperless-ngx take (#826):
+      # their store is PostgreSQL in a container of its own, so the application
+      # is stopped and the database, still running, dumps itself. The stub runs
+      # the exec'd script for real against a fake pg_dump that writes the state
+      # the application container is in, so a dump taken before the stop says so.
+      - name: a pending upgrade dumps the database privately after stopping the application
+        method: pg_dump
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        stale_dump: true
+        expect_calls: "{{ backup_stop_calls + ['exec'] }}"
+        expect_state: exited
+        expect_dump: true
+      # With a stale guard fact naming another image: the pin is the entry's
+      # own read, as main's is (#858).
+      - name: a converged host dumps nothing, whatever a guard left behind
+        method: pg_dump
+        deployed: "{{ backup_new }}"
+        pinned: "{{ backup_new }}"
+        guard_pin: "{{ backup_other }}"
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a review of a bump reports the dump against the candidate's pin and stops and writes nothing
+        method: pg_dump
+        check_mode: true
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_old }}"
+        candidate: "{{ backup_new }}"
+        expect_review_pending: true
+        expect_calls: []
+        expect_state: running
+        expect_copy_absent: true
+      - name: a dump that fails starts the application again and fails
+        method: pg_dump
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        faults: [dump-fails]
+        expect_message: >-
+          failed at "Dump the database before the pinned upgrade".*was not performed.*is running on its old image
+        expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
+        expect_state: running
+      - name: an application that does not come back after a failed dump says it is not serving
+        method: pg_dump
+        deployed: "{{ backup_old }}"
+        pinned: "{{ backup_new }}"
+        faults: [dump-fails, up-fails]
+        expect_message: FIXTURE IS NOT SERVING
+        expect_calls: "{{ backup_stop_calls + ['exec', 'up --no-recreate', 'ps'] }}"
+        expect_state: exited
 
   tasks:
     # At the start as well as the end, so a run that failed cannot leave a tree
@@ -217,6 +269,22 @@
         state: directory
         mode: "0755"
       loop: [bin, current/services/fixture, candidate/services/fixture, runtime/services/fixture]
+
+    # The database container's pg_dump, run by the stub's `exec`. It writes the
+    # application's state into the dump, so a dump taken while the application
+    # still ran is visible in the copy, and fails when the case arms it to.
+    - name: Install the pg_dump the database container runs
+      ansible.builtin.copy:
+        dest: "{{ backup_root }}/bin/pg_dump"
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          daemon="{{ backup_root }}/daemon"
+          if [ -f "$daemon/dump-fails" ]; then
+            echo 'pg_dump: error: connection to server failed' >&2
+            exit 1
+          fi
+          echo "-- dumped while the application was $(cat "$daemon/state")"
 
     # Each case writes the two Compose files, `current` and the candidate, with
     # its own pins; the stub never reads them.
@@ -266,6 +334,18 @@
             # The module lists the project's images around an `up`, to tell a
             # pull from a start; there are none to report.
             images) echo '[]' ;;
+            # The database container's shell, run here: options up to `--`,
+            # then the service, then the argv. Its mount point is the fixture's.
+            exec)
+              echo exec >>"$daemon/calls"
+              while [ "$1" != -- ]; do shift; done
+              shift 2
+              for arg; do
+                shift
+                set -- "$@" "$(printf '%s' "$arg" | sed "s#^/var/lib/postgresql#{{ backup_root }}/postgres#")"
+              done
+              # What the database container was created with.
+              POSTGRES_USER=fixture POSTGRES_PASSWORD=fixture POSTGRES_DB=fixture exec "$@" ;;
             ps)
               echo ps >>"$daemon/calls"
               printf '[{"Name":"fixture-1","Service":"fixture","State":"%s","Labels":""}]\n' \
@@ -341,9 +421,10 @@
       ansible.builtin.assert:
         that:
           - backup_results | length == backup_cases | length
-          - backup_results | length >= 15
-          - backup_results | selectattr('failed') | list | length >= 7
-          - backup_results | rejectattr('failed') | list | length >= 8
+          - backup_results | length >= 20
+          - backup_results | selectattr('failed') | list | length >= 9
+          - backup_results | rejectattr('failed') | list | length >= 11
+          - backup_results | selectattr('method', 'eq', 'pg_dump') | list | length >= 5
         fail_msg: >-
           The pre-upgrade copy ran {{ backup_results | length }} of
           {{ backup_cases | length }} cases, failing

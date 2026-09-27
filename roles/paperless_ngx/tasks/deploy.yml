@@ -135,6 +135,35 @@
       Restore the previous vault values or migrate the database credential explicitly, then rerun.
   when: not ansible_check_mode
 
+# After the data services and the credential refusal and before the webserver,
+# so the database is up, healthy and reachable with the vault's credential, and
+# Django's migrations have not run: roles/pre_upgrade_backup's pg_dump entry stops the webserver -- the consumer, the Celery worker and the scheduler
+# run inside it, so it is every writer -- and dumps the database from inside the
+# db container. The guard runs first, so a downgrade is refused before
+# anything stops; the role reads the pin itself (#858).
+#
+# The dump alone is enough to go back, and document_exporter is not taken:
+# Paperless's migrations are Django schema migrations of that database, and the
+# originals and archive files under the media root are not rewritten by them.
+# That holds only while a release's migrations stay in the database -- a
+# release notes entry that moves or renames files would need the media root
+# too.
+#
+# The dump holds every account's password hash, mail account passwords and the
+# full OCR text of every document, so it is secret-bearing and not small; it is
+# written 0600 in a 0700 directory, as postgres/pre-upgrade-backup under the
+# state root on the host.
+- name: Dump the Paperless database before a pinned upgrade
+  ansible.builtin.include_role:
+    name: pre_upgrade_backup
+    tasks_from: pg_dump
+  vars:
+    pre_upgrade_backup_service_name: paperless-ngx
+    pre_upgrade_backup_compose_service: webserver
+    pre_upgrade_backup_stop_services: [webserver]
+    pre_upgrade_backup_database_service: db
+    pre_upgrade_backup_project_name: "{{ paperless_compose_project_name }}"
+
 - name: Deploy Paperless
   community.docker.docker_compose_v2:
     project_src: "{{ platform_current_dir }}/services/paperless-ngx"
@@ -152,7 +181,9 @@
     tasks_from: report
   vars:
     deployment_report_service: Paperless
-    deployment_report_changed: "{{ (paperless_data_deploy is changed) or (paperless_deploy is changed) }}"
+    deployment_report_changed: >-
+      {{ (paperless_data_deploy is changed) or (paperless_deploy is changed) or
+         ((pre_upgrade_backup_restart | default({})) is changed) }}
 
 - name: Verify Paperless effective container CPU policy
   ansible.builtin.include_role:

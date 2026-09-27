@@ -68,8 +68,9 @@ UNGUARDED_RELEASE_READS = [
   "roles/container_cpu/tasks/inspect.yml",
   "roles/image_downgrade_guard/tasks/main.yml",
   # Live-only since it was added (#858): under --check it reads the candidate
-  # through a lookup, the way the guard above does since #851.
-  "roles/pre_upgrade_backup/tasks/main.yml"
+  # through a lookup, the way the guard above does since #851. Moved out of
+  # tasks/main.yml when the pg_dump entry came to share it (#826).
+  "roles/pre_upgrade_backup/tasks/pending.yml"
 ].freeze
 
 # The reads that must STAY guarded. Stated rather than derived, because "no

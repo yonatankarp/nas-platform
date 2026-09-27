@@ -10,7 +10,7 @@
   ansible.builtin.file:
     path: "{{ backup_root }}/{{ fixture_path }}"
     state: absent
-  loop: [store, daemon]
+  loop: [store, daemon, postgres]
   loop_control:
     loop_var: fixture_path
 
@@ -22,6 +22,22 @@
   loop: [store, daemon]
   loop_control:
     loop_var: fixture_path
+
+# The dump an earlier upgrade left, in a directory looser than the role's 0700,
+# so the case proves the one generation is replaced and the directory tightened.
+- name: Leave the dump directory an earlier upgrade made
+  ansible.builtin.file:
+    path: "{{ backup_root }}/postgres/pre-upgrade-backup"
+    state: directory
+    mode: "0755"
+  when: item.stale_dump | default(false)
+
+- name: Leave the dump an earlier upgrade made
+  ansible.builtin.copy:
+    dest: "{{ backup_root }}/postgres/pre-upgrade-backup/database.sql.gz"
+    content: "stale\n"
+    mode: "0644"
+  when: item.stale_dump | default(false)
 
 # Each store file holds its own name, so a copy can be traced to its source.
 - name: Write the store files this case holds
@@ -131,6 +147,7 @@
     image_downgrade_guard_pinned_image: "{{ item.guard_pin | default('') }}"
     backup_case_manage: "{{ item.manage_ownership | default(false) }}"
     backup_case_check: "{{ item.check_mode | default(false) }}"
+    backup_case_method: "{{ item.method | default('main') }}"
     backup_case_path: "{{ backup_root ~ '/' ~ (item.backup_path if item.backup_path is defined else 'store/pre-upgrade-backup') }}"
 
 - name: Run the pre-upgrade copy against this case
@@ -139,7 +156,11 @@
     - name: Include the pre-upgrade copy the way its callers do
       ansible.builtin.include_role:
         name: pre_upgrade_backup
+        tasks_from: "{{ backup_case_method }}"
+      # Both entries' arguments: each validates its own and ignores the rest.
       vars:
+        pre_upgrade_backup_stop_services: [fixture]
+        pre_upgrade_backup_database_service: db
         pre_upgrade_backup_service_name: fixture
         pre_upgrade_backup_compose_service: fixture
         pre_upgrade_backup_project_name: backup-test
@@ -176,7 +197,8 @@
       - tests/pre_upgrade_backup_review.yml
       - -e
       - "{{ {'backup_root': backup_root, 'backup_store_file': backup_store_file,
-             'backup_expect_pending': backup_case_expect_pending | bool} | to_json }}"
+             'backup_expect_pending': backup_case_expect_pending | bool,
+             'backup_method': backup_case_method} | to_json }}"
     chdir: "{{ playbook_dir }}/.."
   register: backup_case_review
   changed_when: false
@@ -209,6 +231,28 @@
   failed_when: false
   when: item.expect_copy is defined
 
+- name: Read the dump directory
+  ansible.builtin.stat:
+    path: "{{ backup_root }}/postgres/pre-upgrade-backup"
+  register: backup_case_dump_directory
+
+- name: Read the dumps
+  ansible.builtin.find:
+    paths: "{{ backup_root }}/postgres/pre-upgrade-backup"
+    file_type: file
+    hidden: true
+  register: backup_case_dumps
+  when: backup_case_dump_directory.stat.isdir | default(false)
+
+- name: Read the dump
+  ansible.builtin.command:
+    argv: [gzip, -dc, "{{ backup_root }}/postgres/pre-upgrade-backup/database.sql.gz"]
+  register: backup_case_dump
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  when: item.expect_dump | default(false)
+
 - name: Require this case to reach the outcome it declares
   ansible.builtin.assert:
     that:
@@ -240,6 +284,20 @@
       # appends to it, so the copy holding that line was taken after the stop.
       - item.expect_copy is not defined
         or (backup_case_store_copy.content | default('') | b64decode) is search('checkpointed by stop')
+      - item.expect_copy_absent is not defined or not (backup_case_dump_directory.stat.exists | default(false))
+      # A dump is written only where one is declared, and a failed one leaves
+      # no generation behind under the name a restore would read.
+      - item.expect_dump | default(false) or item.stale_dump | default(false)
+        or not (backup_case_dumps.files | default([]) | map(attribute='path') | map('basename')
+                | select('eq', 'database.sql.gz') | list)
+      # One generation, private, and taken with the application stopped: the
+      # fake pg_dump writes the state the application container was in.
+      - not item.expect_dump | default(false) or (
+          backup_case_dump_directory.stat.mode == '0700'
+          and backup_case_dumps.files | map(attribute='path') | map('basename') | list == ['database.sql.gz']
+          and backup_case_dumps.files | map(attribute='mode') | list == ['0600']
+          and backup_case_dump.rc == 0
+          and backup_case_dump.stdout == '-- dumped while the application was exited')
     fail_msg: >-
       The case "{{ item.name }}" declares
       {{ ('a refusal matching ' ~ item.expect_message) if item.expect_message is defined else 'success' }},
@@ -263,4 +321,5 @@
 
 - name: Accumulate the outcome of this case
   ansible.builtin.set_fact:
-    backup_results: "{{ backup_results + [{'name': item.name, 'failed': backup_case_failed}] }}"
+    backup_results: "{{ backup_results + [{'name': item.name, 'failed': backup_case_failed,
+                                           'method': backup_case_method}] }}"

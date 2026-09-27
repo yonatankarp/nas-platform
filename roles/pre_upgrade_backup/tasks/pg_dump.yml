@@ -1,0 +1,185 @@
+---
+# THE DATABASE IS DUMPED BEFORE A PINNED UPGRADE, AND THIS IS NOT A BACKUP
+# EITHER. tasks/main.yml says why for the SQLite copy, and it holds here word for
+# word: the dump lands in pre-upgrade-backup/ beside the cluster, on the same
+# disk, so a drive failure or a mistaken `rm -rf` takes both.
+#
+# This entry is for a service whose store is PostgreSQL in a container of its
+# own -- Nextcloud and Paperless-ngx (#826). The application migrates that
+# database when it starts, so the SQLite copy's argument applies unchanged: a
+# pin is one-way, roles/image_downgrade_guard refuses to go back, and this is
+# what makes going back possible at all -- restore the dump, pin the older
+# image, converge.
+#
+# WHAT DIFFERS FROM THE COPY, AND WHY THIS IS A SECOND ENTRY RATHER THAN A
+# BRANCH IN main.yml. The store is not a file on the host: it is a running
+# server, and the database container is the only thing that can read it
+# consistently. So the application is stopped and the database is NOT, and the
+# dump runs inside the database container. The entry's arguments differ too --
+# no store file, a list of services to stop, the database service -- and a
+# second entry is validated against its own spec rather than loosening main's.
+#
+# WHY THE APPLICATION IS STOPPED FIRST. Not for consistency: pg_dump reads one
+# snapshot, so a dump taken under writes is still a database that existed. It
+# is stopped so nothing lands between the dump and the recreate -- a document
+# consumed or a file uploaded in that window would be in the migrated database
+# and missing from the one a rollback restores. That is also why Nextcloud's
+# `occ maintenance:mode --on` is not used: with no application and no cron
+# running, nothing is left for maintenance mode to hold off, and turning it on
+# is a write into config.php that the new image would then start with.
+#
+# RUNS ONLY WHEN AN UPGRADE IS PENDING, keyed on the application's image exactly
+# as main.yml keys the copy, so a converged host dumps nothing and idempotence
+# holds.
+#
+# The pin, the container's image and the verdict come from tasks/pending.yml,
+# the same file main.yml includes: the pin is read from the application's own
+# Compose service, never handed in (#858).
+- name: Resolve whether an upgrade is pending for the application whose database is dumped
+  ansible.builtin.include_tasks: pending.yml
+
+- name: Report the planned pre-upgrade dump
+  ansible.builtin.debug:
+    msg: >-
+      {{ pre_upgrade_backup_service_name | capitalize }} is running
+      {{ pre_upgrade_backup_deployed_image }} and this release pins
+      {{ pre_upgrade_backup_pinned_image }}. A live run would stop the containers of
+      {{ pre_upgrade_backup_stop_services | join(' and ') }}, pg_dump the database
+      in {{ pre_upgrade_backup_database_service }} into
+      {{ pre_upgrade_backup_dump_dir }}/{{ pre_upgrade_backup_dump_file }} inside
+      that container, and only then start the new image, so that a migration
+      that goes wrong can be undone by restoring the dump and pinning the older
+      image. The dump is on this same disk and is not a backup.
+  register: pre_upgrade_backup_plan
+  when:
+    - ansible_check_mode
+    - pre_upgrade_backup_upgrade_pending | bool
+
+# THE STOP AND THE DUMP ARE ONE UNIT, for main.yml's reason: a stop with nothing
+# after it left the service down on every later converge. The rescue starts what
+# this block stopped, on its old image, and still fails the run. Unlike the copy
+# it needs no read of the store before starting: the store is the database
+# container, which this entry never stops, so there is no empty store the old
+# image could be started over.
+- name: Dump the database, starting the application again if the dump fails
+  block:
+    # `recreate: never` for main.yml's measured reason: without it `stopped`
+    # first recreates the containers onto the new pin.
+    - name: Stop the application before dumping the database it is about to migrate
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
+        project_name: "{{ pre_upgrade_backup_project_name }}"
+        files: "{{ platform_service_compose_files[pre_upgrade_backup_service_name] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/{{ pre_upgrade_backup_service_name }}/.env"]
+        services: "{{ pre_upgrade_backup_stop_services }}"
+        state: stopped
+        recreate: never
+      when:
+        - not ansible_check_mode
+        - pre_upgrade_backup_upgrade_pending | bool
+
+    # Inside the database container, which the caller's data-service deployment
+    # has just brought up healthy. The credential never leaves it: the script
+    # reads the POSTGRES_* the container was created with, so no vault value is
+    # in this argv or this result, and the paths are the only arguments. The
+    # dump goes to a file rather than stdout, because the module would otherwise
+    # hold the whole database in memory and in its result.
+    #
+    # Plain SQL through gzip, the format Immich's own dumps take and
+    # roles/immich/tasks/restore.yml replays with psql, so there is one restore
+    # procedure on this platform rather than two; --clean --if-exists makes it
+    # replay over the migrated database. umask 077 and the chmod make it 0600 in
+    # 0700, root-owned: it holds every account's password hash. Written to
+    # .partial and renamed, so one generation is kept and a failed dump never
+    # replaces the good one.
+    - name: Dump the database before the pinned upgrade
+      community.docker.docker_compose_v2_exec:
+        project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
+        project_name: "{{ pre_upgrade_backup_project_name }}"
+        files: "{{ platform_service_compose_files[pre_upgrade_backup_service_name] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/{{ pre_upgrade_backup_service_name }}/.env"]
+        service: "{{ pre_upgrade_backup_database_service }}"
+        argv:
+          - sh
+          - -c
+          - >-
+            set -eu; set -o pipefail; umask 077;
+            mkdir -p "$1"; chmod 0700 "$1"; rm -f "$1/.partial";
+            PGPASSWORD="$POSTGRES_PASSWORD" pg_dump --username="$POSTGRES_USER"
+            --dbname="$POSTGRES_DB" --clean --if-exists | gzip >"$1/.partial";
+            mv -f "$1/.partial" "$1/$2"
+          - pre-upgrade-dump
+          - "{{ pre_upgrade_backup_dump_dir }}"
+          - "{{ pre_upgrade_backup_dump_file }}"
+        tty: false
+      register: pre_upgrade_backup_dump
+      changed_when: true
+      failed_when: pre_upgrade_backup_dump.rc | default(1) != 0
+      when:
+        - not ansible_check_mode
+        - pre_upgrade_backup_upgrade_pending | bool
+  rescue:
+    - name: Record where the pre-upgrade dump failed
+      ansible.builtin.set_fact:
+        pre_upgrade_backup_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
+        pre_upgrade_backup_failed_message: >-
+          {{ (ansible_failed_result.msg | default('', true) ~ ' ' ~ ansible_failed_result.stderr | default('', true))
+             | trim | regex_replace('[. ]+$', '') }}
+
+    # `recreate: never` again: `up` without it would start the new image, which
+    # is the migration this block exists to protect.
+    - name: Start the application again on the image it was running
+      community.docker.docker_compose_v2:
+        project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
+        project_name: "{{ pre_upgrade_backup_project_name }}"
+        files: "{{ platform_service_compose_files[pre_upgrade_backup_service_name] }}"
+        env_files: ["{{ platform_runtime_dir }}/services/{{ pre_upgrade_backup_service_name }}/.env"]
+        services: "{{ pre_upgrade_backup_stop_services }}"
+        state: present
+        recreate: never
+        wait: true
+        wait_timeout: "{{ platform_compose_wait_timeout }}"
+      register: pre_upgrade_backup_restart
+      ignore_errors: true
+
+    - name: Read whether the application this run stopped is running again
+      ansible.builtin.command:
+        argv:
+          - docker
+          - container
+          - ls
+          - --quiet
+          - --filter
+          - "label=com.docker.compose.project={{ pre_upgrade_backup_project_name }}"
+          - --filter
+          - "label=com.docker.compose.service={{ pre_upgrade_backup_compose_service }}"
+          - --filter
+          - status=running
+      register: pre_upgrade_backup_running
+      changed_when: false
+      failed_when: false
+
+    - name: Refuse the upgrade the pre-upgrade dump could not protect
+      ansible.builtin.fail:
+        msg: >-
+          The {{ pre_upgrade_backup_service_name | capitalize }} pre-upgrade dump failed at
+          "{{ pre_upgrade_backup_failed_task }}": {{ pre_upgrade_backup_failed_message }}.
+          The upgrade from {{ pre_upgrade_backup_deployed_image }} to {{ pre_upgrade_backup_pinned_image }}
+          was not performed.
+          {{ pre_upgrade_backup_outcome }}
+      vars:
+        pre_upgrade_backup_label: "{{ pre_upgrade_backup_service_name | capitalize }}"
+        pre_upgrade_backup_running_again: >-
+          {{ ((pre_upgrade_backup_running.stdout_lines | default([])
+               | select('in', pre_upgrade_backup_container_ids.stdout_lines) | list | length > 0)
+              and not (pre_upgrade_backup_restart is failed)) }}
+        pre_upgrade_backup_outcome: >-
+          {{ (pre_upgrade_backup_label ~ ' is running on its old image, ' ~ pre_upgrade_backup_deployed_image
+               ~ '. Read the ' ~ pre_upgrade_backup_database_service ~ ' container log and converge again;'
+               ~ ' the next run takes the dump and then performs the upgrade.')
+             if (pre_upgrade_backup_running_again | bool)
+             else ((pre_upgrade_backup_label | upper) ~ ' IS NOT SERVING: it was started again on its old image'
+                   ~ ' but did not become healthy within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
+                   ~ (pre_upgrade_backup_restart.msg | default('no message', true)) ~ '), so it is stopped or'
+                   ~ ' crash-looping. Read its container log and the ' ~ pre_upgrade_backup_database_service
+                   ~ ' container log, and converge again.') }}

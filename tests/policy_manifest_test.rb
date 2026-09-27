@@ -648,6 +648,112 @@ expect_failure(failures, "Karakeep pre-upgrade copy after its deployment",
   end
 end
 
+# The pg_dump entry Nextcloud and Paperless-ngx take (#826): its own clause in
+# tests/policy_test.rb, the stop floor that clause's subjects are held to, and
+# the two call sites argument by argument and by position.
+PG_DUMP_SHAPE = "role pre_upgrade_backup: tasks/pg_dump.yml must dump the database after stopping the application"
+expect_failure(failures, "pre-upgrade dump taken before the application stops", PG_DUMP_SHAPE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["block"].reverse!
+  end
+end
+
+expect_failure(failures, "pre-upgrade dump that succeeds on any exit code", PG_DUMP_SHAPE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["block"]
+         .find { |task| task.key?("community.docker.docker_compose_v2_exec") }["failed_when"] = false
+  end
+end
+
+expect_failure(failures, "pre-upgrade dump rescue that starts only the application", PG_DUMP_SHAPE,
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"]
+         .find { |task| task.key?("community.docker.docker_compose_v2") }["community.docker.docker_compose_v2"]["services"] =
+      ["{{ pre_upgrade_backup_compose_service }}"]
+  end
+end
+
+expect_failure(failures, "pre-upgrade dump rescue that lets the upgrade proceed",
+               "role pre_upgrade_backup: a failed pre-upgrade copy must still fail the run",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml") do |tasks|
+    tasks.find { |task| task.key?("rescue") }["rescue"].reject! { |task| task.key?("ansible.builtin.fail") }
+  end
+end
+
+expect_failure(failures, "pre-upgrade dump entry removed",
+               "pre-upgrade copies that stop a container: 1 found, expected at least 2",
+               detected_by: %i[policy]) do |root|
+  FileUtils.rm_f(File.join(root, "roles/pre_upgrade_backup/tasks/pg_dump.yml"))
+end
+
+[
+  ["nextcloud", "    pre_upgrade_backup_stop_services: [nextcloud, cron]\n",
+   "    pre_upgrade_backup_stop_services: [nextcloud]\n", "pre_upgrade_backup_stop_services"],
+  ["nextcloud", "    tasks_from: pg_dump\n", "", "tasks_from"],
+  ["nextcloud", "    pre_upgrade_backup_database_service: db\n",
+   "    pre_upgrade_backup_database_service: cache\n", "pre_upgrade_backup_database_service"],
+  ["paperless_ngx", "    pre_upgrade_backup_compose_service: webserver\n",
+   "    pre_upgrade_backup_compose_service: db\n", "pre_upgrade_backup_compose_service"],
+  ["paperless_ngx", "    pre_upgrade_backup_project_name: \"{{ paperless_compose_project_name }}\"\n",
+   "    pre_upgrade_backup_project_name: \"{{ nextcloud_compose_project_name }}\"\n", "pre_upgrade_backup_project_name"]
+].each do |role, from, to, argument|
+  expect_failure(failures, "#{role} pre-upgrade dump call site without #{from.strip}",
+                 "role #{role}: the pre-upgrade dump must be given #{argument}",
+                 detected_by: %i[policy]) do |root|
+    path = File.join(root, "roles/#{role}/tasks/deploy.yml")
+    body = File.read(path)
+    raise "#{role} call-site plant matched #{body.scan(from).length} times" unless body.scan(from).length == 1
+
+    File.write(path, body.sub(from, to))
+  end
+end
+
+{ "nextcloud" => "nextcloud_data_deploy", "paperless_ngx" => "paperless_deploy" }.each do |role, register|
+  expect_failure(failures, "#{role} pre-upgrade dump moved past #{register}",
+                 "role #{role}: the pre-upgrade dump must run after the deployment registering",
+                 detected_by: %i[policy]) do |root|
+    mutate_yaml_file(root, "roles/#{role}/tasks/deploy.yml") do |tasks|
+      dump = tasks.index { |task| task.dig("ansible.builtin.include_role", "name") == "pre_upgrade_backup" }
+      anchor = tasks.index { |task| task["register"] == register }
+      raise "#{role} order plant found no dump or #{register}" unless dump && anchor
+
+      # Ahead of the data services, or behind the application's deployment.
+      tasks.insert(anchor, tasks.delete_at(dump))
+    end
+  end
+end
+
+expect_failure(failures, "Nextcloud guard gated apart from the pre-upgrade dump",
+               "role nextcloud: the pre-upgrade dump must follow the nextcloud image_downgrade_guard",
+               detected_by: %i[policy]) do |root|
+  mutate_yaml_file(root, "roles/nextcloud/tasks/deploy.yml") do |tasks|
+    guard = tasks.find { |task| task.dig("ansible.builtin.include_role", "name") == "image_downgrade_guard" }
+    raise "guard plant found no guard" unless guard
+
+    guard["tags"] = ["nextcloud_guard"]
+  end
+end
+
+{ "nextcloud" => "roles/nextcloud/tasks/report.yml", "paperless_ngx" => "roles/paperless_ngx/tasks/deploy.yml" }
+  .each do |role, path|
+  expect_failure(failures, "#{role} deployment report that ignores the pre-upgrade dump's restart",
+                 "role #{role}: includes roles/pre_upgrade_backup but its deployment report ignores " \
+                 "pre_upgrade_backup_restart",
+                 detected_by: %i[policy]) do |root|
+    file = File.join(root, path)
+    body = File.read(file)
+    planted = body.sub(/ or\s*\(\(pre_upgrade_backup_restart \| default\(\{\}\)\) is changed\)/, "")
+                  .sub("((pre_upgrade_backup_restart | default({})) is changed) or", "")
+    raise "#{role} report gate plant matched nothing" if planted == body
+
+    File.write(file, planted)
+  end
+end
+
 # The platform fragments are copied per stack because Compose resolves an anchor
 # only inside its own file, so the property that matters is that the copies agree.
 # Each mutation below diverges one stack's copy from the eleven others.
