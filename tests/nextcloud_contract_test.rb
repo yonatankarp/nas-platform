@@ -915,11 +915,12 @@ RUNTIME_DEFAULTS = {
 # to wait: the fixture answers immediately and a row whose outcome is a refusal
 # has nothing to wait for.
 #
-# The deadlines are 30 rather than 10 for the reason the Seafile suite measured:
-# these are ceilings on how long the docker STUB may take to answer, and the stub
-# answers immediately, so a larger ceiling costs nothing when nothing is slow --
-# while a ceiling of 10 turns process-spawn latency inside the gate's own worker
-# pool into "did not finish within 10s", which reports the wrong row as broken.
+# The deadlines are ceilings on how long the docker STUB may take to answer, and
+# the stub answers immediately, so a larger ceiling costs nothing when nothing is
+# slow. They were raised from 10 to 30 for what was read as process-spawn
+# latency inside the gate's worker pool; #888 measured it as macOS's first-exec
+# queue for newly written executables, which no ceiling bounds, and moved that
+# wait out of every row instead -- build_runtime_stubs below records it.
 RUNTIME_BUDGETS = {
   "PLATFORM_NEXTCLOUD_READY_TIMEOUT_SECONDS" => "30",
   "PLATFORM_NEXTCLOUD_DOCKER_TIMEOUT_SECONDS" => "30",
@@ -946,12 +947,14 @@ end
 
 # One stub for `docker`, dispatching on argv the way the real command does. It
 # reads a JSON fixture rather than being regenerated per case, so a row states
-# its outcome as data.
-def docker_stub_source(options_path)
+# its outcome as data. It finds that fixture from the path it was executed by,
+# $0 -- a row's bin/docker symlink -- never from where the file really lives,
+# which is the one copy RUNTIME_STUB_DIR holds for every row.
+def docker_stub_source
   <<~RUBY
     #!#{RbConfig.ruby}
     require "json"
-    options = JSON.parse(File.read(#{options_path.inspect}))
+    options = JSON.parse(File.read(File.join(File.dirname(File.dirname(File.expand_path($0))), "docker-stub.json")))
     argv = ARGV
     joined = argv.join(" ")
     case argv.first
@@ -1020,6 +1023,49 @@ def docker_stub_source(options_path)
   RUBY
 end
 
+# The two stubs every runtime row puts on PATH, written once per process and
+# linked into each row's bin rather than written into it (#888).
+#
+# On macOS the first exec of a newly written executable waits on a check the
+# system runs one file at a time, host-wide. Measured on the 12-core Mac this
+# gate runs on: about 0.3s per new file idle, and with 32 threads doing nothing
+# but exec'ing fresh scripts each exec waited a median 16s while the process
+# spent 0.7s of CPU in 55s of wall time -- a queue, not work. Running the
+# interpreter with the script as an argument, or exec'ing a file that has
+# already run once (through a symlink or a hardlink too), cost 0.01s under the
+# same load. Written per row, every row's first docker call sat in that queue
+# inside the runtime half's own DOCKER budget, and under the full local gate,
+# whose checks write stubs by the hundred, the queue outlasted it: "the
+# application container inspection did not finish within 30s" for rows whose
+# stub answers at once. So the files are made once and exec'd once here, untimed
+# and before any pool starts, and the rows only link to them. Linux runners have
+# no such check, which is why CI never saw it.
+def build_runtime_stubs
+  directory = Dir.mktmpdir("nas-platform-nextcloud-stubs.")
+  at_exit { FileUtils.rm_rf(directory) }
+  bin = File.join(directory, "bin")
+  FileUtils.mkdir_p(bin)
+  File.write(File.join(bin, "docker"), docker_stub_source)
+  # Both halves of the vault's outcome live beside the row's bin, so a row
+  # states them as files, the way the docker stub reads its options.
+  File.write(File.join(bin, "ansible-vault"), <<~'SH')
+    #!/bin/sh
+    root=$(dirname "$(dirname "$0")")
+    if [ -e "$root/vault-refuses" ]; then echo "decryption failed" >&2; exit 1; fi
+    cat "$root/vault-document.yml"
+  SH
+  %w[docker ansible-vault].each do |name|
+    path = File.join(bin, name)
+    File.chmod(0o755, path)
+    # Paid here, with no deadline. Neither has a fixture beside this bin, so
+    # both fail, and only the exec itself is the point.
+    Open3.capture3(path)
+  end
+  directory
+end
+
+RUNTIME_STUB_DIR = build_runtime_stubs
+
 def build_runtime_sandbox(root, options)
   bin = File.join(root, "bin")
   FileUtils.mkdir_p(bin)
@@ -1044,16 +1090,11 @@ def build_runtime_sandbox(root, options)
     "app_list_text" => options.fetch(:app_list_text)
   ))
 
-  File.write(File.join(bin, "docker"), docker_stub_source(options_path))
-  document = options.fetch(:vault_document) || vault_document
-  File.write(File.join(bin, "ansible-vault"), <<~SH)
-    #!/bin/sh
-    #{options.fetch(:vault_ok) ? '' : 'echo "decryption failed" >&2; exit 1'}
-    cat <<'YAML'
-    #{YAML.dump(document).lines.join.chomp}
-    YAML
-  SH
-  %w[docker ansible-vault].each { |name| File.chmod(0o755, File.join(bin, name)) }
+  File.write(File.join(root, "vault-document.yml"), YAML.dump(options.fetch(:vault_document) || vault_document))
+  File.write(File.join(root, "vault-refuses"), "") unless options.fetch(:vault_ok)
+  %w[docker ansible-vault].each do |name|
+    File.symlink(File.join(RUNTIME_STUB_DIR, "bin", name), File.join(bin, name))
+  end
   File.write(File.join(root, "vault.yml"), "encrypted\n")
   File.write(File.join(root, "vault-password"), "fixture\n")
   [bin, docker_root]
