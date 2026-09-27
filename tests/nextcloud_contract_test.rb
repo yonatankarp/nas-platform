@@ -1039,7 +1039,7 @@ end
 # application container inspection did not finish within 30s" for rows whose
 # stub answers at once. So the files are made once and exec'd once here, untimed
 # and before any pool starts, and the rows only link to them. Linux runners have
-# no such check, which is why CI never saw it.
+# no such check.
 def build_runtime_stubs
   directory = Dir.mktmpdir("nas-platform-nextcloud-stubs.")
   at_exit { FileUtils.rm_rf(directory) }
