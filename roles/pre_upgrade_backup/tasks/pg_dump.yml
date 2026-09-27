@@ -92,6 +92,9 @@
     # 0700, root-owned: it holds every account's password hash. Written to
     # .partial and renamed, so one generation is kept and a failed dump never
     # replaces the good one.
+    #
+    # Redacted, because pg_dump's refusal names the database user and database
+    # (#889). The rescue says what failed from the exit code and the path.
     - name: Dump the database before the pinned upgrade
       community.docker.docker_compose_v2_exec:
         project_src: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}"
@@ -115,16 +118,25 @@
       register: pre_upgrade_backup_dump
       changed_when: true
       failed_when: pre_upgrade_backup_dump.rc | default(1) != 0
+      no_log: true
       when:
         - not ansible_check_mode
         - pre_upgrade_backup_upgrade_pending | bool
   rescue:
+    # Never the dump's stderr: it names the database user and database (#889).
+    # The stop's output names only Compose services, so it is kept.
     - name: Record where the pre-upgrade dump failed
       ansible.builtin.set_fact:
         pre_upgrade_backup_failed_task: "{{ ansible_failed_task.name | default('an unnamed task') }}"
         pre_upgrade_backup_failed_message: >-
-          {{ (ansible_failed_result.msg | default('', true) ~ ' ' ~ ansible_failed_result.stderr | default('', true))
-             | trim | regex_replace('[. ]+$', '') }}
+          {{ ('pg_dump exited ' ~ (ansible_failed_result.rc | default('without an exit code', true) | string)
+              ~ ' writing ' ~ pre_upgrade_backup_dump_dir ~ '/' ~ pre_upgrade_backup_dump_file
+              ~ ' in the ' ~ pre_upgrade_backup_database_service ~ ' container; its output is withheld'
+              ~ ' because it names the database and its user, and the ' ~ pre_upgrade_backup_database_service
+              ~ ' container log carries the cause')
+             if ansible_failed_task.name | default('') == 'Dump the database before the pinned upgrade'
+             else ((ansible_failed_result.msg | default('', true) ~ ' ' ~ ansible_failed_result.stderr | default('', true))
+                   | trim | regex_replace('[. ]+$', '')) }}
 
     # `recreate: never` again: `up` without it would start the new image, which
     # is the migration this block exists to protect.
@@ -142,7 +154,9 @@
       register: pre_upgrade_backup_restart
       ignore_errors: true
 
-    - name: Read whether the application this run stopped is running again
+    # Every service the block stopped, from the same list (#889): Nextcloud's
+    # cron could otherwise stay down while the play said it was running.
+    - name: Read whether each service this run stopped is running again
       ansible.builtin.command:
         argv:
           - docker
@@ -152,9 +166,12 @@
           - --filter
           - "label=com.docker.compose.project={{ pre_upgrade_backup_project_name }}"
           - --filter
-          - "label=com.docker.compose.service={{ pre_upgrade_backup_compose_service }}"
+          - "label=com.docker.compose.service={{ pre_upgrade_backup_stopped_service }}"
           - --filter
           - status=running
+      loop: "{{ pre_upgrade_backup_stop_services }}"
+      loop_control:
+        loop_var: pre_upgrade_backup_stopped_service
       register: pre_upgrade_backup_running
       changed_when: false
       failed_when: false
@@ -169,17 +186,29 @@
           {{ pre_upgrade_backup_outcome }}
       vars:
         pre_upgrade_backup_label: "{{ pre_upgrade_backup_service_name | capitalize }}"
+        # A stopped service with no running container, and the application
+        # itself unless what runs is the container it was before: the old image.
+        pre_upgrade_backup_down: >-
+          {{ ((pre_upgrade_backup_running.results | rejectattr('stdout_lines')
+               | map(attribute='pre_upgrade_backup_stopped_service') | list)
+              + ([pre_upgrade_backup_compose_service]
+                 if (pre_upgrade_backup_running.results
+                     | selectattr('pre_upgrade_backup_stopped_service', 'eq', pre_upgrade_backup_compose_service)
+                     | map(attribute='stdout_lines')
+                     | map('ansible.builtin.intersect', pre_upgrade_backup_container_ids.stdout_lines)
+                     | reject | list)
+                 else [])) | unique }}
         pre_upgrade_backup_running_again: >-
-          {{ ((pre_upgrade_backup_running.stdout_lines | default([])
-               | select('in', pre_upgrade_backup_container_ids.stdout_lines) | list | length > 0)
-              and not (pre_upgrade_backup_restart is failed)) }}
+          {{ pre_upgrade_backup_down | length == 0 and not (pre_upgrade_backup_restart is failed) }}
         pre_upgrade_backup_outcome: >-
           {{ (pre_upgrade_backup_label ~ ' is running on its old image, ' ~ pre_upgrade_backup_deployed_image
                ~ '. Read the ' ~ pre_upgrade_backup_database_service ~ ' container log and converge again;'
                ~ ' the next run takes the dump and then performs the upgrade.')
              if (pre_upgrade_backup_running_again | bool)
-             else ((pre_upgrade_backup_label | upper) ~ ' IS NOT SERVING: it was started again on its old image'
-                   ~ ' but did not become healthy within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
-                   ~ (pre_upgrade_backup_restart.msg | default('no message', true)) ~ '), so it is stopped or'
+             else ((pre_upgrade_backup_label | upper) ~ ' IS NOT SERVING: '
+                   ~ ((pre_upgrade_backup_down or pre_upgrade_backup_stop_services) | join(' and '))
+                   ~ ' was started again on its old image'
+                   ~ ' but is not running within ' ~ (platform_compose_wait_timeout | string) ~ ' seconds ('
+                   ~ (pre_upgrade_backup_restart.msg | default('the start reported success', true)) ~ '), so it is stopped or'
                    ~ ' crash-looping. Read its container log and the ' ~ pre_upgrade_backup_database_service
                    ~ ' container log, and converge again.') }}
