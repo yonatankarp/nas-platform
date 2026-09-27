@@ -3666,6 +3666,7 @@ class ConvergeTest(PollerTestCase):
         "        'argv': sys.argv[1:],\n"
         "        'owner': os.environ.get('PLATFORM_DEPLOYMENT_LOCK_OWNER'),\n"
         "        'summary': os.environ.get('PLATFORM_DEPLOYMENT_SUMMARY_PATH'),\n"
+        "        'collections': os.environ.get('ANSIBLE_COLLECTIONS_PATH'),\n"
         "        'held': held,\n"
         "        'cwd': os.getcwd(),\n"
         "        'lock_record': open(lock).read(),\n"
@@ -3784,6 +3785,34 @@ class ConvergeTest(PollerTestCase):
         record = json.loads(invocation["lock_record"])
         self.assertEqual(record["holder"], "operator converge")
         self.assertEqual(record["pid"], os.getpid())
+
+    def test_converge_uses_the_poller_collections_unless_the_operator_chose(self):
+        """pip installs ansible-core, not the Galaxy collections: those sit beside
+        the checkout's virtualenv, where the poller points its plays. A converge
+        that found the venv's ansible-playbook and not its collections would fail
+        on the first community.* module. An operator's own export still wins."""
+
+        record = self.fake_playbook()
+        with mock.patch.dict(os.environ):
+            os.environ.pop("ANSIBLE_COLLECTIONS_PATH", None)
+            production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge", "site.yml"]
+            )
+        self.assertEqual(
+            json.loads(record.read_text(encoding="utf-8"))["collections"],
+            str(self.checkout / ".venv/collections"),
+            "converge must hand ansible-playbook the poller's collections path",
+        )
+
+        chosen = str(self.root / "operator-collections")
+        with mock.patch.dict(os.environ, {"ANSIBLE_COLLECTIONS_PATH": chosen}):
+            production_auto_deploy.main(
+                ["--config", str(self.config_path), "--converge", "site.yml"]
+            )
+        self.assertEqual(
+            json.loads(record.read_text(encoding="utf-8"))["collections"], chosen,
+            "an operator's exported ANSIBLE_COLLECTIONS_PATH must not be overridden",
+        )
 
     def test_converge_reports_the_playbook_exit_code(self):
         self.fake_playbook(exit_code=2)
