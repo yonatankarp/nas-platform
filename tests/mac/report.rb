@@ -408,250 +408,277 @@ def record_phase(path, phase, status)
   atomic_json(path, validate_input(input))
 end
 
+def self_test_redaction
+  forbidden = {
+    "password" => "value-password",
+    "SecretThing" => "value-secret",
+    "nested" => [{ "TOKEN" => "value-token" }, { "authorization" => "value-auth" }],
+    "private_key_data" => "value-private",
+    "passwordHash" => "value-hash"
+  }
+  redacted = []
+  sanitized = sanitize(forbidden, redacted)
+  raise "forbidden keys were not redacted" unless sanitized["password"] == REDACTION
+  raise "redaction count is incomplete" unless redacted.length == 6
+  sanitized_body = JSON.generate(sanitized)
+  %w[value-password value-secret value-token value-auth value-private value-hash].each do |value|
+    raise "forbidden value reached sanitized data" if sanitized_body.include?(value)
+  end
+end
+
+def self_test_valid_input
+  {
+    "schema" => 1,
+    "lane" => "fresh",
+    "proof_platform" => "mac",
+    "platform_kind" => "mac",
+    "platform_compose_kind" => "mac",
+    "callback_host" => "host.docker.internal",
+    "sandbox_id" => "nas-platform-mac.Abc123",
+    "project_name" => "nas-platform-mac-abc123",
+    "beszel_port" => 38_090,
+    "dozzle_port" => 38_080,
+    "audiobookshelf_port" => 33_378,
+    "komga_port" => 35_600,
+    "jellyfin_port" => 38_096,
+    "immich_port" => 32_283,
+    "paperless_port" => 38_000,
+    "radarr_port" => 37_878,
+    "sonarr_port" => 38_989,
+    "prowlarr_port" => 36_969,
+    "bazarr_port" => 36_767,
+    "sabnzbd_port" => 38_082,
+    "pinchflat_port" => 38_945,
+    "kapowarr_port" => 35_656,
+    "bindery_port" => 38_787,
+    "trailarr_port" => 37_889,
+    "seerr_port" => 35_055,
+    "nextcloud_port" => 38_084,
+    "vaultwarden_port" => 38_086,
+    "karakeep_port" => 38_087,
+    "git_revision" => "abc123",
+    "vault_checksum" => "0" * 64,
+    "diagnostic_locations" => [],
+    "phases" => []
+  }
+end
+
+def self_test_report_round_trip(directory, input, json, markdown, manifest, valid_input)
+  File.write(input, JSON.generate(valid_input))
+  File.write(manifest, <<~YAML)
+    ---
+    git_sha: abc123
+    platform_kind: mac
+    platform_compose_kind: mac
+    services:
+      - name: example
+        images:
+          app: example.invalid/app@sha256:1234
+  YAML
+  write_report(input, json, markdown, manifest)
+  parsed = JSON.parse(File.read(json))
+  raise "manifest identity is missing" unless parsed.dig("deployment_manifest", "identity", "git_sha") == "abc123"
+  raise "image evidence is missing" unless parsed.dig("deployment_manifest", "services", 0, "images", "app")
+
+  File.unlink(manifest)
+  write_report(input, json, markdown)
+  retained = JSON.parse(File.read(json))
+  unless retained.dig("deployment_manifest", "identity", "git_sha") == "abc123"
+    raise "manifest evidence was lost after service-data cleanup"
+  end
+
+  nil_input = File.join(directory, "nil-input.json")
+  nil_json = File.join(directory, "nil-report.json")
+  nil_markdown = File.join(directory, "nil-report.md")
+  File.write(nil_input, JSON.generate(valid_input.merge("deployment_manifest" => nil)))
+  write_report(nil_input, nil_json, nil_markdown)
+  nil_report = JSON.parse(File.read(nil_json))
+  expected_report_keys = (ROOT_KEYS + %w[deployment_manifest generated_at redacted_field_count]).sort
+  raise "final report root schema is not exact" unless nil_report.keys.sort == expected_report_keys
+  raise "missing deployment evidence was not persisted as null" unless nil_report["deployment_manifest"].nil?
+  raise "generated_at has the wrong type" unless nil_report["generated_at"].is_a?(String)
+  raise "redacted_field_count has the wrong type" unless nil_report["redacted_field_count"].is_a?(Integer)
+  record_phase(input, "preflight", "failed")
+  record_phase(input, "preflight", "running")
+  restarted = read_input(input).fetch("phases").find { |phase| phase["name"] == "preflight" }
+  raise "restarted phase retained a stale finish time" if restarted.key?("finished_at")
+end
+
+def self_test_malformed_evidence(directory, valid_input)
+  malformed_input = File.join(directory, "malformed.json")
+  File.write(malformed_input, JSON.generate(valid_input.merge("phases" => ["not-an-object"])))
+  begin
+    read_input(malformed_input)
+    raise "malformed phase entry was accepted"
+  rescue RuntimeError => error
+    raise unless error.message == "input phase entries must be JSON objects"
+  end
+
+  malformed_manifest = File.join(directory, "malformed-manifest.yml")
+  File.write(malformed_manifest, "---\nservices:\n  - invalid\n")
+  begin
+    deployment_evidence(malformed_manifest)
+    raise "malformed manifest service was accepted"
+  rescue RuntimeError => error
+    raise unless error.message == "deployment manifest services must be objects"
+  end
+end
+
+def self_test_malformed_inputs(valid_input)
+  recorded_manifest = {
+    "identity" => {
+      "git_sha" => "abc123",
+      "platform_kind" => "mac",
+      "platform_compose_kind" => "mac"
+    },
+    "services" => [{ "name" => "example", "images" => { "app" => "example.invalid/app@sha256:1234" } }]
+  }
+  {
+    "diagnostic_locations string" => valid_input.merge("diagnostic_locations" => "container-state.jsonl"),
+    "diagnostic_locations object" => valid_input.merge("diagnostic_locations" => [{}]),
+    "diagnostic_locations path" => valid_input.merge("diagnostic_locations" => ["../raw.log"]),
+    "deployment_manifest string" => valid_input.merge("deployment_manifest" => "recorded"),
+    "deployment_manifest identity" => valid_input.merge("deployment_manifest" => recorded_manifest.merge("identity" => "mac")),
+    "deployment_manifest services" => valid_input.merge(
+      "deployment_manifest" => recorded_manifest.merge("services" => "not-an-array")
+    ),
+    "deployment_manifest service" => valid_input.merge(
+      "deployment_manifest" => recorded_manifest.merge("services" => ["not-an-object"])
+    ),
+    "deployment_manifest images" => valid_input.merge(
+      "deployment_manifest" => recorded_manifest.merge(
+        "services" => [{ "name" => "example", "images" => "not-an-object" }]
+      )
+    ),
+    "deployment_manifest image entry" => valid_input.merge(
+      "deployment_manifest" => recorded_manifest.merge(
+        "services" => [{ "name" => "example", "images" => { "app" => 123 } }]
+      )
+    ),
+    "malformed root" => [],
+    "unknown root field" => valid_input.merge("unexpected" => true),
+    "root field type" => valid_input.merge("vault_checksum" => []),
+    "partial proof platform identity" => valid_input.reject { |key, _value| key == "proof_platform" },
+    "proof platform invalid" => valid_input.merge("proof_platform" => "linux"),
+    "platform kind invalid" => valid_input.merge("platform_kind" => "nas"),
+    "compose kind mismatch" => valid_input.merge("platform_compose_kind" => "integration"),
+    "callback host mismatch" => valid_input.merge("callback_host" => "192.0.2.1"),
+    "lane invalid" => valid_input.merge("lane" => "adoption"),
+    "retired parity identity" => valid_input.merge("parity_vault_checksum" => "1" * 64),
+    "retired legacy identity" => valid_input.merge("legacy_commit" => "a" * 40),
+    "retired adoption phase" => valid_input.merge(
+      "phases" => [{ "name" => "legacy-deploy", "status" => "failed", "finished_at" => Time.now.utc.iso8601 }]
+    ),
+    "phase status" => valid_input.merge("phases" => [{ "name" => "preflight", "status" => "unknown" }]),
+    "phase timestamp" => valid_input.merge(
+      "phases" => [{ "name" => "preflight", "status" => "failed", "finished_at" => 123 }]
+    )
+  }
+end
+
+def self_test_rejects_malformed_inputs(input, json, markdown, valid_input, original_json, original_markdown)
+  malformed_inputs = self_test_malformed_inputs(valid_input)
+  malformed_inputs.each do |label, malformed|
+    File.write(input, JSON.generate(malformed))
+    File.write(json, original_json)
+    File.write(markdown, original_markdown)
+    _stdout, stderr, status = Open3.capture3(
+      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+      "--json", json, "--markdown", markdown
+    )
+    raise "#{label} was accepted" if status.success?
+    raise "#{label} emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/) &&
+                                                         !stderr.match?(/\.rb:\d+:in [`']/)
+    raise "#{label} replaced the existing JSON report" unless File.binread(json) == original_json
+    raise "#{label} replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
+  end
+end
+
+def self_test_output_aliases(directory, input, valid_input, original_json)
+  shared_output = File.join(directory, "shared-report")
+  File.write(input, JSON.generate(valid_input))
+  File.write(shared_output, original_json)
+  _stdout, stderr, status = Open3.capture3(
+    RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+    "--json", shared_output, "--markdown", File.join(directory, ".", "shared-report")
+  )
+  raise "aliased report destinations were accepted" if status.success?
+  raise "aliased report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+  raise "aliased report destinations replaced the existing output" unless File.binread(shared_output) == original_json
+
+  real_output_root = File.join(directory, "real-output")
+  nested_output_root = File.join(real_output_root, "nested")
+  aliased_output_root = File.join(directory, "aliased-output")
+  Dir.mkdir(real_output_root)
+  Dir.mkdir(nested_output_root)
+  File.symlink(real_output_root, aliased_output_root)
+  nested_json = File.join(nested_output_root, "report")
+  nested_markdown = File.join(aliased_output_root, "nested", "report")
+  _stdout, stderr, status = Open3.capture3(
+    RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+    "--json", nested_json, "--markdown", nested_markdown
+  )
+  raise "nested ancestor aliases were accepted" if status.success?
+  raise "nested ancestor aliases emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+  raise "nested ancestor aliases created an output" if File.exist?(nested_json)
+
+  case_json = File.join(directory, "case-report")
+  case_markdown = File.join(directory, "CASE-REPORT")
+  _stdout, stderr, status = Open3.capture3(
+    RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
+    "--json", case_json, "--markdown", case_markdown
+  )
+  raise "case-folded report destinations were accepted" if status.success?
+  raise "case-folded report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
+  raise "case-folded report destinations created an output" if File.exist?(case_json) || File.exist?(case_markdown)
+end
+
+def self_test_second_rename_failure(input, json, markdown, valid_input, original_json, original_markdown)
+  File.write(input, JSON.generate(valid_input))
+  File.write(json, original_json)
+  File.write(markdown, original_markdown)
+  original_rename = File.method(:rename)
+  rename_count = 0
+  forced_second_rename = false
+  File.define_singleton_method(:rename) do |source, destination|
+    rename_count += 1
+    if rename_count == 2
+      forced_second_rename = true
+      raise Errno::EACCES, destination
+    end
+
+    original_rename.call(source, destination)
+  end
+  begin
+    write_report(input, json, markdown)
+    raise "second publication failure was accepted"
+  rescue Errno::EACCES
+    nil
+  ensure
+    File.define_singleton_method(:rename) do |source, destination|
+      original_rename.call(source, destination)
+    end
+  end
+  raise "second publication failure did not reach the second rename" unless forced_second_rename
+  raise "second publication failure replaced the existing JSON report" unless File.binread(json) == original_json
+  raise "second publication failure replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
+end
+
 def self_test
   Dir.mktmpdir("nas-platform-report.") do |directory|
     input = File.join(directory, "input.json")
     json = File.join(directory, "report.json")
     markdown = File.join(directory, "report.md")
     manifest = File.join(directory, "manifest.yml")
-    forbidden = {
-      "password" => "value-password",
-      "SecretThing" => "value-secret",
-      "nested" => [{ "TOKEN" => "value-token" }, { "authorization" => "value-auth" }],
-      "private_key_data" => "value-private",
-      "passwordHash" => "value-hash"
-    }
-    redacted = []
-    sanitized = sanitize(forbidden, redacted)
-    raise "forbidden keys were not redacted" unless sanitized["password"] == REDACTION
-    raise "redaction count is incomplete" unless redacted.length == 6
-    sanitized_body = JSON.generate(sanitized)
-    %w[value-password value-secret value-token value-auth value-private value-hash].each do |value|
-      raise "forbidden value reached sanitized data" if sanitized_body.include?(value)
-    end
-
-    valid_input = {
-      "schema" => 1,
-      "lane" => "fresh",
-      "proof_platform" => "mac",
-      "platform_kind" => "mac",
-      "platform_compose_kind" => "mac",
-      "callback_host" => "host.docker.internal",
-      "sandbox_id" => "nas-platform-mac.Abc123",
-      "project_name" => "nas-platform-mac-abc123",
-      "beszel_port" => 38_090,
-      "dozzle_port" => 38_080,
-      "audiobookshelf_port" => 33_378,
-      "komga_port" => 35_600,
-      "jellyfin_port" => 38_096,
-      "immich_port" => 32_283,
-      "paperless_port" => 38_000,
-      "radarr_port" => 37_878,
-      "sonarr_port" => 38_989,
-      "prowlarr_port" => 36_969,
-      "bazarr_port" => 36_767,
-      "sabnzbd_port" => 38_082,
-      "pinchflat_port" => 38_945,
-      "kapowarr_port" => 35_656,
-      "bindery_port" => 38_787,
-      "trailarr_port" => 37_889,
-      "seerr_port" => 35_055,
-      "nextcloud_port" => 38_084,
-      "vaultwarden_port" => 38_086,
-      "karakeep_port" => 38_087,
-      "git_revision" => "abc123",
-      "vault_checksum" => "0" * 64,
-      "diagnostic_locations" => [],
-      "phases" => []
-    }
-    File.write(input, JSON.generate(valid_input))
-    File.write(manifest, <<~YAML)
-      ---
-      git_sha: abc123
-      platform_kind: mac
-      platform_compose_kind: mac
-      services:
-        - name: example
-          images:
-            app: example.invalid/app@sha256:1234
-    YAML
-    write_report(input, json, markdown, manifest)
-    parsed = JSON.parse(File.read(json))
-    raise "manifest identity is missing" unless parsed.dig("deployment_manifest", "identity", "git_sha") == "abc123"
-    raise "image evidence is missing" unless parsed.dig("deployment_manifest", "services", 0, "images", "app")
-
-    File.unlink(manifest)
-    write_report(input, json, markdown)
-    retained = JSON.parse(File.read(json))
-    unless retained.dig("deployment_manifest", "identity", "git_sha") == "abc123"
-      raise "manifest evidence was lost after service-data cleanup"
-    end
-
-    nil_input = File.join(directory, "nil-input.json")
-    nil_json = File.join(directory, "nil-report.json")
-    nil_markdown = File.join(directory, "nil-report.md")
-    File.write(nil_input, JSON.generate(valid_input.merge("deployment_manifest" => nil)))
-    write_report(nil_input, nil_json, nil_markdown)
-    nil_report = JSON.parse(File.read(nil_json))
-    expected_report_keys = (ROOT_KEYS + %w[deployment_manifest generated_at redacted_field_count]).sort
-    raise "final report root schema is not exact" unless nil_report.keys.sort == expected_report_keys
-    raise "missing deployment evidence was not persisted as null" unless nil_report["deployment_manifest"].nil?
-    raise "generated_at has the wrong type" unless nil_report["generated_at"].is_a?(String)
-    raise "redacted_field_count has the wrong type" unless nil_report["redacted_field_count"].is_a?(Integer)
-    record_phase(input, "preflight", "failed")
-    record_phase(input, "preflight", "running")
-    restarted = read_input(input).fetch("phases").find { |phase| phase["name"] == "preflight" }
-    raise "restarted phase retained a stale finish time" if restarted.key?("finished_at")
-
-    malformed_input = File.join(directory, "malformed.json")
-    File.write(malformed_input, JSON.generate(valid_input.merge("phases" => ["not-an-object"])))
-    begin
-      read_input(malformed_input)
-      raise "malformed phase entry was accepted"
-    rescue RuntimeError => error
-      raise unless error.message == "input phase entries must be JSON objects"
-    end
-
-    malformed_manifest = File.join(directory, "malformed-manifest.yml")
-    File.write(malformed_manifest, "---\nservices:\n  - invalid\n")
-    begin
-      deployment_evidence(malformed_manifest)
-      raise "malformed manifest service was accepted"
-    rescue RuntimeError => error
-      raise unless error.message == "deployment manifest services must be objects"
-    end
-
+    self_test_redaction
+    valid_input = self_test_valid_input
+    self_test_report_round_trip(directory, input, json, markdown, manifest, valid_input)
+    self_test_malformed_evidence(directory, valid_input)
     original_json = "ORIGINAL JSON\n"
     original_markdown = "ORIGINAL MARKDOWN\n"
-    recorded_manifest = {
-      "identity" => {
-        "git_sha" => "abc123",
-        "platform_kind" => "mac",
-        "platform_compose_kind" => "mac"
-      },
-      "services" => [{ "name" => "example", "images" => { "app" => "example.invalid/app@sha256:1234" } }]
-    }
-    malformed_inputs = {
-      "diagnostic_locations string" => valid_input.merge("diagnostic_locations" => "container-state.jsonl"),
-      "diagnostic_locations object" => valid_input.merge("diagnostic_locations" => [{}]),
-      "diagnostic_locations path" => valid_input.merge("diagnostic_locations" => ["../raw.log"]),
-      "deployment_manifest string" => valid_input.merge("deployment_manifest" => "recorded"),
-      "deployment_manifest identity" => valid_input.merge("deployment_manifest" => recorded_manifest.merge("identity" => "mac")),
-      "deployment_manifest services" => valid_input.merge(
-        "deployment_manifest" => recorded_manifest.merge("services" => "not-an-array")
-      ),
-      "deployment_manifest service" => valid_input.merge(
-        "deployment_manifest" => recorded_manifest.merge("services" => ["not-an-object"])
-      ),
-      "deployment_manifest images" => valid_input.merge(
-        "deployment_manifest" => recorded_manifest.merge(
-          "services" => [{ "name" => "example", "images" => "not-an-object" }]
-        )
-      ),
-      "deployment_manifest image entry" => valid_input.merge(
-        "deployment_manifest" => recorded_manifest.merge(
-          "services" => [{ "name" => "example", "images" => { "app" => 123 } }]
-        )
-      ),
-      "malformed root" => [],
-      "unknown root field" => valid_input.merge("unexpected" => true),
-      "root field type" => valid_input.merge("vault_checksum" => []),
-      "partial proof platform identity" => valid_input.reject { |key, _value| key == "proof_platform" },
-      "proof platform invalid" => valid_input.merge("proof_platform" => "linux"),
-      "platform kind invalid" => valid_input.merge("platform_kind" => "nas"),
-      "compose kind mismatch" => valid_input.merge("platform_compose_kind" => "integration"),
-      "callback host mismatch" => valid_input.merge("callback_host" => "192.0.2.1"),
-      "lane invalid" => valid_input.merge("lane" => "adoption"),
-      "retired parity identity" => valid_input.merge("parity_vault_checksum" => "1" * 64),
-      "retired legacy identity" => valid_input.merge("legacy_commit" => "a" * 40),
-      "retired adoption phase" => valid_input.merge(
-        "phases" => [{ "name" => "legacy-deploy", "status" => "failed", "finished_at" => Time.now.utc.iso8601 }]
-      ),
-      "phase status" => valid_input.merge("phases" => [{ "name" => "preflight", "status" => "unknown" }]),
-      "phase timestamp" => valid_input.merge(
-        "phases" => [{ "name" => "preflight", "status" => "failed", "finished_at" => 123 }]
-      )
-    }
-    malformed_inputs.each do |label, malformed|
-      File.write(input, JSON.generate(malformed))
-      File.write(json, original_json)
-      File.write(markdown, original_markdown)
-      _stdout, stderr, status = Open3.capture3(
-        RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
-        "--json", json, "--markdown", markdown
-      )
-      raise "#{label} was accepted" if status.success?
-      raise "#{label} emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/) &&
-                                                           !stderr.match?(/\.rb:\d+:in [`']/)
-      raise "#{label} replaced the existing JSON report" unless File.binread(json) == original_json
-      raise "#{label} replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
-    end
-
-    shared_output = File.join(directory, "shared-report")
-    File.write(input, JSON.generate(valid_input))
-    File.write(shared_output, original_json)
-    _stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
-      "--json", shared_output, "--markdown", File.join(directory, ".", "shared-report")
-    )
-    raise "aliased report destinations were accepted" if status.success?
-    raise "aliased report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
-    raise "aliased report destinations replaced the existing output" unless File.binread(shared_output) == original_json
-
-    real_output_root = File.join(directory, "real-output")
-    nested_output_root = File.join(real_output_root, "nested")
-    aliased_output_root = File.join(directory, "aliased-output")
-    Dir.mkdir(real_output_root)
-    Dir.mkdir(nested_output_root)
-    File.symlink(real_output_root, aliased_output_root)
-    nested_json = File.join(nested_output_root, "report")
-    nested_markdown = File.join(aliased_output_root, "nested", "report")
-    _stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
-      "--json", nested_json, "--markdown", nested_markdown
-    )
-    raise "nested ancestor aliases were accepted" if status.success?
-    raise "nested ancestor aliases emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
-    raise "nested ancestor aliases created an output" if File.exist?(nested_json)
-
-    case_json = File.join(directory, "case-report")
-    case_markdown = File.join(directory, "CASE-REPORT")
-    _stdout, stderr, status = Open3.capture3(
-      RbConfig.ruby, File.expand_path(__FILE__), "--input", input,
-      "--json", case_json, "--markdown", case_markdown
-    )
-    raise "case-folded report destinations were accepted" if status.success?
-    raise "case-folded report destinations emitted an uncontrolled error" unless stderr.match?(/\Areport error: [^\n]+\n\z/)
-    raise "case-folded report destinations created an output" if File.exist?(case_json) || File.exist?(case_markdown)
-
-    File.write(input, JSON.generate(valid_input))
-    File.write(json, original_json)
-    File.write(markdown, original_markdown)
-    original_rename = File.method(:rename)
-    rename_count = 0
-    forced_second_rename = false
-    File.define_singleton_method(:rename) do |source, destination|
-      rename_count += 1
-      if rename_count == 2
-        forced_second_rename = true
-        raise Errno::EACCES, destination
-      end
-
-      original_rename.call(source, destination)
-    end
-    begin
-      write_report(input, json, markdown)
-      raise "second publication failure was accepted"
-    rescue Errno::EACCES
-      nil
-    ensure
-      File.define_singleton_method(:rename) do |source, destination|
-        original_rename.call(source, destination)
-      end
-    end
-    raise "second publication failure did not reach the second rename" unless forced_second_rename
-    raise "second publication failure replaced the existing JSON report" unless File.binread(json) == original_json
-    raise "second publication failure replaced the existing Markdown report" unless File.binread(markdown) == original_markdown
+    self_test_rejects_malformed_inputs(input, json, markdown, valid_input, original_json, original_markdown)
+    self_test_output_aliases(directory, input, valid_input, original_json)
+    self_test_second_rename_failure(input, json, markdown, valid_input, original_json, original_markdown)
   end
   puts "report: all redaction properties hold"
 end
