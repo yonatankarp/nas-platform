@@ -308,7 +308,8 @@
           daemon="{{ backup_root }}/daemon"
           # What a real refusal prints: the database user and database by name.
           if [ -f "$daemon/dump-fails" ]; then
-            echo "pg_dump: error: connection to server failed: FATAL:  password authentication failed for user \"$POSTGRES_USER\" to database \"$POSTGRES_DB\"" >&2
+            printf 'pg_dump: error: FATAL:  password authentication failed for user "%s" to database "%s"\n' \
+              "$POSTGRES_USER" "$POSTGRES_DB" >&2
             exit 1
           fi
           echo "-- dumped while the application was $(cat "$daemon/state")"
