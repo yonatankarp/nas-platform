@@ -45,11 +45,9 @@
 # immich-server and not the database: the PostgreSQL major is capped by its own
 # Renovate ceiling and a major change there is a restore, not a migration this
 # guard could judge -- classify_restore.py refuses a data directory of another
-# major instead, when the deploy account can read its PG_VERSION, and warns
-# and proceeds when it cannot; machine-learning holds no store. The five paths
-# this reads are the ones the containment re-include at the top of this file
-# already declared through deployment_target_service, so it needs no
-# extra_paths.
+# major instead; machine-learning holds no store. The five paths this reads
+# are the ones the containment re-include at the top of this file already
+# declared through deployment_target_service, so it needs no extra_paths.
 - name: Refuse an Immich image older than the database this host has migrated
   ansible.builtin.include_role:
     name: image_downgrade_guard

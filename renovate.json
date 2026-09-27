@@ -76,21 +76,21 @@
       ]
     },
     {
-      "description": "The Postgres+vector image deliberately leaves Immich's own compose (#839): upstream still ships a frozen pgvecto.rs tag, and this pin is a maintained build bounded by the Postgres and VectorChord ranges the pinned Immich server enforces at startup. It carries a version ceiling rather than enabled false, because the two things enabled false used to do are not equally worth doing. Blocking a major is worth it: a major is an on-disk format change Ansible cannot migrate, and moving one is a dump and restore done by hand (docs/immich-postgres-17-cutover.md), so the ceiling admits only the pinned major and is raised in the pull request that performs the next cutover. The major after the current one is also where the image moves PGDATA, so crossing it changes the volume mount as well. Blocking a DIGEST refresh is not worth it: the tag is unchanged, no version moves, and this tag is rebuilt as Postgres ships minors, so the digest refresh is how security fixes arrive. automerge false stops the merge and needs-manual-coupling says a human checks it against the server pin. Renovate offers tags only at the current suffix, so it will never propose a newer VectorChord or pgvector; that is the tag-shape trap CLAUDE.md describes, and those move by hand when the server's ranges allow. tests/renovate_policy_test.rb refuses dependencyDashboardApproval and enabled false anywhere in this file, which is what stops the silencing coming back.",
+      "description": "The Postgres+vector image is copied verbatim, digest included, from docker/docker-compose.yml at the pinned Immich release's git tag. Its extension versions are coupled to the Immich schema, so it follows an Immich upgrade by hand and never moves on its own. IT USED TO CARRY enabled false, AND THAT WAS THE ONE DEPENDENCY HERE NO PULL REQUEST COULD EVER REACH. The replacement is a version ceiling, because the two things enabled false was doing are not equally worth doing. Blocking a version move is worth it and is measured rather than assumed: ghcr.io/immich-app/postgres publishes 15-vectorchord0.4.3-pgvectors0.2.0 and 16-vectorchord0.4.3-pgvectors0.2.0 under the identical suffix, so a plain enable proposes PostgreSQL 14 to 16 -- an on-disk format change Ansible cannot migrate, offered as though it were routine and wrong to merge on its own. Blocking a DIGEST refresh is not worth it, and that is what was lost: the tag is unchanged, no version moves, no coupling breaks, and a re-pushed digest is exactly the case somebody needs to see. So the ceiling stops the majors, automerge false stops the merge, needs-manual-coupling says the diff is not one a bot can finish, and the digest refresh that used to be invisible now opens a pull request. The ceiling is raised by hand when an Immich release moves the database major, in the same edit that re-copies these lines. tests/renovate_policy_test.rb refuses dependencyDashboardApproval and enabled false anywhere in this file, which is what stops the silencing coming back.",
       "matchFileNames": [
         "services/immich/compose.yml"
       ],
       "matchPackageNames": [
         "ghcr.io/immich-app/postgres"
       ],
-      "allowedVersions": "<18",
+      "allowedVersions": "<15",
       "addLabels": [
         "needs-manual-coupling"
       ],
       "automerge": false
     },
     {
-      "description": "Bumping Immich also means re-copying the redis line from that release's compose, rechecking the database pin against that release's supported Postgres and VectorChord ranges, and rechecking the pinned preference schema. The restore preflight's expected Immich and PostgreSQL versions are derived from these pins rather than restated, so they need no edit.",
+      "description": "Bumping Immich also means re-copying the redis and database lines from that release's compose, and rechecking the pinned preference schema. The restore preflight's expected Immich and PostgreSQL versions are derived from these pins rather than restated, so they need no edit.",
       "matchDatasources": [
         "docker"
       ],
