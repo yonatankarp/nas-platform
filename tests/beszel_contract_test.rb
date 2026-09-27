@@ -1116,6 +1116,11 @@ def hub_responder(state)
       next [200, JSON.generate("err" => state.fetch(:notification_err, failure || false))]
     end
 
+    # The socket proxy's Docker API ping, served by the same fixture, unauthenticated
+    # as the proxy is. run_runtime points PLATFORM_BESZEL_SOCKET_PROXY_PORT here.
+    if method == "GET" && path == "/_ping"
+      next [state.fetch(:ping_status, 200), state.fetch(:ping_body, "OK")]
+    end
     next [401, JSON.generate("message" => "unauthorized")] unless authorized
 
     if method == "GET" && (collection = path[%r{\A/api/collections/([a-z_]+)/records\z}, 1])
@@ -1195,6 +1200,7 @@ def run_runtime(program, mode, state, paths, extra_env: {})
     "PLATFORM_REPORT_ROOT" => paths.fetch(:report),
     "PLATFORM_BESZEL_PORT" => state.fetch(:hub_port).to_s,
     "PLATFORM_KIND" => state.fetch(:platform_kind, "nas"),
+    "PLATFORM_BESZEL_SOCKET_PROXY_PORT" => state.fetch(:ping_port, state.fetch(:hub_port)).to_s,
     "PLATFORM_CALLBACK_HOST" => CALLBACK_HOST
   }.merge(extra_env)
   Open3.capture3(environment, RbConfig.ruby, program, mode, in: "/dev/null")
@@ -1325,6 +1331,18 @@ RUNTIME_ROWS = [
   },
   { name: "a converged Mac platform, whose policy requires no GPU sample",
     mode: "verify", state: { platform_kind: "mac" }, expects: nil },
+  # The integration lane asks the socket proxy's loopback port for a Docker API
+  # ping (#829). The first row is the answer a published proxy gives; the other
+  # two are a port nothing listens on -- what an unpublished proxy leaves -- and
+  # a listener that is not the Docker API.
+  { name: "a converged integration platform whose socket proxy answers on loopback",
+    mode: "verify", state: { platform_kind: "integration" }, expects: nil },
+  { name: "an integration platform whose socket proxy port is not published",
+    mode: "verify", state: { platform_kind: "integration", ping_port: :refusing },
+    expects: "is unreachable from the host: Errno::ECONNREFUSED" },
+  { name: "an integration platform whose loopback port is not the Docker API",
+    mode: "verify", state: { platform_kind: "integration", ping_status: 404, ping_body: "nope" },
+    expects: "did not answer the Docker API ping" },
   # --- drift -------------------------------------------------------------
   { name: "the drift fixture install", mode: "drift", expects: nil,
     after: lambda { |_paths, collected, state|
@@ -1508,6 +1526,7 @@ def prepare_state(row)
   state.merge!(row.fetch(:state, {}))
   state[:alerts] = row.fetch(:alerts).call if row[:alerts]
   state[:row] = row
+  state[:ping_port] = refusing_port if state[:ping_port] == :refusing
   state
 end
 

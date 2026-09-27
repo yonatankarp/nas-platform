@@ -373,6 +373,27 @@ when "notify"
     sleep 1
   end
 else
+  # The socket proxy's loopback port, asked from the host's network namespace --
+  # the vantage agent-intel has on the NAS, and the one this program has in the
+  # integration lane, whose controller runs with --network host. #829 moved the
+  # proxy onto an internal network and gave it a second, non-internal one that
+  # only it joins, because Docker does not publish a port for a container on
+  # internal networks alone. Nothing else in a lane runs agent-intel, so without
+  # this a proxy that lost that second network would pass everywhere and the
+  # first report would be the NAS's missing container telemetry. The Mac lane
+  # resets the port, so only the integration lane asks.
+  if ENV.fetch("PLATFORM_KIND") == "integration"
+    ping_port = Integer(ENV.fetch("PLATFORM_BESZEL_SOCKET_PROXY_PORT", "2375"), 10)
+    begin
+      ping = Net::HTTP.start("127.0.0.1", ping_port, open_timeout: 5, read_timeout: 5) do |http|
+        http.get("/_ping")
+      end
+    rescue SystemCallError, IOError, Timeout::Error => error
+      fail_contract("socket proxy loopback port #{ping_port} is unreachable from the host: #{error.class}")
+    end
+    fail_contract("socket proxy loopback port #{ping_port} did not answer the Docker API ping") unless
+      ping.code == "200" && ping.body.to_s.strip == "OK"
+  end
   request(
     "post", endpoint(HUB, "/api/collections/users/auth-with-password"),
     body: { identity: vault.fetch("vault_beszel_app_user_email"),
