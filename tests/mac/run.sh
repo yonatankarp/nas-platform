@@ -72,6 +72,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+# The lane's Ruby programs, its own and the contracts it runs, call
+# YAML.safe_load_file and Enumerable#filter_map throughout, and macOS's
+# /usr/bin/ruby has neither. Refuse such a ruby here, before the first of them
+# runs, rather than let it die as a NoMethodError generate_immich_fixture_vars
+# swallows and an ENOENT on the file it never wrote (#854). Probed by API, not
+# by version number, so there is no second copy of a floor to keep in step.
+mac_ruby=$(command -v ruby 2>/dev/null) ||
+  mac_die 'ruby is not on PATH; install a current Ruby (docs/getting-started-mac.md)'
+ruby -ryaml -e \
+  'exit(YAML.respond_to?(:safe_load_file) && Enumerable.method_defined?(:filter_map))' \
+  >/dev/null 2>&1 ||
+  mac_die "ruby at $mac_ruby is too old for this lane; install a current Ruby first on PATH (docs/getting-started-mac.md)"
+
 if [ "$manual_validation" = true ]; then
   [ "$lane" = fresh ] || mac_die '--manual-validation requires --lane fresh'
   [ -z "$selected_phase" ] ||

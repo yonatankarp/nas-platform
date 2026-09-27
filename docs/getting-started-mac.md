@@ -57,6 +57,18 @@ Stop if any command fails. Docker must be running, and `ansible-playbook` must
 report the ansible-core version pinned in
 [`controller-requirements.in`](../controller-requirements.in).
 
+The lane also needs a current Ruby, and the `/usr/bin/ruby` that macOS ships is
+too old: `tests/mac/run.sh` refuses it before doing anything else, naming the
+path it found. Install Homebrew's and make sure it comes first on `PATH`:
+
+```sh
+brew install ruby
+export PATH="$(brew --prefix ruby)/bin:$PATH"
+command -v ruby
+```
+
+`command -v ruby` must print a path under `$(brew --prefix)`, not `/usr/bin/ruby`.
+
 ## 2. Prepare the external vault
 
 The proof commands below consume these two protected inputs outside the
