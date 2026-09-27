@@ -590,34 +590,381 @@ def backticked_path_failures(root, sources, absent)
   [failures, cited.length]
 end
 
-def self_test
-  Dir.mktmpdir("docs-backticks-test") do |directory|
-    root = Pathname.new(directory)
-    root.join("roles/real").mkpath
-    source = root.join("guide.md")
-    source.write("`roles/real` `roles/gone/tasks/main.yml` `roles/<name>/x` `roles/kept` `notes/x`\n")
-    failures, count = backticked_path_failures(root, [source], { "roles/kept" => "", "roles/real" => "",
-                                                                 "roles/uncited" => "" })
-    expected = [
-      "guide.md: cites `roles/gone/tasks/main.yml`, which does not exist",
-      "ABSENT_PATH_CITATIONS lists `roles/real`, which exists now",
-      "ABSENT_PATH_CITATIONS lists `roles/uncited`, which no document cites"
-    ]
-    unless failures == expected && count == 3
-      warn "docs links backticked-path self-test failed: #{failures.inspect} #{count}"
+# The document check_sources is proved against in the self-test. It is a
+# constant only so the method that writes it stays short; its bytes are the
+# ones the self-test has always written.
+SELF_TEST_SAMPLE_MARKDOWN = <<~MARKDOWN
+  [file](valid%20file.md)
+  prose < unmatched [after-prose](after-prose-missing.md)
+  [title-paren](title-paren-missing.md "title (")
+  [single-title](single-title-missing.md 'author"s (title')
+  [not-a-link] (not-a-link-missing.md)
+  <!-- [comment](comment-missing.md) -->
+  <!-- ` [comment-inline](comment-inline-missing.md) `
+  ```
+  [comment-fence](comment-fence-missing.md)
+  ``` -->
+  <!-- multiline
+  [multiline-comment](multiline-comment-missing.md)
+  -->
+  \\<!-- [escaped-comment](escaped-comment-missing.md) -->
+  [plus](plus+file.md)
+  [balanced](balanced(name).md)
+  [escaped destination](a\(b\).md)
+  [percent backslash](a%5C(b%5C).md)
+  [titled](<valid%20file.md> "title")
+  [directory](subdir/)
+  [fragment](valid%20file.md#section)
+  [external](https://example.test/missing)
+  [missing](missing.md)
+  [ordinary](ordinary-missing.md)
+  [nested [label]](nested-missing.md)
+  [angle-broken](<missing).md>)
+  ` [inline](inline-missing.md) `
+  ```markdown
+  [backtick](backtick-missing.md)
+  ```not-a-close
+  [inside](inside-missing.md)
+  ```
+  ~~~markdown
+  [tilde](tilde-missing.md)
+  ~~~
+      ```markdown
+      [indented](indented-missing.md)
+      ```
+  \\`[escaped](escaped-missing.md)\\`
+  \`[ordinary escaped](ordinary-escaped-missing.md)\`
+  \\[one-slash](one-slash-missing.md)
+  \\\\[two-slash](two-slash-missing.md)
+  ```bad`info
+  [invalid-info](invalid-info-missing.md)
+  ```not-a-close
+  > ```markdown
+  > [blockquote](blockquote-missing.md)
+  > ```
+  >  ```markdown
+  >  [blockquote-indented](blockquote-indented-missing.md)
+  >  ```
+  >    ```markdown
+  >    [blockquote-four](blockquote-four-missing.md)
+  >    ```
+  -  ```markdown
+     [list-fence](list-fence-missing.md)
+     ```
+  prefix ``` [unmatched](unmatched-missing.md)
+  1234567890. ```ruby
+  [ten-digit](ten-digit-missing.md)
+  ` [later masked](later-masked-missing.md) `
+  ` <!-- [inline-comment](inline-comment-missing.md) `
+  [after-inline-comment](after-inline-comment-missing.md)
+  [after unmatched](after-unmatched-missing.md)
+  [post-unmatched](post-unmatched-missing.md)
+  [post-malformed](post%ZZ.md)
+  ``
+  [multiline](multiline-missing.md)
+  ``
+  `` [unequal](unequal-missing.md) `
+  [traversal](../../etc/passwd)
+  [malformed](bad%ZZ.md)
+  [symlink](escape.md)
+MARKDOWN
+
+def self_test_backticked_paths
+Dir.mktmpdir("docs-backticks-test") do |directory|
+  root = Pathname.new(directory)
+  root.join("roles/real").mkpath
+  source = root.join("guide.md")
+  source.write("`roles/real` `roles/gone/tasks/main.yml` `roles/<name>/x` `roles/kept` `notes/x`\n")
+  failures, count = backticked_path_failures(root, [source], { "roles/kept" => "", "roles/real" => "",
+                                                               "roles/uncited" => "" })
+  expected = [
+    "guide.md: cites `roles/gone/tasks/main.yml`, which does not exist",
+    "ABSENT_PATH_CITATIONS lists `roles/real`, which exists now",
+    "ABSENT_PATH_CITATIONS lists `roles/uncited`, which no document cites"
+  ]
+  unless failures == expected && count == 3
+    warn "docs links backticked-path self-test failed: #{failures.inspect} #{count}"
+    exit 1
+  end
+end
+end
+
+def self_test_hostile_inputs
+unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
+  warn "docs links hostile-unmatched self-test failed"
+  exit 1
+end
+escaped_probe = inline_partners("\\` ordinary ")
+paired_probe = inline_partners("` hidden `")
+unless !escaped_probe.key?(0) && paired_probe[0] == 9
+  warn "docs links inline partner self-test failed"
+  exit 1
+end
+end
+
+# Returns the fixtures written beside the sample, which
+# self_test_unclosed_fixtures checks after every other case has run.
+def self_test_sample_links(root, docs)
+  source = docs.join("sample.md")
+  source.write(SELF_TEST_SAMPLE_MARKDOWN)
+  source.open("a") { |file| file.write("[control](bad\e[31m\x01.md)\n") }
+  unclosed = docs.join("unclosed.md")
+  unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
+  bad_source = docs.join("bad\e-source.md")
+  bad_source.write("[source-control](missing-source.md)\n")
+  bad_unclosed = docs.join("bad\e-unclosed.md")
+  bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
+  unclosed_comment = docs.join("unclosed-comment.md")
+  unclosed_comment.write("<!-- `\n[unclosed-comment](unclosed-comment-missing.md)\n```\n")
+  unclosed_container = docs.join("unclosed-container.md")
+  unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
+  unclosed_four = docs.join("unclosed-four.md")
+  unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
+  failures = check_sources(root, [source])
+  expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "invalid-info-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
+  categories = [
+    "malformed local link post%ZZ.md",
+    "broken local link ../../etc/passwd",
+    "malformed local link bad%ZZ.md",
+    "broken local link escape.md",
+    "broken local link bad?[31m?.md"
+  ]
+  unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && categories.all? { |message| failures.any? { |failure| failure.include?(message) } } && failures.length == expected.length + categories.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    warn "docs links self-test failed: #{failures.inspect}"
+    exit 1
+  end
+  [unclosed, bad_source, bad_unclosed, unclosed_comment, unclosed_container, unclosed_four]
+end
+
+def self_test_inline_boundaries(root, docs)
+  boundary = docs.join("boundary.md")
+  boundary.write("prefix `\n```markdown\n`[inside-fence](inside-fence-missing.md) `\n```\n[after-fence](after-fence-boundary-missing.md)\n")
+  boundary_failures = check_sources(root, [boundary])
+  unless boundary_failures == ["docs/boundary.md: broken local link after-fence-boundary-missing.md"]
+    warn "docs links fence-boundary self-test failed: #{boundary_failures.inspect}"
+    exit 1
+  end
+  comment_boundary = docs.join("comment-boundary.md")
+  comment_boundary.write("prefix `\n<!-- ` [inside-comment](inside-comment-missing.md) ` -->\n[after-comment](after-comment-boundary-missing.md)\n")
+  comment_boundary_failures = check_sources(root, [comment_boundary])
+  unless comment_boundary_failures == ["docs/comment-boundary.md: broken local link after-comment-boundary-missing.md"]
+    warn "docs links comment-boundary self-test failed: #{comment_boundary_failures.inspect}"
+    exit 1
+  end
+  multiline_inline = docs.join("multiline-inline.md")
+  multiline_inline.write("`code\n[hidden](multiline-inline-hidden.md)\n`\n[after](multiline-inline-after.md)\n")
+  multiline_inline_failures = check_sources(root, [multiline_inline])
+  unless multiline_inline_failures == ["docs/multiline-inline.md: broken local link multiline-inline-after.md"]
+    warn "docs links multiline-inline self-test failed: #{multiline_inline_failures.inspect}"
+    exit 1
+  end
+  multiline_suffix = docs.join("multiline-suffix.md")
+  multiline_suffix.write("`\n[hidden](multiline-suffix-hidden.md)\ncode`\n[after](multiline-suffix-after.md)\n")
+  multiline_suffix_failures = check_sources(root, [multiline_suffix])
+  unless multiline_suffix_failures == ["docs/multiline-suffix.md: broken local link multiline-suffix-after.md"]
+    warn "docs links multiline-suffix self-test failed: #{multiline_suffix_failures.inspect}"
+    exit 1
+  end
+  prefixed_multiline = docs.join("prefixed-multiline.md")
+  prefixed_multiline.write("prefix `code\n[hidden](prefixed-multiline-hidden.md)\nend`\n[after](prefixed-multiline-after.md)\n")
+  prefixed_multiline_failures = check_sources(root, [prefixed_multiline])
+  unless prefixed_multiline_failures == ["docs/prefixed-multiline.md: broken local link prefixed-multiline-after.md"]
+    warn "docs links prefixed-multiline self-test failed: #{prefixed_multiline_failures.inspect}"
+    exit 1
+  end
+  cross_line_close = docs.join("cross-line-close.md")
+  cross_line_close.write("`open\n` [must-check](cross-line-must-check.md) `\n")
+  cross_line_close_failures = check_sources(root, [cross_line_close])
+  unless cross_line_close_failures == ["docs/cross-line-close.md: broken local link cross-line-must-check.md"]
+    warn "docs links cross-line-close self-test failed: #{cross_line_close_failures.inspect}"
+    exit 1
+  end
+  paragraph_boundary = docs.join("paragraph-boundary.md")
+  paragraph_boundary.write("prefix `unclosed\n\n[ordinary](paragraph-boundary-missing.md) `\n")
+  paragraph_boundary_failures = check_sources(root, [paragraph_boundary])
+  unless paragraph_boundary_failures == ["docs/paragraph-boundary.md: broken local link paragraph-boundary-missing.md"]
+    warn "docs links paragraph-boundary self-test failed: #{paragraph_boundary_failures.inspect}"
+    exit 1
+  end
+  {
+    "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
+    "setext-boundary.md" => "prefix `unclosed\n===\n[ordinary](setext-boundary-missing.md) `\n",
+    "setext-single-boundary.md" => "prefix `unclosed\n=\n[ordinary](setext-single-boundary-missing.md) `\n",
+    "setext-space-boundary.md" => "prefix `unclosed\n=   \n[ordinary](setext-space-boundary-missing.md) `\n",
+    "setext-dash-boundary.md" => "prefix `unclosed\n-\n[ordinary](setext-dash-boundary-missing.md) `\n",
+    "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
+    "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
+    "list-boundary.md" => "prefix `unclosed\n- [ordinary](list-boundary-missing.md) `\n"
+  }.each do |name, body|
+    boundary_source = docs.join(name)
+    boundary_source.write(body)
+    expected_target = name.sub(".md", "-missing.md")
+    boundary_result = check_sources(root, [boundary_source])
+    expected_failure = "docs/#{name}: broken local link #{expected_target}"
+    unless boundary_result == [expected_failure]
+      warn "docs links block-boundary self-test failed: #{name}: #{boundary_result.inspect}"
       exit 1
     end
   end
-  unless markdown_link_bodies("[" * 50_000).empty? && markdown_link_bodies("[](" * 50_000).empty?
-    warn "docs links hostile-unmatched self-test failed"
+end
+
+def self_test_container_boundaries(root, docs)
+  quoted_comment = docs.join("quoted-comment.md")
+  quoted_comment.write("> prefix `unclosed\n> <!--\n> [hidden](quoted-comment-hidden.md)\n> -->\n> [ordinary](quoted-comment-after.md) `\n")
+  quoted_comment_failures = check_sources(root, [quoted_comment])
+  unless quoted_comment_failures == ["docs/quoted-comment.md: broken local link quoted-comment-after.md"]
+    warn "docs links quoted-comment self-test failed: #{quoted_comment_failures.inspect}"
     exit 1
   end
-  escaped_probe = inline_partners("\\` ordinary ")
-  paired_probe = inline_partners("` hidden `")
-  unless !escaped_probe.key?(0) && paired_probe[0] == 9
-    warn "docs links inline partner self-test failed"
+  nested_quote = docs.join("nested-quote.md")
+  nested_quote.write("> prefix `unclosed\n>  > [ordinary](nested-quote-missing.md) `\n")
+  nested_quote_failures = check_sources(root, [nested_quote])
+  unless nested_quote_failures == ["docs/nested-quote.md: broken local link nested-quote-missing.md"]
+    warn "docs links nested-quote self-test failed: #{nested_quote_failures.inspect}"
     exit 1
   end
+  nested_quote_comment = docs.join("nested-quote-comment.md")
+  nested_quote_comment.write("> > prefix `unclosed\n>  > <!--\n>  > [hidden](nested-quote-comment-hidden.md)\n>  > -->\n>  > [ordinary](nested-quote-comment-after.md) `\n")
+  nested_quote_comment_failures = check_sources(root, [nested_quote_comment])
+  unless nested_quote_comment_failures == ["docs/nested-quote-comment.md: broken local link nested-quote-comment-after.md"]
+    warn "docs links nested-quote-comment self-test failed: #{nested_quote_comment_failures.inspect}"
+    exit 1
+  end
+  mixed_setext = docs.join("mixed-setext.md")
+  mixed_setext.write("prefix `code\n=-\n[hidden](mixed-setext-hidden.md) `\n[after](mixed-setext-after.md)\n")
+  mixed_setext_failures = check_sources(root, [mixed_setext])
+  unless mixed_setext_failures == ["docs/mixed-setext.md: broken local link mixed-setext-after.md"]
+    warn "docs links mixed-setext self-test failed: #{mixed_setext_failures.inspect}"
+    exit 1
+  end
+  indented_quote = docs.join("indented-quote.md")
+  indented_quote.write("prefix `code\n    > [hidden](indented-quote-hidden.md) `\n[after](indented-quote-after.md)\n")
+  indented_quote_failures = check_sources(root, [indented_quote])
+  unless indented_quote_failures == ["docs/indented-quote.md: broken local link indented-quote-after.md"]
+    warn "docs links indented-quote self-test failed: #{indented_quote_failures.inspect}"
+    exit 1
+  end
+  indented_comment = docs.join("indented-comment.md")
+  indented_comment.write("prefix `code\n    <!-- [hidden](indented-comment-hidden.md)\nend`\n[after](indented-comment-after.md)\n")
+  indented_comment_failures = check_sources(root, [indented_comment])
+  unless indented_comment_failures == ["docs/indented-comment.md: broken local link indented-comment-after.md"]
+    warn "docs links indented-comment self-test failed: #{indented_comment_failures.inspect}"
+    exit 1
+  end
+  list_continuation = docs.join("list-continuation.md")
+  list_continuation.write("- prefix `code\n  [hidden](list-continuation-hidden.md)\n  end`\n[after](list-continuation-after.md)\n")
+  list_continuation_failures = check_sources(root, [list_continuation])
+  unless list_continuation_failures == ["docs/list-continuation.md: broken local link list-continuation-after.md"]
+    warn "docs links list-continuation self-test failed: #{list_continuation_failures.inspect}"
+    exit 1
+  end
+  lazy_quote = docs.join("lazy-quote.md")
+  lazy_quote.write("> prefix `code\n[hidden](lazy-quote-hidden.md)\nend`\n[after](lazy-quote-after.md)\n")
+  lazy_quote_failures = check_sources(root, [lazy_quote])
+  unless lazy_quote_failures == ["docs/lazy-quote.md: broken local link lazy-quote-after.md"]
+    warn "docs links lazy-quote self-test failed: #{lazy_quote_failures.inspect}"
+    exit 1
+  end
+  ordered_noninterrupt = docs.join("ordered-noninterrupt.md")
+  ordered_noninterrupt.write("prefix `code\n2. [hidden](ordered-noninterrupt-hidden.md) `\n[after](ordered-noninterrupt-after.md)\n")
+  ordered_noninterrupt_failures = check_sources(root, [ordered_noninterrupt])
+  unless ordered_noninterrupt_failures == ["docs/ordered-noninterrupt.md: broken local link ordered-noninterrupt-after.md"]
+    warn "docs links ordered-noninterrupt self-test failed: #{ordered_noninterrupt_failures.inspect}"
+    exit 1
+  end
+  quoted_ordered_noninterrupt = docs.join("quoted-ordered-noninterrupt.md")
+  quoted_ordered_noninterrupt.write("> prefix `code\n> 2. [hidden](quoted-ordered-hidden.md) `\n[after](quoted-ordered-after.md)\n")
+  quoted_ordered_failures = check_sources(root, [quoted_ordered_noninterrupt])
+  unless quoted_ordered_failures == ["docs/quoted-ordered-noninterrupt.md: broken local link quoted-ordered-after.md"]
+    warn "docs links quoted-ordered self-test failed: #{quoted_ordered_failures.inspect}"
+    exit 1
+  end
+end
+
+def self_test_list_markers(root, docs)
+  {
+    "ordered" => "  2. [hidden](list-nested-ordered-hidden.md) `\n",
+    "empty-star" => "  * \n  [hidden](list-nested-empty-star-hidden.md) `\n"
+  }.each do |label, continuation|
+    list_nested_marker = docs.join("list-nested-#{label}.md")
+    list_nested_marker.write("- prefix `code\n#{continuation}[after](list-nested-#{label}-after.md)\n")
+    list_nested_failures = check_sources(root, [list_nested_marker])
+    expected_nested_failure = "docs/list-nested-#{label}.md: broken local link list-nested-#{label}-after.md"
+    unless list_nested_failures == [expected_nested_failure]
+      warn "docs links list-nested-marker self-test failed: #{label}: #{list_nested_failures.inspect}"
+      exit 1
+    end
+  end
+  {"star" => "* ", "plus" => "+ ", "ordered" => "1. "}.each do |label, marker|
+    empty_item = docs.join("empty-#{label}-item.md")
+    empty_item.write("prefix `code\n#{marker}\n[hidden](empty-#{label}-hidden.md) `\n[after](empty-#{label}-after.md)\n")
+    empty_item_failures = check_sources(root, [empty_item])
+    expected_empty_failure = "docs/empty-#{label}-item.md: broken local link empty-#{label}-after.md"
+    unless empty_item_failures == [expected_empty_failure]
+      warn "docs links empty-list-item self-test failed: #{label}: #{empty_item_failures.inspect}"
+      exit 1
+    end
+  end
+  multiline_comment_code = docs.join("multiline-comment-code.md")
+  multiline_comment_code.write("`start\ninside <!-- [hidden](multiline-comment-code-hidden.md)\nend`\n[after](multiline-comment-code-after.md)\n")
+  multiline_comment_code_failures = check_sources(root, [multiline_comment_code])
+  unless multiline_comment_code_failures == ["docs/multiline-comment-code.md: broken local link multiline-comment-code-after.md"]
+    warn "docs links multiline-comment-code self-test failed: #{multiline_comment_code_failures.inspect}"
+    exit 1
+  end
+  nested_delimiters = docs.join("nested-delimiters.md")
+  nested_delimiters.write("` x `` y ` `` [ordinary](nested-delimiters-missing.md)\n")
+  nested_delimiter_failures = check_sources(root, [nested_delimiters])
+  unless nested_delimiter_failures == ["docs/nested-delimiters.md: broken local link nested-delimiters-missing.md"]
+    warn "docs links nested-delimiters self-test failed: #{nested_delimiter_failures.inspect}"
+    exit 1
+  end
+  fence_comment = docs.join("fence-comment.md")
+  fence_comment.write("```markdown\n<!--\n[fenced](fence-comment-hidden.md)\n```\n` [inline](post-fence-inline-hidden.md) `\n[after](post-fence-comment.md)\n")
+  fence_comment_failures = check_sources(root, [fence_comment])
+  unless fence_comment_failures == ["docs/fence-comment.md: broken local link post-fence-comment.md"]
+    warn "docs links fence-comment self-test failed: #{fence_comment_failures.inspect}"
+    exit 1
+  end
+end
+
+def self_test_unclosed_fixtures(root, fixtures)
+  unclosed, bad_source, bad_unclosed, unclosed_comment, unclosed_container, unclosed_four = fixtures
+  unclosed_failures = check_sources(root, [unclosed])
+  unless unclosed_failures == ["docs/unclosed.md: malformed documentation (unclosed code fence)"]
+    warn "docs links unclosed-fence self-test failed: #{unclosed_failures.inspect}"
+    exit 1
+  end
+  source_failures = check_sources(root, [bad_source])
+  unless source_failures.length == 1 && source_failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
+    warn "docs links source-name self-test failed: #{source_failures.inspect}"
+    exit 1
+  end
+  bad_unclosed_failures = check_sources(root, [bad_unclosed])
+  unless bad_unclosed_failures == ["docs/bad?-unclosed.md: malformed documentation (unclosed code fence)"]
+    warn "docs links sanitized-unclosed self-test failed: #{bad_unclosed_failures.inspect}"
+    exit 1
+  end
+  comment_failures = check_sources(root, [unclosed_comment])
+  unless comment_failures.empty?
+    warn "docs links unclosed-comment self-test failed: #{comment_failures.inspect}"
+    exit 1
+  end
+  container_failures = check_sources(root, [unclosed_container])
+  unless container_failures == ["docs/unclosed-container.md: malformed documentation (unclosed code fence)"]
+    warn "docs links container-fence self-test failed: #{container_failures.inspect}"
+    exit 1
+  end
+  four_failures = check_sources(root, [unclosed_four])
+  unless four_failures == ["docs/unclosed-four.md: malformed documentation (unclosed code fence)"]
+    warn "docs links four-space blockquote self-test failed: #{four_failures.inspect}"
+    exit 1
+  end
+end
+
+def self_test
+  self_test_backticked_paths
+  self_test_hostile_inputs
   Dir.mktmpdir("docs-links-test") do |directory|
     root = Pathname.new(directory)
     docs = root.join("docs")
@@ -631,321 +978,11 @@ def self_test
     outside = root.parent.join("docs-links-outside-#{Process.pid}")
     outside.write("outside\n")
     docs.join("escape.md").make_symlink(outside)
-    source = docs.join("sample.md")
-    source.write(<<~MARKDOWN)
-      [file](valid%20file.md)
-      prose < unmatched [after-prose](after-prose-missing.md)
-      [title-paren](title-paren-missing.md "title (")
-      [single-title](single-title-missing.md 'author"s (title')
-      [not-a-link] (not-a-link-missing.md)
-      <!-- [comment](comment-missing.md) -->
-      <!-- ` [comment-inline](comment-inline-missing.md) `
-      ```
-      [comment-fence](comment-fence-missing.md)
-      ``` -->
-      <!-- multiline
-      [multiline-comment](multiline-comment-missing.md)
-      -->
-      \\<!-- [escaped-comment](escaped-comment-missing.md) -->
-      [plus](plus+file.md)
-      [balanced](balanced(name).md)
-      [escaped destination](a\(b\).md)
-      [percent backslash](a%5C(b%5C).md)
-      [titled](<valid%20file.md> "title")
-      [directory](subdir/)
-      [fragment](valid%20file.md#section)
-      [external](https://example.test/missing)
-      [missing](missing.md)
-      [ordinary](ordinary-missing.md)
-      [nested [label]](nested-missing.md)
-      [angle-broken](<missing).md>)
-      ` [inline](inline-missing.md) `
-      ```markdown
-      [backtick](backtick-missing.md)
-      ```not-a-close
-      [inside](inside-missing.md)
-      ```
-      ~~~markdown
-      [tilde](tilde-missing.md)
-      ~~~
-          ```markdown
-          [indented](indented-missing.md)
-          ```
-      \\`[escaped](escaped-missing.md)\\`
-      \`[ordinary escaped](ordinary-escaped-missing.md)\`
-      \\[one-slash](one-slash-missing.md)
-      \\\\[two-slash](two-slash-missing.md)
-      ```bad`info
-      [invalid-info](invalid-info-missing.md)
-      ```not-a-close
-      > ```markdown
-      > [blockquote](blockquote-missing.md)
-      > ```
-      >  ```markdown
-      >  [blockquote-indented](blockquote-indented-missing.md)
-      >  ```
-      >    ```markdown
-      >    [blockquote-four](blockquote-four-missing.md)
-      >    ```
-      -  ```markdown
-         [list-fence](list-fence-missing.md)
-         ```
-      prefix ``` [unmatched](unmatched-missing.md)
-      1234567890. ```ruby
-      [ten-digit](ten-digit-missing.md)
-      ` [later masked](later-masked-missing.md) `
-      ` <!-- [inline-comment](inline-comment-missing.md) `
-      [after-inline-comment](after-inline-comment-missing.md)
-      [after unmatched](after-unmatched-missing.md)
-      [post-unmatched](post-unmatched-missing.md)
-      [post-malformed](post%ZZ.md)
-      ``
-      [multiline](multiline-missing.md)
-      ``
-      `` [unequal](unequal-missing.md) `
-      [traversal](../../etc/passwd)
-      [malformed](bad%ZZ.md)
-      [symlink](escape.md)
-    MARKDOWN
-    source.open("a") { |file| file.write("[control](bad\e[31m\x01.md)\n") }
-    unclosed = docs.join("unclosed.md")
-    unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
-    bad_source = docs.join("bad\e-source.md")
-    bad_source.write("[source-control](missing-source.md)\n")
-    bad_unclosed = docs.join("bad\e-unclosed.md")
-    bad_unclosed.write("```markdown\n[hidden](hidden-missing.md)\n")
-    unclosed_comment = docs.join("unclosed-comment.md")
-    unclosed_comment.write("<!-- `\n[unclosed-comment](unclosed-comment-missing.md)\n```\n")
-    unclosed_container = docs.join("unclosed-container.md")
-    unclosed_container.write(">  ```markdown\n>  [hidden](hidden-container-missing.md)\n")
-    unclosed_four = docs.join("unclosed-four.md")
-    unclosed_four.write(">    ```markdown\n>    [hidden](hidden-four-missing.md)\n")
-    failures = check_sources(root, [source])
-    expected = ["after-prose-missing.md", "title-paren-missing.md", "single-title-missing.md", "escaped-comment-missing.md", "missing.md", "ordinary-missing.md", "nested-missing.md", "<missing).md>", "indented-missing.md", "escaped-missing.md", "two-slash-missing.md", "invalid-info-missing.md", "ten-digit-missing.md", "after-inline-comment-missing.md", "after-unmatched-missing.md", "post-unmatched-missing.md", "unequal-missing.md"]
-    categories = [
-      "malformed local link post%ZZ.md",
-      "broken local link ../../etc/passwd",
-      "malformed local link bad%ZZ.md",
-      "broken local link escape.md",
-      "broken local link bad?[31m?.md"
-    ]
-    unless expected.all? { |target| failures.any? { |failure| failure.include?("link #{target}") } } && categories.all? { |message| failures.any? { |failure| failure.include?(message) } } && failures.length == expected.length + categories.length && failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
-      warn "docs links self-test failed: #{failures.inspect}"
-      exit 1
-    end
-    boundary = docs.join("boundary.md")
-    boundary.write("prefix `\n```markdown\n`[inside-fence](inside-fence-missing.md) `\n```\n[after-fence](after-fence-boundary-missing.md)\n")
-    boundary_failures = check_sources(root, [boundary])
-    unless boundary_failures == ["docs/boundary.md: broken local link after-fence-boundary-missing.md"]
-      warn "docs links fence-boundary self-test failed: #{boundary_failures.inspect}"
-      exit 1
-    end
-    comment_boundary = docs.join("comment-boundary.md")
-    comment_boundary.write("prefix `\n<!-- ` [inside-comment](inside-comment-missing.md) ` -->\n[after-comment](after-comment-boundary-missing.md)\n")
-    comment_boundary_failures = check_sources(root, [comment_boundary])
-    unless comment_boundary_failures == ["docs/comment-boundary.md: broken local link after-comment-boundary-missing.md"]
-      warn "docs links comment-boundary self-test failed: #{comment_boundary_failures.inspect}"
-      exit 1
-    end
-    multiline_inline = docs.join("multiline-inline.md")
-    multiline_inline.write("`code\n[hidden](multiline-inline-hidden.md)\n`\n[after](multiline-inline-after.md)\n")
-    multiline_inline_failures = check_sources(root, [multiline_inline])
-    unless multiline_inline_failures == ["docs/multiline-inline.md: broken local link multiline-inline-after.md"]
-      warn "docs links multiline-inline self-test failed: #{multiline_inline_failures.inspect}"
-      exit 1
-    end
-    multiline_suffix = docs.join("multiline-suffix.md")
-    multiline_suffix.write("`\n[hidden](multiline-suffix-hidden.md)\ncode`\n[after](multiline-suffix-after.md)\n")
-    multiline_suffix_failures = check_sources(root, [multiline_suffix])
-    unless multiline_suffix_failures == ["docs/multiline-suffix.md: broken local link multiline-suffix-after.md"]
-      warn "docs links multiline-suffix self-test failed: #{multiline_suffix_failures.inspect}"
-      exit 1
-    end
-    prefixed_multiline = docs.join("prefixed-multiline.md")
-    prefixed_multiline.write("prefix `code\n[hidden](prefixed-multiline-hidden.md)\nend`\n[after](prefixed-multiline-after.md)\n")
-    prefixed_multiline_failures = check_sources(root, [prefixed_multiline])
-    unless prefixed_multiline_failures == ["docs/prefixed-multiline.md: broken local link prefixed-multiline-after.md"]
-      warn "docs links prefixed-multiline self-test failed: #{prefixed_multiline_failures.inspect}"
-      exit 1
-    end
-    cross_line_close = docs.join("cross-line-close.md")
-    cross_line_close.write("`open\n` [must-check](cross-line-must-check.md) `\n")
-    cross_line_close_failures = check_sources(root, [cross_line_close])
-    unless cross_line_close_failures == ["docs/cross-line-close.md: broken local link cross-line-must-check.md"]
-      warn "docs links cross-line-close self-test failed: #{cross_line_close_failures.inspect}"
-      exit 1
-    end
-    paragraph_boundary = docs.join("paragraph-boundary.md")
-    paragraph_boundary.write("prefix `unclosed\n\n[ordinary](paragraph-boundary-missing.md) `\n")
-    paragraph_boundary_failures = check_sources(root, [paragraph_boundary])
-    unless paragraph_boundary_failures == ["docs/paragraph-boundary.md: broken local link paragraph-boundary-missing.md"]
-      warn "docs links paragraph-boundary self-test failed: #{paragraph_boundary_failures.inspect}"
-      exit 1
-    end
-    {
-      "heading-boundary.md" => "prefix `unclosed\n# [ordinary](heading-boundary-missing.md) `\n",
-      "setext-boundary.md" => "prefix `unclosed\n===\n[ordinary](setext-boundary-missing.md) `\n",
-      "setext-single-boundary.md" => "prefix `unclosed\n=\n[ordinary](setext-single-boundary-missing.md) `\n",
-      "setext-space-boundary.md" => "prefix `unclosed\n=   \n[ordinary](setext-space-boundary-missing.md) `\n",
-      "setext-dash-boundary.md" => "prefix `unclosed\n-\n[ordinary](setext-dash-boundary-missing.md) `\n",
-      "thematic-boundary.md" => "prefix `unclosed\n---\n[ordinary](thematic-boundary-missing.md) `\n",
-      "quote-boundary.md" => "prefix `unclosed\n> [ordinary](quote-boundary-missing.md) `\n",
-      "list-boundary.md" => "prefix `unclosed\n- [ordinary](list-boundary-missing.md) `\n"
-    }.each do |name, body|
-      boundary_source = docs.join(name)
-      boundary_source.write(body)
-      expected_target = name.sub(".md", "-missing.md")
-      boundary_result = check_sources(root, [boundary_source])
-      expected_failure = "docs/#{name}: broken local link #{expected_target}"
-      unless boundary_result == [expected_failure]
-        warn "docs links block-boundary self-test failed: #{name}: #{boundary_result.inspect}"
-        exit 1
-      end
-    end
-    quoted_comment = docs.join("quoted-comment.md")
-    quoted_comment.write("> prefix `unclosed\n> <!--\n> [hidden](quoted-comment-hidden.md)\n> -->\n> [ordinary](quoted-comment-after.md) `\n")
-    quoted_comment_failures = check_sources(root, [quoted_comment])
-    unless quoted_comment_failures == ["docs/quoted-comment.md: broken local link quoted-comment-after.md"]
-      warn "docs links quoted-comment self-test failed: #{quoted_comment_failures.inspect}"
-      exit 1
-    end
-    nested_quote = docs.join("nested-quote.md")
-    nested_quote.write("> prefix `unclosed\n>  > [ordinary](nested-quote-missing.md) `\n")
-    nested_quote_failures = check_sources(root, [nested_quote])
-    unless nested_quote_failures == ["docs/nested-quote.md: broken local link nested-quote-missing.md"]
-      warn "docs links nested-quote self-test failed: #{nested_quote_failures.inspect}"
-      exit 1
-    end
-    nested_quote_comment = docs.join("nested-quote-comment.md")
-    nested_quote_comment.write("> > prefix `unclosed\n>  > <!--\n>  > [hidden](nested-quote-comment-hidden.md)\n>  > -->\n>  > [ordinary](nested-quote-comment-after.md) `\n")
-    nested_quote_comment_failures = check_sources(root, [nested_quote_comment])
-    unless nested_quote_comment_failures == ["docs/nested-quote-comment.md: broken local link nested-quote-comment-after.md"]
-      warn "docs links nested-quote-comment self-test failed: #{nested_quote_comment_failures.inspect}"
-      exit 1
-    end
-    mixed_setext = docs.join("mixed-setext.md")
-    mixed_setext.write("prefix `code\n=-\n[hidden](mixed-setext-hidden.md) `\n[after](mixed-setext-after.md)\n")
-    mixed_setext_failures = check_sources(root, [mixed_setext])
-    unless mixed_setext_failures == ["docs/mixed-setext.md: broken local link mixed-setext-after.md"]
-      warn "docs links mixed-setext self-test failed: #{mixed_setext_failures.inspect}"
-      exit 1
-    end
-    indented_quote = docs.join("indented-quote.md")
-    indented_quote.write("prefix `code\n    > [hidden](indented-quote-hidden.md) `\n[after](indented-quote-after.md)\n")
-    indented_quote_failures = check_sources(root, [indented_quote])
-    unless indented_quote_failures == ["docs/indented-quote.md: broken local link indented-quote-after.md"]
-      warn "docs links indented-quote self-test failed: #{indented_quote_failures.inspect}"
-      exit 1
-    end
-    indented_comment = docs.join("indented-comment.md")
-    indented_comment.write("prefix `code\n    <!-- [hidden](indented-comment-hidden.md)\nend`\n[after](indented-comment-after.md)\n")
-    indented_comment_failures = check_sources(root, [indented_comment])
-    unless indented_comment_failures == ["docs/indented-comment.md: broken local link indented-comment-after.md"]
-      warn "docs links indented-comment self-test failed: #{indented_comment_failures.inspect}"
-      exit 1
-    end
-    list_continuation = docs.join("list-continuation.md")
-    list_continuation.write("- prefix `code\n  [hidden](list-continuation-hidden.md)\n  end`\n[after](list-continuation-after.md)\n")
-    list_continuation_failures = check_sources(root, [list_continuation])
-    unless list_continuation_failures == ["docs/list-continuation.md: broken local link list-continuation-after.md"]
-      warn "docs links list-continuation self-test failed: #{list_continuation_failures.inspect}"
-      exit 1
-    end
-    lazy_quote = docs.join("lazy-quote.md")
-    lazy_quote.write("> prefix `code\n[hidden](lazy-quote-hidden.md)\nend`\n[after](lazy-quote-after.md)\n")
-    lazy_quote_failures = check_sources(root, [lazy_quote])
-    unless lazy_quote_failures == ["docs/lazy-quote.md: broken local link lazy-quote-after.md"]
-      warn "docs links lazy-quote self-test failed: #{lazy_quote_failures.inspect}"
-      exit 1
-    end
-    ordered_noninterrupt = docs.join("ordered-noninterrupt.md")
-    ordered_noninterrupt.write("prefix `code\n2. [hidden](ordered-noninterrupt-hidden.md) `\n[after](ordered-noninterrupt-after.md)\n")
-    ordered_noninterrupt_failures = check_sources(root, [ordered_noninterrupt])
-    unless ordered_noninterrupt_failures == ["docs/ordered-noninterrupt.md: broken local link ordered-noninterrupt-after.md"]
-      warn "docs links ordered-noninterrupt self-test failed: #{ordered_noninterrupt_failures.inspect}"
-      exit 1
-    end
-    quoted_ordered_noninterrupt = docs.join("quoted-ordered-noninterrupt.md")
-    quoted_ordered_noninterrupt.write("> prefix `code\n> 2. [hidden](quoted-ordered-hidden.md) `\n[after](quoted-ordered-after.md)\n")
-    quoted_ordered_failures = check_sources(root, [quoted_ordered_noninterrupt])
-    unless quoted_ordered_failures == ["docs/quoted-ordered-noninterrupt.md: broken local link quoted-ordered-after.md"]
-      warn "docs links quoted-ordered self-test failed: #{quoted_ordered_failures.inspect}"
-      exit 1
-    end
-    {
-      "ordered" => "  2. [hidden](list-nested-ordered-hidden.md) `\n",
-      "empty-star" => "  * \n  [hidden](list-nested-empty-star-hidden.md) `\n"
-    }.each do |label, continuation|
-      list_nested_marker = docs.join("list-nested-#{label}.md")
-      list_nested_marker.write("- prefix `code\n#{continuation}[after](list-nested-#{label}-after.md)\n")
-      list_nested_failures = check_sources(root, [list_nested_marker])
-      expected_nested_failure = "docs/list-nested-#{label}.md: broken local link list-nested-#{label}-after.md"
-      unless list_nested_failures == [expected_nested_failure]
-        warn "docs links list-nested-marker self-test failed: #{label}: #{list_nested_failures.inspect}"
-        exit 1
-      end
-    end
-    {"star" => "* ", "plus" => "+ ", "ordered" => "1. "}.each do |label, marker|
-      empty_item = docs.join("empty-#{label}-item.md")
-      empty_item.write("prefix `code\n#{marker}\n[hidden](empty-#{label}-hidden.md) `\n[after](empty-#{label}-after.md)\n")
-      empty_item_failures = check_sources(root, [empty_item])
-      expected_empty_failure = "docs/empty-#{label}-item.md: broken local link empty-#{label}-after.md"
-      unless empty_item_failures == [expected_empty_failure]
-        warn "docs links empty-list-item self-test failed: #{label}: #{empty_item_failures.inspect}"
-        exit 1
-      end
-    end
-    multiline_comment_code = docs.join("multiline-comment-code.md")
-    multiline_comment_code.write("`start\ninside <!-- [hidden](multiline-comment-code-hidden.md)\nend`\n[after](multiline-comment-code-after.md)\n")
-    multiline_comment_code_failures = check_sources(root, [multiline_comment_code])
-    unless multiline_comment_code_failures == ["docs/multiline-comment-code.md: broken local link multiline-comment-code-after.md"]
-      warn "docs links multiline-comment-code self-test failed: #{multiline_comment_code_failures.inspect}"
-      exit 1
-    end
-    nested_delimiters = docs.join("nested-delimiters.md")
-    nested_delimiters.write("` x `` y ` `` [ordinary](nested-delimiters-missing.md)\n")
-    nested_delimiter_failures = check_sources(root, [nested_delimiters])
-    unless nested_delimiter_failures == ["docs/nested-delimiters.md: broken local link nested-delimiters-missing.md"]
-      warn "docs links nested-delimiters self-test failed: #{nested_delimiter_failures.inspect}"
-      exit 1
-    end
-    fence_comment = docs.join("fence-comment.md")
-    fence_comment.write("```markdown\n<!--\n[fenced](fence-comment-hidden.md)\n```\n` [inline](post-fence-inline-hidden.md) `\n[after](post-fence-comment.md)\n")
-    fence_comment_failures = check_sources(root, [fence_comment])
-    unless fence_comment_failures == ["docs/fence-comment.md: broken local link post-fence-comment.md"]
-      warn "docs links fence-comment self-test failed: #{fence_comment_failures.inspect}"
-      exit 1
-    end
-    unclosed_failures = check_sources(root, [unclosed])
-    unless unclosed_failures == ["docs/unclosed.md: malformed documentation (unclosed code fence)"]
-      warn "docs links unclosed-fence self-test failed: #{unclosed_failures.inspect}"
-      exit 1
-    end
-    source_failures = check_sources(root, [bad_source])
-    unless source_failures.length == 1 && source_failures.none? { |failure| failure.match?(/[[:cntrl:]]/) }
-      warn "docs links source-name self-test failed: #{source_failures.inspect}"
-      exit 1
-    end
-    bad_unclosed_failures = check_sources(root, [bad_unclosed])
-    unless bad_unclosed_failures == ["docs/bad?-unclosed.md: malformed documentation (unclosed code fence)"]
-      warn "docs links sanitized-unclosed self-test failed: #{bad_unclosed_failures.inspect}"
-      exit 1
-    end
-    comment_failures = check_sources(root, [unclosed_comment])
-    unless comment_failures.empty?
-      warn "docs links unclosed-comment self-test failed: #{comment_failures.inspect}"
-      exit 1
-    end
-    container_failures = check_sources(root, [unclosed_container])
-    unless container_failures == ["docs/unclosed-container.md: malformed documentation (unclosed code fence)"]
-      warn "docs links container-fence self-test failed: #{container_failures.inspect}"
-      exit 1
-    end
-    four_failures = check_sources(root, [unclosed_four])
-    unless four_failures == ["docs/unclosed-four.md: malformed documentation (unclosed code fence)"]
-      warn "docs links four-space blockquote self-test failed: #{four_failures.inspect}"
-      exit 1
-    end
+    fixtures = self_test_sample_links(root, docs)
+    self_test_inline_boundaries(root, docs)
+    self_test_container_boundaries(root, docs)
+    self_test_list_markers(root, docs)
+    self_test_unclosed_fixtures(root, fixtures)
   ensure
     outside&.delete if outside&.exist?
   end
