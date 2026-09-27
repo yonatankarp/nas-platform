@@ -267,46 +267,55 @@ def originals_changed_since(originals_root, dump_mtime):
     is from when it began, so a move inside that window passes here; the
     source-file verification after the restore still refuses it.
     """
-    immich_fd = open_directory(originals_root, category="unsafe-originals")
-    pending = []
+    scanned = 0
 
-    def changed(descriptor):
-        pending.append(descriptor)
+    def changed_below(descriptor):
+        # Every sibling's mtime is read from its entry before any is opened,
+        # and only the ancestor chain is held open, as in the presence scan.
+        nonlocal scanned
+        subdirectories = []
         try:
-            return os.fstat(descriptor).st_mtime > dump_mtime
+            with os.scandir(descriptor) as entries:
+                for entry in entries:
+                    scanned += 1
+                    if scanned > STALE_SCAN_ENTRY_CAP:
+                        return False
+                    if entry.is_dir(follow_symlinks=False):
+                        if entry.stat(follow_symlinks=False).st_mtime > dump_mtime:
+                            return True
+                        subdirectories.append(entry.name)
         except OSError:
             raise Refusal("unsafe-originals") from None
+        for name in subdirectories:
+            if scanned > STALE_SCAN_ENTRY_CAP:
+                return False
+            child = open_child_directory(descriptor, name, category="unsafe-originals")
+            try:
+                if changed_below(child):
+                    return True
+            finally:
+                os.close(child)
+        return False
 
+    immich_fd = open_directory(originals_root, category="unsafe-originals")
+    trees = []
     try:
         for tree in ("upload", "library"):
             tree_fd = open_child_directory(
                 immich_fd, tree, missing_ok=True, category="unsafe-originals"
             )
-            if tree_fd is not None and changed(tree_fd):
-                return True
-        scanned = 0
-        while pending:
-            descriptor = pending.pop()
+            if tree_fd is None:
+                continue
+            trees.append(tree_fd)
             try:
-                with os.scandir(descriptor) as entries:
-                    for entry in entries:
-                        scanned += 1
-                        if scanned > STALE_SCAN_ENTRY_CAP:
-                            return False
-                        if entry.is_dir(follow_symlinks=False) and changed(
-                            open_child_directory(
-                                descriptor, entry.name, category="unsafe-originals"
-                            )
-                        ):
-                            return True
+                if os.fstat(tree_fd).st_mtime > dump_mtime:
+                    return True
             except OSError:
                 raise Refusal("unsafe-originals") from None
-            finally:
-                os.close(descriptor)
-        return False
+        return any(changed_below(tree_fd) for tree_fd in trees)
     finally:
-        for descriptor in pending:
-            os.close(descriptor)
+        for tree_fd in trees:
+            os.close(tree_fd)
         os.close(immich_fd)
 
 
