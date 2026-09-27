@@ -4843,45 +4843,67 @@ class HealthchecksPingTest(PollHarness, PollerTestCase):
     POLLER_URL = "https://hc-ping.com/poller-sentinel-0f3c"
     VERIFY_URL = "https://hc-ping.com/verify-sentinel-7a1d"
 
+    # The curl stub, written once for the class and linked into each test's
+    # bin/curl (#888). On macOS the first exec of a newly written executable
+    # waits in a host-wide queue that the full local gate, whose checks write
+    # stubs by the hundred, keeps long: a stub written per test sat in it past
+    # ping_healthchecks' own 20-second ceiling, the ping read as failed and
+    # printed a line the test never expected. An executable that has run once
+    # -- through a symlink too -- skips that queue, so the one file is exec'd
+    # here, untimed, and every test reaches its own files through the path it
+    # was invoked by rather than through paths written into it.
+    CURL_STUB = (
+        f"#!{sys.executable}\n"
+        "import fcntl, json, os, sys, time\n"
+        "root = os.path.dirname(os.path.dirname(sys.argv[0]))\n"
+        "lock = os.path.join(root, '.local/share/nas-platform/state/deployment.lock')\n"
+        "held = None\n"
+        "if os.path.exists(lock):\n"
+        "    descriptor = os.open(lock, os.O_RDONLY)\n"
+        "    try:\n"
+        "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "        held = False\n"
+        "    except OSError:\n"
+        "        held = True\n"
+        "    os.close(descriptor)\n"
+        "stdin = sys.stdin.read()\n"
+        "with open(os.path.join(root, 'curl-calls.jsonl'), 'a') as sink:\n"
+        "    sink.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin,\n"
+        "                           'held': held}) + '\\n')\n"
+        # What real curl does on an error: name what it was asked for.
+        "if os.path.exists(os.path.join(root, 'curl-echo')):\n"
+        "    print('curl: (22) ' + stdin, file=sys.stderr)\n"
+        "    print(stdin)\n"
+        "def number(name):\n"
+        "    try:\n"
+        "        return float(open(os.path.join(root, name)).read())\n"
+        "    except FileNotFoundError:\n"
+        "        return 0\n"
+        "time.sleep(number('curl-sleep'))\n"
+        "sys.exit(int(number('curl-exit')))\n"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.stub_directory = Path(tempfile.mkdtemp())
+        cls.addClassCleanup(shutil.rmtree, cls.stub_directory)
+        # Warmed from a bin/ of its own, so its sink is a scratch file here.
+        (cls.stub_directory / "bin").mkdir()
+        cls.shared_curl = cls.stub_directory / "bin/curl"
+        cls.shared_curl.write_text(cls.CURL_STUB, encoding="utf-8")
+        cls.shared_curl.chmod(0o700)
+        subprocess.run([str(cls.shared_curl)], input=b"", capture_output=True, check=False)
+
     def setUp(self):
         super().setUp()
         self.calls = self.root / "curl-calls.jsonl"
         self.curl_exit = self.root / "curl-exit"
         self.curl_sleep = self.root / "curl-sleep"
         self.curl_echo = self.root / "curl-echo"
-        lock = self.root / ".local/share/nas-platform/state/deployment.lock"
         self.curl = self.root / "bin/curl"
         self.curl.parent.mkdir()
-        self.curl.write_text(
-            f"#!{sys.executable}\n"
-            "import fcntl, json, os, sys, time\n"
-            "held = None\n"
-            f"if os.path.exists({str(lock)!r}):\n"
-            f"    descriptor = os.open({str(lock)!r}, os.O_RDONLY)\n"
-            "    try:\n"
-            "        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
-            "        held = False\n"
-            "    except OSError:\n"
-            "        held = True\n"
-            "    os.close(descriptor)\n"
-            "stdin = sys.stdin.read()\n"
-            f"with open({str(self.calls)!r}, 'a') as sink:\n"
-            "    sink.write(json.dumps({'argv': sys.argv[1:], 'stdin': stdin,\n"
-            "                           'held': held}) + '\\n')\n"
-            # What real curl does on an error: name what it was asked for.
-            f"if os.path.exists({str(self.curl_echo)!r}):\n"
-            "    print('curl: (22) ' + stdin, file=sys.stderr)\n"
-            "    print(stdin)\n"
-            "def number(path):\n"
-            "    try:\n"
-            "        return float(open(path).read())\n"
-            "    except FileNotFoundError:\n"
-            "        return 0\n"
-            f"time.sleep(number({str(self.curl_sleep)!r}))\n"
-            f"sys.exit(int(number({str(self.curl_exit)!r})))\n",
-            encoding="utf-8",
-        )
-        self.curl.chmod(0o700)
+        self.curl.symlink_to(self.shared_curl)
         self.configure()
 
     def configure(self, **overrides):
