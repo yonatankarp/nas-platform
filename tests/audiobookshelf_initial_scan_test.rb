@@ -72,7 +72,7 @@ def normalized_expression(value)
   value.to_s.gsub(/\s+/, " ")
 end
 
-def validate_initial_scan!(tasks, defaults)
+def validate_scan_classification!(tasks, defaults, found)
   require_condition(
     defaults.values_at("audiobookshelf_initial_scan_retries", "audiobookshelf_initial_scan_delay") == [60, 2],
     "initial scan defaults must be retries=60 and delay=2"
@@ -130,7 +130,13 @@ def validate_initial_scan!(tasks, defaults)
       !scan_guard.include?("audiobookshelf_library_repair_required"),
     "initial scan must be limited to creation, folder repair, or matching pending intent"
   )
+  found.merge!(
+    classification_index: classification_index,
+    scan_classification_index: scan_classification_index
+  )
+end
 
+def validate_scan_request!(tasks, found)
   plan, plan_index = task_named(tasks, PLAN_TASK)
   require_condition(plan.dig("ansible.builtin.debug", "msg") == "AUDIOBOOKSHELF_PLAN_INITIAL_SCAN",
                     "check mode must emit AUDIOBOOKSHELF_PLAN_INITIAL_SCAN")
@@ -164,7 +170,10 @@ def validate_initial_scan!(tasks, defaults)
     uri.is_a?(Hash) && uri["method"] == "POST" && uri["url"].to_s.end_with?("/scan")
   end
   require_condition(scan_posts == 1, "role must contain exactly one library scan POST")
+  found.merge!(plan_index: plan_index, scan_index: scan_index)
+end
 
+def validate_current_library_id!(tasks, found)
   current_library_index = task_named(tasks, CURRENT_LIBRARY_TASK).last
   current_id_gate, current_id_gate_index = task_named(tasks, CURRENT_LIBRARY_ID_TASK)
   current_id_assert = current_id_gate.fetch("ansible.builtin.assert", {})
@@ -185,7 +194,17 @@ def validate_initial_scan!(tasks, defaults)
     !current_id_assert.fetch("fail_msg", "").to_s.include?("{{"),
     "unsafe current library IDs must not be disclosed"
   )
+  found.merge!(
+    current_library_index: current_library_index,
+    current_id_gate_index: current_id_gate_index
+  )
+end
 
+def validate_intent_ordering!(tasks, found)
+  classification_index = found.fetch(:classification_index)
+  scan_index = found.fetch(:scan_index)
+  current_id_gate_index = found.fetch(:current_id_gate_index)
+  current_library_index = found.fetch(:current_library_index)
   repair_index = task_named(tasks, REPAIR_TASK).last
   create_index = task_named(tasks, CREATE_TASK).last
   verify_index = task_named(tasks, VERIFY_TASK).last
@@ -203,7 +222,20 @@ def validate_initial_scan!(tasks, defaults)
       current_id_gate_index < scan_index && current_id_gate_index < diagnostic_index,
     "current library ID validation must precede every API or diagnostic use"
   )
+  found.merge!(
+    repair_index: repair_index,
+    create_index: create_index,
+    verify_index: verify_index,
+    precreate_pending: precreate_pending,
+    precreate_pending_index: precreate_pending_index,
+    bound_pending: bound_pending,
+    bound_pending_index: bound_pending_index
+  )
+end
 
+def validate_scan_polling!(tasks, found)
+  scan_index = found.fetch(:scan_index)
+  verify_index = found.fetch(:verify_index)
   task_poll, task_poll_index = task_named(tasks, TASK_POLL)
   library_poll, library_poll_index = task_named(tasks, LIBRARY_POLL)
   item_poll, item_poll_index = task_named(tasks, ITEM_POLL)
@@ -251,7 +283,12 @@ def validate_initial_scan!(tasks, defaults)
       !item_until.match?(/length\s*>\s*0|length\s*>=\s*1/),
     "item polling must validate response shape without rejecting an empty source"
   )
+  found.merge!(item_poll_index: item_poll_index)
+end
 
+def validate_scan_drains!(tasks, found)
+  bound_pending_index = found.fetch(:bound_pending_index)
+  repair_index = found.fetch(:repair_index)
   pre_repair_drain, pre_repair_drain_index = task_named(tasks, PRE_REPAIR_DRAIN)
   pre_repair_drain_assert, pre_repair_drain_assert_index = task_named(
     tasks, PRE_REPAIR_DRAIN_ASSERT
@@ -295,7 +332,12 @@ def validate_initial_scan!(tasks, defaults)
       "scan drain completion must be strictly asserted without disclosure"
     )
   end
+  found.merge!(final_drain_assert_index: final_drain_assert_index)
+end
 
+def validate_scan_baseline!(tasks, found)
+  final_drain_assert_index = found.fetch(:final_drain_assert_index)
+  scan_index = found.fetch(:scan_index)
   baseline_refetch, baseline_refetch_index = task_named(tasks, BASELINE_REFETCH)
   baseline_outer, baseline_outer_index = task_named(tasks, BASELINE_OUTER_ASSERT)
   baseline_resolve, baseline_resolve_index = task_named(tasks, BASELINE_RESOLVE)
@@ -324,6 +366,12 @@ def validate_initial_scan!(tasks, defaults)
       baseline_index + 1 == scan_index,
     "a strict authoritative lastScan baseline must be freshly captured immediately before POST"
   )
+end
+
+def validate_marker_classification!(tasks, found)
+  precreate_pending_index = found.fetch(:precreate_pending_index)
+  create_index = found.fetch(:create_index)
+  repair_index = found.fetch(:repair_index)
   marker_state, marker_state_index = task_named(
     tasks, "Resolve Audiobookshelf initial scan marker path and expected intents"
   )
@@ -388,6 +436,16 @@ def validate_initial_scan!(tasks, defaults)
       !stale_assert.fetch("fail_msg", "").include?("{{"),
     "mismatched pending intents must fail closed before every library API mutation"
   )
+end
+
+def validate_intent_writes!(tasks, found)
+  precreate_pending = found.fetch(:precreate_pending)
+  bound_pending = found.fetch(:bound_pending)
+  current_id_gate_index = found.fetch(:current_id_gate_index)
+  bound_pending_index = found.fetch(:bound_pending_index)
+  scan_classification_index = found.fetch(:scan_classification_index)
+  plan_index = found.fetch(:plan_index)
+  item_poll_index = found.fetch(:item_poll_index)
   precreate_copy = precreate_pending.fetch("ansible.builtin.copy", {})
   require_condition(
     precreate_copy["content"].to_s.include?("audiobookshelf_initial_scan_precreate_state") &&
@@ -454,7 +512,9 @@ def validate_initial_scan!(tasks, defaults)
       ],
     "pending scan intent must be cleared only after exact success validation"
   )
+end
 
+def validate_scan_diagnostic!(tasks)
   diagnostic, = task_named(tasks, "Require completed Audiobookshelf initial library scan")
   failure_message = diagnostic.dig("ansible.builtin.assert", "fail_msg").to_s
   require_condition(
@@ -467,6 +527,23 @@ def validate_initial_scan!(tasks, defaults)
     !failure_message.match?(/token|password|username|title|metadata|results|tasks/i),
     "scan timeout diagnostic may disclose credentials or media metadata"
   )
+end
+
+# The groups run in the order they were written as one method, and each resolves
+# its own tasks where it used to, so a mutation that deletes a task still raises
+# at the same point. `found` carries the tasks and indexes a later group compares.
+def validate_initial_scan!(tasks, defaults)
+  found = {}
+  validate_scan_classification!(tasks, defaults, found)
+  validate_scan_request!(tasks, found)
+  validate_current_library_id!(tasks, found)
+  validate_intent_ordering!(tasks, found)
+  validate_scan_polling!(tasks, found)
+  validate_scan_drains!(tasks, found)
+  validate_scan_baseline!(tasks, found)
+  validate_marker_classification!(tasks, found)
+  validate_intent_writes!(tasks, found)
+  validate_scan_diagnostic!(tasks)
 end
 
 def deep_copy(value)
