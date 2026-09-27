@@ -126,7 +126,7 @@ def exercise_jellyfin_library_inventory_global_gate(failures)
   end
 end
 
-def exercise_jellyfin_library_rename_identity_refresh(failures)
+def jellyfin_rename_refresh_tasks
   main = jellyfin_role_tasks
   selected_names = [
     "Initialize normalized Jellyfin library inventory",
@@ -153,6 +153,10 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
       "Validate fixture Jellyfin library inventory", "{{ jellyfin_libraries_before.json }}"
     )
   )
+  tasks
+end
+
+def jellyfin_rename_refresh_libraries
   old_id = "1" * 32
   new_id = "2" * 32
   shows_id = "3" * 32
@@ -177,6 +181,125 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     "Name" => "Shows", "ItemId" => 7, "CollectionType" => "tvshows",
     "Locations" => ["/media/Series"]
   }
+  [new_id, shows_id, old_library, new_library, shows_library, incomplete_shows_library]
+end
+
+def exercise_jellyfin_persistent_incomplete_sibling(failures, tasks, variables, state, requests)
+  persistent_tasks = Marshal.load(Marshal.dump(tasks))
+  persistent_wait = persistent_tasks.find do |task|
+    task_name(task) == "Wait for renamed Jellyfin managed library identities"
+  end
+  persistent_wait["retries"] = 2
+  persistent_wait["delay"] = 0
+  persistent_rename = persistent_tasks.find do |task|
+    task_name(task) == "Rename adopted Jellyfin managed libraries"
+  end
+  persistent_rename.fetch("ansible.builtin.uri")["url"] =
+    persistent_rename.dig("ansible.builtin.uri", "url").sub("refreshLibrary=true", "refreshLibrary=false")
+  state.update(
+    renamed: false,
+    rename_refresh: false,
+    observations: 0,
+    refreshed_libraries: nil,
+    premature_post_rename_mutation: false
+  )
+  persistent_boundary = requests.length
+  persistent_stdout, persistent_stderr, persistent_status =
+    run_playbook(persistent_tasks, variables)
+  failures << "Jellyfin persistent incomplete sibling did not time out: #{failure_tail(persistent_stdout + persistent_stderr)}" if
+    persistent_status.success?
+  persistent_output = persistent_stdout + persistent_stderr
+  failures << "Jellyfin persistent malformed ItemId raised a template exception instead of timing out" if
+    persistent_output.match?(/template error|object of type|unhandled exception|unexpected templating type/i)
+  failures << "Jellyfin persistent malformed ItemId did not exercise bounded retries" unless
+    persistent_output.include?("FAILED - RETRYING")
+  persistent_mutations = requests.drop(persistent_boundary).select do |request|
+    %w[POST PUT PATCH DELETE].include?(request["method"]) &&
+      URI("http://fixture#{request.fetch('target')}").path != "/Library/VirtualFolders/Name"
+  end
+  failures << "Jellyfin persistent incomplete sibling reached a post-rename mutation" unless
+    persistent_mutations.empty?
+end
+
+def jellyfin_refreshed_unsafe_libraries
+  {
+    "empty path" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => [""], "LibraryOptions" => { "PathInfos" => [{ "Path" => "" }] }
+    },
+    "slash-only path" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => ["/"], "LibraryOptions" => { "PathInfos" => [{ "Path" => "/" }] }
+    },
+    "non-string path" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => [7], "LibraryOptions" => { "PathInfos" => [{ "Path" => 7 }] }
+    },
+    "malformed unrelated entry" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => "opaque", "LibraryOptions" => nil
+    },
+    "normalized cross-library duplicate" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => ["/media/Movies/"],
+      "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Movies/" }] }
+    },
+    "inconsistent PathInfos" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => ["/media/Unmanaged"],
+      "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Different" }] }
+    },
+    "raw trailing-slash representation mismatch" => {
+      "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
+      "Locations" => ["/media/Unmanaged"],
+      "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Unmanaged/" }] }
+    }
+  }
+end
+
+def exercise_jellyfin_refreshed_unsafe_libraries(failures, tasks, variables, state, requests, new_library,
+                                                 shows_library)
+  unsafe_libraries = jellyfin_refreshed_unsafe_libraries
+  unsafe_tasks = Marshal.load(Marshal.dump(tasks))
+  rename_index = unsafe_tasks.index do |task|
+    task_name(task) == "Rename adopted Jellyfin managed libraries"
+  end
+  unsafe_tasks[rename_index] = {
+    "name" => "Record fixture Jellyfin library rename",
+    "ansible.builtin.debug" => { "msg" => "fixture rename already completed" },
+    "changed_when" => true,
+    "register" => "jellyfin_library_renames"
+  }
+  unsafe_wait = unsafe_tasks.find do |task|
+    task_name(task) == "Wait for renamed Jellyfin managed library identities"
+  end
+  unsafe_wait["retries"] = 2
+  unsafe_wait["delay"] = 0
+  unsafe_libraries.each do |label, unsafe_library|
+    drifted_target = Marshal.load(Marshal.dump(new_library))
+    drifted_target["LibraryOptions"]["EnableRealtimeMonitor"] = false
+    state.update(
+      renamed: false,
+      rename_refresh: false,
+      observations: 0,
+      refreshed_libraries: [drifted_target, shows_library, unsafe_library],
+      premature_post_rename_mutation: false
+    )
+    request_boundary = requests.length
+    unsafe_stdout, unsafe_stderr, unsafe_status = run_playbook(unsafe_tasks, variables)
+    failures << "Jellyfin refreshed #{label} was accepted: #{failure_tail(unsafe_stdout + unsafe_stderr)}" if
+      unsafe_status.success?
+    unsafe_mutations = requests.drop(request_boundary).select do |request|
+      %w[POST PUT PATCH DELETE].include?(request["method"])
+    end
+    failures << "Jellyfin refreshed #{label} reached mutation" unless unsafe_mutations.empty?
+  end
+end
+
+def exercise_jellyfin_library_rename_identity_refresh(failures)
+  tasks = jellyfin_rename_refresh_tasks
+  new_id, shows_id, old_library, new_library, shows_library, incomplete_shows_library =
+    jellyfin_rename_refresh_libraries
   state = {
     renamed: false, rename_refresh: false, observations: 0, refreshed_libraries: nil,
     premature_post_rename_mutation: false
@@ -243,108 +366,9 @@ def exercise_jellyfin_library_rename_identity_refresh(failures)
     failures << "Jellyfin mutated library state before the full rename inventory settled" if
       state[:premature_post_rename_mutation]
 
-    persistent_tasks = Marshal.load(Marshal.dump(tasks))
-    persistent_wait = persistent_tasks.find do |task|
-      task_name(task) == "Wait for renamed Jellyfin managed library identities"
-    end
-    persistent_wait["retries"] = 2
-    persistent_wait["delay"] = 0
-    persistent_rename = persistent_tasks.find do |task|
-      task_name(task) == "Rename adopted Jellyfin managed libraries"
-    end
-    persistent_rename.fetch("ansible.builtin.uri")["url"] =
-      persistent_rename.dig("ansible.builtin.uri", "url").sub("refreshLibrary=true", "refreshLibrary=false")
-    state.update(
-      renamed: false,
-      rename_refresh: false,
-      observations: 0,
-      refreshed_libraries: nil,
-      premature_post_rename_mutation: false
-    )
-    persistent_boundary = requests.length
-    persistent_stdout, persistent_stderr, persistent_status =
-      run_playbook(persistent_tasks, variables)
-    failures << "Jellyfin persistent incomplete sibling did not time out: #{failure_tail(persistent_stdout + persistent_stderr)}" if
-      persistent_status.success?
-    persistent_output = persistent_stdout + persistent_stderr
-    failures << "Jellyfin persistent malformed ItemId raised a template exception instead of timing out" if
-      persistent_output.match?(/template error|object of type|unhandled exception|unexpected templating type/i)
-    failures << "Jellyfin persistent malformed ItemId did not exercise bounded retries" unless
-      persistent_output.include?("FAILED - RETRYING")
-    persistent_mutations = requests.drop(persistent_boundary).select do |request|
-      %w[POST PUT PATCH DELETE].include?(request["method"]) &&
-        URI("http://fixture#{request.fetch('target')}").path != "/Library/VirtualFolders/Name"
-    end
-    failures << "Jellyfin persistent incomplete sibling reached a post-rename mutation" unless
-      persistent_mutations.empty?
-
-    unsafe_libraries = {
-      "empty path" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => [""], "LibraryOptions" => { "PathInfos" => [{ "Path" => "" }] }
-      },
-      "slash-only path" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => ["/"], "LibraryOptions" => { "PathInfos" => [{ "Path" => "/" }] }
-      },
-      "non-string path" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => [7], "LibraryOptions" => { "PathInfos" => [{ "Path" => 7 }] }
-      },
-      "malformed unrelated entry" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => "opaque", "LibraryOptions" => nil
-      },
-      "normalized cross-library duplicate" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => ["/media/Movies/"],
-        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Movies/" }] }
-      },
-      "inconsistent PathInfos" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => ["/media/Unmanaged"],
-        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Different" }] }
-      },
-      "raw trailing-slash representation mismatch" => {
-        "Name" => "Unmanaged", "ItemId" => "3" * 32, "CollectionType" => "books",
-        "Locations" => ["/media/Unmanaged"],
-        "LibraryOptions" => { "PathInfos" => [{ "Path" => "/media/Unmanaged/" }] }
-      }
-    }
-    unsafe_tasks = Marshal.load(Marshal.dump(tasks))
-    rename_index = unsafe_tasks.index do |task|
-      task_name(task) == "Rename adopted Jellyfin managed libraries"
-    end
-    unsafe_tasks[rename_index] = {
-      "name" => "Record fixture Jellyfin library rename",
-      "ansible.builtin.debug" => { "msg" => "fixture rename already completed" },
-      "changed_when" => true,
-      "register" => "jellyfin_library_renames"
-    }
-    unsafe_wait = unsafe_tasks.find do |task|
-      task_name(task) == "Wait for renamed Jellyfin managed library identities"
-    end
-    unsafe_wait["retries"] = 2
-    unsafe_wait["delay"] = 0
-    unsafe_libraries.each do |label, unsafe_library|
-      drifted_target = Marshal.load(Marshal.dump(new_library))
-      drifted_target["LibraryOptions"]["EnableRealtimeMonitor"] = false
-      state.update(
-        renamed: false,
-        rename_refresh: false,
-        observations: 0,
-        refreshed_libraries: [drifted_target, shows_library, unsafe_library],
-        premature_post_rename_mutation: false
-      )
-      request_boundary = requests.length
-      unsafe_stdout, unsafe_stderr, unsafe_status = run_playbook(unsafe_tasks, variables)
-      failures << "Jellyfin refreshed #{label} was accepted: #{failure_tail(unsafe_stdout + unsafe_stderr)}" if
-        unsafe_status.success?
-      unsafe_mutations = requests.drop(request_boundary).select do |request|
-        %w[POST PUT PATCH DELETE].include?(request["method"])
-      end
-      failures << "Jellyfin refreshed #{label} reached mutation" unless unsafe_mutations.empty?
-    end
+    exercise_jellyfin_persistent_incomplete_sibling(failures, tasks, variables, state, requests)
+    exercise_jellyfin_refreshed_unsafe_libraries(failures, tasks, variables, state, requests, new_library,
+                                                 shows_library)
   end
 end
 
