@@ -40,8 +40,8 @@ integration_media_adopt_existing=${integration_media_adopt_existing?}
 # its enabled path on every lane that converges it.
 #
 # EVERY LANE, not just the vaultwarden one, and that is the half worth reading.
-# The vaultwarden tag is already in the idempotence-5 shard, and `full`,
-# `idempotence-check` and a routed `smoke` converge the whole site; a
+# The vaultwarden tag is already in the idempotence-5 shard, and `full` and
+# `idempotence-check` converge the whole site; a
 # `case $INTEGRATION_SUITE` here would leave all of those failing. #295's rule
 # says a lane must request the state it claims to converge, and every lane that
 # reaches this role claims it.
@@ -68,8 +68,8 @@ integration_vaultwarden_domain=https://vaultwarden.integration.invalid
 # verification task and a lane converges rather than verifies. This endpoint is
 # read by a deployed process, so no tag gates it.
 #
-# EVERY LANE, for the same reason integration_vaultwarden_domain is: `full`,
-# `idempotence-check` and a routed `smoke` all converge the whole site, so a
+# EVERY LANE, for the same reason integration_vaultwarden_domain is: `full` and
+# `idempotence-check` both converge the whole site, so a
 # `case $INTEGRATION_SUITE` here would leave all of those pointed at the real
 # API.
 #

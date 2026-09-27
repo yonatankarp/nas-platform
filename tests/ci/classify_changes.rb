@@ -21,8 +21,9 @@ module ClassifyChanges
   # Lanes that gate a workflow job of their own rather than dispatching an
   # integration suite. Every other lane is one suite.
   JOB_LANES = %w[static docs vault reconciliation].freeze
-  # `full` is the runner's own default and no CI lane dispatches it, so it is the
-  # one row the classifier drops. A lane is its suite with hyphens written as
+  # `harness` rows are suites no CI lane dispatches: `full`, the runner's own
+  # default, and `smoke`, a strict prefix of idempotence-check that every
+  # selection carrying it already paid for (#832). A lane is its suite with hyphens written as
   # underscores, because a lane is also a GitHub Actions output key.
   CI_SUITE_ROWS = SUITE_TABLE.reject { |_suite, kind, _tags| kind == "harness" }.freeze
   # The integration suite each lane dispatches, in the order the CI matrix runs
@@ -345,10 +346,10 @@ module ClassifyChanges
   # new job gated on a new output cannot land here unrouted.
   #
   # A service lane rather than `foundation`: selecting foundation empties
-  # selected_tags in write_github_outputs, which would flip the smoke leg onto
-  # the untagged path and converge the whole site. beszel is the cheapest service
-  # lane -- the smallest stack, and no companion lane -- and the standard block
-  # below adds `static`, `smoke` and `idempotence_check` around it.
+  # selected_tags in write_github_outputs, which would flip the idempotence_check
+  # leg onto the untagged path and converge the whole site. beszel is the
+  # cheapest service lane -- the smallest stack, and no companion lane -- and the
+  # standard block below adds `static` and `idempotence_check` around it.
   #
   # Only this one path. Anything else that appears under .github/ is unmapped and
   # keeps falling open to every lane, which is the property CLAUDE.md relies on.
@@ -431,7 +432,6 @@ module ClassifyChanges
 
     unless tagged_lanes.empty?
       %w[static idempotence_check].each { |lane| selection[lane] = true }
-      selection["smoke"] = true if (tagged_lanes & SERVICE_LANES).any?
       tagged_lanes.each { |lane| selection[lane] = true }
     end
     # The contract's own files are fixtures of the policy gate as well -- they are
@@ -546,8 +546,8 @@ module ClassifyChanges
     # `--files` have no base revision to resolve one from, so it stays off there
     # and a leg that would refuse for want of its inputs is never dispatched. A
     # fall-open does have one, and a fall-open whose diff moved a subject's pin
-    # dispatches the lane: a fall-open already runs 25 legs, so one more is
-    # marginal, and forcing it off there left the lane unable to run on any pull
+    # dispatches the lane: a fall-open already runs every suite leg, so one more
+    # is marginal, and forcing it off there left the lane unable to run on any pull
     # request that also touched an unmapped path -- including the one that
     # introduced it.
     off = sharded ? [IDEMPOTENCE_LANE] : IDEMPOTENCE_SHARD_LANES

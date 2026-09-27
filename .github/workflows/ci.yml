@@ -1016,7 +1016,7 @@ jobs:
               fi
               tests/integration.sh --suite "$SUITE" --tags "$UPGRADE_TAGS" site.yml
               ;;
-            smoke|idempotence-check)
+            idempotence-check)
               if [ -n "$SELECTED_TAGS" ]; then
                 tests/integration.sh --suite "$SUITE" --tags "$SELECTED_TAGS" site.yml
               else

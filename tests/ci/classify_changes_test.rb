@@ -24,7 +24,7 @@ SCRIPT = File.expand_path("classify_changes.rb", __dir__)
 FIXTURE_BRANCH = "main"
 LANES = %w[
   static docs vault reconciliation foundation arr downloaders bindery kapowarr pinchflat trailarr seerr
-  smoke beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud
+  beszel dozzle audiobookshelf komga jellyfin immich paperless nextcloud
   vaultwarden karakeep upgrade idempotence_check
   idempotence_1 idempotence_2 idempotence_3 idempotence_4 idempotence_5 idempotence_6
 ].freeze
@@ -116,8 +116,8 @@ def selected_lanes(paths, full: false)
 end
 
 # A selection is returned in LANES order, and a companion lane need not sit
-# beside the lane that pulled it in -- `seerr` precedes `smoke`, which every
-# service lane also selects. Building an expectation by concatenation is how that
+# beside the lane that pulled it in -- `seerr` precedes `jellyfin`, the lane
+# that pulls it in. Building an expectation by concatenation is how that
 # produces a wrong list rather than a wrong-looking one, so expectations assembled
 # from parts are ordered here instead.
 def canonical(lanes)
@@ -149,15 +149,15 @@ if defined?(ClassifyChanges)
     # Only tests/secrets_docs_test.rb reads it, and the docs job runs that, so the
     # secrets guide no longer pays for the whole policy gate.
     ["docs/secrets.md"] => %w[docs],
-    ["roles/paperless_ngx/tasks/main.yml"] => %w[static smoke paperless idempotence_check],
-    ["roles/nextcloud/tasks/main.yml"] => %w[static smoke nextcloud idempotence_check],
-    ["roles/vaultwarden/tasks/main.yml"] => %w[static smoke vaultwarden idempotence_check],
-    ["roles/karakeep/tasks/main.yml"] => %w[static smoke karakeep idempotence_check],
-    ["services/dozzle/compose.yml"] => %w[static smoke dozzle idempotence_check],
+    ["roles/paperless_ngx/tasks/main.yml"] => %w[static paperless idempotence_check],
+    ["roles/nextcloud/tasks/main.yml"] => %w[static nextcloud idempotence_check],
+    ["roles/vaultwarden/tasks/main.yml"] => %w[static vaultwarden idempotence_check],
+    ["roles/karakeep/tasks/main.yml"] => %w[static karakeep idempotence_check],
+    ["services/dozzle/compose.yml"] => %w[static dozzle idempotence_check],
     # Plus seerr: the seerr lane is the only one that converges Jellyfin
     # alongside arr and it signs in to Jellyfin as the vault administrator, so a
     # Jellyfin change has to reach it.
-    ["tests/contracts/jellyfin.sh"] => %w[static seerr smoke jellyfin idempotence_check],
+    ["tests/contracts/jellyfin.sh"] => %w[static seerr jellyfin idempotence_check],
     ["roles/arr/tasks/main.yml"] => %w[static reconciliation arr idempotence_check],
     # Plus bindery: the downloaders lane converges the Usenet provider
     # undeclared now, so the lane that converges it declared has to come with it.
@@ -180,7 +180,7 @@ if defined?(ClassifyChanges)
     # not the policy gate alone. The per-service loop below holds the same claim
     # for every implemented service rather than for this one sample.
     # dozzle is beszel's companion: its beszel-notify mode sends through the hub.
-    ["tests/expected/beszel.yml"] => %w[static smoke beszel dozzle idempotence_check],
+    ["tests/expected/beszel.yml"] => %w[static beszel dozzle idempotence_check],
     ["renovate.json"] => %w[static],
     ["generate-secrets.yml"] => %w[static],
     ["templates/vault-plain.yml.j2"] => %w[static],
@@ -203,7 +203,7 @@ if defined?(ClassifyChanges)
     # the end of this file is what keeps that claim true as the workflow grows;
     # this row is what makes a quiet widening or narrowing of it visible.
     [".github/workflows/ci.yml"] =>
-      %w[static docs vault reconciliation smoke komga idempotence_check],
+      %w[static docs vault reconciliation komga idempotence_check],
     # Only that one file is mapped. A second workflow, or anything else under
     # .github/, is a path nobody has reasoned about and keeps falling open.
     [".github/workflows/release.yml"] => FALL_OPEN_LANES,
@@ -283,7 +283,7 @@ if defined?(ClassifyChanges)
       "tests/contracts/#{contract}.sh"
     ].each do |path|
       companions = expected_service_lanes.flat_map { |lane| COMPANION_LANES.fetch(lane, []) }
-      expected = canonical(%w[static smoke] + expected_service_lanes + companions +
+      expected = canonical(%w[static] + expected_service_lanes + companions +
                            %w[idempotence_check])
       check(failures, selected_lanes([path]) == expected,
             "#{path} selected #{selected_lanes([path]).inspect}, expected #{expected.inspect}")
@@ -291,7 +291,7 @@ if defined?(ClassifyChanges)
   end
 
   check(failures, selected_lanes(["roles/beszel/tasks/main.yml", "services/dozzle/compose.yml"]) ==
-                  %w[static smoke beszel dozzle idempotence_check],
+                  %w[static beszel dozzle idempotence_check],
         "multiple service changes must combine service lanes in canonical order")
   check(
     failures,
@@ -299,7 +299,7 @@ if defined?(ClassifyChanges)
       "roles/komga/tasks/main.yml",
       "services/jellyfin/compose.yml",
       "tests/contracts/immich.sh"
-    ]) == %w[static seerr smoke komga jellyfin immich idempotence_check],
+    ]) == %w[static seerr komga jellyfin immich idempotence_check],
     "multiple media service changes must combine canonically, each carrying its own companion"
   )
 
@@ -350,6 +350,23 @@ if defined?(ClassifyChanges)
         "classify must return every lane in canonical order")
   check(failures, selected_lanes([], full: true) == FULL_LANES,
         "full events must select every lane in the unsharded idempotence form")
+  # smoke is a strict prefix of the idempotence lane -- the same workflow branch,
+  # the same arguments, `exit 0` where phase 2 begins -- so dispatching it beside
+  # either idempotence form proves nothing and, on a fall-open, set the run's wall
+  # (#832). Read with fetch so the check survives smoke leaving the lane list.
+  smoke_samples = [
+    ["full", ClassifyChanges.classify([], full: true)],
+    ["fall-open", ClassifyChanges.classify(["unexpected/new-runtime-file"])],
+    [".github/workflows/ci.yml", ClassifyChanges.classify([".github/workflows/ci.yml"])]
+  ] + LANES.map do |lane|
+    path = "roles/#{lane}/tasks/main.yml"
+    [path, ClassifyChanges.classify([path])]
+  end
+  smoke_samples.each do |label, selection|
+    idempotence = ([IDEMPOTENCE_LANE] + IDEMPOTENCE_SHARD_LANES).any? { |lane| selection.fetch(lane, false) }
+    check(failures, !(selection.fetch("smoke", false) && idempotence),
+          "#{label} selected smoke beside an idempotence lane, which it is a strict prefix of")
+  end
   check(failures, selected_lanes(["AGENTS.md"]) == FALL_OPEN_LANES,
         "AGENTS.md must not be treated as inert Markdown")
   # The rule that exemption used to be a single name for. A document at the
@@ -459,7 +476,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=false
     seerr=false
-    smoke=true
     beszel=true
     dozzle=true
     audiobookshelf=false
@@ -478,7 +494,7 @@ if defined?(ClassifyChanges)
     idempotence_4=false
     idempotence_5=false
     idempotence_6=false
-    suites=["smoke","beszel","dozzle","idempotence-check"]
+    suites=["beszel","dozzle","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,beszel,dozzle
     upgrade_service=
     upgrade_base_image=
@@ -502,7 +518,6 @@ if defined?(ClassifyChanges)
     pinchflat=true
     trailarr=true
     seerr=true
-    smoke=true
     beszel=true
     dozzle=true
     audiobookshelf=true
@@ -521,7 +536,7 @@ if defined?(ClassifyChanges)
     idempotence_4=false
     idempotence_5=false
     idempotence_6=false
-    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-check"]
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-check"]
     selected_tags=
     upgrade_service=
     upgrade_base_image=
@@ -546,7 +561,6 @@ if defined?(ClassifyChanges)
     pinchflat=true
     trailarr=true
     seerr=true
-    smoke=true
     beszel=true
     dozzle=true
     audiobookshelf=true
@@ -565,7 +579,7 @@ if defined?(ClassifyChanges)
     idempotence_4=true
     idempotence_5=true
     idempotence_6=true
-    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","smoke","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5","idempotence-6"]
+    suites=["foundation","arr","downloaders","bindery","kapowarr","pinchflat","trailarr","seerr","beszel","dozzle","audiobookshelf","komga","jellyfin","immich","paperless","nextcloud","vaultwarden","karakeep","idempotence-1","idempotence-2","idempotence-3","idempotence-4","idempotence-5","idempotence-6"]
     selected_tags=
     upgrade_service=
     upgrade_base_image=
@@ -603,7 +617,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=false
     seerr=false
-    smoke=true
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -622,7 +635,7 @@ if defined?(ClassifyChanges)
     idempotence_4=false
     idempotence_5=false
     idempotence_6=false
-    suites=["smoke","paperless","idempotence-check"]
+    suites=["paperless","idempotence-check"]
     selected_tags=host_prep,deployment_bundle,paperless
     upgrade_service=
     upgrade_base_image=
@@ -653,7 +666,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=false
     seerr=false
-    smoke=false
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -697,7 +709,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=false
     seerr=false
-    smoke=false
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -741,7 +752,6 @@ if defined?(ClassifyChanges)
     pinchflat=true
     trailarr=false
     seerr=false
-    smoke=false
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -789,7 +799,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=true
     seerr=false
-    smoke=false
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -837,7 +846,6 @@ if defined?(ClassifyChanges)
     pinchflat=false
     trailarr=false
     seerr=true
-    smoke=false
     beszel=false
     dozzle=false
     audiobookshelf=false
@@ -883,12 +891,12 @@ if defined?(ClassifyChanges)
         "static, docs, vault and reconciliation are the only lanes that gate a job instead of a suite")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/beszel/tasks/main.yml"])) ==
-          %w[smoke beszel dozzle idempotence-check],
-        "a Beszel-only change must dispatch smoke, beszel, its dozzle companion and idempotence-check")
+          %w[beszel dozzle idempotence-check],
+        "a Beszel-only change must dispatch beszel, its dozzle companion and idempotence-check")
   check(failures,
         ClassifyChanges.suites(ClassifyChanges.classify(["roles/arr/tasks/main.yml"])) ==
           %w[arr idempotence-check],
-        "an Arr-only change must dispatch its foundation suite without smoke")
+        "an Arr-only change must dispatch its foundation suite and idempotence-check")
 
   # No lane emits the inert foundation tag plan any more: Phase 4 promoted the
   # last planned acquisition project, and #639 deleted the seven
@@ -1565,7 +1573,7 @@ if defined?(ClassifyChanges)
         "#{ClassifyChanges::CI_WORKFLOW_SUITE_LANE.inspect} now carries a companion lane; pick a " \
         "cheaper representative or accept the extra leg deliberately")
   # Selecting `foundation` would empty selected_tags in write_github_outputs,
-  # which flips the smoke leg onto the untagged path and converges the whole
+  # which flips the idempotence_check leg onto the untagged path and converges the whole
   # site -- the opposite of what this entry is for.
   check(failures, !workflow_selection.fetch("foundation"),
         "#{routed_workflow_path} must not select the foundation lane: it empties selected_tags")
@@ -1573,7 +1581,7 @@ if defined?(ClassifyChanges)
   ClassifyChanges.write_github_outputs(workflow_selection, workflow_outputs)
   workflow_tags = workflow_outputs.string[/^selected_tags=(.*)$/, 1].to_s
   check(failures, !workflow_tags.empty?,
-        "#{routed_workflow_path} must select tags for its suite legs, or the smoke leg converges " \
+        "#{routed_workflow_path} must select tags for its suite legs, or the idempotence_check leg converges " \
         "the whole site rather than the representative stack")
 end
 
