@@ -1756,17 +1756,40 @@ literal_wait_timeout = lambda do |node|
   else false
   end
 end
+#
+# "Not a bare number" is checked as "reads a declared timing variable", not as
+# "is not a YAML integer": `retries: "20"` and `"{{ 20 }}"` are strings and
+# passed the integer test while being exactly the literal it refuses (#844). A
+# retries or delay value has to name, inside its expression, at least one
+# variable ending in _retries or _delay, and every such name it reads has to be
+# declared in inventory/group_vars/all/main.yml or in that role's own defaults,
+# which is where the shared value and a documented deviation live. An
+# expression around that name stays allowed: Beszel's registration wait reads
+# `beszel_agent_enabled | ternary(platform_readiness_retries, 1)`, where the 1
+# is "ask once" rather than a patience of its own.
+shared_timing_variables = YAML.safe_load_file(File.join(ROOT, "inventory/group_vars/all/main.yml"),
+                                              aliases: true).keys
 TIMING_KEYWORD_POLICY = {
   "retries" => "platform_readiness_retries",
   "delay" => "platform_readiness_delay"
 }.freeze
 role_task_files.each do |path|
   relative_path = path.delete_prefix("#{ROOT}/")
+  role_root = relative_path[%r{\Aroles/[^/]+}]
+  role_defaults_path = File.join(ROOT, role_root, "defaults/main.yml")
+  role_defaults = File.exist?(role_defaults_path) ? (YAML.safe_load_file(role_defaults_path, aliases: true) || {}).keys : []
+  declared_timing = shared_timing_variables + role_defaults
   flatten_tasks(YAML.safe_load_file(path, aliases: true)).each do |task|
     task_name = task["name"] || "an unnamed task"
     TIMING_KEYWORD_POLICY.each do |keyword, shared_variable|
-      check(failures, !task[keyword].is_a?(Integer),
-            "#{relative_path}: \"#{task_name}\" writes #{keyword}: #{task[keyword]} as a literal; " \
+      next unless task.key?(keyword)
+
+      value = task[keyword]
+      read = value.is_a?(String) && value.include?("{{") ? value.scan(/\b[a-z][a-z0-9_]*_(?:retries|delay)\b/).uniq : []
+      undeclared = read - declared_timing
+      check(failures, !read.empty? && undeclared.empty?,
+            "#{relative_path}: \"#{task_name}\" writes #{keyword}: #{value.inspect}" \
+            "#{undeclared.empty? ? ' as a literal' : ", reading undeclared #{undeclared.join(', ')}"}; " \
             "read #{shared_variable} or a role default that says why it differs")
     end
     check(failures, !literal_wait_timeout.call(task),

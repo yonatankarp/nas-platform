@@ -51,7 +51,9 @@ nas_compose_minimum: "2.18.0"
 # needs to wait longer declares its own variable in roles/<name>/defaults with
 # the reason beside it, which is what makes a deviation visible as a deviation.
 # tests/policy_test.rb refuses a bare number for retries, delay, or wait_timeout
-# in any role task, so a new literal cannot reintroduce the drift.
+# in any role task -- quoted or templated too -- and requires retries and delay
+# to read a *_retries/*_delay variable declared here or in that role's defaults,
+# so a new literal cannot reintroduce the drift.
 #
 # platform_readiness_retries x platform_readiness_delay is a minute of patience,
 # which is what a container that has already reported healthy needs to answer
