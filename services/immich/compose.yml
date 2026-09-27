@@ -114,21 +114,28 @@ services:
     # write open. 30s is well past what that snapshot costs.
     stop_grace_period: 30s
 
-  # Not a version we chose, and not really one version. This is Immich's own
-  # purpose-built Postgres image, and the tag encodes three coupled things:
-  # Postgres major 14, VectorChord 0.4.3 and pgvecto.rs 0.2.0. Immich's schema
-  # depends on those exact extension versions for smart search and face
-  # recognition, so the value is dictated by the Immich release, not chosen here.
+  # Not really one version. This is Immich's own purpose-built Postgres image,
+  # and the tag encodes three coupled things: the Postgres major, the
+  # VectorChord version and the pgvector version. Immich's schema depends on
+  # those extensions for smart search and face recognition.
   #
-  # This line, digest included, is copied verbatim from docker/docker-compose.yml
-  # at the git tag of the Immich release pinned above, which is the only authority
-  # for it. Re-copy it when changing that release; never bump it on its own.
-  # immich_restore_expected_postgres_major in roles/immich/defaults/main.yml
-  # records the major and must agree.
+  # This line deliberately leaves Immich's own compose (#839). Upstream still
+  # ships a 14 tag carrying pgvecto.rs whose variant the base-images repository
+  # stopped building, so its digest is frozen at an old Postgres minor and the
+  # major reaches end of life. This tag is a maintained build that Immich's CI
+  # does not run, bounded instead by the ranges the pinned server enforces at
+  # startup: POSTGRES_VERSION_RANGE and VECTORCHORD_VERSION_RANGE in
+  # server/src/constants.ts at that release's tag. Recheck both when changing
+  # the server pin; the server refuses to start outside them.
+  #
+  # A major change is a dump and restore, never an in-place bump:
+  # docs/immich-postgres-17-cutover.md is the procedure. The restore preflight
+  # derives the expected major from this tag in roles/immich/tasks/main.yml, so
+  # nothing else restates it.
   database:
     <<: *service-defaults
     container_name: immich_postgres
-    image: ghcr.io/immich-app/postgres:14-vectorchord0.4.3-pgvectors0.2.0@sha256:bcf63357191b76a916ae5eb93464d65c07511da41e3bf7a8416db519b40b1c23
+    image: ghcr.io/immich-app/postgres:17-vectorchord1.1.1-pgvector0.8.5@sha256:e69167a6305918a8601e20f80e3ce1256ab5e6e5f0f1c8047df3a02b194eaa67
     cpus: 2.0
     labels:
       dev.dozzle.group: immich
