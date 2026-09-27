@@ -126,6 +126,8 @@ BASE_FIXTURE_PATHS = %w[
   roles/pre_upgrade_backup/defaults/main.yml
   roles/pre_upgrade_backup/meta/argument_specs.yml
   roles/pre_upgrade_backup/tasks/main.yml
+  roles/pre_upgrade_backup/tasks/pending.yml
+  roles/pre_upgrade_backup/tasks/pg_dump.yml
   services/manifest.yml
   services/dozzle/alert_relay.py
   services/downloaders/clamav_gate.py

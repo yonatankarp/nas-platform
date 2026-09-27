@@ -37,88 +37,11 @@
 # still sees the last caller's; roles/vaultwarden/tasks/report.yml says why the
 # copy is therefore not a report term.
 
-# THE PIN IS READ HERE, FROM THE SERVICE'S OWN COMPOSE FILE, AND NEVER HANDED IN
-# (#858). Callers used to pass roles/image_downgrade_guard's pinned-image fact,
-# which is host-scoped: a caller whose own guard was skipped, or whose stack runs
-# a second guard in between, handed over another Compose service's pin, found an
-# "upgrade" on every converge and stopped its container every five-minute tick.
-# Reading pre_upgrade_backup_compose_service out of
-# services/pre_upgrade_backup_service_name/compose.yml is what makes that
-# impossible rather than refused.
-#
-# Which release holds the pin is chosen the way the guard chooses it (#851). A
-# live run reads `current`, which deployment_bundle has just pointed at this
-# run's release. A review cannot: activation is a command check mode skips, so
-# `current` still names the release this run replaces, and a bump under review
-# reported no copy while the live run took one. So --check reads the candidate
-# from the controller checkout the release is copied from, through a lookup,
-# which holds in remote mode where the target has no copy of it.
-- name: Read the deployed Compose definition of the service whose store is copied
-  ansible.builtin.slurp:
-    path: "{{ platform_current_dir }}/services/{{ pre_upgrade_backup_service_name }}/compose.yml"
-  register: pre_upgrade_backup_compose_source
-  when: not ansible_check_mode
-
-- name: Resolve the image the release pins for the service whose store is copied
-  ansible.builtin.set_fact:
-    pre_upgrade_backup_pinned_image: >-
-      {{ ((lookup('ansible.builtin.file', pre_upgrade_backup_candidate_root
-                  ~ '/services/' ~ pre_upgrade_backup_service_name ~ '/compose.yml')
-           if ansible_check_mode
-           else pre_upgrade_backup_compose_source.content | b64decode) | from_yaml)
-         .services[pre_upgrade_backup_compose_service].image }}
-
-# Only a container this platform actually created is considered, running or not:
-# `docker container ls --all`, so a stack that is merely stopped is still read
-# as having a store this host has migrated. A host with no container has no
-# store to protect and no upgrade to be pending.
-#
-# Listed here rather than read from roles/image_downgrade_guard's identical
-# listing, although the guard ran moments before: that listing is a host-scoped
-# register, and a caller whose guard was skipped by a condition this role does
-# not share would compute a pending upgrade from another service's containers.
-- name: List the containers this host holds for the service whose store is copied
-  ansible.builtin.command:
-    argv:
-      - docker
-      - container
-      - ls
-      - --all
-      - --quiet
-      - --filter
-      - "label=com.docker.compose.project={{ pre_upgrade_backup_project_name }}"
-      - --filter
-      - "label=com.docker.compose.service={{ pre_upgrade_backup_compose_service }}"
-  register: pre_upgrade_backup_container_ids
-  changed_when: false
-  check_mode: false
-
-# Redacted: `docker container inspect` returns the container's whole Env array,
-# which is the rendered .env and therefore whatever credential the stack holds.
-- name: Inspect the containers this host holds for the service whose store is copied
-  ansible.builtin.command:
-    argv: "{{ ['docker', 'container', 'inspect'] + pre_upgrade_backup_container_ids.stdout_lines }}"
-  register: pre_upgrade_backup_inspection
-  changed_when: false
-  check_mode: false
-  no_log: true
-  when: pre_upgrade_backup_container_ids.stdout_lines | length > 0
-
-# Compose records the image reference it created the container from, digest
-# included, so comparing it with the pinned one names an upgrade exactly. An
-# empty deployed reference is a host with no container, which is not an upgrade.
-- name: Resolve the image the service's container was created from
-  ansible.builtin.set_fact:
-    pre_upgrade_backup_deployed_image: >-
-      {{ (pre_upgrade_backup_inspection.stdout | default('[]', true) | from_json
-          | map(attribute='Config.Image') | list | first | default('', true)) }}
-
-- name: Resolve the upgrade this converge would perform
-  ansible.builtin.set_fact:
-    pre_upgrade_backup_upgrade_pending: >-
-      {{ pre_upgrade_backup_deployed_image | length > 0
-         and pre_upgrade_backup_pinned_image | length > 0
-         and pre_upgrade_backup_deployed_image != pre_upgrade_backup_pinned_image }}
+# Shared with tasks/pg_dump.yml: which image the release pins, which the
+# container runs, and whether that is an upgrade. tasks/pending.yml says why the
+# pin is read there rather than handed in.
+- name: Resolve whether an upgrade is pending for the service whose store is copied
+  ansible.builtin.include_tasks: pending.yml
 
 # The copy directory is pruned and chmodded 0700, so a caller that pointed it at
 # the store directory, or above it, would have this role remove the store's own

@@ -1178,6 +1178,18 @@ repository vault remains encrypted:
   directory (#826). That copy carries the same hashes and is secret-bearing
   wherever it is copied to next; it is a rollback path for a one-way migration
   on the same disk, not a backup.
+- The PostgreSQL dumps Nextcloud and Paperless-ngx take before each pinned
+  upgrade (#826). `roles/pre_upgrade_backup`'s pg_dump entry stops the
+  application, and the database container, still running, writes
+  `pre-upgrade-backup/database.sql.gz` beside its cluster -- under
+  `nextcloud/postgres` and `paperless-ngx/postgres` on the host -- root-owned at
+  mode 0600 inside a 0700 directory, replacing the previous one only once the
+  new dump has completed. Each is the whole database: every account's password
+  hash, Nextcloud's app passwords and share tokens, Paperless's mail account
+  passwords and the OCR text of every document. Treat a dump as secret-bearing
+  wherever it is copied to next. The dump connects with the `POSTGRES_*` values
+  the database container already holds, so it adds no vault key. Like the copies
+  above it is a rollback path on the same disk, not a backup.
 - Whatever the applications and their databases then retain in their own
   data and configuration.
 - On a NAS running the unattended poller, the deploy account's home. See

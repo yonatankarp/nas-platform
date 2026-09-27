@@ -2141,10 +2141,10 @@ end
 # conversion away from it is not a failure.
 check_floor(failures, shared_recovery_callers, 4,
             "roles whose deployment report must name the shared recovery's register")
-# Kapowarr, Vaultwarden and Karakeep today. Held at three so the pre-upgrade
+# Kapowarr, Vaultwarden, Karakeep, Nextcloud and Paperless-ngx today. Held at five so the pre-upgrade
 # rule below cannot keep its one shared subject while every caller quietly stops
 # using it.
-check_floor(failures, pre_upgrade_backup_callers, 3,
+check_floor(failures, pre_upgrade_backup_callers, 5,
             "roles whose deployment report must name the shared pre-upgrade copy's register")
 # Held against the roles the INSPECTED TREE actually has rather than against the
 # constant outright, which is what lets one assertion cover both trees this script
@@ -2189,11 +2189,19 @@ check(failures, report_free_deployers.sort == expected_report_free.sort,
 # are one, roles/pre_upgrade_backup, and a service-local pre_upgrade_backup.yml
 # that stops a container is still read here. The Kapowarr contract holds the
 # same properties through its call site; this is what holds every other caller.
+#
+# The shared role's pg_dump entry (#826) is read too, and is exempt BY NAME from
+# the one clause about the store: it never stops the container holding the
+# store -- the database dumps itself while the application is stopped -- so there
+# is no empty store the old image could be started over. Exempting it by what it
+# lacks instead would let a stat deleted from main.yml pass.
 pre_upgrade_stops = 0
-pre_upgrade_paths = [File.join(ROOT, "roles", "pre_upgrade_backup", "tasks", "main.yml")].select { |p| File.file?(p) } +
+pre_upgrade_paths = %w[main.yml pg_dump.yml].map { |f| File.join(ROOT, "roles", "pre_upgrade_backup", "tasks", f) }
+                                           .select { |p| File.file?(p) } +
                     Dir[File.join(ROOT, "roles", "*", "tasks", "pre_upgrade_backup.yml")].sort
 pre_upgrade_paths.each do |path|
   name = File.basename(File.dirname(path, 2))
+  dumps = path.end_with?(File.join("pre_upgrade_backup", "tasks", "pg_dump.yml"))
   document = YAML.safe_load_file(path, aliases: true)
   stops = ->(task) { task.dig("community.docker.docker_compose_v2", "state") == "stopped" }
   next unless flatten_tasks(document).any?(&stops)
@@ -2219,7 +2227,7 @@ pre_upgrade_paths.each do |path|
   pre_stop_read = Array(document).find { |task| task.is_a?(Hash) && task.key?("ansible.builtin.stat") }
   store_read = rescue_tasks.find { |task| task.key?("ansible.builtin.stat") }
   check(failures,
-        start.nil? || (store_read && pre_stop_read && rescue_tasks.index(store_read) < start_index &&
+        start.nil? || dumps || (store_read && pre_stop_read && rescue_tasks.index(store_read) < start_index &&
                        store_read.dig("ansible.builtin.stat", "path") ==
                          pre_stop_read.dig("ansible.builtin.stat", "path") &&
                        store_read["failed_when"] == false &&
@@ -2227,10 +2235,27 @@ pre_upgrade_paths.each do |path|
         "role #{name}: a failed pre-upgrade copy must not start the old container over a missing store")
   check(failures, rescue_tasks.last&.key?("ansible.builtin.fail"),
         "role #{name}: a failed pre-upgrade copy must still fail the run")
+  next unless dumps
+
+  # The dump's own shape: taken after every writer has stopped, failing on any
+  # exit code (the module sets check_rc only when detached, and an rc that was
+  # never set is a failure, not a success), and a failed one starting again
+  # exactly what was stopped -- a rescue that started only the application would
+  # leave Nextcloud's cron down.
+  block_tasks = flatten_tasks(unit&.fetch("block", nil))
+  stop = block_tasks.find(&stops)
+  dump = block_tasks.find { |task| task.key?("community.docker.docker_compose_v2_exec") }
+  check(failures,
+        stop && dump && block_tasks.index(stop) < block_tasks.index(dump) &&
+          dump["failed_when"].to_s.include?(".rc | default(1) != 0") &&
+          start && start.dig("community.docker.docker_compose_v2", "services") ==
+                   stop.dig("community.docker.docker_compose_v2", "services"),
+        "role #{name}: tasks/pg_dump.yml must dump the database after stopping the application, fail on " \
+        "any exit code, and start again every service it stopped when the dump fails")
 end
-# One since #836: the shared role. The callers that reach it are floored at three
-# by the deployment-report clause above.
-check_floor(failures, pre_upgrade_stops, 1, "pre-upgrade copies that stop a container")
+# Two since #826: the shared role's copy and its dump. The callers that reach it
+# are floored at five by the deployment-report clause above.
+check_floor(failures, pre_upgrade_stops, 2, "pre-upgrade copies that stop a container")
 
 # Vaultwarden's call site, argument by argument. The shared role copies whatever
 # its caller names, so this is where the platform's one credential-bearing copy
@@ -2323,7 +2348,7 @@ end
 # outranks the fact it sets (measured: an include_role `vars:` value survived the
 # role's own set_fact of the same name), so a pin passed in would silently take over again --
 # which is how callers used to hand it roles/image_downgrade_guard's host-scoped
-# fact, the pin of whichever guard ran last. Floored at the three callers, so a
+# fact, the pin of whichever guard ran last. Floored at the five callers, so a
 # sweep that stopped finding the includes cannot pass by finding none.
 pre_upgrade_includes = Dir[File.join(ROOT, "roles", "*", "tasks", "*.yml")].sort.flat_map do |path|
   flatten_tasks(YAML.safe_load_file(path, aliases: true)).select do |task|
@@ -2335,7 +2360,66 @@ pre_upgrade_includes.each do |relative, task|
         "#{relative}: \"#{task['name']}\" hands roles/pre_upgrade_backup a pre_upgrade_backup_pinned_image, " \
         "which outranks the pin the role reads from the service's own Compose file")
 end
-check_floor(failures, pre_upgrade_includes.length, 3, "includes of roles/pre_upgrade_backup")
+check_floor(failures, pre_upgrade_includes.length, 5, "includes of roles/pre_upgrade_backup")
+
+# Nextcloud's and Paperless-ngx's call sites, which take the pg_dump entry
+# (#826). Argument by argument, because the role dumps whatever database it is
+# pointed at and stops whatever it is told: Nextcloud's cron shares the pin and
+# writes to the database, so a list without it lets a write land after the dump.
+# The application's guard must come first under the same when and tags, as
+# Karakeep's does, so a downgrade is refused before anything stops. And
+# the dump needs the database running and the migration not yet run, so it
+# sits after the data-service deployment and before the application's.
+POSTGRES_PRE_UPGRADE_CALLERS = {
+  "nextcloud" => {
+    "service" => "nextcloud", "stop" => %w[nextcloud cron], "project" => "{{ nextcloud_compose_project_name }}",
+    "data_deploy" => "nextcloud_data_deploy", "deploy" => "nextcloud_deploy"
+  },
+  "paperless_ngx" => {
+    "service" => "webserver", "stop" => %w[webserver], "project" => "{{ paperless_compose_project_name }}",
+    "data_deploy" => "paperless_data_deploy", "deploy" => "paperless_deploy"
+  }
+}.freeze
+POSTGRES_PRE_UPGRADE_CALLERS.each do |role, expected|
+  deploy_path = File.join(ROOT, "roles", role, "tasks", "deploy.yml")
+  check(failures, File.file?(deploy_path),
+        "role #{role}: tasks/deploy.yml is missing, so its pre-upgrade dump arguments cannot be read")
+  next unless File.file?(deploy_path)
+
+  tasks = flatten_tasks(YAML.safe_load_file(deploy_path, aliases: true))
+  includes_of = ->(name) { tasks.each_index.select { |i| tasks[i].dig("ansible.builtin.include_role", "name") == name } }
+  dumps = includes_of.call("pre_upgrade_backup")
+  check(failures, dumps.length == 1,
+        "role #{role}: roles/#{role}/tasks/deploy.yml includes roles/pre_upgrade_backup #{dumps.length} " \
+        "times, not once, so its database is not dumped before a pinned upgrade")
+  dump_task = dumps.first && tasks[dumps.first]
+  dump_vars = dump_task&.fetch("vars", nil) || {}
+  {
+    "tasks_from" => ["pg_dump", dump_task&.dig("ansible.builtin.include_role", "tasks_from")],
+    "pre_upgrade_backup_service_name" => [role.tr("_", "-"), dump_vars["pre_upgrade_backup_service_name"]],
+    "pre_upgrade_backup_compose_service" => [expected["service"], dump_vars["pre_upgrade_backup_compose_service"]],
+    "pre_upgrade_backup_stop_services" => [expected["stop"], dump_vars["pre_upgrade_backup_stop_services"]],
+    "pre_upgrade_backup_database_service" => ["db", dump_vars["pre_upgrade_backup_database_service"]],
+    "pre_upgrade_backup_project_name" => [expected["project"], dump_vars["pre_upgrade_backup_project_name"]]
+  }.each do |argument, (want, got)|
+    check(failures, want == got,
+          "role #{role}: the pre-upgrade dump must be given #{argument}: #{want.inspect}, not #{got.inspect}")
+  end
+  guard = includes_of.call("image_downgrade_guard").select { |i| dumps.first && i < dumps.first }
+                     .map { |i| tasks[i] }
+                     .find { |task| task.dig("vars", "image_downgrade_guard_compose_service") == expected["service"] }
+  check(failures, guard &&
+                  Array(guard["when"]) == Array(dump_task&.fetch("when", nil)) &&
+                  Array(guard["tags"]) == Array(dump_task&.fetch("tags", nil)),
+        "role #{role}: the pre-upgrade dump must follow the #{expected['service']} image_downgrade_guard, " \
+        "under the same when and tags, so a downgraded pin is refused before the dump stops anything")
+  data_index = tasks.index { |task| task["register"] == expected["data_deploy"] }
+  deploy_index = tasks.index { |task| task["register"] == expected["deploy"] }
+  check(failures, dumps.first && data_index && deploy_index && data_index < dumps.first && dumps.first < deploy_index,
+        "role #{role}: the pre-upgrade dump must run after the deployment registering " \
+        "#{expected['data_deploy']}, which brings the database up, and before the one registering " \
+        "#{expected['deploy']}, or the migration it exists to undo has already run")
+end
 
 # The report itself must stay a report. The per-service report delivers through
 # roles/deployment_bundle/tasks/pushover_publish.yml (#558), so it must reach it

@@ -142,6 +142,36 @@
   register: nextcloud_data_deploy
   when: nextcloud_deployment_enabled | bool
 
+# After the data services and before the application, so the database is up and
+# healthy and the migration has not run: roles/pre_upgrade_backup's pg_dump entry
+# stops the application and cron -- cron shares the pin and writes to the
+# database every five minutes -- and dumps the database from inside the db
+# container. That file carries the argument, including why maintenance mode is
+# not used. Gated like the guard above, which runs first so a downgrade is
+# refused before anything stops; the role reads the pin itself (#858).
+#
+# THE DUMP IS NOT A ROLLBACK ON ITS OWN. The entrypoint refuses to start when
+# the data root's version.php is newer than the image, and the upgrade rsyncs
+# the new code over /var/www/html and rewrites config.php's version. Going back
+# therefore takes this dump AND the data root's code, version.php and
+# config/config.php as they stood, which nothing here copies; a snapshot of
+# {{ nextcloud_data_host_path }} minus data/ is the other half.
+#
+# The dump holds every account's password hash and the application's secrets
+# tables, so it is secret-bearing; it is written 0600 in a 0700 directory, as
+# {{ nextcloud_postgres_host_path }}/pre-upgrade-backup on the host.
+- name: Dump the Nextcloud database before a pinned upgrade
+  ansible.builtin.include_role:
+    name: pre_upgrade_backup
+    tasks_from: pg_dump
+  vars:
+    pre_upgrade_backup_service_name: nextcloud
+    pre_upgrade_backup_compose_service: nextcloud
+    pre_upgrade_backup_stop_services: [nextcloud, cron]
+    pre_upgrade_backup_database_service: db
+    pre_upgrade_backup_project_name: "{{ nextcloud_compose_project_name }}"
+  when: nextcloud_deployment_enabled | bool
+
 # The application and its cron sidecar. No rescue here, and that is a deliberate
 # decision rather than an omission.
 #

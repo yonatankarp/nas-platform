@@ -910,7 +910,11 @@ itself -- all three measured against the pin; the archived pages, assets and
 screenshots beside it are user data rather than credentials; since #826
 `pre-upgrade-backup/` beside it holds a 0600 copy of `db.db` and `queue.db`
 taken before each pinned upgrade, which carries the same hashes and is exactly
-as secret-bearing), and application
+as secret-bearing), the `pre-upgrade-backup/database.sql.gz` that Nextcloud and
+Paperless-ngx write beside their PostgreSQL clusters before each pinned upgrade
+(#826: a whole-database dump holding every account's password hash, and for
+Paperless its mail account passwords in clear too, root-owned 0600 in a 0700
+directory), and application
 data — treat those and their backups as secret-bearing. Losing the vault
 password means regenerating every credential; there is no backdoor.
 

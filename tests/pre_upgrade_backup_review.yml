@@ -24,7 +24,10 @@
     - name: Include the pre-upgrade copy the way its callers do
       ansible.builtin.include_role:
         name: pre_upgrade_backup
+        tasks_from: "{{ backup_method }}"
       vars:
+        pre_upgrade_backup_stop_services: [fixture]
+        pre_upgrade_backup_database_service: db
         pre_upgrade_backup_service_name: fixture
         pre_upgrade_backup_compose_service: fixture
         pre_upgrade_backup_project_name: backup-test
@@ -45,7 +48,7 @@
           - pre_upgrade_backup_pinned_image | trim == (lookup('ansible.builtin.file', backup_candidate) | from_yaml).services.fixture.image
           - (pre_upgrade_backup_upgrade_pending | bool) == (backup_expect_pending | bool)
           - not (backup_expect_pending | bool) or pre_upgrade_backup_plan.msg is search('A live run would stop the container')
-          - not (backup_expect_pending | bool) or pre_upgrade_backup_plan.msg is search('rsa_key')
+          - not (backup_expect_pending | bool) or pre_upgrade_backup_plan.msg is search('rsa_key' if backup_method == 'main' else 'pg_dump')
           - backup_expect_pending | bool or pre_upgrade_backup_plan is skipped
         fail_msg: >-
           The review read the pin {{ pre_upgrade_backup_pinned_image | default('nothing') }},
