@@ -7,15 +7,25 @@
 # It also has to run before Compose starts the new image: Bindery applies its
 # schema migrations at startup, and by the time the API answers again the old
 # schema is gone.
+#
+# The pin is read the way roles/image_downgrade_guard and roles/pre_upgrade_backup
+# read theirs (#851, #858): `current` live, which deployment_bundle has just
+# pointed at this run's release, and the controller checkout under --check, where
+# activation is skipped and `current` still names the release this run replaces.
+# Reading `current` in a review reported no backup for a bump the live run backs
+# up.
 - name: Read the deployed Bindery Compose definition
   ansible.builtin.slurp:
     path: "{{ platform_current_dir }}/services/bindery/compose.yml"
   register: bindery_compose_source
+  when: not ansible_check_mode
 
 - name: Resolve the pinned Bindery image reference
   ansible.builtin.set_fact:
     bindery_pinned_image: >-
-      {{ (bindery_compose_source.content | b64decode | from_yaml).services.bindery.image }}
+      {{ ((lookup('ansible.builtin.file', playbook_dir ~ '/services/bindery/compose.yml')
+           if ansible_check_mode
+           else bindery_compose_source.content | b64decode) | from_yaml).services.bindery.image }}
 
 # Only a running container is considered. The backup route is `VACUUM INTO`,
 # which is the whole point: SQLite runs in WAL mode, so copying bindery.db off
