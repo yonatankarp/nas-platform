@@ -2078,6 +2078,7 @@ class MessageStyleTest(PollerTestCase):
         for app, fields in self.rendered(lambda: production_auto_deploy.note_seeing_poll(config)):
             messages.append(("poller recovered", fields))
         tag = "platform_verify_mdraid"
+        immich = "platform_verify_immich_originals"
         for label, passed, failure, record_tag, previous in (
             ("verify failed", False, "fail", None, None),
             ("verify recovered", True, "fail", None, "fail"),
@@ -2085,8 +2086,12 @@ class MessageStyleTest(PollerTestCase):
             ("raid unchecked", False, "unchecked", tag, None),
             ("raid healthy", True, "fail", tag, "fail"),
             ("raid check running again", True, "unchecked", tag, "unchecked"),
+            ("immich originals missing", False, "fail", immich, None),
+            ("immich originals unchecked", False, "unchecked", immich, None),
+            ("immich originals present", True, "fail", immich, "fail"),
+            ("immich originals check running again", True, "unchecked", immich, "unchecked"),
         ):
-            path = state / ("verify-verdict" if record_tag is None else "verify-verdict-mdraid")
+            path = production_auto_deploy._verify_verdict_path(config, record_tag)
             path.unlink(missing_ok=True)
             if previous:
                 path.write_text(f"{previous} {MAIN_SHA} 2026-08-21T15:00:00Z\n")
@@ -2111,6 +2116,10 @@ class MessageStyleTest(PollerTestCase):
             "raid unchecked": "\u2754 RAID check could not run",
             "raid healthy": "\U0001f7e2 RAID healthy",
             "raid check running again": "\U0001f7e2 RAID check running again",
+            "immich originals missing": "\U0001f7e0 Immich originals missing",
+            "immich originals unchecked": "\u2754 Immich originals check could not run",
+            "immich originals present": "\U0001f7e2 Immich originals present",
+            "immich originals check running again": "\U0001f7e2 Immich originals check running again",
         })
 
     def test_every_message_leads_with_its_state_in_the_colour_of_that_state(self):
@@ -2128,6 +2137,10 @@ class MessageStyleTest(PollerTestCase):
             "raid unchecked": (amber, ["Check", "Revision", "Log"], True),
             "raid healthy": (green, ["Check", "Revision", "Log"], False),
             "raid check running again": (green, ["Check", "Revision", "Log"], False),
+            "immich originals missing": (amber, ["Check", "Revision", "Log"], True),
+            "immich originals unchecked": (amber, ["Check", "Revision", "Log"], True),
+            "immich originals present": (green, ["Check", "Revision", "Log"], False),
+            "immich originals check running again": (green, ["Check", "Revision", "Log"], False),
         }
         messages = self.every_message(self.loaded_config())
         self.assertEqual(sorted(label for label, _fields in messages), sorted(expected))
@@ -4635,6 +4648,28 @@ class VerifyTest(PollerTestCase):
         )
         self.run_verify()
         self.assertEqual(self.titles(), [("-1", "\U0001f7e2 RAID healthy")])
+
+    def test_the_immich_marker_is_the_literal_opening_the_roles_fail_msg(self):
+        import yaml
+
+        path = SCRIPTS.parent / "roles/immich/tasks/verify_originals.yml"
+        text = path.read_text(encoding="utf-8")
+        marker = production_auto_deploy.IMMICH_ORIGINALS_MISSING_MARKER
+        self.assertIs(
+            production_auto_deploy.HOURLY_ONLY_VERIFY_CHECKS[
+                "platform_verify_immich_originals"]["marker"], marker)
+        # Once, in the ceiling assert's fail_msg: anywhere else, a database the
+        # check could not read would page as missing originals.
+        self.assertEqual(text.count(marker), 1)
+        (block,) = [task for task in yaml.safe_load(text) if "block" in task]
+        (assertion,) = [task for task in block["block"] if "ansible.builtin.assert" in task]
+        fail_msg = assertion["ansible.builtin.assert"]["fail_msg"]
+        self.assertTrue(fail_msg.startswith(marker + ":"), fail_msg)
+        self.assertNotIn(marker, assertion["ansible.builtin.assert"]["success_msg"])
+        lines = text.splitlines()
+        (marker_line,) = [n for n, line in enumerate(lines) if marker in line]
+        (success_line,) = [n for n, line in enumerate(lines) if "success_msg:" in line]
+        self.assertGreater(abs(success_line - marker_line), 3)
 
     def test_the_mismatch_marker_is_the_literal_opening_the_roles_fail_msg(self):
         import yaml

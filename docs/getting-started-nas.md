@@ -666,31 +666,39 @@ and local Docker/cron access must remain available.
 
 A deployment runs `verify.yml`, but a quiet week deploys nothing, so cron also
 runs `nas-platform-deploy --verify` at minute 37 of every hour. It runs the
-`verify.yml` invocation a deployment does, then a second one with
-`platform_verify_mdraid` alone, which fails when a RAID array has lost a member.
-A deployment leaves that tag out: its failed verify would quarantine a revision
-that converged, while a degraded array still serves. The second run happens
-whatever the first found, because `verify.yml` stops checking a host at its
-first failure. It runs from the poller's checkout, and only
+`verify.yml` invocation a deployment does, then one more for each hourly-only
+check: `platform_verify_mdraid`, which fails when a RAID array has lost a member,
+and `platform_verify_immich_originals`, which fails when more than
+`immich_originals_missing_ceiling_percent` of a random sample of Immich asset rows
+name an original no longer on disk (#907). A deployment leaves those tags out: its
+failed verify would quarantine a revision that converged, while a degraded array
+still serves and moved originals take an operator to resolve. Each of those runs
+happens whatever the one before it found, because `verify.yml` stops checking a
+host at its first failure. It runs from the poller's checkout, and only
 while that checkout holds the last successful revision: a failed deployment
 leaves it on the candidate, whose probes may name services that never activated,
 so verification pauses until the next successful deployment. It takes the
 deployment lock without waiting, and a deployment already holding it is skipped
 rather than waited for, since that deployment verifies itself. Output goes to
-`logs/verify.log` and `logs/verify-mdraid.log`, overwritten each run. The
-services get 30 minutes and the array check 10, so the lock is held for roughly
-40 minutes at most, plus the time its notifications take. A run that uses its
+`logs/verify.log`, `logs/verify-mdraid.log` and `logs/verify-immich_originals.log`,
+overwritten each run. The services get 30 minutes and each hourly-only check 10,
+so the lock is held for roughly 50 minutes at most, plus the time its
+notifications take. A run that uses its
 whole budget from 03:37 on a Sunday still holds the lock when the 04:00 image
 prune has waited its fifteen minutes, so that week's prune is skipped.
 
 Each check pages on its own: a failure publishes once to the Alerts application
 at priority 1 (`🔴 Verify failed`, which also opens the CI run that released the
-deployed revision when GitHub answers, or `🟠 RAID degraded`) and a recovery
+deployed revision when GitHub answers, `🟠 RAID degraded`, or `🟠 Immich originals
+missing`) and a recovery
 once to the same application at priority -1. The array run shares `verify.yml`'s setup -- Docker modules,
 vault, GPU, Compose files -- so when it fails without the array check's own
 mismatch message in its log it pages `❔ RAID check could not run` instead,
-and its return is `🟢 RAID check running again` rather than `🟢 RAID healthy`; an unchanged result publishes nothing. The last results live
-in `state/verify-verdict` and `state/verify-verdict-mdraid`, each written only
+and its return is `🟢 RAID check running again` rather than `🟢 RAID healthy`.
+The Immich check does the same with `❔ Immich originals check could not run`,
+which also covers a database it could not read; an unchanged result publishes nothing. The last results live
+in `state/verify-verdict`, `state/verify-verdict-mdraid` and
+`state/verify-verdict-immich_originals`, each written only
 once its notice was delivered, so an undelivered one is retried on the next run. A failing verification never touches
 the deployment record and never holds back a poll.
 

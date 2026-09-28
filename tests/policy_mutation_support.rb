@@ -109,6 +109,7 @@ BASE_FIXTURE_PATHS = %w[
   roles/deployment_bundle/templates/manifest.yml.j2
   roles/immich/tasks/restore.yml
   roles/immich/tasks/verify_classifier.yml
+  roles/immich/tasks/verify_originals.yml
   roles/preflight/meta/argument_specs.yml
   roles/preflight/tasks/main.yml
   roles/preflight/tasks/gpu.yml

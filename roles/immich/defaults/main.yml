@@ -26,6 +26,8 @@ immich_restore_backup_gid: >-
 immich_restore_expected_immich_version: ""
 immich_restore_expected_postgres_major: 0
 immich_restore_verify_limit: 25
+# Rows the hourly originals check (#907) samples, at random, per run.
+immich_originals_verify_sample_size: 50
 immich_restore_database_wait_timeout: 300
 
 # Immich brings up PostgreSQL, Redis, machine learning and the server together,

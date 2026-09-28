@@ -1,0 +1,116 @@
+---
+# Asset rows whose original is no longer on disk (#907). 9,576 rows once named
+# files that had been moved into album folders, and nothing noticed: thumbnails
+# live elsewhere, so the library looked whole until an original was opened.
+#
+# Reached only through verify.yml under platform_verify_immich_originals, which
+# only the poller's hourly --verify selects, in an invocation and verdict record
+# of its own -- the platform_verify_mdraid shape (#609). Never from site.yml or a
+# deployment's own verify play: a moved original is a data problem an operator
+# may take days to resolve, and failing there would quarantine every revision
+# and keep the services' verdict red over whatever else broke.
+#
+# Read-only. A random sample, so successive hours cover the library rather than
+# rereading its first rows, checked by the restore path's own helper. It fails
+# only past immich_originals_missing_ceiling_percent of the sample, because some
+# rows are known to be unrecoverable and a zero tolerance would page most hours.
+# Counts only: which rows are missing is read on the host.
+- name: Derive the Immich originals root for verification
+  ansible.builtin.set_fact:
+    immich_restore_originals_root: "{{ nas_media_root }}/Immich"
+  tags: [platform_verify_immich_originals]
+
+# Redacted: psql runs with PGPASSWORD and POSTGRES_USER, and a connection
+# failure echoes them.
+- name: Read a random sample of Immich asset rows
+  community.docker.docker_compose_v2_exec:
+    project_src: "{{ platform_current_dir }}/services/immich"
+    project_name: "{{ immich_compose_project_name }}"
+    files: "{{ platform_service_compose_files['immich'] }}"
+    env_files: ["{{ platform_runtime_dir }}/services/immich/.env"]
+    service: database
+    argv:
+      - sh
+      - -ec
+      - |
+        exec env PGPASSWORD="$POSTGRES_PASSWORD" \
+        psql --host=database --username="$POSTGRES_USER" \
+        --dbname="$POSTGRES_DB" --no-align --tuples-only --quiet \
+        --set=ON_ERROR_STOP=on --set=sample_limit="$1" \
+        <<'IMMICH_ORIGINALS_SQL'
+        SELECT COALESCE(json_agg(json_build_object(
+        'id', sampled.id::text, 'originalPath', sampled."originalPath")), '[]'::json)
+        FROM (SELECT id, "originalPath" FROM asset
+        WHERE "deletedAt" IS NULL ORDER BY random()
+        LIMIT :'sample_limit') AS sampled;
+        IMMICH_ORIGINALS_SQL
+      - immich-originals-sample
+      - "{{ immich_originals_verify_sample_size | string }}"
+    tty: false
+  register: immich_originals_sample_command
+  failed_when: immich_originals_sample_command.rc | default(1) | int != 0
+  changed_when: false
+  check_mode: false
+  no_log: true
+  tags: [platform_verify_immich_originals]
+
+- name: Parse the Immich asset sample
+  ansible.builtin.set_fact:
+    immich_originals_sample: "{{ immich_originals_sample_command.stdout | trim | from_json }}"
+  tags: [platform_verify_immich_originals]
+
+- name: Report an Immich library with no asset rows to sample
+  ansible.builtin.debug:
+    msg: Immich originals check skipped, there are no asset rows to sample.
+  when: immich_originals_sample | length == 0
+  tags: [platform_verify_immich_originals]
+
+- name: Verify the sampled Immich originals are on disk
+  when: immich_originals_sample | length > 0
+  tags: [platform_verify_immich_originals]
+  block:
+    - name: Verify Immich restore classifier before checking originals
+      ansible.builtin.include_tasks:
+        file: verify_classifier.yml
+        apply:
+          tags: [platform_verify_immich_originals]
+
+    - name: Check the sampled Immich originals
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_facts.python.executable }}"
+          - "{{ platform_current_dir }}/services/immich/classify_restore.py"
+          - --verify-assets-json
+          - '-'
+          - --originals-root
+          - "{{ immich_restore_originals_root }}"
+        stdin: "{{ immich_originals_sample | to_json }}"
+        stdin_add_newline: false
+      register: immich_originals_verification
+      changed_when: false
+      check_mode: false
+
+    - name: Count the missing Immich originals
+      ansible.builtin.set_fact:
+        immich_originals_missing: "{{ (immich_originals_verification.stdout | from_json).missing | int }}"
+        immich_originals_sampled: "{{ immich_originals_sample | length }}"
+
+    # fail_msg opens with a fixed literal marker, written once in this file. The
+    # poller's IMMICH_ORIGINALS_MISSING_MARKER must equal it: a failed run whose
+    # log lacks it -- the database unreachable, a path the helper refused -- is a
+    # check that could not run, and pages as that rather than as missing files.
+    - name: Verify missing Immich originals stay within the declared ceiling
+      ansible.builtin.assert:
+        that:
+          - immich_originals_missing | int * 100 <=
+            immich_originals_missing_ceiling_percent | int * immich_originals_sampled | int
+        fail_msg: >-
+          IMMICH-ORIGINALS-MISSING: {{ immich_originals_missing }} of {{ immich_originals_sampled }}
+          sampled asset rows have no readable original, above the declared
+          {{ immich_originals_missing_ceiling_percent }} percent. Files were moved
+          or deleted outside Immich; list the rows whose originalPath is absent on
+          the host before changing anything.
+        success_msg: >-
+          {{ immich_originals_missing }} of {{ immich_originals_sampled }} sampled
+          asset rows have no readable original, within the declared
+          {{ immich_originals_missing_ceiling_percent }} percent.

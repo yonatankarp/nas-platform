@@ -367,4 +367,150 @@ Dir.mktmpdir("nas-platform-immich-lifecycle-uninitialized-") do |temporary|
     retry_output.include?("previous-failed-restore")
 end
 
+
+# --- #907: the hourly originals check -----------------------------------------
+# 9,576 rows named originals no longer on disk and nothing said so, because the
+# thumbnails live elsewhere. verify_originals.yml samples rows at random under an
+# hourly-only tag and fails past a declared share. It runs here against the real
+# helper with only the psql read stubbed, so what is proved is the task file.
+ORIGINALS_TAG = "platform_verify_immich_originals"
+ORIGINALS_MARKER = "IMMICH-ORIGINALS-MISSING"
+ORIGINALS_PATH = File.join(ROOT, "roles", "immich", "tasks", "verify_originals.yml")
+fail_test("verify_originals.yml is absent") unless File.file?(ORIGINALS_PATH)
+ORIGINALS = YAML.safe_load_file(ORIGINALS_PATH, aliases: true)
+ORIGINALS_SAMPLE_TASK = "Read a random sample of Immich asset rows"
+IMMICH_GROUP_VARS = YAML.safe_load_file(
+  File.join(ROOT, "inventory", "group_vars", "all", "service_immich.yml"), aliases: true
+)
+
+def originals_sample_task(tasks)
+  tasks.find { |candidate| candidate["name"] == ORIGINALS_SAMPLE_TASK } ||
+    fail_test("originals task is absent: #{ORIGINALS_SAMPLE_TASK}")
+end
+
+# Random, so repeated hours cover the library rather than rereading its first
+# rows; restore.yml's ORDER BY id is the shape this must not take.
+def random_sample?(tasks)
+  sql = Array(originals_sample_task(tasks).dig("community.docker.docker_compose_v2_exec", "argv"))
+        .join("\n").gsub(/\s+/, " ")
+  sql.include?(%(ORDER BY random() LIMIT :'sample_limit')) && !sql.match?(/ORDER BY (id|"id")/i)
+end
+
+fail_test("the originals sample must be ORDER BY random() LIMIT :'sample_limit'") unless
+  random_sample?(ORIGINALS)
+planted = Marshal.load(Marshal.dump(ORIGINALS))
+originals_sample_task(planted).dig("community.docker.docker_compose_v2_exec", "argv")
+  .map! { |argument| argument.gsub("ORDER BY random()", "ORDER BY id") }
+fail_test("planted: an ORDER BY id sample was not refused") if random_sample?(planted)
+fail_test("the sample read must stay under no_log") unless
+  originals_sample_task(ORIGINALS)["no_log"] == true
+fail_test("every originals task must carry #{ORIGINALS_TAG}") unless
+  ORIGINALS.all? { |candidate| Array(candidate["tags"]).include?(ORIGINALS_TAG) }
+fail_test("the originals root must be derived exactly as main.yml derives it") unless
+  ORIGINALS.any? do |candidate|
+    candidate.dig("ansible.builtin.set_fact", "immich_restore_originals_root") ==
+      source_task("Derive the effective Immich storage roots")
+        .dig("ansible.builtin.set_fact", "immich_restore_originals_root")
+  end
+
+def run_originals(root, sample)
+  media_root = File.join(root, "media")
+  release_root = File.join(root, "release")
+  [File.join(release_root, "services", "immich"), File.join(root, "services", "immich")].each do |directory|
+    FileUtils.mkdir_p(directory)
+    FileUtils.cp(CLASSIFIER, File.join(directory, "classify_restore.py"))
+    FileUtils.chmod(0o644, File.join(directory, "classify_restore.py"))
+  end
+  FileUtils.cp(File.join(ROOT, "roles", "immich", "tasks", "verify_classifier.yml"),
+               File.join(root, "verify_classifier.yml"))
+  real = originals_sample_task(ORIGINALS)
+  stub = {
+    "name" => ORIGINALS_SAMPLE_TASK,
+    "ansible.builtin.command" => { "argv" => ["printf", "%s", "{{ fixture_sample | to_json }}"] },
+    "register" => real.fetch("register"),
+    "changed_when" => false,
+    "tags" => real.fetch("tags")
+  }
+  tasks = ORIGINALS.map { |candidate| candidate["name"] == ORIGINALS_SAMPLE_TASK ? stub : candidate }
+  variables = {
+    "ansible_facts" => { "python" => { "executable" => PYTHON } },
+    "nas_media_root" => media_root,
+    "platform_current_dir" => release_root,
+    "immich_originals_verify_sample_size" => DEFAULTS.fetch("immich_originals_verify_sample_size"),
+    "immich_originals_missing_ceiling_percent" =>
+      IMMICH_GROUP_VARS.fetch("immich_originals_missing_ceiling_percent"),
+    "fixture_sample" => sample
+  }
+  playbook_path = File.join(root, "originals.yml")
+  File.write(playbook_path, YAML.dump([{ "hosts" => "localhost", "connection" => "local",
+                                         "gather_facts" => false, "vars" => variables,
+                                         "tasks" => tasks }]))
+  stdout, stderr, status = Open3.capture3({ "ANSIBLE_NOCOLOR" => "1" }, ANSIBLE, "-i", "localhost,",
+                                          playbook_path, "--tags", ORIGINALS_TAG, chdir: ROOT)
+  [stdout + stderr, status]
+end
+
+def originals_sample(root, present:, missing:)
+  library = File.join(root, "media", "Immich", "library", "admin")
+  FileUtils.mkdir_p(library)
+  (0...present).map do |index|
+    File.write(File.join(library, "present-#{index}.jpg"), "x")
+    { "id" => "present-#{index}", "originalPath" => "/data/library/admin/present-#{index}.jpg" }
+  end + (0...missing).map do |index|
+    { "id" => "missing-#{index}", "originalPath" => "/data/library/admin/moved-away-#{index}.jpg" }
+  end
+end
+
+fail_test("the declared ceiling must be 10 percent") unless
+  IMMICH_GROUP_VARS["immich_originals_missing_ceiling_percent"] == 10
+{
+  "all present" => [20, 0, true],
+  "a missing share under the ceiling" => [19, 1, true],
+  "a missing share at the ceiling" => [18, 2, true],
+  "a missing share over the ceiling" => [17, 3, false]
+}.each do |label, (present, missing, passes)|
+  Dir.mktmpdir("nas-platform-immich-originals-") do |temporary|
+    root = File.realpath(temporary)
+    output, status = run_originals(root, originals_sample(root, present: present, missing: missing))
+    fail_test("originals check, #{label}: expected #{passes ? 'pass' : 'fail'}: " \
+              "#{output.lines.last(8).join}") unless status.success? == passes
+    fail_test("originals check, #{label}: the marker must appear exactly when it fails") unless
+      output.include?("#{ORIGINALS_MARKER}:") == !passes
+    fail_test("originals check, #{label}: the count must be reported") unless
+      output.include?("#{missing} of #{present + missing} sampled")
+    fail_test("originals check, #{label}: a path left the check: #{output}") if
+      output.include?("moved-away") || output.include?(File.join(root, "media"))
+  end
+end
+
+Dir.mktmpdir("nas-platform-immich-originals-empty-") do |temporary|
+  root = File.realpath(temporary)
+  output, status = run_originals(root, [])
+  fail_test("originals check, empty sample: must skip cleanly: #{output.lines.last(8).join}") unless
+    status.success? && output.include?("no asset rows to sample")
+  fail_test("originals check, empty sample: the helper must not run") if
+    output.match?(/Check the sampled Immich originals.*\n(ok|changed|fatal)/)
+end
+
+# A refused path is a check that could not run, never a missing original, so
+# its failure must not carry the marker the poller pages "missing" on.
+Dir.mktmpdir("nas-platform-immich-originals-refused-") do |temporary|
+  root = File.realpath(temporary)
+  sample = originals_sample(root, present: 1, missing: 0) +
+           [{ "id" => "escape", "originalPath" => "/data/../etc/passwd" }]
+  output, status = run_originals(root, sample)
+  fail_test("originals check, refused path: must fail") if status.success?
+  fail_test("originals check, refused path: must not page as missing originals") if
+    output.include?("#{ORIGINALS_MARKER}:")
+end
+
+verify_playbook = YAML.safe_load_file(File.join(ROOT, "verify.yml"), aliases: true)
+include_task = verify_playbook.flat_map { |play| Array(play["tasks"]) }.find do |candidate|
+  candidate.dig("ansible.builtin.include_role", "tasks_from") == "verify_originals"
+end
+fail_test("verify.yml must include verify_originals under [never, #{ORIGINALS_TAG}] with apply") unless
+  include_task && include_task.dig("ansible.builtin.include_role", "name") == "immich" &&
+  Array(include_task["tags"]).sort == ["never", ORIGINALS_TAG].sort &&
+  include_task.dig("ansible.builtin.include_role", "apply", "tags") == [ORIGINALS_TAG]
+
 puts "Immich restore crash-provenance lifecycle fixtures passed"
