@@ -368,7 +368,7 @@
   ansible.builtin.set_fact:
     dozzle_managed_dispatcher_ids: >-
       {{ dozzle_dispatchers_before.json
-         | selectattr('name', 'equalto', dozzle_dispatcher.name)
+         | selectattr('name', 'in', [dozzle_dispatcher.name] + dozzle_dispatcher_former_names)
          | map(attribute='id') | map('string') | sort }}
   no_log: true
 
@@ -392,7 +392,7 @@
   ansible.builtin.set_fact:
     dozzle_existing_dispatcher: >-
       {{ dozzle_dispatchers_before.json
-         | selectattr('name', 'equalto', dozzle_dispatcher.name)
+         | selectattr('name', 'in', [dozzle_dispatcher.name] + dozzle_dispatcher_former_names)
          | list | first | default({}) }}
     dozzle_dispatcher_create_required: "{{ dozzle_managed_dispatcher_ids | length == 0 }}"
   no_log: true
@@ -401,7 +401,8 @@
   ansible.builtin.set_fact:
     dozzle_dispatcher_repair_required: >-
       {{ dozzle_existing_dispatcher | length > 0 and
-         (dozzle_existing_dispatcher.type != dozzle_dispatcher.type or
+         (dozzle_existing_dispatcher.name != dozzle_dispatcher.name or
+          dozzle_existing_dispatcher.type != dozzle_dispatcher.type or
           dozzle_existing_dispatcher.url | default('') != dozzle_dispatcher.url or
           dozzle_existing_dispatcher.template | default('') != dozzle_dispatcher.template or
           dozzle_existing_dispatcher.headers | default({}) != dozzle_dispatcher.headers) }}
@@ -415,7 +416,7 @@
     - dozzle_dispatcher_create_required | bool
   changed_when: true
 
-- name: Create the managed Dozzle ntfy dispatcher
+- name: Create the managed Dozzle dispatcher
   ansible.builtin.uri:
     url: "{{ dozzle_api }}/notifications/dispatchers"
     method: POST
@@ -435,7 +436,7 @@
   ansible.builtin.set_fact:
     dozzle_current_dispatcher: >-
       {{ (dozzle_dispatchers_before.json
-          | selectattr('name', 'equalto', dozzle_dispatcher.name) | list | first)
+          | selectattr('name', 'in', [dozzle_dispatcher.name] + dozzle_dispatcher_former_names) | list | first)
          if dozzle_managed_dispatcher_ids | length == 1
          else (dozzle_dispatcher_created.json if not ansible_check_mode else {}) }}
   no_log: true
@@ -669,7 +670,7 @@
     msg: DOZZLE_PLAN_DISPATCHER_REMOVE
   when:
     - ansible_check_mode
-    - item.name != dozzle_dispatcher.name
+    - item.id | string != dozzle_current_dispatcher.id | default('') | string
   loop: "{{ dozzle_dispatchers_before.json }}"
   loop_control:
     label: Unmanaged Dozzle dispatcher
@@ -684,7 +685,7 @@
     status_code: [204]
   when:
     - not ansible_check_mode
-    - item.name != dozzle_dispatcher.name
+    - item.id | string != dozzle_current_dispatcher.id | default('') | string
   loop: "{{ dozzle_dispatchers_before.json }}"
   loop_control:
     label: "{{ item.name }}"

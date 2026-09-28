@@ -587,7 +587,12 @@ a Tailscale Serve TCP forward on `dozzle_alert_relay_port`
 tailnet reaches the relay, the LAN does not, and the bearer token is still its
 authentication. Serve, not a bind to the tailnet address, because that address
 may not exist when Docker starts the container at boot. The relay sends events
-from host `golem` on the Golem Pushover application.
+from host `Golem` on the Golem Pushover application. `Golem` is the monitoring
+name in Beszel, Dozzle and the relay; the machine and its tailnet name stay
+`golem`. The relay still accepts the lowercase name as the same host, and
+`roles/beszel` renames a hub record still under it (`former_names`), because
+the hub keeps the name an agent first registered with; both go once the NAS and
+golem-platform have deployed the rename.
 
 **`beszel_agent` is effectively root on the host, by choice (#607)**: `:r` on its
 devices refuses a write-open and contains nothing else, and `:ro` on

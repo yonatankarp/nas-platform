@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import collections
 import contextlib
 from datetime import datetime, timedelta, timezone
 import fcntl
@@ -125,21 +126,37 @@ BESZEL_AVERAGE_BODY = re.compile(
 BESZEL_SYSTEM_ROUTE = "/system/"
 BESZEL_SYSTEM_ID_PATTERN = re.compile(r"[A-Za-z0-9]{1,64}\Z")
 BESZEL_URL_TITLE = "Open in Beszel"
-# golem has its own Pushover application. Copy of beszel_remote_systems in
+# Golem has its own Pushover application. Copy of beszel_remote_systems in
 # roles/beszel/defaults/main.yml; tests/dozzle_alert_relay_test.py keeps them in step.
-GOLEM_BESZEL_SYSTEM = "golem"
+GOLEM_BESZEL_SYSTEM = "Golem"
+# The monitoring name before it was capitalised. Accepted beside the new one
+# because golem-platform and this repository deploy independently, and the hub
+# record is renamed by roles/beszel only on the NAS's next converge; drop it once
+# both have. Compared exactly, so "GOLEM" or "golem-2" are still not Golem.
+GOLEM_FORMER_NAME = "golem"
+GOLEM_BESZEL_SYSTEMS = (GOLEM_BESZEL_SYSTEM, GOLEM_FORMER_NAME)
 GOLEM_IN_UNPARSED_TITLE = re.compile(
-    rf"(?:\A| on ){re.escape(GOLEM_BESZEL_SYSTEM)}(?=[: ]|\Z)"
+    rf"(?:\A| on )(?:{'|'.join(map(re.escape, GOLEM_BESZEL_SYSTEMS))})(?=[: ]|\Z)"
 )
 # golem's container events reach /alerts from golem's Dozzle agent: Dozzle
 # v11.1.2's hub pushes its rules and this relay's dispatcher to every agent, and
 # the agent dispatches them itself with .Container.HostName set to its own
 # DOZZLE_HOSTNAME (internal/container/docker/client.go: NewLocalClient). golem
-# sets that to this name, which is also the `|golem` label dozzle_remote_agent
+# sets that to this name, which is also the `|Golem` label dozzle_remote_agent
 # gives the agent in inventory/group_vars/all/service_dozzle.yml;
 # tests/dozzle_alert_relay_test.py holds this copy to that one. Compared whole,
 # so a NAS container host that merely contains the name stays the NAS's.
-GOLEM_DOZZLE_HOST = "golem"
+GOLEM_DOZZLE_HOST = "Golem"
+# validate_envelope rewrites either spelling to GOLEM_DOZZLE_HOST, so health
+# state, ceilings and the Host line do not split across the rename.
+GOLEM_DOZZLE_HOSTS = (GOLEM_DOZZLE_HOST, GOLEM_FORMER_NAME)
+# An /alerts envelope identical to one already published within this window is
+# acknowledged and dropped. Docker stamps each event to the nanosecond and the
+# envelope carries that stamp, so a repeat is the same delivery twice, never a
+# second crash. Golem's Dozzle agent was seen delivering one crash three times
+# after its rules were pushed twice without a restart.
+DUPLICATE_WINDOW = timedelta(minutes=10)
+MAX_DUPLICATE_ENTRIES = 256
 # The palette scripts/production_auto_deploy.py documents, spelled as it spells
 # it; tests/policy_test.rb holds the copies identical.
 COLOR_GREEN = "#2e7d32"
@@ -539,7 +556,7 @@ def validate_envelope(payload):
         "rule": rule,
         "containerId": container_id,
         "container": container,
-        "host": host,
+        "host": GOLEM_DOZZLE_HOST if host in GOLEM_DOZZLE_HOSTS else host,
         "event": event,
         "healthStatus": health_status,
         "exitCode": exit_code,
@@ -799,7 +816,7 @@ def beszel_is_golem(alert):
     """Whether a Beszel alert is about golem; the parsed system is compared whole."""
     system = classify_beszel(alert)["system"]
     if system is not None:
-        return system == GOLEM_BESZEL_SYSTEM
+        return system in GOLEM_BESZEL_SYSTEMS
     return GOLEM_IN_UNPARSED_TITLE.search(alert["title"]) is not None
 
 
@@ -1598,16 +1615,21 @@ def charge_budget(budget, identity, rule, config):
     return ("publish", proposed)
 
 
-def process_event(config, event, floor):
+def process_event(config, event, floor, delivered):
     """Reconcile one event, publish what the ceiling allows, and persist.
 
     `floor` has no default: a default would switch the safety device off.
+    Nor has `delivered`, for the same reason.
     """
     identity = f"{event['host']}\0{event['containerId']}"
     now = utc_now()
     golem = event["host"] == GOLEM_DOZZLE_HOST
     golem_fallback = golem and config.pushover_golem_token is None
     with LockedState(config.alert_state_path) as state_file:
+        # Under the flock, which serialises concurrent deliveries of one event,
+        # and before the ceiling so a repeat is charged nothing.
+        if delivered.seen(event, now):
+            return
         entries, stored_budget, migration_required = state_file.read()
         # Read, then corrected upwards, never downwards: a lost increment must not
         # grant the same allowance twice.
@@ -1645,12 +1667,14 @@ def process_event(config, event, floor):
                 if golem_fallback:
                     sys.stderr.write(
                         "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
-                        "a golem container event was sent on the Containers application\n"
+                        "a Golem container event was sent on the Containers application\n"
                     )
                     sys.stderr.flush()
                 else:
                     token = config.pushover_golem_token
             publish(config, notification, token)
+            # Only once it went out: a repeat of a failed publish is a retry.
+            delivered.record(event, now)
         floor.record(charged)
         if replacement_required:
             state_file.replace(proposed, charged, document)
@@ -1738,13 +1762,52 @@ def process_beszel(config, alert, floor):
                 # One write per alert, naming the setting and never a value.
                 sys.stderr.write(
                     "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
-                    "a golem alert was sent on the Alerts application\n"
+                    "a Golem alert was sent on the Alerts application\n"
                 )
                 sys.stderr.flush()
             publish(config, notification, token)
         floor.record(charged)
         if replacement_required:
             state_file.replace(proposed, charged, document)
+
+
+class DeliveredEvents:
+    """The /alerts envelopes this process has published, to drop an exact repeat.
+
+    Per process and bounded, like BudgetFloor: a restart forgets, so a repeat
+    straddling one is delivered twice, and past MAX_DUPLICATE_ENTRIES the oldest
+    are forgotten early. Both fail towards sending, never towards silence.
+    """
+
+    def __init__(self, window=None, capacity=MAX_DUPLICATE_ENTRIES):
+        # Read at construction rather than bound as a default, so a test can
+        # shorten the module's window before create_server.
+        self._window = DUPLICATE_WINDOW if window is None else window
+        self._capacity = capacity
+        self._published = collections.OrderedDict()
+
+    @staticmethod
+    def key(event):
+        return (event["host"], event["containerId"], event["event"],
+                event["timestamp"], event["rule"])
+
+    def seen(self, event, now):
+        """Whether `event` was published within the window. Call under the flock."""
+        while self._published:
+            oldest_key, published_at = next(iter(self._published.items()))
+            # A clock that stepped back forgets too: towards sending again.
+            if timedelta(0) <= now - published_at < self._window:
+                break
+            del self._published[oldest_key]
+        return self.key(event) in self._published
+
+    def record(self, event, now):
+        """Remember `event` as published. Call under the flock, after the publish."""
+        key = self.key(event)
+        self._published.pop(key, None)
+        self._published[key] = now
+        while len(self._published) > self._capacity:
+            self._published.popitem(last=False)
 
 
 class RelayRequestHandler(BaseHTTPRequestHandler):
@@ -1806,7 +1869,10 @@ class RelayRequestHandler(BaseHTTPRequestHandler):
             self.send_text(400, "invalid request\n")
             return
         try:
-            process_event(self.server.config, event, self.server.budget_floor)
+            process_event(
+                self.server.config, event, self.server.budget_floor,
+                self.server.delivered_events,
+            )
         except StateError:
             self.send_text(500, "state unavailable\n")
             return
@@ -1872,6 +1938,7 @@ def create_server(address, config):
     # One floor per server, so the bound is per process. See BudgetFloor for
     # why it does not live on the module.
     server.budget_floor = BudgetFloor()
+    server.delivered_events = DeliveredEvents()
     return server
 
 

@@ -39,9 +39,12 @@ beszel_alerts:
 
 # Other systems reporting to this hub under the managed application user; their
 # agents are deployed elsewhere, so an unregistered one is reported, not fatal.
-# golem: Memory 85 (7.2 GiB, page cache excluded), no Temperature (unmeasured).
+# Golem: Memory 85 (7.2 GiB, page cache excluded), no Temperature (unmeasured).
+# former_names: records under these are renamed to name in place (configure.yml);
+# drop the entry once the hub shows only Golem.
 beszel_remote_systems:
-  - name: golem
+  - name: Golem
+    former_names: [golem]
     alerts:
       - name: Status
         value: 0

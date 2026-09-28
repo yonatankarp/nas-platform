@@ -30,11 +30,14 @@ dozzle_alert_daily_container_ceiling: 10
 dozzle_alert_daily_oom_container_ceiling: 25
 dozzle_alert_daily_global_ceiling: 200
 
+# Reconciliation finds the dispatcher by name, or by one of these, and renames
+# it in place (same id, so every rule keeps pointing at it). A name missing from
+# both would create a second dispatcher and delete the first.
+dozzle_dispatcher_former_names:
+  - ntfy nas-critical
+
 dozzle_dispatcher:
-  # The name is a selector, not a label: reconciliation matches on it, so a
-  # rename orphans the old dispatcher (with its token) and creates a second.
-  # Renaming is a migration of its own (#558).
-  name: ntfy nas-critical
+  name: alert relay
   type: webhook
   url: "http://alert-relay:{{ dozzle_alert_relay_port }}/alerts"
   # `.UTC` is load-bearing: the relay accepts only the `Z` spelling, and Dozzle

@@ -156,6 +156,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/docs_links_test.rb
   ruby tests/beszel_pushover_validation_test.rb
   ruby tests/dozzle_serve_test.rb
+  ruby tests/dozzle_dispatcher_rename_test.rb
   ruby tests/paperless_contract_test.rb --self-test
   ruby tests/dozzle_contract_test.rb
   ruby tests/production_auto_deploy_role_test.rb

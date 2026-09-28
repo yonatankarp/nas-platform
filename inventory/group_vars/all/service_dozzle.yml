@@ -13,7 +13,7 @@ dozzle_alert_relay_port: 8081
 # only (Docker ports bypass ufw). The hub pushes alert rules to the agent, which
 # POSTs to alert-relay through this host's Serve forward; the relay sends golem's
 # events on the Golem Pushover application (GOLEM_DOZZLE_HOST in alert_relay.py).
-dozzle_remote_agent: "100.104.25.70:7007|golem"
+dozzle_remote_agent: "100.104.25.70:7007|Golem"
 
 nas_storage_dozzle:
   - path: "{{ nas_docker_root }}/dozzle/data"
