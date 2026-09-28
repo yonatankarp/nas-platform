@@ -299,11 +299,6 @@
     container_health_deploy_failure_message: >-
       {{ dozzle_deploy_failure_message | default('') }}
 
-# Statically imported, so its tasks stay inside the fixture set
-# tests/policy_mutation_support.rb derives and are named by --list-tasks.
-- name: Forward the alert relay over the tailnet for golem's Dozzle agent
-  ansible.builtin.import_tasks: serve.yml
-
 - name: Report the Dozzle deployment
   ansible.builtin.include_role:
     name: deployment_bundle
@@ -314,12 +309,10 @@
     # container changed the deployment as surely as the deploy above did, and a
     # report gated on the deploy alone would say nothing on the one converge an
     # operator most wants to hear about. It is registered even when skipped, and
-    # `default({})` covers the paths that never reach it at all -- the Serve
-    # placement among them, on every host without Tailscale.
+    # `default({})` covers the paths that never reach it at all.
     deployment_report_changed: >-
       {{ (dozzle_deploy is changed)
-         or ((container_health_wedged_recreate | default({})) is changed)
-         or ((dozzle_serve_placed | default({})) is changed) }}
+         or ((container_health_wedged_recreate | default({})) is changed) }}
 
 # Not a handler: handlers run at the end of the play, but the health check and
 # API reconciliation immediately below require the restarted container. Deferring
@@ -809,3 +802,15 @@
   loop_control:
     label: "{{ item.name }}"
   when: not ansible_check_mode
+
+# LAST, so the NAS's own alerting is deployed, reconciled and verified before
+# anything golem needs is attempted: a Serve fault (a reshaped CLI, a revoked
+# operator grant, tailscaled not up yet after a boot) fails this run here rather
+# than ahead of the NAS's alerts. It still stops the roles after this one, which
+# is the cost of failing loudly rather than leaving golem silently unpaged.
+# Statically imported, so its tasks stay inside the fixture set
+# tests/policy_mutation_support.rb derives and are named by --list-tasks. Not
+# part of the deployment report: a placement happens once and changes no
+# container.
+- name: Forward the alert relay over the tailnet for golem's Dozzle agent
+  ansible.builtin.import_tasks: serve.yml
