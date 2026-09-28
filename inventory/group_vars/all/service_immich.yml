@@ -48,8 +48,8 @@ immich_managed_user_preference_profiles:
       sidebarWeb: false
 
 # Hourly originals check (#907): max % of sampled originals missing from disk.
-# Not zero because some rows are known unrecoverable; lower it as they are fixed.
-immich_originals_missing_ceiling_percent: 10
+# Zero: the rows #907 could not recover were trashed, so any missing original pages.
+immich_originals_missing_ceiling_percent: 0
 
 nas_storage_immich:
   # Ownership unclaimed: the images run as root and rewrite it. Originals are
