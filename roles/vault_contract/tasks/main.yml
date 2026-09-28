@@ -166,6 +166,7 @@
           'vault_pushover_alerts_token': vault_pushover_alerts_token,
           'vault_pushover_containers_token': vault_pushover_containers_token,
           'vault_pushover_deployments_token': vault_pushover_deployments_token,
+          'vault_pushover_golem_token': vault_pushover_golem_token,
           'vault_pushover_media_token': vault_pushover_media_token,
           'vault_pushover_user_key': vault_pushover_user_key,
           'vault_healthchecks_poller_ping_url': vault_healthchecks_poller_ping_url,

@@ -25,7 +25,7 @@ module PolicySupport
   # vault_komga_), and paperless-ngx's carries the role name where its credentials
   # carry `paperless`, so pinning them per service would take two exceptions to
   # the prefix rule and buy nothing. The Pushover keys are the second kind -- one
-  # user key and four application tokens of an account at a third party, each
+  # user key and five application tokens of an account at a third party, each
   # token pushed into whichever publishers use that application (Beszel, the
   # Dozzle relay, the deployment reports, the deployment poller, Seerr),
   # so they are named here rather than under any one service. The healthchecks.io
@@ -39,6 +39,7 @@ module PolicySupport
     vault_managed_paperless_ngx_users
     vault_pushover_alerts_token vault_pushover_containers_token
     vault_pushover_deployments_token vault_pushover_media_token
+    vault_pushover_golem_token
     vault_pushover_user_key
     vault_healthchecks_poller_ping_url vault_healthchecks_verify_ping_url
   ].freeze

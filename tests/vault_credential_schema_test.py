@@ -165,6 +165,7 @@ PUSHOVER_DISTINCT_KEYS = (
     "vault_pushover_containers_token",
     "vault_pushover_deployments_token",
     "vault_pushover_media_token",
+    "vault_pushover_golem_token",
 )
 
 # Bazarr's settings form is the only place a vault API key is cast with `int()`,

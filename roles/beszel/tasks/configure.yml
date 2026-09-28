@@ -305,7 +305,7 @@
       when: "'platform_verify_beszel' in ansible_run_tags"
       # Every Pushover application on this platform, not only the Alerts one
       # Beszel sends with: this is the one place the poller proves credentials
-      # once per deployed revision, and a Containers, Deployments or Media token
+      # once per deployed revision, and a Containers, Deployments, Media or Golem token
       # regenerated in the console would otherwise surface only as a refused
       # message -- or, for Seerr, as nothing at all. The loop carries vault key
       # NAMES and reads each value through the vars lookup, so a verdict can be
@@ -315,6 +315,7 @@
         - vault_pushover_containers_token
         - vault_pushover_deployments_token
         - vault_pushover_media_token
+        - vault_pushover_golem_token
       ansible.builtin.uri:
         url: "{{ beszel_pushover_validation_url }}"
         method: POST

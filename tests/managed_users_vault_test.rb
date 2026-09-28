@@ -155,7 +155,7 @@ check(failures, vault["vault_jellyfin_admin_username"] == "Yonatan",
   vault_kapowarr_comicvine_api_key
   vault_pushover_alerts_token vault_pushover_containers_token
   vault_pushover_deployments_token vault_pushover_media_token
-  vault_pushover_user_key
+  vault_pushover_golem_token vault_pushover_user_key
 ].each do |key|
   check(failures, vault[key].is_a?(String) && !vault[key].empty?,
         "vault example must declare #{key}")
@@ -338,7 +338,7 @@ vault_options = spec.dig("argument_specs", "main", "options") || {}
   vault_kapowarr_comicvine_api_key
   vault_pushover_alerts_token vault_pushover_containers_token
   vault_pushover_deployments_token vault_pushover_media_token
-  vault_pushover_user_key
+  vault_pushover_golem_token vault_pushover_user_key
 ].each do |key|
   check(failures,
         vault_options[key] == { "type" => "str", "required" => true },
@@ -527,7 +527,7 @@ check(failures,
           "(NOT_PLACEHOLDER, COMICVINE_API_KEY_PLACEHOLDERS)"
         ),
       "vault contract must reject the documented ComicVine placeholder")
-# Pushover issues the user key and all four application tokens to a human
+# Pushover issues the user key and all five application tokens to a human
 # account as well, and each token is the one a publisher sends with. A stand-in
 # that reached a deployment would leave that publisher sending messages Pushover
 # rejects, with nothing on this platform observing the rejection -- the
@@ -541,6 +541,8 @@ check(failures,
     %w[PUSHOVER_DEPLOYMENTS_TOKEN_PLACEHOLDERS example-pushover-deployments-token],
   "vault_pushover_media_token" =>
     %w[PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS example-pushover-media-token],
+  "vault_pushover_golem_token" =>
+    %w[PUSHOVER_GOLEM_TOKEN_PLACEHOLDERS example-pushover-golem-token],
   "vault_pushover_user_key" =>
     %w[PUSHOVER_USER_KEY_PLACEHOLDERS example-pushover-user-key] }.each do |key, (constant, literal)|
   check(failures,
@@ -619,6 +621,7 @@ runtime_vault["vault_pushover_alerts_token"] = "runtime-pushover-alerts-token"
 runtime_vault["vault_pushover_containers_token"] = "runtime-pushover-containers-token"
 runtime_vault["vault_pushover_deployments_token"] = "runtime-pushover-deployments-token"
 runtime_vault["vault_pushover_media_token"] = "runtime-pushover-media-token"
+runtime_vault["vault_pushover_golem_token"] = "runtime-pushover-golem-token"
 runtime_vault["vault_pushover_user_key"] = "runtime-pushover-user-key"
 runtime_vault["vault_healthchecks_poller_ping_url"] = "https://hc-ping.invalid/runtime-poller"
 runtime_vault["vault_healthchecks_verify_ping_url"] = "https://hc-ping.invalid/runtime-verify"
@@ -639,13 +642,14 @@ comicvine_placeholder["vault_kapowarr_comicvine_api_key"] =
 expect_role_rejection(failures, "documented ComicVine placeholder", comicvine_placeholder,
                       "runtime-opensubtitles-password")
 # One Pushover key at a time, for the same attribution reason: with the others
-# runtime-valued, a refusal can only be this one. All five are exercised because
+# runtime-valued, a refusal can only be this one. All six are exercised because
 # the rules are separate entries carrying separate placeholder tuples, and a key
 # checked only through another's rule would let its own lose its clause.
 { "vault_pushover_alerts_token" => "documented Pushover Alerts application token placeholder",
   "vault_pushover_containers_token" => "documented Pushover Containers application token placeholder",
   "vault_pushover_deployments_token" => "documented Pushover Deployments application token placeholder",
   "vault_pushover_media_token" => "documented Pushover Media application token placeholder",
+  "vault_pushover_golem_token" => "documented Pushover Golem application token placeholder",
   "vault_pushover_user_key" => "documented Pushover user key placeholder" }.each do |key, label|
   pushover_placeholder = duplicate(runtime_vault)
   pushover_placeholder[key] = vault[key]

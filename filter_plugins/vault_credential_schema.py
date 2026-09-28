@@ -111,11 +111,11 @@ OPENSUBTITLES_PASSWORD_PLACEHOLDERS = ("example-opensubtitles-password",
 COMICVINE_API_KEY_PLACEHOLDERS = ("example-comicvine-api-key",
                                   "replace-with-comicvine-api-key")
 
-# The Pushover user key and the four application tokens belong to a third-party
+# The Pushover user key and the five application tokens belong to a third-party
 # account at pushover.net, so the platform cannot generate any of them. One user
 # key is shared; each token is its own application -- Alerts (Beszel), Containers
 # (the Dozzle relay and the per-service deployment reports), Deployments (the run
-# summary) and Media (Seerr). None has a shape this repository can vouch for:
+# summary), Media (Seerr) and Golem (Beszel's alerts about the second host). None has a shape this repository can vouch for:
 # Pushover documents them as 30-character opaque strings, and a pattern rule
 # guessed from that would be evaluated before every converge -- on a five-minute
 # poller tick, with the fix locked inside an encrypted file -- so the rules stay
@@ -132,6 +132,8 @@ PUSHOVER_DEPLOYMENTS_TOKEN_PLACEHOLDERS = ("example-pushover-deployments-token",
                                            "replace-with-pushover-deployments-token")
 PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS = ("example-pushover-media-token",
                                      "replace-with-pushover-media-token")
+PUSHOVER_GOLEM_TOKEN_PLACEHOLDERS = ("example-pushover-golem-token",
+                                     "replace-with-pushover-golem-token")
 PUSHOVER_USER_KEY_PLACEHOLDERS = ("example-pushover-user-key",
                                   "replace-with-pushover-user-key")
 
@@ -219,6 +221,10 @@ CREDENTIAL_RULES = {
     "vault_pushover_media_token": (
         (NONEMPTY, None),
         (NOT_PLACEHOLDER, PUSHOVER_MEDIA_TOKEN_PLACEHOLDERS),
+    ),
+    "vault_pushover_golem_token": (
+        (NONEMPTY, None),
+        (NOT_PLACEHOLDER, PUSHOVER_GOLEM_TOKEN_PLACEHOLDERS),
     ),
     "vault_pushover_user_key": (
         (NONEMPTY, None),
@@ -342,13 +348,14 @@ DISTINCT_KEY_GROUPS = (
     ("vault_arr_radarr_admin_password", "vault_arr_sonarr_admin_password",
      "vault_arr_prowlarr_admin_password", "vault_arr_bazarr_admin_password",
      "vault_downloaders_sabnzbd_admin_password"),
-    # The four Pushover application tokens are four separate channels on the
+    # The five Pushover application tokens are five separate channels on the
     # phone. A token pasted into a second key sends that publisher's messages
     # through the wrong application -- container churn under host alerts, or
     # request events under deployments -- and every check here would pass,
     # because Pushover accepts the token either way.
     ("vault_pushover_alerts_token", "vault_pushover_containers_token",
-     "vault_pushover_deployments_token", "vault_pushover_media_token"),
+     "vault_pushover_deployments_token", "vault_pushover_media_token",
+     "vault_pushover_golem_token"),
 )
 
 
