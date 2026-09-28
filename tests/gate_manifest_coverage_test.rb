@@ -412,6 +412,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/case_pool_locals_test.rb --self-test
   ruby tests/case_pool_behavior_test.rb --self-test
   ruby tests/immich_user_onboarding_test.rb
+  ruby tests/immich_system_config_test.rb
   tests/generate-secrets-redaction-test.sh
 CHECKS
 

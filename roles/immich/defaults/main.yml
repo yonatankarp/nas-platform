@@ -39,9 +39,9 @@ immich_compose_wait_timeout: 600
 immich_initialization_retries: 60
 
 # Deliberately small and explicit, and every entry is grounded in the deployed
-# stack rather than in taste. Immich stores hundreds of settings; this role owns
-# only the ones the Compose definition already commits to, so an operator can
-# change anything else through the UI without the next converge undoing it.
+# stack or a recorded decision rather than in taste. Immich stores hundreds of
+# settings; this role owns only these, so an operator can change anything else
+# through the UI without the next converge undoing it.
 immich_managed_settings:
   # The NAS is not permitted to phone home for release announcements.
   newVersionCheck:
@@ -54,6 +54,19 @@ immich_managed_settings:
   backup:
     database:
       enabled: true
+  # Originals live in date folders, which is where the asset rows point since
+  # #907's repair; an album-folder template is what moved them away from their
+  # rows. Changing this moves no existing file: only the Storage Template
+  # Migration job does, and this role never starts it. New uploads, and any
+  # asset whose metadata is re-extracted, are placed by it. The template is
+  # Handlebars, so it is !unsafe: Ansible must never render it as Jinja, and the
+  # linter's Jinja spacing advice would change the stored string.
+  # hashVerificationEnabled is the pinned server's own default, owned so the
+  # object is whole.
+  storageTemplate:
+    enabled: true
+    hashVerificationEnabled: true
+    template: !unsafe "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"  # noqa: jinja[spacing]
 
 # The identity the contract and the role both authenticate as. Immich records
 # the creating account as the sole administrator, so this is created once and

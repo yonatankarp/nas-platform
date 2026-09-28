@@ -69,7 +69,10 @@ DEVICE_ID = "nas-platform-immich-contract"
 MANAGED_SETTINGS = {
   ["newVersionCheck", "enabled"] => false,
   ["machineLearning", "enabled"] => true,
-  ["backup", "database", "enabled"] => true
+  ["backup", "database", "enabled"] => true,
+  ["storageTemplate", "enabled"] => true,
+  ["storageTemplate", "hashVerificationEnabled"] => true,
+  ["storageTemplate", "template"] => "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
 }.freeze
 
 # Both fixtures are produced by the pinned server image's own ffmpeg with
@@ -713,7 +716,8 @@ config = read_settings(token)
 
 if MODE == "drift-verify"
   fail_contract("the Immich drift fixture was not installed") unless
-    config.dig("newVersionCheck", "enabled") == true
+    config.dig("newVersionCheck", "enabled") == true &&
+    config.dig("storageTemplate", "enabled") == false
   target = list_managed_user_records(token, managed_users).fetch(
     managed_users.first.fetch("email").strip.downcase
   )
@@ -813,7 +817,12 @@ if MODE == "clean-restore-assert"
 end
 
 if MODE == "drift"
-  drifted = config.merge("newVersionCheck" => config.fetch("newVersionCheck").merge("enabled" => true))
+  # The storage template is drifted by switching it off, never by rewriting it:
+  # a different template would place the next seeded upload somewhere else.
+  drifted = config.merge(
+    "newVersionCheck" => config.fetch("newVersionCheck").merge("enabled" => true),
+    "storageTemplate" => config.fetch("storageTemplate").merge("enabled" => false)
+  )
   request("put", "/api/system-config", token: token, body: drifted)
   first_managed = managed_users.first
   target = list_managed_user_records(token, [first_managed]).fetch(
