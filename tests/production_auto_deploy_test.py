@@ -4662,7 +4662,8 @@ class VerifyTest(PollerTestCase):
         # check could not read would page as missing originals.
         self.assertEqual(text.count(marker), 1)
         (block,) = [task for task in yaml.safe_load(text) if "block" in task]
-        (assertion,) = [task for task in block["block"] if "ansible.builtin.assert" in task]
+        (assertion,) = [task for task in block["block"]
+                        if task["name"] == "Verify missing Immich originals stay within the declared ceiling"]
         fail_msg = assertion["ansible.builtin.assert"]["fail_msg"]
         self.assertTrue(fail_msg.startswith(marker + ":"), fail_msg)
         self.assertNotIn(marker, assertion["ansible.builtin.assert"]["success_msg"])

@@ -87,8 +87,25 @@
         stdin: "{{ immich_originals_sample | to_json }}"
         stdin_add_newline: false
       register: immich_originals_verification
+      # A refusal's default failure prints the argv, originals root included.
+      # The assert below says the check could not run, and names no path.
+      failed_when: false
       changed_when: false
       check_mode: false
+
+    - name: Require a readable Immich originals verification
+      ansible.builtin.assert:
+        that:
+          - immich_originals_verification.rc | default(1) | int == 0
+          - (immich_originals_verification.stdout | from_json).keys() | list | sort == ['missing', 'verified']
+          - >-
+            (immich_originals_verification.stdout | from_json).missing | int +
+            (immich_originals_verification.stdout | from_json).verified | int ==
+            immich_originals_sample | length
+        fail_msg: >-
+          Immich originals check could not run: the helper refused the sampled
+          asset paths as unsafe.
+        quiet: true
 
     - name: Count the missing Immich originals
       ansible.builtin.set_fact:
