@@ -47,7 +47,8 @@ TOKENS = {
   "vault_pushover_alerts_token" => "probe-alerts-token-never-valid",
   "vault_pushover_containers_token" => "probe-containers-token-never-valid",
   "vault_pushover_deployments_token" => "probe-deployments-token-never-valid",
-  "vault_pushover_media_token" => "probe-media-token-never-valid"
+  "vault_pushover_media_token" => "probe-media-token-never-valid",
+  "vault_pushover_golem_token" => "probe-golem-token-never-valid"
 }.freeze
 USER_KEY = "probe-user-key-never-valid"
 ACCEPT = [200, JSON.generate({ "status" => 1, "devices" => ["phone"] })].freeze

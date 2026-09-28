@@ -43,6 +43,7 @@ LINK_BASE = "http://nas.tailnet.example:8080"
 BESZEL_LINK_BASE = "http://nas.tailnet.example:8090"
 BESZEL_SYSTEM_ID = "a1b2c3d4e5f6g7h"
 ALERTS_TOKEN = "pushover-alerts-secret-that-must-not-leak"
+GOLEM_TOKEN = "pushover-golem-secret-that-must-not-leak"
 # The ceilings these cases run against. Deliberately not the deployment's
 # 10/25/200: a case that trips a ceiling has to publish one message per unit of
 # allowance first, and a relay that ignored its configuration and kept a literal
@@ -276,6 +277,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
             "ALERT_RELAY_LINK_BASE": LINK_BASE,
             "PUSHOVER_TOKEN": PUSHOVER_TOKEN,
             "PUSHOVER_ALERTS_TOKEN": ALERTS_TOKEN,
+            "PUSHOVER_GOLEM_TOKEN": GOLEM_TOKEN,
             "BESZEL_LINK_BASE": BESZEL_LINK_BASE,
             "PUSHOVER_USER_KEY": PUSHOVER_USER_KEY,
             "ALERT_STATE_PATH": str(self.state_path),
@@ -1203,6 +1205,11 @@ class DozzleAlertRelayTest(unittest.TestCase):
                     self.environment(PUSHOVER_ALERTS_TOKEN=value)
                 )
                 self.assertIsNone(config.pushover_alerts_token)
+            with self.subTest(golem_token=label):
+                config = self.relay_module.Config.from_mapping(
+                    self.environment(PUSHOVER_GOLEM_TOKEN=value)
+                )
+                self.assertIsNone(config.pushover_golem_token)
         for label, value in (("missing", None), ("empty", "")):
             with self.subTest(beszel_link_base=label):
                 config = self.relay_module.Config.from_mapping(
@@ -2906,7 +2913,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
 
     # --- Beszel host alerts, POSTed to /beszel ------------------------------
 
-    # Each Beszel 0.19.0 subject exactly as it renders one, the body it sends
+    # Each Beszel 0.20.0 subject exactly as it renders one, the body it sends
     # with it, and the title and priority this relay must turn them into.
     BESZEL_SUBJECTS = (
         ("ASUSTOR-AS6704T CPU above threshold",
@@ -2939,7 +2946,7 @@ class DozzleAlertRelayTest(unittest.TestCase):
          "Battery averaged 64.00% for the previous 5 minutes.",
          "\U0001f7e2 laptop battery back above threshold", -1),
         # Titles this relay does not parse go out as Beszel wrote them, quiet
-        # when they end in its checkmark. Each is Beszel 0.19.0's own format:
+        # when they end in its checkmark. Each is Beszel 0.20.0's own format:
         # internal/alerts/alerts_systemd.go, alerts_container.go, alerts_smart.go.
         ("Services recovered on ASUSTOR-AS6704T \u2705",
          "No services are in the failed state on ASUSTOR-AS6704T.",
@@ -3086,6 +3093,98 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertEqual(host["token"], ALERTS_TOKEN, "/beszel must publish on the Alerts application")
         self.assertEqual(container["user"], PUSHOVER_USER_KEY)
         self.assertEqual(host["user"], PUSHOVER_USER_KEY)
+
+    # Beszel 0.20.0 titles about golem, one per shape the relay routes on: the
+    # four golem has alerts for (roles/beszel beszel_remote_systems), and one it
+    # reads only from the title.
+    GOLEM_SUBJECTS = (
+        ("Connection to golem is down \U0001f534", "Connection to golem is down "),
+        ("golem CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
+        ("golem memory below threshold", "Memory averaged 40.00% for the previous 10 minutes."),
+        ("golem disk usage above threshold",
+         "Usage of / averaged 85.12% for the previous 10 minutes."),
+        ("Failed services on golem \U0001f534", "1 failed service on golem: cron.service"),
+    )
+
+    def test_golem_alerts_publish_on_the_golem_application(self):
+        link = f"{BESZEL_LINK_BASE}/system/g0lem1d"
+        for title, body in self.GOLEM_SUBJECTS:
+            with self.subTest(title=title):
+                self.assertEqual(self.post_beszel(self.beszel(title, body, link))[0], 204)
+                form = self.pushover.requests[-1]["form"]
+                self.assertEqual(form["token"], GOLEM_TOKEN, "golem must publish on the Golem application")
+                self.assertEqual(form["user"], PUSHOVER_USER_KEY)
+                self.assertEqual(form["url"], link)
+                self.assertIn("golem", form["title"])
+                self.assertNotIn("Reason", form["message"])
+        self.assertIn("\U0001f5a5\ufe0f <b>Host</b> golem", self.pushover.requests[0]["form"]["message"])
+
+    def test_the_nas_and_lookalike_systems_stay_on_the_alerts_application(self):
+        for title, body in (
+            self.BESZEL_SUBJECTS[0][:2],
+            ("golem-2 CPU above threshold", "CPU averaged 93.20% for the previous 10 minutes."),
+            ("Connection to notgolem is down \U0001f534", "Connection to notgolem is down "),
+            ("Unhealthy container golem on ASUSTOR-AS6704T \U0001f534", "golem is unhealthy"),
+            ("golem2 containers are healthy \u2705", "golem2 containers are healthy"),
+            ("Test Alert", "This is a notification from Beszel."),
+        ):
+            with self.subTest(title=title):
+                self.assertEqual(self.post_beszel(self.beszel(title, body))[0], 204)
+                self.assertEqual(self.pushover.requests[-1]["form"]["token"], ALERTS_TOKEN)
+
+    def test_without_the_golem_token_golem_alerts_go_to_alerts_and_say_so(self):
+        self.relay.config = self.relay_module.Config.from_mapping(
+            self.environment(PUSHOVER_GOLEM_TOKEN=None)
+        )
+        amber = self.relay_module.COLOR_AMBER
+        reason = (f'\u2753 <b>Reason</b> <font color="{amber}">Golem app token not set</font>'
+                  "; sent on Alerts")
+        for title, body in (self.GOLEM_SUBJECTS[0], self.GOLEM_SUBJECTS[-1]):
+            with self.subTest(title=title):
+                recorder = RecordingStderr()
+                with contextlib.redirect_stderr(recorder):
+                    self.assertEqual(self.post_beszel(self.beszel(title, body))[0], 204)
+                form = self.pushover.requests[-1]["form"]
+                self.assertEqual(form["token"], ALERTS_TOKEN,
+                                 "a golem alert must still be delivered without the Golem token")
+                self.assertIn(reason, form["message"])
+                self.assertEqual(recorder.writes, [
+                    "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
+                    "a golem alert was sent on the Alerts application\n",
+                ])
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            self.assertEqual(self.post_beszel(self.beszel(*self.BESZEL_SUBJECTS[0][:2]))[0], 204)
+        self.assertNotIn("Reason", self.pushover.requests[-1]["form"]["message"])
+        self.assertEqual(recorder.writes, [])
+
+    def test_a_ceiling_golem_trips_is_announced_on_the_alerts_application(self):
+        alert = self.beszel(*self.GOLEM_SUBJECTS[0])
+        for _index in range(GLOBAL_CEILING + 1):
+            self.assertEqual(self.post_beszel(alert)[0], 204)
+        *alerts, notice = self.published_forms()
+        self.assertEqual({form["token"] for form in alerts}, {GOLEM_TOKEN})
+        self.assertEqual(notice["title"], "\U0001f507 Alerts paused")
+        self.assertEqual(notice["token"], ALERTS_TOKEN,
+                         "the ceiling is shared, so its pause is the NAS's news too")
+
+    def test_the_golem_system_name_is_one_beszel_manages(self):
+        defaults = (ROOT / "roles/beszel/defaults/main.yml").read_text()
+        name = re.escape(self.relay_module.GOLEM_BESZEL_SYSTEM)
+        self.assertRegex(
+            defaults, rf"(?m)^beszel_remote_systems:\n(?:[ #].*\n|\n)*?  - name: {name}$",
+            "GOLEM_BESZEL_SYSTEM must name a system in beszel_remote_systems",
+        )
+
+    def test_the_golem_token_is_redacted_like_the_others(self):
+        self.pushover.response_status = 400
+        self.pushover.response_body = f'{{"errors":["token {GOLEM_TOKEN} is invalid"]}}'.encode()
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            status, _body = self.post_beszel(self.beszel(*self.GOLEM_SUBJECTS[0]))
+        self.assertEqual(status, 502)
+        self.assertIn("[redacted]", recorder.getvalue())
+        self.assertNotIn(GOLEM_TOKEN, recorder.getvalue())
 
     def test_the_alerts_token_is_redacted_like_the_others(self):
         self.pushover.response_status = 400

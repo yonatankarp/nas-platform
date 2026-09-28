@@ -253,7 +253,8 @@ against the production deployment without exercising external integrations.
 Beszel's notification webhook is the Dozzle alert relay's `/beszel` route, and the
 relay publishes every Beszel alert and every container alert to Pushover. They
 are separate Pushover applications on one account: the relay sends Beszel's
-alerts with the Alerts application (`vault_pushover_alerts_token`), and its
+alerts with the Alerts application (`vault_pushover_alerts_token`), except those
+about the second host, golem, which go with Golem (`vault_pushover_golem_token`), and its
 container alerts, the per-service deployment reports and the image prune's
 reclaim go with
 Containers, each release's one message with Deployments, the deployment poller's and the

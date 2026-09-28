@@ -195,7 +195,7 @@ MAX_LINK_BASE_CHARACTERS = MAX_URL_CHARACTERS - len(CONTAINER_ROUTE) - 64
 URL_TITLE = "Open in Dozzle"
 MAX_URL_TITLE_CHARACTERS = 100
 
-# Beszel's host alerts, POSTed to /beszel by Beszel 0.19.0's shoutrrr generic
+# Beszel's host alerts, POSTed to /beszel by Beszel 0.20.0's shoutrrr generic
 # webhook with template=json: exactly {"title", "message"}, where message is
 # Beszel's body followed by a blank line and a link (internal/alerts/alerts.go:
 # SendShoutrrrAlert). Beszel sends a recovery through the same URL as the alert
@@ -235,6 +235,19 @@ BESZEL_AVERAGE_BODY = re.compile(
 BESZEL_SYSTEM_ROUTE = "/system/"
 BESZEL_SYSTEM_ID_PATTERN = re.compile(r"[A-Za-z0-9]{1,64}\Z")
 BESZEL_URL_TITLE = "Open in Beszel"
+# golem, the second host (a Debian box on the tailnet whose Beszel agent another
+# repository deploys), has its own Pushover application, Golem, so its alerts
+# never mix with the NAS's. The name is the Beszel system name, which is a second
+# copy of beszel_remote_systems in roles/beszel/defaults/main.yml (and of
+# SYSTEM_NAME on golem itself); tests/dozzle_alert_relay_test.py holds the two
+# copies in step. Every alert Beszel 0.20.0 sends names the system in its title:
+# status and threshold titles as classify_beszel parses them, and the S.M.A.R.T.,
+# ZFS, systemd, container and network-monitor titles as "<system> containers are
+# healthy" or "... on <system>" followed by ":", a space or the end.
+GOLEM_BESZEL_SYSTEM = "golem"
+GOLEM_IN_UNPARSED_TITLE = re.compile(
+    rf"(?:\A| on ){re.escape(GOLEM_BESZEL_SYSTEM)}(?=[: ]|\Z)"
+)
 # The palette scripts/production_auto_deploy.py documents, spelled as it spells
 # it; tests/policy_test.rb holds the copies identical.
 COLOR_GREEN = "#2e7d32"
@@ -298,6 +311,7 @@ class Config:
         "pushover_alerts_token",
         "beszel_link_base",
         "beszel_link_problem",
+        "pushover_golem_token",
     )
 
     def __init__(
@@ -316,7 +330,9 @@ class Config:
         alerts_token=None,
         beszel_link_base=None,
         beszel_link_problem=None,
+        golem_token=None,
     ):
+        self.pushover_golem_token = golem_token
         self.pushover_alerts_token = alerts_token
         self.beszel_link_base = beszel_link_base
         self.beszel_link_problem = beszel_link_problem
@@ -341,6 +357,7 @@ class Config:
         api_url = cls._pushover_api_url(resolved["PUSHOVER_API_URL"])
         link_base, link_problem = cls._dozzle_link(values)
         alerts_token, beszel_link_base, beszel_link_problem = cls._beszel_settings(values)
+        golem_token = optional_setting(values, "PUSHOVER_GOLEM_TOKEN")
         container_ceiling, oom_container_ceiling, global_ceiling = cls._daily_ceilings(resolved)
         state_path = cls._validated_state_path(resolved["ALERT_STATE_PATH"])
 
@@ -359,6 +376,7 @@ class Config:
             alerts_token,
             beszel_link_base,
             beszel_link_problem,
+            golem_token,
         )
 
     @staticmethod
@@ -455,10 +473,10 @@ class Config:
         # the one rendered before they existed. Without the Alerts token /beszel
         # answers 503 and says so on stderr; /alerts, which never needed it,
         # keeps working. Without a usable link base a Beszel alert carries no
-        # button.
-        alerts_token = values.get("PUSHOVER_ALERTS_TOKEN")
-        if not isinstance(alerts_token, str) or not alerts_token or contains_control(alerts_token):
-            alerts_token = None
+        # button. The Golem token is optional for the first reason, and its
+        # absence costs less still: golem's alerts go out on the Alerts
+        # application instead, each saying so (process_beszel).
+        alerts_token = optional_setting(values, "PUSHOVER_ALERTS_TOKEN")
         raw_beszel_link_base = values.get("BESZEL_LINK_BASE")
         if not isinstance(raw_beszel_link_base, str) or not raw_beszel_link_base:
             return alerts_token, None, (
@@ -507,6 +525,14 @@ class Config:
         if not state_path.is_absolute() or state_path.name in {"", ".", ".."}:
             raise ConfigurationError("ALERT_STATE_PATH must be an absolute file path")
         return state_path
+
+def optional_setting(values, name):
+    """The setting `name`, or None when it is absent, empty or holds a control character."""
+    value = values.get(name)
+    if not isinstance(value, str) or not value or contains_control(value):
+        return None
+    return value
+
 
 def validated_link_base(value):
     """Dozzle's origin as the link base, or ConfigurationError saying why not.
@@ -915,7 +941,7 @@ def classify_beszel(alert):
 
     kind is "status", "threshold", or None for any title this relay does not
     recognise -- "Test Alert", and the S.M.A.R.T., ZFS, systemd and container
-    alerts 0.19.0 can also send, which is why the fallback is a path and not a
+    alerts 0.20.0 can also send, which is why the fallback is a path and not a
     corner. problem is True for an alert and False for a recovery.
     """
     title = alert["title"]
@@ -944,6 +970,19 @@ def classify_beszel(alert):
     return result
 
 
+def beszel_is_golem(alert):
+    """Whether a Beszel alert is about golem rather than about the NAS.
+
+    The parsed system when classify_beszel recognises the title, compared whole,
+    so a NAS system named "golem-2" stays the NAS's; otherwise the anchored title
+    match GOLEM_IN_UNPARSED_TITLE documents.
+    """
+    system = classify_beszel(alert)["system"]
+    if system is not None:
+        return system == GOLEM_BESZEL_SYSTEM
+    return GOLEM_IN_UNPARSED_TITLE.search(alert["title"]) is not None
+
+
 def beszel_link(link, link_base):
     """The link Beszel sent, only if it is this relay's own Beszel system page."""
     if link_base is None:
@@ -954,7 +993,7 @@ def beszel_link(link, link_base):
     return link
 
 
-def render_beszel(alert, link_base, now):
+def render_beszel(alert, link_base, now, golem_fallback=False):
     """Render one Beszel alert as Pushover form fields.
 
     An alert is 1 and its recovery -1, the split Beszel cannot make itself: a
@@ -967,6 +1006,10 @@ def render_beszel(alert, link_base, now):
     The When line is this relay's clock, because Beszel sends no time. The link
     is the one Beszel appended, used only as the button and only when
     beszel_link accepts it.
+
+    golem_fallback marks a golem alert that is going out on the Alerts
+    application because the Golem token is not set: a Reason line in amber, so
+    the misrouting is visible on the message it happened to.
     """
     parsed = classify_beszel(alert)
     fields = {"html": "1", "priority": 1 if parsed["problem"] else -1}
@@ -974,13 +1017,20 @@ def render_beszel(alert, link_base, now):
     if link is not None:
         fields["url"] = link
         fields["url_title"] = BESZEL_URL_TITLE
+    fallback_line = (
+        f'\u2753 <b>Reason</b> <font color="{COLOR_AMBER}">Golem app token not set</font>'
+        "; sent on Alerts"
+    )
     if parsed["kind"] is None:
         text = parsed["body"].strip() or alert["title"]
         escaped = html_escape(text, MAX_MESSAGE_CHARACTERS, MAX_MESSAGE_CHARACTERS)
+        lines = escaped.split("\n")
+        if golem_fallback:
+            lines = [fallback_line, ""] + lines
         return dict(
             fields,
             title=alert["title"][:MAX_TITLE_CHARACTERS],
-            message=fit_message(escaped.split("\n")),
+            message=fit_message(lines),
         )
 
     name = parsed["system"][:MAX_TITLE_CONTAINER_CHARACTERS]
@@ -1014,6 +1064,8 @@ def render_beszel(alert, link_base, now):
             details.append(
                 f"{emoji} <b>Average</b> {reading} over {minutes} {unit} \u00b7 {descriptor}"
             )
+    if golem_fallback:
+        details.append(fallback_line)
     details.append(f"\U0001f552 <b>When</b> {human_time(datetime_nanoseconds(now))}")
     return dict(
         fields,
@@ -1573,7 +1625,10 @@ def log_safe(value, config, maximum=MAX_DIAGNOSTIC_CHARACTERS):
     with an exception is a sanitiser with a path that was missed.
     """
     text = str(value)
-    for secret in (config.pushover_token, config.pushover_user_key, config.pushover_alerts_token):
+    for secret in (
+        config.pushover_token, config.pushover_user_key,
+        config.pushover_alerts_token, config.pushover_golem_token,
+    ):
         if secret:
             text = text.replace(secret, "[redacted]")
     text = "".join(
@@ -1664,7 +1719,8 @@ def publish(config, notification, token):
     """POST one message to Pushover, as the application `token` names.
 
     Container events go out on the Containers application and Beszel's host
-    alerts on the Alerts one, so the caller chooses; the user key is shared.
+    alerts on the Alerts one, or golem's on the Golem one, so the caller
+    chooses; the user key is shared.
 
     Pushover authenticates by form field rather than by header: the application
     token and the user key are `token` and `user` in the body, and there is no
@@ -2073,8 +2129,16 @@ def process_beszel(config, alert, floor):
     everything from raise_floor to replace inside the flock, publish before the
     floor records, the floor before the persist. There is no health state to
     reconcile, so every Beszel alert is a publication the ceiling decides on.
+
+    An alert about golem publishes on the Golem application, or on Alerts with
+    a Reason line and a stderr line when the Golem token is not set. The
+    ceiling notice stays on Alerts whichever host tripped it: the ceiling is
+    shared, so the pause it announces is the NAS's too.
     """
     now = utc_now()
+    golem = beszel_is_golem(alert)
+    golem_fallback = golem and config.pushover_golem_token is None
+    token = config.pushover_golem_token if golem and not golem_fallback else config.pushover_alerts_token
     with LockedState(config.alert_state_path) as state_file:
         entries, stored_budget, migration_required = state_file.read()
         budget = floor.raise_floor(rolled_budget(stored_budget, now))
@@ -2082,7 +2146,7 @@ def process_beszel(config, alert, floor):
         charged = decision[1]
         notification = None
         if decision[0] == "publish":
-            notification = render_beszel(alert, config.beszel_link_base, now)
+            notification = render_beszel(alert, config.beszel_link_base, now, golem_fallback)
         elif decision[0] == "notice":
             system = classify_beszel(alert)["system"] or "Beszel"
             notification = render_ceiling_notice(
@@ -2093,7 +2157,16 @@ def process_beszel(config, alert, floor):
             migration_required or proposed != entries or charged != stored_budget
         )
         if notification is not None:
-            publish(config, notification, config.pushover_alerts_token)
+            if decision[0] == "notice":
+                token = config.pushover_alerts_token
+            elif golem_fallback:
+                # One write per alert, naming the setting and never a value.
+                sys.stderr.write(
+                    "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
+                    "a golem alert was sent on the Alerts application\n"
+                )
+                sys.stderr.flush()
+            publish(config, notification, token)
         floor.record(charged)
         if replacement_required:
             state_file.replace(proposed, charged, document)

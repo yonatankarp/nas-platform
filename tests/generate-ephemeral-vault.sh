@@ -351,6 +351,7 @@ vault_pushover_alerts_token: ephemeral-pushover-alerts-token
 vault_pushover_containers_token: ephemeral-pushover-containers-token
 vault_pushover_deployments_token: ephemeral-pushover-deployments-token
 vault_pushover_media_token: ephemeral-pushover-media-token
+vault_pushover_golem_token: ephemeral-pushover-golem-token
 vault_pushover_user_key: ephemeral-pushover-user-key
 vault_healthchecks_poller_ping_url: https://healthchecks.invalid/ephemeral-poller-ping
 vault_healthchecks_verify_ping_url: https://healthchecks.invalid/ephemeral-verify-ping

@@ -52,6 +52,7 @@ render() {
     ALERT_DAILY_CONTAINER_CEILING=10 ALERT_DAILY_OOM_CONTAINER_CEILING=25 \
     ALERT_DAILY_GLOBAL_CEILING=200 DOZZLE_REMOTE_AGENT=contract-agent:7007 \
     PUSHOVER_ALERTS_TOKEN=test-pushover-alerts-token BESZEL_LINK_BASE=http://127.0.0.1:8090 \
+    PUSHOVER_GOLEM_TOKEN=test-pushover-golem-token \
     docker compose --project-name "$base_name-dozzle" \
       -f "$repo_dir/services/dozzle/compose.yml" \
       -f "$repo_dir/services/dozzle/compose.mac.yml" config --format json \

@@ -176,6 +176,10 @@ argument_specs:
         type: str
         required: true
         description: Pushover Media application token; only validated here.
+      vault_pushover_golem_token:
+        type: str
+        required: true
+        description: Pushover Golem application token; only validated here, the relay sends with it.
       vault_pushover_user_key:
         type: str
         required: true

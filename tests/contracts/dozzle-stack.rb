@@ -53,6 +53,7 @@ abort "Dozzle contract failed: alert relay environment differs" unless
     "ALERT_RELAY_LINK_BASE" => "${ALERT_RELAY_LINK_BASE:?}",
     "PUSHOVER_TOKEN" => "${PUSHOVER_TOKEN:?}",
     "PUSHOVER_ALERTS_TOKEN" => "${PUSHOVER_ALERTS_TOKEN:?}",
+    "PUSHOVER_GOLEM_TOKEN" => "${PUSHOVER_GOLEM_TOKEN:?}",
     "BESZEL_LINK_BASE" => "${BESZEL_LINK_BASE:?}",
     "PUSHOVER_USER_KEY" => "${PUSHOVER_USER_KEY:?}",
     "ALERT_DAILY_CONTAINER_CEILING" => "${ALERT_DAILY_CONTAINER_CEILING:?}",
@@ -185,6 +186,9 @@ abort "Dozzle contract failed: the relay secret is not a credential of its own" 
   ) &&
   env_template.include?(
     "PUSHOVER_ALERTS_TOKEN={{ vault_pushover_alerts_token | replace('$', '$$') }}"
+  ) &&
+  env_template.include?(
+    "PUSHOVER_GOLEM_TOKEN={{ vault_pushover_golem_token | replace('$', '$$') }}"
   ) &&
   env_template.include?(
     "PUSHOVER_USER_KEY={{ vault_pushover_user_key | replace('$', '$$') }}"
