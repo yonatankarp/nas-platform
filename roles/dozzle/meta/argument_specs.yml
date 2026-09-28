@@ -22,6 +22,17 @@ argument_specs:
       dozzle_alert_relay_port:
         type: int
         required: false
+      dozzle_tailscale_binary_candidates:
+        type: list
+        elements: path
+        required: false
+      dozzle_tailscale_binary:
+        type: str
+        required: false
+        description: >-
+          An absolute path to the Tailscale client, or the empty string to
+          discover one from the candidates above; a str because the empty
+          string is its normal value and `path` would expand it.
       dozzle_pushover_api_url:
         type: str
         required: false

@@ -205,6 +205,8 @@ def dozzle_render(port = PROBE_PORT)
     "services" => {
       "alert-relay" => {
         "environment" => { "ALERT_RELAY_PORT" => port },
+        "ports" => [{ "mode" => "ingress", "host_ip" => "127.0.0.1", "target" => port.to_i,
+                      "published" => port, "protocol" => "tcp" }],
         "healthcheck" => {
           "test" => ["CMD-SHELL",
                      "python -c \"import urllib.request as r; " \
@@ -275,6 +277,29 @@ GROUP_RENDER_ROWS = [
       config
     },
     expects: "dozzle base alert relay does not take its listener port from one variable"
+  },
+  {
+    name: "a relay published on the wildcard", stack: "dozzle", group: "dozzle", variant: "base",
+    config: lambda {
+      config = dozzle_render
+      config["services"]["alert-relay"]["ports"][0]["host_ip"] = "0.0.0.0"
+      config
+    },
+    expects: "dozzle base alert relay does not publish its listener port on loopback alone"
+  },
+  {
+    name: "a relay published on a literal port", stack: "dozzle", group: "dozzle", variant: "base",
+    config: lambda {
+      config = dozzle_render
+      config["services"]["alert-relay"]["ports"][0]["published"] = "8081"
+      config
+    },
+    expects: "dozzle base alert relay does not publish its listener port on loopback alone"
+  },
+  {
+    name: "a Mac relay that keeps its publication", stack: "dozzle", group: "dozzle", variant: "mac",
+    config: -> { dozzle_render },
+    expects: "dozzle mac alert relay does not publish its listener port on loopback alone"
   },
   {
     # The relay guard is Dozzle's alone. A grouped stack whose services happen to
@@ -624,13 +649,13 @@ STACK_ROWS = [
     expects: "alert relay mounts differ"
   },
   {
-    name: "a relay that publishes a port", argument: "services/dozzle/compose.yml",
+    name: "a relay that publishes on the wildcard", argument: "services/dozzle/compose.yml",
     edit: lambda { |root|
       edit_yaml_text(root, "services/dozzle/compose.yml",
-                     "    command: [python, /app/alert_relay.py]\n",
-                     "    command: [python, /app/alert_relay.py]\n    ports:\n      - \"8081:8081\"\n")
+                     "      - \"127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}\"\n",
+                     "      - \"${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}\"\n")
     },
-    expects: "alert relay must not publish a port"
+    expects: "alert relay must publish only its listener port, on loopback"
   },
   {
     name: "a writable relay root filesystem", argument: "services/dozzle/compose.yml",
@@ -1573,7 +1598,9 @@ DOCKER_STUB = <<~STUB
     esac
   done
   stack=${project%-*}
-  if [ -f "$DOZZLE_STUB_RENDERS/$stack.json" ]; then
+  if [ -f "$DOZZLE_STUB_RENDERS/$project.json" ]; then
+    cat "$DOZZLE_STUB_RENDERS/$project.json"
+  elif [ -f "$DOZZLE_STUB_RENDERS/$stack.json" ]; then
     cat "$DOZZLE_STUB_RENDERS/$stack.json"
   else
     cat "$DOZZLE_STUB_RENDERS/single.json"
@@ -1626,6 +1653,10 @@ def with_contract_copy(programs: {}, wrapper: File.read(CONTRACT))
     renders = File.join(root, "renders")
     FileUtils.mkdir_p(renders)
     File.write(File.join(renders, "dozzle.json"), JSON.generate(dozzle_render))
+    # The Mac override resets the relay's loopback publication.
+    mac = dozzle_render
+    mac.dig("services", "alert-relay").delete("ports")
+    File.write(File.join(renders, "dozzle-mac.json"), JSON.generate(mac))
     RENDERED_STACKS.each do |stack, group|
       next if stack == "dozzle"
 
@@ -2429,11 +2460,11 @@ PROGRAM_MUTATIONS = [
     rows: ["relay state mounted read-only"]
   },
   {
-    label: "the unpublished relay check",
+    label: "the loopback-only relay publication check",
     program: :stack,
-    from: "  relay.key?(\"ports\") || relay.key?(\"network_mode\")\n",
-    to: "  false\n",
-    rows: ["a relay that publishes a port"]
+    from: "  relay[\"ports\"] == [\"127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}\"] &&\n",
+    to: "  true &&\n",
+    rows: ["a relay that publishes on the wildcard"]
   },
   {
     label: "the relay hardening check",

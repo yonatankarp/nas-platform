@@ -7,6 +7,19 @@ dozzle_compose_project_name: >-
   {{ (platform_project_name ~ '-dozzle')
      if platform_project_name | default('') | length > 0 else 'dozzle' }}
 
+# Where tasks/serve.yml looks for the Tailscale client that places the relay's
+# tailnet TCP forward, and the override that skips the search. The same list and
+# the same measurement as vaultwarden_tailscale_binary_candidates, whose comment
+# in roles/vaultwarden/defaults/main.yml carries both; kept per role because a
+# role default is in scope only inside its own role. None matching is the absent
+# path every CI lane and the Mac lane take -- tests/mac/lib.sh empties this list
+# so a sandbox never writes to an operator's real tailnet.
+dozzle_tailscale_binary_candidates:
+  - /usr/local/bin/tailscale
+  - /usr/local/AppCentral/tailscale-native/bin/tailscale
+  - /usr/bin/tailscale
+dozzle_tailscale_binary: ""
+
 # Where the relay publishes. A variable rather than a literal for the reason
 # beszel_pushover_validation_url and production_auto_deploy_github_api_base are:
 # the endpoint has to be redirectable so a lane can prove the relay's own

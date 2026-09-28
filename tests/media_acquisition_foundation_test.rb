@@ -204,6 +204,11 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # Dozzle alert relay, 8082 qbittorrent, 8083 claimed by the AdGuard Home stack
   # of #548 and free again since #577 removed it, 8084 Nextcloud, 8085 SABnzbd.
   ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"],
+  # Another loopback publication, and the tailnet is again the reason: a
+  # Tailscale Serve TCP forward hands golem's Dozzle agent to it, and the LAN
+  # must not reach it (roles/dozzle/tasks/serve.yml). Its port is interpolated,
+  # so parse_port reads it from the one inventory value that sets it.
+  ["dozzle", "alert-relay", "127.0.0.1", 8081, 8081, "tcp"],
   # Karakeep's bind address is interpolated -- ${KARAKEEP_PUBLISH_ADDRESS:?} --
   # and parse_port reads it as the wildcard, which is what every converge but
   # the administrator bootstrap renders. The bootstrap renders 127.0.0.1 for one
@@ -358,6 +363,12 @@ rescue Psych::Exception => e
   [nil, ["is malformed: #{e.message.lines.first.strip}"]]
 end
 
+INTERPOLATED_PORTS = {
+  "ALERT_RELAY_PORT" => YAML.safe_load_file(
+    File.join(ROOT, "inventory/group_vars/all/service_dozzle.yml")
+  ).fetch("dozzle_alert_relay_port")
+}.freeze
+
 def parse_port(publication)
   unless publication.is_a?(String)
     raise ArgumentError, "Compose ports entries must use canonical short syntax"
@@ -369,6 +380,11 @@ def parse_port(publication)
   # pass two publications that do collide. Its colons are Compose's `:?`, not
   # address separators.
   address_and_ports = publication.sub(%r{/[^/]+\z}, "").sub(/\A\$\{[A-Z0-9_]+:\?\}:/, "0.0.0.0:")
+  # An interpolated PORT is resolved from the inventory value that renders it,
+  # because a collision review needs the number; one it cannot resolve raises.
+  address_and_ports = address_and_ports.gsub(/\$\{([A-Z0-9_]+):\?\}/) do
+    INTERPOLATED_PORTS.fetch(Regexp.last_match(1)).to_s
+  end
   if (match = address_and_ports.match(/\A\[([^\]]+)\]:(\d+):(\d+)\z/))
     bind_address, host_port, container_port = match.captures
   elsif (match = address_and_ports.match(/\A(::):(\d+):(\d+)\z/))

@@ -3186,6 +3186,83 @@ class DozzleAlertRelayTest(unittest.TestCase):
         self.assertIn("[redacted]", recorder.getvalue())
         self.assertNotIn(GOLEM_TOKEN, recorder.getvalue())
 
+    # --- golem's container events, POSTed to /alerts by golem's Dozzle agent --
+
+    def test_golem_container_events_publish_on_the_golem_application(self):
+        golem = self.relay_module.GOLEM_DOZZLE_HOST
+        # Unhealthy and Recovery share a container, the others take their own,
+        # so no container reaches its ceiling here.
+        for rule, container_id in (("OOM", "0123456789ab"), ("Unexpected exit", "ba9876543210"),
+                                   ("Unhealthy", CONTAINER_ID), ("Recovery", CONTAINER_ID)):
+            with self.subTest(rule=rule):
+                self.assertEqual(self.post(self.envelope(rule, host=golem, containerId=container_id))[0], 204)
+                form = self.pushover.requests[-1]["form"]
+                self.assertEqual(form["token"], GOLEM_TOKEN, "golem must publish on the Golem application")
+                self.assertEqual(form["user"], PUSHOVER_USER_KEY)
+                self.assertIn(f"\U0001f5a5️ <b>Host</b> {golem}", form["message"])
+                self.assertNotIn("Reason", form["message"])
+        self.assertEqual(self.published_forms()[0]["priority"], "2", "an OOM keeps its emergency priority")
+
+    def test_nas_and_lookalike_container_hosts_stay_on_the_containers_application(self):
+        for host in ("nas", "golem-2", "notgolem", "Golem", "golem "):
+            with self.subTest(host=host):
+                self.assertEqual(self.post(self.envelope("Unexpected exit", host=host))[0], 204)
+                self.assertEqual(self.pushover.requests[-1]["form"]["token"], PUSHOVER_TOKEN)
+
+    def test_without_the_golem_token_golem_container_events_go_to_containers_and_say_so(self):
+        self.relay.config = self.relay_module.Config.from_mapping(
+            self.environment(PUSHOVER_GOLEM_TOKEN=None)
+        )
+        amber = self.relay_module.COLOR_AMBER
+        reason = (f'❓ <b>Reason</b> <font color="{amber}">Golem app token not set</font>'
+                  "; sent on Containers")
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            self.assertEqual(self.post(self.envelope("Unexpected exit", host="golem"))[0], 204)
+        form = self.pushover.requests[-1]["form"]
+        self.assertEqual(form["token"], PUSHOVER_TOKEN,
+                         "a golem event must still be delivered without the Golem token")
+        self.assertIn(reason, form["message"])
+        self.assertEqual(recorder.writes, [
+            "alert-relay: PUSHOVER_GOLEM_TOKEN is not set; "
+            "a golem container event was sent on the Containers application\n",
+        ])
+        recorder = RecordingStderr()
+        with contextlib.redirect_stderr(recorder):
+            self.assertEqual(self.post(self.envelope("Unexpected exit"))[0], 204)
+        self.assertNotIn("Reason", self.pushover.requests[-1]["form"]["message"])
+        self.assertEqual(recorder.writes, [])
+
+    def test_health_state_is_kept_per_host_for_the_same_container_id(self):
+        # One container id on both hosts: golem going unhealthy must not read as
+        # a duplicate of the NAS's, and its recovery closes only its own entry.
+        self.assertEqual(self.post(self.envelope("Unhealthy"))[0], 204)
+        self.assertEqual(self.post(self.envelope("Unhealthy", host="golem"))[0], 204)
+        self.assertEqual(self.post(self.envelope(
+            "Recovery", host="golem", timestamp="2026-08-15T01:23:13Z"))[0], 204)
+        self.assertEqual([form["token"] for form in self.published_forms()],
+                         [PUSHOVER_TOKEN, GOLEM_TOKEN, GOLEM_TOKEN])
+        states = {entry["identity"].split("\0")[0]: entry["state"]
+                  for entry in self.read_state()["entries"]}
+        self.assertEqual(states, {"nas": "unhealthy", "golem": "healthy"})
+
+    def test_a_ceiling_a_golem_container_trips_is_announced_on_the_containers_application(self):
+        event = self.envelope("Unexpected exit", host="golem")
+        for _index in range(CONTAINER_CEILING + 1):
+            self.assertEqual(self.post(event)[0], 204)
+        *alerts, notice = self.published_forms()
+        self.assertEqual(len(alerts), CONTAINER_CEILING)
+        self.assertEqual({form["token"] for form in alerts}, {GOLEM_TOKEN})
+        self.assertEqual(notice["token"], PUSHOVER_TOKEN)
+
+    def test_the_golem_dozzle_host_is_the_label_of_the_remote_agent(self):
+        inventory = (ROOT / "inventory/group_vars/all/service_dozzle.yml").read_text()
+        name = re.escape(self.relay_module.GOLEM_DOZZLE_HOST)
+        self.assertRegex(
+            inventory, rf'(?m)^dozzle_remote_agent: "[^"|]+\|{name}"$',
+            "GOLEM_DOZZLE_HOST must be the name dozzle_remote_agent gives golem's agent",
+        )
+
     def test_the_alerts_token_is_redacted_like_the_others(self):
         self.pushover.response_status = 400
         self.pushover.response_body = f'{{"errors":["token {ALERTS_TOKEN} is invalid"]}}'.encode()
