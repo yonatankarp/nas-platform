@@ -89,7 +89,10 @@ services:
       DOZZLE_ENABLE_MCP: "false"
       DOZZLE_ENABLE_SHELL: "false"
       DOZZLE_NO_ANALYTICS: "true"
-      DOZZLE_REMOTE_HOST: tcp://socket-proxy:2375
+      # `|name` is what Dozzle shows for this host; without it the NAS was listed
+      # as "socket-proxy", the URL's host. The name is Beszel's for the same
+      # machine (roles/beszel/defaults/main.yml beszel_system_name), copied.
+      DOZZLE_REMOTE_HOST: tcp://socket-proxy:2375|ASUSTOR-AS6704T
       # golem's agent, dialled over the tailnet (dozzle_remote_agent). Dozzle
       # falls back to the image's public pair when a DOZZLE_CERT path does not
       # exist, silently, so these name exactly where roles/dozzle writes the
