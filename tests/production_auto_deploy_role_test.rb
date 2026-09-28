@@ -71,7 +71,7 @@ tasks = YAML.safe_load_file(ROLE_TASKS)
 # --- structural contract -----------------------------------------------------
 
 # #558 removed ntfy, so the role renders no ntfy.curl any more. The file a
-# previous installation left in the config root is the operator's to delete.
+# previous installation left in the config root the role now removes.
 check(failures, tasks.none? { |task| task.dig("ansible.builtin.template", "src").to_s.include?("ntfy") } &&
                 !File.exist?(File.join(ROOT, "roles/production_auto_deploy/templates/ntfy.curl.j2")),
       "the role must render no ntfy.curl: #558 removed the service it published to")
@@ -526,6 +526,8 @@ Dir.mktmpdir("auto-deploy-role") do |root|
   FileUtils.mkdir_p([File.join(checkout, ".git"), File.join(checkout, "scripts"),
                      config_root])
   FileUtils.cp(POLLER_SOURCE, File.join(checkout, "scripts/production_auto_deploy.py"))
+  # What an installation from before #558 left behind, for the role to remove.
+  File.write(File.join(config_root, "ntfy.curl"), "header = \"Authorization: Bearer retired\"\n")
   # The poller runs Ansible from this virtualenv, so the role must find it.
   tooling_bin = File.join(checkout, ".venv/bin")
   FileUtils.mkdir_p(tooling_bin)
@@ -699,7 +701,7 @@ Dir.mktmpdir("auto-deploy-role") do |root|
           "#{config['platform_callback_host'].inspect}")
 
     check(failures, !File.exist?(File.join(config_root, "ntfy.curl")),
-          "the role must not render ntfy.curl since #558 removed ntfy")
+          "the role must remove the ntfy.curl #558 left behind")
 
     poller = File.join(home, ".local/share/nas-platform/poller/production_auto_deploy.py")
     check(failures, (File.stat(poller).mode & 0o777) == 0o700, "the poller must be mode 0700")

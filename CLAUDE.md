@@ -552,9 +552,12 @@ password means regenerating every credential; there is no backdoor.
 secret (#561)**, so a leaked secret is answered as a lost password is: regenerate
 every credential and re-encrypt (`docs/secrets.md` has the steps).
 
-**A removed service does not take its files with it**: `host_prep` never deletes,
-so retired data stays on the NAS until an operator removes it
-([docs/host-cleanup.md](docs/host-cleanup.md) has AdGuard, #577, and ntfy, #558).
+**A removed service does not take its files with it**: `host_prep` deletes
+nothing but what it names, so retired data stays on the NAS until an operator or
+a named task removes it. ntfy's (#558) is removed by
+`roles/host_prep/tasks/retire_ntfy.yml` and the two roles that wrote its curl
+configs; AdGuard's (#577) is still manual
+([docs/host-cleanup.md](docs/host-cleanup.md)).
 
 **Vaultwarden's store is client-side encrypted, but `rsa_key.pem` signs every
 token**, so its directory is 0700 and the `pre-upgrade-backup/` copy is
