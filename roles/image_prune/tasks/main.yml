@@ -151,6 +151,14 @@
     label: "{{ item.path }}"
   no_log: true
 
+# This role rendered it until #558 removed ntfy; it carries the deploy
+# publisher's bearer token for a server that no longer runs.
+- name: Remove the retired ntfy publisher configuration
+  ansible.builtin.file:
+    path: "{{ image_prune_config_root }}/ntfy-prune.curl"
+    state: absent
+  no_log: true
+
 - name: Write the non-secret prune configuration
   ansible.builtin.template:
     src: config.json.j2

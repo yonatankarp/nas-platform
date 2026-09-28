@@ -126,8 +126,8 @@ mac_validate_integration_callback() {
 # - nas_compose_minimum: the mac/integration overrides use `!override` (Compose 2.24.4).
 # - *_deployment_enabled: the lane requests the stacks its hooks account for.
 # - vaultwarden_domain: the role refuses an IPv4 literal (WebAuthn needs a domain).
-# - empty Tailscale candidates: otherwise a Mac with /usr/local/bin/tailscale would
-#   run `tailscale serve` against the operator's REAL tailnet.
+# - empty Tailscale candidates (Vaultwarden and Dozzle): otherwise a Mac with
+#   /usr/local/bin/tailscale would run `tailscale serve` against the REAL tailnet.
 # - *_pushover_*: this lane uses the REAL vault; never page the household's devices.
 #   Dozzle's port is tests/contracts/dozzle.sh's recorder; the dozzle_contract,
 #   deployment_summary and seerr_contract tests refuse losing these lines.
@@ -139,7 +139,7 @@ mac_ansible_playbook() {
     -e 'dozzle_pushover_api_url=http://{{ platform_callback_host }}:32587/1/messages.json' \
     -e 'deployment_pushover_api_url=http://127.0.0.1:1/1/messages.json' \
     -e '{"seerr_pushover_access_token": "", "seerr_pushover_user_key": ""}' \
-    -e '{"vaultwarden_tailscale_binary_candidates": []}'
+    -e '{"vaultwarden_tailscale_binary_candidates": [], "dozzle_tailscale_binary_candidates": []}'
   case ${PLATFORM_PROOF_PLATFORM:-mac} in
     mac)
       case ${PLATFORM_CALLBACK_HOST:-host.docker.internal} in

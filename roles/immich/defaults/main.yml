@@ -31,8 +31,8 @@ immich_restore_database_wait_timeout: 300
 immich_compose_wait_timeout: 600
 immich_initialization_retries: 60
 
-# Only settings the Compose definition commits to; everything else stays
-# operator-owned in the UI.
+# Only settings the Compose definition or a recorded decision commits to;
+# everything else stays operator-owned in the UI.
 immich_managed_settings:
   # The NAS is not permitted to phone home for release announcements.
   newVersionCheck:
@@ -42,6 +42,19 @@ immich_managed_settings:
   backup:
     database:
       enabled: true
+  # Originals live in date folders, which is where the asset rows point since
+  # #907's repair; an album-folder template is what moved them away from their
+  # rows. Changing this moves no existing file: only the Storage Template
+  # Migration job does, and this role never starts it. New uploads, and any
+  # asset whose metadata is re-extracted, are placed by it. The template is
+  # Handlebars, so it is !unsafe: Ansible must never render it as Jinja, and the
+  # linter's Jinja spacing advice would change the stored string.
+  # hashVerificationEnabled is the pinned server's own default, owned so the
+  # object is whole.
+  storageTemplate:
+    enabled: true
+    hashVerificationEnabled: true
+    template: !unsafe "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"  # noqa: jinja[spacing]
 
 # Immich makes the creating account the sole administrator: created once, then reconciled.
 immich_admin_name: NAS Platform Administrator

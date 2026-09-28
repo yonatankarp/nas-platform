@@ -771,3 +771,15 @@
   loop_control:
     label: "{{ item.name }}"
   when: not ansible_check_mode
+
+# LAST, so the NAS's own alerting is deployed, reconciled and verified before
+# anything golem needs is attempted: a Serve fault (a reshaped CLI, a revoked
+# operator grant, tailscaled not up yet after a boot) fails this run here rather
+# than ahead of the NAS's alerts. It still stops the roles after this one, which
+# is the cost of failing loudly rather than leaving golem silently unpaged.
+# Statically imported, so its tasks stay inside the fixture set
+# tests/policy_mutation_support.rb derives and are named by --list-tasks. Not
+# part of the deployment report: a placement happens once and changes no
+# container.
+- name: Forward the alert relay over the tailnet for golem's Dozzle agent
+  ansible.builtin.import_tasks: serve.yml

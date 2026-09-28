@@ -223,6 +223,13 @@
     label: "{{ item.path }}"
   no_log: true
 
+# ntfy was removed in #558; this file carries a bearer token for a dead server.
+- name: Remove the retired ntfy publisher configuration
+  ansible.builtin.file:
+    path: "{{ production_auto_deploy_config_root }}/ntfy.curl"
+    state: absent
+  no_log: true
+
 # Secret-bearing: the healthchecks.io ping URLs carry their tokens (#606).
 - name: Write the protected poller configuration
   ansible.builtin.template:

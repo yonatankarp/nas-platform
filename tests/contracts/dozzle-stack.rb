@@ -57,8 +57,11 @@ abort "Dozzle contract failed: alert relay mounts differ" unless relay["volumes"
   "${PLATFORM_CURRENT_DIR:?}/services/dozzle/alert_relay.py:/app/alert_relay.py:ro",
   "${DOZZLE_STATE_ROOT:?}/alert-relay:/state"
 ]
-abort "Dozzle contract failed: alert relay must not publish a port" if
-  relay.key?("ports") || relay.key?("network_mode")
+# Loopback and the listener port only: golem's agent arrives through the NAS's
+# Tailscale Serve TCP forward, and the LAN must not reach it.
+abort "Dozzle contract failed: alert relay must publish only its listener port, on loopback" unless
+  relay["ports"] == ["127.0.0.1:${ALERT_RELAY_PORT:?}:${ALERT_RELAY_PORT:?}"] &&
+  !relay.key?("network_mode")
 # The relay joins default and the external alert-relay bridge; the socket proxy
 # shares only docker-api, and only with Dozzle (#829).
 abort "Dozzle contract failed: alert relay must join default and the external alert-relay bridge, and nothing else may" unless

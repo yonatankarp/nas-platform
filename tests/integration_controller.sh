@@ -1289,6 +1289,55 @@ EOF
       if [ "$INTEGRATION_SUITE" = komga ]; then
         run_komga_contract run
 
+        # NTFY'S HOST RESIDUE, REMOVED BY host_prep. #558 deleted the stack from
+        # the repository, and the NAS kept running it. What production meets
+        # once is a labelled ntfy container mounting its data, its network, the
+        # data directory and the rendered .env; a sandbox that never ran ntfy
+        # has none of it, so this plants all four and converges host_prep. Komga
+        # because its lane starts no Dozzle relay that the stop could page.
+        # The komga image is used only because this lane already pulled it.
+        ntfy_project=$integration_project_namespace-ntfy
+        ntfy_root=$sandbox/volume1/Docker/ntfy
+        ntfy_runtime=$sandbox/volume1/Docker/nas-platform/runtime/services/ntfy
+        mkdir -p "$ntfy_root/data" "$ntfy_root/cache" "$ntfy_runtime"
+        : > "$ntfy_root/data/auth.db"
+        : > "$ntfy_runtime/.env"
+        ntfy_image=$(docker inspect --format '{{.Config.Image}}' \
+          "$integration_project_namespace-komga")
+        docker network create \
+          --label com.docker.compose.project="$ntfy_project" "${ntfy_project}_default"
+        docker run -d --init --stop-timeout 30 --name "$ntfy_project" \
+          --label com.docker.compose.project="$ntfy_project" \
+          --network "${ntfy_project}_default" \
+          -v "$ntfy_root/data:/var/lib/ntfy" \
+          --entrypoint sleep "$ntfy_image" 86400
+        ntfy_container_id=$(docker inspect --format '{{.Id}}' "$ntfy_project")
+        ntfy_teardown_since=$(date +%s)
+        run_play --tags host_prep
+        ntfy_teardown_until=$(date +%s)
+        if [ -n "$(docker ps -aq --filter label=com.docker.compose.project="$ntfy_project")" ] ||
+            [ -n "$(docker network ls -q --filter label=com.docker.compose.project="$ntfy_project")" ] ||
+            [ -e "$ntfy_root" ] || [ -e "$ntfy_runtime" ]; then
+          printf '%s\n' 'host_prep left part of the retired ntfy stack in place' >&2
+          exit 1
+        fi
+        # Gracefully: Dozzle pages on 137, which a stop that outran its grace
+        # period produces. The container is gone, so the code is read from the
+        # daemon's die event.
+        ntfy_exit_code=$(docker events --since "$ntfy_teardown_since" \
+          --until $((ntfy_teardown_until + 1)) \
+          --filter container="$ntfy_container_id" --filter event=die \
+          --format '{{index .Actor.Attributes "exitCode"}}' | tail -n 1)
+        case $ntfy_exit_code in
+          0|143) ;;
+          *)
+            printf 'host_prep stopped the ntfy container with exit code "%s", not 0 or 143\n' \
+              "$ntfy_exit_code" >&2
+            exit 1
+            ;;
+        esac
+        run_enabled_idempotence host_prep
+        printf 'NTFY_RESIDUE_REMOVED exit=%s\n' "$ntfy_exit_code"
       fi
     fi
 

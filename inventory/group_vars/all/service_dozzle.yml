@@ -5,12 +5,14 @@
 # vault_dozzle_alert_relay_token has no default: vault_dozzle.yml is its only source (#558).
 
 # Shared inventory rather than a role default because Beszel converges before
-# Dozzle and must name the same relay. Container-internal port only.
+# Dozzle and must name the same relay. Also the relay's loopback publication and
+# the tailnet port golem's Dozzle agent reaches it on (roles/dozzle Serve forward).
 dozzle_alert_relay_port: 8081
 
 # golem's Dozzle agent, as `address|name`. Published on golem's tailnet address
 # only (Docker ports bypass ufw). The hub pushes alert rules to the agent, which
-# evaluates them itself; alert-relay is unreachable from golem, so golem never pages.
+# POSTs to alert-relay through this host's Serve forward; the relay sends golem's
+# events on the Golem Pushover application (GOLEM_DOZZLE_HOST in alert_relay.py).
 dozzle_remote_agent: "100.104.25.70:7007|golem"
 
 nas_storage_dozzle:

@@ -356,6 +356,8 @@ REQUIRED_CHECKS = %w[
   ruby\ tests/database_managed_users_test.rb\ --self-test
   ruby\ tests/immich_configured_password_test.rb
   ruby\ tests/immich_user_onboarding_test.rb
+  ruby\ tests/immich_system_config_test.rb
+  ruby\ tests/immich_placement_wait_test.rb
   ruby\ tests/immich_selective_helper_integrity_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb
   ruby\ tests/komga_library_reconciliation_test.rb\ --self-test

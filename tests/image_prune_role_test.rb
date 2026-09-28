@@ -54,7 +54,7 @@ tasks = YAML.safe_load_file(ROLE_TASKS)
 
 # --- structural contract -----------------------------------------------------
 
-# #558 removed ntfy; a leftover ntfy-prune.curl is the operator's to delete.
+# #558 removed ntfy; the role removes a leftover ntfy-prune.curl.
 check(failures, tasks.none? { |task| task.dig("ansible.builtin.template", "src").to_s.include?("ntfy") } &&
                 !File.exist?(File.join(ROOT, "roles/image_prune/templates/ntfy.curl.j2")),
       "the role must render no ntfy-prune.curl: #558 removed the service it published to")
@@ -172,6 +172,8 @@ Dir.mktmpdir("image-prune-role") do |root|
   poller_state = File.join(home, ".local/share/nas-platform/state")
   FileUtils.mkdir_p([File.join(checkout, "scripts"), config_root, poller_state])
   FileUtils.cp(PRUNE_SOURCE, File.join(checkout, "scripts/image_prune.py"))
+  # What an installation from before #558 left behind, for the role to remove.
+  File.write(File.join(config_root, "ntfy-prune.curl"), "header = \"Authorization: Bearer retired\"\n")
 
   inventory = File.join(root, "inventory.yml")
   File.write(inventory, <<~YAML)
@@ -288,7 +290,7 @@ Dir.mktmpdir("image-prune-role") do |root|
           "the launcher must not contain a Pushover credential")
 
     check(failures, !File.exist?(File.join(config_root, "ntfy-prune.curl")),
-          "the role must not render ntfy-prune.curl since #558 removed ntfy")
+          "the role must remove the ntfy-prune.curl #558 left behind")
 
     # --status takes no lock and prunes nothing, so a fresh install proves itself.
     status_output, status_result = Open3.capture2e(

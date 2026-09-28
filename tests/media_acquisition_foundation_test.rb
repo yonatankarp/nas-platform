@@ -172,6 +172,8 @@ EXPECTED_IMPLEMENTED_PORTS = [
   # 127.0.0.1, v4 only) is its whole perimeter. 8086 inside because the
   # unprivileged container cannot bind 80.
   ["vaultwarden", "vaultwarden", "127.0.0.1", 8086, 8086, "tcp"],
+  # Loopback for golem's Tailscale Serve forward; the port comes from inventory.
+  ["dozzle", "alert-relay", "127.0.0.1", 8081, 8081, "tcp"],
   # Karakeep's interpolated bind address reads as the wildcard; only its
   # administrator bootstrap renders 127.0.0.1.
   ["karakeep", "karakeep", "0.0.0.0", 8087, 3000, "tcp"]
@@ -319,6 +321,12 @@ rescue Psych::Exception => e
   [nil, ["is malformed: #{e.message.lines.first.strip}"]]
 end
 
+INTERPOLATED_PORTS = {
+  "ALERT_RELAY_PORT" => YAML.safe_load_file(
+    File.join(ROOT, "inventory/group_vars/all/service_dozzle.yml")
+  ).fetch("dozzle_alert_relay_port")
+}.freeze
+
 def parse_port(publication)
   unless publication.is_a?(String)
     raise ArgumentError, "Compose ports entries must use canonical short syntax"
@@ -328,6 +336,11 @@ def parse_port(publication)
   # An interpolated bind address is read as the widest it can render to, the
   # wildcard. Its colons are Compose's `:?`, not address separators.
   address_and_ports = publication.sub(%r{/[^/]+\z}, "").sub(/\A\$\{[A-Z0-9_]+:\?\}:/, "0.0.0.0:")
+  # An interpolated PORT is resolved from the inventory value that renders it,
+  # because a collision review needs the number; one it cannot resolve raises.
+  address_and_ports = address_and_ports.gsub(/\$\{([A-Z0-9_]+):\?\}/) do
+    INTERPOLATED_PORTS.fetch(Regexp.last_match(1)).to_s
+  end
   if (match = address_and_ports.match(/\A\[([^\]]+)\]:(\d+):(\d+)\z/))
     bind_address, host_port, container_port = match.captures
   elsif (match = address_and_ports.match(/\A(::):(\d+):(\d+)\z/))

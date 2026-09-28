@@ -12,6 +12,12 @@ if stack == "dozzle"
   abort "Dozzle contract failed: #{stack} #{variant} alert relay does not take its listener port from one variable" unless
     probed == relay_probe_port &&
     healthcheck.include?("http://127.0.0.1:#{relay_probe_port}/healthz")
+  # The third consumer, the loopback publication Tailscale Serve forwards to:
+  # the probe port on both sides, and nothing on the Mac, which resets it.
+  published = Array(relay["ports"]).map { |port| [port["host_ip"], port["published"].to_s, port["target"].to_s] }
+  expected = variant == "mac" ? [] : [["127.0.0.1", relay_probe_port, relay_probe_port]]
+  abort "Dozzle contract failed: #{stack} #{variant} alert relay does not publish its listener port on loopback alone" unless
+    published == expected
 end
 services.each do |service, definition|
   matches = definition.fetch("labels", {}).select { |name, _value| name == "dev.dozzle.name" }

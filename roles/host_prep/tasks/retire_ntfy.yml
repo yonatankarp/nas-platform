@@ -1,0 +1,107 @@
+---
+# NTFY'S HOST RESIDUE, REMOVED FROM THE REPOSITORY RATHER THAN BY HAND. #558
+# deleted the stack, but a repository change takes nothing off the host, and the
+# NAS was found still running it with nothing sending to it. Its data held
+# auth.db (every account's bcrypt hash and access token) and its rendered .env
+# the same in clear, so the operator decided to delete all of it rather than
+# archive it. The deploy account's two ntfy curl configs are removed by the
+# roles that wrote them, production_auto_deploy and image_prune.
+#
+# Order is the safety: containers, then their network, then the directories, and
+# the directories only once no container mounts anything under them. Every step
+# is a no-op on a host that never ran ntfy, so a second run changes nothing.
+- name: Select the retired ntfy project and paths
+  ansible.builtin.set_fact:
+    host_prep_ntfy_project: >-
+      {{ (platform_project_name ~ '-ntfy')
+         if platform_project_name | default('') | length > 0 else 'ntfy' }}
+    host_prep_ntfy_paths:
+      - "{{ nas_docker_root }}/ntfy"
+      - "{{ platform_runtime_dir }}/services/ntfy"
+
+# Both roots are validated elsewhere; this is only that neither can collapse the
+# removal onto something wider than the one directory each names.
+- name: Require the retired ntfy paths to name only ntfy
+  ansible.builtin.assert:
+    that:
+      - item is match('^/.+/ntfy$')
+      - "'..' not in item.split('/')"
+  loop: "{{ host_prep_ntfy_paths }}"
+
+- name: Validate the retired ntfy paths before removing them
+  ansible.builtin.include_role:
+    name: deployment_bundle
+    tasks_from: target
+  vars:
+    deployment_target_service: ""
+    deployment_target_require_current_release: false
+    deployment_target_extra_paths: "{{ host_prep_ntfy_paths }}"
+
+- name: Find the retired ntfy project's containers and networks
+  community.docker.docker_host_info:
+    containers: true
+    containers_all: true
+    containers_filters:
+      label: "com.docker.compose.project={{ host_prep_ntfy_project }}"
+    networks: true
+    networks_filters:
+      label: "com.docker.compose.project={{ host_prep_ntfy_project }}"
+  register: host_prep_ntfy_docker
+  changed_when: false
+
+# No stop_timeout: Docker then waits the container's own grace period, the 30s
+# its Compose file declared, and init: true forwarded the signal. A graceful stop
+# exits 0 or 143, which Dozzle's unexpected-exit rule does not page on.
+- name: Remove the retired ntfy containers
+  community.docker.docker_container:
+    name: "{{ item.Id }}"
+    state: absent
+  loop: "{{ host_prep_ntfy_docker.containers }}"
+  loop_control:
+    label: "{{ item.Names | default([item.Id]) | first }}"
+
+- name: Remove the retired ntfy networks
+  community.docker.docker_network:
+    name: "{{ item.Name }}"
+    state: absent
+  loop: "{{ host_prep_ntfy_docker.networks }}"
+  loop_control:
+    label: "{{ item.Name }}"
+
+# A container the label did not find -- one started outside Compose, or under
+# another project name -- would otherwise lose auth.db from under it. Refuse
+# instead, naming it. Skipped under --check, where the removal above only
+# reported and the container it found is legitimately still there.
+- name: Read every container's mounts before removing ntfy's directories
+  community.docker.docker_host_info:
+    containers: true
+    containers_all: true
+    verbose_output: true
+  register: host_prep_ntfy_mounts
+  changed_when: false
+  when: not ansible_check_mode
+
+- name: Refuse to remove ntfy's directories while a container mounts them
+  ansible.builtin.assert:
+    that:
+      - host_prep_ntfy_mounting | length == 0
+    fail_msg: >-
+      Refusing to remove {{ nas_docker_root }}/ntfy because these containers
+      still mount it: {{ host_prep_ntfy_mounting | join(', ') }}. Stop and
+      remove them, then converge again.
+  vars:
+    host_prep_ntfy_mounting: >-
+      {{ host_prep_ntfy_mounts.containers
+         | subelements('Mounts', skip_missing=true)
+         | selectattr('1.Source', 'match', '^' ~ (host_prep_ntfy_paths[0] | regex_escape) ~ '(/|$)')
+         | map(attribute='0.Names.0')
+         | unique
+         | list }}
+  when: not ansible_check_mode
+
+- name: Remove the retired ntfy data and runtime directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ host_prep_ntfy_paths }}"
+  no_log: true

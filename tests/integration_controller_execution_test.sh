@@ -204,6 +204,20 @@ build_stub_bin() {
     stub_preamble
     cat <<'STUB'
 log_invocation ansible-playbook "$@"
+# The komga lane plants ntfy's host residue and requires a host_prep converge to
+# remove it; this is that removal, unless the case says the role left it.
+case " $* " in
+  *" --tags host_prep "*)
+    if [ "${CASE_NTFY_RESIDUE_SURVIVES-}" != true ]; then
+      for stub_argument in "$@"; do
+        case $stub_argument in
+          nas_docker_root=*)
+            rm -rf "${stub_argument#nas_docker_root=}/ntfy" \
+              "${stub_argument#nas_docker_root=}/nas-platform/runtime/services/ntfy" ;;
+        esac
+      done
+    fi ;;
+esac
 printf 'ansible-playbook env=[ANSIBLE_VAULT_PASSWORD_FILE=%s]\n' \
   "${ANSIBLE_VAULT_PASSWORD_FILE-<unset>}" >> "${CONTROLLER_STUB_LOG:?}"
 printf 'PLAY RECAP *********************************************************************\n'
@@ -228,6 +242,7 @@ log_invocation docker "$@"
 case ${1-} in
   ps) printf '%s' "${CONTROLLER_STUB_DOCKER_RUNNING-}" ;;
   inspect) printf '%s\n' "${CONTROLLER_STUB_DOCKER_STATE-exited:0}" ;;
+  events) printf '%s\n' "${CASE_NTFY_EXIT_CODE-143}" ;;
 esac
 STUB
   } > "$stub_bin/docker"
@@ -584,6 +599,29 @@ case_komga() {
   expect_log 'contract komga argv=[seed]'
   expect_log 'contract komga argv=[run]'
   expect_log_order 'contract komga argv=[seed]' 'contract komga argv=[run]'
+  expect_log '[--entrypoint][sleep]'
+  expect_log_order 'contract komga argv=[run]' '[--entrypoint][sleep]'
+  expect_output 'NTFY_RESIDUE_REMOVED exit=143'
+}
+
+# The same lane, with host_prep leaving the residue or killing the container:
+# each must fail the lane rather than print the marker.
+case_komga_ntfy_residue_survives() {
+  CASE_NTFY_RESIDUE_SURVIVES=true
+  export CASE_NTFY_RESIDUE_SURVIVES
+  run_controller komga host_prep,deployment_bundle,komga true true site.yml
+  unset CASE_NTFY_RESIDUE_SURVIVES
+  expect_nonzero_status
+  expect_output 'host_prep left part of the retired ntfy stack in place'
+}
+
+case_komga_ntfy_killed() {
+  CASE_NTFY_EXIT_CODE=137
+  export CASE_NTFY_EXIT_CODE
+  run_controller komga host_prep,deployment_bundle,komga true true site.yml
+  unset CASE_NTFY_EXIT_CODE
+  expect_nonzero_status
+  expect_output 'with exit code "137", not 0 or 143'
 }
 
 # The upgrade lane. The checkout is a git repository because the repin commits:
@@ -855,7 +893,8 @@ build_stub_bin
 build_checkout
 
 for healthy_case in idempotence_check extra_arguments empty_tags arr \
-    downloaders bindery seerr jellyfin komga upgrade upgrade_stop_sigkill \
+    downloaders bindery seerr jellyfin komga komga_ntfy_residue_survives \
+    komga_ntfy_killed upgrade upgrade_stop_sigkill \
     upgrade_stop_nothing_running upgrade_refusals \
     upgrade_missing_compose toolchain_install \
     refuses_missing_roots vault_install_path; do
@@ -949,6 +988,8 @@ plant 'Jellyfin owning contract dropped' jellyfin program \
   'run_jellyfin_contract run' ':' 1
 plant 'Komga fixture seed dropped' komga program \
   'run_komga_contract seed' ':' 1
+plant 'ntfy residue converge dropped' komga program \
+  'run_play --tags host_prep\n' ':\n' 1 regexp
 # The upgrade lane's plants (#773): seed and verify, then the pin surgery.
 plant 'upgrade seed dropped' upgrade program \
   'run_contract "$upgrade_service" seed' ':' 1

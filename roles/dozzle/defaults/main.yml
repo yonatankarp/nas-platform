@@ -7,6 +7,14 @@ dozzle_compose_project_name: >-
   {{ (platform_project_name ~ '-dozzle')
      if platform_project_name | default('') | length > 0 else 'dozzle' }}
 
+# Tailscale client for the relay's tailnet TCP forward; same list and reasoning as
+# vaultwarden_tailscale_binary_candidates. Lanes empty it (tests/mac/lib.sh).
+dozzle_tailscale_binary_candidates:
+  - /usr/local/bin/tailscale
+  - /usr/local/AppCentral/tailscale-native/bin/tailscale
+  - /usr/bin/tailscale
+dozzle_tailscale_binary: ""
+
 # Redirectable so lanes never push to real devices: the deployed relay POSTs
 # on every container event. Every lane overrides it.
 dozzle_pushover_api_url: https://api.pushover.net/1/messages.json

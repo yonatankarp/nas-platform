@@ -155,6 +155,7 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/paperless_mail_reconciliation_test.rb
   ruby tests/docs_links_test.rb
   ruby tests/beszel_pushover_validation_test.rb
+  ruby tests/dozzle_serve_test.rb
   ruby tests/paperless_contract_test.rb --self-test
   ruby tests/dozzle_contract_test.rb
   ruby tests/production_auto_deploy_role_test.rb
@@ -214,6 +215,8 @@ SHARD_3 = <<~'CHECKS'.lines(chomp: true).freeze
   ruby tests/case_pool_locals_test.rb --self-test
   ruby tests/case_pool_behavior_test.rb --self-test
   ruby tests/immich_user_onboarding_test.rb
+  ruby tests/immich_system_config_test.rb
+  ruby tests/immich_placement_wait_test.rb
   tests/generate-secrets-redaction-test.sh
 CHECKS
 

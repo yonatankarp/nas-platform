@@ -188,6 +188,16 @@ STATIC_ROWS = [
     expects: "managed settings must keep the database backup enabled"
   },
   {
+    name: "the storage template switched to album folders",
+    break: lambda { |root|
+      edit_yaml(root, "roles/immich/defaults/main.yml") do |document|
+        document.fetch("immich_managed_settings").fetch("storageTemplate")["template"] =
+          "{{y}}/{{album}}/{{filename}}"
+      end
+    },
+    expects: "managed settings must keep the date-folder storage template"
+  },
+  {
     name: "the pinned standard preference profile edited",
     break: lambda { |root|
       edit_yaml(root, "roles/immich/defaults/main.yml") do |document|
@@ -422,7 +432,9 @@ end
 def default_system_config
   { "newVersionCheck" => { "enabled" => false },
     "machineLearning" => { "enabled" => true },
-    "backup" => { "database" => { "enabled" => true } } }
+    "backup" => { "database" => { "enabled" => true } },
+    "storageTemplate" => { "enabled" => true, "hashVerificationEnabled" => true,
+                           "template" => "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}" } }
 end
 
 RUNTIME_ROWS = [
@@ -507,6 +519,18 @@ RUNTIME_ROWS = [
     name: "a managed setting the deployment does not hold",
     given: { system_config: -> { default_system_config.merge("newVersionCheck" => { "enabled" => true }) } },
     expects: "managed setting newVersionCheck.enabled differs"
+  },
+  {
+    name: "a storage template retemplated in the UI",
+    given: {
+      system_config: lambda {
+        default_system_config.merge(
+          "storageTemplate" => default_system_config.fetch("storageTemplate")
+                                 .merge("template" => "{{y}}/{{album}}/{{filename}}")
+        )
+      }
+    },
+    expects: "managed setting storageTemplate.template differs"
   },
   {
     name: "an unreadable encrypted vault",
@@ -889,6 +913,13 @@ PROGRAM_MUTATIONS = [
     from: 'settings.dig("newVersionCheck", "enabled") == false',
     to: "true",
     rows: ["the outbound version check re-enabled"]
+  },
+  {
+    label: "the storage template check",
+    program: :static,
+    from: 'settings["storageTemplate"] == {',
+    to: "true || {",
+    rows: ["the storage template switched to album folders"]
   },
   {
     label: "the pinned preference profile check",

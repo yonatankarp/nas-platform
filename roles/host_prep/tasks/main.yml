@@ -285,3 +285,8 @@
     label: "{{ item.item.path }}"
   changed_when: false
   when: host_prep_integration_writer_enabled | bool
+
+# A removed service's host residue, deleted here because host_prep is what
+# created its directories. ntfy is the one retired this way; see the task file.
+- name: Remove the retired ntfy stack from the host
+  ansible.builtin.include_tasks: retire_ntfy.yml

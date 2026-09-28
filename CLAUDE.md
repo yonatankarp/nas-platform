@@ -552,9 +552,12 @@ password means regenerating every credential; there is no backdoor.
 secret (#561)**, so a leaked secret is answered as a lost password is: regenerate
 every credential and re-encrypt (`docs/secrets.md` has the steps).
 
-**A removed service does not take its files with it**: `host_prep` never deletes,
-so retired data stays on the NAS until an operator removes it
-([docs/host-cleanup.md](docs/host-cleanup.md) has AdGuard, #577, and ntfy, #558).
+**A removed service does not take its files with it**: `host_prep` deletes
+nothing but what it names, so retired data stays on the NAS until an operator or
+a named task removes it. ntfy's (#558) is removed by
+`roles/host_prep/tasks/retire_ntfy.yml` and the two roles that wrote its curl
+configs; AdGuard's (#577) is still manual
+([docs/host-cleanup.md](docs/host-cleanup.md)).
 
 **Vaultwarden's store is client-side encrypted, but `rsa_key.pem` signs every
 token**, so its directory is 0700 and the `pre-upgrade-backup/` copy is
@@ -575,6 +578,16 @@ environment (#829). Beszel's is on `127.0.0.1` only because host-networked
 `beszel_agent` cannot join its internal network; the hub has no route to it. `SOCKET_PROXY_CONSUMERS` in `tests/policy_test.rb` states who
 may share its network in `compose.yml`, and refuses an override of that stack
 declaring networks.
+
+**The Dozzle alert relay is the third `127.0.0.1` publication, for golem**:
+Dozzle's hub pushes the relay's URL and bearer header to golem's agent, which
+dispatches from golem. golem maps `alert-relay` to the NAS's tailnet address, and
+a Tailscale Serve TCP forward on `dozzle_alert_relay_port`
+(`roles/dozzle/tasks/serve.yml`) hands the connection to the loopback port, so the
+tailnet reaches the relay, the LAN does not, and the bearer token is still its
+authentication. Serve, not a bind to the tailnet address, because that address
+may not exist when Docker starts the container at boot. The relay sends events
+from host `golem` on the Golem Pushover application.
 
 **`beszel_agent` is effectively root on the host, by choice (#607)**: `:r` on its
 devices refuses a write-open and contains nothing else, and `:ro` on

@@ -131,6 +131,12 @@ refuse("managed settings must keep machine learning enabled") unless
   settings.dig("machineLearning", "enabled") == true
 refuse("managed settings must keep the database backup enabled") unless
   settings.dig("backup", "database", "enabled") == true
+# #907: date folders, which is where the repaired asset rows point.
+refuse("managed settings must keep the date-folder storage template") unless
+  settings["storageTemplate"] == {
+    "enabled" => true, "hashVerificationEnabled" => true,
+    "template" => "{{y}}/{{y}}-{{MM}}-{{dd}}/{{filename}}"
+  }
 
 expected_standard_preferences = {
   "albums" => { "defaultAssetOrder" => "desc" },
